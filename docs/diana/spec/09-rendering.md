@@ -95,7 +95,10 @@ its children remain in the product. A named scope whose only child is another
 unnamed printed control prints that child directly; P7 marks it transparent and
 P9 omits the scope's own brace pair.
 
-A natural call prints `receiver.method(arguments)`. A selected `Parameters` call
+A natural call prints `receiver.method(arguments)`. An `Owner` call carries
+owner-only disclosure selected by P7 for an Object receiver;
+that form is `(receiver via Owner).method(arguments)` and field accesses use
+`(receiver via Owner).field`. It performs no new type check. A `Parameters` call
 prints `receiver.method<(ParameterTypes)>(arguments)`. A selected `FullSignature`
 call prints `receiver.method<(ParameterTypes) -> ReturnType>(arguments)`.
 The parameter parentheses distinguish a signature from generic type arguments;
@@ -173,6 +176,10 @@ exactly negated composed boolean Eqz prints its operand without double negation;
 original arm identities and selected-edge phases do not change. Synchronized routing terminals
 and post-release copies remain at their original nodes rather than moving past
 surrounding catch scopes. Uncaught propagation is not an unavailable handler.
+P7-selected boolean literals print `true` or `false`. A selected boolean use of
+integral storage prints `(value != 0)` unless that local is already displayed
+as boolean. These are interpretations of the existing read, not new conversions
+or evaluations selected by P9.
 
 A construction composed into `throw` prints at that terminal. Its statement,
 member operations and exception sites retain source spans on the construction;

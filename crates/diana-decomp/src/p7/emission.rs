@@ -299,6 +299,8 @@ pub struct EmissionPlan {
     pub(super) suspensions: Vec<Suspension>,
     pub(super) coroutine_body: Option<CoroutineBody>,
     pub(super) local_types: Vec<LocalSpelling>,
+    pub(super) boolean_uses: Vec<bool>,
+    pub(super) boolean_locals: Vec<bool>,
     /// A declaration attached to its existing assignment; absence keeps the header form.
     pub(super) local_initializers: Vec<Option<StatementId>>,
     pub(super) controls: Vec<EmissionControl>,
@@ -310,6 +312,7 @@ pub struct EmissionPlan {
     /// A field reference prints its declared type only when the delivered
     /// references would otherwise be indistinguishable.
     pub(super) field_qualifications: Vec<bool>,
+    pub(super) field_receiver_owners: Vec<Option<TypeUseId>>,
     /// A store prints as an ordinary assignment only when reordering its
     /// operands to Java's left-to-right order cannot be observed.
     pub(super) natural_stores: Vec<bool>,
@@ -355,6 +358,24 @@ pub struct EmissionPlan {
     pub(super) origin_only_terminals: Vec<bool>,
 }
 impl EmissionPlan {
+    pub fn field_receiver_owner(&self, reference: ReferenceId) -> Option<TypeUseId> {
+        self.field_receiver_owners
+            .get(reference.0 as usize)
+            .copied()
+            .flatten()
+    }
+    pub fn boolean_use(&self, expression: ExprId) -> bool {
+        self.boolean_uses
+            .get(expression.0 as usize)
+            .copied()
+            .unwrap_or(false)
+    }
+    pub fn boolean_local(&self, local: StorageId) -> bool {
+        self.boolean_locals
+            .get(local.0 as usize)
+            .copied()
+            .unwrap_or(false)
+    }
     pub fn origin_only_operation(&self, op: OpId) -> bool {
         self.origin_only_operations
             .get(op.0 as usize)
@@ -387,12 +408,15 @@ impl EmissionPlan {
             suspensions: Vec::new(),
             coroutine_body: None,
             local_types: Vec::new(),
+            boolean_uses: Vec::new(),
+            boolean_locals: Vec::new(),
             local_initializers: Vec::new(),
             controls: Vec::new(),
             blocks: Vec::new(),
             show_chains: Vec::new(),
             site_annotations: Vec::new(),
             field_qualifications: Vec::new(),
+            field_receiver_owners: Vec::new(),
             natural_stores: Vec::new(),
             inline_checks: Vec::new(),
             check_uses: Vec::new(),

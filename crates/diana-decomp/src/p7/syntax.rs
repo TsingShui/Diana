@@ -55,6 +55,7 @@ pub enum Arguments {
 #[serde(rename_all = "snake_case")]
 pub enum Qualification {
     Natural,
+    Owner,
     Parameters { owner: bool },
     FullSignature { owner: bool },
 }

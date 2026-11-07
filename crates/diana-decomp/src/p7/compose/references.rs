@@ -120,9 +120,6 @@ pub(super) fn call_owners(code: &mut MethodCode) -> Result<(), ExpressionError> 
         let ExprKind::Call(call) = &code.expressions[index].kind else {
             continue;
         };
-        if matches!(call.qualification, Qualification::Natural) {
-            continue;
-        }
         let owner = match &code.references[call.target.0 as usize].declaration {
             Ok(ReferenceDeclaration::Member(MemberDeclaration::Method { owner, .. })) => *owner,
             _ => continue,
@@ -139,15 +136,91 @@ pub(super) fn call_owners(code: &mut MethodCode) -> Result<(), ExpressionError> 
             !matches!(code.emission.local_types[storage.0 as usize],
                 LocalSpelling::Named(ty) if code.types[ty.0 as usize].units == code.types[owner.0 as usize].units)
         });
+        let object_owner = !object_type(code, owner)
+            && call
+                .receiver
+                .is_some_and(|receiver| object_receiver(code, receiver))
+            && !matches!(&code.references[call.target.0 as usize].declaration,
+                Ok(ReferenceDeclaration::Member(MemberDeclaration::Method { name, .. })) if name.units.iter().copied().eq("<init>".encode_utf16()));
         let ExprKind::Call(call) = &mut code.expressions[index].kind else {
             return Err(super::bug("owner selection lost its call"));
         };
         match &mut call.qualification {
-            Qualification::Natural => {}
+            Qualification::Natural => {
+                if object_owner {
+                    call.qualification = Qualification::Owner;
+                }
+            }
+            Qualification::Owner => {}
             Qualification::Parameters { owner } | Qualification::FullSignature { owner } => {
                 *owner = disclose
             }
         }
     }
+    Ok(())
+}
+
+fn object_receiver(code: &MethodCode, expression: ExprId) -> bool {
+    if code.emission.composed_use(expression).is_some()
+        || code
+            .emission
+            .inline_checks
+            .iter()
+            .any(|check| check.occurrence == expression)
+    {
+        return false;
+    }
+    let Some(ExprKind::Read { storage, .. }) = code
+        .expressions
+        .get(expression.0 as usize)
+        .map(|expression| &expression.kind)
+    else {
+        return false;
+    };
+    matches!(code.emission.local_types[storage.0 as usize], LocalSpelling::Named(ty)
+        if code.types[ty.0 as usize].units.iter().copied().eq(b"Ljava/lang/Object;".iter().copied().map(u16::from)))
+}
+
+fn object_type(code: &MethodCode, ty: TypeUseId) -> bool {
+    code.types[ty.0 as usize]
+        .units
+        .iter()
+        .copied()
+        .eq(b"Ljava/lang/Object;".iter().copied().map(u16::from))
+}
+
+pub(super) fn field_owners(code: &mut MethodCode) -> Result<(), ExpressionError> {
+    let mut owners = filled(code.references.len(), None)?;
+    let mut select = |reference: ReferenceId, receiver: ExprId| {
+        if !object_receiver(code, receiver) {
+            return;
+        }
+        if let Ok(ReferenceDeclaration::Member(MemberDeclaration::Field { owner, .. })) =
+            &code.references[reference.0 as usize].declaration
+            && !object_type(code, *owner)
+        {
+            owners[reference.0 as usize] = Some(*owner);
+        }
+    };
+    for expression in &code.expressions {
+        if let ExprKind::Field {
+            reference,
+            receiver: Some(receiver),
+        } = expression.kind
+        {
+            select(reference, receiver);
+        }
+    }
+    for statement in &code.statements {
+        if let StatementKind::FieldStore {
+            reference,
+            receiver: Some(receiver),
+            ..
+        } = statement.kind
+        {
+            select(reference, receiver);
+        }
+    }
+    code.emission.field_receiver_owners = owners;
     Ok(())
 }

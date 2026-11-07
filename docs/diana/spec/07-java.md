@@ -109,6 +109,15 @@ it is not an empty parameter list. An unavailable expression retains its concret
 gap and provenance. P7 MUST NOT substitute zero, null, NOP or a fabricated local.
 Reference-read errors and opcode-use errors remain distinct.
 
+Boolean display uses P4's range-proved `IntegralView` of `Z`, never a declaration
+alone. At such a use, exact zero/one literals print as false/true; an integral
+local can print a value test. A local produced by one boolean call, boolean field
+read or instance-of expression can be declared boolean only with an established
+[0,1] range, complete boolean type
+sources, exclusively boolean reads and no copy/snapshot involvement. Other
+storage keeps its machine spelling. Copy expressions retain their original
+storage contract, and composed numeric expressions keep their existing form.
+
 A constructor or delegated `this`/`super` call also uses the natural surface: its
 name is never a Java identifier and the receiver or created type already names the
 target, so only an unresolved competing delivered overload qualifies it.
@@ -156,6 +165,11 @@ composed producer or inline check at that read. Owner selection runs after
 expression and check composition. This is display
 selection, not hierarchy resolution; inheritance or multiple implementations
 alone do not select qualification. Static calls already print the owner.
+An otherwise natural instance call or field access whose displayed receiver is
+only `java.lang.Object` can disclose its different original owner without adding
+a signature. A check already printed at that exact receiver occurrence needs no
+such disclosure. This names the original reference, not a new runtime cast or
+a replacement SSA value.
 P9 prints the selected signature and owner according to
 [the call notation](09-rendering.md#expression-and-control-notation), without
 recomputing these decisions. Unread references keep their concrete unavailable

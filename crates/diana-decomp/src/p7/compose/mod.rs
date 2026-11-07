@@ -6,6 +6,7 @@
 mod access;
 mod allocation;
 mod arrays;
+mod booleans;
 mod branches;
 mod casts;
 mod continuations;
@@ -182,7 +183,9 @@ pub(super) fn construct(
         "transparent_scopes",
         scopes::transparent_labelled_scopes(code)
     );
+    booleans::construct(code, types)?;
     references::call_owners(code)?;
+    references::field_owners(code)?;
     declarations::construct(code)?;
     Ok(())
 }

@@ -11,6 +11,12 @@ use crate::{
 };
 
 pub(super) trait ExpressionSource {
+    fn boolean_use(&self, _id: ExprId) -> bool {
+        false
+    }
+    fn boolean_local(&self, _id: StorageId) -> bool {
+        false
+    }
     fn kotlin_notation(&self) -> bool {
         false
     }
@@ -32,6 +38,9 @@ pub(super) trait ExpressionSource {
         None
     }
     /// A partial product has no selected display plan, so it keeps the type.
+    fn field_receiver_owner(&self, _reference: ReferenceId) -> Option<TypeUseId> {
+        None
+    }
     fn field_qualification(&self, _reference: ReferenceId) -> bool {
         true
     }
@@ -62,6 +71,12 @@ pub(super) trait ExpressionSource {
     }
 }
 impl ExpressionSource for MethodCode {
+    fn boolean_use(&self, id: ExprId) -> bool {
+        self.emission().boolean_use(id)
+    }
+    fn boolean_local(&self, id: StorageId) -> bool {
+        self.emission().boolean_local(id)
+    }
     fn local_initializer(&self, local: StorageId) -> Option<(StatementId, LocalSpelling)> {
         Some((
             self.emission().local_initializer(local)?,
@@ -97,6 +112,9 @@ impl ExpressionSource for MethodCode {
     }
     fn composed_use(&self, id: ExprId) -> Option<ComposedExpression> {
         self.emission().composed_use(id)
+    }
+    fn field_receiver_owner(&self, reference: ReferenceId) -> Option<TypeUseId> {
+        self.emission().field_receiver_owner(reference)
     }
     fn field_qualification(&self, reference: ReferenceId) -> bool {
         self.emission().field_qualification(reference)
@@ -610,6 +628,10 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
                     )?;
                     if let Some(receiver) = receiver {
                         push_event(&mut work, ExprEvent::Text("."))?;
+                        if let Some(owner) = self.code.field_receiver_owner(reference) {
+                            self.out.put("(")?;
+                            push_event(&mut work, ExprEvent::Via(owner))?;
+                        }
                         push_event(&mut work, ExprEvent::Expression(receiver, true))?;
                     }
                 }
@@ -803,12 +825,23 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
                         push_event(work, ExprEvent::Text(")"))?;
                     }
                     push_event(work, ExprEvent::Expression(composed.expression, false))?;
+                } else if self.code.boolean_use(id) && !self.code.boolean_local(*storage) {
+                    self.out.put("(")?;
+                    self.local(*storage)?;
+                    self.out.put(" != 0)")?;
                 } else {
                     self.local(*storage)?;
                 }
             }
             ExprKind::Snapshot { storage } => self.local(*storage)?,
-            ExprKind::Literal { bits, view } => literal(self.out, *bits, *view)?,
+            ExprKind::Literal { bits, view } => {
+                if self.code.boolean_use(id) {
+                    self.out
+                        .put(if bits.value == 0 { "false" } else { "true" })?;
+                } else {
+                    literal(self.out, *bits, *view)?;
+                }
+            }
             ExprKind::Unavailable { gap } => self.out.fmt(format_args!("unavailable<{gap:?}>"))?,
             ExprKind::Unary { op, value } => {
                 self.out.put("(")?;
@@ -1186,7 +1219,14 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
     ) -> Result<(), RenderError> {
         let start = self.out.position();
         if let Some(recv) = receiver {
+            let owner = self.code.field_receiver_owner(r);
+            if owner.is_some() {
+                self.out.put("(")?;
+            }
             self.operand(recv)?;
+            if let Some(owner) = owner {
+                self.via(owner)?;
+            }
             self.out.put(".")?;
         }
         self.member_end(r, receiver.is_some(), signature, start)
@@ -1195,7 +1235,8 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
     fn call_owner(&self, r: ReferenceId, qualification: Qualification) -> Option<TypeUseId> {
         if !matches!(
             qualification,
-            Qualification::Parameters { owner: true }
+            Qualification::Owner
+                | Qualification::Parameters { owner: true }
                 | Qualification::FullSignature { owner: true }
         ) {
             return None;
@@ -1219,7 +1260,7 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
         r: ReferenceId,
         qualification: Qualification,
     ) -> Result<(), RenderError> {
-        if matches!(qualification, Qualification::Natural) {
+        if matches!(qualification, Qualification::Natural | Qualification::Owner) {
             return Ok(());
         }
         match &self.code.references()[r.0 as usize].declaration {
