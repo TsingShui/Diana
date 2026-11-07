@@ -303,22 +303,19 @@ fn strings_from_prefix(
             }
             prefix::PrefixStrings::Whole => return Ok(false),
             prefix::PrefixStrings::Ready(values) => {
-                for (ordinal, value) in values.into_iter().enumerate() {
+                values.visit(|string, value| {
                     if let Some(needle) = filter
                         && !super::dex::contains_ignore_case(&value.units()?, needle)
                     {
-                        continue;
+                        return Ok(());
                     }
-                    let string = diana_decomp::StringId(
-                        u32::try_from(ordinal).map_err(|_| InputError::PlatformCapacity)?,
-                    );
                     emit(Row::String(StringRow {
                         image,
                         logical: LogicalDex(0),
                         string,
                         value,
-                    }))?;
-                }
+                    }))
+                })?;
                 return Ok(true);
             }
         }
@@ -353,9 +350,9 @@ fn classes_from_prefix(
         let bytes = reader.read(aim)?;
         match prefix::classes(bytes)? {
             PrefixClasses::Needs(more) => {
-                // A prefix only pays off while it is clearly shorter than the
-                // member: every round re-inflates from the start, so asking for most
-                // of the member costs more than inflating it once.
+                // Prefix growth resumes the stream. Switch to the full reader
+                // before touching most of the payload only to fall back and inflate
+                // it again with the whole-entry backend.
                 if more <= bytes.len()
                     || more.saturating_mul(5) > root.declared_len().saturating_mul(3)
                 {

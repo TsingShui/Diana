@@ -57,7 +57,45 @@ pub enum PrefixStrings<'a> {
     /// This container requires the whole-member reader.
     Whole,
     /// Every original pool entry, in string-ID order.
-    Ready(Vec<DexString<'a>>),
+    Ready(StringPool<'a>),
+}
+
+/// Complete original pool facts. Input is borrowed once rather than once per item;
+/// the private records contain only established payload offsets and unit counts.
+/// DEX 035–040 declare a u32 physical extent, so all stored offsets fit that width.
+pub struct StringPool<'a> {
+    bytes: &'a [u8],
+    records: Vec<StringRecord>,
+}
+
+struct StringRecord {
+    start: u32,
+    end: u32,
+    utf16_len: u32,
+}
+
+impl<'a> StringPool<'a> {
+    /// Delivers existing item facts in original string-ID order. Rebinding a span
+    /// does not read a pool record, length prefix, terminator or encoded unit again.
+    pub fn visit<E: From<InputError>>(
+        self,
+        mut visit: impl FnMut(StringId, DexString<'a>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        for (index, record) in self.records.into_iter().enumerate() {
+            let value =
+                DexString::from_parts(self.bytes, record.start, record.end, record.utf16_len)
+                    .ok_or(InputError::InternalInvariant(
+                        "prefix pool span lost its input range",
+                    ))?;
+            let id = StringId(
+                u32::try_from(index).map_err(|_| InputError::PlatformCapacity {
+                    offset_byte: ByteOffset(0),
+                })?,
+            );
+            visit(id, value)?;
+        }
+        Ok(())
+    }
 }
 
 /// Reads every original string through the shared item reader and prefix bounds.
@@ -94,7 +132,16 @@ pub fn strings(bytes: &[u8]) -> Result<PrefixStrings<'_>, InputError> {
         let data_at = string_item(bytes, &header, StringId(index))?;
         let cursor = Cursor::bounded(bytes, data_at, string_end(bytes, &header, data_at))?;
         match DexString::read(bytes, cursor) {
-            Ok(value) => values.push(value),
+            Ok(value) => {
+                let (start, end, utf16_len) = value.parts().ok_or(
+                    InputError::InternalInvariant("prefix pool span exceeds its u32 header extent"),
+                )?;
+                values.push(StringRecord {
+                    start,
+                    end,
+                    utf16_len,
+                });
+            }
             Err(_) if bytes.len() < header.declared => {
                 return Ok(PrefixStrings::Needs(next_request(
                     bytes.len(),
@@ -105,7 +152,10 @@ pub fn strings(bytes: &[u8]) -> Result<PrefixStrings<'_>, InputError> {
             Err(error) => return Err(error),
         }
     }
-    Ok(PrefixStrings::Ready(values))
+    Ok(PrefixStrings::Ready(StringPool {
+        bytes,
+        records: values,
+    }))
 }
 
 /// Resolves a pool entry under declaration-prefix bounds, shared by class and

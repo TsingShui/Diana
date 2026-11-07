@@ -26,7 +26,8 @@ pub struct ProgramIndex<'a> {
     facts_build: std::sync::Mutex<()>,
     pub(super) declarations: std::sync::Arc<LocalDeclarations<'a>>,
     pub(crate) header: DexHeader,
-    prototypes: Vec<std::sync::OnceLock<PrototypeFacts<'a>>>,
+    prototypes: std::sync::OnceLock<Vec<std::sync::OnceLock<PrototypeFacts<'a>>>>,
+    prototype_build: std::sync::Mutex<()>,
 }
 
 impl<'a> ProgramIndex<'a> {
@@ -163,11 +164,10 @@ impl<'a> ProgramIndex<'a> {
                 .ok_or_else(|| malformed(InputProblem::InvalidMap, section.start_byte))?;
             by_kind[bit.trailing_zeros() as usize] = Some(*section);
         }
-        let prototypes =
-            super::declarations::cache_slots(header.proto_ids.count, header.proto_ids.offset_byte)?;
         Ok(Self {
             bytes,
-            prototypes,
+            prototypes: std::sync::OnceLock::new(),
+            prototype_build: std::sync::Mutex::new(()),
             dex: crate::DexId(0),
             class_facts: std::sync::Mutex::new(std::collections::HashMap::new()),
             facts_build: std::sync::Mutex::new(()),
@@ -280,15 +280,21 @@ impl<'a> ProgramIndex<'a> {
     }
 
     pub(crate) fn prototype(&self, proto_idx: ProtoId) -> Result<Prototype<'_, 'a>, InputError> {
-        let slot = self
-            .prototypes
+        if proto_idx.0 >= self.header.proto_ids.count {
+            return Err(malformed(
+                InputProblem::InvalidReference,
+                self.header.proto_ids.offset_byte,
+            ));
+        }
+        let prototypes = match self.prototypes.get() {
+            Some(prototypes) => prototypes.as_slice(),
+            None => self.initialize_prototypes()?,
+        };
+        let slot = prototypes
             .get(count_usize(proto_idx.0, self.header.proto_ids.offset_byte)?)
-            .ok_or_else(|| {
-                malformed(
-                    InputProblem::InvalidReference,
-                    self.header.proto_ids.offset_byte,
-                )
-            })?;
+            .ok_or(InputError::InternalInvariant(
+                "prototype cache lost a checked table index",
+            ))?;
         let facts = match slot.get() {
             Some(facts) => facts,
             None => {
@@ -309,6 +315,31 @@ impl<'a> ProgramIndex<'a> {
             parameter_descriptors: &facts.descriptors,
             parameter_words: facts.parameter_words,
         })
+    }
+
+    /// Slot storage is needed only by prototype consumers, not field/class scans.
+    /// Serialize first construction so racing callers do not reserve duplicate
+    /// vectors; failed reservation leaves the cell empty and remains retryable.
+    fn initialize_prototypes(
+        &self,
+    ) -> Result<&[std::sync::OnceLock<PrototypeFacts<'a>>], InputError> {
+        let _build = self
+            .prototype_build
+            .lock()
+            .map_err(|_| InputError::InternalInvariant("prototype cache construction poisoned"))?;
+        if self.prototypes.get().is_none() {
+            let slots = super::declarations::cache_slots(
+                self.header.proto_ids.count,
+                self.header.proto_ids.offset_byte,
+            )?;
+            let _ = self.prototypes.set(slots);
+        }
+        self.prototypes
+            .get()
+            .map(Vec::as_slice)
+            .ok_or(InputError::InternalInvariant(
+                "prototype slot publication lost",
+            ))
     }
 
     fn read_prototype(&self, proto_idx: ProtoId) -> Result<PrototypeFacts<'a>, InputError> {

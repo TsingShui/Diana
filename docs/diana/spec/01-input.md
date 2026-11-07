@@ -48,8 +48,11 @@ descriptor shapes, member-name checks and resolved prototype facts within each
 logical index. These facts depend only on immutable input bytes. Prototype readers
 establish shorty correspondence, parameter descriptors and word counts once;
 member-list rows borrow those descriptors without per-row allocation. Cache storage
-uses fallible reservation bounded by checked table extents. Failed construction is
-not cached as absence, and indexes from different logical members remain separate.
+uses fallible reservation bounded by checked table extents. The prototype slot
+array is initialized only on a prototype read; first construction is serialized so
+concurrent callers do not allocate duplicate arrays. Field-only scans leave it
+unallocated. Failed construction is not cached as absence, and indexes from
+different logical members remain separate.
 
 Members are traversed in two forms. The code traversal reads each `code_item` and
 delivers the original instructions for a caller that analyses a body. The header
@@ -216,6 +219,12 @@ is a weaker bound, so the view MUST:
   never publish a prefix of the list;
 - leave classification of a genuinely malformed member to the whole-member read,
   which is what a caller falls back to.
+
+A ready string pool borrows the accepted input once and stores only payload start,
+payload end and declared unit count per entry. These offsets fit the physical
+extent declared by DEX 035–040; DEX 041 still requires the whole-member reader.
+Visitation rebinds established spans to the same immutable input without reading
+string-ID records, length prefixes, terminators or encoded units again.
 
 A caller MUST fall back to the whole member whenever the view does not answer, and
 MUST NOT shorten a result because a prefix was unavailable. Hierarchy relations
