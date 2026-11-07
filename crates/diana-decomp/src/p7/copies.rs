@@ -140,13 +140,24 @@ pub(super) fn construct(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> 
                 .iter()
                 .find(|prepared| usize::try_from(prepared.argument) == Ok(index))
             {
-                let reference = c.first_reference(prepared.operation)?;
-                let expression = c.expression(ExprKind::String(reference), None)?;
-                let statement = c.statement(
-                    StatementKind::Evaluate { expression },
-                    prepared.operation,
-                    Arguments::Known(Vec::new()),
-                )?;
+                // The admitted producer keeps its ordinary lowering; only its
+                // position changes, to the argument it already prepared.
+                let inputs = c.inputs(prepared.operation)?;
+                let source = c
+                    .planned
+                    .execution()
+                    .operations()
+                    .get(prepared.operation.0 as usize)
+                    .ok_or(bug("prepared construction argument lost its operation"))?;
+                let kind = super::lower::semantic(c, source, &inputs)?;
+                let expression = match &kind {
+                    StatementKind::Evaluate { expression }
+                    | StatementKind::Move { expression, .. } => *expression,
+                    _ => {
+                        return Err(bug("prepared construction argument is not an expression"));
+                    }
+                };
+                let statement = c.statement(kind, prepared.operation, inputs)?;
                 push(
                     &mut prepared_arguments,
                     PreparedExpression {

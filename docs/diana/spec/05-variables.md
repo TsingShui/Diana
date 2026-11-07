@@ -71,15 +71,21 @@ snapshot obligations. No new SSA value or alternate method chain is created.
 The planner consumes P4's position-related allocation binding and initialization.
 It requires a same-occurrence receiver before construction, an unshared linear
 normal corridor, and transparent object aliases or unmaterialized literal
-definitions inside that corridor. P5 may also select resolved string preparations
-as constructor arguments when each has one initialized reference use at that
-constructor, no Phi or copy involvement, and the preparation order matches the
-argument order. Allocation, preparation and initialization must each have one
-uncaught exception route and no snapshot. The group identifies each selected
-operation, argument and local; P7 consumes these facts to evaluate each string
-inside `new`, after allocation and before initialization. Other intervening
-operations, including nested constructions, retain an explicit plan at their
-original positions. Branches, external entries, required intervening transfers
+definitions inside that corridor. P5 may also select one preparation operation per
+constructor argument: a resolved string constant or an ordinary operation whose
+single defined value has exactly one initialized use at that constructor. A
+preparation MUST have no Phi or copy involvement, no read of the object under
+construction, one uncaught exception route and no snapshot, and its program order
+MUST match increasing argument order. Allocation, every preparation and
+initialization keep that same uncaught exception route. These conditions make the
+printed `new T(arg1, arg2)` evaluation order equal to the original corridor order:
+allocation, each prepared argument, initialization. The group identifies each
+selected operation, argument and local; P7 consumes these facts to evaluate the
+preparation's ordinary expression inside `new`, after allocation and before
+initialization. The preparation keeps its statement, operation, PC, result commit
+and site origins. Other intervening operations, including nested constructions and
+monitor, allocation, unresolved or cast-only operations, retain an explicit plan at
+their original positions. Branches, external entries, required intervening transfers
 and unavailable arguments also retain explicit plans. Other arguments use
 existing storage or P4-proven literal views.
 

@@ -192,7 +192,7 @@ fn call(
         qualification,
     })
 }
-fn semantic(
+pub(super) fn semantic(
     c: &mut Context<'_, '_>,
     op: &p2::Operation,
     args: &Arguments,
