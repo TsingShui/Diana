@@ -87,7 +87,7 @@ pub(super) fn construct(
                 BodyAction::Statement { statement, .. } | BodyAction::Release { statement, .. } => {
                     !found.iter().any(|(check, _)| check == statement)
                 }
-                BodyAction::Receive { .. } => true,
+                BodyAction::Receive { .. } | BodyAction::AbiOperation { .. } => true,
             });
         }
     }
@@ -262,6 +262,18 @@ fn statement_uses(
                 refuse("next_action_is_not_a_statement");
                 continue;
             };
+            if code
+                .emission
+                .suspensions()
+                .iter()
+                .any(|s| s.statement == next)
+            {
+                // This surface has an implicit continuation occurrence. Keep a
+                // preceding check at its original action rather than attach it
+                // to an operand that this surface does not print.
+                refuse("suspension_owns_its_operands");
+                continue;
+            }
             if code.statements[next.0 as usize]
                 .outputs
                 .iter()

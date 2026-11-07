@@ -33,6 +33,7 @@ pub(super) fn printed_entry_is(code: &MethodCode, mut current: ControlId, target
             | EmissionLayout::Labelled
             | EmissionLayout::Graph
             | EmissionLayout::When { .. }
+            | EmissionLayout::Suspension { .. }
             | EmissionLayout::Loop { .. }
             | EmissionLayout::Try { .. }
             | EmissionLayout::Synchronized { .. } => return false,
@@ -49,7 +50,7 @@ pub(super) fn printed_parts<'a>(
     buffer: &'a mut [ControlId],
 ) -> &'a [ControlId] {
     let parts: &[ControlId] = match &code.emission.controls[control.0 as usize].layout {
-        EmissionLayout::Block(_) => return &[],
+        EmissionLayout::Block(_) | EmissionLayout::Suspension { .. } => return &[],
         EmissionLayout::Sequence | EmissionLayout::Labelled | EmissionLayout::Graph => {
             return code.emission.controls[control.0 as usize]
                 .children(&code.controls[control.0 as usize]);

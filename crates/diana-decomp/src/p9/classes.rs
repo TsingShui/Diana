@@ -287,6 +287,7 @@ fn member(
     prints_nothing: bool,
 ) -> Result<(), RenderError> {
     let initial_depth = out.depth;
+    let initial_comment = out.abi_comment;
     let start = out.position();
     let mut state = MethodRenderState {
         prints_nothing,
@@ -301,6 +302,9 @@ fn member(
         class_name,
         &mut state,
     );
+    // A failed attachment cannot comment out a sibling's recovered code or its
+    // method-local recovery diagnostic.
+    out.abi_comment = initial_comment;
     match result {
         Ok(()) => {}
         Err(RenderError::Invariant(message)) => {
@@ -371,14 +375,20 @@ fn method(
                 header.declaration.parameter_count(),
                 lookup,
             )?;
+            let suspending = result
+                .code()
+                .is_some_and(|code| code.emission().coroutine_body().is_some());
+            if suspending {
+                out.line("// Diana: ABI-derived suspend body; original entry/reentry and error code retained below")?;
+            }
             header_line(
                 out,
                 lookup,
                 &names,
                 header,
-                class_name,
-                lookup.find_use(p8::TypeSource::Owner),
+                (class_name, lookup.find_use(p8::TypeSource::Owner)),
                 attachments,
+                suspending,
             )?;
             state.header_printed = true;
             if let Some(code) = result.code() {
@@ -420,7 +430,15 @@ fn method(
                     header.declaration.parameter_count(),
                     lookup,
                 )?;
-                header_line(out, lookup, &names, header, None, None, attachments)?;
+                header_line(
+                    out,
+                    lookup,
+                    &names,
+                    header,
+                    (None, None),
+                    attachments,
+                    false,
+                )?;
             } else {
                 original_header(out, facts, member.id)?;
             }
@@ -559,9 +577,9 @@ fn header_line(
     lookup: &Lookup<'_>,
     names: &MethodNames,
     h: &p7::MethodHeader,
-    class_name: Option<&p8::ValueName>,
-    owner: Option<p8::TypeUseId>,
+    owner: (Option<&p8::ValueName>, Option<p8::TypeUseId>),
     attachments: Option<&Attachments<'_>>,
+    suspending: bool,
 ) -> Result<(), RenderError> {
     out.indent()?;
     // A class initializer is a static block. DEX may give it access bits that
@@ -579,6 +597,9 @@ fn header_line(
             varargs,
         },
     )?;
+    if suspending {
+        out.put("suspend ")?;
+    }
     let method = h.key.method;
     if let Some(parameters) = lookup.method_parameters(method)
         && !parameters.is_empty()
@@ -592,7 +613,7 @@ fn header_line(
         p7::MethodKind::Constructor => {
             // The class declaration name is the constructor name. A reference
             // spelling can be qualified by an unrelated field or local shadow.
-            match (class_name, owner) {
+            match owner {
                 (Some(name), _) => out.name(&name.units, name.form)?,
                 (None, Some(id)) => lookup.print(out, id)?,
                 (None, None) => out.name(h.declaration.name_units(), h.name_form)?,

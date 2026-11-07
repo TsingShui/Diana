@@ -120,6 +120,16 @@ operation and control origins remain in the final source spans. Metadata and
 bootstrap declarations travel from their owning producers; P7 does not reopen
 input. See the [P7 chapter](../../docs/diana/spec/07-java.md).
 
+A closed single-suspension SuspendLambda entry can now select a Kotlin-style
+suspend body: its initial work, suspended result and original common tail form
+one sequence. The declaration retains its original format and adds only a
+`suspend` modifier. Original ABI entry/reentry, resume checks/copies, state publication
+and invalid-state errors remain readable attachments with source mappings. The
+callee binding and continuation identity stay explicit, and suspension is marked
+as an inference. ABI parameters and wrapper members remain; original source-lambda
+signatures, multi-suspension spills and source exception recovery are not established
+by this view. Missing prerequisites retain the original method layout.
+
 P8 produces owned `ClassResult`/`TypeNamePlan` from the original directory and
 joined method deliveries. Success, no-code and stopped members remain distinct.
 The same execution retains inspection while sharing immutable owned P7 results.

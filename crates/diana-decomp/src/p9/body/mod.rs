@@ -9,6 +9,7 @@ mod control;
 mod decision;
 mod header;
 mod statement;
+mod suspension;
 mod terminal;
 mod transfer;
 
@@ -39,9 +40,50 @@ impl Expressions<'_, '_> {
         if let Some(root) = self.code.root() {
             push(&mut work, Event::Control(root))?;
         }
+        if let Some(body) = self.code.emission().coroutine_body() {
+            push(&mut work, Event::EndAbi(body.initial))?;
+            push(&mut work, Event::Control(body.invalid))?;
+            push(
+                &mut work,
+                Event::BeginAbi("invalid-state arm", body.invalid),
+            )?;
+            push(&mut work, Event::Control(body.resume))?;
+            push(
+                &mut work,
+                Event::BeginAbi("resumed completion", body.resume),
+            )?;
+            push(&mut work, Event::AbiDispatch)?;
+            push(&mut work, Event::Control(body.prefix))?;
+            push(
+                &mut work,
+                Event::BeginAbi("entry/reentry prefix", body.prefix),
+            )?;
+        }
         while let Some(event) = work.pop() {
             let chained = matches!(event, Event::ChainedControl(_));
             match event {
+                Event::BeginAbi(section, control) => {
+                    self.out.abi_comment = false;
+                    self.out.indent()?;
+                    self.out
+                        .fmt(format_args!("// Diana: ABI {section}, entry "))?;
+                    let entry = self.code.controls()[control.0 as usize].entry.ok_or(
+                        RenderError::Invariant("ABI attachment lost its delivered entry"),
+                    )?;
+                    self.label_name(entry)?;
+                    self.out.put("\n")?;
+                    self.out.abi_comment = true;
+                }
+                Event::EndAbi(initial) => {
+                    self.out.abi_comment = false;
+                    self.out.indent()?;
+                    self.out.put("// Diana: suspend body, original entry ")?;
+                    if let Some(entry) = self.code.controls()[initial.0 as usize].entry {
+                        self.label_name(entry)?;
+                    }
+                    self.out.put("\n")?;
+                }
+                Event::AbiDispatch => self.abi_dispatch()?,
                 Event::Control(id) | Event::ChainedControl(id) => {
                     if self.code.emission().omitted(id) {
                         continue;
@@ -52,6 +94,7 @@ impl Expressions<'_, '_> {
                     push(&mut work, Event::End(id, start))?;
                     match &p.layout {
                         EmissionLayout::Block(node) => self.block(*node)?,
+                        EmissionLayout::Suspension { plan } => self.suspension_tail(*plan)?,
                         EmissionLayout::Sequence if !p.label_required => {
                             for &child in p.children(c).iter().rev() {
                                 push(
@@ -763,6 +806,9 @@ pub(super) fn branch(op: BranchOp) -> &'static str {
     }
 }
 enum Event {
+    BeginAbi(&'static str, ControlId),
+    EndAbi(ControlId),
+    AbiDispatch,
     Control(ControlId),
     ChainedControl(ControlId),
     End(ControlId, TextOffset),

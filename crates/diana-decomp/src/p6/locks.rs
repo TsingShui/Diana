@@ -363,6 +363,7 @@ pub(super) fn construct(
         .iter()
         .any(|op| matches!(op.kind(), OpKind::Monitor { .. }))
     {
+        f.lock_entries = LockEntries::NoMonitorOperations;
         return Ok(());
     }
     let mut flow = LockFlow {
@@ -400,6 +401,11 @@ pub(super) fn construct(
             }
         }
     }
+    let mut empty_entries = Vec::new();
+    for state in &states {
+        push(&mut empty_entries, *state == State::Known(None))?;
+    }
+    f.lock_entries = LockEntries::Analysed(empty_entries);
     for op in storage.execution().operations() {
         if !matches!(op.kind(), OpKind::Monitor { .. }) {
             continue;

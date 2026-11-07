@@ -6,6 +6,9 @@ pub(super) struct Buffer {
     pub spans: Vec<SourceSpan>,
     pub issues: Vec<RenderIssue>,
     pub depth: usize,
+    /// A source attachment is comment-only; it still uses the one renderer and
+    /// records origins while writing, rather than editing completed text.
+    pub abi_comment: bool,
     allocation: Option<std::collections::TryReserveError>,
 }
 impl Buffer {
@@ -15,6 +18,7 @@ impl Buffer {
             spans: Vec::new(),
             issues: Vec::new(),
             depth: 0,
+            abi_comment: false,
             allocation: None,
         }
     }
@@ -49,6 +53,9 @@ impl Buffer {
         self.text.try_reserve(n).map_err(RenderError::Allocation)?;
         for _ in 0..n {
             self.text.push(' ');
+        }
+        if self.abi_comment {
+            self.put("// ABI: ")?;
         }
         Ok(())
     }
@@ -140,6 +147,27 @@ impl Buffer {
         }
         Ok(())
     }
+    pub fn kotlin_name(&mut self, units: &[u16]) -> Result<(), RenderError> {
+        self.encode(
+            units.iter().copied(),
+            (!kotlin_plain(units.iter().copied())).then_some("`"),
+        )
+    }
+    pub fn kotlin_name_str(&mut self, name: &str) -> Result<(), RenderError> {
+        self.encode(
+            name.encode_utf16(),
+            (!kotlin_plain(name.encode_utf16())).then_some("`"),
+        )
+    }
+    pub fn kotlin_path(&mut self, units: &[u16], separator: u16) -> Result<(), RenderError> {
+        for (index, segment) in units.split(|&unit| unit == separator).enumerate() {
+            if index > 0 {
+                self.put(".")?;
+            }
+            self.kotlin_name(segment)?;
+        }
+        Ok(())
+    }
     pub fn name(&mut self, units: &[u16], form: crate::p7::NameForm) -> Result<(), RenderError> {
         if form == crate::p7::NameForm::Original {
             self.encode(units.iter().copied(), Some("`"))
@@ -184,6 +212,47 @@ impl Buffer {
         self.quote(message)?;
         self.put(";\n")
     }
+}
+fn kotlin_plain(units: impl Iterator<Item = u16> + Clone) -> bool {
+    let mut rest = units.clone();
+    let letter = |unit: u16| unit == 95 || (65..=90).contains(&unit) || (97..=122).contains(&unit);
+    if !rest.next().is_some_and(letter)
+        || !rest.all(|unit| letter(unit) || (48..=57).contains(&unit))
+    {
+        return false;
+    }
+    ![
+        "as",
+        "break",
+        "class",
+        "continue",
+        "do",
+        "else",
+        "false",
+        "for",
+        "fun",
+        "if",
+        "in",
+        "interface",
+        "is",
+        "null",
+        "object",
+        "package",
+        "return",
+        "super",
+        "this",
+        "throw",
+        "true",
+        "try",
+        "typealias",
+        "typeof",
+        "val",
+        "var",
+        "when",
+        "while",
+    ]
+    .iter()
+    .any(|keyword| units.clone().eq(keyword.encode_utf16()))
 }
 impl Write for Buffer {
     fn write_str(&mut self, s: &str) -> std::fmt::Result {

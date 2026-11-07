@@ -541,6 +541,36 @@ fn selected(
     }
     Err(bug("terminal lost its selected normal edge role"))
 }
+fn equality_kind(code: &MethodCode, expression: ExprId) -> EqualityKind {
+    match code.expressions[expression.0 as usize].kind {
+        ExprKind::Read { view, .. } | ExprKind::Literal { view, .. } => match view {
+            Interpretation::Direct(Family::Reference) | Interpretation::Null => {
+                EqualityKind::Reference
+            }
+            Interpretation::Direct(Family::Integral)
+            | Interpretation::IntegralView { .. }
+            | Interpretation::Literal {
+                family: Family::Integral,
+                ..
+            } => EqualityKind::Primitive,
+            _ => EqualityKind::Unknown,
+        },
+        ExprKind::Snapshot { storage } => {
+            match code.locals[storage.0 as usize].original.storage_type() {
+                crate::p5::StorageType::Family {
+                    family: Family::Reference,
+                    ..
+                } => EqualityKind::Reference,
+                crate::p5::StorageType::Family {
+                    family: Family::Integral,
+                    ..
+                } => EqualityKind::Primitive,
+                _ => EqualityKind::Unknown,
+            }
+        }
+        _ => EqualityKind::Unknown,
+    }
+}
 pub(super) fn terminals(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> {
     let f = c.planned.facts();
     for b in c.planned.execution().blocks() {
@@ -617,10 +647,19 @@ pub(super) fn terminals(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> 
                         meaning,
                     }
                 } else {
+                    let right = arg(1)?;
+                    let left_kind = equality_kind(c.code, value);
+                    let right_kind = equality_kind(c.code, right);
+                    let equality = if left_kind == right_kind {
+                        left_kind
+                    } else {
+                        EqualityKind::Unknown
+                    };
                     Condition::Pair {
                         op: *op,
                         left: value,
-                        right: arg(1)?,
+                        right,
+                        equality,
                     }
                 };
                 TerminalKind::If {

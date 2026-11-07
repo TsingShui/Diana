@@ -190,7 +190,9 @@ impl Expressions<'_, '_> {
             // the check's first use.
             let previous = self.check_carrier.replace(CheckCarrier::Statement(id));
             let statement = self.statement.replace(id);
-            let rendered = if self.code.emission().allocation_declaration(id) {
+            let rendered = if let Some(plan) = self.code.emission().suspension(op) {
+                self.suspension_assignment(plan)
+            } else if self.code.emission().allocation_declaration(id) {
                 self.allocation_declaration(s)
             } else {
                 self.assignment(s).and_then(|()| self.semantic(s))
@@ -204,6 +206,16 @@ impl Expressions<'_, '_> {
         }
         self.sites(&s.sites, start)?;
         self.out.put(";")?;
+        if let Some(plan) = self.code.emission().suspension(op) {
+            self.out.fmt(format_args!(
+                " // Diana: inferred suspension, continuation=this, resume state={}; ABI ",
+                plan.original.state()
+            ))?;
+            let previous = std::mem::replace(&mut self.out.abi_comment, true);
+            let binding = self.member(plan.target, None, true);
+            self.out.abi_comment = previous;
+            binding?;
+        }
         if let Some(note) = self.generated_note(s) {
             self.out.put(" ")?;
             self.out.put(note)?;

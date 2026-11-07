@@ -11,6 +11,7 @@ impl Expressions<'_, '_> {
         for action in &b.actions {
             match *action {
                 BodyAction::Statement { operation, .. } => self.statement(operation, None)?,
+                BodyAction::AbiOperation { operation, .. } => self.abi_operation(operation)?,
                 BodyAction::Release {
                     operation, scope, ..
                 } => self.statement(operation, Some(scope))?,

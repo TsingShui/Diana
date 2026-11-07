@@ -11,6 +11,7 @@ mod ownership;
 mod product;
 mod protection;
 mod scopes;
+mod suspension;
 mod transfers;
 pub use build::RegionError;
 pub(crate) use build::{RegionBuild, build_regions};

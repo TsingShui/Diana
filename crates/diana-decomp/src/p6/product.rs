@@ -855,7 +855,181 @@ pub enum PlanningIssue {
         reason: RecoveryReason,
     },
 }
+/// A local continuation protocol. The dispatch and resume/error bodies remain
+/// original code; only the selected call/marker/normal-copy position is combined.
+#[derive(Clone, Copy, Debug)]
+pub struct SuspensionPlan {
+    pub(super) dispatch: RegionId,
+    pub(super) control: RegionId,
+    pub(super) header: RegionId,
+    pub(super) normal_body: RegionId,
+    pub(super) suspended_body: RegionId,
+    pub(super) state: i32,
+    pub(super) state_store: OpId,
+    pub(super) call: OpId,
+    pub(super) result: crate::p5::LocalId,
+    pub(super) merged: crate::p5::LocalId,
+    pub(super) continuation_argument: u32,
+    pub(super) marker: crate::p5::LocalId,
+    pub(super) predicate: BlockId,
+    pub(super) normal: LinkId,
+    pub(super) suspended: LinkId,
+    pub(super) marker_return: BlockId,
+    pub(super) normal_copy: PlanId,
+    pub(super) resume: RegionId,
+    pub(super) resume_check: OpId,
+    pub(super) resume_link: LinkId,
+    pub(super) resume_copy: PlanId,
+}
+impl SuspensionPlan {
+    pub fn call(&self) -> OpId {
+        self.call
+    }
+    pub fn control(&self) -> RegionId {
+        self.control
+    }
+    pub fn header(&self) -> RegionId {
+        self.header
+    }
+    pub fn bodies(&self) -> [RegionId; 2] {
+        [self.normal_body, self.suspended_body]
+    }
+    pub fn dispatch(&self) -> RegionId {
+        self.dispatch
+    }
+    pub fn state(&self) -> i32 {
+        self.state
+    }
+    pub fn state_store(&self) -> OpId {
+        self.state_store
+    }
+    pub fn result(&self) -> crate::p5::LocalId {
+        self.result
+    }
+    pub fn merged(&self) -> crate::p5::LocalId {
+        self.merged
+    }
+    pub fn continuation_argument(&self) -> u32 {
+        self.continuation_argument
+    }
+    pub fn marker(&self) -> crate::p5::LocalId {
+        self.marker
+    }
+    pub fn predicate(&self) -> BlockId {
+        self.predicate
+    }
+    pub fn links(&self) -> [LinkId; 2] {
+        [self.normal, self.suspended]
+    }
+    pub fn marker_return(&self) -> BlockId {
+        self.marker_return
+    }
+    pub fn normal_copy(&self) -> PlanId {
+        self.normal_copy
+    }
+    pub fn resume(&self) -> RegionId {
+        self.resume
+    }
+    pub fn resume_check(&self) -> OpId {
+        self.resume_check
+    }
+    pub fn resume_link(&self) -> LinkId {
+        self.resume_link
+    }
+    pub fn resume_copy(&self) -> PlanId {
+        self.resume_copy
+    }
+}
+/// Source-body order over an established suspension. ABI-only code remains
+/// explicitly attached, so it is neither treated as pure nor erased as dead code.
+#[derive(Clone, Copy, Debug)]
+pub enum CoroutineOperationRole {
+    Marker,
+    LabelRead,
+    Literal,
+    PublishState,
+    ResumeCheck,
+    InvalidState,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct CoroutineOperation {
+    pub(super) operation: OpId,
+    pub(super) role: CoroutineOperationRole,
+}
+impl CoroutineOperation {
+    pub fn operation(&self) -> OpId {
+        self.operation
+    }
+    pub fn role(&self) -> CoroutineOperationRole {
+        self.role
+    }
+}
+#[derive(Debug)]
+pub struct CoroutineBodyPlan {
+    pub(super) root: RegionId,
+    pub(super) prefix: RegionId,
+    pub(super) dispatch: RegionId,
+    pub(super) initial: RegionId,
+    pub(super) resume: RegionId,
+    pub(super) invalid: RegionId,
+    pub(super) entry_check: OpId,
+    pub(super) sequence: Vec<RegionId>,
+    pub(super) operations: Vec<CoroutineOperation>,
+    pub(super) implicit_locals: Vec<crate::p5::LocalId>,
+}
+impl CoroutineBodyPlan {
+    pub fn root(&self) -> RegionId {
+        self.root
+    }
+    pub fn prefix(&self) -> RegionId {
+        self.prefix
+    }
+    pub fn dispatch(&self) -> RegionId {
+        self.dispatch
+    }
+    pub fn initial(&self) -> RegionId {
+        self.initial
+    }
+    pub fn resume(&self) -> RegionId {
+        self.resume
+    }
+    pub fn invalid(&self) -> RegionId {
+        self.invalid
+    }
+    pub fn entry_check(&self) -> OpId {
+        self.entry_check
+    }
+    pub fn sequence(&self) -> &[RegionId] {
+        &self.sequence
+    }
+    pub fn operations(&self) -> &[CoroutineOperation] {
+        &self.operations
+    }
+    pub fn implicit_locals(&self) -> &[crate::p5::LocalId] {
+        &self.implicit_locals
+    }
+}
+/// Lock emptiness is retained from the one owning lock-flow computation.
+/// Missing computation is not an empty lock stack.
+#[derive(Debug)]
+pub(super) enum LockEntries {
+    Unestablished,
+    NoMonitorOperations,
+    Analysed(Vec<bool>),
+}
+impl LockEntries {
+    pub fn empty_at(&self, node: NodeId) -> bool {
+        match self {
+            Self::Unestablished => false,
+            Self::NoMonitorOperations => true,
+            Self::Analysed(entries) => entries.get(node.0 as usize).copied() == Some(true),
+        }
+    }
+}
 pub struct RegionFacts {
+    pub(super) lock_entries: LockEntries,
+    pub(super) suspensions: Vec<SuspensionPlan>,
+    pub(super) coroutine_body: Option<CoroutineBodyPlan>,
     pub(super) nodes: Vec<Node>,
     pub(super) blocks: Vec<BlockPlan>,
     pub(super) links: Vec<NormalLink>,
@@ -881,8 +1055,17 @@ pub struct RegionFacts {
     pub(super) terminal_owners: Vec<TerminalOwner>,
 }
 impl RegionFacts {
+    pub fn coroutine_body(&self) -> Option<&CoroutineBodyPlan> {
+        self.coroutine_body.as_ref()
+    }
+    pub fn suspensions(&self) -> &[SuspensionPlan] {
+        &self.suspensions
+    }
     pub(super) fn empty() -> Self {
         Self {
+            suspensions: Vec::new(),
+            coroutine_body: None,
+            lock_entries: LockEntries::Unestablished,
             nodes: Vec::new(),
             blocks: Vec::new(),
             links: Vec::new(),

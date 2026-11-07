@@ -252,6 +252,7 @@ pub enum Condition {
         op: BranchOp,
         left: ExprId,
         right: ExprId,
+        equality: EqualityKind,
     },
     Zero {
         #[serde(serialize_with = "super::debug")]
@@ -259,6 +260,15 @@ pub enum Condition {
         value: ExprId,
         meaning: ZeroMeaning,
     },
+}
+/// Operand representation already delivered by P4/P5. Reference DEX equality
+/// is identity, not Kotlin's potentially effectful equals dispatch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EqualityKind {
+    Primitive,
+    Reference,
+    Unknown,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]

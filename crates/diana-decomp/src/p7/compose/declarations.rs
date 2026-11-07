@@ -85,6 +85,10 @@ impl Layout {
                 EmissionLayout::Graph => {
                     // Explicit entries and jumps do not establish lexical first assignment.
                 }
+                EmissionLayout::Suspension { .. } => {
+                    // The selected protocol surface prints no child declaration;
+                    // its call statement keeps its own ordinary block action.
+                }
                 EmissionLayout::Sequence | EmissionLayout::Labelled => {
                     let nested = emission.label_required
                         || matches!(emission.layout, EmissionLayout::Labelled)

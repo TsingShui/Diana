@@ -104,5 +104,6 @@ pub(super) fn construct(
     own(storage, f, g)?;
     transfers(f, g)?;
     super::condition_layout::construct(f, g)?;
-    super::decision_layout::construct(storage, f, g)
+    super::decision_layout::construct(storage, f, g)?;
+    super::suspension::construct(storage, f, g)
 }
