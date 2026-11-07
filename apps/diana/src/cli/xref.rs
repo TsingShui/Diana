@@ -3,12 +3,15 @@
 use std::path::Path;
 
 use super::output::{Failure, Format};
-use super::table::publish_rows;
+use super::table::{RowSummary, publish_rows};
 use crate::analysis::at;
-use crate::analysis::input::InputOptions;
+use crate::analysis::input::{InputError, InputOptions};
 use crate::analysis::request::RequestScope;
 use crate::analysis::selector;
 use crate::analysis::xref::{Matched, Target, Xref, XrefPlan};
+
+/// Default presentation cap, shared by text and JSON across all caller depths.
+pub(super) const DEFAULT_LIMIT: usize = 50;
 
 #[allow(clippy::too_many_arguments)]
 pub fn run(
@@ -112,16 +115,20 @@ pub fn run(
             rows.extend(found);
         }
     }
+    // Select the presentation once, after every requested caller depth was read.
+    // Hidden rows still contribute to the next frontier and the exact total.
+    let total = rows.len();
+    let shown = if limit == 0 { total } else { total.min(limit) };
+    let warning = (shown < total).then(|| {
+        format!(
+            "//Diana Warn: Too much results, only show top {shown} , use --no-limit or --limit N"
+        )
+    });
     let mut output_rows = Vec::new();
-    let mut printed = std::collections::HashMap::new();
-    for row in &rows {
-        if matches!(format, Format::Text) && limit > 0 {
-            let seen = printed.entry(row.depth).or_insert(0usize);
-            if *seen >= limit {
-                continue;
-            }
-            *seen += 1;
-        }
+    output_rows
+        .try_reserve_exact(shown)
+        .map_err(|error| Failure::input(InputError::Allocation(error)))?;
+    for row in rows.iter().take(shown) {
         let image = &images[row.image.0];
         let context = format!(
             "{}@cu:{:#06x}",
@@ -137,7 +144,6 @@ pub fn run(
             row.code_unit
         );
         output_rows.push(vec![
-            image.label.clone(),
             context,
             matched_text(&row.matched),
             format!("{} depth {}", row.use_, row.depth),
@@ -145,11 +151,15 @@ pub fn run(
     }
     publish_rows(
         &output_rows,
-        &["entry", "context", "match", "use"],
+        &["context", "match", "use"],
         "xref",
         format,
         input,
         output,
+        RowSummary {
+            total,
+            warning: warning.as_deref(),
+        },
     )
 }
 

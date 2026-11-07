@@ -500,16 +500,22 @@ impl<'w> ChunkSink<'w> {
     }
 }
 
-/// Strings schema 2 removes the redundant entry-name column. Other table
-/// commands retain their existing schemas.
+/// Strings and xref schema 2 remove redundant entry-name columns. Xref also
+/// publishes explicit display coverage and warnings. Other tables retain schema 1.
 fn schema_version(command: &str) -> u8 {
     match command {
-        "strings" => 2,
+        "strings" | "xref" => 2,
         _ => 1,
     }
 }
 
-/// Publishes already formatted columns with the given header.
+/// Coverage of the already-selected display, separate from scan completeness.
+pub(super) struct RowSummary<'a> {
+    pub total: usize,
+    pub warning: Option<&'a str>,
+}
+
+/// Publishes already formatted columns with their shared selection summary.
 pub(super) fn publish_rows(
     rows: &[Vec<String>],
     columns: &[&str],
@@ -517,10 +523,16 @@ pub(super) fn publish_rows(
     format: Format,
     input: &Path,
     output: Option<&Path>,
+    summary: RowSummary<'_>,
 ) -> Result<(), Failure> {
     let text = match format {
         Format::Text => {
-            let mut text = columns.join("\t");
+            let mut text = String::new();
+            if let Some(warning) = summary.warning {
+                text.push_str(warning);
+                text.push('\n');
+            }
+            text.push_str(&columns.join("\t"));
             text.push('\n');
             for row in rows {
                 let escaped: Vec<String> = row.iter().map(|value| escape(value)).collect();
@@ -547,6 +559,10 @@ pub(super) fn publish_rows(
                 "schema_version": schema_version(command),
                 "command": command,
                 "items": items,
+                "total": summary.total,
+                "shown": rows.len(),
+                "truncated": rows.len() < summary.total,
+                "warnings": summary.warning.into_iter().collect::<Vec<_>>(),
             })
             .to_string()
         }

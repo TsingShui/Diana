@@ -226,7 +226,7 @@ enum Command {
     },
     /// Find original reference sites
     #[command(
-        long_about = "Columns: entry, context, match, use. Kinds: string, type, method, field; each real operand site is one row."
+        long_about = "Columns: context, match, use. Kinds: string, type, method, field; each real operand site is one row."
     )]
     Xref {
         /// Input file (APK, ZIP or bare DEX)
@@ -245,9 +245,12 @@ enum Command {
         #[arg(long)]
         /// Follow callers upstream for this many levels (``method`` kind only)
         transitive: Option<u32>,
-        #[arg(long)]
-        /// Rows printed per transitive level; 0 prints every row
-        limit: Option<usize>,
+        #[arg(long, default_value_t = xref::DEFAULT_LIMIT, conflicts_with = "no_limit")]
+        /// Maximum total result rows across all depths; 0 prints all
+        limit: usize,
+        #[arg(long, conflicts_with = "limit")]
+        /// Show all matching references without a display limit
+        no_limit: bool,
         #[arg(long, value_enum, default_value_t = Format::Text)]
         /// Presentation of the same result
         format: Format,
@@ -341,6 +344,7 @@ pub fn run() -> std::process::ExitCode {
             jobs,
             transitive,
             limit,
+            no_limit,
             format,
             output,
         } => xref::run(
@@ -349,7 +353,7 @@ pub fn run() -> std::process::ExitCode {
             &target,
             class.as_deref(),
             transitive.unwrap_or(0),
-            limit.unwrap_or(10),
+            if no_limit { 0 } else { limit },
             match jobs {
                 Some(0) => {
                     return std::process::ExitCode::from(2);
@@ -552,9 +556,8 @@ fn manifest_command(
     let text = match format {
         Format::Text => manifest.xml().to_owned(),
         Format::Json => serde_json::json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "command": "manifest",
-            "entry": manifest.entry().name(),
             "status": if manifest.is_partial() { "partial" } else { "complete" },
             "xml": manifest.xml(),
             "warnings": manifest.warnings().iter().map(|warning| serde_json::json!({

@@ -29,8 +29,9 @@ help        Print help for a command
 ```
 
 Commands accept `--format text|json` and `-o <file>`. Extraction always writes
-the requested payload to `-o`, with no stdout result. Queries return every match,
-without pagination or previews. An empty match is a normal empty result.
+the requested payload to `-o`, with no stdout result. Index queries return every
+match. `xref` defaults to `--limit 50` with an explicit warning when limited;
+`--no-limit` returns every reference. An empty match is a normal empty result.
 Independent query results arrive in completion order, not a guaranteed sequence.
 
 | Command | Presentation |
@@ -39,8 +40,8 @@ Independent query results arrive in completion order, not a guaranteed sequence.
 | `classes`, `fields`, `methods` | `at` |
 | `tree` | Package hierarchy and subtree definition counts; optional class leaves |
 | `strings` | `at, value` |
-| `xref` | `entry, context, match, use` |
-| `manifest` | XML, or JSON with `entry, status, xml, warnings` |
+| `xref` | `context, match, use` |
+| `manifest` | XML, or JSON with `status, xml, warnings` |
 | `get-class`, `get-method` | P9 Java-like text, or JSON schema 3 |
 | `extract` | One output file |
 
@@ -143,7 +144,27 @@ P8/P9 display; it does not analyze siblings or slice text out of a class result.
 exact value/reference. Its `--class` restricts the referencing class by
 descriptor or dotted name. It searches operand sites without requiring the target
 to have a definition in the input. A reader failure is reported, not silently
-counted as an empty method.
+counted as an empty method. The `context` locator already retains the physical
+entry and logical DEX identity, so xref rows omit the redundant entry-name column.
+
+`xref` defaults to `--limit 50`. The limit applies to the total displayed rows
+across all requested caller depths, identically in text and JSON. `--limit N`
+overrides it; `--no-limit` removes the limit. The existing `--limit 0` spelling
+also returns all rows. Explicit `--limit` and `--no-limit` cannot be combined.
+Selection follows result arrival order, not a relevance ranking. All requested
+depths are scanned before display selection, so hidden rows still contribute to
+the caller frontier and total count.
+
+Only when the total exceeds the current limit, text starts with:
+
+```text
+//Diana Warn: Too much results, only show top 50 , use --no-limit or --limit N
+```
+
+The number in this warning follows the effective limit. JSON remains a valid
+document: xref schema 2 carries the same warning in `warnings`, alongside
+`total`, `shown` and `truncated`. A limit does not change original reference
+identities, and unlimited output has no truncation warning.
 
 ## Decompilation text and JSON
 
@@ -184,12 +205,14 @@ Query text is UTF-8 TSV with the column header. Display fields escape backslash,
 tab, CR, LF and NUL; isolated surrogates remain escaped instead of being replaced.
 Query JSON uses `{schema_version, command, items}`. `strings` uses schema 2 with
 `at` and `value`; the former `entry` name column is removed. Its locator retains
-the exact physical-entry identity. Other table queries remain schema 1.
+the exact physical-entry identity. `xref` schema 2 likewise removes the entry-name
+column and adds explicit display totals and warnings as described above. Other table queries remain schema 1.
 `entries` reads the ZIP central directory only; it does not open or decompress
 DEX payloads.
 
-`manifest` uses XML or JSON with `schema_version, command, entry, status, xml,
-warnings`. Recoverable AXML gaps remain XML comments, JSON warnings and stderr
+`manifest` uses XML or JSON schema 2 with `schema_version, command, status, xml,
+warnings`; the constant entry-name field is removed. Recoverable AXML gaps remain
+XML comments, JSON warnings and stderr
 diagnostics. `--strict` reports a partial document as failure after publication.
 
 ## File publication and exit codes
