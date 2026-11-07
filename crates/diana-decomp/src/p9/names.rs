@@ -76,6 +76,113 @@ impl<'a> Lookup<'a> {
             .ok_or(RenderError::Invariant("varargs type is unavailable"))?;
         self.print_parts(out, id, true, true)
     }
+    pub fn print_kotlin_base(
+        &self,
+        out: &mut Buffer,
+        id: p8::TypeUseId,
+    ) -> Result<(), RenderError> {
+        let use_ = self
+            .uses
+            .get(id.0 as usize)
+            .ok_or(RenderError::Invariant("Kotlin base lost its named use"))?;
+        let target = self
+            .targets
+            .get(use_.target.0 as usize)
+            .ok_or(RenderError::Invariant("Kotlin base lost its named target"))?;
+        let start = out.position();
+        match use_.spelling {
+            p8::Spelling::Primitive => out.units(&target.full, false)?,
+            p8::Spelling::Simple => out.kotlin_name(
+                target
+                    .full
+                    .get(target.simple_start..)
+                    .ok_or(RenderError::Invariant("Kotlin base lost its simple name"))?,
+            )?,
+            p8::Spelling::Qualified => out.kotlin_path(&target.full, 46)?,
+            p8::Spelling::Original if !target.full.is_empty() => {
+                let end = target
+                    .descriptor
+                    .len()
+                    .checked_sub(1)
+                    .ok_or(RenderError::Invariant(
+                        "Kotlin original type lost its delimiter",
+                    ))?;
+                let begin = end
+                    .checked_sub(target.full.len())
+                    .ok_or(RenderError::Invariant("Kotlin original type lost its base"))?;
+                out.kotlin_path(
+                    target
+                        .descriptor
+                        .get(begin..end)
+                        .ok_or(RenderError::Invariant("Kotlin original type lost its path"))?,
+                    47,
+                )?;
+            }
+            p8::Spelling::Original => return self.print(out, id),
+        }
+        out.span(start, Origin::Type(id))
+    }
+    /// Alternate type grammar over P8's existing base/rank facts. Nullable
+    /// references preserve Unknown nullability and introduce no extra check.
+    pub fn print_kotlin(&self, out: &mut Buffer, id: p8::TypeUseId) -> Result<(), RenderError> {
+        let use_ = self
+            .uses
+            .get(id.0 as usize)
+            .ok_or(RenderError::Invariant("Kotlin type lost its named use"))?;
+        let target = self
+            .targets
+            .get(use_.target.0 as usize)
+            .ok_or(RenderError::Invariant("Kotlin type lost its target"))?;
+        if target.full.is_empty() {
+            return self.print(out, id);
+        }
+        let primitive = if target.primitive {
+            match target.descriptor.last().copied() {
+                Some(90) => Some(("kotlin.Boolean", "kotlin.BooleanArray")),
+                Some(66) => Some(("kotlin.Byte", "kotlin.ByteArray")),
+                Some(67) => Some(("kotlin.Char", "kotlin.CharArray")),
+                Some(83) => Some(("kotlin.Short", "kotlin.ShortArray")),
+                Some(73) => Some(("kotlin.Int", "kotlin.IntArray")),
+                Some(74) => Some(("kotlin.Long", "kotlin.LongArray")),
+                Some(70) => Some(("kotlin.Float", "kotlin.FloatArray")),
+                Some(68) => Some(("kotlin.Double", "kotlin.DoubleArray")),
+                Some(86) if target.dimensions == 0 => Some(("kotlin.Unit", "kotlin.Unit")),
+                _ => return self.print(out, id),
+            }
+        } else {
+            None
+        };
+        let start = out.position();
+        if target.dimensions == 0 {
+            if let Some((scalar, _)) = primitive {
+                out.put(scalar)?;
+            } else {
+                self.print_kotlin_base(out, id)?;
+                out.put("?")?;
+            }
+        } else {
+            let outer = target
+                .dimensions
+                .checked_sub(u32::from(primitive.is_some()))
+                .ok_or(RenderError::Invariant(
+                    "Kotlin array lost its delivered rank",
+                ))?;
+            for _ in 0..outer {
+                out.put("kotlin.Array<")?;
+            }
+            if let Some((_, array)) = primitive {
+                out.put(array)?;
+                out.put("?")?;
+            } else {
+                self.print_kotlin_base(out, id)?;
+                out.put("?")?;
+            }
+            for _ in 0..outer {
+                out.put(">?")?;
+            }
+        }
+        out.span(start, Origin::Type(id))
+    }
     pub fn print(&self, out: &mut Buffer, id: p8::TypeUseId) -> Result<(), RenderError> {
         self.print_parts(out, id, true, false)
     }

@@ -58,7 +58,7 @@ pub(super) fn array_literals(code: &mut MethodCode) -> Result<(), ExpressionErro
             BodyAction::Statement { statement, .. } | BodyAction::Release { statement, .. } => {
                 !folded.get(statement.0 as usize).copied().unwrap_or(false)
             }
-            BodyAction::Receive { .. } => true,
+            BodyAction::Receive { .. } | BodyAction::AbiOperation { .. } => true,
         });
     }
     Ok(())

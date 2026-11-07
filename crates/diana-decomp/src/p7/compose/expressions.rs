@@ -359,6 +359,9 @@ fn producer(
         .operations
         .get(operation.0 as usize)
         .ok_or("producer_operation_unavailable")?;
+    if code.emission.suspension(operation).is_some() {
+        return Err("suspension_owns_its_result_and_route");
+    }
     if code.emission.composed_operation(operation)
         || !matches!(source.emission, Emission::Block { .. })
     {

@@ -11,6 +11,9 @@ use crate::{
 };
 
 pub(super) trait ExpressionSource {
+    fn kotlin_notation(&self) -> bool {
+        false
+    }
     fn payloads(&self) -> &[ArrayPayload];
     fn types(&self) -> &[TypeUse];
     fn references(&self) -> &[Reference];
@@ -19,6 +22,10 @@ pub(super) trait ExpressionSource {
     fn constructions(&self) -> &[Construction];
     fn copies(&self) -> &[CopyBundle];
     fn local_initializer(&self, _local: StorageId) -> Option<(StatementId, LocalSpelling)> {
+        None
+    }
+    /// A suspension surface makes one continuation occurrence implicit.
+    fn suspension_call(&self, _id: ExprId) -> Option<&Suspension> {
         None
     }
     fn composed_use(&self, _id: ExprId) -> Option<ComposedExpression> {
@@ -60,6 +67,12 @@ impl ExpressionSource for MethodCode {
             self.emission().local_initializer(local)?,
             self.emission().local_types()[local.0 as usize],
         ))
+    }
+    fn suspension_call(&self, id: ExprId) -> Option<&Suspension> {
+        self.emission().suspension_call(id)
+    }
+    fn kotlin_notation(&self) -> bool {
+        self.emission().kotlin_continuation_view()
     }
     fn payloads(&self) -> &[ArrayPayload] {
         self.payloads()
@@ -146,6 +159,7 @@ impl ExpressionSource for ExpressionPartial {
 enum ExprEvent {
     Expression(ExprId, bool),
     End(ExprId, super::TextOffset),
+    Anchor(ExprId),
     Text(&'static str),
     Reference(ReferenceId),
     Member(ReferenceId, Option<ExprId>, bool),
@@ -328,10 +342,18 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
             StatementKind::CheckCast { value, reference } => {
                 // A cast statement keeps the check at its original position and
                 // writes no register; the value keeps its own local.
-                self.out.put("cast ")?;
-                self.operand(*value)?;
-                self.out.put(" to ")?;
-                self.reference(*reference)?;
+                if self.kotlin_notation() {
+                    self.out.put("(")?;
+                    self.operand(*value)?;
+                    self.out.put(" as ")?;
+                    self.kotlin_cast_reference(*reference)?;
+                    self.out.put(")")?;
+                } else {
+                    self.out.put("cast ")?;
+                    self.operand(*value)?;
+                    self.out.put(" to ")?;
+                    self.reference(*reference)?;
+                }
             }
             StatementKind::FillArray { array, payload } => {
                 self.out.put("fill_array ")?;
@@ -441,6 +463,34 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
         }
         Ok(())
     }
+    pub(super) fn kotlin_notation(&self) -> bool {
+        self.code.kotlin_notation() && !self.out.abi_comment
+    }
+    pub(super) fn kotlin_type(&mut self, id: TypeUseId) -> Result<(), RenderError> {
+        if let Some(named) = self.names.body.get(id.0 as usize).copied().flatten() {
+            self.lookup.print_kotlin(self.out, named)
+        } else {
+            self.ty(id)
+        }
+    }
+    fn kotlin_cast_reference(&mut self, id: ReferenceId) -> Result<(), RenderError> {
+        let start = self.out.position();
+        let reference = &self.code.references()[id.0 as usize];
+        if reference.use_issue.is_some() {
+            return self.reference(id);
+        }
+        match &reference.declaration {
+            Ok(ReferenceDeclaration::Type { type_use }) => self.kotlin_type(*type_use)?,
+            _ => return self.reference(id),
+        }
+        self.out.span(
+            start,
+            Origin::Reference {
+                method: self.method,
+                reference: id,
+            },
+        )
+    }
     pub fn local(&mut self, id: StorageId) -> Result<(), RenderError> {
         let l = self
             .code
@@ -449,9 +499,27 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
             .ok_or(RenderError::Invariant(
                 "expression lost its local declaration",
             ))?;
-        self.out.put(&l.name)
+        if self.kotlin_notation()
+            && !matches!(
+                l.original.kind(),
+                crate::p5::LocalKind::Parameter {
+                    role: crate::p3::EntryRole::This,
+                    ..
+                }
+            )
+        {
+            self.out.kotlin_name_str(&l.name)
+        } else {
+            self.out.put(&l.name)
+        }
     }
     pub fn ty(&mut self, id: TypeUseId) -> Result<(), RenderError> {
+        if self.kotlin_notation()
+            && let Some(named) = self.names.body.get(id.0 as usize).copied().flatten()
+            && self.lookup.dimensions(named) == Some(0)
+        {
+            return self.lookup.print_kotlin_base(self.out, named);
+        }
         self.names
             .body(self.out, self.lookup, self.code.types(), id)
     }
@@ -518,6 +586,16 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
                         expression: id,
                     },
                 )?,
+                ExprEvent::Anchor(expression) => {
+                    let position = self.out.position();
+                    self.out.span(
+                        position,
+                        Origin::Expression {
+                            method: self.method,
+                            expression,
+                        },
+                    )?;
+                }
                 ExprEvent::Text(value) => self.out.put(value)?,
                 ExprEvent::Reference(reference) => self.reference(reference)?,
                 ExprEvent::Member(reference, receiver, signature) => {
@@ -660,11 +738,19 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
                 {
                     // The check prints at its selected first use and keeps its
                     // own origin; any other read of the same storage stays plain.
-                    self.out.put("((")?;
-                    self.reference(check.reference)?;
-                    self.out.put(") ")?;
-                    self.local(*storage)?;
-                    self.out.put(")")?;
+                    if self.kotlin_notation() {
+                        self.out.put("(")?;
+                        self.local(*storage)?;
+                        self.out.put(" as ")?;
+                        self.kotlin_cast_reference(check.reference)?;
+                        self.out.put(")")?;
+                    } else {
+                        self.out.put("((")?;
+                        self.reference(check.reference)?;
+                        self.out.put(") ")?;
+                        self.local(*storage)?;
+                        self.out.put(")")?;
+                    }
                     self.out.span(
                         start,
                         Origin::Statement {
@@ -857,8 +943,22 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
                 ) {
                     self.out.fmt(format_args!("invoke<{:?}> ", call.kind))?;
                 }
+
                 push_event(work, ExprEvent::Text(")"))?;
-                self.argument_events(work, id, &call.arguments)?;
+                if let Some(plan) = self.code.suspension_call(id) {
+                    let Arguments::Known(arguments) = &call.arguments else {
+                        return Err(RenderError::Invariant(
+                            "suspension lost its known arguments",
+                        ));
+                    };
+                    let visible = arguments.get(..plan.continuation_argument as usize).ok_or(
+                        RenderError::Invariant("suspension lost its argument projection"),
+                    )?;
+                    push_event(work, ExprEvent::Anchor(plan.continuation))?;
+                    self.known_argument_events(work, visible)?;
+                } else {
+                    self.argument_events(work, id, &call.arguments)?;
+                }
                 push_event(work, ExprEvent::Text("("))?;
                 if let Some(proto) = call.invocation_prototype {
                     push_event(work, ExprEvent::InvocationPrototype(proto))?;
@@ -879,7 +979,9 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
                 constructor,
                 arguments,
             } => {
-                self.out.put("new ")?;
+                if !self.kotlin_notation() {
+                    self.out.put("new ")?;
+                }
                 self.reference(*reference)?;
                 self.out.put("(")?;
                 push_event(work, ExprEvent::Initializer(*reference, *constructor))?;
@@ -1168,7 +1270,11 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
                 self.ty(*owner)?;
                 self.out.put(".")?;
             }
-            self.out.name(&name.units, name.form)?;
+            if self.kotlin_notation() {
+                self.out.kotlin_name(&name.units)?;
+            } else {
+                self.out.name(&name.units, name.form)?;
+            }
         }
         self.call_signature(r, qualification)?;
         self.call_use_issue(r)?;
@@ -1215,7 +1321,11 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
                         self.ty(owner)?;
                         self.out.put(">::")?;
                     }
-                    self.out.name(&name.units, name.form)?;
+                    if self.kotlin_notation() {
+                        self.out.kotlin_name(&name.units)?;
+                    } else {
+                        self.out.name(&name.units, name.form)?;
+                    }
                 }
                 if signature {
                     match m {

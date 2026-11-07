@@ -347,13 +347,11 @@ fn candidate(
         if literal {
             continue;
         }
-        if matches!(op.kind(), OpKind::ConstString { .. }) {
-            push(&mut preparations, operation)?;
-            continue;
-        }
-        // Moving allocation across another operation changes the order of its
-        // failure and any state observed on that failure path.
-        return Ok(Err(Separation::InterveningOperation(operation)));
+        // Another operation may prepare one constructor argument. The strict
+        // admission below decides whether its single use, order, copy and
+        // protection facts preserve the original evaluation order; any
+        // rejection keeps the whole construction explicit.
+        push(&mut preparations, operation)?;
     }
     for plan in &f.copies {
         if matches!(plan.location,CopyLocation::Transfer{site:TransferSite::NormalEdge(e),..}if interior_edges.contains(&e))
@@ -461,14 +459,16 @@ fn candidate(
     for &operation in &preparations {
         let op = &flow.operations()[operation.0 as usize];
         let handlers = protection(typed, operation)?;
-        if !matches!(
+        let string = matches!(
             flow.reference_fact(op.pc(), crate::raw::ReferenceSlot::First),
             Some(Ok(crate::p1::CheckedReferenceFact::String { .. }))
-        ) || flow
+        );
+        // Both kinds print at the constructor argument they prepare, so their
+        // exception must propagate from that same position rather than enter a
+        // locally selected handler.
+        if flow
             .reference_use_issue(op.pc(), crate::raw::ReferenceSlot::First)
             .is_some()
-            || !op.effects().may_throw()
-            || op.exceptional().is_none()
             || !matches!(
                 handlers.as_slice(),
                 [Handler {
@@ -480,14 +480,60 @@ fn candidate(
         {
             return Ok(Err(Separation::InterveningOperation(operation)));
         }
+        if string {
+            if !matches!(op.kind(), OpKind::ConstString { .. })
+                || !op.effects().may_throw()
+                || op.exceptional().is_none()
+            {
+                return Ok(Err(Separation::InterveningOperation(operation)));
+            }
+        } else if !matches!(
+            f.operation_emission[operation.0 as usize],
+            OperationEmission::Ordinary
+        ) || matches!(
+            op.kind(),
+            OpKind::Monitor { .. }
+                | OpKind::MoveException
+                | OpKind::NewInstance { .. }
+                | OpKind::NewArray { .. }
+                | OpKind::FilledNewArray { .. }
+                | OpKind::FillArrayData { .. }
+                | OpKind::UnresolvedInvoke { .. }
+                | OpKind::UnresolvedResult { .. }
+        ) {
+            return Ok(Err(Separation::InterveningOperation(operation)));
+        }
+        // A preparation must not observe the object whose construction it
+        // precedes; that read would still be uninitialized at its own position.
+        if typed.facts().initialization().iter().any(|use_| {
+            matches!(
+                use_.site,
+                UseSite::Operation {
+                    operation: at,
+                    ..
+                } if at == operation
+            ) && use_.state == Initialization::BeforeConstructor
+                && use_
+                    .allocation
+                    .is_some_and(|binding| binding.operation == allocation)
+        }) {
+            return Ok(Err(Separation::InterveningOperation(operation)));
+        }
         let Some([definition]) = f.operation_definitions(operation) else {
             return Ok(Err(Separation::InterveningOperation(operation)));
         };
         let Materialization::Store(local) = definition.materialization() else {
             return Ok(Err(Separation::InterveningOperation(operation)));
         };
-        if definition.commit() != crate::p2::CommitRule::AtOperation || f.local_gap(local).is_some()
-        {
+        // An operation that commits its result at a following result capture
+        // keeps that commit position: the composed expression still delivers
+        // the operation PC, result-commit PC and site as separate origins.
+        let committed = match definition.commit() {
+            crate::p2::CommitRule::AtOperation => true,
+            crate::p2::CommitRule::AfterResult => op.result_pc().is_some(),
+            _ => false,
+        };
+        if !committed || f.local_gap(local).is_some() {
             return Ok(Err(Separation::InterveningOperation(operation)));
         }
         let Some(produced) = value(s, definition.state()) else {
@@ -562,7 +608,7 @@ fn candidate(
         let Some(input_index) = argument_index.checked_add(1) else {
             return Ok(Err(Separation::InterveningOperation(operation)));
         };
-        if !matches!(read, StorageRead::Value { value, local: source, view: crate::p4::Interpretation::Direct(crate::p4::Family::Reference), .. } if *value == produced && *source == local)
+        if !matches!(read, StorageRead::Value { value, local: source, .. } if *value == produced && *source == local)
             || inputs
                 .get(input_index)
                 .is_none_or(|input| input.initialization() != Some(Initialization::Initialized))

@@ -153,10 +153,32 @@ impl Expressions<'_, '_> {
     pub(super) fn condition(&mut self, c: &Condition, negate: bool) -> Result<(), RenderError> {
         let op_of = |op: BranchOp| if negate { complement(op) } else { op };
         match c {
-            Condition::Pair { op, left, right } => {
+            Condition::Pair {
+                op,
+                left,
+                right,
+                equality,
+            } => {
                 self.operand(*left)?;
-                self.out.put(branch(op_of(*op)))?;
-                self.operand(*right)
+                let op = op_of(*op);
+                let spelling = if self.kotlin_notation() && *equality == EqualityKind::Reference {
+                    match op {
+                        BranchOp::Eq => " === ",
+                        BranchOp::Ne => " !== ",
+                        _ => branch(op),
+                    }
+                } else {
+                    branch(op)
+                };
+                self.out.put(spelling)?;
+                self.operand(*right)?;
+                if self.kotlin_notation()
+                    && *equality == EqualityKind::Unknown
+                    && matches!(op, BranchOp::Eq | BranchOp::Ne)
+                {
+                    self.out.put(" /* DEX equality, not Kotlin equals: operand interpretation unestablished */")?;
+                }
+                Ok(())
             }
             Condition::Zero { op, value, meaning } => {
                 if let Some(composed) = self.code.emission().composed_use(*value)

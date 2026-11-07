@@ -536,6 +536,47 @@ Pure propagation chains can be implicit only when no displayed site or handler r
 Integral literals encoded in integer arithmetic instructions retain their original
 bits and an integral view. Other bit-pattern literals keep their supplied views.
 
+## Suspension surfaces
+
+P7 installs a suspension surface only from P6's closed `CoroutineBodyPlan`.
+A local `SuspensionPlan` without that body product leaves the original header,
+call, marker branch and dispatch untouched. P7 MUST NOT discover a body from
+names, metadata or text, or walk a graph to find another tail.
+
+`CoroutineBody` owns the original ABI prefix, dispatch, resume/error controls
+and protocol operation roles. The root's selected child list uses P6's initial
+body and common-tail order; the source control tree remains original scope
+evidence. The member name, ABI argument, initial failure check, wrappers and
+class remain present. The original resume and invalid-state bodies are readable
+comment-only attachments, not a second executable schedule.
+
+The call stays at its original statement with the same receiver, visible
+arguments, target, site and result-commit identity. Its one matched continuation
+read becomes implicit. Normal completion publishes the original normal-copy
+target; the original resume attachment retains its failure check and copy to
+that same target. The original call-result local and private protocol locals
+need no executable declaration, but remain owned source facts.
+
+The state-publication statement becomes `BodyAction::AbiOperation`, not a removed
+action. P7 MUST preserve it as an adjacency barrier: a receiver or argument
+producer before the write cannot move into the call after that write. Ordinary
+producer composition cannot move the suspension itself or replace its owned
+result/route. A preceding cast cannot acquire the implicit continuation occurrence
+as its carrier. Array and cast action filtering retain ABI operations.
+
+Pair predicates retain an `EqualityKind` from their existing operand views.
+Reference equality is identity, not an inferred `equals` call. Only established
+integral views select primitive equality; missing or incompatible representations
+remain Unknown. P9 consumes this distinction without solving operand types.
+
+The suspension's marker predicate/return use `EmissionLayout::Suspension`; its
+children are not also printed as executable code and are not transparent jump
+entries. The original transfers, copies, terminals and scopes remain available.
+`kotlin_continuation_view` selects Kotlin body grammar only for this closed
+alternative. Its declaration keeps the existing signature format with an added
+`suspend` modifier, not a new signature style. It is not a claim that the original source lambda declaration or
+external callee implementation has been established.
+
 ## Failure and evidence
 
 `ExpressionError` preserves concrete request/resource errors and necessary

@@ -14,6 +14,12 @@ pub struct EvaluationPhases {
 }
 #[derive(Clone, Copy, Debug, Serialize)]
 pub enum BodyAction {
+    /// An original protocol event, retained as an ordered barrier and printed
+    /// as an ABI-only attachment rather than a second executable statement.
+    AbiOperation {
+        operation: OpId,
+        statement: StatementId,
+    },
     Statement {
         operation: OpId,
         statement: StatementId,
@@ -197,6 +203,11 @@ pub enum EmissionLayout {
     When {
         bodies: Vec<ControlId>,
     },
+    /// The call statement owns the marker/normal-result protocol. The original
+    /// dispatch and resume bodies remain in their existing scopes.
+    Suspension {
+        plan: u32,
+    },
     Loop {
         body: ControlId,
         placement: LoopPlacement,
@@ -279,6 +290,8 @@ pub enum LocalSpelling {
 /// records remain evidence, not additional schedules to emit alongside this one.
 #[derive(Debug, Serialize)]
 pub struct EmissionPlan {
+    pub(super) suspensions: Vec<Suspension>,
+    pub(super) coroutine_body: Option<CoroutineBody>,
     pub(super) local_types: Vec<LocalSpelling>,
     /// A declaration attached to its existing assignment; absence keeps the header form.
     pub(super) local_initializers: Vec<Option<StatementId>>,
@@ -334,8 +347,25 @@ pub struct EmissionPlan {
     pub(super) statement_operations: Vec<Option<OpId>>,
 }
 impl EmissionPlan {
+    pub fn kotlin_continuation_view(&self) -> bool {
+        self.coroutine_body.is_some()
+    }
+    pub fn coroutine_body(&self) -> Option<&CoroutineBody> {
+        self.coroutine_body.as_ref()
+    }
+    pub fn suspensions(&self) -> &[Suspension] {
+        &self.suspensions
+    }
+    pub fn suspension(&self, op: OpId) -> Option<&Suspension> {
+        self.suspensions.iter().find(|s| s.call == op)
+    }
+    pub fn suspension_call(&self, expression: ExprId) -> Option<&Suspension> {
+        self.suspensions.iter().find(|s| s.expression == expression)
+    }
     pub(super) fn empty() -> Self {
         Self {
+            suspensions: Vec::new(),
+            coroutine_body: None,
             local_types: Vec::new(),
             local_initializers: Vec::new(),
             controls: Vec::new(),

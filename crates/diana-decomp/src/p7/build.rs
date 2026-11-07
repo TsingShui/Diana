@@ -137,6 +137,7 @@ fn construct(
     super::lower::terminals(&mut c)?;
     super::control::construct(&mut c)?;
     super::emission::construct(c.code)?;
+    super::suspension::construct(&mut c)?;
     let key = partial
         .header
         .as_ref()

@@ -390,6 +390,65 @@ alternative. P7 MUST consume this
 choice rather than infer fallthrough from source layout. Public follow content has
 one owner, not a separate copy in each arm.
 
+## Local continuation suspension protocols
+
+After decision layout, P6 can publish a `SuspensionPlan` over an existing
+`invokeSuspend(Object): Object` member whose original superclass is
+`SuspendLambda`. This identity is only a candidate filter. P6 MUST also establish
+the label-field read, matching state store and continuation operand, original
+call result commit, marker comparison and private marker-return arm. The other
+original edge and the matching resume arm each copy their established result into
+the same existing local at the same original follow.
+
+The supported interface has initial and resume integer cases, a resume body
+containing its original `throwOnFailure` call, and one original assignment on each
+result edge. P6 MUST require exact storage states and occurrences, no other
+consumer of the call-result local, no intervening call-to-predicate operation,
+no local exception handler or copy/snapshot phase on the call or resume check,
+and no foreign normal or executable exceptional entrance into the hidden protocol
+portions. A target's complete original method reference must end in Continuation
+and return Object. That signature and the observed protocol infer suspension at
+this call site; they do not establish an external callee implementation.
+
+The owning lock-flow pass retains private node-entry emptiness from its existing
+fixed point. An explicit no-monitor result is distinct from an unestablished
+result. P6 MUST require established method-local lock emptiness at the call,
+predicate, marker return and resume ingress. It MUST NOT rerun lock propagation.
+Unknown or held locks leave the original protocol explicit.
+
+The plan names the original dispatch, call, state write, result local, continuation
+argument, marker, predicate, return, normal/resume links and copy plans. P6 keeps
+the dispatch, state stores, resume check, default/error arm and shared continuation
+as original code. It adds no state, dispatcher, SSA definition, tail copy or
+runtime helper. A mismatch leaves that local protocol explicit; resource and
+construction failures retain their classified behavior.
+
+### Closed source-body alternative
+
+A local plan alone does not authorize a source-body replacement. P6 additionally
+publishes `CoroutineBodyPlan` when the selected root Sequence consists of an ABI
+entry prefix, that dispatch and the original common-tail controls. The alternative
+contains the original initial body followed by those same tail controls; it adds
+no execution copy. The initial failure check remains an ordinary instruction.
+
+P6 MUST account for the prefix's marker/label reads and literal definitions, state
+publication, original resume body and closed invalid-state exception construction.
+Their exact operations, effects and exceptions remain protocol attachments; P6
+MUST NOT declare these calls pure or infer their implementations. An original
+instruction-use issue on a protocol operation rejects the source-body alternative. P6 MUST establish
+that their private locals do not escape into readable code. The initial body's
+only normal entrance is its selected dispatch edge, and its only normal exit is
+the original suspension-result edge. Executable exceptional arrivals into hidden
+protocol content reject this alternative. Lock emptiness comes from the existing
+owning computation, not a second propagation.
+
+The alternative retains the initial ABI argument and every containing member.
+The prefix and resume/error bodies remain readable ABI-only attachments, with
+their original controls, instructions, references, sites and copies. The call
+still refers to its precise continuation operand and original callee binding.
+A missing prerequisite leaves the complete original layout and local facts
+available. Resource and construction errors retain the ordinary classified stop.
+
 ## Transfers, labels and P5 obligations
 
 Every original edge has an `EdgePlan`. Each normal `LinkPlan` chooses a concrete

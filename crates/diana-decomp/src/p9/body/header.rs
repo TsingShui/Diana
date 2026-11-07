@@ -16,12 +16,31 @@ impl Expressions<'_, '_> {
                 continue;
             }
             self.out.indent()?;
-            match self.code.emission().local_types()[l.id.0 as usize] {
-                LocalSpelling::Named(t) => self.ty(t)?,
-                LocalSpelling::Machine(t) => super::expressions::machine_type(self.out, t)?,
+            if self.kotlin_notation() {
+                self.out.put("var ")?;
+                self.local(l.id)?;
+                self.out.put(": ")?;
+                match self.code.emission().local_types()[l.id.0 as usize] {
+                    LocalSpelling::Named(t) => self.kotlin_type(t)?,
+                    LocalSpelling::Machine(crate::p5::StorageType::Family { family, .. }) => {
+                        self.out.put(match family {
+                            crate::p4::Family::Integral => "kotlin.Int",
+                            crate::p4::Family::Long => "kotlin.Long",
+                            crate::p4::Family::Float => "kotlin.Float",
+                            crate::p4::Family::Double => "kotlin.Double",
+                            crate::p4::Family::Reference => "reference",
+                        })?
+                    }
+                    LocalSpelling::Machine(t) => super::expressions::machine_type(self.out, t)?,
+                }
+            } else {
+                match self.code.emission().local_types()[l.id.0 as usize] {
+                    LocalSpelling::Named(t) => self.ty(t)?,
+                    LocalSpelling::Machine(t) => super::expressions::machine_type(self.out, t)?,
+                }
+                self.out.put(" ")?;
+                self.local(l.id)?;
             }
-            self.out.put(" ")?;
-            self.local(l.id)?;
             self.out.put(";")?;
             if let Some(gap) = l.gap {
                 self.out

@@ -359,6 +359,52 @@ surrogates; valid pairs become UTF-8 scalars. Bidi controls are escaped to avoid
 visual source injection. Floating-point non-finite values retain exact bit
 notation rather than losing a NaN payload.
 
+## Kotlin continuation-protocol views
+
+P9 consumes the selected body order, without finding a dispatch or merge. It
+uses the ordinary declaration renderer and adds only a `suspend` modifier.
+The original return-type placement, member name, parameter syntax, generics and
+metadata remain unchanged; P9 MUST NOT introduce a separate Kotlin signature
+format. The ordinary initial body, suspending call and original shared tail form
+one sequence. Original entry/reentry, resume and invalid-state
+code remains visible in clearly marked ABI comments. P9 MUST NOT silently drop
+that code or execute it beside the selected source body.
+
+The ABI attachments use the same statements, copies and control event stack.
+P9 enables line-comment formatting only for their delivered scopes. Method-local
+failure restores the prior comment mode before printing a recovery diagnostic
+or another member. The original branch operands and targets retain their own
+source spans. The state write prints as an ABI attachment at its original action,
+preserving the P7 adjacency barrier.
+
+Executable declarations use Kotlin `var name: Type`; natural constructors omit
+`new`. Type formatting consumes P8's existing base/rank/name facts and preserves
+primitive-array versus reference-array identity. Built-in Kotlin type names
+are always qualified rather than requesting or guessing imports. Unknown reference nullability
+uses nullable spelling. A cast uses a nullable target so it does not introduce
+a null-rejecting check absent from DEX. P9 MUST NOT add safe calls or not-null
+checks to satisfy Kotlin type checking. P7-marked reference equality prints
+`===`/`!==`, preserving identity without adding an `equals` call. Unknown equality
+keeps explicit DEX comparison notation and its unestablished-interpretation note.
+Original names needing Kotlin escaping
+keep backticks, not substitutions. Remaining explicit machine forms and type
+gaps remain visible; Kotlin compilability is not a delivery gate.
+
+The suspension statement prints the original normal-copy target and original
+call with exactly the delivered continuation argument implicit. Its trailing
+comment names the original ABI method binding and marks suspension as an
+inference. P9 MUST NOT select another callee, discard another argument or add a
+helper. Receiver and visible argument evaluation stays in the existing
+expression event stack.
+
+The statement carries the original normal-copy and normal-transfer spans.
+The implicit continuation read, copy-source read, marker predicate/return
+operands, terminal identities, suspended transfer and unprinted child controls
+retain anchors. Resume checks/copies and invalid-state exceptions carry their
+ordinary origins in the ABI attachments. These products preserve original
+identities and uncertainty; they do not establish recovery of the whole original
+Kotlin class.
+
 ## Spans
 
 `TextOffset` is a byte coordinate in the final UTF-8 text. `SourceSpan` ranges are
