@@ -610,6 +610,7 @@ impl Region {
 pub struct FinallyPlan {
     pub(super) normal: Vec<NodeId>,
     pub(super) operations: Vec<(OpId, OpId)>,
+    pub(super) predicates: Vec<(NodeId, NodeId)>,
     pub(super) capture: OpId,
     pub(super) rethrow: NodeId,
 }
@@ -619,6 +620,9 @@ impl FinallyPlan {
     }
     pub fn operations(&self) -> &[(OpId, OpId)] {
         &self.operations
+    }
+    pub fn predicates(&self) -> &[(NodeId, NodeId)] {
+        &self.predicates
     }
     pub fn capture(&self) -> OpId {
         self.capture

@@ -188,8 +188,10 @@ capture, and `extractFinally` requires matching cleanup instructions across the
 other execution scopes before marking duplicates. In contrast,
 `dex/trycatch/TryEdge::isHandlerExit` only classifies `TryEdgeType.HANDLER`.
 Shared handler identity or that edge classification alone does not establish
-finally equivalence. Diana's linear unlocked cleanup matcher instead requires exact
-P5 reads and initialization facts, with no copy phases or storage coalescing;
+finally equivalence. Diana's unlocked cleanup matcher pairs original graph
+events with a bounded explicit stack and consistent joins. Its value correspondence
+uses exact P5 reads or private results of matched definitions, with equal
+initialization facts and no copy phases or storage coalescing;
 it does not adopt JADX's debug-name or code-variable equivalence, mutable
 instruction flags or method-reload path. These are source observations, not
 semantic evidence for Diana's transforms.

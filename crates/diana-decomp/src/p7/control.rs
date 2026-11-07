@@ -298,6 +298,7 @@ pub struct Finally {
     pub capture: OpId,
     pub rethrow: crate::p2::BlockId,
     pub operations: Vec<(OpId, OpId)>,
+    pub predicates: Vec<(crate::p2::BlockId, crate::p2::BlockId)>,
 }
 #[derive(Debug, Serialize)]
 pub struct Control {
@@ -726,6 +727,9 @@ pub(super) fn construct(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> 
                                 capture: p.capture(),
                                 rethrow: terminal(c, p.rethrow()),
                                 operations: ids(p.operations(), |pair| pair)?,
+                                predicates: ids(p.predicates(), |(a, b)| {
+                                    (terminal(c, a), terminal(c, b))
+                                })?,
                             })
                         })
                         .transpose()?,

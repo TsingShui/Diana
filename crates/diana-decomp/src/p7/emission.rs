@@ -951,8 +951,20 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
                         }
                     }
                     plan.origin_only_terminals[finally.rethrow.0 as usize] = true;
+                    for &(normal, _) in &finally.predicates {
+                        plan.origin_only_terminals[normal.0 as usize] = true;
+                    }
                     for &(normal, _) in &finally.operations {
                         plan.origin_only_operations[normal.0 as usize] = true;
+                        if let Some(statement) = code.operations[normal.0 as usize].statement {
+                            for d in &code.statements[statement.0 as usize].outputs {
+                                if let crate::p5::Materialization::Store(local) =
+                                    d.materialization()
+                                {
+                                    plan.hidden_locals[local.0 as usize] = true;
+                                }
+                            }
+                        }
                     }
                     EmissionLayout::Try {
                         body: child(c, 0)?,

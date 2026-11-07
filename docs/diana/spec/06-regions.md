@@ -535,21 +535,34 @@ finally.
 ### Matched unlocked cleanup
 
 Before composition, P6 can attach a `FinallyPlan` to an established single
-catch-all `TryPlan`. The handler has one finite linear path: its original
-capture, a nonempty sequence of result-free static/virtual/interface calls,
-and a throw reading that exact capture storage state with a reference view.
-The captured local has no other read or copy dependency.
+catch-all `TryPlan`. Its handler is a finite acyclic cleanup graph ending at one
+throw that reads the exact capture storage state with a reference view.
+The captured local has no other read or copy dependency. Moves, numeric/string
+constants, field accesses and static/virtual/interface calls can match; allocation
+and construction members remain explicit.
 
-The normal exit starts an equally ordered sequence of calls. Every pair has the
-same original invocation kind/target, exact P5 operand reads and initialization
-facts, with only uncaught propagation from either cleanup. Both paths require
-established empty local lock entries and no attached P5 copy or snapshot plans.
-Cleanup nodes have no foreign normal or executable exceptional entrance. Body
-returns, bypass outlets, different protected chains and shared cleanup tails
-reject this alternative. A Phi or different operand state does not become an
-assumed equal value.
+A paired cursor traverses handler and normal cleanup events. Block cuts and
+copy-free gotos are transparent. Conditions require the same operator and operand
+correspondence, with original true/false edges paired by role. Bidirectional
+event maps require consistent joins; an active pair revisit rejects a cycle.
+Completed pairs are reused, not expanded into every possible path. All matched
+normal paths must stop at the same original continuation, at a whole-node
+boundary. Scratch allocation is fallible and cursor arithmetic is checked.
 
-The plan pairs original normal and handler operations, retains the original
+An operation pair requires identical original kind/target, effects and normal
+commit rules, plus equal exceptional frame/heap/lock behavior and uncaught routes.
+Inputs are exact P5 reads, equal literal bits/views, or results of already matched
+definitions. Result pairs require compatible storage types and complete reads
+confined to their respective cleanup graphs, with no copy dependency or escaping
+result. This correspondence does not coalesce storage or make a Phi input equal
+to its result. Initialization facts must match for each use.
+
+Both paths require established empty local lock entries and no attached P5 copy
+or snapshot plans. Cleanup nodes have no foreign normal or executable exceptional
+entrance. Body returns, bypass outlets, different protected chains, cross-handler
+shared tails and unmatched value joins reject this alternative.
+
+The plan pairs original normal and handler operations and predicates, retains the original
 capture/rethrow, and adds the normal duplicate as a separate source child.
 The protected body still owns only its original nodes; normal completion enters
 the matched cleanup, then continues at its original next node. Catch-all
