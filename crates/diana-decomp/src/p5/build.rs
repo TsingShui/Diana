@@ -42,6 +42,8 @@ pub(crate) fn build_storage<'a>(
 fn construct(typed: &TypedMethod<'_>, f: &mut StorageFacts) -> Result<(), StorageError> {
     super::bindings::construct(typed, f)?;
     super::transfers::construct(typed, f)?;
+    super::copies::dependencies(f)?;
+    super::coalesce::construct(typed, f)?;
     super::copies::construct(f)?;
     super::materialization::construct(typed, f)
 }
@@ -76,6 +78,8 @@ pub(super) fn local(
             id,
             storage_type,
             kind,
+            representative: id,
+            reused: false,
         },
     )?;
     push(&mut f.local_gaps, None)?;

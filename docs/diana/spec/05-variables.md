@@ -28,8 +28,9 @@ storage/type/execution facts, not an owned predecessor or constructor.
 A binding identifies an original parameter, independent local, reference carrier,
 allocation carrier, deferred construction publication, exact literal bits or a
 concrete storage gap. `ValueId` and
-`LocalId` have separate identities. P5 does not coalesce general values or build a
-second register environment.
+`LocalId` have separate identities. P5 first assigns independent locals, then
+selects compatible representatives for noninterfering Move/normal-copy affinities.
+It does not build another register environment or equate the original values.
 
 P5 consumes P4 families and widths. `StorageType::NumericBits` preserves an
 established numeric word/wide representation without choosing int versus float
@@ -55,6 +56,47 @@ receiver access. Allocation carriers become available at the allocation's normal
 commit, not at the constructor call. Reference carrier storage alone does not
 prove initialization. Per-use initialization remains the original P4 fact;
 absence of an initialization record does not mean initialized.
+
+## Storage reuse
+
+P5 propagates copy dependency gaps, selects storage representatives, schedules
+copies once, and then constructs natural allocation groups. The owning reuse
+pass consumes P4/P3's existing execution positions and original transfers.
+It does not depend on P6 syntax, rerun SSA or query external declarations.
+
+Liveness uses original reads and committed definitions. Exceptional transfers
+leave the execute point before normal commit. A normal CopyPlan is an event on
+its own transfer; an AfterCommit plan follows the committed definition instead
+of preceding it. Simultaneous copies read all sources before writing destinations.
+A finite worklist computes sparse live-in sets. Writes interfere with values live
+after them, except for the exact identity-copy source, and simultaneous distinct
+destinations interfere with each other. Representative groups merge only when
+no member conflicts with the other group. No output validation or symbolic
+execution runs as part of this admission.
+
+Candidates require equal storage representation and identical delivered declared
+type sources/unknown-source flags. Parameters, snapshots, allocation identities,
+uncertain reference initialization, dependency gaps and locals touched by
+before-throw/handler-receive plans stay independent. An unavailable operation
+input layout supplies no complete read set, so the method retains its existing
+independent storage selection. Other declined candidates do not suppress code.
+Allocation and constructor publication reuse requires its actual materialization
+positions and is not inferred from the raw allocation commit.
+
+Each Local retains its original id/kind and publishes its selected representative
+and whether that representative has several value bindings. Bindings, definitions,
+reads, copy requirements and constructor receiver accesses use that representative;
+ValueId, StateId, initialization facts, copy/transfer identities and locations
+remain unchanged. Alias Local records remain inspectable but need no separate
+executable declaration. Consumers that require one SSA value per storage must
+check the delivered reuse flag rather than read the representative's first kind
+as the identity of every assignment.
+
+Copy scheduling still omits only established identity self-copies and retains
+the requirement record. It creates any necessary parallel-copy temporary after
+representative selection. Reuse does not move assignments, invent literal
+defaults or change source-operation counts. Fallible scratch allocation and
+checked graph sizes retain the existing classified P5 stop.
 
 ## Construction groups
 
@@ -121,7 +163,10 @@ natural/explicit mode without re-identifying construction patterns.
 ## Transfer coverage and placement
 
 `PhiTransfer` accounts for every original Phi incoming, retaining its `PhiId`,
-`TransferId`, source state and P4 adaptation. Its route identifies a literal,
+joined destination `StateId`/`ValueId`, `TransferId`, source state and P4 adaptation.
+The destination identities connect a delivered P5 read to its incoming records
+without opening the retained SSA inspection view. They describe the join, not
+value equality or permission to share storage across arrivals. Its route identifies a literal,
 normal copy, exception save/receive pair or local gap. Consumers MUST inspect the
 referenced copy assignment's issue as well as the route; an existing plan ID is
 not an established-copy guarantee.
@@ -169,9 +214,10 @@ ordered steps. Snapshot saves and receives retain their original throw and handl
 positions; temporary reads require a preceding save. An unavailable source or
 copy is not a no-op or an initialized default.
 
-Under independent storage bindings and P3's exact-slot incoming guarantee,
-different Phis on one transfer target have different slots. Snapshot namespaces
-similarly separate saved sources from destinations. This structural argument does
+P3's exact-slot incoming guarantee distinguishes the original Phi destinations.
+The reuse pass also keeps all simultaneous distinct destinations interfering,
+so representative selection cannot create competing writes in one CopyPlan.
+Snapshot namespaces remain pinned and separate saved sources from destinations. This structural argument does
 not establish execution coverage of the generic cycle/temporary branch. Consumers
 MUST NOT fabricate private products to claim such coverage.
 

@@ -247,6 +247,17 @@ fn private_definitions(
 ) -> bool {
     for pair in definitions {
         for ((local, state), inside) in [(pair.normal, normal), (pair.canonical, canonical)] {
+            // A literal-folded Phi incoming can have no executable CopyPlan.
+            // It still observes this result; only the incoming identity names
+            // that dependency, so copying/uses alone cannot prove it private.
+            if storage
+                .facts()
+                .transfers()
+                .iter()
+                .any(|incoming| incoming.source() == state && incoming.destination_state() != state)
+            {
+                return false;
+            }
             for u in storage.facts().uses() {
                 match u.read() {
                     Err(_) => return false,

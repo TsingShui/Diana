@@ -41,8 +41,17 @@ pub struct Local {
     pub(super) id: LocalId,
     pub(super) storage_type: StorageType,
     pub(super) kind: LocalKind,
+    pub(super) representative: LocalId,
+    pub(super) reused: bool,
 }
 impl Local {
+    /// Execution storage selected by P5; this record's original id remains valid provenance.
+    pub fn representative(&self) -> LocalId {
+        self.representative
+    }
+    pub fn is_reused(&self) -> bool {
+        self.reused
+    }
     pub fn id(&self) -> LocalId {
         self.id
     }
@@ -338,12 +347,21 @@ pub enum TransferRoute {
 #[derive(Clone, Copy, Debug)]
 pub struct PhiTransfer {
     pub(super) phi: PhiId,
+    pub(super) destination_state: StateId,
+    pub(super) destination_value: ValueId,
     pub(super) transfer: TransferId,
     pub(super) source: StateId,
     pub(super) view: Interpretation,
     pub(super) route: TransferRoute,
 }
 impl PhiTransfer {
+    /// Original joined identity, not an assertion that its incoming values are equal.
+    pub fn destination_state(&self) -> StateId {
+        self.destination_state
+    }
+    pub fn destination_value(&self) -> ValueId {
+        self.destination_value
+    }
     pub fn phi(&self) -> PhiId {
         self.phi
     }

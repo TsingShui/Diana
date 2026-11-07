@@ -502,8 +502,23 @@ content is not a reason to remove its original identity or priority.
 A natural `TryPlan` records a clause range in an original chain and disjoint body
 and handler content. Catch ownership follows the ordered clause range, not target
 address equality. A shared target does not merge different catch roles. Normal or
-sibling-catch entrances into a natural catch body reject that wrapping. Shared
-handler tails require a common continuation or explicit representation.
+sibling-catch entrances into a natural catch body reject that wrapping.
+
+Before enumerating protection candidates, P6 computes each original handler's
+normal and executable exceptional reach. A node with a normal arrival from
+outside that reach is a shared continuation frontier, not private catch content.
+The capture entry itself is never cut this way. Including nested exceptional
+paths keeps their private joins in the enclosing handler.
+
+Handler membership stops at these frontiers as well as its selected normal
+follow. The original outward links retain their targets, edge copies and
+explicit transfers; the shared tail has one owner outside the catch. The
+protected body's normal follow is not replaced by the handler's separate
+continuation. Catch admission still rejects foreign entrances into the remaining
+private content, and construction groups cannot be split. This can recover a
+natural catch with an explicit outward goto without duplicating its cleanup or
+claiming that it is a finally. Frontier walks use fallible scratch and iterative
+queues in the same owning protection pass.
 
 Proved enclosing synchronization supplies a bounded protection context containing
 the actual held graph and outlet anchors. Cleanup handlers remain ordinary
@@ -554,7 +569,8 @@ commit rules, plus equal exceptional frame/heap/lock behavior and uncaught route
 Inputs are exact P5 reads, equal literal bits/views, or results of already matched
 definitions. Result pairs require compatible storage types and complete reads
 confined to their respective cleanup graphs, with no copy dependency or escaping
-result. This correspondence does not coalesce storage or make a Phi input equal
+result. Original Phi incoming dependencies also prevent folding a private result,
+including a literal-folded incoming with no executable copy assignment. This correspondence does not coalesce storage or make a Phi input equal
 to its result. Initialization facts must match for each use.
 
 Both paths require established empty local lock entries and no attached P5 copy

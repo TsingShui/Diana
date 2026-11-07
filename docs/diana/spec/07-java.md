@@ -46,6 +46,18 @@ without duplicating arenas or borrowing DEX. Partial expressions likewise retain
 a shared unpublished prefix; its type-use and local-declaration views do not
 promote it to a completed MethodResult. The production method chain has no parallel P6 success path.
 
+P5 Local representatives select execution storage, not new source identities.
+P7 retains alias Local records and hides only their redundant declarations.
+Existing single-value expression and array composition refuse reused storage;
+adjacent check carriers additionally retain exact ValueId/StateId matching,
+while the old nonadjacent carrier search cannot consume reused storage.
+P4-established redundant checks remain a separate omission decision.
+
+A phase-free, site-free Move with a direct read and store to the same reused
+representative contributes origin-only text at its original position. Other
+moves and assignments remain executable text. P7 does not delete an effect or
+infer representative equivalence; it consumes P5's selection.
+
 ## Unified operation lowering
 
 P7 uses exhaustive P2 operation/terminal matches for both natural and explicit

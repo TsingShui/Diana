@@ -83,8 +83,12 @@ The [P4 chapter](../../docs/diana/spec/04-types.md) records its algorithm and gu
 
 P5 privately retains P4 in `StorageMethod`; P6 privately retains that product in
 `PlannedMethod`. P7 consumes this mature plan in the same method task.
-It maps each SSA value to a parameter, independent local, exact literal or explicit
-reference carrier, preserving P4 numeric bit storage without choosing a new family.
+It initially maps each SSA value to a parameter, independent local, exact literal
+or explicit reference carrier, preserving P4 numeric bit storage without choosing
+a new family. Before copy scheduling, compatible Move/normal-copy locals can
+share storage when exception-aware liveness establishes no interference. Original
+value/state identities and Local representative mappings remain inspectable;
+parameters, snapshots and construction-related carriers remain independent.
 Definitions keep their original normal commit/materialization sites. Every Phi
 incoming retains its original transfer and adaptation: normal copies execute only
 on the selected transfer; exceptional incoming uses before-throw saves and
@@ -108,8 +112,10 @@ defines the boundary and scope rules. A single unlocked catch-all cleanup can
 print as `finally` when its cleanup graph matches the normal exit. Matching covers
 conditional branches, field accesses and calls, including private result pairs
 established from P5 definitions and reads. Both paths retain their original
-effect order and require no copy phases. Cross-handler shared tails, unmatched
-Phi values and different exits retain the original catch or explicit handlers.
+effect order and require no copy phases. Shared handler continuations retain one external owner; their private entries
+can print as natural catches with original copies and explicit outward transfers.
+Cross-handler finally folding, unmatched Phi values and different cleanup exits
+retain the original catch or explicit handlers.
 
 P7 produces an independently owned `MethodResult`, delivered by
 `MethodOutcome::Expressed(ExpressedMethod)`. `inspection()` borrows earlier facts

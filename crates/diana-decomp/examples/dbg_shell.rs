@@ -1380,6 +1380,13 @@ fn add_storage_counts(counts: &mut BTreeMap<String, u64>, f: &diana_decomp::p5::
     count!("bindings", f.bindings().len());
     count!("locals", f.locals().len());
     count!(
+        "reused_locals",
+        f.locals()
+            .iter()
+            .filter(|l| l.representative() != l.id())
+            .count()
+    );
+    count!(
         "parameters",
         f.bindings()
             .iter()
@@ -1547,7 +1554,7 @@ fn storage_json(stored: diana_decomp::p5::StorageEvidence<'_, '_>, details: bool
     json!({"stage":"p5","class":stored.class_id().0,"method":stored.method_id().0,"counts":counts,"upstream_type_issues":stored.type_facts().issues().len(),
         "details":details.then(||json!({
             "bindings":f.bindings().iter().enumerate().map(|(i,b)|json!({"value":i,"binding":format!("{b:?}")})).collect::<Vec<_>>(),
-            "locals":f.locals().iter().map(|l|json!({"id":l.id().0,"type":format!("{:?}",l.storage_type()),"kind":format!("{:?}",l.kind()),"gap":f.local_gap(l.id()).map(|g|format!("{g:?}"))})).collect::<Vec<_>>(),
+            "locals":f.locals().iter().map(|l|json!({"id":l.id().0,"representative":l.representative().0,"reused":l.is_reused(),"type":format!("{:?}",l.storage_type()),"kind":format!("{:?}",l.kind()),"gap":f.local_gap(l.id()).map(|g|format!("{g:?}"))})).collect::<Vec<_>>(),
             "uses":f.uses().iter().map(|u|json!({"site":format!("{:?}",u.site()),"point":u.point().0,"state":u.state().0,"read":format!("{:?}",u.read()),"original_source":format!("{:?}",u.original_source()),"initialization":u.initialization().map(|i|format!("{i:?}"))})).collect::<Vec<_>>(),
             "definitions":f.definitions().iter().map(|d|json!({"operation":d.operation().0,"output":d.output(),"state":d.state().0,"point":d.point().0,"commit":format!("{:?}",d.commit()),"commit_pc":d.commit_pc().map(|pc|pc.0),"materialization":format!("{:?}",d.materialization())})).collect::<Vec<_>>(),
             "copy_plans":f.copy_plans().iter().map(|p|json!({"id":p.id().0,"location":format!("{:?}",p.location()),"complete":p.is_complete(),
@@ -1555,7 +1562,7 @@ fn storage_json(stored: diana_decomp::p5::StorageEvidence<'_, '_>, details: bool
                 "steps":p.steps().iter().map(|s|format!("{s:?}")).collect::<Vec<_>>()
             })).collect::<Vec<_>>(),
             "snapshots":f.snapshots().iter().map(|s|json!({"id":s.id().0,"phi":s.phi().0,"entry":s.entry().0,"local":s.local().0})).collect::<Vec<_>>(),
-            "transfers":f.transfers().iter().map(|t|json!({"phi":t.phi().0,"transfer":t.transfer().0,"state":t.source().0,"view":format!("{:?}",t.view()),"route":format!("{:?}",t.route())})).collect::<Vec<_>>(),
+            "transfers":f.transfers().iter().map(|t|json!({"phi":t.phi().0,"destination_state":t.destination_state().0,"destination_value":t.destination_value().0,"transfer":t.transfer().0,"state":t.source().0,"view":format!("{:?}",t.view()),"route":format!("{:?}",t.route())})).collect::<Vec<_>>(),
             "constructions":f.constructions().iter().map(|c|json!({"operation":c.fact().operation.0,"relation":format!("{:?}",c.fact().relation),"receiver":c.receiver().map(|r|format!("{r:?}")),"mode":format!("{:?}",c.mode())})).collect::<Vec<_>>(),
             "groups":f.construction_groups().iter().map(|g|json!({"id":g.id().0,"allocation":g.allocation().0,"initialization":g.initialization().0,"normal":g.normal().0,"members":g.members().iter().map(|o|o.0).collect::<Vec<_>>(),"edges":g.interior_edges().iter().map(|e|e.0).collect::<Vec<_>>(),"arguments":g.arguments().iter().map(|a|format!("{a:?}")).collect::<Vec<_>>(),"publications":g.publications().iter().map(|p|json!({"value":p.value.0,"local":p.local.0})).collect::<Vec<_>>(),"prelude":g.prelude().map(|p|p.0),"snapshot_members":g.snapshot_members().iter().map(|p|p.0).collect::<Vec<_>>()})).collect::<Vec<_>>(),
             "allocation_plans":f.allocation_plans().iter().map(|p|json!({"operation":p.operation().0,"mode":format!("{:?}",p.mode())})).collect::<Vec<_>>(),

@@ -658,6 +658,10 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
     plan.allocation_declarations = filled(code.statements.len(), false)?;
     plan.allocation_locals = filled(code.locals.len(), false)?;
     plan.hidden_locals = filled(code.locals.len(), false)?;
+    for local in &code.locals {
+        plan.hidden_locals[local.id.0 as usize] =
+            local.original.representative() != local.original.id();
+    }
     plan.local_initializers = filled(code.locals.len(), None)?;
     plan.deferred_controls = filled(code.controls.len(), false)?;
     for l in &code.locals {
@@ -1060,6 +1064,42 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
         };
         if headers[i] || deferred {
             c.continuation = None;
+        }
+    }
+    // A reused identity move keeps its operation/statement origins at this
+    // point; it performs no remaining storage write or observable evaluation.
+    for op in &code.operations {
+        let Some(statement) = op.statement else {
+            continue;
+        };
+        let s = &code.statements[statement.0 as usize];
+        let StatementKind::Move { expression, .. } = s.kind else {
+            continue;
+        };
+        let [definition] = s.outputs.as_slice() else {
+            continue;
+        };
+        let crate::p5::Materialization::Store(local) = definition.materialization() else {
+            continue;
+        };
+        let ExprKind::Read {
+            storage,
+            view: crate::p4::Interpretation::Direct(family),
+        } = code.expressions[expression.0 as usize].kind
+        else {
+            continue;
+        };
+        let phases = &plan.operations[op.source.0 as usize];
+        if storage.0 == local.0
+            && code.locals[local.0 as usize].original.is_reused()
+            && matches!(code.locals[local.0 as usize].original.storage_type(),
+                crate::p5::StorageType::Family { family: stored, .. } if stored == family)
+            && phases.before.is_empty()
+            && phases.snapshots.is_empty()
+            && phases.after.is_empty()
+            && s.sites.is_empty()
+        {
+            plan.origin_only_operations[op.source.0 as usize] = true;
         }
     }
     code.emission = plan;

@@ -10,7 +10,7 @@ impl Expressions<'_, '_> {
         let copies = &self.code.emission().transfers()[id.0 as usize].copies;
         self.copies(copies)?;
         if jump {
-            if !copies.is_empty() {
+            if self.out.position() != start {
                 self.out.put(" ")?;
             }
             self.out.put("goto ")?;
@@ -55,7 +55,8 @@ impl Expressions<'_, '_> {
     ) -> Result<(), RenderError> {
         let p = &self.code.emission().transfers()[id.0 as usize];
         let start = self.out.position();
-        if self.transfer_prints_nothing(id) {
+        if self.transfer_prints_no_words(id) {
+            self.copies(&p.copies)?;
             return self.out.span(
                 start,
                 Origin::Transfer {
@@ -67,8 +68,11 @@ impl Expressions<'_, '_> {
         if indent {
             self.out.indent()?;
         }
+        let copies_start = self.out.position();
         self.copies(&p.copies)?;
-        if !p.copies.is_empty() && !matches!(p.spelling, TransferSpelling::Fallthrough) {
+        if self.out.position() != copies_start
+            && !matches!(p.spelling, TransferSpelling::Fallthrough)
+        {
             self.out.put(" ")?;
         }
         if matches!(

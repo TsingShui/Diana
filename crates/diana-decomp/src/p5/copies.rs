@@ -35,7 +35,7 @@ fn connect(nodes: &mut [Node], from: usize, to: usize) -> Result<(), StorageErro
 // Dependency propagation concerns synthetic storage, not SSA/type reconstruction.
 // A missing copy can affect its storage-interference component and consumers of
 // its destinations, without poisoning an independent original producer's local.
-fn dependencies(f: &mut StorageFacts) -> Result<(), StorageError> {
+pub(super) fn dependencies(f: &mut StorageFacts) -> Result<(), StorageError> {
     if f.copies
         .iter()
         .all(|p| p.assignments.iter().all(|a| a.issue.is_none()))
@@ -328,7 +328,6 @@ fn schedule(f: &mut StorageFacts, pi: usize) -> Result<(), StorageError> {
     Ok(())
 }
 pub(super) fn construct(f: &mut StorageFacts) -> Result<(), StorageError> {
-    dependencies(f)?;
     for pi in 0..f.copies.len() {
         schedule(f, pi)?;
     }

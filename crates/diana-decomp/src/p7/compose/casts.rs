@@ -60,10 +60,20 @@ pub(super) fn construct(
     distant_uses(code, &protection, &omitted, &mut found, &mut why_slots)?;
     // A redundant check has no text to carry, so its value's read keeps its own
     // spelling and the check's statement only contributes its origins.
-    found.retain(|(statement, _)| {
-        omitted
+    found.retain(|(statement, check)| {
+        if omitted
             .get(statement.0 as usize)
-            .is_none_or(Option::is_none)
+            .is_some_and(Option::is_some)
+        {
+            return false;
+        }
+        if code.locals[check.value.0 as usize].original.is_reused()
+            && !same_checked_read(code, *statement, check.occurrence)
+        {
+            why_at(&mut why_slots, *statement, "carrier_value_state_changed");
+            return false;
+        }
+        true
     });
     if !found.is_empty() {
         for (_, check) in &found {
@@ -199,6 +209,23 @@ fn eligible_check(
     Some((storage, reference))
 }
 
+fn same_checked_read(code: &MethodCode, statement: StatementId, occurrence: ExprId) -> bool {
+    let StatementKind::CheckCast { value, .. } = code.statements[statement.0 as usize].kind else {
+        return false;
+    };
+    let source = code.expressions[value.0 as usize]
+        .origin
+        .as_ref()
+        .and_then(|o| o.read.ok());
+    let use_ = code.expressions[occurrence.0 as usize]
+        .origin
+        .as_ref()
+        .and_then(|o| o.read.ok());
+    matches!((source, use_), (
+        Some(crate::p5::StorageRead::Value { value: a, state: sa, .. }),
+        Some(crate::p5::StorageRead::Value { value: b, state: sb, .. })
+    ) if a == b && sa == sb)
+}
 fn carried_check(
     code: &MethodCode,
     operation: OpId,
@@ -351,6 +378,10 @@ fn distant_uses(
             else {
                 continue;
             };
+            if code.locals[storage.0 as usize].original.is_reused() {
+                why_at(why_slots, statement, "distant_storage_has_multiple_values");
+                continue;
+            }
             let mut why = None;
             let mut carried = None;
             for candidate in &code.statements {

@@ -283,6 +283,33 @@ fn normal_follow_roots(
     }
     Ok(selected)
 }
+// A normal entrance from outside a handler's complete execution reach marks
+// a shared continuation, not private catch content. Include nested exception
+// paths while finding that frontier so their joins stay inside an enclosing
+// catch. The selected catch retains the original outbound edge and its copies.
+fn handler_frontiers(
+    storage: &StorageMethod<'_>,
+    f: &RegionFacts,
+    g: &Graph,
+) -> Result<Vec<Vec<NodeId>>, RegionError> {
+    let mut frontiers = lists(f.nodes.len())?;
+    let excluded = filled(f.nodes.len(), false)?;
+    for handler in &f.handlers {
+        let reach = reachable(storage, f, g, &[handler.node], None, &excluded, true)?;
+        for node in &f.nodes {
+            if node.id == handler.node || !reach[node.id.0 as usize] {
+                continue;
+            }
+            if g.incoming[node.id.0 as usize]
+                .iter()
+                .any(|link| !reach[f.links[link.0 as usize].from.0 as usize])
+            {
+                push(&mut frontiers[handler.node.0 as usize], node.id)?;
+            }
+        }
+    }
+    Ok(frontiers)
+}
 struct Pattern {
     chain: ChainId,
     start: usize,
@@ -295,6 +322,7 @@ pub(super) fn plan(
     g: &Graph,
     s: &Structure,
 ) -> Result<(), RegionError> {
+    let handler_frontiers = handler_frontiers(storage, f, g)?;
     let mut patterns: Vec<Pattern> = Vec::new();
     for context in 0..=f.synchronized.len() {
         let outer = if context == 0 {
@@ -484,6 +512,9 @@ pub(super) fn plan(
                 if other != target {
                     exclude[other.0 as usize] = true;
                 }
+            }
+            for &frontier in &handler_frontiers[target.0 as usize] {
+                exclude[frontier.0 as usize] = true;
             }
             let arm = reachable(storage, f, g, &[target], follow, &exclude, true)?;
             if !arm[target.0 as usize]

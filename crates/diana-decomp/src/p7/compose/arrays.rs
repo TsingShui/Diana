@@ -105,6 +105,7 @@ pub(super) fn array_literal(
     // No copy or publication may observe it either, because such a step prints
     // after the allocation and before the fill.
     if declared.gap.is_some()
+        || declared.original.is_reused()
         || !matches!(
             declared.original.kind(),
             crate::p5::LocalKind::Value(_) | crate::p5::LocalKind::ReferenceCarrier(_)

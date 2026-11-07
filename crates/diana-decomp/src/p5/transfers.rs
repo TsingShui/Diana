@@ -291,6 +291,8 @@ pub(super) fn construct(typed: &TypedMethod<'_>, f: &mut StorageFacts) -> Result
                 &mut f.transfers,
                 PhiTransfer {
                     phi: phi.id(),
+                    destination_state: phi.state(),
+                    destination_value: phi.value(),
                     transfer: incoming.transfer,
                     source: incoming.state,
                     view: incoming.interpretation,

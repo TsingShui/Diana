@@ -413,6 +413,9 @@ fn producer(
     if declared.gap.is_some() {
         return Err("producer_local_has_gap");
     }
+    if declared.original.is_reused() {
+        return Err("producer_storage_has_multiple_values");
+    }
     let result = match access.protection[local.0 as usize] {
         LocalProtection::Pinned => return Err("producer_local_pinned"),
         LocalProtection::CopySource if matches!(policy, UsePolicy::PreserveStore) => {

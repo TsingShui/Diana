@@ -422,6 +422,12 @@ current position. Method-local failure restores this mode before reporting an
 issue or rendering another member. P9 does not run a second analysis or renderer
 to obtain those origins.
 
+P7-selected reused-storage identity moves retain operation, statement and read
+origins without text at the original position. A transfer whose copy bundles
+have no executable steps or unavailable assignments keeps its Copy/Transfer
+anchors without adding a blank line; a following goto needs no separator for
+those zero-width bundles.
+
 Suppressed literal statements and contracted interior transfers remain in the
 owned source products and coverage. A composed operation's range encloses its
 printed expression; its original statement and optional exception site retain
