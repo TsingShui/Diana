@@ -51,9 +51,10 @@ pub(super) fn construct(
     let mut why_slots: Vec<Option<&'static str>> =
         super::super::build::filled(code.statements.len(), None)?;
     let mut found: Vec<(StatementId, InlineCheck)> = Vec::new();
-    statement_uses(code, &mut found, &mut why_slots)?;
+    let protection = protected_contexts(code)?;
+    statement_uses(code, &protection, &mut found, &mut why_slots)?;
     copy_uses(code, &mut found, &mut why_slots)?;
-    terminal_uses(code, &mut found, &mut why_slots)?;
+    terminal_uses(code, &protection, &mut found, &mut why_slots)?;
     // A redundant check has no text to carry, so its value's read keeps its own
     // spelling and the check's statement only contributes its origins.
     found.retain(|(statement, _)| {
@@ -237,6 +238,7 @@ fn unclaimed_occurrence(found: &[(StatementId, InlineCheck)], check: &InlineChec
 /// every effect of that statement, and the checked local is not written.
 fn statement_uses(
     code: &MethodCode,
+    protection: &[Option<ControlId>],
     found: &mut Vec<(StatementId, InlineCheck)>,
     why_slots: &mut [Option<&'static str>],
 ) -> Result<(), ExpressionError> {
@@ -256,12 +258,17 @@ fn statement_uses(
             };
             let mut refuse = |why: &'static str| why_at(why_slots, statement, why);
             let BodyAction::Statement {
-                statement: next, ..
+                operation: consumer,
+                statement: next,
             } = actions[index + 1]
             else {
                 refuse("next_action_is_not_a_statement");
                 continue;
             };
+            if !statement_keeps_protection(code, consumer, protection, protection[node]) {
+                refuse("next_statement_changes_protection");
+                continue;
+            }
             if code.statements[next.0 as usize]
                 .outputs
                 .iter()
@@ -298,6 +305,62 @@ fn statement_uses(
         }
     }
     Ok(())
+}
+
+/// Follow an already selected composition to its printed carrier. This reads
+/// the P7 plan; it does not choose another evaluation position.
+fn statement_keeps_protection(
+    code: &MethodCode,
+    mut operation: OpId,
+    protection: &[Option<ControlId>],
+    context: Option<ControlId>,
+) -> bool {
+    for _ in 0..code.operations.len() {
+        let Some(source) = code.operations.get(operation.0 as usize) else {
+            return false;
+        };
+        if protection.get(source.node.0 as usize).copied() != Some(context) {
+            return false;
+        }
+        if !code.emission.composed_operation(operation) {
+            return true;
+        }
+        let mut uses = code
+            .emission
+            .composed_uses
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.is_some_and(|entry| entry.operation == operation));
+        let Some((index, _)) = uses.next() else {
+            return false;
+        };
+        if uses.next().is_some() {
+            return false;
+        }
+        let Some(origin) = code
+            .expressions
+            .get(index)
+            .and_then(|expression| expression.origin.as_ref())
+        else {
+            return false;
+        };
+        match origin.site {
+            crate::p3::UseSite::Operation {
+                operation: target, ..
+            } => operation = target,
+            crate::p3::UseSite::Terminal { block, .. } => {
+                return code.blocks.iter().enumerate().any(|(node, body)| {
+                    let terminal = match body.completion {
+                        BlockCompletion::Ordinary(terminal)
+                        | BlockCompletion::Syntax { terminal, .. } => Some(terminal),
+                        BlockCompletion::None => None,
+                    };
+                    terminal == Some(block) && protection.get(node).copied() == Some(context)
+                });
+            }
+        }
+    }
+    false
 }
 
 /// The checked value read by the first executed step of this block's single
@@ -411,8 +474,34 @@ fn copy_uses(
 /// terminal. The check is the block's last action, so the terminal follows it
 /// with nothing printed in between; a before-terminal copy, snapshot or selected
 /// arm would move the check past that event and keeps the standalone statement.
+fn protected_contexts(code: &MethodCode) -> Result<Vec<Option<ControlId>>, ExpressionError> {
+    let mut nodes = super::super::build::filled(code.blocks.len(), None)?;
+    let mut work = Vec::new();
+    if let Some(root) = code.root {
+        push(&mut work, (root, None))?;
+    }
+    while let Some((id, context)) = work.pop() {
+        let control = &code.controls[id.0 as usize];
+        if let ControlKind::Block { node } = control.kind {
+            nodes[node.0 as usize] = context;
+        }
+        for (index, &child) in control.children.iter().enumerate() {
+            // A Try protects its body, not its own catch clauses. Nested Try
+            // identities retain the rest of their enclosing scope ancestry.
+            let child_context = if matches!(control.kind, ControlKind::Try { .. }) && index == 0 {
+                Some(id)
+            } else {
+                context
+            };
+            push(&mut work, (child, child_context))?;
+        }
+    }
+    Ok(nodes)
+}
+
 fn terminal_uses(
     code: &MethodCode,
+    protection: &[Option<ControlId>],
     found: &mut Vec<(StatementId, InlineCheck)>,
     why_slots: &mut [Option<&'static str>],
 ) -> Result<(), ExpressionError> {
@@ -435,7 +524,7 @@ fn terminal_uses(
         // block: a plain within-block link with no copy prints nothing between
         // the check and the terminal operand.
         let mut refuse = |why: &'static str| why_at(why_slots, statement, why);
-        let Some(terminal) = terminal_after(code, node)? else {
+        let Some(terminal) = terminal_after(code, protection, node)? else {
             refuse("no_terminal_follows");
             continue;
         };
@@ -489,6 +578,7 @@ fn terminal_uses(
 /// end, or a chain of empty blocks joined by single copy-free within-block links.
 fn terminal_after(
     code: &MethodCode,
+    protection: &[Option<ControlId>],
     mut node: usize,
 ) -> Result<Option<crate::p2::BlockId>, ExpressionError> {
     for _ in 0..code.emission.blocks.len() {
@@ -529,6 +619,9 @@ fn terminal_after(
                     return Ok(None);
                 }
                 let next = from.destination.0 as usize;
+                if protection[node] != protection[next] {
+                    return Ok(None);
+                }
                 if code
                     .emission
                     .blocks

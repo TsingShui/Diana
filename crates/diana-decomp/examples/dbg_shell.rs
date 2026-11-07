@@ -5,6 +5,8 @@
 //!   {"id":1,"cmd":"p0","class":0}
 //!   {"id":2,"cmd":"p1","class":0,"method":0}
 //! Output is one JSON object per line. `--exec` runs commands without a REPL.
+//! `p9-all` with `text_only: true` includes class texts and rendering issues
+//! without retaining source products or spans in the batch response.
 //!
 //! Coordinates: `class` is the `class_def` index of the single bare DEX image
 //! (`DexId(0)`). `method` is the engine-wide `MethodId`, not an index inside the
@@ -551,6 +553,7 @@ impl Shell {
                     .transpose()?,
                 request.get("details").and_then(Value::as_bool) == Some(true),
                 command == "p9-all",
+                request.get("text_only").and_then(Value::as_bool) == Some(true),
             ),
             "p9" | "source" => {
                 let class = class_key(class_id(request)?);
@@ -2019,6 +2022,7 @@ fn assembly_all(
     selected: Option<u32>,
     details: bool,
     rendering: bool,
+    text_only: bool,
 ) -> Result<Value, RequestError> {
     use diana_decomp::p8::{ClassOutcome, MethodDelivery};
     let start = std::time::Instant::now();
@@ -2038,7 +2042,7 @@ fn assembly_all(
     let mut storage_issues = 0u64;
     let mut counts = BTreeMap::new();
     let mut first_failure = None;
-    let mut products = details.then(Vec::new);
+    let mut products = (details || text_only).then(Vec::new);
     for ordinal in 0..selected.map_or(classes, |_| 1) {
         let class = selected.unwrap_or(ordinal);
         let began = std::time::Instant::now();
@@ -2111,7 +2115,12 @@ fn assembly_all(
             }
         }
         if let Some(products) = &mut products {
-            products.push(if rendering {
+            products.push(if rendering && text_only {
+                match &analysis.rendered {
+                    diana_decomp::p9::RenderOutcome::Ready(result) => json!({"class":class,"text":result.text(),"issues":result.issues()}),
+                    diana_decomp::p9::RenderOutcome::Stopped(stop) => json!({"class":class,"text_prefix":stop.text_prefix(),"error":stop.error().to_string(),"issues":stop.issues()}),
+                }
+            } else if rendering {
                 rendering_json(&analysis.rendered, true)
             } else {
                 assembly_json(result, true)

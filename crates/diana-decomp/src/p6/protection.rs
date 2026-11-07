@@ -391,6 +391,7 @@ pub(super) fn plan(
                 }
             }
         }
+        let normal_follow = s.common_follow(&follows);
         let handler_follows = outer
             .map(|scope| normal_follow_roots(f, g, scope, &targets))
             .transpose()?;
@@ -399,7 +400,10 @@ pub(super) fn plan(
                 push(&mut follows, target)?;
             }
         }
-        let follow = s.common_follow(&follows);
+        // A returning or throwing handler need not share the body's normal
+        // continuation. Membership and entrance checks below still prove the
+        // entire candidate around this boundary.
+        let follow = s.common_follow(&follows).or(normal_follow);
         let mut excluded = filled(f.nodes.len(), false)?;
         if let Some(scope) = outer {
             for (i, slot) in excluded.iter_mut().enumerate() {

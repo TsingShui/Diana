@@ -73,6 +73,12 @@ original copy steps MUST stay in the product with their source origins; composit
 removes one display action, not the check event, and P7 MUST refuse the composition
 when a phase, route, later operand, second transfer, selected branch or earlier copy
 step would move the check past an event it precedes.
+Cross-portion terminal carriers must also retain the check's enclosing natural
+Try body context at every traversed link. A catch clause is outside its own
+Try body's protection and inherits only enclosing protection. Textually adjacent
+portions on opposite sides of that boundary cannot share the check's display.
+A following statement already composed into another carrier must retain that
+same protection context through its selected composition chain.
 
 P7 omits a check-cast's own text only from P4's published `Redundant` disposition,
 which is a must-fact over every reaching transfer. The omitted statement keeps its

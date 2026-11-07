@@ -447,7 +447,11 @@ when equal memberships would otherwise let a suffix obscure it.
 
 Follow candidates start after guarded nodes. Within a synchronized context,
 handlers that complete through abrupt outlets do not constrain a shared normal
-follow; guarded nodes' own normal successors still constrain it. Exception-closed
+follow; guarded nodes' own normal successors still constrain it. When no follow
+is common to the guarded successors and handlers, their normal-successor follow
+can be used as a candidate boundary. The same body/handler membership, protected
+site and entrance checks must still accept the entire candidate; no handler or
+abrupt exit is removed by this choice. Exception-closed
 body/handler membership and entrance checks retain nested cleanup protection and
 secondary exceptions. A proved `ImpossibleRelease` supplies no executable
 exceptional entrance, but its original completion, chain, edges and snapshots
