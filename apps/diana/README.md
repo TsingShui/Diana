@@ -22,6 +22,7 @@ strings     List original string values
 xref        Find original reference sites
 manifest    Decode the binary AndroidManifest.xml
 classes     List class definitions
+tree        Show the code package hierarchy
 fields      List defined fields
 methods     List defined methods
 help        Print help for a command
@@ -36,7 +37,8 @@ Independent query results arrive in completion order, not a guaranteed sequence.
 |---|---|
 | `entries` | `name, compressed_size, uncompressed_size, compression` |
 | `classes`, `fields`, `methods` | `at` |
-| `strings` | `at, value, entry` |
+| `tree` | Package hierarchy and subtree definition counts; optional class leaves |
+| `strings` | `at, value` |
 | `xref` | `entry, context, match, use` |
 | `manifest` | XML, or JSON with `entry, status, xml, warnings` |
 | `get-class`, `get-method` | P9 Java-like text, or JSON schema 3 |
@@ -52,6 +54,34 @@ CPU count, capped by the number of roots. Workers claim roots dynamically, with
 larger query roots started first. Logical headers within a root retain their own
 identities. `get-class --jobs` instead sets Engine's
 method worker count; its default is one. Explicit job counts must be positive.
+
+## Package tree
+
+```sh
+diana tree app.apk
+diana tree app.apk --prefix com.example -L 2
+diana tree classes.dex --classes --format json -o tree.json
+```
+
+`tree` consumes the ordinary class query, without reading method bodies.
+`--prefix` selects an exact root package in dotted or slash-separated form;
+matching respects package boundaries. Without it, `.` represents the input root,
+including classes in the default package. An unmatched root has zero definitions.
+
+`-L/--level` selects a positive package depth relative to that root.
+`--classes` includes classes in visible packages; class leaves do not consume
+package depth. Counts include descendant definitions beyond the visible depth.
+Equal class names in different DEX entries remain separate leaves, each with a
+canonical `get-class` locator. Dollar signs remain part of the original class name.
+
+Text and JSON present the same selected hierarchy. JSON schema 1 contains
+`complete`, `issue` and `tree`: `tree.root` indexes the flat `tree.packages`
+arena. Each package carries `parent`, `children`, its display `name`, original
+`name_units`, subtree `class_count`, and optional `classes`. Leaves carry
+`name`, `at` and original `descriptor_units`. Child indexes avoid recursive
+input-derived nesting. A scan failure retains recovered nodes, marks the tree
+incomplete in both formats, and exits nonzero. Package/class siblings are not
+alphabetically sorted. File output uses the ordinary atomic publisher.
 
 ## Original identity and selection
 
@@ -129,8 +159,11 @@ The old schema 2, Java/Mixed status projections, whole-class method-text slicing
 
 Query text is UTF-8 TSV with the column header. Display fields escape backslash,
 tab, CR, LF and NUL; isolated surrogates remain escaped instead of being replaced.
-Query JSON uses `{schema_version: 1, command, items}`. `entries` reads the ZIP
-central directory only; it does not open or decompress DEX payloads.
+Query JSON uses `{schema_version, command, items}`. `strings` uses schema 2 with
+`at` and `value`; the former `entry` name column is removed. Its locator retains
+the exact physical-entry identity. Other table queries remain schema 1.
+`entries` reads the ZIP central directory only; it does not open or decompress
+DEX payloads.
 
 `manifest` uses XML or JSON with `schema_version, command, entry, status, xml,
 warnings`. Recoverable AXML gaps remain XML comments, JSON warnings and stderr

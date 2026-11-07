@@ -20,4 +20,5 @@ pub mod query;
 pub mod request;
 mod runner;
 pub mod selector;
+pub mod tree;
 pub mod xref;

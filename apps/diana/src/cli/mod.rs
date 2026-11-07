@@ -9,6 +9,7 @@ mod extract_cli;
 mod get;
 mod output;
 mod table;
+mod tree;
 mod xref;
 
 use std::path::PathBuf;
@@ -79,6 +80,8 @@ enum Command {
         /// Write the result to this file instead of stdout
         output: Option<PathBuf>,
     },
+    /// Show the code package hierarchy from original class definitions
+    Tree(tree::TreeArgs),
     /// List defined fields
     #[command(
         long_about = "Column: at. Only class_data definitions; --class selects the defining class exactly and --filter is a literal substring."
@@ -127,7 +130,7 @@ enum Command {
     },
     /// List original string values
     #[command(
-        long_about = "Columns: at, value, entry. string_ids order with the complete UTF-16 value; a code reference site is found with xref."
+        long_about = "Columns: at, value. string_ids order with the complete UTF-16 value; a code reference site is found with xref."
     )]
     Strings {
         /// Input file (APK, ZIP or bare DEX)
@@ -269,6 +272,7 @@ enum KindArg {
 pub fn run() -> std::process::ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
+        Command::Tree(args) => tree::run(args),
         Command::Entries {
             input,
             format,
@@ -599,7 +603,7 @@ fn query_command(
     let query = Query::new(&scope, plan).map_err(|error| Failure::query(error, 1))?;
     let images = query.images().to_vec();
     let columns: &[&str] = match kind {
-        QueryKind::Strings => &["at", "value", "entry"],
+        QueryKind::Strings => &["at", "value"],
         _ => &["at"],
     };
     let command = match kind {
@@ -624,7 +628,7 @@ fn query_command(
 }
 
 /// One analysis row as the columns this command publishes.
-fn query_row<'a>(row: &'a Row<'a>, images: &'a [ImageInfo]) -> Result<QueryRow<'a>, QueryError> {
+fn query_row<'a>(row: &'a Row<'a>, images: &[ImageInfo]) -> Result<QueryRow<'a>, QueryError> {
     let image_index = match row {
         Row::Class(row) => row.image.0,
         Row::Method(row) => row.image.0,
@@ -643,7 +647,6 @@ fn query_row<'a>(row: &'a Row<'a>, images: &'a [ImageInfo]) -> Result<QueryRow<'
                 descriptor: row.descriptor,
             },
             value: None,
-            entry: None,
         },
         Row::Method(row) => QueryRow {
             at: Locator::Method {
@@ -657,7 +660,6 @@ fn query_row<'a>(row: &'a Row<'a>, images: &'a [ImageInfo]) -> Result<QueryRow<'
                 returns: row.prototype.returns,
             },
             value: None,
-            entry: None,
         },
         Row::Field(row) => QueryRow {
             at: Locator::Field {
@@ -670,7 +672,6 @@ fn query_row<'a>(row: &'a Row<'a>, images: &'a [ImageInfo]) -> Result<QueryRow<'
                 field_type: row.field_type,
             },
             value: None,
-            entry: None,
         },
         Row::String(row) => QueryRow {
             at: Locator::String {
@@ -679,7 +680,6 @@ fn query_row<'a>(row: &'a Row<'a>, images: &'a [ImageInfo]) -> Result<QueryRow<'
                 string: row.string.0,
             },
             value: Some(row.value),
-            entry: Some(image.label.as_str()),
         },
         Row::Entry(_) => return Err(QueryError::WorkerLost),
     })

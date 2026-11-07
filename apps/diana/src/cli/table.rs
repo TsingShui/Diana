@@ -27,7 +27,6 @@ use diana_decomp::input::DexString;
 pub(super) struct QueryRow<'a> {
     pub at: Locator<'a>,
     pub value: Option<DexString<'a>>,
-    pub entry: Option<&'a str>,
 }
 
 /// Everything the canonical `at` locator is made of, kept decoded.
@@ -213,12 +212,6 @@ fn write_column(
             Some(value) => Ok(at::write_value(out, mode, value)?),
             None => Ok(()),
         },
-        "entry" => {
-            if let Some(entry) = row.entry {
-                at::write_text(out, mode, entry);
-            }
-            Ok(())
-        }
         _ => Ok(()),
     }?;
     if quoted {
@@ -460,8 +453,11 @@ impl<'w> ChunkSink<'w> {
                 self.writer.write_all(b"\n")
             }
             Format::Json => {
-                self.writer
-                    .write_all(b"{\"schema_version\":1,\"command\":")?;
+                write!(
+                    self.writer,
+                    "{{\"schema_version\":{},\"command\":",
+                    schema_version(command),
+                )?;
                 serde_json::to_writer(&mut *self.writer, command)?;
                 self.writer.write_all(b",\"")?;
                 self.writer.write_all(self.items_key.as_bytes())?;
@@ -504,6 +500,15 @@ impl<'w> ChunkSink<'w> {
     }
 }
 
+/// Strings schema 2 removes the redundant entry-name column. Other table
+/// commands retain their existing schemas.
+fn schema_version(command: &str) -> u8 {
+    match command {
+        "strings" => 2,
+        _ => 1,
+    }
+}
+
 /// Publishes already formatted columns with the given header.
 pub(super) fn publish_rows(
     rows: &[Vec<String>],
@@ -539,7 +544,7 @@ pub(super) fn publish_rows(
                 })
                 .collect();
             serde_json::json!({
-                "schema_version": 1,
+                "schema_version": schema_version(command),
                 "command": command,
                 "items": items,
             })
