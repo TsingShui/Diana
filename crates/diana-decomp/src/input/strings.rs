@@ -64,6 +64,56 @@ impl<'a> DexString<'a> {
         std::str::from_utf8(self.bytes()).ok()
     }
 
+    /// A Unicode text projection for scalar-only consumers such as regex matching.
+    /// The existing UTF-8 view stays borrowed. Otherwise the shared MUTF-8 decoder
+    /// supplies UTF-16 units: valid surrogate pairs combine, and unpaired surrogates
+    /// become U+FFFD in this projection only. Original payload/units remain intact.
+    pub fn utf8_lossy(&self) -> Result<std::borrow::Cow<'a, str>, InputError> {
+        if let Some(text) = self.utf8() {
+            return Ok(std::borrow::Cow::Borrowed(text));
+        }
+        let mut reader = self.reader()?;
+        let mut pending = None;
+        let mut text = String::new();
+        text.try_reserve_exact(self.bytes().len())
+            .map_err(|_| InputError::Allocation {
+                offset_byte: self.start_byte,
+            })?;
+        loop {
+            let unit = match pending.take() {
+                Some(unit) => unit,
+                None => match reader.next()? {
+                    Some(unit) => unit,
+                    None => break,
+                },
+            };
+            let scalar = if (0xd800..0xdc00).contains(&unit) {
+                match reader.next()? {
+                    Some(low) if (0xdc00..0xe000).contains(&low) => {
+                        0x10000 + ((u32::from(unit) - 0xd800) << 10) + u32::from(low) - 0xdc00
+                    }
+                    other => {
+                        pending = other;
+                        u32::from(char::REPLACEMENT_CHARACTER)
+                    }
+                }
+            } else {
+                u32::from(unit)
+            };
+            let character = char::from_u32(scalar).unwrap_or(char::REPLACEMENT_CHARACTER);
+            // Each append is reserved before writing; malformed one-byte sequences
+            // can expand to three UTF-8 replacement bytes.
+            if text.capacity() - text.len() < character.len_utf8() {
+                text.try_reserve(character.len_utf8())
+                    .map_err(|_| InputError::Allocation {
+                        offset_byte: self.start_byte,
+                    })?;
+            }
+            text.push(character);
+        }
+        Ok(std::borrow::Cow::Owned(text))
+    }
+
     /// Reads one `string_data_item`: its declared unit count and the byte payload
     /// up to the terminator.
     ///

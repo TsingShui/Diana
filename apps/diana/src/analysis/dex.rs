@@ -1,6 +1,7 @@
 use diana_decomp::input::{ClassView, DexString, FieldStorage, ProgramIndex};
 use diana_decomp::{ClassDefId, FieldId, MethodId, StringId};
 
+use super::filter::TextFilter;
 use super::images::LogicalDex;
 use super::query::{QueryError, Row};
 
@@ -167,7 +168,7 @@ pub(super) fn classes(
     index: &ProgramIndex<'_>,
     image: ImageIndex,
     logical: LogicalDex,
-    filter: Option<&[u16]>,
+    filter: Option<&TextFilter>,
     relation: &ClassFilter,
     emit: &mut dyn FnMut(Row) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
@@ -187,7 +188,7 @@ pub(super) fn classes(
             // A filter is the only consumer that needs UTF-16 units, so the common
             // unfiltered index pays no per-class allocation.
             if let Some(needle) = filter
-                && !contains(&class.descriptor.units()?, needle)
+                && !needle.matches(class.descriptor)?
             {
                 return Ok(());
             }
@@ -215,7 +216,7 @@ pub(super) fn methods<'a>(
     image: ImageIndex,
     logical: LogicalDex,
     class_filter: Option<&[u16]>,
-    filter: Option<&[u16]>,
+    filter: Option<&TextFilter>,
     emit: &mut dyn FnMut(Row) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
     let mut matching_names = Vec::new();
@@ -266,7 +267,7 @@ pub(super) fn methods<'a>(
                 if let Some(matched) = *slot {
                     return Ok(matched);
                 }
-                let matched = name.contains_ignore_case(needle)?;
+                let matched = needle.matches(name)?;
                 *slot = Some(matched);
                 Ok(matched)
             };
@@ -308,7 +309,7 @@ pub(super) fn fields(
     image: ImageIndex,
     logical: LogicalDex,
     class_filter: Option<&[u16]>,
-    filter: Option<&[u16]>,
+    filter: Option<&TextFilter>,
     emit: &mut dyn FnMut(Row) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
     let mut failure: Option<QueryError> = None;
@@ -332,7 +333,7 @@ pub(super) fn fields(
             class.visit_fields(|field| {
                 let declaration = field.declaration?;
                 if let Some(needle) = filter
-                    && !declaration.name.contains_ignore_case(needle)?
+                    && !needle.matches(declaration.name)?
                 {
                     return Ok(());
                 }
@@ -360,14 +361,14 @@ pub(super) fn strings(
     index: &ProgramIndex<'_>,
     image: ImageIndex,
     logical: LogicalDex,
-    filter: Option<&[u16]>,
+    filter: Option<&TextFilter>,
     emit: &mut dyn FnMut(Row) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
     for ordinal in 0..index.string_ids_len() {
         let string = StringId(ordinal);
         let value = index.string(string)?;
         if let Some(needle) = filter
-            && !value.contains_ignore_case(needle)?
+            && !needle.matches(value)?
         {
             continue;
         }

@@ -32,6 +32,12 @@ Case-insensitive substring matching compares decoded UTF-16 units by lowercase
 iterator equality; surrogate units compare as units. An all-ASCII payload and
 needle use byte candidates. Other values use the same replacement decoder,
 without allocating a UTF-16 vector or changing to whole-string case folding.
+Scalar-only consumers can request a Unicode text projection. The existing UTF-8
+view remains borrowed when available. Other payloads use the shared decoder;
+valid surrogate pairs combine and unpaired surrogates become U+FFFD only in that
+projection. Owned text growth is fallible, and original payload/unit facts remain
+available unchanged. Application regex selection uses this projection; literal
+selection retains the per-unit rules above.
 Declaration syntax checks (name and descriptor shape) are separate from this and
 still reject an unusable declaration.
 

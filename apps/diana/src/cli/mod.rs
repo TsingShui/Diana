@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 use crate::analysis::dex::{ClassFilter, ClassKind};
+use crate::analysis::filter::{CaseSensitivity, TextFilter};
 use crate::analysis::input::InputOptions;
 use crate::analysis::manifest;
 use crate::analysis::query::{ImageInfo, Query, QueryError, QueryKind, QueryPlan, Row};
@@ -56,8 +57,11 @@ enum Command {
         /// Input file (APK, ZIP or bare DEX)
         input: PathBuf,
         #[arg(long)]
-        /// Case-insensitive literal over the semantic name/descriptor
+        /// Literal over the class descriptor; use --regex for a pattern
         filter: Option<String>,
+        #[arg(long, requires = "filter")]
+        /// Interpret --filter as a Rust regular expression
+        regex: bool,
         #[arg(long)]
         /// Only definitions whose own superclass is this class
         extends: Option<String>,
@@ -84,14 +88,17 @@ enum Command {
     Tree(tree::TreeArgs),
     /// List defined fields
     #[command(
-        long_about = "Column: at. Only class_data definitions; --class selects the defining class exactly and --filter is a literal substring."
+        long_about = "Column: at. Only class_data definitions; --class selects the defining class exactly and --filter is literal unless --regex is set."
     )]
     Fields {
         /// Input file (APK, ZIP or bare DEX)
         input: PathBuf,
         #[arg(long)]
-        /// Case-insensitive literal over the semantic name/descriptor
+        /// Case-insensitive literal over the name/value; use --regex for a pattern
         filter: Option<String>,
+        #[arg(long, requires = "filter")]
+        /// Interpret --filter as a Rust regular expression
+        regex: bool,
         #[arg(long)]
         /// Exact defining class (descriptor or dotted name)
         class: Option<String>,
@@ -113,8 +120,11 @@ enum Command {
         /// Input file (APK, ZIP or bare DEX)
         input: PathBuf,
         #[arg(long)]
-        /// Case-insensitive literal over the semantic name/descriptor
+        /// Case-insensitive literal over the name/value; use --regex for a pattern
         filter: Option<String>,
+        #[arg(long, requires = "filter")]
+        /// Interpret --filter as a Rust regular expression
+        regex: bool,
         #[arg(long)]
         /// Exact defining class (descriptor or dotted name)
         class: Option<String>,
@@ -136,8 +146,11 @@ enum Command {
         /// Input file (APK, ZIP or bare DEX)
         input: PathBuf,
         #[arg(long)]
-        /// Case-insensitive literal over the semantic name/descriptor
+        /// Case-insensitive literal over the name/value; use --regex for a pattern
         filter: Option<String>,
+        #[arg(long, requires = "filter")]
+        /// Interpret --filter as a Rust regular expression
+        regex: bool,
         #[arg(long)]
         /// Workers for independent DEX images (default: available CPUs)
         jobs: Option<usize>,
@@ -350,6 +363,7 @@ pub fn run() -> std::process::ExitCode {
         Command::Classes {
             input,
             filter,
+            regex,
             extends,
             implements,
             subinterface,
@@ -362,6 +376,7 @@ pub fn run() -> std::process::ExitCode {
             QueryKind::Classes,
             QueryArgs {
                 filter,
+                regex,
                 class: None,
                 jobs,
                 class_filter: ClassFilter {
@@ -380,6 +395,7 @@ pub fn run() -> std::process::ExitCode {
         Command::Fields {
             input,
             filter,
+            regex,
             class,
             jobs,
             format,
@@ -389,6 +405,7 @@ pub fn run() -> std::process::ExitCode {
             QueryKind::Fields,
             QueryArgs {
                 filter,
+                regex,
                 class,
                 jobs,
                 class_filter: ClassFilter::default(),
@@ -399,6 +416,7 @@ pub fn run() -> std::process::ExitCode {
         Command::Methods {
             input,
             filter,
+            regex,
             class,
             jobs,
             format,
@@ -408,6 +426,7 @@ pub fn run() -> std::process::ExitCode {
             QueryKind::Methods,
             QueryArgs {
                 filter,
+                regex,
                 class,
                 jobs,
                 class_filter: ClassFilter::default(),
@@ -418,6 +437,7 @@ pub fn run() -> std::process::ExitCode {
         Command::Strings {
             input,
             filter,
+            regex,
             jobs,
             format,
             output,
@@ -426,6 +446,7 @@ pub fn run() -> std::process::ExitCode {
             QueryKind::Strings,
             QueryArgs {
                 filter,
+                regex,
                 class: None,
                 jobs,
                 class_filter: ClassFilter::default(),
@@ -556,6 +577,7 @@ fn manifest_command(
 
 struct QueryArgs {
     filter: Option<String>,
+    regex: bool,
     class: Option<String>,
     jobs: Option<usize>,
     class_filter: ClassFilter,
@@ -578,6 +600,30 @@ fn query_command(
     format: Format,
     output: Option<&std::path::Path>,
 ) -> Result<(), Failure> {
+    let case = if matches!(kind, QueryKind::Classes | QueryKind::Entries) {
+        CaseSensitivity::Sensitive
+    } else {
+        CaseSensitivity::Insensitive
+    };
+    let filter = args
+        .filter
+        .as_deref()
+        .map(|pattern| {
+            if args.regex {
+                TextFilter::regex(pattern, case)
+            } else {
+                TextFilter::literal(pattern, case)
+            }
+        })
+        .transpose()
+        .map_err(|error| Failure {
+            code: if error.kind() == diana_decomp::FailureKind::Unsupported {
+                2
+            } else {
+                1
+            },
+            message: error.to_string(),
+        })?;
     let scope = RequestScope::open(input, &options()).map_err(Failure::input)?;
     let jobs = match args.jobs {
         Some(0) => {
@@ -591,10 +637,7 @@ fn query_command(
     };
     let plan = QueryPlan {
         kind,
-        filter: args
-            .filter
-            .as_deref()
-            .map(|text| text.encode_utf16().collect()),
+        filter,
         class: args.class.as_deref().map(selector_units),
         class_filter: args.class_filter,
 

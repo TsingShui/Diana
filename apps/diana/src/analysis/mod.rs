@@ -13,6 +13,7 @@ pub mod axml;
 pub mod decompile;
 pub mod dex;
 pub mod extract;
+pub mod filter;
 pub mod images;
 pub mod input;
 pub mod manifest;

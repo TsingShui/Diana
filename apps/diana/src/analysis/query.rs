@@ -4,8 +4,9 @@ use diana_decomp::{FailureKind, RequestError};
 use super::apk::DexRoot;
 use super::archive::EntryRecord;
 use super::dex::{
-    self, ClassFilter, ClassKind, ClassRow, FieldRow, ImageIndex, MethodRow, StringRow, contains,
+    self, ClassFilter, ClassKind, ClassRow, FieldRow, ImageIndex, MethodRow, StringRow,
 };
+use super::filter::TextFilter;
 use super::images::LogicalDex;
 use super::input::{EntryIndex, InputError};
 use super::request::RequestScope;
@@ -92,8 +93,8 @@ const CHUNK_BYTES: usize = 1 << 20;
 #[derive(Clone, Debug)]
 pub struct QueryPlan {
     pub kind: QueryKind,
-    /// Literal UTF-16 substring over the primary column text.
-    pub filter: Option<Vec<u16>>,
+    /// Compiled predicate over the primary semantic name/descriptor/value.
+    pub filter: Option<TextFilter>,
     /// Exact class descriptor restricting methods/fields to one definition.
     pub class: Option<Vec<u16>>,
     /// Direct hierarchy relations restricting `classes`.
@@ -106,7 +107,7 @@ pub struct Query<'a> {
     roots: Vec<DexRoot<'a>>,
     images: Vec<ImageInfo>,
     kind: QueryKind,
-    filter: Option<Vec<u16>>,
+    filter: Option<TextFilter>,
     class: Option<Vec<u16>>,
     class_filter: super::dex::ClassFilter,
     jobs: usize,
@@ -176,7 +177,7 @@ impl<'a> Query<'a> {
                     method: entry.method(),
                 };
                 if let Some(needle) = &self.filter
-                    && !contains(&row.name.encode_utf16().collect::<Vec<_>>(), needle)
+                    && !needle.matches_text(&row.name)?
                 {
                     continue;
                 }
@@ -199,12 +200,14 @@ impl<'a> Query<'a> {
         super::runner::run(
             self.roots.len(),
             self.jobs,
-            Vec::new,
-            |scratch: &mut Vec<u8>, task, emit| {
+            || (Vec::new(), self.filter.as_ref().map(TextFilter::for_worker)),
+            |(scratch, worker_filter): &mut (Vec<u8>, Option<std::borrow::Cow<'_, TextFilter>>),
+             task,
+             emit| {
                 let ordinal = work[task];
                 let root = &self.roots[ordinal];
                 let image = ImageIndex(ordinal);
-                let filter = self.filter.as_deref();
+                let filter = worker_filter.as_deref();
                 let class = self.class.as_deref();
                 let mut chunk = Vec::new();
                 {
@@ -285,7 +288,7 @@ fn strings_from_prefix(
     root: &DexRoot<'_>,
     scratch: &mut Vec<u8>,
     image: ImageIndex,
-    filter: Option<&[u16]>,
+    filter: Option<&TextFilter>,
     emit: &mut dyn FnMut(Row<'_>) -> Result<(), QueryError>,
 ) -> Result<bool, QueryError> {
     let mut reader = root.prefix_reader(scratch)?;
@@ -305,7 +308,7 @@ fn strings_from_prefix(
             prefix::PrefixStrings::Ready(values) => {
                 values.visit(|string, value| {
                     if let Some(needle) = filter
-                        && !value.contains_ignore_case(needle)?
+                        && !needle.matches(value)?
                     {
                         return Ok(());
                     }
@@ -332,7 +335,7 @@ fn classes_from_prefix(
     root: &DexRoot<'_>,
     scratch: &mut Vec<u8>,
     image: ImageIndex,
-    filter: Option<&[u16]>,
+    filter: Option<&TextFilter>,
     relation: &ClassFilter,
     emit: &mut dyn FnMut(Row<'_>) -> Result<(), QueryError>,
 ) -> Result<bool, QueryError> {
@@ -364,7 +367,7 @@ fn classes_from_prefix(
             PrefixClasses::Ready(classes) => {
                 for class in classes {
                     if let Some(needle) = filter
-                        && !contains(&class.descriptor.units()?, needle)
+                        && !needle.matches(class.descriptor)?
                     {
                         continue;
                     }

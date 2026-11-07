@@ -49,6 +49,29 @@ and `--kind`. Hierarchy filters inspect direct original superclass/interface
 edges. `fields` and `methods` accept `--class` as a descriptor or dotted name,
 and `--filter` as a case-insensitive literal name substring.
 
+Add `--regex` to interpret `--filter` as a Rust regular expression:
+
+```sh
+diana methods app.apk --filter '^on(Create|Resume)$' --regex
+diana fields app.apk --filter '^(s?instance)$' --regex
+diana strings app.apk --filter 'https?://' --regex --format json
+diana classes app.apk --filter '^Lcom/example/' --regex
+```
+
+Without `--regex`, metacharacters remain literal and matching keeps the existing
+UTF-16 rules. Classes match their original descriptors case-sensitively; methods
+and fields match names, and strings match values, case-insensitively by default.
+Regex follows those case defaults; inline flags such as `(?i)` and `(?-i)` can
+change them. Patterns search within the semantic text, not locators or printed
+escape sequences; use `^` and `$` for whole-value matching.
+
+Regex uses the existing UTF-8 view where available. Other MUTF-8 values are decoded
+to Unicode text, combining surrogate pairs and replacing unpaired surrogates with
+U+FFFD for matching only. Published original values and identities do not change.
+Rust regex syntax supports groups, alternatives, repetition and Unicode classes,
+but not look-around or backreferences. Patterns compile before input scanning;
+invalid syntax exits 2 without publishing output. `--regex` requires `--filter`.
+
 Query `--jobs` bounds concurrent physical DEX roots; its default is the available
 CPU count, capped by the number of roots. Workers claim roots dynamically, with
 larger query roots started first. Logical headers within a root retain their own
