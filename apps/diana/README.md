@@ -19,7 +19,7 @@ get-method  Decompile one method
 entries     List physical archive entries
 extract     Extract one physical entry
 strings     List original string values
-xref        Find original reference sites
+xref        Find original reference sites and direct hierarchy relations
 manifest    Decode the binary AndroidManifest.xml
 classes     List class definitions
 tree        Show the code package hierarchy
@@ -32,7 +32,9 @@ Commands accept `--format text|json` and `-o <file>`. Extraction always writes
 the requested payload to `-o`, with no stdout result. Index queries return every
 match. `xref` defaults to `--limit 50` with an explicit warning when limited;
 `--no-limit` returns every reference. An empty match is a normal empty result.
-Independent query results arrive in completion order, not a guaranteed sequence.
+Fuzzy searches rank matches across all input images before presentation. Fuzzy
+is the default for filtered searches and xref; unfiltered lists and the other
+matching modes retain completion order.
 
 | Command | Presentation |
 |---|---|
@@ -47,8 +49,32 @@ Independent query results arrive in completion order, not a guaranteed sequence.
 
 `classes` supports `--filter`, `--extends`, `--implements`, `--subinterface`
 and `--kind`. Hierarchy filters inspect direct original superclass/interface
-edges. `fields` and `methods` accept `--class` as a descriptor or dotted name,
-and `--filter` as a case-insensitive literal name substring.
+edges. `fields` and `methods` accept `--class` as an exact descriptor or dotted name.
+
+`classes`, `methods`, `fields`, `strings` and `xref` share four matching modes:
+
+| Mode | Selection |
+|---|---|
+| Default, or `--fuzzy` | Case-insensitive ordered subsequence through `nucleo-matcher` |
+| `--substring` | Case-insensitive contiguous substring |
+| `--regex` | Case-insensitive Rust regular expression |
+| `--exact` | Complete, case-sensitive UTF-16 value equality |
+
+Mode switches are mutually exclusive. List commands require `--filter` when a
+mode switch is supplied. Classes match descriptors, methods/fields match names,
+and strings match values. Substring and fuzzy modes treat metacharacters and
+spaces literally; no fzf operator syntax is parsed. Fuzzy relevance is the nucleo
+score divided by candidate scalar length, favoring compact matches. Ties use raw
+score, shorter candidate length, then original coordinates.
+Other modes retain arrival order. Ranking retains every match, so weak matches
+remain available after the stronger results. Fuzzy presentation waits for the
+complete scan and buffers the matched rows with fallible allocation.
+
+```sh
+diana methods app.apk --filter oncrt
+diana methods app.apk --filter onCreate --substring
+diana methods app.apk --filter onCreate --exact
+```
 
 Add `--regex` to interpret `--filter` as a Rust regular expression:
 
@@ -59,19 +85,19 @@ diana strings app.apk --filter 'https?://' --regex --format json
 diana classes app.apk --filter '^Lcom/example/' --regex
 ```
 
-Without `--regex`, metacharacters remain literal and matching keeps the existing
-UTF-16 rules. Classes match their original descriptors case-sensitively; methods
-and fields match names, and strings match values, case-insensitively by default.
-Regex follows those case defaults; inline flags such as `(?i)` and `(?-i)` can
-change them. Patterns search within the semantic text, not locators or printed
+Regex also defaults to case-insensitive matching; inline `(?-i)` enables case
+sensitivity. Regex patterns search within semantic text, not locators or printed
 escape sequences; use `^` and `$` for whole-value matching.
 
-Regex uses the existing UTF-8 view where available. Other MUTF-8 values are decoded
-to Unicode text, combining surrogate pairs and replacing unpaired surrogates with
-U+FFFD for matching only. Published original values and identities do not change.
+Fuzzy and regex matching use the existing UTF-8 view where available. Other
+MUTF-8 values are decoded to Unicode text, combining surrogate pairs and replacing
+unpaired surrogates with U+FFFD for matching only. Fuzzy matching uses simple
+Unicode case folding without accent normalization. Published original values and
+identities do not change. Matcher representation limits produce explicit errors,
+never truncated input or an empty successful result.
 Rust regex syntax supports groups, alternatives, repetition and Unicode classes,
 but not look-around or backreferences. Patterns compile before input scanning;
-invalid syntax exits 2 without publishing output. `--regex` requires `--filter`.
+invalid syntax exits 2 without publishing output.
 
 Query `--jobs` bounds concurrent physical DEX roots; its default is the available
 CPU count, capped by the number of roots. Workers claim roots dynamically, with
@@ -121,9 +147,9 @@ string-at = e<entry>:l<logical>:s<string-id>
 for an ordinary DEX, potentially several ordinals for DEX 041. `c`, `m`, `f`
 and `s` are original table indices. Engine's request-local `DexId` is a separate
 coordinate; it is not a physical entry or logical-header ordinal. A canonical
-locator opens only its physical root. Unrelated DEX payloads are not decompressed
-or required to be readable. An unqualified class name searches all roots to
-establish a unique match.
+locator used by `get-class` or `get-method` opens only its physical root.
+Unrelated DEX payloads are not decompressed or required to be readable for that
+retrieval. An unqualified class name searches all roots to establish a unique match.
 
 `get-class` accepts a class-at, descriptor or dotted class name. `get-method`
 accepts a method-at or the complete `Lowner;->name(args)return` reference.
@@ -140,20 +166,62 @@ Class retrieval analyzes all known original members. Single-method retrieval
 calls `Engine::analyze_method` with the selected ID and uses its standalone
 P8/P9 display; it does not analyze siblings or slice text out of a class result.
 
-`xref` takes `string`, `type`, `method` or `field` and the corresponding
-exact value/reference. Its `--class` restricts the referencing class by
-descriptor or dotted name. It searches operand sites without requiring the target
-to have a definition in the input. A reader failure is reported, not silently
-counted as an empty method. The `context` locator already retains the physical
-entry and logical DEX identity, so xref rows omit the redundant entry-name column.
+`xref` takes `string`, `type`, `method`, `field`, `impl` or `extend`. Names and
+values use the same default ranked fuzzy matching and explicit mode switches as
+`--filter`. Literal type/owner patterns accept dotted fragments, converted to
+slash-separated descriptor fragments. Method/field patterns accept a bare name,
+`owner->name`, or `owner->` for every member of matching owners. In substring and
+fuzzy modes, an optional method prototype or field type is exact.
+
+In regex mode, owner and member expressions are compiled separately; owner regexes
+operate on original descriptors without dotted-name conversion. Parentheses and
+colons in member regexes are syntax, not signature separators. Use exact mode or
+a coordinate to constrain the complete member signature.
+
+```sh
+diana xref app.apk method oncrt
+diana xref app.apk method 'example.Activity->onCreate' --substring
+diana xref app.apk method '^on(Create|Resume)$' --regex
+diana xref app.apk field 'example.Config->'
+diana xref app.apk impl Runnable
+diana xref app.apk extend activity
+diana xref app.apk string 'https://example.invalid/' --exact
+```
+
+A canonical coordinate resolves and validates the selected original value, then
+searches all input images by that complete value. Class coordinates select type
+or hierarchy targets; method/field coordinates also check definition membership
+and the complete original signature. String coordinates select an exact pool
+value. `--exact` accepts an exact string, complete type or complete member reference
+without requiring a target definition. For `string --exact`, coordinate-shaped
+text is a literal string value.
+
+`impl` reads direct interface-list references, including interfaces extending
+interfaces. Its `use` is `implements` or `extends-interface`. `extend` reads the
+direct superclass reference and reports `extends`. Hierarchy rows carry class
+coordinates, with no invented method or code-unit offset. These queries read
+only checked declarations, not method bodies; they do not compute a transitive
+hierarchy. Method queries support `--transitive N` for that many upstream caller
+levels, with exact method identities after the initial query match. Fuzzy caller
+expansion carries the best originating relevance for each frontier method;
+owner/name scores are combined when both are fuzzy. Coordinate targets remain
+exact and unranked regardless of a fuzzy switch.
+
+`--class` restricts the referencing class by exact descriptor or dotted name.
+Operand queries do not require the target to have a definition in the input.
+A reader failure is reported, not silently counted as an empty method. The
+`context` locator retains physical entry and logical DEX identity, so xref rows
+omit the redundant entry-name column.
 
 `xref` defaults to `--limit 50`. The limit applies to the total displayed rows
 across all requested caller depths, identically in text and JSON. `--limit N`
 overrides it; `--no-limit` removes the limit. The existing `--limit 0` spelling
 also returns all rows. Explicit `--limit` and `--no-limit` cannot be combined.
-Selection follows result arrival order, not a relevance ranking. All requested
-depths are scanned before display selection, so hidden rows still contribute to
-the caller frontier and total count.
+Fuzzy queries rank all matches by length-normalized relevance, raw score and
+candidate length, then caller depth and original coordinates, before applying
+the display limit. Other modes select
+rows in arrival order. All requested depths are scanned before display selection,
+so hidden rows still contribute to the caller frontier and total count.
 
 Only when the total exceeds the current limit, text starts with:
 

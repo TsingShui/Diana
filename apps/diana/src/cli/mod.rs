@@ -7,6 +7,7 @@
 
 mod extract_cli;
 mod get;
+mod matching;
 mod output;
 mod table;
 mod tree;
@@ -17,11 +18,11 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 use crate::analysis::dex::{ClassFilter, ClassKind};
-use crate::analysis::filter::{CaseSensitivity, TextFilter};
 use crate::analysis::input::InputOptions;
 use crate::analysis::manifest;
 use crate::analysis::query::{ImageInfo, Query, QueryError, QueryKind, QueryPlan, Row};
 use crate::analysis::request::RequestScope;
+use matching::MatchArgs;
 
 use output::{Failure, Format, publish};
 use table::{Locator, QueryRow, RowFormat};
@@ -57,11 +58,10 @@ enum Command {
         /// Input file (APK, ZIP or bare DEX)
         input: PathBuf,
         #[arg(long)]
-        /// Literal over the class descriptor; use --regex for a pattern
+        /// Ranked case-insensitive fuzzy matching over the descriptor; select another matching mode explicitly
         filter: Option<String>,
-        #[arg(long, requires = "filter")]
-        /// Interpret --filter as a Rust regular expression
-        regex: bool,
+        #[command(flatten)]
+        matching: MatchArgs,
         #[arg(long)]
         /// Only definitions whose own superclass is this class
         extends: Option<String>,
@@ -88,17 +88,16 @@ enum Command {
     Tree(tree::TreeArgs),
     /// List defined fields
     #[command(
-        long_about = "Column: at. Only class_data definitions; --class selects the defining class exactly and --filter is literal unless --regex is set."
+        long_about = "Column: at. Only class_data definitions; --class selects the defining class exactly and --filter defaults to ranked case-insensitive fuzzy matching."
     )]
     Fields {
         /// Input file (APK, ZIP or bare DEX)
         input: PathBuf,
         #[arg(long)]
-        /// Case-insensitive literal over the name/value; use --regex for a pattern
+        /// Ranked case-insensitive fuzzy matching over the name; select another matching mode explicitly
         filter: Option<String>,
-        #[arg(long, requires = "filter")]
-        /// Interpret --filter as a Rust regular expression
-        regex: bool,
+        #[command(flatten)]
+        matching: MatchArgs,
         #[arg(long)]
         /// Exact defining class (descriptor or dotted name)
         class: Option<String>,
@@ -120,11 +119,10 @@ enum Command {
         /// Input file (APK, ZIP or bare DEX)
         input: PathBuf,
         #[arg(long)]
-        /// Case-insensitive literal over the name/value; use --regex for a pattern
+        /// Ranked case-insensitive fuzzy matching over the name; select another matching mode explicitly
         filter: Option<String>,
-        #[arg(long, requires = "filter")]
-        /// Interpret --filter as a Rust regular expression
-        regex: bool,
+        #[command(flatten)]
+        matching: MatchArgs,
         #[arg(long)]
         /// Exact defining class (descriptor or dotted name)
         class: Option<String>,
@@ -140,17 +138,16 @@ enum Command {
     },
     /// List original string values
     #[command(
-        long_about = "Columns: at, value. string_ids order with the complete UTF-16 value; a code reference site is found with xref."
+        long_about = "Columns: at, value. Original string_ids values; filtered searches default to ranked fuzzy matching. Find code reference sites with xref."
     )]
     Strings {
         /// Input file (APK, ZIP or bare DEX)
         input: PathBuf,
         #[arg(long)]
-        /// Case-insensitive literal over the name/value; use --regex for a pattern
+        /// Ranked case-insensitive fuzzy matching over the value; select another matching mode explicitly
         filter: Option<String>,
-        #[arg(long, requires = "filter")]
-        /// Interpret --filter as a Rust regular expression
-        regex: bool,
+        #[command(flatten)]
+        matching: MatchArgs,
         #[arg(long)]
         /// Workers for independent DEX images (default: available CPUs)
         jobs: Option<usize>,
@@ -224,20 +221,21 @@ enum Command {
         /// Exit non-zero when the delivered document is partial
         strict: bool,
     },
-    /// Find original reference sites
+    /// Find original reference sites and direct hierarchy relations
     #[command(
-        long_about = "Columns: context, match, use. Kinds: string, type, method, field; each real operand site is one row."
+        long_about = "Columns: context, match, use. Kinds: string, type, method, field, impl, extend. Defaults to ranked case-insensitive fuzzy matching; --substring, --regex and --exact select other modes. Canonical coordinates always select exact values."
     )]
     Xref {
         /// Input file (APK, ZIP or bare DEX)
         input: PathBuf,
-        /// string | type | method | field
-        /// Target kind: string, type, method or field
+        /// Target kind: string, type, method, field, impl or extend
         kind: String,
-        /// Exact target value or complete reference
+        /// Name/descriptor pattern, owner->member, or canonical coordinate
         target: String,
+        #[command(flatten)]
+        matching: MatchArgs,
         #[arg(long)]
-        /// Exact defining class (descriptor or dotted name)
+        /// Exact referencing class (descriptor or dotted name)
         class: Option<String>,
         #[arg(long)]
         /// Workers for independent DEX images (default: available CPUs)
@@ -340,6 +338,7 @@ pub fn run() -> std::process::ExitCode {
             input,
             kind,
             target,
+            matching,
             class,
             jobs,
             transitive,
@@ -351,6 +350,7 @@ pub fn run() -> std::process::ExitCode {
             &input,
             &kind,
             &target,
+            matching.mode(),
             class.as_deref(),
             transitive.unwrap_or(0),
             if no_limit { 0 } else { limit },
@@ -367,7 +367,7 @@ pub fn run() -> std::process::ExitCode {
         Command::Classes {
             input,
             filter,
-            regex,
+            matching,
             extends,
             implements,
             subinterface,
@@ -380,7 +380,7 @@ pub fn run() -> std::process::ExitCode {
             QueryKind::Classes,
             QueryArgs {
                 filter,
-                regex,
+                matching,
                 class: None,
                 jobs,
                 class_filter: ClassFilter {
@@ -399,7 +399,7 @@ pub fn run() -> std::process::ExitCode {
         Command::Fields {
             input,
             filter,
-            regex,
+            matching,
             class,
             jobs,
             format,
@@ -409,7 +409,7 @@ pub fn run() -> std::process::ExitCode {
             QueryKind::Fields,
             QueryArgs {
                 filter,
-                regex,
+                matching,
                 class,
                 jobs,
                 class_filter: ClassFilter::default(),
@@ -420,7 +420,7 @@ pub fn run() -> std::process::ExitCode {
         Command::Methods {
             input,
             filter,
-            regex,
+            matching,
             class,
             jobs,
             format,
@@ -430,7 +430,7 @@ pub fn run() -> std::process::ExitCode {
             QueryKind::Methods,
             QueryArgs {
                 filter,
-                regex,
+                matching,
                 class,
                 jobs,
                 class_filter: ClassFilter::default(),
@@ -441,7 +441,7 @@ pub fn run() -> std::process::ExitCode {
         Command::Strings {
             input,
             filter,
-            regex,
+            matching,
             jobs,
             format,
             output,
@@ -450,7 +450,7 @@ pub fn run() -> std::process::ExitCode {
             QueryKind::Strings,
             QueryArgs {
                 filter,
-                regex,
+                matching,
                 class: None,
                 jobs,
                 class_filter: ClassFilter::default(),
@@ -580,7 +580,7 @@ fn manifest_command(
 
 struct QueryArgs {
     filter: Option<String>,
-    regex: bool,
+    matching: MatchArgs,
     class: Option<String>,
     jobs: Option<usize>,
     class_filter: ClassFilter,
@@ -603,30 +603,7 @@ fn query_command(
     format: Format,
     output: Option<&std::path::Path>,
 ) -> Result<(), Failure> {
-    let case = if matches!(kind, QueryKind::Classes | QueryKind::Entries) {
-        CaseSensitivity::Sensitive
-    } else {
-        CaseSensitivity::Insensitive
-    };
-    let filter = args
-        .filter
-        .as_deref()
-        .map(|pattern| {
-            if args.regex {
-                TextFilter::regex(pattern, case)
-            } else {
-                TextFilter::literal(pattern, case)
-            }
-        })
-        .transpose()
-        .map_err(|error| Failure {
-            code: if error.kind() == diana_decomp::FailureKind::Unsupported {
-                2
-            } else {
-                1
-            },
-            message: error.to_string(),
-        })?;
+    let filter = args.matching.filter(args.filter.as_deref())?;
     let scope = RequestScope::open(input, &options()).map_err(Failure::input)?;
     let jobs = match args.jobs {
         Some(0) => {

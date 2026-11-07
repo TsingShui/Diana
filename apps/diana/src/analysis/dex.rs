@@ -1,7 +1,7 @@
 use diana_decomp::input::{ClassView, DexString, FieldStorage, ProgramIndex};
 use diana_decomp::{ClassDefId, FieldId, MethodId, StringId};
 
-use super::filter::TextFilter;
+use super::filter::{self, FilterMatch, Relevance, TextFilter};
 use super::images::LogicalDex;
 use super::query::{QueryError, Row};
 
@@ -16,6 +16,7 @@ pub struct ImageIndex(pub usize);
 /// and materializing its UTF-16 units per row was one allocation per class.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClassRow<'a> {
+    pub relevance: Option<Relevance>,
     pub image: ImageIndex,
     pub logical: LogicalDex,
     pub class_def: ClassDefId,
@@ -27,6 +28,7 @@ pub struct ClassRow<'a> {
 /// reference is never a definition.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MethodRow<'a> {
+    pub relevance: Option<Relevance>,
     pub image: ImageIndex,
     pub logical: LogicalDex,
     pub class_def: ClassDefId,
@@ -51,6 +53,7 @@ pub struct PrototypeRow<'a> {
 /// One field actually defined by `class_data`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FieldRow<'a> {
+    pub relevance: Option<Relevance>,
     pub image: ImageIndex,
     pub logical: LogicalDex,
     pub class_def: ClassDefId,
@@ -68,6 +71,7 @@ pub struct FieldRow<'a> {
 /// The value stays borrowed so a full string pool costs no per-row allocation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StringRow<'a> {
+    pub relevance: Option<Relevance>,
     pub image: ImageIndex,
     pub logical: LogicalDex,
     pub string: StringId,
@@ -185,17 +189,14 @@ pub(super) fn classes(
         };
         index.visit_classes(|class_def, class| {
             let class = class?;
-            // A filter is the only consumer that needs UTF-16 units, so the common
-            // unfiltered index pays no per-class allocation.
-            if let Some(needle) = filter
-                && !needle.matches(class.descriptor)?
-            {
+            let Some(selected) = filter::select(filter, class.descriptor)? else {
                 return Ok(());
-            }
+            };
             if !relation.admits(&class)? {
                 return Ok(());
             }
             forward(Row::Class(ClassRow {
+                relevance: selected.relevance,
                 image,
                 logical,
                 class_def,
@@ -219,15 +220,8 @@ pub(super) fn methods<'a>(
     filter: Option<&TextFilter>,
     emit: &mut dyn FnMut(Row) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
-    let mut matching_names = Vec::new();
-    if filter.is_some() {
-        let count = usize::try_from(index.string_ids_len())
-            .map_err(|_| super::input::InputError::PlatformCapacity)?;
-        matching_names
-            .try_reserve_exact(count)
-            .map_err(super::input::InputError::Allocation)?;
-        matching_names.resize(count, None);
-    }
+    let matching_names: std::cell::RefCell<std::collections::HashMap<&[u8], Option<FilterMatch>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
     let mut failure: Option<QueryError> = None;
     let result = {
         let mut forward = |row: Row| -> Result<(), diana_decomp::input::InputError> {
@@ -246,30 +240,27 @@ pub(super) fn methods<'a>(
             {
                 return Ok(());
             }
-            // A name appears once in the pool but can be used by many definitions.
-            // Cache only completed matches, scoped to this logical index/request.
-            let mut accept = |id: StringId,
+            // Cache completed selection products by the checked original name.
+            // Both callbacks share this logical-index-local cache, so accepting
+            // a name never loses its relevance before prototype acquisition.
+            let mut accept = |_id: StringId,
                               name: DexString<'a>|
              -> Result<bool, diana_decomp::input::InputError> {
                 let Some(needle) = filter else {
                     return Ok(true);
                 };
-                let id = usize::try_from(id.0).map_err(|_| {
-                    diana_decomp::input::InputError::PlatformCapacity {
-                        offset_byte: diana_decomp::ByteOffset(0),
-                    }
-                })?;
-                let slot = matching_names.get_mut(id).ok_or(
-                    diana_decomp::input::InputError::InternalInvariant(
-                        "method name cache lost an original string ID",
-                    ),
-                )?;
-                if let Some(matched) = *slot {
-                    return Ok(matched);
+                if let Some(selected) = matching_names.borrow().get(name.bytes()) {
+                    return Ok(selected.is_some());
                 }
-                let matched = needle.matches(name)?;
-                *slot = Some(matched);
-                Ok(matched)
+                let selected = needle.evaluate(name)?;
+                let mut cache = matching_names.borrow_mut();
+                cache
+                    .try_reserve(1)
+                    .map_err(|_| diana_decomp::input::InputError::Allocation {
+                        offset_byte: diana_decomp::ByteOffset(0),
+                    })?;
+                cache.insert(name.bytes(), selected);
+                Ok(selected.is_some())
             };
             let name_filter = filter.map(|_| {
                 &mut accept
@@ -282,7 +273,20 @@ pub(super) fn methods<'a>(
             class.visit_method_headers(name_filter, |method_idx, access_flags, declaration| {
                 let declaration = declaration?;
                 let parameters = declaration.prototype.parameter_descriptors();
+                let selected = if filter.is_some() {
+                    matching_names
+                        .borrow()
+                        .get(declaration.name.bytes())
+                        .copied()
+                        .flatten()
+                        .ok_or(diana_decomp::input::InputError::InternalInvariant(
+                            "accepted method name lost its match product",
+                        ))?
+                } else {
+                    FilterMatch::default()
+                };
                 forward(Row::Method(MethodRow {
+                    relevance: selected.relevance,
                     image,
                     logical,
                     class_def,
@@ -332,12 +336,11 @@ pub(super) fn fields(
             }
             class.visit_fields(|field| {
                 let declaration = field.declaration?;
-                if let Some(needle) = filter
-                    && !needle.matches(declaration.name)?
-                {
+                let Some(selected) = filter::select(filter, declaration.name)? else {
                     return Ok(());
-                }
+                };
                 forward(Row::Field(FieldRow {
+                    relevance: selected.relevance,
                     image,
                     logical,
                     class_def,
@@ -367,12 +370,11 @@ pub(super) fn strings(
     for ordinal in 0..index.string_ids_len() {
         let string = StringId(ordinal);
         let value = index.string(string)?;
-        if let Some(needle) = filter
-            && !needle.matches(value)?
-        {
+        let Some(selected) = filter::select(filter, value)? else {
             continue;
-        }
+        };
         emit(Row::String(StringRow {
+            relevance: selected.relevance,
             image,
             logical,
             string,

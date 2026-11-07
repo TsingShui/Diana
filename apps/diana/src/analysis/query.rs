@@ -6,7 +6,9 @@ use super::archive::EntryRecord;
 use super::dex::{
     self, ClassFilter, ClassKind, ClassRow, FieldRow, ImageIndex, MethodRow, StringRow,
 };
-use super::filter::TextFilter;
+use super::filter::{self, Relevance, TextFilter};
+
+mod ranking;
 use super::images::LogicalDex;
 use super::input::{EntryIndex, InputError};
 use super::request::RequestScope;
@@ -14,6 +16,7 @@ use super::request::RequestScope;
 /// One physical ZIP record, listed in directory order.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EntryRow {
+    pub relevance: Option<Relevance>,
     pub entry: EntryIndex,
     pub name: String,
     pub compressed_size: u64,
@@ -34,6 +37,29 @@ pub enum Row<'a> {
     Method(MethodRow<'a>),
     Field(FieldRow<'a>),
     String(StringRow<'a>),
+}
+
+impl Row<'_> {
+    pub fn relevance(&self) -> Option<Relevance> {
+        match self {
+            Self::Entry(row) => row.relevance,
+            Self::Class(row) => row.relevance,
+            Self::Method(row) => row.relevance,
+            Self::Field(row) => row.relevance,
+            Self::String(row) => row.relevance,
+        }
+    }
+
+    // Presentation tie-break only; original locators remain separate typed facts.
+    fn order_key(&self) -> (usize, u32, u32, u32) {
+        match self {
+            Self::Entry(row) => (row.entry.0, 0, 0, 0),
+            Self::Class(row) => (row.image.0, row.logical.0, row.class_def.0, 0),
+            Self::Method(row) => (row.image.0, row.logical.0, row.class_def.0, row.method.0),
+            Self::Field(row) => (row.image.0, row.logical.0, row.class_def.0, row.field.0),
+            Self::String(row) => (row.image.0, row.logical.0, 0, row.string.0),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -102,7 +128,8 @@ pub struct QueryPlan {
     pub jobs: usize,
 }
 
-/// Prepared query: root images are resolved once, rows stream in completion order.
+/// Prepared query: one scan delivers completion-order chunks, or globally ranked
+/// fuzzy products. Root images and original row identities are resolved once.
 pub struct Query<'a> {
     roots: Vec<DexRoot<'a>>,
     images: Vec<ImageInfo>,
@@ -155,7 +182,8 @@ impl<'a> Query<'a> {
     /// Streams every matching row, formatted inside the scan.
     ///
     /// `render` runs on the workers: a root's rows are formatted into one chunk and
-    /// only the chunk crosses to `sink`, which runs on the caller's thread. Splitting
+    /// only formatted products cross to `sink`, on the caller's thread. Fuzzy
+    /// products retain relevance and are globally ranked before delivery. Splitting
     /// the two is what keeps formatting off the single consumer thread; `first` says
     /// whether the row is the first of its chunk, which is where the JSON separator
     /// goes.
@@ -164,30 +192,32 @@ impl<'a> Query<'a> {
         R: for<'r> Fn(Row<'r>, &mut Vec<u8>, bool) -> Result<(), QueryError> + Sync,
         S: FnMut(Vec<u8>) -> Result<(), QueryError>,
     {
+        let ranked = self.filter.as_ref().is_some_and(TextFilter::is_fuzzy);
+        let mut collected = ranking::Collected::default();
         if self.kind == QueryKind::Entries {
             let entries = self.entries.ok_or(QueryError::NotArchive)?;
-            let mut chunk = Vec::new();
-            let mut first = true;
+            let mut buffer = ranking::Buffer::new(ranked);
             for entry in entries {
-                let row = EntryRow {
+                let mut row = EntryRow {
+                    relevance: None,
                     entry: entry.index(),
                     name: entry.name().to_owned(),
                     compressed_size: entry.compressed_size().0,
                     uncompressed_size: entry.uncompressed_size().0,
                     method: entry.method(),
                 };
-                if let Some(needle) = &self.filter
-                    && !needle.matches_text(&row.name)?
-                {
-                    continue;
+                if let Some(needle) = &self.filter {
+                    let Some(selected) = needle.evaluate_text(&row.name)? else {
+                        continue;
+                    };
+                    row.relevance = selected.relevance;
                 }
-                render(Row::Entry(row), &mut chunk, first)?;
-                first = false;
+                buffer.push(Row::Entry(row), render, &mut |batch| {
+                    collected.accept(batch, sink)
+                })?;
             }
-            if !chunk.is_empty() {
-                sink(chunk)?;
-            }
-            return Ok(());
+            buffer.flush(&mut |batch| collected.accept(batch, sink))?;
+            return collected.finish(sink);
         }
         let kind = self.kind;
         let mut work = Vec::new();
@@ -197,7 +227,7 @@ impl<'a> Query<'a> {
         // Start expensive roots first without moving them: ImageIndex remains the
         // original directory ordinal, independent of worker assignment/completion.
         work.sort_unstable_by_key(|&ordinal| std::cmp::Reverse(self.roots[ordinal].declared_len()));
-        super::runner::run(
+        let scanned = super::runner::run(
             self.roots.len(),
             self.jobs,
             || (Vec::new(), self.filter.as_ref().map(TextFilter::for_worker)),
@@ -209,28 +239,10 @@ impl<'a> Query<'a> {
                 let image = ImageIndex(ordinal);
                 let filter = worker_filter.as_deref();
                 let class = self.class.as_deref();
-                let mut chunk = Vec::new();
+                let mut buffer = ranking::Buffer::new(ranked);
                 {
-                    let mut first = true;
-                    let mut push = |row: Row<'_>| -> Result<(), QueryError> {
-                        render(row, &mut chunk, first)?;
-                        first = false;
-                        // Bound how much formatted text a worker holds: a large DEX
-                        // can produce tens of MiB for one root, and the consumer
-                        // writes a chunk as soon as it arrives. Splitting mid-root is
-                        // safe because a chunk boundary always carries the JSON
-                        // separator, and rows inside a chunk carry their own.
-                        if chunk.len() >= CHUNK_BYTES {
-                            emit(std::mem::replace(
-                                &mut chunk,
-                                Vec::with_capacity(CHUNK_BYTES),
-                            ))?;
-                            // The next row starts a new chunk: it carries no
-                            // separator of its own, the sink adds one.
-                            first = true;
-                        }
-                        Ok(())
-                    };
+                    let mut push =
+                        |row: Row<'_>| -> Result<(), QueryError> { buffer.push(row, render, emit) };
                     // Declaration-only queries can finish before the code/map tail.
                     // No rows are emitted until the prefix contains the complete list.
                     let from_prefix = match kind {
@@ -273,13 +285,13 @@ impl<'a> Query<'a> {
                         )?;
                     }
                 }
-                if !chunk.is_empty() {
-                    emit(chunk)?;
-                }
-                Ok(())
+                buffer.flush(emit)
             },
-            sink,
-        )
+            &mut |batch| collected.accept(batch, sink),
+        );
+        let delivered = collected.finish(sink);
+        scanned?;
+        delivered
     }
 }
 
@@ -307,12 +319,11 @@ fn strings_from_prefix(
             prefix::PrefixStrings::Whole => return Ok(false),
             prefix::PrefixStrings::Ready(values) => {
                 values.visit(|string, value| {
-                    if let Some(needle) = filter
-                        && !needle.matches(value)?
-                    {
+                    let Some(selected) = filter::select(filter, value)? else {
                         return Ok(());
-                    }
+                    };
                     emit(Row::String(StringRow {
+                        relevance: selected.relevance,
                         image,
                         logical: LogicalDex(0),
                         string,
@@ -366,11 +377,9 @@ fn classes_from_prefix(
             PrefixClasses::Whole => return Ok(false),
             PrefixClasses::Ready(classes) => {
                 for class in classes {
-                    if let Some(needle) = filter
-                        && !needle.matches(class.descriptor)?
-                    {
+                    let Some(selected) = filter::select(filter, class.descriptor)? else {
                         continue;
-                    }
+                    };
                     if let Some(kind) = relation.kind {
                         let interface = class.access_flags & 0x200 != 0;
                         if interface != (kind == ClassKind::Interface) {
@@ -378,6 +387,7 @@ fn classes_from_prefix(
                         }
                     }
                     emit(Row::Class(ClassRow {
+                        relevance: selected.relevance,
                         image,
                         logical: LogicalDex(0),
                         class_def: class.class_def,

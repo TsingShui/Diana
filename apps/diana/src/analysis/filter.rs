@@ -1,5 +1,6 @@
-//! Compiled query predicates. Literal matching keeps the existing UTF-16 rules;
-//! regex matching consumes a Unicode text view without changing delivered facts.
+//! Shared query predicates. Fuzzy selection retains nucleo relevance for ranked
+//! presentation; exact/literal matching retains UTF-16 identities and regex uses
+//! a scalar text projection.
 
 use std::borrow::Cow;
 
@@ -7,14 +8,42 @@ use diana_decomp::FailureKind;
 use diana_decomp::input::{DexString, InputError};
 use regex::{Regex, RegexBuilder};
 
+mod fuzzy;
+mod relevance;
+pub use fuzzy::FuzzyPattern;
+pub use relevance::{FilterMatch, Relevance, best_first};
+
+/// Absence of a filter selects a row without assigning relevance.
+pub(super) fn select(
+    filter: Option<&TextFilter>,
+    value: DexString<'_>,
+) -> Result<Option<FilterMatch>, InputError> {
+    match filter {
+        Some(filter) => filter.evaluate(value),
+        None => Ok(Some(FilterMatch::default())),
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum CaseSensitivity {
     Sensitive,
     Insensitive,
 }
 
+/// Matching semantics shared by list filters and reference targets.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MatchMode {
+    Substring,
+    #[default]
+    Fuzzy,
+    Regex,
+    Exact,
+}
+
 #[derive(Clone, Debug)]
 pub enum TextFilter {
+    Exact(Vec<u16>),
+    Fuzzy(FuzzyPattern),
     Literal {
         needle: Vec<u16>,
         case: CaseSensitivity,
@@ -28,6 +57,10 @@ pub enum FilterError {
     Regex(#[from] regex::Error),
     #[error("filter allocation failed: {0}")]
     Allocation(#[source] std::collections::TryReserveError),
+    #[error(
+        "fuzzy pattern exceeds nucleo-matcher's u16 score representation; use an exact query or a shorter pattern"
+    )]
+    MatcherCapacity,
 }
 
 impl FilterError {
@@ -36,12 +69,32 @@ impl FilterError {
             Self::Regex(regex::Error::CompiledTooBig(_)) | Self::Allocation(_) => {
                 FailureKind::ResourceExhausted
             }
-            Self::Regex(_) => FailureKind::Unsupported,
+            Self::Regex(_) | Self::MatcherCapacity => FailureKind::Unsupported,
         }
     }
 }
 
 impl TextFilter {
+    pub fn compile(pattern: &str, mode: MatchMode) -> Result<Self, FilterError> {
+        match mode {
+            MatchMode::Substring => Self::literal(pattern, CaseSensitivity::Insensitive),
+            MatchMode::Fuzzy => Self::fuzzy(pattern),
+            MatchMode::Regex => Self::regex(pattern, CaseSensitivity::Insensitive),
+            MatchMode::Exact => {
+                let mut units = Vec::new();
+                units
+                    .try_reserve_exact(pattern.len())
+                    .map_err(FilterError::Allocation)?;
+                units.extend(pattern.encode_utf16());
+                Ok(Self::Exact(units))
+            }
+        }
+    }
+
+    pub fn fuzzy(pattern: &str) -> Result<Self, FilterError> {
+        Ok(Self::Fuzzy(FuzzyPattern::new(pattern)?))
+    }
+
     pub fn literal(pattern: &str, case: CaseSensitivity) -> Result<Self, FilterError> {
         let mut needle = Vec::new();
         needle
@@ -62,42 +115,69 @@ impl TextFilter {
     }
 
     /// Regex clones share the compiled program but have worker-local search caches.
-    /// Literals stay borrowed, preserving their allocation-free query path.
+    /// Literal and fuzzy predicates stay borrowed; regex caches are worker-local.
     pub(super) fn for_worker(&self) -> Cow<'_, Self> {
         match self {
-            Self::Literal { .. } => Cow::Borrowed(self),
+            Self::Exact(_) | Self::Fuzzy(_) | Self::Literal { .. } => Cow::Borrowed(self),
             Self::Regex(_) => Cow::Owned(self.clone()),
         }
     }
 
-    pub(super) fn matches(&self, value: DexString<'_>) -> Result<bool, InputError> {
-        match self {
+    pub fn is_fuzzy(&self) -> bool {
+        matches!(self, Self::Fuzzy(_))
+    }
+
+    pub(super) fn evaluate(&self, value: DexString<'_>) -> Result<Option<FilterMatch>, InputError> {
+        let matched = match self {
+            Self::Exact(units) => value.matches(units)?,
+            Self::Fuzzy(pattern) => {
+                return Ok(pattern.evaluate(value)?.map(|relevance| FilterMatch {
+                    relevance: Some(relevance),
+                }));
+            }
             Self::Literal {
                 needle,
                 case: CaseSensitivity::Insensitive,
-            } => value.contains_ignore_case(needle),
+            } => value.contains_ignore_case(needle)?,
             Self::Literal {
                 needle,
                 case: CaseSensitivity::Sensitive,
-            } => Ok(super::dex::contains(&value.units()?, needle)),
-            Self::Regex(regex) => Ok(regex.is_match(&value.utf8_lossy()?)),
-        }
+            } => super::dex::contains(&value.units()?, needle),
+            Self::Regex(regex) => regex.is_match(&value.utf8_lossy()?),
+        };
+        Ok(matched.then_some(FilterMatch::default()))
     }
 
-    pub(super) fn matches_text(&self, value: &str) -> Result<bool, super::input::InputError> {
+    pub(super) fn evaluate_text(
+        &self,
+        value: &str,
+    ) -> Result<Option<FilterMatch>, super::query::QueryError> {
         let (needle, case) = match self {
-            Self::Regex(regex) => return Ok(regex.is_match(value)),
+            Self::Exact(units) => {
+                return Ok(value
+                    .encode_utf16()
+                    .eq(units.iter().copied())
+                    .then_some(FilterMatch::default()));
+            }
+            Self::Fuzzy(pattern) => {
+                return Ok(pattern.evaluate_text(value)?.map(|relevance| FilterMatch {
+                    relevance: Some(relevance),
+                }));
+            }
+            Self::Regex(regex) => {
+                return Ok(regex.is_match(value).then_some(FilterMatch::default()));
+            }
             Self::Literal { needle, case } => (needle, case),
         };
         if needle.is_empty() {
-            return Ok(true);
+            return Ok(Some(FilterMatch::default()));
         }
         let mut units = Vec::new();
         units
             .try_reserve_exact(value.len())
             .map_err(super::input::InputError::Allocation)?;
         units.extend(value.encode_utf16());
-        Ok(match case {
+        let matched = match case {
             CaseSensitivity::Sensitive => super::dex::contains(&units, needle),
             CaseSensitivity::Insensitive => units.windows(needle.len()).any(|window| {
                 window.iter().zip(needle).all(|(&left, &right)| {
@@ -113,6 +193,7 @@ impl TextFilter {
                         }
                 })
             }),
-        })
+        };
+        Ok(matched.then_some(FilterMatch::default()))
     }
 }

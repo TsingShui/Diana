@@ -239,6 +239,25 @@ pub fn field(text: &str) -> Result<FieldSelector, SelectorError> {
     })
 }
 
+/// Recognizes and parses a canonical coordinate without treating ordinary names
+/// or values as coordinates. Malformed coordinate-shaped text is a usage error.
+pub fn locator(text: &str) -> Result<Option<Selector>, SelectorError> {
+    let Some((_, rest)) = at_parts(text)? else {
+        return Ok(None);
+    };
+    let identity = rest.split_once("::").map_or(rest, |(identity, _)| identity);
+    let selector = if identity.starts_with('s') {
+        Selector::String(string(text)?)
+    } else if identity.contains(":m") {
+        Selector::Method(method(text)?)
+    } else if identity.contains(":f") {
+        Selector::Field(field(text)?)
+    } else {
+        Selector::Class(class(text)?)
+    };
+    Ok(Some(selector))
+}
+
 /// Parses `e<entry>:l<logical>:s<string-id>`.
 pub fn string(text: &str) -> Result<StringSelector, SelectorError> {
     let Some(((entry, logical), rest)) = at_parts(text)? else {

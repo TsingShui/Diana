@@ -197,7 +197,11 @@ unchanged artifacts; do not add whole-JDK, dependency-tree or cache scans.
   the engine will borrow input bytes and declaration facts.
 - Preserve raw identity and program instruction/argument/effect/catch/lock/
   initialization order. Independent-result order, generated source or synthetic
-  names are not stable; no output sorting/reordering buffer or pagination.
+  names are not stable. The application MAY buffer and rank fuzzy search results
+  by relevance, including the default mode for filtered searches and xref. Other query modes MUST retain completion order,
+  without output sorting/reordering buffers or pagination. Fuzzy ranking MUST
+  preserve all matches and original identities; xref display limits apply only
+  after ranking and complete caller expansion.
 - Keep backpressure, checked ranges and allocation failure handling. Request
   cancellation callbacks/tokens are not an engine API; the CLI/host owns process
   termination.

@@ -207,13 +207,33 @@ memoizes visited name IDs and uses ASCII byte candidates; its author header
 identifies MG1937.
 
 Diana independently applies name selection inside the shared class-data reader,
-with a per-query name-ID result cache. It neither copies nor links the upstream
+with a per-query checked-name selection cache. It neither copies nor links the upstream
 helpers. Its substring matcher preserves Diana's existing per-UTF-16-unit
 lowercase equality, surrogate handling and replacement decoding rather than
 adopting the reference's whole-string lowercase semantics. Name/identity errors
 remain classified; only selected declarations consume prototype facts.
 Correspondence review compares original locator/value multisets, not only row
 counts. Finite corpus observations do not prove equivalence for every encoding.
+
+### 6.6 Fuzzy query dependency
+
+The operator approved the production dependency
+[`nucleo-matcher` 0.3.1](https://crates.io/crates/nucleo-matcher/0.3.1), licensed
+MPL-2.0 by the Helix project contributors. Its package version is pinned in the
+application manifest and Cargo.lock. Diana calls the library; it does not copy or
+modify its matcher sources. Reviewed package sources include
+`src/lib.rs::{Matcher,Matcher::fuzzy_match}`, `src/chars.rs::to_lower_case`,
+`src/config.rs::Config` and `src/score.rs::Matcher::calculate_score`.
+
+The application supplies pre-folded literal needles, scalar text and private
+per-thread scratch. Normalization and prefix preference are disabled. The adapter
+checks the library's code-point representation and the worst-case score bound
+from its pinned scoring constants before matching, including its long-input greedy
+path. Fuzzy searches retain library scores and rank by score per
+candidate scalar length, rather than using the library score only as a boolean;
+other modes keep completion order. This application normalization differs from
+unmodified fzf/nucleo ranking. Source review establishes these integration
+assumptions, not corpus coverage or independent semantic evidence.
 
 ## 7. Additional one-command references and reading targets
 

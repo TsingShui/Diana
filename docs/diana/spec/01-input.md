@@ -78,8 +78,10 @@ checked name before acquiring a prototype. Identity/name read failures retain th
 classification. Only accepted names require prototype facts; a rejected name does
 not depend on prototype availability. Class-data bounds, original membership and
 cross-group duplicate handling remain shared with the unfiltered traversal. The
-application memoizes completed name matches within one logical index and query;
-it does not cache read failures or share numeric IDs across logical members.
+application memoizes completed selection products by checked original name bytes
+within one logical index and query. The name filter and declaration consumer share
+those products, including fuzzy relevance. The cache does not store read failures
+or share identities across logical members.
 
 ## Method source preparation
 
@@ -247,6 +249,57 @@ string-ID records, length prefixes, terminators or encoded units again.
 A caller MUST fall back to the whole member whenever the view does not answer, and
 MUST NOT shorten a result because a prefix was unavailable. Hierarchy relations
 (superclass/interface lists) are not part of the view; they require the whole member.
+
+## Application query matching
+
+`analysis/filter` owns the shared compiled predicates for list filters and xref.
+Filtered searches and xref default to ranked case-insensitive fuzzy matching
+through `nucleo-matcher`, with simple Unicode case folding, normalization disabled
+and a literal ordered-subsequence pattern. Explicit substring matching consumes
+the reader's UTF-16 units. An absent list filter selects all rows without ranking.
+Fuzzy and regex modes consume scalar text projections; exact matching retains
+case-sensitive complete UTF-16 unit equality. The CLI selects one mutually
+exclusive mode. Projection, case folding and matching MUST NOT change published
+original values, locators or member signatures. Only fuzzy selection
+retains and ranks scores. Other modes retain completion order.
+
+A successful predicate publishes an optional relevance product alongside selection:
+fuzzy matches carry the nucleo score and candidate scalar length, while unranked
+matches remain distinct from non-matches. Owning list readers retain this product
+through name selection and prototype acquisition. The existing query scan formats
+rows once on workers; fuzzy batches retain the score and original coordinate tie
+key while ordinary batches continue streaming. After all images finish, fuzzy rows
+are ordered by descending score per candidate scalar length. Comparison uses
+exact cross multiplication, with a denominator of one for empty-pattern matches.
+Ties use descending raw score, shorter candidate length, then original
+coordinates. Text and JSON consume that same order. Buffer growth is fallible;
+ranking does not introduce a match-count cutoff or another query scan.
+
+Xref combines the owner/name relevance when both predicates are fuzzy. Direct
+hierarchy rows rank the referenced descriptor. Upstream caller expansion uses
+exact method identities while retaining the best originating relevance for each
+frontier method. Fuzzy xref orders all recovered rows by the same normalized
+relevance, raw score and length, then caller depth and original coordinates,
+before selecting the display limit. Hidden
+rows still contribute to caller expansion and exact totals. A coordinate target
+remains an exact, unranked query even when a fuzzy switch is present.
+
+Each thread reuses private matcher scratch; input-sized Unicode buffers reserve
+fallibly. The adapter checks the pinned library's code-point and score
+representations before invoking it. A representation failure is explicit, not a
+truncated value or a non-match. The score bound depends on the pinned library's
+scoring constants and disabled prefix bonus; dependency upgrades require review
+of those assumptions. Source and license notes are in
+[SOURCE_MAP §6.6](../SOURCE_MAP.md#66-fuzzy-query-dependency).
+
+Canonical xref coordinates use the shared checked class/member/string readers
+to validate physical/logical indexes, names, signatures and definition membership.
+Only the selected complete value becomes the reference target; DEX-local numeric
+IDs are not cross-image identities. Subsequent caller levels match exact original
+method identities. Direct superclass/interface queries consume the existing
+checked hierarchy reader and return class-level sites without opening code items
+or invoking method analysis. Read and allocation failures retain classification;
+a missing target definition is not a missing operand or hierarchy reference.
 
 ## Application input safety
 
