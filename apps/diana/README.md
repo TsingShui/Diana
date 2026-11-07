@@ -7,7 +7,7 @@ The binary is `diana` (`diana.exe` on Windows). The `0.0.0` version is an
 unpublished development marker.
 
 The [approved architecture](../../docs/diana/PIPELINE_DESIGN.md) owns product
-boundaries. This package owns input snapshots, APK/ZIP access, selection,
+boundaries. This package owns input mapping, APK/ZIP access, selection,
 command routing and file publication. Decompilation uses only the analyzed input;
 external classpaths, declarations and runtimes are not required.
 
@@ -47,8 +47,10 @@ and `--kind`. Hierarchy filters inspect direct original superclass/interface
 edges. `fields` and `methods` accept `--class` as a descriptor or dotted name,
 and `--filter` as a case-insensitive literal name substring.
 
-Query `--jobs` bounds concurrent physical DEX roots. Logical headers within a
-root retain their own identities. `get-class --jobs` instead sets Engine's
+Query `--jobs` bounds concurrent physical DEX roots; its default is the available
+CPU count, capped by the number of roots. Workers claim roots dynamically, with
+larger query roots started first. Logical headers within a root retain their own
+identities. `get-class --jobs` instead sets Engine's
 method worker count; its default is one. Explicit job counts must be positive.
 
 ## Original identity and selection
@@ -156,7 +158,7 @@ cooperative cancellation callbacks or numeric work/allocation/output quotas.
 | 4 | The selector matches several definitions |
 
 `extract <input> <entry> -o <file>` writes one physical record. Duplicate names
-require `--entry-index`; name and index must agree. Size and CRC validation
+require `--entry-index`; name and index must agree. Size validation
 applies to the original decompressed bytes. Binary XML is decoded by default;
 `--raw` keeps the payload. An existing extraction target needs `--force`.
 Extraction refuses directories, symbolic links and input aliases.

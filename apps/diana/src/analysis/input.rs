@@ -1,4 +1,3 @@
-use std::io::{ErrorKind as IoErrorKind, Read};
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
@@ -16,9 +15,9 @@ pub struct EntryIndex(pub usize);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InputKind {
-    /// The whole leased snapshot is one DEX container.
+    /// The whole leased input is one DEX container.
     BareDex,
-    /// The snapshot is a ZIP archive whose entries are available.
+    /// The leased input is a ZIP archive whose entries are available.
     Archive,
     /// A leased regular file that is neither of the above.
     Opaque,
@@ -36,7 +35,7 @@ pub enum ArchiveProblem {
     NameEncoding,
     /// The requested entry does not exist at that physical index.
     UnknownEntry,
-    /// A stored entry's payload, size or CRC contradicts its record.
+    /// A stored entry's payload or size contradicts its record.
     DamagedEntry,
     /// The entry uses a compression method this module cannot read.
     UnsupportedCompression(u16),
@@ -131,22 +130,42 @@ impl InputIdentity {
     }
 }
 
-/// An owned immutable snapshot of one input and its restricted entry metadata.
+/// The bytes of one leased input.
 ///
-/// The snapshot is complete before the lease exists, so a later truncation or
-/// replacement of the source file does not change it. Dropping the lease releases
-/// only this owned copy; the user's file is never modified or deleted.
+/// A regular file is mapped instead of copied, so a 200 MiB archive costs only
+/// the pages a request actually reads. The empty input has no mapping to make and
+/// keeps an owned empty buffer.
+#[derive(Debug)]
+enum InputBytes {
+    Mapped(memmap2::Mmap),
+    Owned(Vec<u8>),
+}
+
+impl InputBytes {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Mapped(mapped) => mapped,
+            Self::Owned(bytes) => bytes,
+        }
+    }
+}
+
+/// One leased input: its mapped bytes and its restricted entry metadata.
+///
+/// The mapping is read-only and outlives the file descriptor it was made from.
+/// The host owns the file: truncating or rewriting it while a request holds this
+/// lease is outside the supported input contract (see spec/01-input.md).
 #[derive(Debug)]
 pub struct InputLease {
     identity: InputIdentity,
     kind: InputKind,
-    bytes: Vec<u8>,
+    bytes: InputBytes,
     archive: Option<ArchiveDirectory>,
 }
 
 impl BytesSource for InputLease {
     fn bytes(&self) -> &[u8] {
-        &self.bytes
+        self.bytes.as_slice()
     }
 }
 
@@ -158,7 +177,7 @@ impl InputLease {
         self.kind
     }
     pub fn bytes(&self) -> &[u8] {
-        &self.bytes
+        self.bytes.as_slice()
     }
     pub fn archive(&self) -> Option<&ArchiveDirectory> {
         self.archive.as_ref()
@@ -176,8 +195,9 @@ pub struct InputOptions {
 /// Leases one regular file after applying the path and size policy.
 ///
 /// Non-regular files (directories, devices, FIFOs, sockets) are rejected from
-/// metadata before any open, so a FIFO cannot block the request. A file that
-/// changes while it is read yields `Changed` instead of a partial snapshot.
+/// metadata before any open, so a FIFO cannot block the request. The bytes are
+/// mapped, not copied: reading them is left to the request. A file whose length
+/// changes around the open yields `Changed`.
 pub fn open_input(path: &Path, options: &InputOptions) -> Result<InputLease, InputError> {
     let resolved = std::fs::canonicalize(path).map_err(InputError::Io)?;
     if let Some(root) = &options.allowed_root {
@@ -191,18 +211,18 @@ pub fn open_input(path: &Path, options: &InputOptions) -> Result<InputLease, Inp
         return Err(InputError::NotRegularFile(resolved));
     }
     let len = metadata.len();
-    let mut file = std::fs::File::open(&resolved).map_err(InputError::Io)?;
+    let file = std::fs::File::open(&resolved).map_err(InputError::Io)?;
     if file.metadata().map_err(InputError::Io)?.len() != len {
         return Err(InputError::Changed);
     }
-    let bytes = read_snapshot(&mut file, len)?;
+    let bytes = map_input(&file, len)?;
     if file.metadata().map_err(InputError::Io)?.len() != len {
         return Err(InputError::Changed);
     }
-    let kind = classify(&bytes);
+    let kind = classify(bytes.as_slice());
     let archive = match kind {
         InputKind::Archive => {
-            Some(ArchiveDirectory::parse(&bytes).map_err(InputError::MalformedArchive)?)
+            Some(ArchiveDirectory::parse(bytes.as_slice()).map_err(InputError::MalformedArchive)?)
         }
         _ => None,
     };
@@ -217,30 +237,26 @@ pub fn open_input(path: &Path, options: &InputOptions) -> Result<InputLease, Inp
     })
 }
 
-fn read_snapshot(file: &mut impl Read, len: u64) -> Result<Vec<u8>, InputError> {
-    let size = usize::try_from(len).map_err(|_| InputError::PlatformCapacity)?;
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(size)
-        .map_err(InputError::Allocation)?;
-    let mut remaining = size;
-    let mut buffer = [0u8; 64 * 1024];
-    while remaining != 0 {
-        let want = remaining.min(buffer.len());
-        match file.read(&mut buffer[..want]) {
-            Ok(0) => return Err(InputError::Changed),
-            Ok(read) => {
-                bytes.extend_from_slice(&buffer[..read]);
-                remaining -= read;
-            }
-            Err(error) if error.kind() == IoErrorKind::Interrupted => {}
-            Err(error) => return Err(InputError::Io(error)),
-        }
+/// Maps the leased file read-only.
+///
+/// This is the only `unsafe` in the application crate: mapping is an inherently
+/// unsafe operation because the bytes are outside Rust's aliasing model. The
+/// obligations this function relies on are that the mapping is never written and
+/// that the file is not truncated for as long as the lease lives; both belong to
+/// the host and are stated in spec/01-input.md.
+#[allow(unsafe_code)]
+fn map_input(file: &std::fs::File, len: u64) -> Result<InputBytes, InputError> {
+    if len == 0 {
+        return Ok(InputBytes::Owned(Vec::new()));
     }
-    if bytes.len() != size {
+    // SAFETY: a read-only mapping of an open regular file. The mapping is owned by
+    // the returned value, so it cannot outlive the descriptor it was created from,
+    // and no code in this crate ever takes a mutable view of it.
+    let mapped = unsafe { memmap2::MmapOptions::new().map(file) }.map_err(InputError::Io)?;
+    if mapped.len() != usize::try_from(len).map_err(|_| InputError::PlatformCapacity)? {
         return Err(InputError::Changed);
     }
-    Ok(bytes)
+    Ok(InputBytes::Mapped(mapped))
 }
 
 fn classify(bytes: &[u8]) -> InputKind {

@@ -120,10 +120,11 @@ impl<'a> Xref<'a> {
         super::runner::run(
             self.roots.len(),
             self.plan.jobs,
-            |ordinal, emit| {
+            || (),
+            |(), ordinal, emit| {
                 let root = &self.roots[ordinal];
 
-                dex::visit_logical(root.bytes(), |logical, index| {
+                dex::visit_logical(root.bytes()?, |logical, index| {
                     scan_logical(&index, ImageIndex(ordinal), logical, &self.plan, emit)
                 })
             },

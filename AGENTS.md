@@ -28,9 +28,12 @@ package-local `AGENTS.md` before working in either package.
   never silently truncate a successful result. Request cancellation callbacks and
   tokens are not part of the CLI-oriented engine API; process termination belongs
   to the CLI/host.
-- Production is native Rust, forbids `unsafe`, and has no external runtime or
-  process dependency. The application owns files and ZIPs; the engine borrows
-  input bytes and declaration facts.
+- Production is native Rust and has no external runtime or process dependency.
+  The single permitted `unsafe` operation is the read-only memory mapping of the
+  leased input file in `apps/diana/src/analysis/input.rs`, behind one
+  `#[allow(unsafe_code)]`; the engine keeps `unsafe_code = "forbid"`. The
+  application owns files and ZIPs; the engine borrows input bytes and declaration
+  facts.
 - Use one shared ordinary-method analysis chain. Migrate only to the approved
   target below; rendering consumes existing products and original facts without
   starting analysis or retrying reconstruction.

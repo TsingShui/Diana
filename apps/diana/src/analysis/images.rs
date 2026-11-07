@@ -53,7 +53,7 @@ impl<'a> ImageSet<'a> {
         };
         let mut images = Vec::new();
         for (ordinal, root) in roots.iter().enumerate() {
-            let container = DexContainer::open(root.bytes())?;
+            let container = DexContainer::open(root.bytes()?)?;
             for (logical, header) in container.logical_headers()?.into_iter().enumerate() {
                 let dex =
                     DexId(u32::try_from(images.len()).map_err(|_| InputError::PlatformCapacity)?);
@@ -77,12 +77,12 @@ impl<'a> ImageSet<'a> {
     }
 
     /// Original root bytes; offsets remain container-relative for DEX 041.
-    pub fn bytes<'s>(&'s self, image: &ImageRef) -> &'s [u8] {
-        self.roots[image.root].bytes()
+    pub fn bytes<'s>(&'s self, image: &ImageRef) -> Result<&'s [u8], ImageError> {
+        Ok(self.roots[image.root].bytes()?)
     }
 
     pub fn program<'s>(&'s self, image: &ImageRef) -> Result<ProgramIndex<'s>, ImageError> {
-        Ok(DexContainer::open(self.bytes(image))?.program(image.header_offset)?)
+        Ok(DexContainer::open(self.bytes(image)?)?.program(image.header_offset)?)
     }
 }
 

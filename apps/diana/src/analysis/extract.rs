@@ -1,7 +1,7 @@
 //! Physical entry extraction with an optional binary-XML decode and safe publish.
 //!
 //! The output is derived only from the selected physical record: the decompressed
-//! payload is validated for size and CRC before any decode, a binary XML payload is
+//! payload is validated for its declared size before any decode, a binary XML payload is
 //! decoded by default, and the file is published atomically from a private
 //! temporary name in the target directory.
 

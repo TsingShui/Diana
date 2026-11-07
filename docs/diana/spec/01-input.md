@@ -22,8 +22,14 @@ DEX namespaces.
 count, stride and end arithmetic before slicing or reserving memory. Fixed table
 strides and minimum encoded-record sizes are format facts, not numeric quotas.
 LEB values MUST retain their format width/sign constraints; malformed encodings
-MUST NOT become zeros. MUTF-8 retains exact UTF-16 units, including isolated
-surrogates; declaration syntax checks are distinct from readable string display.
+MUST NOT become zeros. A `string_data_item` is read as its declared unit count plus
+the payload up to its terminator; the payload bytes are not decoded or validated on
+read. Decoding happens on demand ([`Units`]) and replaces an illegal sequence with
+U+FFFD instead of failing the item, so a malformed string stays readable and cannot
+make a request that merely names it unavailable. The declared unit count is
+advisory: equality and prefix matching compare decoded units, not that count.
+Declaration syntax checks (name and descriptor shape) are separate from this and
+still reject an unusable declaration.
 
 Original DEX declarations and references are the only symbol facts. Missing target
 class definitions do not erase a readable reference's owner/name/prototype.
@@ -36,6 +42,23 @@ superclass view use that same implementation; no second descriptor or class-reco
 parser is maintained. The view keeps only this logical header's namespace, and
 its local class-location index is initialized on demand. The declaration view
 has no method-analysis or stage-construction interface.
+
+The reader memoizes accepted string spans/counts, type-to-string references,
+descriptor shapes, member-name checks and resolved prototype facts within each
+logical index. These facts depend only on immutable input bytes. Prototype readers
+establish shorty correspondence, parameter descriptors and word counts once;
+member-list rows borrow those descriptors without per-row allocation. Cache storage
+uses fallible reservation bounded by checked table extents. Failed construction is
+not cached as absence, and indexes from different logical members remain separate.
+
+Members are traversed in two forms. The code traversal reads each `code_item` and
+delivers the original instructions for a caller that analyses a body. The header
+traversal delivers the original index, access flags and declaration without reading
+code. Method-only selection reads field record boundaries and identities but does
+not resolve unrelated field declarations; a listing that only publishes members uses it, because reading every body to
+print its header costs more than the listing itself. Neither form is a second
+parser: both walk the same class data with the same per-declaration failure
+classification.
 
 ## Method source preparation
 
@@ -172,14 +195,50 @@ independently re-encodes retained instruction/payload facts and compares origina
 bytes. This evidence does not validate P2 behavior or final Java semantics. P2's
 own translation obligations are in [02-flow](02-flow.md).
 
+## Declaration prefix view
+
+`input::prefix` reads complete class-definition or string-pool lists from a logical
+member prefix. Classes need the header, declaration tables and their descriptor
+items; strings need the string-ID table and every payload it references. It uses the
+same checked reader: `Cursor` range arithmetic, the same `string_data_item` read
+(declared count plus terminator), the same table strides, link-overlap rejection and
+class descriptor shape check as `LocalDeclarations::checked_class`.
+
+The one obligation that differs is the bound of a string item. The whole-member
+reader bounds every item by its `map_list` section; the prefix view bounds it by the
+declared `data` range and the accepted byte length, and therefore reads no map. That
+is a weaker bound, so the view MUST:
+
+- report `Needs(bytes)` instead of a truncated value whenever a table, an item or one
+  of its units is not yet inside the accepted bytes;
+- report `Whole` for DEX 041, whose header chain and map need the whole member;
+- return every requested definition or pool entry in original table order, or none;
+  never publish a prefix of the list;
+- leave classification of a genuinely malformed member to the whole-member read,
+  which is what a caller falls back to.
+
+A caller MUST fall back to the whole member whenever the view does not answer, and
+MUST NOT shorten a result because a prefix was unavailable. Hierarchy relations
+(superclass/interface lists) are not part of the view; they require the whole member.
+
 ## Application input safety
 
 The application owns input snapshots, physical archive identity and decompression.
-ZIP ranges, sizes, supported compression and payload CRC remain checked; extraction
-publishes one selected original entry atomically and MUST NOT rewrite DEX headers
-or expose a partially written successful file. AXML decoding preserves usable
-partial content with explicit diagnostics rather than silently removing records.
-See the [CLI README](../../../apps/diana/README.md) for current selectors,
+Whole-entry DEFLATE uses libdeflater. Prefix DEFLATE uses the operator-approved
+`flate2`/`zlib-rs` streaming reader, bound to one entry and scratch buffer. Growth
+resumes the stream and exposes only its measured output bytes. An insufficient-space
+result from a one-shot codec MUST NOT be treated as an established prefix length.
+A leased regular file is memory-mapped read-only instead of copied, so residency
+follows the pages a request reads. The mapping is the sole `unsafe` operation in
+the workspace, it never outlives the descriptor it was made from, and no code
+takes a mutable view of it. The host MUST NOT truncate or rewrite the file while
+a request holds its lease; that obligation replaces the byte-copy snapshot the
+application previously kept. ZIP ranges, sizes, supported compression and the
+declared payload size remain checked; extraction publishes one selected original
+entry atomically
+and MUST NOT rewrite DEX headers or expose a partially written successful file.
+AXML decoding preserves usable partial content with explicit diagnostics rather
+than silently removing records. See the [CLI README](../../../apps/diana/README.md) for current selectors,
 publication options and output behavior.
 
 All native reads, growth, decompression and publication MUST preserve classified

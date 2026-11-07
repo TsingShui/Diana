@@ -1310,7 +1310,9 @@ dependencies = [
  "clap",
  "diana-decomp",
  "fastrace",
+ "flate2",
  "libdeflater",
+ "memmap2",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -1321,6 +1323,7 @@ name = "diana-decomp"
 version = "0.0.0"
 dependencies = [
  "fastrace",
+ "memchr",
  "rayon",
  "serde",
  "serde_json",

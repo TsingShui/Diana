@@ -1,4 +1,4 @@
-use diana_decomp::input::{ClassView, FieldStorage, ProgramIndex};
+use diana_decomp::input::{ClassView, DexString, FieldStorage, ProgramIndex};
 use diana_decomp::{ClassDefId, FieldId, MethodId, StringId};
 
 use super::images::LogicalDex;
@@ -10,52 +10,67 @@ use super::query::{QueryError, Row};
 pub struct ImageIndex(pub usize);
 
 /// One `class_defs` definition with its original identity.
+///
+/// The descriptor stays borrowed: a class index is hundreds of thousands of rows,
+/// and materializing its UTF-16 units per row was one allocation per class.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ClassRow {
+pub struct ClassRow<'a> {
     pub image: ImageIndex,
     pub logical: LogicalDex,
     pub class_def: ClassDefId,
-    pub descriptor: Vec<u16>,
+    pub descriptor: DexString<'a>,
     pub access_flags: u32,
 }
 
 /// One method actually defined by `class_data`; an external `method_ids`
 /// reference is never a definition.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MethodRow {
+pub struct MethodRow<'a> {
     pub image: ImageIndex,
     pub logical: LogicalDex,
     pub class_def: ClassDefId,
     /// Original owner descriptor, needed for the canonical `at` locator.
-    pub class_descriptor: Vec<u16>,
+    pub class_descriptor: DexString<'a>,
     pub method: MethodId,
-    pub name: Vec<u16>,
-    pub prototype: Vec<u16>,
+    pub name: DexString<'a>,
+    pub prototype: PrototypeRow<'a>,
     pub access_flags: u32,
+}
+
+/// A method's original prototype, kept as the descriptors it is made of.
+///
+/// Parameters borrow the logical index's resolved prototype facts. A referencing
+/// method neither allocates a parameter vector nor resolves the same types again.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PrototypeRow<'a> {
+    pub parameters: &'a [DexString<'a>],
+    pub returns: DexString<'a>,
 }
 
 /// One field actually defined by `class_data`.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FieldRow {
+pub struct FieldRow<'a> {
     pub image: ImageIndex,
     pub logical: LogicalDex,
     pub class_def: ClassDefId,
     /// Original owner descriptor, needed for the canonical `at` locator.
-    pub class_descriptor: Vec<u16>,
+    pub class_descriptor: DexString<'a>,
     pub field: FieldId,
-    pub name: Vec<u16>,
-    pub field_type: Vec<u16>,
+    pub name: DexString<'a>,
+    pub field_type: DexString<'a>,
     pub access_flags: u32,
     pub storage: FieldStorage,
 }
 
 /// One original `string_ids` value, independent of where it is used.
+///
+/// The value stays borrowed so a full string pool costs no per-row allocation.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct StringRow {
+pub struct StringRow<'a> {
     pub image: ImageIndex,
     pub logical: LogicalDex,
     pub string: StringId,
-    pub units: Vec<u16>,
+    pub value: DexString<'a>,
 }
 
 /// Definition kind restriction for `classes`.
@@ -169,9 +184,10 @@ pub(super) fn classes(
         };
         index.visit_classes(|class_def, class| {
             let class = class?;
-            let descriptor = class.descriptor.units()?;
+            // A filter is the only consumer that needs UTF-16 units, so the common
+            // unfiltered index pays no per-class allocation.
             if let Some(needle) = filter
-                && !contains(&descriptor, needle)
+                && !contains(&class.descriptor.units()?, needle)
             {
                 return Ok(());
             }
@@ -182,7 +198,7 @@ pub(super) fn classes(
                 image,
                 logical,
                 class_def,
-                descriptor,
+                descriptor: class.descriptor,
                 access_flags: class.access_flags,
             }))?;
             Ok(())
@@ -220,32 +236,26 @@ pub(super) fn methods(
             {
                 return Ok(());
             }
-            let class_descriptor = class.descriptor.units()?;
-            class.visit_methods(|method| {
-                let declaration = method.declaration?;
-                let name = declaration.name.units()?;
+            class.visit_method_headers(|method_idx, access_flags, declaration| {
+                let declaration = declaration?;
                 if let Some(needle) = filter
-                    && !contains_ignore_case(&name, needle)
+                    && !contains_ignore_case(&declaration.name.units()?, needle)
                 {
                     return Ok(());
                 }
-                let mut prototype = Vec::new();
-                prototype.push(u16::from(b'('));
-                declaration.prototype.visit_parameters(|parameter| {
-                    prototype.extend(parameter.units()?);
-                    Ok(())
-                })?;
-                prototype.push(u16::from(b')'));
-                prototype.extend(declaration.prototype.return_type.units()?);
+                let parameters = declaration.prototype.parameter_descriptors();
                 forward(Row::Method(MethodRow {
                     image,
                     logical,
                     class_def,
-                    class_descriptor: class_descriptor.clone(),
-                    method: method.method_idx,
-                    name,
-                    prototype,
-                    access_flags: method.access_flags,
+                    class_descriptor: class.descriptor,
+                    method: method_idx,
+                    name: declaration.name,
+                    prototype: PrototypeRow {
+                        parameters,
+                        returns: declaration.prototype.return_type,
+                    },
+                    access_flags,
                 }))
             })
         })
@@ -282,12 +292,10 @@ pub(super) fn fields(
             {
                 return Ok(());
             }
-            let class_descriptor = class.descriptor.units()?;
             class.visit_fields(|field| {
                 let declaration = field.declaration?;
-                let name = declaration.name.units()?;
                 if let Some(needle) = filter
-                    && !contains_ignore_case(&name, needle)
+                    && !contains_ignore_case(&declaration.name.units()?, needle)
                 {
                     return Ok(());
                 }
@@ -295,10 +303,10 @@ pub(super) fn fields(
                     image,
                     logical,
                     class_def,
-                    class_descriptor: class_descriptor.clone(),
+                    class_descriptor: class.descriptor,
                     field: field.field_idx,
-                    name,
-                    field_type: declaration.field_type.units()?,
+                    name: declaration.name,
+                    field_type: declaration.field_type,
                     access_flags: field.access_flags,
                     storage: field.storage,
                 }))
@@ -320,9 +328,9 @@ pub(super) fn strings(
 ) -> Result<(), QueryError> {
     for ordinal in 0..index.string_ids_len() {
         let string = StringId(ordinal);
-        let units = index.string(string)?.units()?;
+        let value = index.string(string)?;
         if let Some(needle) = filter
-            && !contains_ignore_case(&units, needle)
+            && !contains_ignore_case(&value.units()?, needle)
         {
             continue;
         }
@@ -330,7 +338,7 @@ pub(super) fn strings(
             image,
             logical,
             string,
-            units,
+            value,
         }))?;
     }
     Ok(())

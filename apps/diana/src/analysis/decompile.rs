@@ -94,7 +94,7 @@ pub fn run_with_jobs(
         .map_err(RequestError::Allocation)?;
     for image in images.images() {
         inputs.push(DexImage {
-            bytes: images.bytes(image),
+            bytes: images.bytes(image)?,
             header_offset: image.header_offset,
             origin: ImageOrigin {
                 input: InputId(

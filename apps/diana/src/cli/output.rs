@@ -32,7 +32,7 @@ impl Failure {
             message: error.to_string(),
         }
     }
-    fn output(error: std::io::Error) -> Self {
+    pub(super) fn output(error: std::io::Error) -> Self {
         Self {
             code: 1,
             message: format!("result output failed: {error}"),

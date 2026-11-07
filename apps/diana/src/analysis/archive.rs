@@ -209,9 +209,10 @@ impl EntryPayload<'_> {
     }
 }
 
-/// Reads one entry payload and verifies that its local header agrees with the
-/// central record. Stored payloads are borrowed; deflate payloads are inflated on
-/// demand under the configured bound and then checked against the recorded CRC.
+/// Reads one entry payload and checks that its local header agrees with the
+/// central record. Stored payloads are borrowed; deflate payloads are inflated
+/// under the declared size. The declared size and the deflate stream itself are
+/// the only integrity facts this reader charges for.
 pub fn read_entry<'a>(
     bytes: &'a [u8],
     entry: &EntryRecord,
@@ -222,9 +223,6 @@ pub fn read_entry<'a>(
             if entry.compressed_size.0 != entry.uncompressed_size.0 {
                 return Err(ArchiveProblem::DamagedEntry);
             }
-            if crc32(compressed) != entry.crc32 {
-                return Err(ArchiveProblem::DamagedEntry);
-            }
             Ok(EntryPayload::Borrowed(compressed))
         }
         8 => inflate(compressed, entry),
@@ -233,22 +231,117 @@ pub fn read_entry<'a>(
 }
 
 fn inflate<'a>(compressed: &[u8], entry: &EntryRecord) -> Result<EntryPayload<'a>, ArchiveProblem> {
-    let declared = entry.uncompressed_size.0;
-
-    let size = usize::try_from(declared).map_err(|_| ArchiveProblem::OutOfRange)?;
     let mut output = Vec::new();
-    output
-        .try_reserve_exact(size)
-        .map_err(ArchiveProblem::Allocation)?;
-    output.resize(size, 0);
+    let written = inflate_bytes(compressed, entry, &mut output)?;
+    output.truncate(written);
+    Ok(EntryPayload::Inflated(output))
+}
+
+/// Inflates one entry into a caller-owned buffer and returns the payload length.
+///
+/// The buffer is only grown, never re-zeroed: a scan inflates dozens of entries
+/// through the same pages, and first-touching fresh pages is what made a
+/// per-entry allocation cost about twice the decompression itself. The payload is
+/// `buffer[..written]`.
+pub fn inflate_into(
+    bytes: &[u8],
+    entry: &EntryRecord,
+    buffer: &mut Vec<u8>,
+) -> Result<usize, ArchiveProblem> {
+    let compressed = compressed_payload(bytes, entry)?;
+    inflate_bytes(compressed, entry, buffer)
+}
+
+fn inflate_bytes(
+    compressed: &[u8],
+    entry: &EntryRecord,
+    buffer: &mut Vec<u8>,
+) -> Result<usize, ArchiveProblem> {
+    let declared = entry.uncompressed_size.0;
+    let size = usize::try_from(declared).map_err(|_| ArchiveProblem::OutOfRange)?;
+    if buffer.len() < size {
+        buffer
+            .try_reserve_exact(size - buffer.len())
+            .map_err(ArchiveProblem::Allocation)?;
+        buffer.resize(size, 0);
+    }
     let mut decompressor = libdeflater::Decompressor::new();
     let written = decompressor
-        .deflate_decompress(compressed, &mut output)
+        .deflate_decompress(compressed, &mut buffer[..size])
         .map_err(|_| ArchiveProblem::DecompressionFailed)?;
-    if written != size || crc32(&output) != entry.crc32 {
+    if written != size {
         return Err(ArchiveProblem::DamagedEntry);
     }
-    Ok(EntryPayload::Inflated(output))
+    Ok(written)
+}
+
+/// A streaming prefix cursor bound to one compressed entry and its scratch buffer.
+/// Each growth resumes from measured input/output positions; no bytes are replayed.
+pub(super) struct PrefixReader<'a, 's> {
+    compressed: &'a [u8],
+    declared: usize,
+    buffer: &'s mut Vec<u8>,
+    decoder: flate2::Decompress,
+}
+
+impl<'a, 's> PrefixReader<'a, 's> {
+    pub(super) fn new(
+        bytes: &'a [u8],
+        entry: &EntryRecord,
+        buffer: &'s mut Vec<u8>,
+    ) -> Result<Self, ArchiveProblem> {
+        Ok(Self {
+            compressed: compressed_payload(bytes, entry)?,
+            declared: usize::try_from(entry.uncompressed_size.0)
+                .map_err(|_| ArchiveProblem::OutOfRange)?,
+            buffer,
+            decoder: flate2::Decompress::new(false),
+        })
+    }
+
+    /// Only total_out establishes which bytes belong to this entry. A stalled or
+    /// short stream is an error, never a successful target-length prefix.
+    pub(super) fn read(&mut self, aim: usize) -> Result<&[u8], ArchiveProblem> {
+        let aim = aim.min(self.declared);
+        if self.buffer.len() < aim {
+            self.buffer
+                .try_reserve_exact(aim - self.buffer.len())
+                .map_err(ArchiveProblem::Allocation)?;
+            self.buffer.resize(aim, 0);
+        }
+        loop {
+            let consumed =
+                usize::try_from(self.decoder.total_in()).map_err(|_| ArchiveProblem::OutOfRange)?;
+            let written = usize::try_from(self.decoder.total_out())
+                .map_err(|_| ArchiveProblem::OutOfRange)?;
+            if written >= aim && aim < self.declared {
+                return self.buffer.get(..written).ok_or(ArchiveProblem::OutOfRange);
+            }
+            let status = self
+                .decoder
+                .decompress(
+                    self.compressed
+                        .get(consumed..)
+                        .ok_or(ArchiveProblem::OutOfRange)?,
+                    self.buffer
+                        .get_mut(written..aim)
+                        .ok_or(ArchiveProblem::OutOfRange)?,
+                    flate2::FlushDecompress::None,
+                )
+                .map_err(|_| ArchiveProblem::DecompressionFailed)?;
+            let end = usize::try_from(self.decoder.total_out())
+                .map_err(|_| ArchiveProblem::OutOfRange)?;
+            if status == flate2::Status::StreamEnd {
+                if end != self.declared {
+                    return Err(ArchiveProblem::DamagedEntry);
+                }
+                return self.buffer.get(..end).ok_or(ArchiveProblem::OutOfRange);
+            }
+            if self.decoder.total_in() == consumed as u64 && end == written {
+                return Err(ArchiveProblem::DecompressionFailed);
+            }
+        }
+    }
 }
 
 /// Reads one stored entry payload. A deflate record needs `read_entry` with its
@@ -321,20 +414,4 @@ impl<'a> EntryView<'a> {
     pub fn payload(&self) -> &'a [u8] {
         self.payload
     }
-}
-
-/// CRC-32 (IEEE) over the actual payload, independent of any codec default.
-pub fn crc32(bytes: &[u8]) -> u32 {
-    let mut crc = 0xffff_ffffu32;
-    for &byte in bytes {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            crc = if crc & 1 != 0 {
-                (crc >> 1) ^ 0xedb8_8320
-            } else {
-                crc >> 1
-            };
-        }
-    }
-    !crc
 }

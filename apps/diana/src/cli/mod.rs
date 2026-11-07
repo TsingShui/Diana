@@ -15,15 +15,14 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-use crate::analysis::at;
 use crate::analysis::dex::{ClassFilter, ClassKind};
 use crate::analysis::input::InputOptions;
 use crate::analysis::manifest;
-use crate::analysis::query::{Query, QueryKind, QueryPlan, Row};
+use crate::analysis::query::{ImageInfo, Query, QueryError, QueryKind, QueryPlan, Row};
 use crate::analysis::request::RequestScope;
 
 use output::{Failure, Format, publish};
-use table::Record;
+use table::{Locator, QueryRow, RowFormat};
 
 #[derive(Parser)]
 #[command(name = "diana", about = "Native APK/DEX analysis", version)]
@@ -71,7 +70,7 @@ enum Command {
         /// Restrict to classes or interfaces
         kind: Option<KindArg>,
         #[arg(long)]
-        /// Workers for independent DEX images (default: min(8, CPUs))
+        /// Workers for independent DEX images (default: available CPUs)
         jobs: Option<usize>,
         #[arg(long, value_enum, default_value_t = Format::Text)]
         /// Presentation of the same result
@@ -94,7 +93,7 @@ enum Command {
         /// Exact defining class (descriptor or dotted name)
         class: Option<String>,
         #[arg(long)]
-        /// Workers for independent DEX images (default: min(8, CPUs))
+        /// Workers for independent DEX images (default: available CPUs)
         jobs: Option<usize>,
         #[arg(long, value_enum, default_value_t = Format::Text)]
         /// Presentation of the same result
@@ -117,7 +116,7 @@ enum Command {
         /// Exact defining class (descriptor or dotted name)
         class: Option<String>,
         #[arg(long)]
-        /// Workers for independent DEX images (default: min(8, CPUs))
+        /// Workers for independent DEX images (default: available CPUs)
         jobs: Option<usize>,
         #[arg(long, value_enum, default_value_t = Format::Text)]
         /// Presentation of the same result
@@ -137,7 +136,7 @@ enum Command {
         /// Case-insensitive literal over the semantic name/descriptor
         filter: Option<String>,
         #[arg(long)]
-        /// Workers for independent DEX images (default: min(8, CPUs))
+        /// Workers for independent DEX images (default: available CPUs)
         jobs: Option<usize>,
         #[arg(long, value_enum, default_value_t = Format::Text)]
         /// Presentation of the same result
@@ -225,7 +224,7 @@ enum Command {
         /// Exact defining class (descriptor or dotted name)
         class: Option<String>,
         #[arg(long)]
-        /// Workers for independent DEX images (default: min(8, CPUs))
+        /// Workers for independent DEX images (default: available CPUs)
         jobs: Option<usize>,
         #[arg(long)]
         /// Follow callers upstream for this many levels (``method`` kind only)
@@ -457,54 +456,45 @@ fn entries(
             filter: None,
             class: None,
             class_filter: Default::default(),
-
             jobs: 1,
         },
     )
     .map_err(|error| Failure::query(error, 1))?;
-
-    let mut rows = Vec::new();
-    query
-        .run(&mut |row| {
-            rows.push(row);
-            Ok(())
-        })
-        .map_err(|error| Failure::query(error, 1))?;
-    let text = match format {
-        Format::Text => {
-            let mut text = String::from("name\tcompressed_size\tuncompressed_size\tcompression\n");
-            for row in &rows {
-                if let Row::Entry(row) = row {
-                    text.push_str(&format!(
-                        "{}\t{}\t{}\t{}\n",
-                        row.name, row.compressed_size, row.uncompressed_size, row.method
-                    ));
-                }
-            }
-            text
-        }
-        Format::Json => {
-            let entries: Vec<_> = rows
-                .iter()
-                .filter_map(|row| match row {
-                    Row::Entry(row) => Some(serde_json::json!({
-                        "name": row.name,
-                        "compressed_size": row.compressed_size,
-                        "uncompressed_size": row.uncompressed_size,
-                        "compression": row.method,
-                    })),
-                    _ => None,
-                })
-                .collect();
-            serde_json::json!({
-                "schema_version": 1,
-                "command": "entries",
-                "entries": entries,
-            })
-            .to_string()
-        }
-    };
-    publish(output, input, text.as_bytes(), format)
+    let columns = [
+        "name",
+        "compressed_size",
+        "uncompressed_size",
+        "compression",
+    ];
+    let rows = RowFormat::new(format, &columns);
+    table::publish_table(
+        "entries",
+        "entries",
+        &columns,
+        format,
+        input,
+        output,
+        |sink| {
+            query
+                .run(
+                    &|row, out, first| {
+                        if let Row::Entry(row) = row {
+                            rows.entry_row(
+                                &row.name,
+                                row.compressed_size,
+                                row.uncompressed_size,
+                                u64::from(row.method),
+                                out,
+                                first,
+                            );
+                        }
+                        Ok(())
+                    },
+                    &mut |chunk: Vec<u8>| sink.chunk(&chunk),
+                )
+                .map_err(|error| Failure::query(error, 1))
+        },
+    )
 }
 
 fn manifest_command(
@@ -573,7 +563,7 @@ fn selector_units(text: &str) -> Vec<u16> {
 
 fn default_jobs() -> usize {
     std::thread::available_parallelism()
-        .map(|count| count.get().min(8))
+        .map(|count| count.get())
         .unwrap_or(1)
 }
 
@@ -608,57 +598,6 @@ fn query_command(
     };
     let query = Query::new(&scope, plan).map_err(|error| Failure::query(error, 1))?;
     let images = query.images().to_vec();
-
-    let mut rows = Vec::new();
-    query
-        .run(&mut |row| {
-            rows.push(row);
-            Ok(())
-        })
-        .map_err(|error| Failure::query(error, 1))?;
-    let mut records = Vec::with_capacity(rows.len());
-    for row in &rows {
-        let image_index = match row {
-            Row::Class(row) => row.image.0,
-            Row::Method(row) => row.image.0,
-            Row::Field(row) => row.image.0,
-            Row::String(row) => row.image.0,
-            Row::Entry(_) => continue,
-        };
-        let image = &images[image_index];
-        let entry = image.entry.map(|entry| entry.0);
-        let record = match row {
-            Row::Class(row) => Record::new(at::class(
-                entry,
-                row.logical.0,
-                row.class_def.0,
-                &row.descriptor,
-            )),
-            Row::Method(row) => Record::new(at::method(
-                entry,
-                row.logical.0,
-                row.class_def.0,
-                row.method.0,
-                &row.class_descriptor,
-                &row.name,
-                &row.prototype,
-            )),
-            Row::Field(row) => Record::new(at::field(
-                entry,
-                row.logical.0,
-                row.class_def.0,
-                row.field.0,
-                &row.class_descriptor,
-                &row.name,
-                &row.field_type,
-            )),
-            Row::String(row) => Record::new(at::string(entry, row.logical.0, row.string.0))
-                .with_value(at::escape_units(&row.units))
-                .with_entry(image.label.clone()),
-            Row::Entry(_) => continue,
-        };
-        records.push(record);
-    }
     let columns: &[&str] = match kind {
         QueryKind::Strings => &["at", "value", "entry"],
         _ => &["at"],
@@ -670,5 +609,78 @@ fn query_command(
         QueryKind::Strings => "strings",
         QueryKind::Entries => "entries",
     };
-    table::publish_records(&records, columns, command, format, input, output)
+    let rows = RowFormat::new(format, columns);
+    table::publish_table(command, "items", columns, format, input, output, |sink| {
+        query
+            .run(
+                &|row, out, first| {
+                    let row = query_row(&row, &images)?;
+                    rows.query_row(&row, out, first)
+                },
+                &mut |chunk: Vec<u8>| sink.chunk(&chunk),
+            )
+            .map_err(|error| Failure::query(error, 1))
+    })
+}
+
+/// One analysis row as the columns this command publishes.
+fn query_row<'a>(row: &'a Row<'a>, images: &'a [ImageInfo]) -> Result<QueryRow<'a>, QueryError> {
+    let image_index = match row {
+        Row::Class(row) => row.image.0,
+        Row::Method(row) => row.image.0,
+        Row::Field(row) => row.image.0,
+        Row::String(row) => row.image.0,
+        Row::Entry(_) => return Err(QueryError::WorkerLost),
+    };
+    let image = images.get(image_index).ok_or(QueryError::WorkerLost)?;
+    let entry = image.entry.map(|entry| entry.0);
+    Ok(match row {
+        Row::Class(row) => QueryRow {
+            at: Locator::Class {
+                entry,
+                logical: row.logical.0,
+                class_def: row.class_def.0,
+                descriptor: row.descriptor,
+            },
+            value: None,
+            entry: None,
+        },
+        Row::Method(row) => QueryRow {
+            at: Locator::Method {
+                entry,
+                logical: row.logical.0,
+                class_def: row.class_def.0,
+                method: row.method.0,
+                descriptor: row.class_descriptor,
+                name: row.name,
+                parameters: row.prototype.parameters,
+                returns: row.prototype.returns,
+            },
+            value: None,
+            entry: None,
+        },
+        Row::Field(row) => QueryRow {
+            at: Locator::Field {
+                entry,
+                logical: row.logical.0,
+                class_def: row.class_def.0,
+                field: row.field.0,
+                descriptor: row.class_descriptor,
+                name: row.name,
+                field_type: row.field_type,
+            },
+            value: None,
+            entry: None,
+        },
+        Row::String(row) => QueryRow {
+            at: Locator::String {
+                entry,
+                logical: row.logical.0,
+                string: row.string.0,
+            },
+            value: Some(row.value),
+            entry: Some(image.label.as_str()),
+        },
+        Row::Entry(_) => return Err(QueryError::WorkerLost),
+    })
 }

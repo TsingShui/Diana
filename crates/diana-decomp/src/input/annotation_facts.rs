@@ -329,9 +329,9 @@ enum AssociationKind {
     Method,
     Parameter,
 }
-fn read_members(
-    index: &ProgramIndex<'_>,
-    class: &super::ClassView<'_, '_>,
+fn read_members<'a>(
+    index: &ProgramIndex<'a>,
+    class: &super::ClassView<'_, 'a>,
     records: &mut super::Cursor<'_>,
     kind: AssociationKind,
     facts: &mut OriginalAnnotations,

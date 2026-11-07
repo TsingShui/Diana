@@ -35,20 +35,29 @@ fn main() {
     )
     .expect("query");
 
-    let mut all = Vec::new();
+    // The row renderer runs on the scan's workers, so the collected list needs
+    // interior mutability.
+    let collected = std::sync::Mutex::new(Vec::new());
     query
-        .run(&mut |row| {
-            if let diana::analysis::query::Row::Class(class) = row {
-                all.push((
-                    class.image.0,
-                    class.logical.0,
-                    class.class_def.0,
-                    class.descriptor,
-                ));
-            }
-            Ok(())
-        })
+        .run(
+            &|row, _out, _first| {
+                if let diana::analysis::query::Row::Class(class) = row
+                    && let Ok(mut all) = collected.lock()
+                {
+                    all.push((
+                        class.image.0,
+                        class.logical.0,
+                        class.class_def.0,
+                        // The row value is borrowed from a scan-local buffer.
+                        class.descriptor.units().expect("descriptor units"),
+                    ));
+                }
+                Ok(())
+            },
+            &mut |_chunk: Vec<u8>| Ok(()),
+        )
         .expect("list classes");
+    let all = collected.into_inner().expect("class list");
     let step = (all.len() / count.max(1)).max(1);
     for (index, logical, class_def, descriptor) in all.iter().step_by(step).take(count) {
         let entry = query.images()[*index].entry.map_or(0, |entry| entry.0);

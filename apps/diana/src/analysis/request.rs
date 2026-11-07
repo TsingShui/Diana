@@ -6,8 +6,8 @@ use super::input::{EntryIndex, InputError, InputLease, InputOptions, open_input}
 /// One CLI request's input ownership.
 ///
 /// The scope leases the input for the whole request and hands out only borrowed
-/// root views inside that lifetime. Dropping the scope releases the owned
-/// snapshot and every future temporary owner it holds; it never modifies or
+/// root views inside that lifetime. Dropping the scope releases the mapped input
+/// and every future temporary owner it holds; it never modifies or
 /// deletes the user's input.
 #[derive(Debug)]
 pub struct RequestScope {

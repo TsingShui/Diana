@@ -26,6 +26,7 @@ pub struct ProgramIndex<'a> {
     facts_build: std::sync::Mutex<()>,
     pub(super) declarations: std::sync::Arc<LocalDeclarations<'a>>,
     pub(crate) header: DexHeader,
+    prototypes: Vec<std::sync::OnceLock<PrototypeFacts<'a>>>,
 }
 
 impl<'a> ProgramIndex<'a> {
@@ -162,8 +163,11 @@ impl<'a> ProgramIndex<'a> {
                 .ok_or_else(|| malformed(InputProblem::InvalidMap, section.start_byte))?;
             by_kind[bit.trailing_zeros() as usize] = Some(*section);
         }
+        let prototypes =
+            super::declarations::cache_slots(header.proto_ids.count, header.proto_ids.offset_byte)?;
         Ok(Self {
             bytes,
+            prototypes,
             dex: crate::DexId(0),
             class_facts: std::sync::Mutex::new(std::collections::HashMap::new()),
             facts_build: std::sync::Mutex::new(()),
@@ -171,13 +175,18 @@ impl<'a> ProgramIndex<'a> {
                 container,
                 header.clone(),
                 by_kind,
-            )),
+            )?),
             header,
         })
     }
 
     pub fn string(&self, string_idx: StringId) -> Result<DexString<'a>, InputError> {
         self.declarations.string(string_idx)
+    }
+
+    /// The pool entry named by a member identity, validated once per entry.
+    fn member_name(&self, string_idx: StringId) -> Result<DexString<'a>, InputError> {
+        self.declarations.member_name(string_idx)
     }
 
     pub fn class(&self, class_def_idx: ClassDefId) -> Result<ClassView<'_, 'a>, InputError> {
@@ -271,6 +280,38 @@ impl<'a> ProgramIndex<'a> {
     }
 
     pub(crate) fn prototype(&self, proto_idx: ProtoId) -> Result<Prototype<'_, 'a>, InputError> {
+        let slot = self
+            .prototypes
+            .get(count_usize(proto_idx.0, self.header.proto_ids.offset_byte)?)
+            .ok_or_else(|| {
+                malformed(
+                    InputProblem::InvalidReference,
+                    self.header.proto_ids.offset_byte,
+                )
+            })?;
+        let facts = match slot.get() {
+            Some(facts) => facts,
+            None => {
+                // Only successful construction is published. A failed declaration or
+                // allocation remains local to its caller, not a cached absence.
+                let facts = self.read_prototype(proto_idx)?;
+                let _ = slot.set(facts);
+                slot.get().ok_or(InputError::InternalInvariant(
+                    "prototype cache publication lost",
+                ))?
+            }
+        };
+        Ok(Prototype {
+            shorty: facts.shorty,
+            return_type: facts.return_type,
+            return_type_idx: facts.return_type_idx,
+            parameters: facts.parameters,
+            parameter_descriptors: &facts.descriptors,
+            parameter_words: facts.parameter_words,
+        })
+    }
+
+    fn read_prototype(&self, proto_idx: ProtoId) -> Result<PrototypeFacts<'a>, InputError> {
         let mut record = self.table(TableKey::Proto(proto_idx))?;
         let shorty = self.string(StringId(record.read_u32()?))?;
         let return_type_idx = TypeId(record.read_u32()?);
@@ -292,21 +333,28 @@ impl<'a> ProgramIndex<'a> {
         if shorty_units.next()? != Some(u16::from(return_shape.shorty())) {
             return Err(malformed(InputProblem::InvalidPrototype, parameters_offset));
         }
+        let mut descriptors = Vec::new();
+        descriptors
+            .try_reserve_exact(parameters.len() / 2)
+            .map_err(|_| InputError::Allocation {
+                offset_byte: parameters_offset,
+            })?;
         let mut parameter_words = RegisterWordCount(0);
         for word in parameters.as_chunks::<2>().0 {
             let type_idx = TypeId(u32::from(u16::from_le_bytes(*word)));
-            let (_, shape) = self.type_descriptor(type_idx)?;
+            let (name, shape) = self.type_descriptor(type_idx)?;
             if shape.words() == 0 || shorty_units.next()? != Some(u16::from(shape.shorty())) {
                 return Err(malformed(InputProblem::InvalidPrototype, parameters_offset));
             }
             parameter_words.0 += u64::from(shape.words());
+            descriptors.push(name);
         }
-        Ok(Prototype {
-            index: self,
+        Ok(PrototypeFacts {
             shorty,
             return_type,
             return_type_idx,
             parameters,
+            descriptors,
             parameter_words,
         })
     }
@@ -334,8 +382,7 @@ impl<'a> ProgramIndex<'a> {
             ));
         }
         let proto_idx = ProtoId(u32::from(record.read_u16()?));
-        let name = self.string(StringId(record.read_u32()?))?;
-        name.validate_name()?;
+        let name = self.member_name(StringId(record.read_u32()?))?;
         Ok((name, proto_idx))
     }
 
@@ -353,8 +400,7 @@ impl<'a> ProgramIndex<'a> {
         }
         let field_type_idx = TypeId(u32::from(record.read_u16()?));
         let (field_type, shape) = self.type_descriptor(field_type_idx)?;
-        let name = self.string(StringId(record.read_u32()?))?;
-        name.validate_name()?;
+        let name = self.member_name(StringId(record.read_u32()?))?;
         if shape.words() == 0 {
             return Err(malformed(
                 InputProblem::InvalidDescriptor,
@@ -664,8 +710,19 @@ pub struct MethodDeclaration<'i, 'a> {
     pub prototype: Prototype<'i, 'a>,
 }
 
+/// Established prototype facts, owned by the logical index rather than by each
+/// referencing method. Descriptors borrow the original bytes; no output is cached.
+struct PrototypeFacts<'a> {
+    shorty: DexString<'a>,
+    return_type: DexString<'a>,
+    return_type_idx: TypeId,
+    parameters: &'a [u8],
+    descriptors: Vec<DexString<'a>>,
+    parameter_words: RegisterWordCount,
+}
+
 pub struct Prototype<'i, 'a> {
-    index: &'i ProgramIndex<'a>,
+    parameter_descriptors: &'i [DexString<'a>],
     pub shorty: DexString<'a>,
     pub return_type: DexString<'a>,
     pub(crate) return_type_idx: TypeId,
@@ -673,14 +730,24 @@ pub struct Prototype<'i, 'a> {
     pub parameter_words: RegisterWordCount,
 }
 
-impl<'a> Prototype<'_, 'a> {
+impl<'i, 'a> Prototype<'i, 'a> {
+    /// Original parameter descriptors, resolved once in the logical index.
+    pub fn parameter_descriptors(&self) -> &'i [DexString<'a>] {
+        self.parameter_descriptors
+    }
+
     pub(crate) fn visit_parameter_type_ids<E: From<InputError>>(
         &self,
         mut visit: impl FnMut(TypeId, DexString<'a>) -> Result<(), E>,
     ) -> Result<(), E> {
-        for word in self.parameters.as_chunks::<2>().0 {
+        for (word, &name) in self
+            .parameters
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .zip(self.parameter_descriptors)
+        {
             let id = TypeId(u32::from(u16::from_le_bytes(*word)));
-            let (name, _) = self.index.type_descriptor(id)?;
             visit(id, name)?;
         }
         Ok(())
@@ -706,10 +773,7 @@ impl<'a> Prototype<'_, 'a> {
             return Ok(false);
         }
         let mut position = Utf16Offset(1);
-        for word in self.parameters.as_chunks::<2>().0 {
-            let (name, _) = self
-                .index
-                .type_descriptor(TypeId(u32::from(u16::from_le_bytes(*word))))?;
+        for name in self.parameter_descriptors {
             let Some(next) = name.matches_prefix(descriptor, position)? else {
                 return Ok(false);
             };
@@ -775,6 +839,9 @@ pub struct FieldEntry<'a> {
 
 pub(crate) enum MemberSelection {
     AllMethods,
+    /// Method declarations only; field records establish cursor/identity bounds
+    /// but do not resolve unrelated field names or types.
+    MethodHeaders,
     /// Every field and method header in original group order, without reading code.
     AllMembers,
     Fields,
@@ -833,6 +900,39 @@ impl<'i, 'a> ClassView<'i, 'a> {
             MemberEntry::Field(field) => visit(field),
             _ => Err(InputError::InternalInvariant(
                 "field traversal delivered a method",
+            )),
+        })
+    }
+
+    /// Visits each method this class defines without reading its code.
+    ///
+    /// A listing needs the original index, access flags and declaration of every
+    /// method; reading each `code_item` to answer that costs more than the listing
+    /// itself on a large APK, so callers that do not analyze bodies use this
+    /// traversal instead of [`Self::visit_methods`].
+    pub fn visit_method_headers(
+        &self,
+        mut visit: impl FnMut(
+            crate::MethodId,
+            u32,
+            Result<&MethodDeclaration<'i, 'a>, InputError>,
+        ) -> Result<(), InputError>,
+    ) -> Result<(), InputError> {
+        self.visit_members_with(MemberSelection::MethodHeaders, |entry| match entry {
+            MemberEntry::Field(_) => Err(InputError::InternalInvariant(
+                "method-header traversal delivered a field",
+            )),
+            MemberEntry::MethodHeader {
+                method_idx,
+                access_flags,
+                declaration,
+                ..
+            } => match declaration {
+                Ok(declaration) => visit(method_idx, access_flags, Ok(&declaration)),
+                Err(error) => visit(method_idx, access_flags, Err(error)),
+            },
+            MemberEntry::Method(_) => Err(InputError::InternalInvariant(
+                "code visitation reached a header-only selection",
             )),
         })
     }
@@ -968,7 +1068,10 @@ impl<'i, 'a> ClassView<'i, 'a> {
                     }
                     match member {
                         EncodedMember::Field => {
-                            if matches!(selection, MemberSelection::AllMethods) {
+                            if matches!(
+                                selection,
+                                MemberSelection::AllMethods | MemberSelection::MethodHeaders
+                            ) {
                                 continue;
                             }
                             let declaration =
@@ -995,7 +1098,10 @@ impl<'i, 'a> ClassView<'i, 'a> {
                                 self.index
                                     .method_declaration(MethodId(index), self.type_idx),
                             )?;
-                            if matches!(selection, MemberSelection::AllMembers) {
+                            if matches!(
+                                selection,
+                                MemberSelection::AllMembers | MemberSelection::MethodHeaders
+                            ) {
                                 let group_slot = match kind {
                                     MemberKind::Field => group,
                                     MemberKind::Method => group + 2,
