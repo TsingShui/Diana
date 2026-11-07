@@ -545,6 +545,7 @@ pub(super) fn plan(
             body: body_nodes,
             handlers: targets,
             handler_bodies,
+            finally: None,
             members: list(&members)?,
             follow,
         };

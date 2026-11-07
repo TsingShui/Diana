@@ -63,6 +63,7 @@ The following forms have fixed execution meanings:
 | `release synchronized R(lock)` | Execute that outlet's original release read/effect at its original node. Only the named lock scope ends; enclosing try scopes remain unchanged. |
 | `on_exception_entry { copies }` | Receive saved values only on exceptional arrival, after the original capture when present. |
 | `try { ... } catch (Type)` / `catch (all)` | A catch header prints the caught type and nothing else: the handler block follows it, so the clause's route target is not repeated. `all` is a clause with no delivered type (a catch-all), which the DEX format and `exception_chain` routes spell the same way. |
+| `try { ... } finally { ... }` | P6/P7's matched cleanup executes on either normal completion or the established catch-all completion. The capture and rethrow are implicit; a throwing cleanup keeps its delivered uncaught outcome. The original normal duplicate and protocol facts retain zero-width origins. P9 does not identify cleanup from text or choose another handler. |
 | `exception_chain` and `[exn cN]` site markers | Preserve original selection priority, handler targets and delivered natural/explicit protection. A marker is printed only when the enclosing printed catch does not already express that route; it names the chain whose line carries the clauses. A chain line is printed only when a printed `[exn cN]` marker names it, because each catch route is otherwise already printed as the clause of its `try`. Method-local impossible-release findings do not delete original exception facts. |
 | `graph ... entry label` / `no_implicit_entry` | Preserve the supplied graph entry or its explicit absence. The first printed child is not an invented entry. |
 
@@ -414,6 +415,12 @@ transfers, copies, labels, controls, metadata and preparation have distinct
 origins. A compound expression can map multiple original operations to one range.
 Nested spans overlap intentionally. Empty schedules and implicit fallthrough can
 have zero-length anchors; these are not invented executed instructions.
+
+Finally attachments use the same control, statement and terminal renderers in
+origin-only mode. Text writes are suppressed while spans are recorded at the
+current position. Method-local failure restores this mode before reporting an
+issue or rendering another member. P9 does not run a second analysis or renderer
+to obtain those origins.
 
 Suppressed literal statements and contracted interior transfers remain in the
 owned source products and coverage. A composed operation's range encloses its

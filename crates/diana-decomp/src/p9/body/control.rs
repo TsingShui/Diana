@@ -10,7 +10,13 @@ impl Expressions<'_, '_> {
         let b = &self.code.emission().blocks()[node.0 as usize];
         for action in &b.actions {
             match *action {
-                BodyAction::Statement { operation, .. } => self.statement(operation, None)?,
+                BodyAction::Statement { operation, .. } => {
+                    let previous = self.out.origin_only;
+                    self.out.origin_only |= self.code.emission().origin_only_operation(operation);
+                    let result = self.statement(operation, None);
+                    self.out.origin_only = previous;
+                    result?;
+                }
                 BodyAction::AbiOperation { operation, .. } => self.abi_operation(operation)?,
                 BodyAction::Release {
                     operation, scope, ..
@@ -28,7 +34,13 @@ impl Expressions<'_, '_> {
         }
         match &b.end {
             BlockEnd::None => Ok(()),
-            BlockEnd::Terminal(t) => self.terminal(*t),
+            BlockEnd::Terminal(t) => {
+                let previous = self.out.origin_only;
+                self.out.origin_only |= self.code.emission().origin_only_terminal(*t);
+                let result = self.terminal(*t);
+                self.out.origin_only = previous;
+                result
+            }
             BlockEnd::Transfers(ts) => {
                 for &t in ts {
                     self.transfer(t)?;

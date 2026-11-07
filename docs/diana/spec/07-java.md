@@ -301,6 +301,19 @@ snapshot provenance. Natural catch delivery, explicit protection, propagation an
 P6's method-local ImpossibleRelease finding stay distinct. P7 MUST NOT discard an
 original exceptional edge or invent a handler from syntax adjacency.
 
+A selected P6 `FinallyPlan` lowers to the existing Try control with a delivered
+finally layout. Its source children retain the protected body, handler cleanup
+and original normal duplicate. The executable child order contains the body and
+one cleanup spelling; the duplicate is an origin-only attachment. The original
+capture and rethrow likewise contribute origins without text, and their private
+capture local needs no declaration. Exact operation pairs remain in the owned
+control product. P7 does not infer equal values or establish cleanup correspondence.
+
+Origin-only occurrences cannot carry a composed check-cast or invalidate an
+otherwise scoped local declaration merely because they have no executable
+display location. Statements, expressions, sites and transfers remain in the
+source arenas. P9 consumes these placements through its existing event stack.
+
 Each synchronized outlet identifies its release statement, entry label,
 original transfer and exact resume intent. Before-operand copies precede the
 release read; snapshots follow that read. `completion` orders after-commit copies,

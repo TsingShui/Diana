@@ -25,8 +25,10 @@ pub(super) fn branch_proposal(
 ) -> Result<Option<Candidate>, RegionError> {
     let t = f.links[true_link.0 as usize].to;
     let e = f.links[false_link.0 as usize].to;
-    let a = super::completion::reachable(f, g, &[t], boundary, follow)?;
-    let b = super::completion::reachable(f, g, &[e], boundary, follow)?;
+    let mut a = super::completion::reachable(f, g, &[t], boundary, follow)?;
+    let mut b = super::completion::reachable(f, g, &[e], boundary, follow)?;
+    super::completion::include_try_handlers(f, boundary, follow, &mut a);
+    super::completion::include_try_handlers(f, boundary, follow, &mut b);
     if a[entry.0 as usize] || b[entry.0 as usize] || a.iter().zip(&b).any(|(a, b)| *a && *b) {
         return Ok(None);
     }
@@ -172,7 +174,11 @@ pub(super) fn candidates(
                 completion: PartCompletion::Ordinary,
                 nodes: copy(&p.body)?,
                 entry: Some(p.entry),
-                follow: p.follow,
+                follow: p
+                    .finally
+                    .as_ref()
+                    .and_then(|p| p.normal.first().copied())
+                    .or(p.follow),
             },
         )?;
         for (&entry, body) in p.handlers.iter().zip(&p.handler_bodies) {
@@ -182,6 +188,17 @@ pub(super) fn candidates(
                     completion: PartCompletion::Ordinary,
                     nodes: copy(body)?,
                     entry: Some(entry),
+                    follow: p.follow,
+                },
+            )?;
+        }
+        if let Some(finally) = &p.finally {
+            push(
+                &mut parts,
+                Part {
+                    completion: PartCompletion::Ordinary,
+                    nodes: copy(&finally.normal)?,
+                    entry: finally.normal.first().copied(),
                     follow: p.follow,
                 },
             )?;

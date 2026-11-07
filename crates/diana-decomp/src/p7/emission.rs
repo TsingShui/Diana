@@ -222,6 +222,7 @@ pub enum EmissionLayout {
     Try {
         body: ControlId,
         catches: Vec<ControlId>,
+        finally: Option<FinallyEmission>,
     },
     /// Explicit planned exits prevent implicit second releases, including when
     /// an unlocked routing terminal remains within its original nested catch.
@@ -231,6 +232,11 @@ pub enum EmissionLayout {
         acquire: OpId,
     },
     Graph,
+}
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct FinallyEmission {
+    pub cleanup: ControlId,
+    pub duplicate: ControlId,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub enum ControlCompletion {
@@ -345,8 +351,22 @@ pub struct EmissionPlan {
     pub(super) transfers: Vec<EmissionTransfer>,
     pub(super) initial: Vec<CopyPlanId>,
     pub(super) statement_operations: Vec<Option<OpId>>,
+    pub(super) origin_only_operations: Vec<bool>,
+    pub(super) origin_only_terminals: Vec<bool>,
 }
 impl EmissionPlan {
+    pub fn origin_only_operation(&self, op: OpId) -> bool {
+        self.origin_only_operations
+            .get(op.0 as usize)
+            .copied()
+            .unwrap_or(false)
+    }
+    pub fn origin_only_terminal(&self, block: BlockId) -> bool {
+        self.origin_only_terminals
+            .get(block.0 as usize)
+            .copied()
+            .unwrap_or(false)
+    }
     pub fn kotlin_continuation_view(&self) -> bool {
         self.coroutine_body.is_some()
     }
@@ -395,6 +415,8 @@ impl EmissionPlan {
             transfers: Vec::new(),
             initial: Vec::new(),
             statement_operations: Vec::new(),
+            origin_only_operations: Vec::new(),
+            origin_only_terminals: Vec::new(),
         }
     }
     pub fn local_initializer(&self, local: StorageId) -> Option<StatementId> {
@@ -652,6 +674,8 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
     plan.omitted_returns = filled(code.terminals.len(), false)?;
     plan.empty_if = filled(code.terminals.len(), false)?;
     plan.statement_operations = filled(code.statements.len(), None)?;
+    plan.origin_only_operations = filled(code.operations.len(), false)?;
+    plan.origin_only_terminals = filled(code.terminals.len(), false)?;
     let mut nodes = Vec::new();
     crate::substrate::owned::reserve(&mut nodes, code.blocks.len())?;
     nodes.resize_with(code.blocks.len(), Vec::new);
@@ -909,14 +933,47 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
                 }
             }
             ControlKind::LabelledBlock { .. } => EmissionLayout::Labelled,
-            ControlKind::Try { .. } => EmissionLayout::Try {
-                body: child(c, 0)?,
-                catches: copy(
-                    c.children
-                        .get(1..)
-                        .ok_or(bug("try lost handler children"))?,
-                )?,
-            },
+            ControlKind::Try { finally, .. } => {
+                if let Some(finally) = finally {
+                    if c.children.len() != 3 {
+                        return Err(bug(
+                            "finally lost its protected, cleanup or duplicate child",
+                        ));
+                    }
+                    plan.origin_only_operations[finally.capture.0 as usize] = true;
+                    if let Some(statement) = code.operations[finally.capture.0 as usize].statement {
+                        for d in &code.statements[statement.0 as usize].outputs {
+                            if let crate::p5::Materialization::ExceptionCapture(local) =
+                                d.materialization()
+                            {
+                                plan.hidden_locals[local.0 as usize] = true;
+                            }
+                        }
+                    }
+                    plan.origin_only_terminals[finally.rethrow.0 as usize] = true;
+                    for &(normal, _) in &finally.operations {
+                        plan.origin_only_operations[normal.0 as usize] = true;
+                    }
+                    EmissionLayout::Try {
+                        body: child(c, 0)?,
+                        catches: copy(&c.children[1..2])?,
+                        finally: Some(FinallyEmission {
+                            cleanup: child(c, 1)?,
+                            duplicate: child(c, 2)?,
+                        }),
+                    }
+                } else {
+                    EmissionLayout::Try {
+                        body: child(c, 0)?,
+                        catches: copy(
+                            c.children
+                                .get(1..)
+                                .ok_or(bug("try lost handler children"))?,
+                        )?,
+                        finally: None,
+                    }
+                }
+            }
             ControlKind::Synchronized { acquire, .. } => EmissionLayout::Synchronized {
                 entry: child(c, 0)?,
                 body: child(c, 1)?,
@@ -953,6 +1010,14 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
                 layout,
             },
         )?;
+    }
+    for c in &code.controls {
+        if let ControlKind::Try {
+            finally: Some(_), ..
+        } = c.kind
+        {
+            plan.controls[c.id.0 as usize].explicit_children = Some(copy(&c.children[..2])?);
+        }
     }
     let mut headers = filled(plan.controls.len(), false)?;
     for c in &plan.controls {

@@ -100,8 +100,16 @@ fallible and checked, without a configured numeric quota.
 
 An ordinary branch first proposes its normal postdominator follow when it lies
 in the enclosing part, otherwise that part's established follow. Both original
-arm reach sets stop at the same enclosing completion boundary. The
-primary boundary is admissible when neither arm reaches the predicate, the arms
+arm reach sets stop at the same enclosing completion boundary. Before comparing
+ordinary branch arms, P6 closes each set over established `TryPlan` membership:
+when the whole protected body is inside an arm and no member is its follow or
+boundary, that arm also owns the plan's original handler content. The monotone
+closure stops when membership no longer changes. It neither follows arbitrary
+exception edges nor identifies a new cleanup pattern. Overlapping arms, foreign
+entrances, split construction groups and scope crossings retain their existing
+admission checks. This lets a containing branch retain an abrupt catch beside
+its protected body instead of excluding the try before child selection.
+The primary boundary is admissible when neither arm reaches the predicate, the arms
 are disjoint, and their union with the predicate satisfies
 `protection::closed_entry`. P6 MUST enqueue only that primary proposal when it is
 boundary-admissible. A later owner/barrier rejection MUST NOT trigger another
@@ -500,8 +508,8 @@ handler tails require a common continuation or explicit representation.
 Proved enclosing synchronization supplies a bounded protection context containing
 the actual held graph and outlet anchors. Cleanup handlers remain ordinary
 protected content: P6 does not remove their clauses, captures, operations or P5
-receives in favor of an implicit cleanup template. Ordered prefix and suffix
-clauses remain unchanged. Candidate composition prefers the full catch frontier
+receives in favor of an implicit cleanup template. The unlocked cleanup alternative
+below retains these facts separately. Ordered prefix and suffix clauses remain unchanged. Candidate composition prefers the full catch frontier
 when equal memberships would otherwise let a suffix obscure it.
 
 Follow candidates start after guarded nodes. Within a synchronized context,
@@ -523,6 +531,33 @@ This changes plans, not original execution facts, and preserves independent regi
 P7 receives either natural ownership or the complete site-specific chain; it does
 not infer a handler relation from printing position. Catch-all is not automatically
 finally.
+
+### Matched unlocked cleanup
+
+Before composition, P6 can attach a `FinallyPlan` to an established single
+catch-all `TryPlan`. The handler has one finite linear path: its original
+capture, a nonempty sequence of result-free static/virtual/interface calls,
+and a throw reading that exact capture storage state with a reference view.
+The captured local has no other read or copy dependency.
+
+The normal exit starts an equally ordered sequence of calls. Every pair has the
+same original invocation kind/target, exact P5 operand reads and initialization
+facts, with only uncaught propagation from either cleanup. Both paths require
+established empty local lock entries and no attached P5 copy or snapshot plans.
+Cleanup nodes have no foreign normal or executable exceptional entrance. Body
+returns, bypass outlets, different protected chains and shared cleanup tails
+reject this alternative. A Phi or different operand state does not become an
+assumed equal value.
+
+The plan pairs original normal and handler operations, retains the original
+capture/rethrow, and adds the normal duplicate as a separate source child.
+The protected body still owns only its original nodes; normal completion enters
+the matched cleanup, then continues at its original next node. Catch-all
+completion executes that same cleanup and implicitly rethrows the established
+capture unless cleanup itself throws. No store, binding or copy is manufactured
+or moved. Ordinary region admission still selects the whole interface; an
+unselected or refused alternative leaves its instructions explicit. Allocation
+and necessary construction failures retain the ordinary classified P6 stop.
 
 ## Monitor capture and scope proof
 

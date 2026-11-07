@@ -49,6 +49,16 @@ pub(super) fn transfers(f: &mut RegionFacts, g: &Graph) -> Result<(), RegionErro
                         break;
                     }
                 }
+                RegionKind::Try(scope) => {
+                    let p = &f.tries[scope.0 as usize];
+                    if p.finally.as_ref().is_some_and(|cleanup| {
+                        cleanup.normal.first() == Some(&l.to) && p.body.contains(&l.from)
+                    }) {
+                        action = TransferAction::Next(l.to);
+                        handled = true;
+                        break;
+                    }
+                }
                 RegionKind::Synchronized(scope) => {
                     let p = &f.synchronized[scope.0 as usize];
                     if p.enter_link == l.id {
@@ -162,6 +172,14 @@ pub(super) fn transfers(f: &mut RegionFacts, g: &Graph) -> Result<(), RegionErro
                 | RegionKind::Try(_)
                 | RegionKind::LabelledBlock { .. }
                     if p.follow == Some(follow) =>
+                {
+                    continuation = Continuation::Parent
+                }
+                RegionKind::Try(id)
+                    if f.tries[id.0 as usize]
+                        .finally
+                        .as_ref()
+                        .is_some_and(|p| p.normal.first() == Some(&follow)) =>
                 {
                     continuation = Continuation::Parent
                 }

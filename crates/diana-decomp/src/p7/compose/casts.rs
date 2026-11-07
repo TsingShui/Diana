@@ -433,6 +433,9 @@ fn first_terminal_read(
     block: crate::p2::BlockId,
     storage: StorageId,
 ) -> Result<Option<ExprId>, ExpressionError> {
+    if code.emission.origin_only_terminal(block) {
+        return Ok(None);
+    }
     let Some(terminal) = code.terminals.get(block.0 as usize) else {
         return Ok(None);
     };
@@ -1106,6 +1109,13 @@ fn rendered_once(
     statement: StatementId,
     occurrence: ExprId,
 ) -> Result<bool, ExpressionError> {
+    if code
+        .emission
+        .statement_operation(statement)
+        .is_some_and(|op| code.emission.origin_only_operation(op))
+    {
+        return Ok(false);
+    }
     let statement = code
         .statements
         .get(statement.0 as usize)

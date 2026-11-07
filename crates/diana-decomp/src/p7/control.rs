@@ -228,6 +228,7 @@ pub enum ControlKind {
         clauses: std::ops::Range<u32>,
         handlers: Vec<p6::NodeId>,
         planning_scope: Option<p6::SyncId>,
+        finally: Option<Finally>,
     },
     Synchronized {
         acquire: StatementId,
@@ -291,6 +292,12 @@ pub struct DecisionArm {
     pub selected: TransferId,
     pub remaining: TransferId,
     pub body: ControlId,
+}
+#[derive(Debug, Serialize)]
+pub struct Finally {
+    pub capture: OpId,
+    pub rethrow: crate::p2::BlockId,
+    pub operations: Vec<(OpId, OpId)>,
 }
 #[derive(Debug, Serialize)]
 pub struct Control {
@@ -712,6 +719,16 @@ pub(super) fn construct(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> 
                     clauses: p.clauses(),
                     handlers: ids(p.handlers(), |n| n)?,
                     planning_scope: p.outer_sync(),
+                    finally: p
+                        .finally()
+                        .map(|p| -> Result<Finally, ExpressionError> {
+                            Ok(Finally {
+                                capture: p.capture(),
+                                rethrow: terminal(c, p.rethrow()),
+                                operations: ids(p.operations(), |pair| pair)?,
+                            })
+                        })
+                        .transpose()?,
                 }
             }
             RegionKind::Synchronized(id) => {

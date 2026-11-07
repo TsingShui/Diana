@@ -97,6 +97,38 @@ pub(super) fn reachable(
     Ok(reached)
 }
 
+/// A branch containing a complete established try body must leave room for
+/// that try's handlers in the same child. Normal reachability alone strands
+/// abrupt catch bodies outside the branch before the try can be selected.
+/// Shared handlers and foreign entrances still pass ordinary admission.
+pub(super) fn include_try_handlers(
+    f: &RegionFacts,
+    boundary: &[bool],
+    follow: Option<NodeId>,
+    reached: &mut [bool],
+) {
+    loop {
+        let mut changed = false;
+        for plan in &f.tries {
+            if !plan.body.iter().all(|n| reached[n.0 as usize])
+                || plan
+                    .members
+                    .iter()
+                    .any(|n| boundary[n.0 as usize] || Some(*n) == follow)
+            {
+                continue;
+            }
+            for &node in &plan.members {
+                changed |= !reached[node.0 as usize];
+                reached[node.0 as usize] = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
 /// A unique first shared actual target, not a categorical return vertex. More
 /// than one shared frontier stays explicit; no returned operands are compared.
 pub(super) fn shared_target(

@@ -84,6 +84,13 @@ impl Expressions<'_, '_> {
                     self.out.put("\n")?;
                 }
                 Event::AbiDispatch => self.abi_dispatch()?,
+                Event::OriginOnly(value) => self.out.origin_only = value,
+                Event::Finally => {
+                    self.out.close()?;
+                    self.out.indent()?;
+                    self.out.put("finally")?;
+                    self.out.open()?;
+                }
                 Event::Control(id) | Event::ChainedControl(id) => {
                     if self.code.emission().omitted(id) {
                         continue;
@@ -298,7 +305,11 @@ impl Expressions<'_, '_> {
                             push(&mut work, Event::Switch(id, *terminal))?;
                             push(&mut work, Event::Control(*header))?;
                         }
-                        EmissionLayout::Try { body, catches } => {
+                        EmissionLayout::Try {
+                            body,
+                            catches,
+                            finally,
+                        } => {
                             self.out.indent()?;
                             if p.label_required {
                                 self.out.put(&p.label)?;
@@ -307,9 +318,17 @@ impl Expressions<'_, '_> {
                             self.out.put("try")?;
                             self.out.open()?;
                             push(&mut work, Event::Close)?;
-                            for (i, &handler) in catches.iter().enumerate().rev() {
-                                push(&mut work, Event::Control(handler))?;
-                                push(&mut work, Event::Catch(id, i))?;
+                            if let Some(finally) = finally {
+                                push(&mut work, Event::OriginOnly(self.out.origin_only))?;
+                                push(&mut work, Event::Control(finally.duplicate))?;
+                                push(&mut work, Event::OriginOnly(true))?;
+                                push(&mut work, Event::Control(finally.cleanup))?;
+                                push(&mut work, Event::Finally)?;
+                            } else {
+                                for (i, &handler) in catches.iter().enumerate().rev() {
+                                    push(&mut work, Event::Control(handler))?;
+                                    push(&mut work, Event::Catch(id, i))?;
+                                }
                             }
                             push(&mut work, Event::Control(*body))?;
                         }
@@ -806,6 +825,8 @@ pub(super) fn branch(op: BranchOp) -> &'static str {
     }
 }
 enum Event {
+    OriginOnly(bool),
+    Finally,
     BeginAbi(&'static str, ControlId),
     EndAbi(ControlId),
     AbiDispatch,

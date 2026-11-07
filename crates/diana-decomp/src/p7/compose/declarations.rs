@@ -155,7 +155,7 @@ impl Layout {
                     }
                     push(&mut work, Event::Control(*header, scope, declarations))?;
                 }
-                EmissionLayout::Try { body, catches } => {
+                EmissionLayout::Try { body, catches, .. } => {
                     for &catch in catches.iter().rev() {
                         push(&mut work, Event::Nested(catch, declarations))?;
                     }
@@ -341,6 +341,7 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
                 statement,
             } = *action
                 && !code.emission.composed_operation(operation)
+                && !code.emission.origin_only_operation(operation)
                 && !code.emission.omitted_literal(statement)
             {
                 statement_operations[statement.0 as usize] = Some(operation);
@@ -537,6 +538,18 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
     }
     for expression in &code.expressions {
         if handled[expression.id.0 as usize] || code.emission.composed_use(expression.id).is_some()
+        {
+            continue;
+        }
+        if expression
+            .origin
+            .as_ref()
+            .is_some_and(|origin| match origin.site {
+                UseSite::Operation { operation, .. } => {
+                    code.emission.origin_only_operation(operation)
+                }
+                UseSite::Terminal { block, .. } => code.emission.origin_only_terminal(block),
+            })
         {
             continue;
         }

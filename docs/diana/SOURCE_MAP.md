@@ -171,6 +171,29 @@ RxD's LICENSE/NOTICE do not override Diana's existing reference-reuse or product
 rules. No dependency, runtime exception or third-party extraction is authorized
 by this capability review.
 
+### 6.4 JADX exception-structure review
+
+JADX [commit c5a451e4](https://github.com/skylot/jadx/tree/c5a451e4ecaea6913bdacb36d272899e0476b5ed)
+is an Apache-2.0 source-review reference. Under
+`jadx-core/src/main/java/jadx/core/`,
+`dex/visitors/regions/ProcessTryCatchRegions::process` traverses regions including
+handlers before wrapping try scopes. Diana independently closes ordinary branch
+membership over complete established P6 `TryPlan` bodies and their handlers;
+its existing entrance, disjoint-part and scope checks still decide admission.
+No Java implementation, helper or dependency is copied.
+
+`dex/visitors/finaly/MarkFinallyVisitor::getTryBlockData` nominates a catch-all
+handler. `cutHandlerBlocks` checks that its examined exits throw the original
+capture, and `extractFinally` requires matching cleanup instructions across the
+other execution scopes before marking duplicates. In contrast,
+`dex/trycatch/TryEdge::isHandlerExit` only classifies `TryEdgeType.HANDLER`.
+Shared handler identity or that edge classification alone does not establish
+finally equivalence. Diana's linear unlocked cleanup matcher instead requires exact
+P5 reads and initialization facts, with no copy phases or storage coalescing;
+it does not adopt JADX's debug-name or code-variable equivalence, mutable
+instruction flags or method-reload path. These are source observations, not
+semantic evidence for Diana's transforms.
+
 ## 7. Additional one-command references and reading targets
 
 ```sh

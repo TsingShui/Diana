@@ -604,6 +604,29 @@ impl Region {
         &self.nodes
     }
 }
+/// One cleanup spelling with its original normal/exceptional instruction pairs.
+/// The original capture, rethrow and normal duplicate remain owned source facts.
+#[derive(Debug)]
+pub struct FinallyPlan {
+    pub(super) normal: Vec<NodeId>,
+    pub(super) operations: Vec<(OpId, OpId)>,
+    pub(super) capture: OpId,
+    pub(super) rethrow: NodeId,
+}
+impl FinallyPlan {
+    pub fn normal(&self) -> &[NodeId] {
+        &self.normal
+    }
+    pub fn operations(&self) -> &[(OpId, OpId)] {
+        &self.operations
+    }
+    pub fn capture(&self) -> OpId {
+        self.capture
+    }
+    pub fn rethrow(&self) -> NodeId {
+        self.rethrow
+    }
+}
 #[derive(Debug)]
 pub struct TryPlan {
     pub(super) id: TryId,
@@ -614,6 +637,7 @@ pub struct TryPlan {
     pub(super) body: Vec<NodeId>,
     pub(super) handlers: Vec<NodeId>,
     pub(super) handler_bodies: Vec<Vec<NodeId>>,
+    pub(super) finally: Option<FinallyPlan>,
     pub(super) members: Vec<NodeId>,
     pub(super) follow: Option<NodeId>,
 }
@@ -641,6 +665,9 @@ impl TryPlan {
     }
     pub fn handler_bodies(&self) -> &[Vec<NodeId>] {
         &self.handler_bodies
+    }
+    pub fn finally(&self) -> Option<&FinallyPlan> {
+        self.finally.as_ref()
     }
     pub fn members(&self) -> &[NodeId] {
         &self.members

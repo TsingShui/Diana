@@ -288,6 +288,7 @@ fn member(
 ) -> Result<(), RenderError> {
     let initial_depth = out.depth;
     let initial_comment = out.abi_comment;
+    let initial_origin_only = out.origin_only;
     let start = out.position();
     let mut state = MethodRenderState {
         prints_nothing,
@@ -305,6 +306,7 @@ fn member(
     // A failed attachment cannot comment out a sibling's recovered code or its
     // method-local recovery diagnostic.
     out.abi_comment = initial_comment;
+    out.origin_only = initial_origin_only;
     match result {
         Ok(()) => {}
         Err(RenderError::Invariant(message)) => {

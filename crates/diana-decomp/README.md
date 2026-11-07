@@ -104,7 +104,10 @@ finite-exit postdominator candidates and iterative SCC analysis drive compositio
 Labels and selected edge copies remain concrete. Ordered throw-site chains,
 original captures, P5 construction ownership and explicit monitor separation reasons
 survive failed natural composition. The [P6 chapter](../../docs/diana/spec/06-regions.md)
-defines the boundary and scope rules.
+defines the boundary and scope rules. A single unlocked catch-all cleanup can
+print as `finally` when its result-free calls match the normal exit by exact
+P5 reads and both paths have no copy phases. Value joins, shared tails and
+unmatched exits retain the original catch or explicit handlers.
 
 P7 produces an independently owned `MethodResult`, delivered by
 `MethodOutcome::Expressed(ExpressedMethod)`. `inspection()` borrows earlier facts

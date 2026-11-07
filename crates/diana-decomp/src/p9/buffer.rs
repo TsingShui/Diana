@@ -9,6 +9,7 @@ pub(super) struct Buffer {
     /// A source attachment is comment-only; it still uses the one renderer and
     /// records origins while writing, rather than editing completed text.
     pub abi_comment: bool,
+    pub origin_only: bool,
     allocation: Option<std::collections::TryReserveError>,
 }
 impl Buffer {
@@ -19,10 +20,14 @@ impl Buffer {
             issues: Vec::new(),
             depth: 0,
             abi_comment: false,
+            origin_only: false,
             allocation: None,
         }
     }
     pub fn put(&mut self, text: &str) -> Result<(), RenderError> {
+        if self.origin_only {
+            return Ok(());
+        }
         self.text
             .try_reserve(text.len())
             .map_err(RenderError::Allocation)?;
@@ -49,6 +54,9 @@ impl Buffer {
         Ok(())
     }
     pub fn indent(&mut self) -> Result<(), RenderError> {
+        if self.origin_only {
+            return Ok(());
+        }
         let n = self.depth.checked_mul(4).ok_or(RenderError::Capacity)?;
         self.text.try_reserve(n).map_err(RenderError::Allocation)?;
         for _ in 0..n {
@@ -256,6 +264,9 @@ fn kotlin_plain(units: impl Iterator<Item = u16> + Clone) -> bool {
 }
 impl Write for Buffer {
     fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        if self.origin_only {
+            return Ok(());
+        }
         if let Err(e) = self.text.try_reserve(s.len()) {
             self.allocation = Some(e);
             return Err(std::fmt::Error);

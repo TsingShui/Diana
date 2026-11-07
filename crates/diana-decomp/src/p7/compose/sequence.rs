@@ -78,7 +78,7 @@ pub(super) fn printed_parts<'a>(
             buffer[1..=bodies.len()].copy_from_slice(bodies);
             return &buffer[..=bodies.len()];
         }
-        EmissionLayout::Try { body, catches } => {
+        EmissionLayout::Try { body, catches, .. } => {
             buffer[0] = *body;
             buffer[1..=catches.len()].copy_from_slice(catches);
             return &buffer[..=catches.len()];
