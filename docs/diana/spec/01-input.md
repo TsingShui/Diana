@@ -28,6 +28,10 @@ read. Decoding happens on demand ([`Units`]) and replaces an illegal sequence wi
 U+FFFD instead of failing the item, so a malformed string stays readable and cannot
 make a request that merely names it unavailable. The declared unit count is
 advisory: equality and prefix matching compare decoded units, not that count.
+Case-insensitive substring matching compares decoded UTF-16 units by lowercase
+iterator equality; surrogate units compare as units. An all-ASCII payload and
+needle use byte candidates. Other values use the same replacement decoder,
+without allocating a UTF-16 vector or changing to whole-string case folding.
 Declaration syntax checks (name and descriptor shape) are separate from this and
 still reject an unusable declaration.
 
@@ -62,6 +66,14 @@ not resolve unrelated field declarations; a listing that only publishes members 
 print its header costs more than the listing itself. Neither form is a second
 parser: both walk the same class data with the same per-declaration failure
 classification.
+
+A header-only method visitor can select by the original name-string ID and
+checked name before acquiring a prototype. Identity/name read failures retain their
+classification. Only accepted names require prototype facts; a rejected name does
+not depend on prototype availability. Class-data bounds, original membership and
+cross-group duplicate handling remain shared with the unfiltered traversal. The
+application memoizes completed name matches within one logical index and query;
+it does not cache read failures or share numeric IDs across logical members.
 
 ## Method source preparation
 

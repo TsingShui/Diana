@@ -210,14 +210,23 @@ pub(super) fn classes(
     }
 }
 
-pub(super) fn methods(
-    index: &ProgramIndex<'_>,
+pub(super) fn methods<'a>(
+    index: &ProgramIndex<'a>,
     image: ImageIndex,
     logical: LogicalDex,
     class_filter: Option<&[u16]>,
     filter: Option<&[u16]>,
     emit: &mut dyn FnMut(Row) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
+    let mut matching_names = Vec::new();
+    if filter.is_some() {
+        let count = usize::try_from(index.string_ids_len())
+            .map_err(|_| super::input::InputError::PlatformCapacity)?;
+        matching_names
+            .try_reserve_exact(count)
+            .map_err(super::input::InputError::Allocation)?;
+        matching_names.resize(count, None);
+    }
     let mut failure: Option<QueryError> = None;
     let result = {
         let mut forward = |row: Row| -> Result<(), diana_decomp::input::InputError> {
@@ -236,13 +245,41 @@ pub(super) fn methods(
             {
                 return Ok(());
             }
-            class.visit_method_headers(|method_idx, access_flags, declaration| {
-                let declaration = declaration?;
-                if let Some(needle) = filter
-                    && !contains_ignore_case(&declaration.name.units()?, needle)
-                {
-                    return Ok(());
+            // A name appears once in the pool but can be used by many definitions.
+            // Cache only completed matches, scoped to this logical index/request.
+            let mut accept = |id: StringId,
+                              name: DexString<'a>|
+             -> Result<bool, diana_decomp::input::InputError> {
+                let Some(needle) = filter else {
+                    return Ok(true);
+                };
+                let id = usize::try_from(id.0).map_err(|_| {
+                    diana_decomp::input::InputError::PlatformCapacity {
+                        offset_byte: diana_decomp::ByteOffset(0),
+                    }
+                })?;
+                let slot = matching_names.get_mut(id).ok_or(
+                    diana_decomp::input::InputError::InternalInvariant(
+                        "method name cache lost an original string ID",
+                    ),
+                )?;
+                if let Some(matched) = *slot {
+                    return Ok(matched);
                 }
+                let matched = name.contains_ignore_case(needle)?;
+                *slot = Some(matched);
+                Ok(matched)
+            };
+            let name_filter = filter.map(|_| {
+                &mut accept
+                    as &mut dyn FnMut(
+                        StringId,
+                        DexString<'a>,
+                    )
+                        -> Result<bool, diana_decomp::input::InputError>
+            });
+            class.visit_method_headers(name_filter, |method_idx, access_flags, declaration| {
+                let declaration = declaration?;
                 let parameters = declaration.prototype.parameter_descriptors();
                 forward(Row::Method(MethodRow {
                     image,
@@ -295,7 +332,7 @@ pub(super) fn fields(
             class.visit_fields(|field| {
                 let declaration = field.declaration?;
                 if let Some(needle) = filter
-                    && !contains_ignore_case(&declaration.name.units()?, needle)
+                    && !declaration.name.contains_ignore_case(needle)?
                 {
                     return Ok(());
                 }
@@ -330,7 +367,7 @@ pub(super) fn strings(
         let string = StringId(ordinal);
         let value = index.string(string)?;
         if let Some(needle) = filter
-            && !contains_ignore_case(&value.units()?, needle)
+            && !value.contains_ignore_case(needle)?
         {
             continue;
         }
@@ -362,36 +399,6 @@ pub fn class_descriptor(text: &str) -> Vec<u16> {
     }
     descriptor.push(u16::from(b';'));
     descriptor
-}
-
-/// Case-insensitive literal UTF-16 substring match for `--filter`.
-pub fn contains_ignore_case(haystack: &[u16], needle: &[u16]) -> bool {
-    if needle.is_empty() {
-        return true;
-    }
-    if needle.len() > haystack.len() {
-        return false;
-    }
-    haystack.windows(needle.len()).any(|window| {
-        window
-            .iter()
-            .zip(needle)
-            .all(|(left, right)| unit_eq_ignore_case(*left, *right))
-    })
-}
-
-/// Compares two UTF-16 units ignoring case; surrogate units compare as units.
-fn unit_eq_ignore_case(left: u16, right: u16) -> bool {
-    if left == right {
-        return true;
-    }
-    match (
-        char::from_u32(u32::from(left)),
-        char::from_u32(u32::from(right)),
-    ) {
-        (Some(left), Some(right)) => left.to_lowercase().eq(right.to_lowercase()),
-        _ => false,
-    }
 }
 
 /// Literal UTF-16 substring match over the primary column text.

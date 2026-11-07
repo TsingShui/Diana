@@ -305,7 +305,7 @@ fn strings_from_prefix(
             prefix::PrefixStrings::Ready(values) => {
                 values.visit(|string, value| {
                     if let Some(needle) = filter
-                        && !super::dex::contains_ignore_case(&value.units()?, needle)
+                        && !value.contains_ignore_case(needle)?
                     {
                         return Ok(());
                     }

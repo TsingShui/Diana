@@ -117,6 +117,64 @@ impl<'a> DexString<'a> {
         Ok(self.matches_prefix(units, Utf16Offset(0))? == Some(Utf16Offset(units.len())))
     }
 
+    /// Literal UTF-16 substring matching with per-unit lowercase equality.
+    /// Surrogates compare as units; no normalization or multi-unit case folding
+    /// changes the match. The original declared count does not bound the search.
+    /// ASCII payloads use byte candidates; other payloads use the shared decoder,
+    /// including its replacement behavior, without materializing a unit vector.
+    pub fn contains_ignore_case(&self, needle: &[u16]) -> Result<bool, InputError> {
+        let Some(&first) = needle.first() else {
+            return Ok(true);
+        };
+        let bytes = self.bytes();
+        if needle.iter().all(|&unit| unit < 0x80) && bytes.is_ascii() {
+            if needle.len() > bytes.len() {
+                return Ok(false);
+            }
+            // first fits u8 by the all-ASCII predicate above.
+            let first = first as u8;
+            for at in memchr::memchr2_iter(
+                first.to_ascii_lowercase(),
+                first.to_ascii_uppercase(),
+                bytes,
+            ) {
+                let Some(candidate) = bytes.get(at..).and_then(|tail| tail.get(..needle.len()))
+                else {
+                    continue;
+                };
+                if candidate
+                    .iter()
+                    .zip(needle)
+                    .all(|(&byte, &unit)| byte.eq_ignore_ascii_case(&(unit as u8)))
+                {
+                    return Ok(true);
+                }
+            }
+            return Ok(false);
+        }
+        let mut positions = self.reader()?;
+        while let Some(unit) = positions.next()? {
+            if !unit_eq_ignore_case(unit, first) {
+                continue;
+            }
+            let mut candidate = positions;
+            let mut matched = true;
+            for &expected in &needle[1..] {
+                match candidate.next()? {
+                    Some(actual) if unit_eq_ignore_case(actual, expected) => {}
+                    _ => {
+                        matched = false;
+                        break;
+                    }
+                }
+            }
+            if matched {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub(super) fn matches_prefix(
         &self,
         units: &[u16],
@@ -302,6 +360,7 @@ impl PrimitiveType {
 /// decodes to a finite unit stream: a malformed item stays readable instead of
 /// failing the request that mentions it. Isolated surrogates are kept as units,
 /// because that is what the item declares and what a caller re-encodes.
+#[derive(Clone, Copy)]
 pub(crate) struct Units<'a> {
     bytes: &'a [u8],
     position: usize,
@@ -360,6 +419,20 @@ impl Units<'_> {
     fn byte_at(&self, ahead: usize) -> Option<u8> {
         let at = self.position.checked_add(ahead)?;
         (at < self.end).then(|| self.bytes[at])
+    }
+}
+
+/// Unit equality deliberately does not fold across UTF-16 boundaries.
+fn unit_eq_ignore_case(left: u16, right: u16) -> bool {
+    if left == right {
+        return true;
+    }
+    match (
+        char::from_u32(u32::from(left)),
+        char::from_u32(u32::from(right)),
+    ) {
+        (Some(left), Some(right)) => left.to_lowercase().eq(right.to_lowercase()),
+        _ => false,
     }
 }
 

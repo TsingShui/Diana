@@ -395,16 +395,31 @@ impl<'a> ProgramIndex<'a> {
         method_idx: MethodId,
         owner: TypeId,
     ) -> Result<MethodDeclaration<'_, 'a>, InputError> {
-        let (name, proto_idx) = self.method_header(method_idx, owner)?;
+        self.method_declaration_if(method_idx, owner, |_, _| Ok(true))?
+            .ok_or(InputError::InternalInvariant(
+                "unfiltered declaration was rejected",
+            ))
+    }
+
+    fn method_declaration_if(
+        &self,
+        method_idx: MethodId,
+        owner: TypeId,
+        mut accept: impl FnMut(StringId, DexString<'a>) -> Result<bool, InputError>,
+    ) -> Result<Option<MethodDeclaration<'_, 'a>>, InputError> {
+        let (name_id, name, proto_idx) = self.method_header(method_idx, owner)?;
+        if !accept(name_id, name)? {
+            return Ok(None);
+        }
         let prototype = self.prototype(proto_idx)?;
-        Ok(MethodDeclaration { name, prototype })
+        Ok(Some(MethodDeclaration { name, prototype }))
     }
 
     fn method_header(
         &self,
         method_idx: MethodId,
         owner: TypeId,
-    ) -> Result<(DexString<'a>, ProtoId), InputError> {
+    ) -> Result<(StringId, DexString<'a>, ProtoId), InputError> {
         let mut record = self.table(TableKey::Method(method_idx))?;
         if TypeId(u32::from(record.read_u16()?)) != owner {
             return Err(malformed(
@@ -413,8 +428,9 @@ impl<'a> ProgramIndex<'a> {
             ));
         }
         let proto_idx = ProtoId(u32::from(record.read_u16()?));
-        let name = self.member_name(StringId(record.read_u32()?))?;
-        Ok((name, proto_idx))
+        let name_id = StringId(record.read_u32()?);
+        let name = self.member_name(name_id)?;
+        Ok((name_id, name, proto_idx))
     }
 
     pub(super) fn validate_field(
@@ -868,11 +884,11 @@ pub struct FieldEntry<'a> {
     pub declaration: Result<FieldDeclaration<'a>, InputError>,
 }
 
-pub(crate) enum MemberSelection {
+pub(crate) enum MemberSelection<'f, 'a> {
     AllMethods,
     /// Method declarations only; field records establish cursor/identity bounds
     /// but do not resolve unrelated field names or types.
-    MethodHeaders,
+    MethodHeaders(Option<&'f mut dyn FnMut(StringId, DexString<'a>) -> Result<bool, InputError>>),
     /// Every field and method header in original group order, without reading code.
     AllMembers,
     Fields,
@@ -940,32 +956,39 @@ impl<'i, 'a> ClassView<'i, 'a> {
     /// A listing needs the original index, access flags and declaration of every
     /// method; reading each `code_item` to answer that costs more than the listing
     /// itself on a large APK, so callers that do not analyze bodies use this
-    /// traversal instead of [`Self::visit_methods`].
+    /// traversal instead of [`Self::visit_methods`]. An optional name predicate
+    /// sees the original string ID and checked name before prototype resolution.
+    /// Only accepted names acquire prototypes; name/identity failures remain local
+    /// declaration errors. The predicate does not change class-data coverage checks.
     pub fn visit_method_headers(
         &self,
+        name_filter: Option<&mut dyn FnMut(StringId, DexString<'a>) -> Result<bool, InputError>>,
         mut visit: impl FnMut(
             crate::MethodId,
             u32,
             Result<&MethodDeclaration<'i, 'a>, InputError>,
         ) -> Result<(), InputError>,
     ) -> Result<(), InputError> {
-        self.visit_members_with(MemberSelection::MethodHeaders, |entry| match entry {
-            MemberEntry::Field(_) => Err(InputError::InternalInvariant(
-                "method-header traversal delivered a field",
-            )),
-            MemberEntry::MethodHeader {
-                method_idx,
-                access_flags,
-                declaration,
-                ..
-            } => match declaration {
-                Ok(declaration) => visit(method_idx, access_flags, Ok(&declaration)),
-                Err(error) => visit(method_idx, access_flags, Err(error)),
+        self.visit_members_with(
+            MemberSelection::MethodHeaders(name_filter),
+            |entry| match entry {
+                MemberEntry::Field(_) => Err(InputError::InternalInvariant(
+                    "method-header traversal delivered a field",
+                )),
+                MemberEntry::MethodHeader {
+                    method_idx,
+                    access_flags,
+                    declaration,
+                    ..
+                } => match declaration {
+                    Ok(declaration) => visit(method_idx, access_flags, Ok(&declaration)),
+                    Err(error) => visit(method_idx, access_flags, Err(error)),
+                },
+                MemberEntry::Method(_) => Err(InputError::InternalInvariant(
+                    "code visitation reached a header-only selection",
+                )),
             },
-            MemberEntry::Method(_) => Err(InputError::InternalInvariant(
-                "code visitation reached a header-only selection",
-            )),
-        })
+        )
     }
 
     /// Per-member failures retain their original IDs. A class-data boundary
@@ -989,7 +1012,7 @@ impl<'i, 'a> ClassView<'i, 'a> {
     /// sibling declaration; per-declaration read failures stay in each entry.
     pub(crate) fn walk_members_with<E: From<InputError>>(
         &self,
-        selection: MemberSelection,
+        mut selection: MemberSelection<'_, 'a>,
         mut visit: impl FnMut(MemberEntry<'i, 'a>) -> Result<(), E>,
     ) -> Result<ClassDataWalk, E> {
         let Some(offset) = self.class_data_offset else {
@@ -1101,7 +1124,7 @@ impl<'i, 'a> ClassView<'i, 'a> {
                         EncodedMember::Field => {
                             if matches!(
                                 selection,
-                                MemberSelection::AllMethods | MemberSelection::MethodHeaders
+                                MemberSelection::AllMethods | MemberSelection::MethodHeaders(_)
                             ) {
                                 continue;
                             }
@@ -1125,13 +1148,28 @@ impl<'i, 'a> ClassView<'i, 'a> {
                             }))?;
                         }
                         EncodedMember::Method { code_offset } => {
-                            let declaration = local(
-                                self.index
-                                    .method_declaration(MethodId(index), self.type_idx),
-                            )?;
+                            let declaration = match &mut selection {
+                                MemberSelection::MethodHeaders(Some(accept)) => {
+                                    local(self.index.method_declaration_if(
+                                        MethodId(index),
+                                        self.type_idx,
+                                        &mut **accept,
+                                    ))?
+                                }
+                                _ => local(
+                                    self.index
+                                        .method_declaration(MethodId(index), self.type_idx)
+                                        .map(Some),
+                                )?,
+                            };
+                            let declaration = match declaration {
+                                Ok(Some(declaration)) => Ok(declaration),
+                                Ok(None) => continue,
+                                Err(error) => Err(error),
+                            };
                             if matches!(
                                 selection,
-                                MemberSelection::AllMembers | MemberSelection::MethodHeaders
+                                MemberSelection::AllMembers | MemberSelection::MethodHeaders(_)
                             ) {
                                 let group_slot = match kind {
                                     MemberKind::Field => group,
@@ -1192,7 +1230,7 @@ impl<'i, 'a> ClassView<'i, 'a> {
 
     pub(crate) fn visit_members_with<E: From<InputError>>(
         &self,
-        selection: MemberSelection,
+        selection: MemberSelection<'_, 'a>,
         visit: impl FnMut(MemberEntry<'i, 'a>) -> Result<(), E>,
     ) -> Result<(), E> {
         let walk = self.walk_members_with(selection, visit)?;

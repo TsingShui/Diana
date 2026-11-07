@@ -12,6 +12,7 @@ References are identified by **public repository URL, pinned commit, and reposit
 | KU | [Noelo-Lab/kuna](https://github.com/Noelo-Lab/kuna) | `29c44b57f8c1d9b35044aa4ee3f636c193288009` | Paths are relative to that repository's root. [Pinned phases document](https://github.com/Noelo-Lab/kuna/blob/29c44b57f8c1d9b35044aa4ee3f636c193288009/docs/phases.md) |
 | RG | [MG1937/radguard](https://github.com/MG1937/radguard), `0.1.3` | **`290de20c925c4a2c7642b1a63c9997185a06e130`** | Paths are relative to radguard's own repository root. [Pinned manifest](https://github.com/MG1937/radguard/blob/290de20c925c4a2c7642b1a63c9997185a06e130/Cargo.toml). An earlier version incorrectly identified the parent repository's commit as the radguard commit; the parent contains only a gitlink. This corrects that mistake. |
 | ZD | [zed-industries/zed](https://github.com/zed-industries/zed) | `654efae441bc8eb117d0042bb28cd7cf3570bdc9` | GUI design reference: `crates/ui/src/components/{list/list_item,tab}.rs`; MIT color data: `assets/themes/ayu/ayu.json`. See §6.2. |
+| AS | [TsingShui/rust_ASC](https://github.com/TsingShui/rust_ASC) | `bcc2ca403067466dd6d104d9909ca2324561b063` | Operator-selected CLI name-selection reference; reviewed checkout pin. Online availability was not rechecked. See §6.5. |
 | RX | [TsingShui/RxD](https://github.com/TsingShui/RxD) | `54b38408e16371971c2cc1f5fbf70e8e0642907a` | GUI capability reference only: workspace features, CLI adapters, backend public surfaces and NOTICE. See §6.3. |
 
 Explicitly obtain pinned references in the current checkout as described in [SOURCE_MAP.md](SOURCE_MAP.md#10-reproducible-inputs-and-tools). References are for review and implementation, not implicit dependencies of production or E2E test runs. Offline collaborators use source bundles verified at the same commits; do not automatically switch to main or the author's machine paths.
@@ -195,6 +196,24 @@ initialization facts and no copy phases or storage coalescing;
 it does not adopt JADX's debug-name or code-variable equivalence, mutable
 instruction flags or method-reload path. These are source observations, not
 semantic evidence for Diana's transforms.
+
+### 6.5 CLI name-selection reference
+
+AS at the commit in §1 declares Apache-2.0 in its manifest and root LICENSE.
+`src/asc_core/findrefs/scan/method_id_scan.rs::{matching_methods,render_dex_methods}`
+selects candidate method indexes before resolving prototypes.
+`src/asc_core/findrefs/locator/string_locator.rs::{locate_name_indices,matches_name}`
+memoizes visited name IDs and uses ASCII byte candidates; its author header
+identifies MG1937.
+
+Diana independently applies name selection inside the shared class-data reader,
+with a per-query name-ID result cache. It neither copies nor links the upstream
+helpers. Its substring matcher preserves Diana's existing per-UTF-16-unit
+lowercase equality, surrogate handling and replacement decoding rather than
+adopting the reference's whole-string lowercase semantics. Name/identity errors
+remain classified; only selected declarations consume prototype facts.
+Correspondence review compares original locator/value multisets, not only row
+counts. Finite corpus observations do not prove equivalence for every encoding.
 
 ## 7. Additional one-command references and reading targets
 
