@@ -342,6 +342,9 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
             StatementKind::CheckCast { value, reference } => {
                 // A cast statement keeps the check at its original position and
                 // writes no register; the value keeps its own local.
+                // A standalone check prints as the cast expression it is: the
+                // Java-like form keeps the same syntax as an inlined check, and
+                // the Kotlin view uses `as`, never the null-returning `as?`.
                 if self.kotlin_notation() {
                     self.out.put("(")?;
                     self.operand(*value)?;
@@ -349,10 +352,11 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
                     self.kotlin_cast_reference(*reference)?;
                     self.out.put(")")?;
                 } else {
-                    self.out.put("cast ")?;
-                    self.operand(*value)?;
-                    self.out.put(" to ")?;
+                    self.out.put("((")?;
                     self.reference(*reference)?;
+                    self.out.put(") ")?;
+                    self.operand(*value)?;
+                    self.out.put(")")?;
                 }
             }
             StatementKind::FillArray { array, payload } => {

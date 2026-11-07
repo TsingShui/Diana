@@ -185,8 +185,8 @@ unchanged. An element that is itself a combined expression keeps the explicit
 form.
 
 Unary conversions correspond to original conversion operations. A check-cast
-remains a check with no invented register write. It prints as `cast v to T` at its
-original position, or as `((T) v)` at the first printed read of the checked local;
+remains a check with no invented register write. It prints as `((T) v)` at its
+original position, or at the first printed read of the checked local;
 the check then keeps its own statement, operation, type and route origins at the
 use. That read is either the first evaluated value of the following statement or
 the first executed step of the single unconditional transfer copy set that ends the

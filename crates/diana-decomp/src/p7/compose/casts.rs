@@ -55,6 +55,9 @@ pub(super) fn construct(
     statement_uses(code, &protection, &mut found, &mut why_slots)?;
     copy_uses(code, &mut found, &mut why_slots)?;
     terminal_uses(code, &protection, &mut found, &mut why_slots)?;
+    // A check with no adjacent carrier still prints at the read that consumes
+    // its value, so no check-cast stands alone.
+    distant_uses(code, &protection, &omitted, &mut found, &mut why_slots)?;
     // A redundant check has no text to carry, so its value's read keeps its own
     // spelling and the check's statement only contributes its origins.
     found.retain(|(statement, _)| {
@@ -317,6 +320,264 @@ fn statement_uses(
         }
     }
     Ok(())
+}
+
+/// Attach a still standalone check to the first printed read of its value. The
+/// carrier must sit in the same protection context and render that read once.
+fn distant_uses(
+    code: &MethodCode,
+    protection: &[Option<ControlId>],
+    omitted: &[Option<OmittedCheck>],
+    found: &mut Vec<(StatementId, InlineCheck)>,
+    why_slots: &mut [Option<&'static str>],
+) -> Result<(), ExpressionError> {
+    for node in 0..code.emission.blocks.len() {
+        for &action in &code.emission.blocks[node].actions {
+            let BodyAction::Statement {
+                operation,
+                statement,
+            } = action
+            else {
+                continue;
+            };
+            if omitted
+                .get(statement.0 as usize)
+                .is_some_and(Option::is_some)
+                || found.iter().any(|(check, _)| *check == statement)
+            {
+                continue;
+            }
+            let Some((storage, reference)) = eligible_check(code, operation, statement, None)
+            else {
+                continue;
+            };
+            let mut why = None;
+            let mut carried = None;
+            for candidate in &code.statements {
+                if candidate.id == statement {
+                    continue;
+                }
+                let Some((_, occurrence)) = first_read(code, candidate.id, storage)? else {
+                    continue;
+                };
+                let Some(consumed) = code
+                    .operations
+                    .iter()
+                    .find(|source| source.statement == Some(candidate.id))
+                else {
+                    continue;
+                };
+                if protection.get(consumed.node.0 as usize).copied()
+                    != protection.get(node).copied()
+                {
+                    why = Some("distant_use_changes_protection");
+                    continue;
+                }
+                if !rendered_once(code, candidate.id, occurrence)? {
+                    why = Some("distant_read_renders_twice");
+                    continue;
+                }
+                carried = Some(carried_check(
+                    code,
+                    operation,
+                    statement,
+                    storage,
+                    reference,
+                    CheckCarrier::Statement(candidate.id),
+                    occurrence,
+                )?);
+                break;
+            }
+            if carried.is_none() {
+                for (index, body) in code.blocks.iter().enumerate() {
+                    let terminal = match body.completion {
+                        BlockCompletion::Ordinary(terminal)
+                        | BlockCompletion::Syntax { terminal, .. } => terminal,
+                        BlockCompletion::None => continue,
+                    };
+                    let Some(occurrence) = first_terminal_read(code, terminal, storage)? else {
+                        continue;
+                    };
+                    if protection.get(index).copied() != protection.get(node).copied() {
+                        why = Some("distant_use_changes_protection");
+                        continue;
+                    }
+                    carried = Some(carried_check(
+                        code,
+                        operation,
+                        statement,
+                        storage,
+                        reference,
+                        CheckCarrier::Terminal(terminal),
+                        occurrence,
+                    )?);
+                    break;
+                }
+            }
+            match carried {
+                Some(carried) if unclaimed_occurrence(found, &carried.1) => push(found, carried)?,
+                Some(_) => why = Some("distant_occurrence_claimed"),
+                None => {}
+            }
+            if let Some(why) = why {
+                why_at(why_slots, statement, why);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The first executed read of one storage among a terminal's operands.
+fn first_terminal_read(
+    code: &MethodCode,
+    block: crate::p2::BlockId,
+    storage: StorageId,
+) -> Result<Option<ExprId>, ExpressionError> {
+    let Some(terminal) = code.terminals.get(block.0 as usize) else {
+        return Ok(None);
+    };
+    let mut roots = Vec::new();
+    match &terminal.kind {
+        TerminalKind::Return(Some(value)) | TerminalKind::Throw(value) => {
+            push(&mut roots, *value)?;
+        }
+        TerminalKind::If { condition, .. } => match condition {
+            Condition::Pair { left, right, .. } => {
+                push(&mut roots, *left)?;
+                push(&mut roots, *right)?;
+            }
+            Condition::Zero { value, .. } => push(&mut roots, *value)?,
+        },
+        TerminalKind::Switch { selector, .. } => push(&mut roots, *selector)?,
+        TerminalKind::None | TerminalKind::Goto(_) | TerminalKind::Return(None) => {}
+    }
+    let mut work = Vec::new();
+    for root in roots.into_iter().rev() {
+        push(&mut work, root)?;
+    }
+    while let Some(id) = work.pop() {
+        let Some(expression) = code.expressions.get(id.0 as usize) else {
+            return Ok(None);
+        };
+        if code.emission.composed_use(id).is_some() {
+            return Ok(None);
+        }
+        match &expression.kind {
+            ExprKind::Read { storage: read, .. } if *read == storage => return Ok(Some(id)),
+            ExprKind::Unary { value, .. } => push(&mut work, *value)?,
+            ExprKind::Binary { left, right, .. } | ExprKind::Compare { left, right, .. } => {
+                push(&mut work, *right)?;
+                push(&mut work, *left)?;
+            }
+            ExprKind::Array { array, index, .. } => {
+                push(&mut work, *index)?;
+                push(&mut work, *array)?;
+            }
+            ExprKind::Field {
+                receiver: Some(receiver),
+                ..
+            } => push(&mut work, *receiver)?,
+            ExprKind::ArrayLength(array) => push(&mut work, *array)?,
+            ExprKind::InstanceOf { value, .. } => push(&mut work, *value)?,
+            ExprKind::Call(call) => {
+                if let Arguments::Known(args) = &call.arguments {
+                    for &argument in args.iter().rev() {
+                        push(&mut work, argument)?;
+                    }
+                }
+                if let Some(receiver) = call.receiver {
+                    push(&mut work, receiver)?;
+                }
+            }
+            _ => return Ok(None),
+        }
+    }
+    Ok(None)
+}
+
+/// The first printed read of one storage inside this statement's expression
+/// roots, in the order P9 evaluates them.
+fn first_read(
+    code: &MethodCode,
+    statement: StatementId,
+    storage: StorageId,
+) -> Result<Option<(StatementId, ExprId)>, ExpressionError> {
+    let Some(statement_ref) = code.statements.get(statement.0 as usize) else {
+        return Ok(None);
+    };
+    let mut roots = Vec::new();
+    match &statement_ref.kind {
+        StatementKind::Move { expression, .. }
+        | StatementKind::Evaluate { expression }
+        | StatementKind::Initialize { expression, .. } => push(&mut roots, *expression)?,
+        StatementKind::FieldStore {
+            receiver, value, ..
+        } => {
+            if code.emission.natural_store(statement)
+                && let Some(receiver) = receiver
+            {
+                push(&mut roots, *receiver)?;
+            }
+            push(&mut roots, *value)?;
+        }
+        StatementKind::ArrayStore {
+            array,
+            index,
+            value,
+            ..
+        } => {
+            if code.emission.natural_store(statement) {
+                push(&mut roots, *array)?;
+                push(&mut roots, *index)?;
+            }
+            push(&mut roots, *value)?;
+        }
+        _ => return Ok(None),
+    }
+    let mut work = Vec::new();
+    for root in roots.into_iter().rev() {
+        push(&mut work, root)?;
+    }
+    while let Some(id) = work.pop() {
+        let Some(expression) = code.expressions.get(id.0 as usize) else {
+            return Ok(None);
+        };
+        if code.emission.composed_use(id).is_some() {
+            return Ok(None);
+        }
+        match &expression.kind {
+            ExprKind::Read { storage: read, .. } if *read == storage => {
+                return Ok(Some((statement, id)));
+            }
+            ExprKind::Unary { value, .. } => push(&mut work, *value)?,
+            ExprKind::Binary { left, right, .. } | ExprKind::Compare { left, right, .. } => {
+                push(&mut work, *right)?;
+                push(&mut work, *left)?;
+            }
+            ExprKind::Array { array, index, .. } => {
+                push(&mut work, *index)?;
+                push(&mut work, *array)?;
+            }
+            ExprKind::Field {
+                receiver: Some(receiver),
+                ..
+            } => push(&mut work, *receiver)?,
+            ExprKind::ArrayLength(array) => push(&mut work, *array)?,
+            ExprKind::InstanceOf { value, .. } => push(&mut work, *value)?,
+            ExprKind::Call(call) => {
+                if let Arguments::Known(args) = &call.arguments {
+                    for &argument in args.iter().rev() {
+                        push(&mut work, argument)?;
+                    }
+                }
+                if let Some(receiver) = call.receiver {
+                    push(&mut work, receiver)?;
+                }
+            }
+            _ => return Ok(None),
+        }
+    }
+    Ok(None)
 }
 
 /// Follow an already selected composition to its printed carrier. This reads
@@ -740,6 +1001,12 @@ fn observable_carrier(
         StatementKind::Move { expression, .. } | StatementKind::Evaluate { expression } => {
             push(&mut roots, *expression)?;
         }
+        // An explicit constructor call prints receiver and arguments in
+        // evaluation order, so a checked argument keeps the check before every
+        // later argument and before the constructor itself.
+        StatementKind::Initialize { expression, .. } => {
+            push(&mut roots, *expression)?;
+        }
         StatementKind::FieldStore {
             receiver, value, ..
         } => {
@@ -846,6 +1113,9 @@ fn rendered_once(
     let mut roots = [None; 3];
     match &statement.kind {
         StatementKind::Move { expression, .. } | StatementKind::Evaluate { expression } => {
+            roots[0] = Some(*expression);
+        }
+        StatementKind::Initialize { expression, .. } => {
             roots[0] = Some(*expression);
         }
         StatementKind::FieldStore {
