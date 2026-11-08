@@ -1,0 +1,6 @@
+-dontwarn
+-dontshrink
+-dontoptimize
+-printmapping mapping.txt
+-keep,allowobfuscation class fixture.ComplexFlow { *; }
+-keep,allowobfuscation class fixture.ComplexFlow$State { *; }

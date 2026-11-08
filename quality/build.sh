@@ -31,6 +31,9 @@ if [ -z "$KOTLINC" ]; then
     KOTLINC="/Applications/Android Studio.app/Contents/plugins/Kotlin/kotlinc/bin/kotlinc"
 fi
 KOTLIN_LIB="$(dirname "$KOTLINC")/../lib/kotlin-stdlib.jar"
+R8_JAR="${R8_JAR:-/Applications/Android Studio.app/Contents/plugins/android/lib/r8.jar}"
+PROGUARD_JARS="${PROGUARD_JARS:-$(ls "$ROOT"/.cache/tools/proguard/*.jar 2>/dev/null | paste -sd: -)}"
+ANDROID_JAR="${ANDROID_JAR:-$SDK/platforms/android-37.0/android.jar}"
 
 echo "d8          $D8"
 echo "build-tools $(basename "$(dirname "$D8")")"
@@ -66,7 +69,34 @@ for slug_dir in "$QUALITY"/fixtures/*/; do
         echo "error: $slug produced no classes" >&2
         exit 1
     fi
-    if [ -f "$KOTLIN_LIB" ]; then
+
+    # A fixture's own rules file selects the packaging step; there is no
+    # per-language or per-kind build route.
+    rules="$slug_dir/rules.pro"
+    if [ -f "$rules" ]; then
+        (
+            cd "$out"
+            mkdir -p input && cp -r classes/. input/ && (cd input && zip -qr ../classes.jar .)
+            if grep -q '^# obfuscator: *proguard' "$rules"; then
+                if [ -z "$PROGUARD_JARS" ]; then
+                    echo "error: $slug needs ProGuard jars; set PROGUARD_JARS" >&2
+                    exit 1
+                fi
+                cp "$rules" proguard.pro
+                printf -- "-injars %s/classes.jar\n-outjars %s/obfuscated.jar\n-libraryjars %s\n" \
+                    "$out" "$out" "$ANDROID_JAR" >> proguard.pro
+                java -cp "$PROGUARD_JARS" proguard.ProGuard @proguard.pro
+                mkdir -p obfuscated && (cd obfuscated && unzip -qo ../obfuscated.jar)
+                "$D8" --min-api 24 --output dex $(find obfuscated -name '*.class')
+            else
+                java -cp "$R8_JAR" com.android.tools.r8.R8 --release --min-api 24 \
+                    --lib "$ANDROID_JAR" --pg-conf "$rules" --output dex classes.jar
+            fi
+        )
+        if [ -f "$out/mapping.txt" ]; then
+            cp "$out/mapping.txt" "$slug_dir/mapping.txt"
+        fi
+    elif [ -f "$KOTLIN_LIB" ]; then
         "$D8" --min-api 24 --lib "$KOTLIN_LIB" --output "$out/dex" $class_files
     else
         "$D8" --min-api 24 --output "$out/dex" $class_files

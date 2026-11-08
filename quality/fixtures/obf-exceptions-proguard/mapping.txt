@@ -1,0 +1,13 @@
+fixture.ComplexExceptions -> a.a:
+    java.util.List log -> a
+    void <init>() -> <init>
+    int parseOrThrow(java.lang.String) -> a
+    int nestedFinally(int) -> a
+    int resources(int) -> b
+    int multiAndInstance(java.lang.Object) -> a
+fixture.ComplexExceptions$Res -> a.b:
+    int id -> a
+    boolean closed -> b
+    void <init>(int) -> <init>
+    int read() -> a
+    void close() -> close

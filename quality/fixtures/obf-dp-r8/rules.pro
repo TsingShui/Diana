@@ -1,0 +1,4 @@
+-dontwarn
+-dontoptimize
+-printmapping mapping.txt
+-keep,allowobfuscation class fixture.AlgoDp { *; }

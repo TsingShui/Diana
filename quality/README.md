@@ -124,6 +124,9 @@ Commands are only re-verified with the ordinary equivalence checks (`get-class`,
 | `complex-map-nested` | `Map<String, List<Integer>>`, `computeIfAbsent`, `getOrDefault`, entry loops |
 | `complex-recursion` | mutual recursion, accumulator recursion, memoised Fibonacci |
 | `algo-matrix` | matrix multiply, transpose, spiral traversal |
+| `obf-flow-r8` | R8-obfuscated `complex-flow` (enum switch, loop, try/finally, ternary) |
+| `obf-dp-r8` | R8-obfuscated `algo-dp` (2D arrays, nested loops, `Math.min`) |
+| `obf-exceptions-proguard` | ProGuard-obfuscated `complex-exceptions` (nested try/finally, TWR in a loop, multi-catch) |
 | `kotlin-null-safety` | `?.`, `?:`, `!!`, safe-call chain, `@Metadata` (Kotlin source; review only, no Java reference to score against) |
 
 ## Reviews
@@ -170,8 +173,26 @@ Commands are only re-verified with the ordinary equivalence checks (`get-class`,
 | `complex-stream` | 62% / 73% | pipelines and method references correct; lambda bodies and `$r8$lambda$…` names enter the class body |
 | `complex-map-nested` | 54% / 69% | `computeIfAbsent` lambdas correct; nested generic arguments lost, `via` and dangling casts appear |
 | `algo-matrix` | 28% / 29% | all three correct; `new int[m][n]` becomes `Array.newInstance` and the result is returned as `Object` |
+| `obf-flow-r8` | 43% / obf | R8-renamed enum switch renders as Kotlin `when` and loses the `default:` order |
+| `obf-exceptions-proguard` | 31% / obf | nested classes flattened, `@MemberClasses` dropped, one short name reused for overloads |
+| `obf-dp-r8` | 30% / obf | scores match the unobfuscated source fixture: renaming alone costs no structure |
 
-Corpus totals (round 1): **structure 65%, naming 61%** over 149 methods. The
+### Obfuscated fixtures
+
+A fixture whose directory holds a `rules.pro` is obfuscated before it is dexed:
+R8 by default, ProGuard when the first line says `# obfuscator: proguard`. Both
+are local tools only - R8 comes from the Android Studio install, ProGuard jars
+live under `.cache/tools/proguard/` (GPLv2, never committed) - while the
+generated DEX and `mapping.txt` are ours and do stay in the tree.
+
+`score.py` reads `mapping.txt` and pairs each reference method with the produced
+body through the mapped name **and parameter types**, because an obfuscator may
+give one short name to several overloads. Structure is comparable with the
+unobfuscated source fixture; naming is reported as `obf` because the obfuscator
+destroyed it.
+
+Corpus totals (round 1): **structure 62%, naming 61%** over 164 methods (164
+includes the obfuscated fixtures, which contribute structure only). The
 `complex-*` and `algo-*` fixtures are the lowest scorers: real code multiplies the
 temporary variables, `while (test { … })` loops and goto-based exits that the
 single-structure fixtures isolate. The second
