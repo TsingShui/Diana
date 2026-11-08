@@ -7,7 +7,7 @@ use super::build::*;
 use super::*;
 use crate::p2::OpKind;
 use crate::p3::ValueId;
-use crate::p4::{Identity, Initialization, Interpretation, TypedMethod};
+use crate::p4::{Identity, Initialization, Interpretation, TypeNameId, TypedMethod};
 
 fn identity_source(
     f: &StorageFacts,
@@ -105,7 +105,20 @@ fn compatible(typed: &TypedMethod<'_>, f: &StorageFacts, a: LocalId, b: LocalId)
     };
     // Consumers can retain the representative's declared-type sources only
     // when all members carry precisely those same facts; no type join is guessed.
-    a.types() == b.types() && a.has_unknown_type_source() == b.has_unknown_type_source()
+    // The solver appends a source per reaching use, so the same sources in
+    // another arrival order describe the same declaration and still merge.
+    same_type_sources(a.types(), b.types())
+        && a.has_unknown_type_source() == b.has_unknown_type_source()
+}
+fn same_type_sources(a: &[TypeNameId], b: &[TypeNameId]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut left: Vec<u32> = a.iter().map(|id| id.0).collect();
+    let mut right: Vec<u32> = b.iter().map(|id| id.0).collect();
+    left.sort_unstable();
+    right.sort_unstable();
+    left == right
 }
 fn root(parent: &[LocalId], mut id: LocalId) -> LocalId {
     while parent[id.0 as usize] != id {

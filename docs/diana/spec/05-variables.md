@@ -31,6 +31,11 @@ concrete storage gap. `ValueId` and
 `LocalId` have separate identities. P5 first assigns independent locals, then
 selects compatible representatives for noninterfering Move/normal-copy affinities.
 It does not build another register environment or equate the original values.
+Two candidates are compatible only with equal storage types and the same set of
+declared-type sources. P4 appends a source as each reaching use is solved, so that
+list is a fact set, not a sequence: the same sources in another arrival order
+describe the same declaration and do not block reuse. Pinned locals, incomplete
+or non-transfer copy requirements, and any interfering member still do.
 
 P5 consumes P4 families and widths. `StorageType::NumericBits` preserves an
 established numeric word/wide representation without choosing int versus float
