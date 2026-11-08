@@ -108,6 +108,12 @@ Commands are only re-verified with the ordinary equivalence checks (`get-class`,
 | `class-enum-body` | enum with constructor state, method and a constant body |
 | `class-interface-default` | interface `default` and `static` methods |
 | `class-init-order` | field initializers, instance block, static init, `this(...)` |
+| `complex-flow` | enum state machine: switch, loop with break/continue, try/finally, ternary |
+| `complex-exceptions` | nested `try`/`finally`, caught rethrow with cause, TWR in a loop, multi-catch |
+| `complex-inner` | anonymous class, member inner, static nested, generic bag |
+| `algo-sort` | insertion, quick and merge sort |
+| `algo-graph` | BFS, DFS and connected components on an adjacency matrix |
+| `algo-dp` | edit distance, longest increasing subsequence, knapsack |
 | `kotlin-null-safety` | `?.`, `?:`, `!!`, safe-call chain, `@Metadata` (Kotlin source; review only, no Java reference to score against) |
 
 ## Reviews
@@ -138,8 +144,17 @@ Commands are only re-verified with the ordinary equivalence checks (`get-class`,
 | `class-interface-default` | 78% / 89% | `default` keyword lost; `plus()` condition inverted |
 | `class-anonymous` | 73% / 67% | capture via `new Outer$1(this, p0)` is right; result goes through a temporary |
 | `class-init-order` | 68% / 100% | static block, initializer and instance block order correct; field reads go through temporaries |
+| `complex-inner` | 74% / 36% | captures and inner construction correct; generic type arguments lost |
+| `algo-graph` | 50% / 45% | BFS/DFS values correct; `Deque`/`ArrayDeque` generics and element casts lose the declared type |
+| `algo-sort` | 50% / 49% | all three sorts correct; every index goes through a temporary and `for` is lost |
+| `complex-exceptions` | 30% / 63% | correct except the TWR-in-loop handler placement; constructors print as `new X;` + `x.<init>(…)` |
+| `algo-dp` | 29% / 37% | all three recurrences correct; 2D arrays go through `Array.newInstance` with uncast reads |
+| `complex-flow` | 23% / 70% | behaviour correct; ternary, enum cases and loop exits are all expanded into temporaries, empty `if`s and gotos |
 
-Corpus totals (round 1): **structure 75%, naming 65%** over 88 methods. The second
+Corpus totals (round 1): **structure 69%, naming 62%** over 108 methods. The
+`complex-*` and `algo-*` fixtures are the lowest scorers: real code multiplies the
+temporary variables, `while (test { … })` loops and goto-based exits that the
+single-structure fixtures isolate. The second
 batch (loops, switches, exceptions, synchronization) is exactly where the recovery
 is weakest: string switch 18%, two-resource TWR 8%, synchronized 42%.
 
