@@ -1,9 +1,11 @@
 # Java explanations and Smali fixtures
 
-A fixture is a small, independently authored reduction of one observed problem.
-Java explains the intended behavior; Smali fixes the DEX instruction structure
-used for reproduction. The [evolution workflow](EVOLUTION.md) owns repair and
-regression acceptance. Fixture preparation follows the root
+A fixture is a focused, independently authored input for discovery, reproduction,
+regression or a complexity challenge. Java explains the intended behavior; Smali
+fixes the DEX instruction structure. A reduction isolates an observed cause; a
+challenge retains it while adding interacting mechanisms. The primary
+[evolution workflow](EVOLUTION.md#primary-iteration) requires new complexity
+challenges after repair and owns iteration and behavioral-regression decisions. Fixture preparation follows the root
 [permission](../../AGENTS.md) and [testing policy](CONTRIBUTING.md#testing-policy).
 
 ## Files and ownership
@@ -37,7 +39,9 @@ generated-output ban. A failed assembly MUST NOT publish or test a stale result.
 
 [quality/README](../../quality/README.md) describes the shared fixture directory
 and written-review workflow. Sharing a location does not turn DEX inputs or
-written reviews into behavioral expectations or regression acceptance evidence.
+written reviews into executed behavioral results. Reviews support the primary
+iteration decision under EVOLUTION; behavioral-regression acceptance requires
+its separately executed checks.
 
 There is no mandatory `expected.json` or per-fixture `build.sh`. Authors MUST write
 independent behavioral expectations in the README. An authorized regression case
@@ -46,6 +50,21 @@ back to the fixture; it does not introduce a competing source of expected behavi
 Engine fixture tests MUST use the ordinary Engine entry and original selectors.
 Shared helpers belong in `tests/support/` when actual consumers require them;
 production stage modules MUST NOT hold fixture test implementations.
+
+## Complexity challenge records
+
+Follow [EVOLUTION](EVOLUTION.md#complexity-challenge) for the primary repair loop.
+Keep each new challenge beside its own Java/Smali, DEX, expectations and review;
+link the original discovery fixture rather than replacing or expanding it in place.
+Its README MUST identify the repaired mechanism/invariant, the added interaction,
+the parent fixture, required scenarios and pre-fix/candidate revisions. Its review
+MUST explain both generalization and preservation of earlier effects. Keep
+compatibility guards distinct from cases demonstrating a new repair benefit.
+
+Authors MUST derive helper arguments and fault reachability from the input:
+an acquisition ID is not necessarily its returned handle, and a selected fault
+cannot occur if an earlier branch skips its call. Native declarations require an
+explicit helper model; models are not claims of an executed implementation.
 
 ## Java and Smali correspondence
 
@@ -124,7 +143,8 @@ Acceptance for a prepared reproduction: the assembled input has the recorded
 trigger structure and reproduces the concrete symptom on the identified Diana
 revision. Assembly success, exit zero, legal Java or an empty diagnostic list
 alone does not meet this criterion. Repair acceptance additionally follows
-[EVOLUTION](EVOLUTION.md#acceptance-and-regression).
+[EVOLUTION's iteration decision](EVOLUTION.md#iteration-decision) and its separate
+[behavioral-regression criteria](EVOLUTION.md#acceptance-and-regression).
 
 ## Fixture review
 

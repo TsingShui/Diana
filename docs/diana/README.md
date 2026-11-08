@@ -33,7 +33,7 @@ construction boundaries and later-stage responsibilities are in [phases](phases.
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution, Rust and acceptance rules. |
 | [FIXTURES.md](FIXTURES.md) | Java explanations, Smali inputs, assembly records and independent expectations. |
 | [quality/README](../../quality/README.md) | Output-quality fixtures, their committed DEX and the written reviews. |
-| [EVOLUTION.md](EVOLUTION.md) | Agreed discovery-to-repair workflow and test-side final-plan acceptance design. |
+| [EVOLUTION.md](EVOLUTION.md) | Primary fixture-driven repair/complexity-challenge/review loop and supplementary test-side behavioral acceptance. |
 | [WRITING.md](WRITING.md) | Documentation conventions. |
 
 Archived implementations are not active stages or alternate recovery paths. Removed specifications and historical
@@ -48,12 +48,19 @@ transform checks remain required.
 
 ## Regression workflow status
 
-[EVOLUTION](EVOLUTION.md) defines the agreed workflow. [FIXTURES](FIXTURES.md)
-uses paired Java explanations and Smali assembly inputs without requiring a
-fixed Java/D8/R8 toolchain or exact assembler version.
+[EVOLUTION](EVOLUTION.md#primary-iteration) defines the primary improvement loop:
+fixture discovery, owning-stage repair, newly authored complexity challenges,
+LLM path-by-path semantic review, and preservation of original/prior effects.
+A repair of the discovery case alone does not complete the iteration.
+[FIXTURES](FIXTURES.md) uses paired Java explanations and Smali inputs without
+requiring a fixed Java/D8/R8 toolchain or exact assembler version. The existing
+`dbg_shell` supplies ordinary Engine products for review; implemented structural
+checks are described in the [engine README](../../crates/diana-decomp/README.md).
 
 The final-output-plan executor and admitted regression suite are not implemented.
-There is no automated acceptance command or regression CI job to report as passing.
+There is no automated final-plan behavioral acceptance command or regression CI
+job to report as passing. This does not prevent the primary LLM-reviewed
+iteration; its decision is not a substitute for a machine behavioral result.
 The root testing policy now permits automated tests and CI test jobs. That
 permission does not implement the checker or activate a nonexistent suite.
 [Checker implementation](EVOLUTION.md#checker-implementation) defines the planned

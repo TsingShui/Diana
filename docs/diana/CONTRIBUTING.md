@@ -176,11 +176,14 @@ Java/D8/R8 compilation or exact assembler versions.
 `quality/fixtures/` holds all fixtures, including output-quality references and
 Java/Smali reproductions used by tests. Prepared DEX is committed beside its
 sources so inspection and tests need no toolchain. A written quality review
-records judgement, not a test result: it MUST NOT be cited as regression or
-acceptance evidence, and it does not gate a change.
+records an LLM semantic judgment supporting the primary iteration decision, not
+an executed test result. It MUST NOT be cited as a machine behavioral PASS or
+used to override a failed deterministic check.
 
-[EVOLUTION](EVOLUTION.md) fixes the discovery-to-repair procedure, checker design
-and acceptance criteria. Contributors MUST distinguish independent expectations
+[EVOLUTION](EVOLUTION.md) defines the primary fixture-driven loop: after repairing
+the general cause, generate new more-complex same-mechanism fixtures, review them
+semantically with the original case, and preserve prior effects. Its iteration
+decision and executed behavioral-regression criteria are separate evidence scopes. Contributors MUST distinguish independent expectations
 from observed engine output. Cases that cannot be prepared or evaluated MUST
 remain explicit failures or unchecked results, not successful skips. Reports
 MUST identify the required scenarios, exercised subset and actual outcomes.

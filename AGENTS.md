@@ -100,9 +100,13 @@ chapters describe the existing implementation until migrated to this target.
   changes.
   Identify consumed facts, guarantees, invariants and classified failure behavior.
   If contracts conflict with the change, stop and request a decision.
-- For discovery, fixture reduction and repair acceptance, follow
-  [EVOLUTION](docs/diana/EVOLUTION.md). Unimplemented, unrun or unsupported
-  checks MUST NOT be reported as passing.
+- The primary improvement process is the fixture-driven loop in
+  [EVOLUTION](docs/diana/EVOLUTION.md): discover, repair the general cause,
+  generate new more-complex same-mechanism fixtures, perform LLM semantic review,
+  and recheck original/prior effects. Contributors MUST complete the complexity
+  challenge and required regression checks before declaring an iteration effective;
+  fixing the discovery case alone is insufficient. Unimplemented, unrun or
+  unsupported checks MUST NOT be reported as passing.
 - For detailed architecture, Rust conventions, dependency choices, acceptance,
   file verification, corpus handling and reference isolation, read
   [CONTRIBUTING](docs/diana/CONTRIBUTING.md) for the relevant work. Read
@@ -140,8 +144,9 @@ chapters describe the existing implementation until migrated to this target.
   per-fixture tool-version pin, record the actual environment, and publish the
   prepared `classes.dex` beside its sources so inspection/tests need no assembler.
   Only `quality/fixtures/**/classes.dex` is exempt from the generated-output ban;
-  other generated files stay ignored. Written quality reviews are judgements,
-  not tests or regression acceptance evidence.
+  other generated files stay ignored. Written quality reviews support the primary
+  iteration decision; they are judgements, not executed behavioral tests or
+  machine regression acceptance.
   Test authorization does not permit independent validation on production requests.
 - Fixture reviews MUST primarily use LLM semantic-equivalence review: compare
   the original input/source behavior with the current decompiled output path by

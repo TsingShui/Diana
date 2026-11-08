@@ -10,8 +10,8 @@ refer to these inputs. The written-review workflow here answers *did the readabl
 get better*, separately from executed behavioral checks.
 
 Fixture reviews MUST primarily use LLM semantic-equivalence review: directly
-compare original input/source behavior and helper bodies with current decompiled
-output, path by path. Structural assertions, similarity scores and test results
+compare original input/source behavior and helper bodies or explicit helper
+models with current decompiled output, path by path. Structural assertions, similarity scores and test results
 are supporting evidence, not substitutes for this semantic reading.
 
 Missing effects or case bodies can be semantic
@@ -27,7 +27,7 @@ quality/
 ├── score.py                     structure/naming recovery per method, no thresholds
 ├── lib.py                       method splitting and token normalisation
 ├── .gitignore                   keeps the committed fixture DEX in the tree
-└── fixtures/<theme>/<slug>/     one structure per directory, one theme per parent
+└── fixtures/<theme>/<slug>/     one focused hypothesis per directory
     ├── <Slug>.java              readable explanation; compile input without Smali
     ├── <Slug>.smali             optional assembly input; takes precedence over Java
     ├── classes.dex              prepared input, committed for reproducibility
@@ -35,8 +35,9 @@ quality/
     └── review.md                written quality verdict, if applicable
 ```
 
-A fixture tests **one structure** (constants, two-register branches, one catch):
-that is what makes the Java source a usable expectation and keeps a review short.
+A fixture tests **one focused mechanism or interaction**. Atomic inputs isolate
+constants, branches or catches; complexity challenges combine relevant structures
+while keeping the repaired guarantee and independent expectations identifiable.
 The themes are `atoms/`, `branches/`, `loops/`, `exceptions/`, `sync/`,
 `classes/`, `generics/`, `algorithms/`, `composite/`, `obfuscated/` and
 `kotlin/`; the two catalog tables below use the same grouping, and a slug stays
@@ -47,6 +48,12 @@ JDK, Android SDK, assembler or network. The generated-output exception covers
 `quality/fixtures/**/classes.dex` only.
 
 ## Workflow
+
+The primary improvement loop is [EVOLUTION](../docs/diana/EVOLUTION.md#primary-iteration):
+discover a fixture problem, repair its general cause, author new more-complex
+same-mechanism fixtures, then review the challenge and preserve earlier effects.
+A successful review of only the discovery case does not finish an iteration.
+The commands and review steps below supply evidence for that loop.
 
 ```sh
 quality/build.sh                       # after editing assembly/compile inputs
@@ -71,8 +78,8 @@ hand-written Java "expected" file is added as a workaround.
 normalises both bodies (identifiers to `ID`, string/char literals to `STR`/`CHR`,
 comments dropped, keywords/operators/numbers kept) and reports the token-stream
 similarity, the share of reference identifiers that reappear, and the first
-divergence. Because a fixture holds one structure, that number is meaningful, and
-it needs no hand-written expectations. It is a measurement, not a verdict: a 100%
+divergence. Interpret that number within the fixture's focused mechanism or
+interaction; it needs no hand-written token expectations. It is a measurement, not a verdict: a 100%
 match can still be wrong, and an equivalent shape can score low.
 
 1. `dump.py` prints every fixture method twice: the Java reference and Diana's
@@ -93,14 +100,15 @@ match can still be wrong, and an equivalent shape can score low.
    much structure survived, the semantics table says whether it still means the
    same thing. That file already holds the coverage table and the preparation record,
    while reproduction scenarios and test evidence stay in the fixture's README.
-4. Improvements are made, `dump.py` is re-run, and the **current verdict is
+4. After a repair, complete EVOLUTION's new complexity challenge and original/prior
+   effect review, rather than only re-dumping the seed. The **current verdict is
    rewritten in place** while `## Rounds` gains one line. The file stays bounded:
    it always opens with what is true now, and older rounds remain readable in
    `git log -p`.
 
 A fixture review records the LLM's semantic judgment and its evidence separately
-from readability. It is written quality evidence, not an automated behavioral
-execution result or regression acceptance. An LLM judgment MUST NOT override a
+from readability. It supports EVOLUTION's primary iteration decision, but is not
+an automated behavioral execution result or executed behavioral-regression acceptance. An LLM judgment MUST NOT override a
 failed deterministic check; repair acceptance still follows
 [EVOLUTION](../docs/diana/EVOLUTION.md#acceptance-and-regression).
 
