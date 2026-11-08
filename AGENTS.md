@@ -135,6 +135,10 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo build --workspace --release --locked
 ```
 
+The CLI and engine hold the 1.93 minimum and CI gates them on that toolchain on
+Linux, macOS and Windows. The GPUI desktop application follows current stable and
+needs the platform GUI libraries; CI gates the full workspace on Linux stable only.
+
 Run applicable format, lint and build checks. Report failures and unrun evidence
 accurately; do not report removed tests or missing semantic evidence as a pass.
 

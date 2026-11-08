@@ -1,9 +1,11 @@
 name: Diana
 
 # Diana-only gates: format, lint and release build.
-# `gates` runs the declared minimum toolchain (1.93) on three platforms; `latest`
-# reruns the same gates on current stable so new lints and warnings surface before
-# a toolchain bump. No version preparation, artifact upload, tag or release.
+# `gates` runs the CLI and engine on the declared minimum toolchain (1.93) on three
+# platforms. `workspace` reruns the same gates over every workspace member,
+# including the GPUI desktop application, on current stable. The GUI follows stable
+# because its GPUI dependency needs newer library features than 1.93, and it needs
+# the platform GUI libraries. No version preparation, artifact upload, tag or release.
 
 on:
   push:
@@ -34,7 +36,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-latest, macos-14, windows-latest]
+        runner: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v5
@@ -51,17 +53,24 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
 
-      - name: Lint
-        run: cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
+      - name: Lint CLI and engine
+        run: cargo clippy -p diana -p diana-decomp --locked --all-targets --all-features -- -D warnings
 
-      - name: Build
-        run: cargo build --workspace --locked --release
+      - name: Build CLI and engine
+        run: cargo build -p diana -p diana-decomp --locked --release
 
-  latest:
-    name: Gates (ubuntu-latest, stable)
+  workspace:
+    name: Workspace gates (ubuntu-latest, stable)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+
+      # GPUI resolves fonts through fontconfig and links the desktop toolkit.
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libfontconfig1-dev libfreetype-dev libxkbcommon-dev libwayland-dev
 
       - name: Toolchain
         run: |
@@ -70,7 +79,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: diana-latest
+          key: diana-workspace
 
       - name: Format
         run: cargo fmt --all -- --check

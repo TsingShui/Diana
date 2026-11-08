@@ -142,6 +142,11 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo build --workspace --release --locked
 ```
 
+The CLI and engine hold the 1.93 minimum; CI gates those packages on that
+toolchain on Linux, macOS and Windows. The GPUI desktop application needs current
+stable and the platform GUI libraries, so CI gates the full workspace on Linux
+stable only.
+
 Bare Cargo commands select Diana only. Do not build or release archived reference
 projects to validate this branch. Report failed checks and missing evidence
 accurately. Real APK/ART validation requires explicit opt-in and authorized

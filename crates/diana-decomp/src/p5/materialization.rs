@@ -394,7 +394,10 @@ fn candidate(
         }
         let own =
             matches!(usage.site(),UseSite::Operation{operation,..}if members.contains(&operation));
-        if !own && !(normal_single && s.dominates(normal, usage.point())) {
+        // The use either belongs to one of the construction's own members, or is
+        // reached only after its single normal completion.
+        let after_initialization = own || (normal_single && s.dominates(normal, usage.point()));
+        if !after_initialization {
             if unsafe_reach.is_none() {
                 unsafe_reach = Some(without_success(typed, success)?);
             }
