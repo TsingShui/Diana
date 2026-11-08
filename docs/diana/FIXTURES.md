@@ -125,3 +125,16 @@ trigger structure and reproduces the concrete symptom on the identified Diana
 revision. Assembly success, exit zero, legal Java or an empty diagnostic list
 alone does not meet this criterion. Repair acceptance additionally follows
 [EVOLUTION](EVOLUTION.md#acceptance-and-regression).
+
+## Fixture review
+
+Authors MUST use LLM semantic-equivalence review as the primary method for written
+fixture reviews. Compare the authored input/source behavior and helper bodies
+with current decompiled output, path by path. Record the original member,
+reviewed scenarios, reasoning and unresolved paths in `review.md`.
+
+Structural checks, similarity scores and test results supplement this review;
+they do not replace semantic reading. A written judgment is not a claim that
+behavioral execution passed and does not override a failing test. The detailed
+[quality review workflow](../../quality/README.md#workflow) keeps semantic
+agreement, concrete mismatches, uncertainty and readability findings distinct.

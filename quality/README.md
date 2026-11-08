@@ -9,7 +9,12 @@ expectations. Executable engine checks live in `crates/diana-decomp/tests/` and
 refer to these inputs. The written-review workflow here answers *did the readable output
 get better*, separately from executed behavioral checks.
 
-Quality is judged by reading. Missing effects or case bodies can be semantic
+Fixture reviews MUST primarily use LLM semantic-equivalence review: directly
+compare original input/source behavior and helper bodies with current decompiled
+output, path by path. Structural assertions, similarity scores and test results
+are supporting evidence, not substitutes for this semantic reading.
+
+Missing effects or case bodies can be semantic
 errors; an explicit handler chain or graph can instead be a readability obstacle
 that preserves execution facts. The notation alone does not establish a semantic
 error. String metrics measure shape, not correctness, and never replace that
@@ -72,10 +77,15 @@ match can still be wrong, and an equivalent shape can score low.
 
 1. `dump.py` prints every fixture method twice: the Java reference and Diana's
    output for the same method, plus the checks to apply.
-2. A reviewer (LLM or person) judges each pair on four axes — **semantics**
-   (same values, effects, call order, exceptions, locks), **facts** (original
+2. An LLM reviewer judges semantic equivalence first: results and exception
+   identities; evaluation, argument, call and write order; initialization,
+   acquisition, close and lock order; catch priority; primary and suppressed
+   exceptions. Read helper bodies and compare each relevant normal and exceptional
+   path. Record original member identities, concrete expected/observed behavior
+   and the reasoning. Mark uncertain and unreviewed paths explicitly rather than
+   inferring agreement from similar structure. Then record **facts** (original
    calls, constants, identities), **shape** (reference constructs recovered) and
-   **notation** (only-a-decompiler forms in the body).
+   **notation** (only-a-decompiler forms in the body) as separate findings.
 3. The judgement is written into the fixture itself, `quality/fixtures/<theme>/<slug>/review.md`.
    **Every written quality review carries a per-method `### Semantics` table** - `✔` equivalent,
    `~` equivalent but different shape, `✘` wrong, `?` not yet judged - next to the
@@ -88,9 +98,11 @@ match can still be wrong, and an equivalent shape can score low.
    it always opens with what is true now, and older rounds remain readable in
    `git log -p`.
 
-Commands are only re-verified with the ordinary equivalence checks (`get-class`,
-`get-method`, `xref`, `outline` byte-identical before/after); the review says
-*whether it reads better*, not *whether it is correct*.
+A fixture review records the LLM's semantic judgment and its evidence separately
+from readability. It is written quality evidence, not an automated behavioral
+execution result or regression acceptance. An LLM judgment MUST NOT override a
+failed deterministic check; repair acceptance still follows
+[EVOLUTION](../docs/diana/EVOLUTION.md#acceptance-and-regression).
 
 ## Fixtures
 

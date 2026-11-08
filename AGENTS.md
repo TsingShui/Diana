@@ -143,6 +143,13 @@ chapters describe the existing implementation until migrated to this target.
   other generated files stay ignored. Written quality reviews are judgements,
   not tests or regression acceptance evidence.
   Test authorization does not permit independent validation on production requests.
+- Fixture reviews MUST primarily use LLM semantic-equivalence review: compare
+  the original input/source behavior with the current decompiled output path by
+  path, including helper behavior, results, effect order and exception handling.
+  Reviewers MUST record their reasoning and mark uncertain or unreviewed paths.
+  Structural checks, similarity scores and test results are supporting evidence,
+  not substitutes for that review. Written judgments do not establish executed
+  behavioral checks or override failed tests and regression acceptance rules.
 - Rust tests MUST run through `cargo nextest run`, not `cargo test`. Use package
   and test filters for the affected scope. Missing nextest is a setup failure;
   do not silently substitute another runner.
