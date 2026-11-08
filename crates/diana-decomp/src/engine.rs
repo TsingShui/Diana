@@ -44,6 +44,9 @@ struct IndexedImage<'a> {
     image: DexImage<'a>,
     container: DexContainer<'a>,
     index: ProgramIndex<'a>,
+    /// Original image id: the vector position for [`Engine::open`], or the id the
+    /// caller already established for [`Engine::focus`].
+    dex: crate::DexId,
 }
 
 /// Immutable original indexes borrowing caller-owned bytes.
@@ -155,17 +158,17 @@ impl<'a> Engine<'a> {
                 Some(container) => container,
                 None => DexContainer::open(image.bytes)?,
             };
-            let index = container
-                .program(image.header_offset)?
-                .with_dex(crate::DexId(u32::try_from(indexed.len()).map_err(
-                    |_| InputError::PlatformCapacity {
-                        offset_byte: image.header_offset,
-                    },
-                )?));
+            let dex = crate::DexId(u32::try_from(indexed.len()).map_err(|_| {
+                InputError::PlatformCapacity {
+                    offset_byte: image.header_offset,
+                }
+            })?);
+            let index = container.program(image.header_offset)?.with_dex(dex);
             indexed.push(IndexedImage {
                 image,
                 container,
                 index,
+                dex,
             });
         }
         Ok(Self {
@@ -175,6 +178,42 @@ impl<'a> Engine<'a> {
             method_pool: std::sync::OnceLock::new(),
             method_pool_build: std::sync::Mutex::new(()),
         })
+    }
+
+    /// Opens one image under the [`crate::DexId`] the caller already established.
+    ///
+    /// A request for one class does not need the other logical images of a
+    /// multi-DEX input: the caller resolved the class once and can lend only the
+    /// defining image. [`Engine::open`] numbers images by vector position, which
+    /// would renumber them; this entry keeps the original id, so published class
+    /// keys and image facts still name the original image.
+    pub fn focus(image: DexImage<'a>, dex: crate::DexId) -> Result<Self, InputError> {
+        let container = DexContainer::open(image.bytes)?;
+        let index = container.program(image.header_offset)?.with_dex(dex);
+        let mut images = Vec::new();
+        images
+            .try_reserve_exact(1)
+            .map_err(|_| InputError::Allocation {
+                offset_byte: image.header_offset,
+            })?;
+        images.push(IndexedImage {
+            image,
+            container,
+            index,
+            dex,
+        });
+        Ok(Self {
+            images,
+            method_jobs: 1,
+            outline: false,
+            method_pool: std::sync::OnceLock::new(),
+            method_pool_build: std::sync::Mutex::new(()),
+        })
+    }
+
+    /// The image stored under this original id, if the engine holds it.
+    fn image(&self, dex: crate::DexId) -> Option<&IndexedImage<'a>> {
+        self.images.iter().find(|image| image.dex == dex)
     }
 }
 
@@ -330,8 +369,7 @@ impl<'a> Engine<'a> {
         &self,
         class: ClassKey,
     ) -> Result<std::sync::Arc<crate::p0::ClassFacts>, RequestError> {
-        let position = usize::try_from(class.dex.0).map_err(|_| RequestError::UnknownDex)?;
-        let image = self.images.get(position).ok_or(RequestError::UnknownDex)?;
+        let image = self.image(class.dex).ok_or(RequestError::UnknownDex)?;
         image.index.class_facts_cached(class.class_def)
     }
 
@@ -342,8 +380,7 @@ impl<'a> Engine<'a> {
         method: MethodId,
     ) -> Result<SingleMethodAnalysis<'a>, RequestError> {
         let facts = self.class_facts(class)?;
-        let position = usize::try_from(class.dex.0).map_err(|_| RequestError::UnknownDex)?;
-        let image = self.images.get(position).ok_or(RequestError::UnknownDex)?;
+        let image = self.image(class.dex).ok_or(RequestError::UnknownDex)?;
         let result = MethodTask::run(&image.index, &facts, method);
         let mut members = Vec::new();
         crate::substrate::owned::push(&mut members, delivery::member(method, &result))?;
@@ -361,9 +398,9 @@ impl<'a> Engine<'a> {
     /// Runs the unique method tasks, then P8 on their joined products. A selected
     /// method uses the same name planner without class-wide package/import output.
     pub fn analyze(&self, request: Request) -> Result<ClassAnalysis<'a>, RequestError> {
-        let position =
-            usize::try_from(request.class.dex.0).map_err(|_| RequestError::UnknownDex)?;
-        let image = self.images.get(position).ok_or(RequestError::UnknownDex)?;
+        let image = self
+            .image(request.class.dex)
+            .ok_or(RequestError::UnknownDex)?;
         let facts = image.index.class_facts_cached(request.class.class_def)?;
         let mut entries = Vec::new();
         match &request.method {

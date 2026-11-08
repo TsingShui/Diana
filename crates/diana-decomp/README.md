@@ -225,6 +225,13 @@ multi-member class requests when `n > 1`; the default is one. Single-method call
 keep the same sequential chain. The shell exposes this setting as
 `--method-jobs <workers>`. Separate DEX-process concurrency and method-worker
 concurrency need joint configuration rather than multiplying both blindly.
+
+`Engine::open` numbers images by vector position. A caller that already resolved a
+class can lend only the defining image through `Engine::focus(image, dex)`, which
+keeps the original `DexId`. Published class keys, image facts and locators then
+still name the image that defined the class, and an application that resolved a
+name across a multi-DEX input does not need to hand every image to the engine.
+Both constructors store one image per id and serve the same `Request` chain.
 `p5-all` with `details:true` also exposes each class member's retained P3/P4/P5
 products and the P6 plan from that one class request. `p7-all` with
 `details:true` exposes each member's owned method result. `p8` (aliases `assembly`
