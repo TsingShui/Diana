@@ -34,6 +34,62 @@ use crate::p5::{CopyLocation, Materialization, TransferSite};
 
 /// The first reason this statement could not print at a read. The first refusal
 /// is the one that decides; later paths would only repeat a symptom.
+/// Shared read-only state one carrier decision may consult. The driver owns the
+/// iteration, the "already claimed" bookkeeping and every written slot.
+struct Carrier<'a> {
+    code: &'a MethodCode,
+    protection: &'a [Option<ControlId>],
+    found: &'a [(StatementId, InlineCheck)],
+}
+/// What one carrier decided for one check statement.
+enum Carried {
+    /// The check prints at this occurrence.
+    At((StatementId, InlineCheck)),
+    /// The declaration takes the check's type; the driver applies it.
+    Declare {
+        check: (StatementId, InlineCheck),
+        local: StorageId,
+        ty: TypeUseId,
+    },
+}
+/// Why one carrier did not answer for this check, or an error it hit while
+/// reading the products. The driver records the first refusal and propagates an
+/// error.
+enum Stop {
+    Refuse(&'static str),
+    Error(ExpressionError),
+}
+impl From<ExpressionError> for Stop {
+    fn from(error: ExpressionError) -> Self {
+        Stop::Error(error)
+    }
+}
+type Find = for<'a> fn(&Carrier<'a>, StatementId, StorageId) -> Result<Option<Carried>, Stop>;
+
+/// Priority is this order. A carrier that refuses leaves the check to the next
+/// one; the driver keeps the first refusal per check for the trace.
+const CARRIERS: &[Find] = &[
+    definition_carrier,
+    statement_carrier,
+    copy_carrier,
+    terminal_carrier,
+    distant_carrier,
+];
+
+/// The block and action position of one statement in the printed order.
+fn block_and_index(code: &MethodCode, statement: StatementId) -> Option<(usize, usize)> {
+    for (node, block) in code.emission.blocks.iter().enumerate() {
+        for (index, action) in block.actions.iter().enumerate() {
+            if let BodyAction::Statement { statement: s, .. } = action
+                && *s == statement
+            {
+                return Some((node, index));
+            }
+        }
+    }
+    None
+}
+
 fn why_at(slots: &mut [Option<&'static str>], statement: StatementId, why: &'static str) {
     if let Some(slot) = slots.get_mut(statement.0 as usize)
         && slot.is_none()
@@ -52,15 +108,51 @@ pub(super) fn construct(
         super::super::build::filled(code.statements.len(), None)?;
     let mut found: Vec<(StatementId, InlineCheck)> = Vec::new();
     let protection = protected_contexts(code)?;
-    // A value that the check names as a whole is declared and initialized with
-    // that type; this carrier owns the check before any read claims it.
-    definition_uses(code, &omitted, &mut found, &mut why_slots)?;
-    statement_uses(code, &protection, &mut found, &mut why_slots)?;
-    copy_uses(code, &mut found, &mut why_slots)?;
-    terminal_uses(code, &protection, &mut found, &mut why_slots)?;
-    // A check with no adjacent carrier still prints at the read that consumes
-    // its value, so no check-cast stands alone.
-    distant_uses(code, &protection, &omitted, &mut found, &mut why_slots)?;
+    // One traversal: every check statement asks the carriers in priority order,
+    // and the driver applies the one decision that answers.
+    for node in 0..code.emission.blocks.len() {
+        for index in 0..code.emission.blocks[node].actions.len() {
+            let BodyAction::Statement {
+                operation,
+                statement,
+            } = code.emission.blocks[node].actions[index]
+            else {
+                continue;
+            };
+            if found.iter().any(|(check, _)| *check == statement)
+                || omitted
+                    .get(statement.0 as usize)
+                    .is_some_and(Option::is_some)
+            {
+                continue;
+            }
+            let Some((storage, _)) = eligible_check(code, operation, statement, None) else {
+                continue;
+            };
+            let carrier = Carrier {
+                code,
+                protection: &protection,
+                found: &found,
+            };
+            for find in CARRIERS {
+                match find(&carrier, statement, storage) {
+                    Ok(Some(Carried::At(check))) => {
+                        push(&mut found, check)?;
+                        break;
+                    }
+                    Ok(Some(Carried::Declare { check, local, ty })) => {
+                        code.emission.local_types[local.0 as usize] = LocalSpelling::Named(ty);
+                        code.locals[local.0 as usize].declared_types = vec![ty];
+                        push(&mut found, check)?;
+                        break;
+                    }
+                    Ok(None) => {}
+                    Err(Stop::Refuse(why)) => why_at(&mut why_slots, statement, why),
+                    Err(Stop::Error(error)) => return Err(error),
+                }
+            }
+        }
+    }
     // A redundant check has no text to carry, so its value's read keeps its own
     // spelling and the check's statement only contributes its origins.
     let mut kept: Vec<(StatementId, InlineCheck)> = Vec::new();
@@ -341,87 +433,77 @@ fn unclaimed_occurrence(found: &[(StatementId, InlineCheck)], check: &InlineChec
 /// The checked value read by the very next statement action, at that statement's
 /// first evaluated value. Nothing is reordered: the check still happens before
 /// every effect of that statement, and the checked local is not written.
-fn statement_uses(
-    code: &MethodCode,
-    protection: &[Option<ControlId>],
-    found: &mut Vec<(StatementId, InlineCheck)>,
-    why_slots: &mut [Option<&'static str>],
-) -> Result<(), ExpressionError> {
-    for node in 0..code.emission.blocks.len() {
-        let actions = &code.emission.blocks[node].actions;
-        for index in 0..actions.len().saturating_sub(1) {
-            let BodyAction::Statement {
-                operation,
-                statement,
-            } = actions[index]
-            else {
-                continue;
-            };
-            let Some((storage, reference)) = eligible_check(code, operation, statement, None)
-            else {
-                continue;
-            };
-            let mut refuse = |why: &'static str| why_at(why_slots, statement, why);
-            let BodyAction::Statement {
-                operation: consumer,
-                statement: next,
-            } = actions[index + 1]
-            else {
-                refuse("next_action_is_not_a_statement");
-                continue;
-            };
-            if code
-                .emission
-                .suspensions()
-                .iter()
-                .any(|s| s.statement == next)
-            {
-                // This surface has an implicit continuation occurrence. Keep a
-                // preceding check at its original action rather than attach it
-                // to an operand that this surface does not print.
-                refuse("suspension_owns_its_operands");
-                continue;
-            }
-            if !statement_keeps_protection(code, consumer, protection, protection[node]) {
-                refuse("next_statement_changes_protection");
-                continue;
-            }
-            if code.statements[next.0 as usize]
-                .outputs
-                .iter()
-                .any(|output| {
-                    matches!(
-                        output.materialization(),
-                        Materialization::Store(local) if StorageId(local.0) == storage
-                    )
-                })
-            {
-                refuse("next_statement_writes_the_value");
-                continue;
-            }
-            let Some(occurrence) = observable_carrier(code, next, storage)? else {
-                refuse("first_observable_is_another_value");
-                continue;
-            };
-            if !rendered_once(code, next, occurrence)? {
-                refuse("first_leaf_renders_twice");
-                continue;
-            }
-            let carried = carried_check(
-                code,
-                operation,
-                statement,
-                storage,
-                reference,
-                CheckCarrier::Statement(next),
-                occurrence,
-            )?;
-            if unclaimed_occurrence(found, &carried.1) {
-                push(found, carried)?;
-            }
-        }
+fn statement_carrier(
+    carrier: &Carrier<'_>,
+    statement: StatementId,
+    storage: StorageId,
+) -> Result<Option<Carried>, Stop> {
+    let code = carrier.code;
+    let Some((node, index)) = block_and_index(code, statement) else {
+        return Ok(None);
+    };
+    let actions = &code.emission.blocks[node].actions;
+    let Some(next_action) = actions.get(index + 1) else {
+        return Ok(None);
+    };
+    let BodyAction::Statement {
+        operation: consumer,
+        statement: next,
+    } = *next_action
+    else {
+        return Err(Stop::Refuse("next_action_is_not_a_statement"));
+    };
+    let BodyAction::Statement { operation, .. } = actions[index] else {
+        return Ok(None);
+    };
+    let Some((_, reference)) = eligible_check(code, operation, statement, None) else {
+        return Ok(None);
+    };
+    if code
+        .emission
+        .suspensions()
+        .iter()
+        .any(|s| s.statement == next)
+    {
+        // This surface has an implicit continuation occurrence. Keep a
+        // preceding check at its original action rather than attach it
+        // to an operand that this surface does not print.
+        return Err(Stop::Refuse("suspension_owns_its_operands"));
     }
-    Ok(())
+    if !statement_keeps_protection(code, consumer, carrier.protection, carrier.protection[node]) {
+        return Err(Stop::Refuse("next_statement_changes_protection"));
+    }
+    if code.statements[next.0 as usize]
+        .outputs
+        .iter()
+        .any(|output| {
+            matches!(
+                output.materialization(),
+                Materialization::Store(local) if StorageId(local.0) == storage
+            )
+        })
+    {
+        return Err(Stop::Refuse("next_statement_writes_the_value"));
+    }
+    let Some(occurrence) = observable_carrier(code, next, storage)? else {
+        return Err(Stop::Refuse("first_observable_is_another_value"));
+    };
+    if !rendered_once(code, next, occurrence)? {
+        return Err(Stop::Refuse("first_leaf_renders_twice"));
+    }
+    let carried = carried_check(
+        code,
+        operation,
+        statement,
+        storage,
+        reference,
+        CheckCarrier::Statement(next),
+        occurrence,
+    )?;
+    if !unclaimed_occurrence(carrier.found, &carried.1) {
+        return Err(Stop::Refuse("occurrence_claimed"));
+    }
+    Ok(Some(Carried::At(carried)))
 }
 
 /// Attach a still standalone check to the first printed read of its value. The
@@ -434,247 +516,204 @@ fn statement_uses(
 /// read then prints the narrow declared type instead of repeating a cast, which
 /// the single readable read carrier cannot do for a second use. Only a reference
 /// type that narrows the current declaration qualifies.
-fn definition_uses(
-    code: &mut MethodCode,
-    omitted: &[Option<OmittedCheck>],
-    found: &mut Vec<(StatementId, InlineCheck)>,
-    why_slots: &mut [Option<&'static str>],
-) -> Result<(), ExpressionError> {
-    for block in &code.emission.blocks {
-        let mut previous: Option<StatementId> = None;
-        for action in &block.actions {
-            let BodyAction::Statement {
-                operation,
-                statement,
-            } = action
-            else {
-                previous = None;
-                continue;
-            };
-            if omitted
-                .get(statement.0 as usize)
-                .is_some_and(Option::is_some)
-                || found.iter().any(|(check, _)| check == statement)
-            {
-                previous = Some(*statement);
-                continue;
-            }
-            let Some((storage, reference)) = eligible_check(code, *operation, *statement, None)
-            else {
-                previous = Some(*statement);
-                continue;
-            };
-            let Some(definition) = previous else {
-                why_at(why_slots, *statement, "definition_not_adjacent");
-                previous = Some(*statement);
-                continue;
-            };
-            let mut stores = code.statements.iter().filter(|s| {
-                s.outputs.iter().any(|output| {
-                    matches!(
-                        output.materialization(),
-                        Materialization::Store(local) if StorageId(local.0) == storage
-                    )
-                })
-            });
-            let unique =
-                stores.next().is_some_and(|s| s.id == definition) && stores.next().is_none();
-            if !unique {
-                why_at(why_slots, *statement, "definition_is_not_the_only_store");
-                previous = Some(*statement);
-                continue;
-            }
-            let defined = code.statements[definition.0 as usize]
-                .outputs
-                .iter()
-                .find(|output| {
-                    matches!(
-                        output.materialization(),
-                        Materialization::Store(local) if StorageId(local.0) == storage
-                    )
-                })
-                .map(|output| output.state());
-            if defined.is_none()
-                || checked_read(code, *statement).map(|(_, state)| state) != defined
-            {
-                why_at(why_slots, *statement, "definition_state_differs");
-                previous = Some(*statement);
-                continue;
-            }
-            let Ok(ReferenceDeclaration::Type { type_use }) =
-                &code.references[reference.0 as usize].declaration
-            else {
-                why_at(why_slots, *statement, "check_target_not_a_type");
-                previous = Some(*statement);
-                continue;
-            };
-            let Some(target) = code.types.get(type_use.0 as usize) else {
-                why_at(why_slots, *statement, "check_target_lost_its_use");
-                previous = Some(*statement);
-                continue;
-            };
-            // Only the erased declaration narrows: a second, unrelated reference
-            // type would replace a fact instead of recovering one.
-            let object = |units: &[u16]| {
-                units
-                    .iter()
-                    .copied()
-                    .eq(b"Ljava/lang/Object;".iter().copied().map(u16::from))
-            };
-            let reference_type = matches!(target.units.first(), Some(&unit) if unit == b'L' as u16 || unit == b'[' as u16);
-            let narrows = !object(&target.units)
-                && matches!(
-                    code.emission.local_types.get(storage.0 as usize).copied(),
-                    Some(LocalSpelling::Named(ty)) if object(&code.types[ty.0 as usize].units)
-                );
-            if !reference_type || !narrows || code.locals[storage.0 as usize].original.is_reused() {
-                why_at(why_slots, *statement, "definition_type_does_not_narrow");
-                previous = Some(*statement);
-                continue;
-            }
-            let pc = code
-                .operations
-                .get(operation.0 as usize)
-                .ok_or(bug("check-cast lost its operation"))?
-                .pc;
-            let occurrence = match code.statements[statement.0 as usize].kind {
-                StatementKind::CheckCast { value, .. } => value,
-                _ => return Err(bug("definition carrier lost its check")),
-            };
-            push(
-                found,
-                (
-                    *statement,
-                    InlineCheck {
-                        check: *statement,
-                        operation: *operation,
-                        pc,
-                        value: storage,
-                        reference,
-                        carrier: CheckCarrier::Definition(definition),
-                        occurrence,
-                    },
-                ),
-            )?;
-            code.emission.local_types[storage.0 as usize] = LocalSpelling::Named(*type_use);
-            code.locals[storage.0 as usize].declared_types = vec![*type_use];
-            previous = Some(*statement);
-        }
+fn definition_carrier(
+    carrier: &Carrier<'_>,
+    statement: StatementId,
+    storage: StorageId,
+) -> Result<Option<Carried>, Stop> {
+    let code = carrier.code;
+    let Some((node, index)) = block_and_index(code, statement) else {
+        return Ok(None);
+    };
+    let Some(previous) = index.checked_sub(1) else {
+        return Ok(None);
+    };
+    let BodyAction::Statement {
+        operation,
+        statement: definition,
+    } = code.emission.blocks[node].actions[previous]
+    else {
+        return Err(Stop::Refuse("definition_not_adjacent"));
+    };
+    let Some((_, reference)) = eligible_check(code, operation, statement, None) else {
+        return Ok(None);
+    };
+    let mut stores = code.statements.iter().filter(|s| {
+        s.outputs.iter().any(|output| {
+            matches!(
+                output.materialization(),
+                Materialization::Store(local) if StorageId(local.0) == storage
+            )
+        })
+    });
+    let unique = stores.next().is_some_and(|s| s.id == definition) && stores.next().is_none();
+    if !unique {
+        return Err(Stop::Refuse("definition_is_not_the_only_store"));
     }
-    Ok(())
+    let defined = code.statements[definition.0 as usize]
+        .outputs
+        .iter()
+        .find(|output| {
+            matches!(
+                output.materialization(),
+                Materialization::Store(local) if StorageId(local.0) == storage
+            )
+        })
+        .map(|output| output.state());
+    if defined.is_none() || checked_read(code, statement).map(|(_, state)| state) != defined {
+        return Err(Stop::Refuse("definition_state_differs"));
+    }
+    let Ok(ReferenceDeclaration::Type { type_use }) =
+        &code.references[reference.0 as usize].declaration
+    else {
+        return Err(Stop::Refuse("check_target_not_a_type"));
+    };
+    let Some(target) = code.types.get(type_use.0 as usize) else {
+        return Err(Stop::Refuse("check_target_lost_its_use"));
+    };
+    // Only the erased declaration narrows: a second, unrelated reference type
+    // would replace a fact instead of recovering one.
+    let object = |units: &[u16]| {
+        units
+            .iter()
+            .copied()
+            .eq(b"Ljava/lang/Object;".iter().copied().map(u16::from))
+    };
+    let reference_type =
+        matches!(target.units.first(), Some(&unit) if unit == b'L' as u16 || unit == b'[' as u16);
+    let narrows = !object(&target.units)
+        && matches!(
+            code.emission.local_types.get(storage.0 as usize).copied(),
+            Some(LocalSpelling::Named(ty)) if object(&code.types[ty.0 as usize].units)
+        );
+    if !reference_type || !narrows || code.locals[storage.0 as usize].original.is_reused() {
+        return Err(Stop::Refuse("definition_type_does_not_narrow"));
+    }
+    let pc = code
+        .operations
+        .get(operation.0 as usize)
+        .ok_or(bug("check-cast lost its operation"))?
+        .pc;
+    let occurrence = match code.statements[statement.0 as usize].kind {
+        StatementKind::CheckCast { value, .. } => value,
+        _ => return Err(Stop::Error(bug("definition carrier lost its check"))),
+    };
+    Ok(Some(Carried::Declare {
+        check: (
+            statement,
+            InlineCheck {
+                check: statement,
+                operation,
+                pc,
+                value: storage,
+                reference,
+                carrier: CheckCarrier::Definition(definition),
+                occurrence,
+            },
+        ),
+        local: storage,
+        ty: *type_use,
+    }))
 }
-fn distant_uses(
-    code: &MethodCode,
-    protection: &[Option<ControlId>],
-    omitted: &[Option<OmittedCheck>],
-    found: &mut Vec<(StatementId, InlineCheck)>,
-    why_slots: &mut [Option<&'static str>],
-) -> Result<(), ExpressionError> {
-    for node in 0..code.emission.blocks.len() {
-        for &action in &code.emission.blocks[node].actions {
-            let BodyAction::Statement {
-                operation,
-                statement,
-            } = action
-            else {
-                continue;
-            };
-            if omitted
-                .get(statement.0 as usize)
-                .is_some_and(Option::is_some)
-                || found.iter().any(|(check, _)| *check == statement)
-            {
-                continue;
-            }
-            let Some((storage, reference)) = eligible_check(code, operation, statement, None)
-            else {
-                continue;
-            };
-            let copied = if code.locals[storage.0 as usize].original.is_reused() {
-                checked_copy_states(code, statement, storage)?
-            } else {
-                Vec::new()
-            };
-            let mut why = None;
-            let mut carried = None;
-            for candidate in &code.statements {
-                if candidate.id == statement {
-                    continue;
-                }
-                let Some((_, occurrence)) = first_read(code, candidate.id, storage)? else {
-                    continue;
-                };
-                let Some(consumed) = code
-                    .operations
-                    .iter()
-                    .find(|source| source.statement == Some(candidate.id))
-                else {
-                    continue;
-                };
-                if protection.get(consumed.node.0 as usize).copied()
-                    != protection.get(node).copied()
-                {
-                    why = Some("distant_use_changes_protection");
-                    continue;
-                }
-                if !rendered_once(code, candidate.id, occurrence)? {
-                    why = Some("distant_read_renders_twice");
-                    continue;
-                }
-                // A merged local publishes several value bindings; its check still
-                // carries to the read of a pure copy of the checked value.
-                if !carries_check(code, statement, storage, occurrence, &copied) {
-                    why = Some("distant_checked_value_changed");
-                    continue;
-                }
-                carried = Some(carried_check(
-                    code,
-                    operation,
-                    statement,
-                    storage,
-                    reference,
-                    CheckCarrier::Statement(candidate.id),
-                    occurrence,
-                )?);
-                break;
-            }
-            if carried.is_none() {
-                for (index, body) in code.blocks.iter().enumerate() {
-                    let terminal = match body.completion {
-                        BlockCompletion::Ordinary(terminal)
-                        | BlockCompletion::Syntax { terminal, .. } => terminal,
-                        BlockCompletion::None => continue,
-                    };
-                    let Some(occurrence) = first_terminal_read(code, terminal, storage)? else {
-                        continue;
-                    };
-                    if protection.get(index).copied() != protection.get(node).copied() {
-                        why = Some("distant_use_changes_protection");
-                        continue;
-                    }
-                    carried = Some(carried_check(
-                        code,
-                        operation,
-                        statement,
-                        storage,
-                        reference,
-                        CheckCarrier::Terminal(terminal),
-                        occurrence,
-                    )?);
-                    break;
-                }
-            }
-            match carried {
-                Some(carried) if unclaimed_occurrence(found, &carried.1) => push(found, carried)?,
-                Some(_) => why = Some("distant_occurrence_claimed"),
-                None => {}
-            }
-            if let Some(why) = why {
-                why_at(why_slots, statement, why);
-            }
+fn distant_carrier(
+    carrier: &Carrier<'_>,
+    statement: StatementId,
+    storage: StorageId,
+) -> Result<Option<Carried>, Stop> {
+    let code = carrier.code;
+    let Some((node, index)) = block_and_index(code, statement) else {
+        return Ok(None);
+    };
+    let BodyAction::Statement { operation, .. } = code.emission.blocks[node].actions[index] else {
+        return Ok(None);
+    };
+    let Some((_, reference)) = eligible_check(code, operation, statement, None) else {
+        return Ok(None);
+    };
+    let copied = if code.locals[storage.0 as usize].original.is_reused() {
+        checked_copy_states(code, statement, storage)?
+    } else {
+        Vec::new()
+    };
+    let mut why = None;
+    for candidate in &code.statements {
+        if candidate.id == statement {
+            continue;
         }
+        let Some((_, occurrence)) = first_read(code, candidate.id, storage)? else {
+            continue;
+        };
+        let Some(consumed) = code
+            .operations
+            .iter()
+            .find(|source| source.statement == Some(candidate.id))
+        else {
+            continue;
+        };
+        if carrier.protection.get(consumed.node.0 as usize).copied()
+            != carrier.protection.get(node).copied()
+        {
+            why = Some("distant_use_changes_protection");
+            continue;
+        }
+        if !rendered_once(code, candidate.id, occurrence)? {
+            why = Some("distant_read_renders_twice");
+            continue;
+        }
+        // A merged local publishes several value bindings; its check still
+        // carries to the read of a pure copy of the checked value.
+        if !carries_check(code, statement, storage, occurrence, &copied) {
+            why = Some("distant_checked_value_changed");
+            continue;
+        }
+        let carried = carried_check(
+            code,
+            operation,
+            statement,
+            storage,
+            reference,
+            CheckCarrier::Statement(candidate.id),
+            occurrence,
+        )?;
+        return if unclaimed_occurrence(carrier.found, &carried.1) {
+            Ok(Some(Carried::At(carried)))
+        } else {
+            Err(Stop::Refuse("distant_occurrence_claimed"))
+        };
     }
-    Ok(())
+    for (index, body) in code.blocks.iter().enumerate() {
+        let terminal = match body.completion {
+            BlockCompletion::Ordinary(terminal) | BlockCompletion::Syntax { terminal, .. } => {
+                terminal
+            }
+            BlockCompletion::None => continue,
+        };
+        let Some(occurrence) = first_terminal_read(code, terminal, storage)? else {
+            continue;
+        };
+        if carrier.protection.get(index).copied() != carrier.protection.get(node).copied() {
+            why = Some("distant_use_changes_protection");
+            continue;
+        }
+        let carried = carried_check(
+            code,
+            operation,
+            statement,
+            storage,
+            reference,
+            CheckCarrier::Terminal(terminal),
+            occurrence,
+        )?;
+        return if unclaimed_occurrence(carrier.found, &carried.1) {
+            Ok(Some(Carried::At(carried)))
+        } else {
+            Err(Stop::Refuse("distant_occurrence_claimed"))
+        };
+    }
+    match why {
+        Some(why) => Err(Stop::Refuse(why)),
+        None => Ok(None),
+    }
 }
 
 /// The first executed read of one storage among a terminal's operands.
@@ -894,109 +933,93 @@ fn statement_keeps_protection(
 /// whose transfer carries no earlier step is followed by that read immediately;
 /// a terminal, a second transfer, a Save or another bundle between them keeps
 /// the standalone statement.
-fn copy_uses(
-    code: &MethodCode,
-    found: &mut Vec<(StatementId, InlineCheck)>,
-    why_slots: &mut [Option<&'static str>],
-) -> Result<(), ExpressionError> {
-    for node in 0..code.emission.blocks.len() {
-        let block = &code.emission.blocks[node];
-        let Some((last, _)) = block.actions.split_last() else {
-            continue;
-        };
-        let BodyAction::Statement {
-            operation,
-            statement,
-        } = *last
-        else {
-            continue;
-        };
-        if found.iter().any(|(check, _)| *check == statement) {
-            continue;
-        }
-        let Some((storage, reference)) = eligible_check(code, operation, statement, None) else {
-            continue;
-        };
-        let mut refuse = |why: &'static str| why_at(why_slots, statement, why);
-        let BlockEnd::Transfers(transfers) = &block.end else {
-            // A terminal evaluates its own operands and selects between its
-            // original edges, so the check still precedes both outcomes.
-            refuse("block_ends_in_a_terminal");
-            continue;
-        };
-        let [transfer] = transfers.as_slice() else {
-            refuse("block_has_two_transfers");
-            continue;
-        };
-        let Some(planned) = code.emission.transfers.get(transfer.0 as usize) else {
-            continue;
-        };
-        if matches!(planned.spelling, TransferSpelling::Selected) {
-            // A selected arm prints this bundle for one outcome only.
-            refuse("transfer_is_a_selected_arm");
-            continue;
-        }
-        let [bundle] = planned.copies.as_slice() else {
-            refuse("transfer_has_not_exactly_one_bundle");
-            continue;
-        };
-        let Some(bundle) = code.copies.get(bundle.0 as usize) else {
-            continue;
-        };
-        let CopyLocation::Transfer {
-            site: TransferSite::NormalEdge(edge),
-            ..
-        } = bundle.location
-        else {
-            refuse("bundle_is_not_a_normal_edge_copy");
-            continue;
-        };
-        // The bundle must be this transfer's own normal edge, not a copy another
-        // composition step placed here from a different origin.
-        if code.transfers.get(transfer.0 as usize).and_then(|t| t.edge) != Some(edge) {
-            refuse("bundle_edge_is_not_this_transfer");
-            continue;
-        }
-        if !matches!(bundle.emission, CopyEmission::Original) {
-            refuse("bundle_was_relocated");
-            continue;
-        }
-        let Some(CopyStatement::Assign {
-            destination,
-            expression,
-            ..
-        }) = bundle.steps.first()
-        else {
-            refuse("first_copy_step_is_not_an_assignment");
-            continue;
-        };
-        if *destination == storage {
-            // The surviving assignment would look like the check wrote the local.
-            refuse("copy_writes_the_checked_local");
-            continue;
-        }
-        if !reads(code, *expression, storage) {
-            refuse("copy_rhs_is_another_value");
-            continue;
-        }
-        let carried = carried_check(
-            code,
-            operation,
-            statement,
-            storage,
-            reference,
-            // The carrier is the bundle's first executed step.
-            CheckCarrier::Copy {
-                bundle: bundle.id,
-                step: 0,
-            },
-            *expression,
-        )?;
-        if unclaimed_occurrence(found, &carried.1) {
-            push(found, carried)?;
-        }
+fn copy_carrier(
+    carrier: &Carrier<'_>,
+    statement: StatementId,
+    storage: StorageId,
+) -> Result<Option<Carried>, Stop> {
+    let code = carrier.code;
+    let Some((node, index)) = block_and_index(code, statement) else {
+        return Ok(None);
+    };
+    let block = &code.emission.blocks[node];
+    if index + 1 != block.actions.len() {
+        return Ok(None);
     }
-    Ok(())
+    let BodyAction::Statement { operation, .. } = block.actions[index] else {
+        return Ok(None);
+    };
+    let Some((_, reference)) = eligible_check(code, operation, statement, None) else {
+        return Ok(None);
+    };
+    let BlockEnd::Transfers(transfers) = &block.end else {
+        // A terminal evaluates its own operands and selects between its
+        // original edges, so the check still precedes both outcomes.
+        return Err(Stop::Refuse("block_ends_in_a_terminal"));
+    };
+    let [transfer] = transfers.as_slice() else {
+        return Err(Stop::Refuse("block_has_two_transfers"));
+    };
+    let Some(planned) = code.emission.transfers.get(transfer.0 as usize) else {
+        return Ok(None);
+    };
+    if matches!(planned.spelling, TransferSpelling::Selected) {
+        // A selected arm prints this bundle for one outcome only.
+        return Err(Stop::Refuse("transfer_is_a_selected_arm"));
+    }
+    let [bundle] = planned.copies.as_slice() else {
+        return Err(Stop::Refuse("transfer_has_not_exactly_one_bundle"));
+    };
+    let Some(bundle) = code.copies.get(bundle.0 as usize) else {
+        return Ok(None);
+    };
+    let CopyLocation::Transfer {
+        site: TransferSite::NormalEdge(edge),
+        ..
+    } = bundle.location
+    else {
+        return Err(Stop::Refuse("bundle_is_not_a_normal_edge_copy"));
+    };
+    // The bundle must be this transfer's own normal edge, not a copy another
+    // composition step placed here from a different origin.
+    if code.transfers.get(transfer.0 as usize).and_then(|t| t.edge) != Some(edge) {
+        return Err(Stop::Refuse("bundle_edge_is_not_this_transfer"));
+    }
+    if !matches!(bundle.emission, CopyEmission::Original) {
+        return Err(Stop::Refuse("bundle_was_relocated"));
+    }
+    let Some(CopyStatement::Assign {
+        destination,
+        expression,
+        ..
+    }) = bundle.steps.first()
+    else {
+        return Err(Stop::Refuse("first_copy_step_is_not_an_assignment"));
+    };
+    if *destination == storage {
+        // The surviving assignment would look like the check wrote the local.
+        return Err(Stop::Refuse("copy_writes_the_checked_local"));
+    }
+    if !reads(code, *expression, storage) {
+        return Err(Stop::Refuse("copy_rhs_is_another_value"));
+    }
+    let carried = carried_check(
+        code,
+        operation,
+        statement,
+        storage,
+        reference,
+        // The carrier is the bundle's first executed step.
+        CheckCarrier::Copy {
+            bundle: bundle.id,
+            step: 0,
+        },
+        *expression,
+    )?;
+    if !unclaimed_occurrence(carrier.found, &carried.1) {
+        return Err(Stop::Refuse("occurrence_claimed"));
+    }
+    Ok(Some(Carried::At(carried)))
 }
 
 /// The checked value read by the first evaluated operand of this block's own
@@ -1028,82 +1051,69 @@ fn protected_contexts(code: &MethodCode) -> Result<Vec<Option<ControlId>>, Expre
     Ok(nodes)
 }
 
-fn terminal_uses(
-    code: &MethodCode,
-    protection: &[Option<ControlId>],
-    found: &mut Vec<(StatementId, InlineCheck)>,
-    why_slots: &mut [Option<&'static str>],
-) -> Result<(), ExpressionError> {
-    for node in 0..code.emission.blocks.len() {
-        let block = &code.emission.blocks[node];
-        let Some((last, _)) = block.actions.split_last() else {
-            continue;
-        };
-        let BodyAction::Statement {
-            operation,
-            statement,
-        } = *last
-        else {
-            continue;
-        };
-        if found.iter().any(|(check, _)| *check == statement) {
-            continue;
-        }
-        let Some((storage, reference)) = eligible_check(code, operation, statement, None) else {
-            continue;
-        };
-        // The terminal may sit in a following portion of the same original
-        // block: a plain within-block link with no copy prints nothing between
-        // the check and the terminal operand.
-        let mut refuse = |why: &'static str| why_at(why_slots, statement, why);
-        let Some(terminal) = terminal_after(code, protection, node)? else {
-            refuse("no_terminal_follows");
-            continue;
-        };
-        let phases = &code.emission.terminals[terminal.0 as usize];
-        if !phases.before.is_empty() {
-            refuse("terminal_has_before_copies");
-            continue;
-        }
-        let target = &code.terminals[terminal.0 as usize];
-        let operand = match &target.kind {
-            TerminalKind::Return(Some(value)) | TerminalKind::Throw(value) => *value,
-            TerminalKind::If { condition, .. } => match condition {
-                Condition::Pair { left, .. } => *left,
-                Condition::Zero { value, .. } => *value,
-            },
-            TerminalKind::Switch { selector, .. } => *selector,
-            TerminalKind::Return(None) | TerminalKind::None | TerminalKind::Goto(_) => {
-                refuse("terminal_has_no_operand");
-                continue;
-            }
-        };
-        let Some(occurrence) = leftmost(code, operand) else {
-            refuse("terminal_operand_has_no_first_leaf");
-            continue;
-        };
-        if !reads(code, occurrence, storage) {
-            refuse("terminal_first_leaf_is_another_value");
-            continue;
-        }
-        if !once_in(code, operand, occurrence)? {
-            refuse("terminal_operand_renders_twice");
-            continue;
-        }
-        let carried = carried_check(
-            code,
-            operation,
-            statement,
-            storage,
-            reference,
-            CheckCarrier::Terminal(terminal),
-            occurrence,
-        )?;
-        if unclaimed_occurrence(found, &carried.1) {
-            push(found, carried)?;
-        }
+fn terminal_carrier(
+    carrier: &Carrier<'_>,
+    statement: StatementId,
+    storage: StorageId,
+) -> Result<Option<Carried>, Stop> {
+    let code = carrier.code;
+    let Some((node, index)) = block_and_index(code, statement) else {
+        return Ok(None);
+    };
+    let block = &code.emission.blocks[node];
+    if index + 1 != block.actions.len() {
+        return Ok(None);
     }
-    Ok(())
+    let BodyAction::Statement { operation, .. } = block.actions[index] else {
+        return Ok(None);
+    };
+    let Some((_, reference)) = eligible_check(code, operation, statement, None) else {
+        return Ok(None);
+    };
+    // The terminal may sit in a following portion of the same original
+    // block: a plain within-block link with no copy prints nothing between
+    // the check and the terminal operand.
+    let Some(terminal) = terminal_after(code, carrier.protection, node)? else {
+        return Err(Stop::Refuse("no_terminal_follows"));
+    };
+    let phases = &code.emission.terminals[terminal.0 as usize];
+    if !phases.before.is_empty() {
+        return Err(Stop::Refuse("terminal_has_before_copies"));
+    }
+    let target = &code.terminals[terminal.0 as usize];
+    let operand = match &target.kind {
+        TerminalKind::Return(Some(value)) | TerminalKind::Throw(value) => *value,
+        TerminalKind::If { condition, .. } => match condition {
+            Condition::Pair { left, .. } => *left,
+            Condition::Zero { value, .. } => *value,
+        },
+        TerminalKind::Switch { selector, .. } => *selector,
+        TerminalKind::Return(None) | TerminalKind::None | TerminalKind::Goto(_) => {
+            return Err(Stop::Refuse("terminal_has_no_operand"));
+        }
+    };
+    let Some(occurrence) = leftmost(code, operand) else {
+        return Err(Stop::Refuse("terminal_operand_has_no_first_leaf"));
+    };
+    if !reads(code, occurrence, storage) {
+        return Err(Stop::Refuse("terminal_first_leaf_is_another_value"));
+    }
+    if !once_in(code, operand, occurrence)? {
+        return Err(Stop::Refuse("terminal_operand_renders_twice"));
+    }
+    let carried = carried_check(
+        code,
+        operation,
+        statement,
+        storage,
+        reference,
+        CheckCarrier::Terminal(terminal),
+        occurrence,
+    )?;
+    if !unclaimed_occurrence(carrier.found, &carried.1) {
+        return Err(Stop::Refuse("occurrence_claimed"));
+    }
+    Ok(Some(Carried::At(carried)))
 }
 
 /// The terminal this block reaches without printing anything in between: its own

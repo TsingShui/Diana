@@ -340,7 +340,7 @@ A fixture may pin its own `javac.args` / `d8.args` (`complex-indy-*` need
 `--release 11 -XDstringConcat=indy` and `--no-desugaring --min-api 28` to keep
 `invoke-custom` in the DEX); the default stays `--release 8 -g` and `--min-api 24`.
 
-Corpus totals: **structure 63%, naming 61%** over 241 methods (the
+Corpus totals: **structure 63%, naming 60%** over 241 methods (the
 obfuscated fixtures contribute structure only; Kotlin fixtures are unreviewed by
 the score). The
 `complex-*` and `algo-*` fixtures are the lowest scorers: real code multiplies the

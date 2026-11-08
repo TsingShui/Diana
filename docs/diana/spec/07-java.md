@@ -81,6 +81,11 @@ binding.
 P7 composes a check-cast's display into the first printed read of its checked
 local only when that read is the first evaluated value of the following statement
 or the first executed step of this block's single unconditional transfer copy set.
+Carriers are tried in one fixed priority order: the declaration that produced the
+value, the following statement, this block's transfer copy step, the terminal
+operand, then a later read. The first carrier that answers owns the check, so one
+check-cast prints at most one cast; a carrier that refuses leaves the check to the
+next one and keeps its first refusal for the trace.
 The carrier names that exact statement and read-expression occurrence, so a second
 read of the same storage in the printed form never carries the check. A carrier
 read whose state a pure reference copy of the checked value published also carries

@@ -7,7 +7,7 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 - Current numbers from `python3 quality/score.py --slug cast-instanceof`:
-  structure 84%, naming 77%.
+  structure 84%, naming 77%%.
 
 ## Current verdict — round 2, 2026-11-08
 

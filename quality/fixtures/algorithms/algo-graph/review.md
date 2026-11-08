@@ -7,7 +7,7 @@ so a review needs no toolchain.
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 - Current numbers from `python3 quality/score.py --slug algo-graph`:
-  structure 50%, naming 45%.
+  structure 49%, naming 45%%.
 
 ## Current verdict — round 1, 2026-11-08
 

@@ -8,7 +8,7 @@ with the fixture's `javac.args`/`d8.args` or the shared defaults (see
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 - Selector: `Lfixture/LoopMapViews;`
 - Current numbers from `python3 quality/score.py --slug loop-map-views`:
-  structure 64%.
+  structure 66%.
 
 ## Current verdict — round 1, 2026-11-08
 

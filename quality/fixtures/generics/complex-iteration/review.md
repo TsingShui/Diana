@@ -7,7 +7,7 @@ so a review needs no toolchain.
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 - Current numbers from `python3 quality/score.py --slug complex-iteration`:
-  structure 66%, naming 59%.
+  structure 67%, naming 59%%.
 
 ## Current verdict — round 1, 2026-11-08
 
