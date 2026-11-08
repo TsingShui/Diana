@@ -22,6 +22,8 @@ pub fn run(
     kind: &str,
     target: &str,
     mode: MatchMode,
+    recursive: bool,
+    method_relation: crate::analysis::xref::MethodRelation,
     class: Option<&str>,
     transitive: u32,
     limit: usize,
@@ -29,18 +31,30 @@ pub fn run(
     format: Format,
     output: Option<&Path>,
 ) -> Result<(), Failure> {
+    if recursive && kind != "impl" && kind != "extend" {
+        return Err(invalid("--recursive requires impl or extend"));
+    }
+    if method_relation != crate::analysis::xref::MethodRelation::References && kind != "method" {
+        return Err(invalid("--relation requires method"));
+    }
+    if transitive > 0 && method_relation != crate::analysis::xref::MethodRelation::References {
+        return Err(invalid(
+            "caller expansion cannot be combined with method relation selection",
+        ));
+    }
     if transitive > 0 && kind != "method" {
         return Err(invalid(
             "--transitive follows callers and requires the method kind",
         ));
     }
-    let coordinate = if mode == MatchMode::Exact && kind == "string" {
+    let coordinate = if kind == "resource" || mode == MatchMode::Exact && kind == "string" {
         None
     } else {
         selector::locator(target).map_err(selection_failure)?
     };
     let target = match coordinate {
         Some(coordinate) => QueryTarget::Coordinate(coordinate),
+        None if kind == "resource" => QueryTarget::Resource(target.to_owned()),
         None => QueryTarget::Pattern(parse_target(kind, target, mode)?),
     };
     let class = class
@@ -50,7 +64,44 @@ pub fn run(
         .map(|selector| selector.descriptor);
     let scope =
         RequestScope::open(input, &InputOptions { allowed_root: None }).map_err(Failure::input)?;
+    let mut issues = Vec::new();
     let target = match target {
+        QueryTarget::Resource(pattern) => {
+            use crate::analysis::resources::{Catalog, ResourceTarget, numeric_id};
+            let numeric = numeric_id(&pattern);
+            match Catalog::read(&scope) {
+                Ok(catalog) => {
+                    let missing =
+                        numeric.is_some_and(|id| !catalog.rows.iter().any(|row| row.id == id));
+                    let target = catalog.target(&pattern, mode).map_err(query_failure)?;
+                    issues = catalog.issues;
+                    if missing {
+                        issues
+                            .try_reserve(1)
+                            .map_err(|error| Failure::input(InputError::Allocation(error)))?;
+                        issues.push(crate::analysis::xref::Issue::unknown(
+                            format!("resource:{pattern}"),
+                            "resource name absent from input; matching literal candidates only",
+                        ));
+                    }
+                    Target::Resource(target)
+                }
+                Err(error) => {
+                    let Some(id) = numeric else {
+                        return Err(query_failure(error));
+                    };
+                    issues
+                        .try_reserve(1)
+                        .map_err(|error| Failure::input(InputError::Allocation(error)))?;
+                    issues.push(crate::analysis::xref::Issue::new(
+                        format!("resource:{pattern}"),
+                        &error,
+                        None,
+                    ));
+                    Target::Resource(ResourceTarget::unresolved(id).map_err(query_failure)?)
+                }
+            }
+        }
         QueryTarget::Coordinate(coordinate) => {
             crate::analysis::xref::resolve_coordinate(&scope, kind, &coordinate)
                 .map_err(selection_failure)?
@@ -61,6 +112,8 @@ pub fn run(
     let first = Xref::new(
         &scope,
         XrefPlan {
+            recursive,
+            method_relation,
             targets: vec![target],
             class,
             depth: 1,
@@ -71,7 +124,7 @@ pub fn run(
     let images = first.images().to_vec();
     let mut rows = Vec::new();
     first
-        .run(&mut |row| push_row(&mut rows, row))
+        .run(&mut |event| collect_event(&mut rows, &mut issues, event))
         .map_err(query_failure)?;
     drop(first);
 
@@ -86,6 +139,8 @@ pub fn run(
             let scan = Xref::new(
                 &scope,
                 XrefPlan {
+                    recursive: false,
+                    method_relation: crate::analysis::xref::MethodRelation::References,
                     targets: frontier,
                     class: None,
                     depth,
@@ -94,7 +149,7 @@ pub fn run(
             )
             .map_err(query_failure)?;
             let mut found = Vec::new();
-            scan.run(&mut |row| push_row(&mut found, row))
+            scan.run(&mut |event| collect_event(&mut found, &mut issues, event))
                 .map_err(query_failure)?;
             frontier = if depth < transitive {
                 caller_targets(&found).map_err(query_failure)?
@@ -104,6 +159,23 @@ pub fn run(
             rows.try_reserve(found.len())
                 .map_err(|error| Failure::input(InputError::Allocation(error)))?;
             rows.extend(found);
+        }
+    }
+    for issue in &mut issues {
+        if let Some(scope) = issue.context.strip_prefix("image:") {
+            let (ordinal, suffix) = scope
+                .split_once(':')
+                .map_or((scope, ""), |(ordinal, suffix)| (ordinal, suffix));
+            if let Ok(ordinal) = ordinal.parse::<usize>()
+                && let Some(image) = images.get(ordinal)
+            {
+                issue.context = format!(
+                    "e{}{}{}",
+                    image.entry.map_or(0, |entry| entry.0),
+                    if suffix.is_empty() { "" } else { ":" },
+                    suffix
+                );
+            }
         }
     }
     if ranked {
@@ -130,7 +202,47 @@ pub fn run(
         let entry = image.entry.map(|entry| entry.0);
         let context = match &row.site {
             Site::Class => at::class(entry, row.logical.0, row.class_def.0, &row.class_descriptor),
-            Site::Instruction {
+            Site::UnknownField(id) => format!(
+                "e{}:l{}:c{}:f{}",
+                entry.unwrap_or(0),
+                row.logical.0,
+                row.class_def.0,
+                id.0
+            ),
+            Site::UnknownMethod(id) => format!(
+                "e{}:l{}:c{}:m{}",
+                entry.unwrap_or(0),
+                row.logical.0,
+                row.class_def.0,
+                id.0
+            ),
+            Site::Field {
+                field,
+                name,
+                field_type,
+            } => at::field(
+                entry,
+                row.logical.0,
+                row.class_def.0,
+                field.0,
+                &row.class_descriptor,
+                name,
+                field_type,
+            ),
+            Site::Method {
+                method,
+                name,
+                prototype,
+            } => at::method(
+                entry,
+                row.logical.0,
+                row.class_def.0,
+                method.0,
+                &row.class_descriptor,
+                name,
+                prototype,
+            ),
+            Site::Code {
                 method,
                 name,
                 prototype,
@@ -164,6 +276,7 @@ pub fn run(
         RowSummary {
             total,
             warning: warning.as_deref(),
+            issues: &issues,
         },
     )
 }
@@ -171,7 +284,11 @@ pub fn run(
 fn row_order(row: &XrefRow) -> (usize, u32, u32, u32, u32) {
     let (method, code_unit) = match &row.site {
         Site::Class => (0, 0),
-        Site::Instruction {
+        Site::UnknownField(id) => (id.0, 0),
+        Site::UnknownMethod(id) => (id.0, 0),
+        Site::Field { field, .. } => (field.0, 0),
+        Site::Method { method, .. } => (method.0, 0),
+        Site::Code {
             method, code_unit, ..
         } => (method.0, *code_unit),
     };
@@ -185,13 +302,26 @@ fn row_order(row: &XrefRow) -> (usize, u32, u32, u32, u32) {
 }
 
 enum QueryTarget {
+    Resource(String),
     Coordinate(selector::Selector),
     Pattern(Target),
 }
 
-fn push_row(rows: &mut Vec<XrefRow>, row: XrefRow) -> Result<(), QueryError> {
-    rows.try_reserve(1).map_err(InputError::Allocation)?;
-    rows.push(row);
+fn collect_event(
+    rows: &mut Vec<XrefRow>,
+    issues: &mut Vec<crate::analysis::xref::Issue>,
+    event: crate::analysis::xref::Event,
+) -> Result<(), QueryError> {
+    match event {
+        crate::analysis::xref::Event::Row(row) => {
+            rows.try_reserve(1).map_err(InputError::Allocation)?;
+            rows.push(row);
+        }
+        crate::analysis::xref::Event::Issue(issue) => {
+            issues.try_reserve(1).map_err(InputError::Allocation)?;
+            issues.push(issue);
+        }
+    }
     Ok(())
 }
 
@@ -339,13 +469,14 @@ fn parse_target(kind: &str, text: &str, mode: MatchMode) -> Result<Target, Failu
             })
         }
         other => Err(invalid(format!(
-            "unknown xref kind {other:?}; expected string|type|method|field|impl|extend"
+            "unknown xref kind {other:?}; expected string|type|method|field|impl|extend|resource"
         ))),
     }
 }
 
 fn matched_text(matched: &Matched) -> String {
     match matched {
+        Matched::Resource { id, name } => format!("{name} ({:#010x})", id.0),
         Matched::String(units) | Matched::Type(units) => at::escape_units(units),
         Matched::Method {
             owner,

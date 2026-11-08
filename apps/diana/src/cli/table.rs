@@ -14,7 +14,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use super::output::{Failure, Format, publish, publish_with};
+use super::output::{Failure, Format, publish_with};
 use crate::analysis::at::{self, Mode};
 use crate::analysis::query::QueryError;
 use diana_decomp::input::DexString;
@@ -500,11 +500,12 @@ impl<'w> ChunkSink<'w> {
     }
 }
 
-/// Strings and xref schema 2 remove redundant entry-name columns. Xref also
-/// publishes explicit display coverage and warnings. Other tables retain schema 1.
+/// Xref/resource schema 3 distinguishes coverage from display truncation.
+/// Strings retain schema 2; other listing tables retain schema 1.
 fn schema_version(command: &str) -> u8 {
     match command {
-        "strings" | "xref" => 2,
+        "xref" | "resources" => 3,
+        "strings" => 2,
         _ => 1,
     }
 }
@@ -513,11 +514,54 @@ fn schema_version(command: &str) -> u8 {
 pub(super) struct RowSummary<'a> {
     pub total: usize,
     pub warning: Option<&'a str>,
+    pub issues: &'a [crate::analysis::xref::Issue],
 }
 
-/// Publishes already formatted columns with their shared selection summary.
-pub(super) fn publish_rows(
-    rows: &[Vec<String>],
+/// Already selected cells; resource values can remain borrowed from the catalog.
+pub(super) trait Cells {
+    fn cells(&self) -> impl Iterator<Item = &str>;
+}
+impl Cells for Vec<String> {
+    fn cells(&self) -> impl Iterator<Item = &str> {
+        self.iter().map(String::as_str)
+    }
+}
+struct ObjectRow<'a, R> {
+    columns: &'a [&'a str],
+    row: &'a R,
+}
+impl<R: Cells> serde::Serialize for ObjectRow<'_, R> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.columns.len()))?;
+        for (column, value) in self.columns.iter().zip(self.row.cells()) {
+            map.serialize_entry(column, value)?;
+        }
+        map.end()
+    }
+}
+struct Items<'a, R> {
+    columns: &'a [&'a str],
+    rows: &'a [R],
+}
+impl<R: Cells> serde::Serialize for Items<'_, R> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut rows = serializer.serialize_seq(Some(self.rows.len()))?;
+        for row in self.rows {
+            rows.serialize_element(&ObjectRow {
+                columns: self.columns,
+                row,
+            })?;
+        }
+        rows.end()
+    }
+}
+
+/// Renders the existing selection directly to the atomic sink. No JSON value tree
+/// or second full text buffer copies potentially large resource/metadata values.
+pub(super) fn publish_rows<R: Cells>(
+    rows: &[R],
     columns: &[&str],
     command: &str,
     format: Format,
@@ -525,63 +569,80 @@ pub(super) fn publish_rows(
     output: Option<&Path>,
     summary: RowSummary<'_>,
 ) -> Result<(), Failure> {
-    let text = match format {
-        Format::Text => {
-            let mut text = String::new();
-            if let Some(warning) = summary.warning {
-                text.push_str(warning);
-                text.push('\n');
-            }
-            text.push_str(&columns.join("\t"));
-            text.push('\n');
-            for row in rows {
-                let escaped: Vec<String> = row.iter().map(|value| escape(value)).collect();
-                text.push_str(&escaped.join("\t"));
-                text.push('\n');
-            }
-            text
-        }
-        Format::Json => {
-            let items: Vec<_> = rows
-                .iter()
-                .map(|row| {
-                    let mut object = serde_json::Map::new();
-                    for (column, value) in columns.iter().zip(row) {
-                        object.insert(
-                            (*column).to_owned(),
-                            serde_json::Value::String(value.clone()),
-                        );
-                    }
-                    serde_json::Value::Object(object)
-                })
-                .collect();
-            serde_json::json!({
-                "schema_version": schema_version(command),
-                "command": command,
-                "items": items,
-                "total": summary.total,
-                "shown": rows.len(),
-                "truncated": rows.len() < summary.total,
-                "warnings": summary.warning.into_iter().collect::<Vec<_>>(),
-            })
-            .to_string()
-        }
-    };
-    publish(output, input, text.as_bytes(), format)
-}
-
-fn escape(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    let mut buffer = [0u8; 4];
-    for character in value.chars() {
-        match character {
-            '\\' => escaped.push_str("\\\\"),
-            '\t' => escaped.push_str("\\t"),
-            '\r' => escaped.push_str("\\r"),
-            '\n' => escaped.push_str("\\n"),
-            '\0' => escaped.push_str("\\0"),
-            other => escaped.push_str(other.encode_utf8(&mut buffer)),
-        }
+    for issue in summary.issues {
+        eprintln!(
+            "diana: warning: {}: {}: {}",
+            issue.context, issue.kind, issue.reason
+        );
     }
-    escaped
+    publish_with(output, input, |writer| {
+        let mut writer = std::io::BufWriter::with_capacity(1 << 18, writer);
+        match format {
+            Format::Text => {
+                if let Some(warning) = summary.warning {
+                    writeln!(writer, "{warning}").map_err(Failure::output)?;
+                }
+                if !summary.issues.is_empty() {
+                    writeln!(
+                        writer,
+                        "//Diana Warn: coverage incomplete; counts describe recovered matches only"
+                    )
+                    .map_err(Failure::output)?;
+                }
+                write_cells(&mut writer, columns.iter().copied()).map_err(Failure::output)?;
+                for row in rows {
+                    write_cells(&mut writer, row.cells()).map_err(Failure::output)?;
+                }
+            }
+            Format::Json => {
+                let write = (|| -> Result<(), serde_json::Error> {
+                    use serde::ser::SerializeMap;
+                    let mut serializer = serde_json::Serializer::new(&mut writer);
+                    let mut object = serde::Serializer::serialize_map(&mut serializer, Some(10))?;
+                    object.serialize_entry("schema_version", &schema_version(command))?;
+                    object.serialize_entry("command", command)?;
+                    object.serialize_entry("items", &Items { columns, rows })?;
+                    object.serialize_entry(
+                        "total",
+                        &summary.issues.is_empty().then_some(summary.total),
+                    )?;
+                    object.serialize_entry("recovered_total", &summary.total)?;
+                    object.serialize_entry("complete", &summary.issues.is_empty())?;
+                    object.serialize_entry("issues", summary.issues)?;
+                    object.serialize_entry("shown", &rows.len())?;
+                    object.serialize_entry("truncated", &(rows.len() < summary.total))?;
+                    object.serialize_entry("warnings", summary.warning.as_slice())?;
+                    object.end()
+                })();
+                write.map_err(|error| Failure::output(std::io::Error::other(error)))?;
+            }
+        }
+        writer.flush().map_err(Failure::output)
+    })
+}
+fn write_cells<'a>(
+    writer: &mut dyn Write,
+    cells: impl Iterator<Item = &'a str>,
+) -> std::io::Result<()> {
+    for (ordinal, value) in cells.enumerate() {
+        if ordinal != 0 {
+            writer.write_all(b"\t")?;
+        }
+        let mut start = 0;
+        for (at, character) in value.char_indices() {
+            let escaped: &[u8] = match character {
+                '\\' => b"\\\\",
+                '\t' => b"\\t",
+                '\r' => b"\\r",
+                '\n' => b"\\n",
+                '\0' => b"\\0",
+                _ => continue,
+            };
+            writer.write_all(&value.as_bytes()[start..at])?;
+            writer.write_all(escaped)?;
+            start = at + character.len_utf8();
+        }
+        writer.write_all(&value.as_bytes()[start..])?;
+    }
+    writer.write_all(b"\n")
 }

@@ -263,7 +263,14 @@ Fixture-authoring and AXML format anchors: the locked Smali 2.5.2
 and tree walker define input-fixture directives, escapes, literals and operands;
 [PIPELINE_DESIGN](PIPELINE_DESIGN.md) requires readable original facts, not this assembler grammar.
 AOSP Android 15 [ResourceTypes.h](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-15.0.0_r1/libs/androidfw/include/androidfw/ResourceTypes.h)
-defines ResChunk_header, ResStringPool and ResXMLTree field layouts. These are
+defines ResChunk_header, ResStringPool, ResXMLTree and ResTable package/type/entry
+field layouts. Diana's resource catalog and AXML reader share one bounded string
+pool implementation; it reads the UTF-8 unit-count/byte-count prefixes in their
+format order and decodes extended UTF-16 lengths and surrogate pairs. Resource
+entry flags distinguish full/compact values and dense/sparse/16-bit offset tables.
+This is an independent native reader, not copied parser code or a new parser
+dependency. The anchor and publicly indexed header passages are format references,
+not a completed full-header correspondence review. These are
 online source anchors, not new downloaded tool assets or a claim of round-trip
 certification. The archived AXML PATCHES and `src/analysis/manifest.rs` are reuse
 evidence only; neither certifies Diana allocation or malformed-read

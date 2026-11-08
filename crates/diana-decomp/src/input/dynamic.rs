@@ -22,6 +22,18 @@ pub(crate) struct CheckedCallSite<'i, 'a> {
     pub prototype: Prototype<'i, 'a>,
 }
 
+/// Established mandatory call-site header and an explicitly unfinished value walk.
+pub(super) struct CallSitePrefix<'i, 'a> {
+    pub offset: ByteOffset,
+    pub values: EncodedValues<'a>,
+    pub handle_id: MethodHandleId,
+    pub name_id: crate::StringId,
+    pub proto_id: ProtoId,
+    pub name: super::DexString<'a>,
+    pub handle: CheckedMethodHandle,
+    pub prototype: Prototype<'i, 'a>,
+}
+
 fn invalid(at: ByteOffset) -> InputError {
     malformed(InputProblem::InvalidReference, at)
 }
@@ -64,7 +76,18 @@ impl<'a> ProgramIndex<'a> {
         Ok(CheckedMethodHandle { kind, member })
     }
 
-    pub(crate) fn call_site(&self, id: CallSiteId) -> Result<CheckedCallSite<'_, 'a>, MethodError> {
+    pub(super) fn call_site_prefix(
+        &self,
+        id: CallSiteId,
+    ) -> Result<CallSitePrefix<'_, 'a>, MethodError> {
+        self.call_site_prefix_observed(id, &mut |_, _| Ok(()))
+    }
+
+    pub(super) fn call_site_prefix_observed(
+        &self,
+        id: CallSiteId,
+        established: &mut impl FnMut(OperandReference, &'static str) -> Result<(), MethodError>,
+    ) -> Result<CallSitePrefix<'_, 'a>, MethodError> {
         let mut record = self.mapped_entry(7, id.0, ByteLength(4))?;
         let offset = ByteOffset(
             usize::try_from(record.read_u32()?).map_err(|_| MethodError::PlatformCapacity)?,
@@ -80,6 +103,7 @@ impl<'a> ProgramIndex<'a> {
             return Err(invalid(handle.range.start).into());
         };
         let handle = self.method_handle(handle_id)?;
+        established(OperandReference::MethodHandle(handle_id), "bootstrap")?;
         let Some(ValueStep::Value(name)) = values.next(self)? else {
             return Err(invalid(offset).into());
         };
@@ -93,6 +117,7 @@ impl<'a> ProgramIndex<'a> {
         {
             return Err(invalid(offset).into());
         }
+        established(OperandReference::String(name_id), "name")?;
         let Some(ValueStep::Value(proto)) = values.next(self)? else {
             return Err(invalid(offset).into());
         };
@@ -100,6 +125,30 @@ impl<'a> ProgramIndex<'a> {
             return Err(invalid(proto.range.start).into());
         };
         let prototype = self.prototype(proto_id)?;
+        established(OperandReference::Proto(proto_id), "signature")?;
+        Ok(CallSitePrefix {
+            offset,
+            values,
+            handle_id,
+            name_id,
+            proto_id,
+            name,
+            handle,
+            prototype,
+        })
+    }
+
+    pub(crate) fn call_site(&self, id: CallSiteId) -> Result<CheckedCallSite<'_, 'a>, MethodError> {
+        let CallSitePrefix {
+            offset,
+            mut values,
+            handle_id,
+            name_id,
+            proto_id,
+            name,
+            handle,
+            prototype,
+        } = self.call_site_prefix(id)?;
         let mut bootstrap = Vec::new();
         while let Some(value) = values.next(self)? {
             bootstrap.try_reserve(1).map_err(MethodError::Allocation)?;

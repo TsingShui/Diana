@@ -148,6 +148,42 @@ impl TextFilter {
         Ok(matched.then_some(FilterMatch::default()))
     }
 
+    pub(super) fn evaluate_units(
+        &self,
+        units: &[u16],
+    ) -> Result<Option<FilterMatch>, super::query::QueryError> {
+        if let Self::Exact(expected) = self {
+            return Ok((units == expected).then_some(FilterMatch::default()));
+        }
+        if let Self::Literal { needle, case } = self {
+            let hit = needle.is_empty()
+                || units.windows(needle.len()).any(|window| {
+                    window.iter().zip(needle).all(|(&left, &right)| {
+                        left == right
+                            || matches!(case, CaseSensitivity::Insensitive)
+                                && match (
+                                    char::from_u32(u32::from(left)),
+                                    char::from_u32(u32::from(right)),
+                                ) {
+                                    (Some(left), Some(right)) => {
+                                        left.to_lowercase().eq(right.to_lowercase())
+                                    }
+                                    _ => false,
+                                }
+                    })
+                });
+            return Ok(hit.then_some(FilterMatch::default()));
+        }
+        let mut text = String::new();
+        for character in char::decode_utf16(units.iter().copied()) {
+            let character = character.unwrap_or(char::REPLACEMENT_CHARACTER);
+            text.try_reserve(character.len_utf8())
+                .map_err(super::input::InputError::Allocation)?;
+            text.push(character);
+        }
+        self.evaluate_text(&text)
+    }
+
     pub(super) fn evaluate_text(
         &self,
         value: &str,

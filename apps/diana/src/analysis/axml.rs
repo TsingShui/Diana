@@ -28,13 +28,15 @@ pub enum ManifestError {
     UnsupportedValue { index: u32, data_type: u8 },
     #[error("manifest value is not representable on this platform")]
     PlatformCapacity,
+    #[error("Android string allocation failed: {0}")]
+    Allocation(#[source] std::collections::TryReserveError),
 }
 
 impl ManifestError {
     pub fn kind(&self) -> diana_decomp::FailureKind {
         use diana_decomp::FailureKind as Kind;
         match self {
-            Self::PlatformCapacity => Kind::ResourceExhausted,
+            Self::PlatformCapacity | Self::Allocation(_) => Kind::ResourceExhausted,
             Self::NotAxml | Self::UnsupportedChunk { .. } | Self::UnsupportedValue { .. } => {
                 Kind::Unsupported
             }
@@ -55,7 +57,6 @@ const RES_XML_END_NAMESPACE_TYPE: u16 = 0x0101;
 const RES_XML_START_ELEMENT_TYPE: u16 = 0x0102;
 const RES_XML_END_ELEMENT_TYPE: u16 = 0x0103;
 
-const UTF8_FLAG: u32 = 1 << 8;
 const ANDROID_NAMESPACE: &str = "http://schemas.android.com/apk/res/android";
 const RES_XML_CDATA_TYPE: u16 = 0x0104;
 
@@ -73,133 +74,7 @@ fn u32_at(bytes: &[u8], offset: usize) -> Result<u32, ManifestError> {
     Ok(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
 }
 
-fn bounded(offset: usize, size: usize, end: usize) -> Result<usize, ManifestError> {
-    let limit = offset
-        .checked_add(size)
-        .ok_or(ManifestError::InconsistentChunk { offset })?;
-    if limit > end {
-        return Err(ManifestError::InconsistentChunk { offset });
-    }
-    Ok(limit)
-}
-
-struct StringPool<'a> {
-    data: &'a [u8],
-    offsets: &'a [u8],
-    count: u32,
-    utf8: bool,
-}
-
-impl<'a> StringPool<'a> {
-    fn parse(
-        bytes: &'a [u8],
-        offset: usize,
-        header: usize,
-        end: usize,
-    ) -> Result<Self, ManifestError> {
-        let count = u32_at(bytes, offset + 8)?;
-        let flags = u32_at(bytes, offset + 16)?;
-        let style_count = u32_at(bytes, offset + 12)?;
-        let strings_start = usize::try_from(u32_at(bytes, offset + 20)?)
-            .map_err(|_| ManifestError::PlatformCapacity)?;
-        let styles_start = u32_at(bytes, offset + 24)?;
-        if style_count != 0 && styles_start == 0 {
-            return Err(ManifestError::InconsistentChunk { offset });
-        }
-        if styles_start != 0 {
-            bounded(
-                offset,
-                usize::try_from(styles_start).map_err(|_| ManifestError::PlatformCapacity)?,
-                end,
-            )?;
-        }
-        let header = header.max(28);
-        let offsets_start = bounded(offset, header, end)?;
-        let offsets_len = usize::try_from(count)
-            .map_err(|_| ManifestError::PlatformCapacity)?
-            .checked_mul(4)
-            .ok_or(ManifestError::PlatformCapacity)?;
-        let offsets_end = bounded(offsets_start, offsets_len, end)?;
-        let data_start = bounded(offset, strings_start, end)?;
-        if data_start < offsets_end {
-            return Err(ManifestError::InconsistentChunk { offset });
-        }
-        Ok(Self {
-            data: &bytes[data_start..end],
-            offsets: &bytes[offsets_start..offsets_end],
-            count,
-            utf8: flags & UTF8_FLAG != 0,
-        })
-    }
-
-    /// Returns the raw payload of one string: UTF-8 bytes or UTF-16LE units.
-    fn payload(&self, index: u32) -> Result<&'a [u8], ManifestError> {
-        if index >= self.count {
-            return Err(ManifestError::InvalidString { index });
-        }
-        let at = usize::try_from(index)
-            .map_err(|_| ManifestError::PlatformCapacity)?
-            .checked_mul(4)
-            .ok_or(ManifestError::PlatformCapacity)?;
-        let relative = usize::try_from(u32_at(self.offsets, at)?)
-            .map_err(|_| ManifestError::PlatformCapacity)?;
-        let record = self
-            .data
-            .get(relative..)
-            .ok_or(ManifestError::InvalidString { index })?;
-        if self.utf8 {
-            // The first prefix is the payload byte length; the second is the
-            // UTF-16 unit length.
-            let (byte_length, after_byte_length) = utf8_prefix(record, 0, index)?;
-            let (_, payload_start) = utf8_prefix(record, after_byte_length, index)?;
-
-            let length =
-                usize::try_from(byte_length).map_err(|_| ManifestError::PlatformCapacity)?;
-            record
-                .get(payload_start..payload_start + length)
-                .ok_or(ManifestError::InvalidString { index })
-        } else {
-            let units = u32::from(u16_at(record, 0)?);
-
-            let length = usize::try_from(units)
-                .map_err(|_| ManifestError::PlatformCapacity)?
-                .checked_mul(2)
-                .ok_or(ManifestError::PlatformCapacity)?;
-            record
-                .get(2..2 + length)
-                .ok_or(ManifestError::InvalidString { index })
-        }
-    }
-
-    fn text(&self, index: u32) -> Result<String, ManifestError> {
-        let payload = self.payload(index)?;
-        if self.utf8 {
-            Ok(String::from_utf8_lossy(payload).into_owned())
-        } else {
-            let mut text = String::new();
-            for chunk in payload.as_chunks::<2>().0 {
-                text.push(
-                    char::from_u32(u32::from(u16::from_le_bytes(*chunk))).unwrap_or('\u{fffd}'),
-                );
-            }
-            Ok(text)
-        }
-    }
-}
-
-fn utf8_prefix(record: &[u8], at: usize, index: u32) -> Result<(u32, usize), ManifestError> {
-    let first = *record
-        .get(at)
-        .ok_or(ManifestError::InvalidString { index })?;
-    if first & 0x80 == 0 {
-        Ok((u32::from(first), at + 1))
-    } else {
-        let second = *record
-            .get(at + 1)
-            .ok_or(ManifestError::InvalidString { index })?;
-        Ok(((u32::from(first & 0x7f) << 8) | u32::from(second), at + 2))
-    }
-}
+use super::android_strings::StringPool;
 
 fn describe(kind: &ManifestWarningKind) -> String {
     match kind {

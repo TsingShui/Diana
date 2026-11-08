@@ -2,6 +2,9 @@
 
 Code: `crates/diana-decomp/src/p0/`, with the application adapter in
 the engine development shell `crates/diana-decomp/examples/dbg_shell.rs`.
+Application declaration xref and hierarchy queries consume the same public
+ClassFacts producer and immutable records, without constructing method-analysis
+products. They retain only the original header/signature facts their queries need.
 
 ## Input and ownership
 

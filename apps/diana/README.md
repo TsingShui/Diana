@@ -19,7 +19,8 @@ get-method  Decompile one method
 entries     List physical archive entries
 extract     Extract one physical entry
 strings     List original string values
-xref        Find original reference sites and direct hierarchy relations
+xref        Find references, hierarchy and method relationships
+resources   List resource IDs, configurations and values
 manifest    Decode the binary AndroidManifest.xml
 classes     List class definitions
 tree        Show the code package hierarchy
@@ -43,6 +44,7 @@ matching modes retain completion order.
 | `tree` | Package hierarchy and subtree definition counts; optional class leaves |
 | `strings` | `at, value` |
 | `xref` | `context, match, use` |
+| `resources` | `context, id, name, config, value` |
 | `manifest` | XML, or JSON with `status, xml, warnings` |
 | `get-class`, `get-method` | P9 Java-like text, or JSON schema 3 |
 | `extract` | One output file |
@@ -51,7 +53,7 @@ matching modes retain completion order.
 and `--kind`. Hierarchy filters inspect direct original superclass/interface
 edges. `fields` and `methods` accept `--class` as an exact descriptor or dotted name.
 
-`classes`, `methods`, `fields`, `strings` and `xref` share four matching modes:
+`classes`, `methods`, `fields`, `strings`, `resources` and `xref` share four matching modes:
 
 | Mode | Selection |
 |---|---|
@@ -166,7 +168,7 @@ Class retrieval analyzes all known original members. Single-method retrieval
 calls `Engine::analyze_method` with the selected ID and uses its standalone
 P8/P9 display; it does not analyze siblings or slice text out of a class result.
 
-`xref` takes `string`, `type`, `method`, `field`, `impl` or `extend`. Names and
+`xref` takes `string`, `type`, `method`, `field`, `impl`, `extend` or `resource`. Names and
 values use the same default ranked fuzzy matching and explicit mode switches as
 `--filter`. Literal type/owner patterns accept dotted fragments, converted to
 slash-separated descriptor fragments. Method/field patterns accept a bare name,
@@ -200,8 +202,10 @@ text is a literal string value.
 interfaces. Its `use` is `implements` or `extends-interface`. `extend` reads the
 direct superclass reference and reports `extends`. Hierarchy rows carry class
 coordinates, with no invented method or code-unit offset. These queries read
-only checked declarations, not method bodies; they do not compute a transitive
-hierarchy. Method queries support `--transitive N` for that many upstream caller
+only checked declarations, not method bodies. Add `--recursive` for indirect
+relationships across input DEX images. Indirect rows retain a depth and `via`
+witness; missing, ambiguous or cyclic declaration paths are explicit Unknown
+issues, not evidence that no relationship exists. Method queries support `--transitive N` for that many upstream caller
 levels, with exact method identities after the initial query match. Fuzzy caller
 expansion carries the best originating relevance for each frontier method;
 owner/name scores are combined when both are fuzzy. Coordinate targets remain
@@ -209,7 +213,10 @@ exact and unranked regardless of a fuzzy switch.
 
 `--class` restricts the referencing class by exact descriptor or dotted name.
 Operand queries do not require the target to have a definition in the input.
-A reader failure is reported, not silently counted as an empty method. The
+A local reader failure retains independently recovered rows and continues at the
+smallest reliably located scope. A bad code item does not stop sibling methods,
+classes or physical DEX roots; a damaged instruction suffix does not erase its
+already decoded reference prefix. The
 `context` locator retains physical entry and logical DEX identity, so xref rows
 omit the redundant entry-name column.
 
@@ -230,9 +237,70 @@ Only when the total exceeds the current limit, text starts with:
 ```
 
 The number in this warning follows the effective limit. JSON remains a valid
-document: xref schema 2 carries the same warning in `warnings`, alongside
-`total`, `shown` and `truncated`. A limit does not change original reference
+document: xref schema 3 carries the same warning in `warnings`, alongside
+`complete`, `total`, `recovered_total`, `shown`, `truncated` and `issues`. A complete
+scan has an exact `total`; an incomplete scan has `total: null` and reports only
+its recovered count. Issues retain original scopes, failure kinds/reasons and
+available byte ranges. Display truncation and incomplete coverage are distinct. A limit does not change original reference
 identities, and unlimited output has no truncation warning.
+
+## Declaration and dynamic references
+
+Type xref includes field types, method parameters/returns, superclass/interface
+references, annotation descriptors and metadata values, as well as instruction
+operands and member-signature types. String/member searches include their original
+annotation/static-preparation references. Declaration rows use class, field or
+method coordinates without an invented code-unit offset; `use` identifies
+`field-type`, `parameter-type[N]`, `return-type`, `annotation` or `static-value`.
+
+Call-site and method-handle references expand through the shared checked reader.
+Their `use` retains the original instruction and reference path, including
+bootstrap/member kinds and encoded-value byte positions. This is encoded
+reference evidence, not a claim of runtime dispatch. A broken dynamic suffix
+retains established header/argument leaves and an explicit local issue.
+
+For method definitions, select a relationship instead of reference sites:
+
+```sh
+diana xref app.apk method 'Lexample/I;->run()V' --exact --relation implementations
+diana xref app.apk method 'Lexample/Base;->run()V' --exact --relation overrides
+diana xref app.apk impl example.I --exact --recursive
+```
+
+These queries consume input declarations, flags and hierarchy paths without
+opening method bodies. Results retain actual declaring methods: inherited
+implementations do not fabricate methods in subclasses. `use` names the receiving
+class and witness path, so one declaration can appear for multiple receivers.
+`--class` selects the receiver for method-relationship queries. Interface default
+methods remain explicitly labeled candidates, not resolved runtime dispatch.
+Unestablished return covariance, missing/ambiguous ancestors and conflicting
+defaults produce Unknown issues. Caller expansion and method-relationship
+selection cannot be combined.
+
+## Resources
+
+```sh
+diana resources app.apk --filter app_name --substring
+diana resources app.apk --filter 'https://' --substring --format json
+diana xref app.apk resource 0x7f120123
+diana xref app.apk resource string/api_host --substring
+```
+
+The catalog reads the input APK's `resources.arsc` only. Each configuration remains
+a separate original row, with a physical-entry/byte locator. `default` identifies
+a zero-qualifier configuration; other configurations retain their complete encoded
+configuration as hexadecimal. Compact, dense, sparse and 16-bit entry-offset forms
+share the checked chunk/string-pool readers. Complex values retain ordered map
+entries; unsupported or damaged local values keep their available IDs/names and
+explicit unavailability. Dynamic resource references remain raw, not linked to
+external framework tables. Catalog schema 3 has the same coverage/count/issue
+fields as xref.
+
+Resource xref matches constant/array-payload and preparation/annotation integer
+bits against catalog IDs. Every such hit is labeled a candidate: equal bits do
+not prove resource access or data flow. Numeric IDs can still be searched when
+names are absent or the input is a bare DEX; the name and resource coverage remain
+explicitly unavailable. A resource-name/value search requires the resource table.
 
 ## Decompilation text and JSON
 
@@ -273,8 +341,9 @@ Query text is UTF-8 TSV with the column header. Display fields escape backslash,
 tab, CR, LF and NUL; isolated surrogates remain escaped instead of being replaced.
 Query JSON uses `{schema_version, command, items}`. `strings` uses schema 2 with
 `at` and `value`; the former `entry` name column is removed. Its locator retains
-the exact physical-entry identity. `xref` schema 2 likewise removes the entry-name
-column and adds explicit display totals and warnings as described above. Other table queries remain schema 1.
+the exact physical-entry identity. `xref` and `resources` schema 3 retain original locators and publish explicit
+display totals, coverage and local issues as described above. Other table queries
+remain schema 1.
 `entries` reads the ZIP central directory only; it does not open or decompress
 DEX payloads.
 

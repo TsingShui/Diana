@@ -5,6 +5,7 @@
 //! original table facts, `query` streams rows in completion order, `xref` scans original reference sites, and `request`
 //! holds one request's lease for its full lifetime.
 
+mod android_strings;
 pub mod apk;
 pub mod archive;
 pub mod at;
@@ -19,6 +20,7 @@ pub mod input;
 pub mod manifest;
 pub mod query;
 pub mod request;
+pub mod resources;
 mod runner;
 pub mod selector;
 pub mod tree;
