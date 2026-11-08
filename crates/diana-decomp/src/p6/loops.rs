@@ -141,6 +141,23 @@ pub(super) fn construct(
         if !matches!(form, LoopForm::While(_)) {
             evaluation.clear();
         }
+        // A head test whose private prefix already covers every member leaves no
+        // body to print before it, so the statements run before the test: the
+        // loop is a tail test. Both printed shapes evaluate those statements once
+        // per iteration, so only the shape changes.
+        if matches!(form, LoopForm::While(_))
+            && members.iter().all(|node| evaluation.contains(node))
+        {
+            let condition = condition_plan(at)?;
+            // The prefix invariants make this hold, and the tail-test print
+            // repeats to the header: a repeat elsewhere would need the second
+            // arrival the prefix forbids.
+            if f.links[condition.repeat.0 as usize].to == header {
+                form = LoopForm::DoWhile(condition);
+                evaluation.clear();
+                push(&mut evaluation, at)?;
+            }
+        }
         if matches!(form, LoopForm::Infinite) && latches.len() == 1 {
             let latch = f.links[latches[0].0 as usize].from;
             if conditional(latch)

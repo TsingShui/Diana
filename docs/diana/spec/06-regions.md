@@ -318,6 +318,16 @@ not cross an original branch, rotate a tail test or hoist initialization. Origin
 operations, terminals, protection sites and P5 positions remain unchanged; candidate
 partitioning still rejects split construction groups, scopes and existing owners.
 
+A head test whose private prefix already contains every loop member leaves no
+body before the test, so those operations run before the predicate on every
+arrival, including the first one. The same predicate node is then the tail test:
+P6 records `DoWhile` for that loop and keeps only the condition node as its
+evaluation, instead of accepting a `While` whose body would be empty. This is
+classification from the existing prefix, not rotation: the predicate node, its
+original links and its evaluation operations keep their identities, and only the
+form changes. Both shapes evaluate those operations once per iteration, so the
+recovered behavior is identical.
+
 The head evaluation and repeated body are distinct children. A head-loop continue
 returns to the original evaluation entry, including its operations, not merely to
 the terminal portion. If the head candidate fails, P6 retains the existing tail

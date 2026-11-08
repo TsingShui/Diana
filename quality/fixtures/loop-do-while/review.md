@@ -9,7 +9,7 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 - Current numbers from `python3 quality/score.py --slug loop-do-while`:
   structure 54%, naming 34%.
 
-## Current verdict — round 1, 2026-11-08
+## Current verdict — round 2, 2026-11-08
 
 ### Per method
 
@@ -25,20 +25,21 @@ The semantics verdict is written by reading the reference next to the output; `?
 
 | method | semantics |
 |---|---|
-| `countUp` | ✔ 取值正确 |
-| `stopEarly` | ✔ break 变循环条件，等价 |
-| `nested` | ✔ 内外层取值正确（外层 do-while 保留） |
+| `countUp` | ✔ `do { v1 = v1 + 1; } while (v1 < p0);` |
+| `stopEarly` | ✔ `do { … } while (v1 <= p0);` 与原 `if (index > limit) break` 等价 |
+| `nested` | ✔ 内外两层都是 `do-while`，取值正确 |
 
 ### Findings
 
-- 三个方法都退化成 `while (test { graph<Unstructured> entries [L1] … yield … }) { }`，`do` 完全丢失
-- `countUp` 的语义仍正确（`v1 = 0; while (v1 < p0) v1++;`），但形状是语料里最差的
-- 结构 53~55%，扣分主要来自图包装与 `;` 插入而不是取值错误
+- 三个方法现在都是 `do { … } while (cond)`，`graph<Unstructured>` 与空 `[repeat: ]` 记法消失
+- 结构分未变（54%）：差距来自 `v1 = (v1 + 1)` 对 `index++`、`LoopDoWhile.state` 全限定名、`nop;`
+- `nested` 内层循环后仍有一条 `nop;`（空 block 打印）
 
 ### Ranked fixes
 
-把 `do-while` 识别为循环形态，去掉 `test {}` 与 `graph<Unstructured>`；参数名恢复
+`++`/`+=` 复合赋值恢复（影响全部夹具的 token 归一化），空 block 不再打印 `nop;`，再谈参数名
 
 ## Rounds
 
 - R1 2026-11-08: structure 54%, naming 34%; 三个方法都退化成 `while (test { graph<Unstructured> entries [L1] … yield … }) { }`，`do` 完全丢失
+- R2 2026-11-08: structure 54%, naming 34%; 三方法恢复 `do-while`，内部记法消失；差距转为 `v1 = (v1 + 1)` 与 `nop;`

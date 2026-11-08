@@ -290,9 +290,19 @@ impl Expressions<'_, '_> {
             // print. `selected` keeps the transfer origin on those copies and
             // anchors an edge with nothing to print where it was selected.
             for (role, edge) in [("repeat", repeat), ("exit", exit)] {
-                let prints = !self.code.emission().transfers()[edge.0 as usize]
+                // A selected edge whose bundles deliver no step of their own has
+                // nothing to name; an empty `[repeat: ]` would only add notation.
+                let prints = self.code.emission().transfers()[edge.0 as usize]
                     .copies
-                    .is_empty();
+                    .iter()
+                    .any(|&bundle| {
+                        let plan = &self.code.copies()[bundle.0 as usize];
+                        !plan.steps.is_empty()
+                            || plan
+                                .assignments
+                                .iter()
+                                .any(|assignment| assignment.issue().is_some())
+                    });
                 if prints {
                     self.out.fmt(format_args!(" [{role}: "))?;
                 }

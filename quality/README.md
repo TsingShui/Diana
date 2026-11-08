@@ -103,6 +103,7 @@ Commands are only re-verified with the ordinary equivalence checks (`get-class`,
 | `loop-map-views` | `values()`, `keySet()`, custom `Iterable`, iterator removal |
 | `loop-do-while-sideeffect` | loop conditions that call something on every test |
 | `loop-do-while` | `do-while`, `do-while` with `break`, nested `do-while` |
+| `loop-tail-shapes` | every tail-test shape next to the head tests that must stay `while` |
 | `branch-switch-string` | switch over `String`, grouped `case` labels, effects in branches |
 | `branch-switch-enum` | switch over an enum with a `default` arm |
 | `sync-block` | `synchronized` block, early return inside it, nested blocks |
@@ -173,7 +174,8 @@ Kotlin fixtures are **never scored**; their review is the record (see below).
 | `loop-shared-exit` | 47% / 30% | `&& !found` moves into the body; `break outer` needs goto inspection |
 | `complex-indy-lambda` | 32% / 68% | method references stay as `LambdaMetafactory` `call_site` metadata |
 | `complex-indy-concat` | 28% / 60% | one `a + b + c` becomes two lines of `call_site` metadata plus `invoke<Custom>` |
-| `loop-do-while` | 54% / 34% | `do` lost entirely; body wrapped in `while (test { graph<Unstructured> … })` |
+| `loop-do-while` | 54% / 34% | `do-while` recovered; `v1 = (v1 + 1)` against `index++` dominates the diff |
+| `loop-tail-shapes` | 76% / 58% | tail tests correct both ways; remaining `while (test { … })` and `nop` |
 | `branch-switch-string` | 18% / 71% | two-level hash/equals switch plus `graph<MultipleEntry>` |
 | `branch-switch-enum` | 42% / 25% | `ordinal()` switch correct, temporaries and `default` order differ |
 | `sync-block` | 42% / 83% | `synchronized` kept, but every block carries `catch (all)`, `release`, `goto` |
@@ -232,7 +234,7 @@ A fixture may pin its own `javac.args` / `d8.args` (`complex-indy-*` need
 `--release 11 -XDstringConcat=indy` and `--no-desugaring --min-api 28` to keep
 `invoke-custom` in the DEX); the default stays `--release 8 -g` and `--min-api 24`.
 
-Corpus totals (round 1): **structure 60%, naming 60%** over 211 methods (the
+Corpus totals (round 1): **structure 61%, naming 60%** over 228 methods (the
 obfuscated fixtures contribute structure only; Kotlin fixtures are unreviewed by
 the score). The
 `complex-*` and `algo-*` fixtures are the lowest scorers: real code multiplies the
