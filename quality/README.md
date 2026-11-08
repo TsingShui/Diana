@@ -64,9 +64,12 @@ match can still be wrong, and an equivalent shape can score low.
    (same values, effects, call order, exceptions, locks), **facts** (original
    calls, constants, identities), **shape** (reference constructs recovered) and
    **notation** (only-a-decompiler forms in the body).
-3. The judgement is written into the fixture itself, `fixtures/<slug>/review.md`:
-   a per-method verdict, a ranked list of what to fix, and a one-line entry per
-   round. That file already holds the coverage table and the preparation record,
+3. The judgement is written into the fixture itself, `fixtures/<slug>/review.md`.
+   **Every fixture carries a per-method `### Semantics` table** - `✔` equivalent,
+   `~` equivalent but different shape, `✘` wrong, `?` not yet judged - next to the
+   numeric score. The numbers never replace the reading: `score.py` measures how
+   much structure survived, the semantics table says whether it still means the
+   same thing. That file already holds the coverage table and the preparation record,
    so a fixture is three files and no side directories.
 4. Improvements are made, `dump.py` is re-run, and the **current verdict is
    rewritten in place** while `## Rounds` gains one line. The file stays bounded:

@@ -20,6 +20,17 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 | `castAfterTest` | 81% | 86% |
 | `arrayCast` | 84% | 67% |
 
+### Semantics
+
+The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
+
+| method | semantics |
+|---|---|
+| `isString` | ✔ |
+| `castToNumber` | ✔ 多一次临时 |
+| `castAfterTest` | ✔ 反演但等价 |
+| `arrayCast` | ✔ 多一次临时 |
+
 ### Findings
 
 - `instanceof` 与 `(Number) v1` 转换正确

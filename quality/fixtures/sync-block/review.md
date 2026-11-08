@@ -19,6 +19,16 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 | `clearIfPositive` | 49% | 100% | `insert: ref=- ours=ID ID ; ID ID` |
 | `nested` | 35% | 75% | `insert: ref=- ours=int ID ; ID ID` |
 
+### Semantics
+
+The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
+
+| method | semantics |
+|---|---|
+| `add` | ✔ 早返回前已释放 |
+| `clearIfPositive` | ✔ |
+| `nested` | ✔ 嵌套锁与释放正确 |
+
 ### Findings
 
 - `synchronized` 形状保留，嵌套块也正确嵌套（结构 35~49%）

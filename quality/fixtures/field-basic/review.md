@@ -22,6 +22,19 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 | `writeInstance` | 93% | 67% |
 | `addToInstance` | 67% | 67% |
 
+### Semantics
+
+The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
+
+| method | semantics |
+|---|---|
+| `readStatic` | ✔ 读写与顺序正确 |
+| `writeStatic` | ✔ 读写与顺序正确 |
+| `readLabel` | ✔ 读写与顺序正确 |
+| `readInstance` | ✔ 读写与顺序正确 |
+| `writeInstance` | ✔ 读写与顺序正确 |
+| `addToInstance` | ✔ 读写与顺序正确 |
+
 ### Findings
 
 - 读写都正确，差异是插入 `this .` / `X . ` 限定与 `int ID = this.ID` 临时

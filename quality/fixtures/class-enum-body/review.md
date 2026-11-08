@@ -18,6 +18,15 @@ so a review needs no toolchain.
 | `weight` | 91% | 100% | `insert: ref=- ours=this .` |
 | `scaled` | 89% | 67% | `insert: ref=- ours=( this .` |
 
+### Semantics
+
+The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
+
+| method | semantics |
+|---|---|
+| `weight` | ✔ |
+| `scaled` | ✔ |
+
 ### Findings
 
 - `weight()` 91%、`scaled()` 89%：方法体正确

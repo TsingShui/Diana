@@ -19,6 +19,16 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 | `catchRethrows` | 56% | 60% |
 | `sideEffectsInTry` | 34% | 60% |
 
+### Semantics
+
+The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
+
+| method | semantics |
+|---|---|
+| `catchReturns` | ✔ |
+| `catchRethrows` | ✔ state 置 2 后重抛原异常 |
+| `sideEffectsInTry` | ✔ 顺序正确 |
+
 ### Findings
 
 - 语义全部正确（catch 返回、catch 内 rethrow、try 内效果顺序都保住）

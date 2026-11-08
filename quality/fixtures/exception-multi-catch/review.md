@@ -18,6 +18,15 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 | `parse` | 43% | 80% | `insert: ref=- ours=int ID ; ID ID` |
 | `rethrow` | 42% | 80% | `insert: ref=- ours=int ID ; ID ID` |
 
+### Semantics
+
+The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
+
+| method | semantics |
+|---|---|
+| `parse` | ✔ |
+| `rethrow` | ✔ 两 catch 汇合后 `throw new IllegalStateException(error)` |
+
 ### Findings
 
 - multi-catch 被拆成两个 `catch` 加 `goto` 汇合，`|` 形态丢失

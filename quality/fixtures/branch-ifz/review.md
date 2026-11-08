@@ -20,6 +20,17 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 | `bothPaths` | 68% | 67% |
 | `nullCheck` | 96% | 80% |
 
+### Semantics
+
+The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
+
+| method | semantics |
+|---|---|
+| `whenZero` | ✔ 分支未反演 |
+| `whenNonZero` | ✔ 分支未反演 |
+| `bothPaths` | ✔ 分支未反演 |
+| `nullCheck` | ✔ 分支未反演 |
+
 ### Findings
 
 - 条件形状全部保留（`if (p0 == 0)`、`if (p0 != 0)`、`if (input == null)` 都没有被反演）

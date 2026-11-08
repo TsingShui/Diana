@@ -18,6 +18,15 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 | `dispatch` | 16% | 75% | `insert: ref=- ours=ID ID ; int ID` |
 | `describe` | 21% | 67% | `insert: ref=- ours=int ID ; int ID` |
 
+### Semantics
+
+The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
+
+| method | semantics |
+|---|---|
+| `dispatch` | ✔ hash/equals 映射与分支体正确 |
+| `describe` | ✔ 语义正确 |
+
 ### Findings
 
 - 两段 switch：先 `hashCode()`，再 `equals()` 比对，中间夹 `graph<MultipleEntry>` 与 goto

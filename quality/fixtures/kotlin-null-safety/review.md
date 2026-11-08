@@ -14,7 +14,9 @@ and no numeric threshold applies. The verdict below is the record.
 
 ## Current verdict — round 1, 2026-11-08
 
-### Per method
+### Semantics
+
+Kotlin is judged by reading only; there is no numeric score.
 
 | method | semantics | shape | notation |
 |---|---|---|---|

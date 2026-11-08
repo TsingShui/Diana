@@ -18,6 +18,15 @@ so a review needs no toolchain.
 | `holder` | 82% | 33% | `replace: ref=return ours=ID ID =` |
 | `useHolder` | 95% | 75% | `insert: ref=- ours=. ID` |
 
+### Semantics
+
+The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
+
+| method | semantics |
+|---|---|
+| `holder` | ✔ |
+| `useHolder` | ✔ |
+
 ### Findings
 
 - `holder()` 82%：构造后经临时返回；`useHolder()` 95%：仅多一次 `.` 限定

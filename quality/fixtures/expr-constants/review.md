@@ -25,6 +25,22 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 | `nullValue` | 100% | 100% |
 | `classValue` | 81% | 100% |
 
+### Semantics
+
+The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
+
+| method | semantics |
+|---|---|
+| `intValue` | ✔ 123456 |
+| `longValue` | ✔ 1234567890123 |
+| `floatValue` | ✔ 1.5f |
+| `doubleValue` | ✔ 2.25 |
+| `charValue` | ✔ 值正确，记法为 120 |
+| `booleanValue` | ✔ false |
+| `stringValue` | ✔ LABEL |
+| `nullValue` | ✔ null |
+| `classValue` | ✔ 值正确，记法为临时赋值 |
+
 ### Findings
 
 - 所有常量形态还原（int/long/float/double/boolean/string/null 结构 100%）

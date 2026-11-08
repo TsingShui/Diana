@@ -17,6 +17,14 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 |---|---|---|---|
 | `apply` | 42% | 25% | `insert: ref=- ours=int ID = ID .` |
 
+### Semantics
+
+The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
+
+| method | semantics |
+|---|---|
+| `apply` | ✔ case 0/1/2 对应 FAST/SAFE/LEGACY |
+
 ### Findings
 
 - `apply` 用 `int v = p0.ordinal()` 直接 switch，`$SwitchMap` 被消解（这是好事）

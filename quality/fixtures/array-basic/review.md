@@ -24,6 +24,21 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 | `length` | 82% | 50% |
 | `nested` | 80% | 25% |
 
+### Semantics
+
+The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
+
+| method | semantics |
+|---|---|
+| `sized` | ✔ 取值与顺序正确 |
+| `filled` | ✔ 取值与顺序正确 |
+| `bytes` | ✔ 取值与顺序正确 |
+| `flags` | ✔ 取值与顺序正确 |
+| `read` | ✔ 取值与顺序正确 |
+| `write` | ✔ 取值与顺序正确 |
+| `length` | ✔ 取值与顺序正确 |
+| `nested` | ✔ 取值与顺序正确 |
+
 ### Findings
 
 - 创建、读写、`.length`、二维 `matrix[row][column]` 都正确

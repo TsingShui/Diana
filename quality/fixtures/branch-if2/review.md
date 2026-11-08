@@ -19,6 +19,16 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 | `greaterOrEqual` | 70% | 50% |
 | `equal` | 74% | 50% |
 
+### Semantics
+
+The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
+
+| method | semantics |
+|---|---|
+| `lessThan` | ✔ 反演但等价 |
+| `greaterOrEqual` | ✔ |
+| `equal` | ✔ |
+
 ### Findings
 
 - 三种比较都正确，但全部被反演/重排（`<` → `>=`、`else` 拆成早返回）

@@ -18,6 +18,15 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 | `normalPath` | 70% | 50% | `delete: ref=0 ; try { ID ours=-` |
 | `throwingPath` | 86% | 50% | `delete: ref== 0 ours=-` |
 
+### Semantics
+
+The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
+
+| method | semantics |
+|---|---|
+| `normalPath` | ✔ finally 折进正常路径，等价 |
+| `throwingPath` | ✔ finally 恢复为 finally 块 |
+
 ### Findings
 
 - `finally` 被拆成正常路径重复 + `catch (all)` 重抛（与之前一致）

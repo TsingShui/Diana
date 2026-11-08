@@ -19,6 +19,16 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 | `stopEarly` | 55% | 50% | `insert: ref=- ours=; ID` |
 | `nested` | 53% | 20% | `delete: ref== 0 ours=-` |
 
+### Semantics
+
+The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
+
+| method | semantics |
+|---|---|
+| `countUp` | ✔ 取值正确 |
+| `stopEarly` | ✔ break 变循环条件，等价 |
+| `nested` | ✔ 内外层取值正确（外层 do-while 保留） |
+
 ### Findings
 
 - 三个方法都退化成 `while (test { graph<Unstructured> entries [L1] … yield … }) { }`，`do` 完全丢失

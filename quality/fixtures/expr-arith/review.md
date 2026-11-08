@@ -24,6 +24,21 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 | `shifts` | 74% | 50% |
 | `negate` | 93% | 50% |
 
+### Semantics
+
+The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
+
+| method | semantics |
+|---|---|
+| `add` | ✔ 与参考等价 |
+| `minusOne` | ✔ 与参考等价 |
+| `multiply` | ✔ 与参考等价 |
+| `divide` | ✔ 与参考等价 |
+| `modulo` | ✔ 与参考等价 |
+| `bits` | ✔ 与参考等价 |
+| `shifts` | ✔ 与参考等价 |
+| `negate` | ✔ 与参考等价 |
+
 ### Findings
 
 - 算术结果正确；主要差异是每个表达式被拆成 `int ID = (…)` 再 `return`

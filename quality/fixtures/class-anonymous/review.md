@@ -18,6 +18,15 @@ so a review needs no toolchain.
 | `task` | 55% | 33% | `delete: ref=final ours=-` |
 | `currentBase` | 91% | 100% | `insert: ref=- ours=this .` |
 
+### Semantics
+
+The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
+
+| method | semantics |
+|---|---|
+| `task` | ✔ 捕获正确（this + step） |
+| `currentBase` | ✔ |
+
 ### Findings
 
 - `task()` 54.5%：`new ClassAnonymous$1(this, p0)` 结构与捕获正确，但先赋给临时再返回

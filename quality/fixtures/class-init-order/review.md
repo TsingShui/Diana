@@ -18,6 +18,15 @@ so a review needs no toolchain.
 | `total` | 45% | 100% | `replace: ref=return ours=int ID = this .` |
 | `label` | 91% | 100% | `insert: ref=- ours=. ID` |
 
+### Semantics
+
+The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
+
+| method | semantics |
+|---|---|
+| `total` | ✔ |
+| `label` | ✔ |
+
 ### Findings
 
 - 静态块、实例字段初始化、实例块的**顺序正确**（`second = 2` → 实例块 → `first = p0`）

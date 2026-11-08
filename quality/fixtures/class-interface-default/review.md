@@ -19,6 +19,16 @@ so a review needs no toolchain.
 | `plus` | 59% | 67% | `replace: ref=default ours=public` |
 | `constant` | 95% | 100% | `insert: ref=- ours=public` |
 
+### Semantics
+
+The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
+
+| method | semantics |
+|---|---|
+| `doubled` | ✔ 主体正确，缺 default 关键字 |
+| `plus` | ✔ 反演但等价 |
+| `constant` | ✔ |
+
 ### Findings
 
 - `default` 关键字丢失：输出是 `public int doubled()`（有方法体的接口方法没有声明符）

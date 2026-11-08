@@ -23,6 +23,20 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 | `either` | 37% | 33% |
 | `negated` | 84% | 50% |
 
+### Semantics
+
+The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
+
+| method | semantics |
+|---|---|
+| `lessThan` | ✔ |
+| `atLeast` | ✔ 反演但等价 |
+| `same` | ✔ |
+| `different` | ✔ |
+| `both` | ✔ 反演但等价 |
+| `either` | ✔ |
+| `negated` | ✔ |
+
 ### Findings
 
 - 比较结果正确，但 `return a < b` 变成 `int v; if (a < b) …`（结构 ~48%）

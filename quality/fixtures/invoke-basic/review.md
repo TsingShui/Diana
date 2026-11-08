@@ -22,6 +22,19 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 | `manyArguments` | 88% | 100% |
 | `listCall` | 81% | 62% |
 
+### Semantics
+
+The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
+
+| method | semantics |
+|---|---|
+| `staticCall` | ✔ |
+| `virtualCall` | ✔ |
+| `interfaceCall` | ✔ |
+| `constructorCall` | ✔ 构造正确，经临时返回 |
+| `manyArguments` | ✔ |
+| `listCall` | ✔ 泛型实参丢失，属形态 |
+
 ### Findings
 
 - 四种调用都 100% 结构一致

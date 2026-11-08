@@ -17,6 +17,14 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 |---|---|---|---|
 | `sum` | 8% | 33% | `insert: ref=- ours=ID ID ; ID ID` |
 
+### Semantics
+
+The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
+
+| method | semantics |
+|---|---|
+| `sum` | ✘ 打印结构不可跟踪（handler 在 return 之后、try 出现在 throw 之后）；意图正确 |
+
 ### Findings
 
 - 结构 7.6% —— 语料里最差：handler `H6`/`H8` 打在 `return` 之后的方法层级，`try { H10:` 出现在 `throw v7` 之后

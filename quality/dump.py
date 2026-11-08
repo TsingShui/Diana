@@ -75,7 +75,7 @@ def dump(binary: str, slug: str) -> str:
         "4. **notation** - does anything only a decompiler would print appear in the body",
         "   (`test {`, `graph<`, `goto`, `capture_exception`, `via `, `dex_flags<`)?",
         "",
-        f"Write the findings as a new round in `quality/fixtures/{slug}/review.md`; do not score them.",
+        f"Record a semantics verdict per method in `quality/fixtures/{slug}/review.md`; do not score them.",
         "",
     ]
     if kotlin_only:

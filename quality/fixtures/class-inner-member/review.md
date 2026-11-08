@@ -18,6 +18,15 @@ so a review needs no toolchain.
 | `inner` | 77% | 33% | `replace: ref=return ours=ID ID =` |
 | `currentTotal` | 91% | 100% | `insert: ref=- ours=this .` |
 
+### Semantics
+
+The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
+
+| method | semantics |
+|---|---|
+| `inner` | ✔ 捕获与构造正确 |
+| `currentTotal` | ✔ |
+
 ### Findings
 
 - 外部类两个方法语义正确；`inner()` 走临时变量再返回，`currentTotal()` 加 `this.` 限定

@@ -19,6 +19,16 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 | `skipNegative` | 50% | 40% | `delete: ref== 0 ours=-` |
 | `stopAt` | 66% | 50% | `delete: ref=for ( ours=-` |
 
+### Semantics
+
+The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
+
+| method | semantics |
+|---|---|
+| `sumTo` | ✔ |
+| `skipNegative` | ✔ continue 变空 else，等价 |
+| `stopAt` | ✔ break 保留 |
+
 ### Findings
 
 - 三个 `for` 全部没有还原（首个差异就是 `for (` 缺失），变成 `while` + 循环前置赋值
