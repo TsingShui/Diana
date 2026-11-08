@@ -85,6 +85,36 @@ impl Expressions<'_, '_> {
             }
             return Ok(());
         }
+        if self.code.emission().omitted_nop(id) {
+            // A `nop` performs nothing, so the plan prints no text for it and
+            // keeps the statement, operation and PC as zero-length anchors.
+            let position = self.out.position();
+            for &site in &s.sites {
+                self.out.span(
+                    position,
+                    Origin::Site {
+                        method: self.method,
+                        site,
+                    },
+                )?;
+            }
+            self.out.span(
+                position,
+                Origin::Statement {
+                    method: self.method,
+                    statement: id,
+                },
+            )?;
+            self.out.span(
+                position,
+                Origin::Operation {
+                    method: self.method,
+                    operation: op,
+                    pc: original.pc,
+                },
+            )?;
+            return Ok(());
+        }
         if release.is_none()
             && let Some(omitted) = self.code.emission().omitted_check(id)
         {

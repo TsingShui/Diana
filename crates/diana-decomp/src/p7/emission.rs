@@ -334,6 +334,9 @@ pub struct EmissionPlan {
     /// materializes as a literal, so the statement itself states nothing. Its
     /// operation, PC, result commit and expression keep zero-length anchors.
     pub(super) omitted_literals: Vec<bool>,
+    /// A `nop` operation states nothing a reader can execute: the plan keeps its
+    /// statement, operation and PC as zero-length anchors instead of text.
+    pub(super) omitted_nops: Vec<bool>,
     /// By the statement that allocates an object without constructing it yet.
     /// It prints the allocated type and its local where that allocation happens.
     pub(super) allocation_declarations: Vec<bool>,
@@ -427,6 +430,7 @@ impl EmissionPlan {
             array_literals: Vec::new(),
             omitted_checks: Vec::new(),
             omitted_literals: Vec::new(),
+            omitted_nops: Vec::new(),
             allocation_declarations: Vec::new(),
             allocation_locals: Vec::new(),
             hidden_locals: Vec::new(),
@@ -526,6 +530,13 @@ impl EmissionPlan {
     }
     /// The original check this statement's own display omits, if P4 established
     /// it cannot add behavior at this position.
+    /// Whether this statement is a `nop` the plan prints without text.
+    pub fn omitted_nop(&self, id: StatementId) -> bool {
+        self.omitted_nops
+            .get(id.0 as usize)
+            .copied()
+            .unwrap_or(false)
+    }
     pub fn omitted_literal(&self, id: StatementId) -> bool {
         self.omitted_literals
             .get(id.0 as usize)
@@ -679,6 +690,12 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
     plan.array_literals = filled(code.statements.len(), None)?;
     plan.omitted_checks = filled(code.statements.len(), None)?;
     plan.omitted_literals = filled(code.statements.len(), false)?;
+    plan.omitted_nops = filled(code.statements.len(), false)?;
+    for statement in &code.statements {
+        if matches!(statement.kind, StatementKind::Nop) {
+            plan.omitted_nops[statement.id.0 as usize] = true;
+        }
+    }
     plan.allocation_declarations = filled(code.statements.len(), false)?;
     plan.allocation_locals = filled(code.locals.len(), false)?;
     plan.hidden_locals = filled(code.locals.len(), false)?;
