@@ -34,8 +34,7 @@ typed clauses share H14, so this is a concrete producer-side barrier, not merely
 missing P9 syntax. Nested outer protection/shared cleanup introduces additional
 ownership constraints; removing the rejection alone is not an established repair.
 The explicit chain retains clause priority and effects. Fresh delivery has no
-stopped member or rendering issue. Behavioral execution remains unrun; R1 scores
-are historical.
+stopped member or rendering issue. Behavioral execution remains unrun.
 
 ## Prior review — round 1
 
@@ -43,9 +42,9 @@ are historical.
 
 This is a manual source/output reading judgment, not an automated execution result.
 
-| Method | Semantics | Structure | Naming |
-|---|---|---|---|
-| `classify` | ~ Equivalent behavior with a different shape: catch priority, the -2/111 results, the nested detail close and the shared outer close agree, but the typed catch clauses are printed as labeled handler blocks and `exception_chain` routes. | 23.0% | 64.7% |
+| Method | Semantics |
+| --- | --- |
+| `classify` | ~ Equivalent behavior with a different shape: catch priority, the -2/111 results, the nested detail close and the shared outer close agree, but the typed catch clauses are printed as labeled handler blocks and `exception_chain` routes. |
 
 ### Path comparison
 
@@ -114,12 +113,6 @@ the obstruction above a single-fixture notation choice.
 - Constructor failure and asynchronous exceptions are not modeled.
 - No automated behavioral execution or Rust fixture test was run.
 
-### Score (supplementary)
-
-`python3 quality/score.py --slug typed-catch-shared-cleanup` reports structure
-23.0% and naming 64.7%. The score reflects explicit chains, split construction
-and labeled handlers; it is not a verdict.
-
 ### Commands
 
 ```sh
@@ -129,7 +122,6 @@ cargo run -p diana-decomp --example dbg_shell --locked -- \
 cargo run -p diana-decomp --example dbg_shell --locked -- \
   --dex quality/fixtures/exceptions/typed-catch-shared-cleanup/classes.dex \
   --exec '{"cmd":"p6-all","details":true}'
-python3 quality/score.py --slug typed-catch-shared-cleanup
 ```
 
 ## Rounds

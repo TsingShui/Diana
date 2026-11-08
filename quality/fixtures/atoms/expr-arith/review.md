@@ -6,48 +6,32 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
-- Current numbers from `python3 quality/score.py --slug expr-arith`:
-  structure 86%, naming 44%.
 
 ## Current verdict — round 1, 2026-11-08
 
-### Per method
-
-| method | structure | naming |
-|---|---|---|
-| `add` | 95% | 33% |
-| `minusOne` | 91% | 50% |
-| `multiply` | 72% | 50% |
-| `divide` | 95% | 33% |
-| `modulo` | 94% | 50% |
-| `bits` | 75% | 33% |
-| `shifts` | 74% | 50% |
-| `negate` | 93% | 50% |
-
 ### Semantics
 
-The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
-
+The recorded LLM verdict compares reference and output; `?` marks unjudged behavior.
 | method | semantics |
 |---|---|
-| `add` | ✔ 与参考等价 |
-| `minusOne` | ✔ 与参考等价 |
-| `multiply` | ✔ 与参考等价 |
-| `divide` | ✔ 与参考等价 |
-| `modulo` | ✔ 与参考等价 |
-| `bits` | ✔ 与参考等价 |
-| `shifts` | ✔ 与参考等价 |
-| `negate` | ✔ 与参考等价 |
+| `add` | ✔ Equivalent to the reference. |
+| `minusOne` | ✔ Equivalent to the reference. |
+| `multiply` | ✔ Equivalent to the reference. |
+| `divide` | ✔ Equivalent to the reference. |
+| `modulo` | ✔ Equivalent to the reference. |
+| `bits` | ✔ Equivalent to the reference. |
+| `shifts` | ✔ Equivalent to the reference. |
+| `negate` | ✔ Equivalent to the reference. |
 
 ### Findings
 
-- 算术结果正确；主要差异是每个表达式被拆成 `int ID = (…)` 再 `return`
-- `x * 17L` 的 wide 乘法被拆成两行（结构 72%）
+- Arithmetic results agree; expressions are assigned to locals before return. Recorded forms: `int ID = (…)`.
+- The wide multiplication `x * 17L` is split across two statements.
 
 ### Ranked fixes
 
-单表达式直接 `return x + 1;`
+Prefer a direct return expression such as `return x + 1;` when the delivered plan permits it.
 
 ## Rounds
 
-- R1 2026-11-08: structure 86%, naming 44%; 算术结果正确；主要差异是每个表达式被拆成 `int ID = (…)` 再 `return`
+- R1 2026-11-08: Arithmetic results agree; expressions are assigned to locals before return. Recorded forms: `int ID = (…)`.

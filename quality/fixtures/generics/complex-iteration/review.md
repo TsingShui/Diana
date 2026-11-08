@@ -6,44 +6,31 @@ so a review needs no toolchain.
 
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
-- Current numbers from `python3 quality/score.py --slug complex-iteration`:
-  structure 67%, naming 59%%.
 
 ## Current verdict — round 1, 2026-11-08
 
 ### Semantics
 
-The verdict is written by reading the reference next to the output. `score.py`
-never substitutes for it.
+The verdict is written by reading the reference next to the output.
 
 | method | semantics |
 |---|---|
 | `add` | ✔ |
-| `totalWeight` | ✔ entrySet 遍历求和 |
-| `dropShort` | ✔ `iterator.remove()` 保留 |
-| `heavy` | ? 未读 |
-| `sumNested` | ✔ 二维增强 for 展开为下标循环，取值正确 |
-
-### Score
-
-| method | structure | naming |
-|---|---|---|
-| `add` | 75% | 71% |
-| `totalWeight` | 49% | 50% |
-| `dropShort` | 92% | 82% |
-| `heavy` | 66% | 71% |
-| `sumNested` | 49% | 20% |
+| `totalWeight` | ✔ entrySet iteration and summation agree. |
+| `dropShort` | ✔ iterator.remove() is retained. |
+| `heavy` | ? Not reviewed. |
+| `sumNested` | ✔ Indexed loops preserve the values of nested enhanced iteration. |
 
 ### Findings
 
-- `for (Map.Entry<…> entry : counts.entrySet())` 变成 `Iterator` + `Object` + `((Map$Entry) v5).getValue()`
-- `for (String name : names)` 变成 `Iterator` + `((String) v5).length()`
-- `heavy` 的 `counts.get(name)` 与空值判断未核实
+- Map.Entry enhanced iteration expands into Iterator, Object and an explicit entry cast. Recorded forms: `for (Map.Entry<…> entry : counts.entrySet())`, `((Map$Entry) v5).getValue()`.
+- String enhanced iteration expands into Iterator and an explicit String cast. Recorded forms: `for (String name : names)`, `((String) v5).length()`.
+- The counts.get(name) and null-selection paths in heavy were not confirmed.
 
 ### Ranked fixes
 
-增强 for 与 Map.Entry 形态恢复；保留泛型实参；元素不再经 `Object` 中转
+Improve enhanced iteration, Map.Entry and generic-argument presentation without losing element checks. Recorded forms: `Object`.
 
 ## Rounds
 
-- R1 2026-11-08: structure 66%, naming 59%; `for (Map.Entry<…> entry : counts.entrySet())` 变成 `Iterator` + `Object` + `((Map$Entry) v5).getValue()`
+- R1 2026-11-08: Map.Entry enhanced iteration expands into Iterator, Object and an explicit entry cast. Recorded forms: `for (Map.Entry<…> entry : counts.entrySet())`, `((Map$Entry) v5).getValue()`.

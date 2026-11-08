@@ -6,40 +6,28 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
-- Current numbers from `python3 quality/score.py --slug branch-ifz`:
-  structure 89%, naming 70%.
 
 ## Current verdict — round 1, 2026-11-08
 
-### Per method
-
-| method | structure | naming |
-|---|---|---|
-| `whenZero` | 96% | 67% |
-| `whenNonZero` | 96% | 67% |
-| `bothPaths` | 68% | 67% |
-| `nullCheck` | 96% | 80% |
-
 ### Semantics
 
-The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
-
+The recorded LLM verdict compares reference and output; `?` marks unjudged behavior.
 | method | semantics |
 |---|---|
-| `whenZero` | ✔ 分支未反演 |
-| `whenNonZero` | ✔ 分支未反演 |
-| `bothPaths` | ✔ 分支未反演 |
-| `nullCheck` | ✔ 分支未反演 |
+| `whenZero` | ✔ Branch polarity is preserved. |
+| `whenNonZero` | ✔ Branch polarity is preserved. |
+| `bothPaths` | ✔ Branch polarity is preserved. |
+| `nullCheck` | ✔ Branch polarity is preserved. |
 
 ### Findings
 
-- 条件形状全部保留（`if (p0 == 0)`、`if (p0 != 0)`、`if (input == null)` 都没有被反演）
-- 扣分只来自命名（`p0`）与字段限定 `BranchIfz.state`，不是结构
+- Zero, nonzero and null condition forms retain their original polarity. Recorded forms: `if (p0 == 0)`, `if (p0 != 0)`, `if (input == null)`.
+- Generated parameter names and qualified state access remain, rather than a conditional-structure difference. Recorded forms: `p0`, `BranchIfz.state`.
 
 ### Ranked fixes
 
-参数名从 debug_info 恢复；字段限定在无冲突时省略
+Recover available debug parameter names and reduce qualification where unambiguous.
 
 ## Rounds
 
-- R1 2026-11-08: structure 89%, naming 70%; 条件形状全部保留（`if (p0 == 0)`、`if (p0 != 0)`、`if (input == null)` 都没有被反演）
+- R1 2026-11-08: Zero, nonzero and null condition forms retain their original polarity. Recorded forms: `if (p0 == 0)`, `if (p0 != 0)`, `if (input == null)`.

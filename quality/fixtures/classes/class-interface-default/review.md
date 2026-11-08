@@ -6,39 +6,28 @@ so a review needs no toolchain.
 
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
-- Current numbers from `python3 quality/score.py --slug class-interface-default`:
-  structure 78%, naming 89%.
 
 ## Current verdict — round 1, 2026-11-08
 
-### Per method
-
-| method | structure | naming | first divergence |
-|---|---|---|---|
-| `doubled` | 81% | 100% | `replace: ref=default ours=public` |
-| `plus` | 59% | 67% | `replace: ref=default ours=public` |
-| `constant` | 95% | 100% | `insert: ref=- ours=public` |
-
 ### Semantics
 
-The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
-
+The recorded LLM verdict compares reference and output; `?` marks unjudged behavior.
 | method | semantics |
 |---|---|
-| `doubled` | ✔ 主体正确，缺 default 关键字 |
-| `plus` | ✔ 反演但等价 |
+| `doubled` | ✔ The body agrees, but the default keyword is absent. |
+| `plus` | ✔ Inverted but equivalent. |
 | `constant` | ✔ |
 
 ### Findings
 
-- `default` 关键字丢失：输出是 `public int doubled()`（有方法体的接口方法没有声明符）
-- `constant()` 95%、`plus()` 条件被反演（`if (p0 >= 0)` 与源码相反但等价）
-- 分词器此前漏掉 `default` 方法，本轮已修（语料方法数 86 → 88）
+- The interface method body is printed as public int doubled() without its source default modifier.
+- constant() agrees; plus() uses an inverted condition with equivalent branch selection. Recorded forms: `if (p0 >= 0)`.
+- The method extractor previously missed default methods; its correction expanded the recorded method count from 86 to 88.
 
 ### Ranked fixes
 
-还原 `default` 关键字；条件不反演；参数名恢复
+Improve default-method declarations, condition presentation and parameter names.
 
 ## Rounds
 
-- R1 2026-11-08: structure 78%, naming 89%; `default` 关键字丢失：输出是 `public int doubled()`（有方法体的接口方法没有声明符）
+- R1 2026-11-08: The interface method body is printed as public int doubled() without its source default modifier.

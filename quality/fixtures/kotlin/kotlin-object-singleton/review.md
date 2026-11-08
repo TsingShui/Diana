@@ -1,9 +1,6 @@
 # Fixture: kotlin-object-singleton
 
-object singleton and companion object. Written in Kotlin, so the source is the semantic reference only: this
-fixture is **never scored** (`score.py` refuses it) and the review below is the
-record. Kotlin has no lexical counterpart in Java-like output, so a number would
-measure syntax rather than recovery.
+object singleton and companion object. The Kotlin source is the semantic reference for the LLM review below.
 
 - Provenance: authored for this repository. No third-party code or data.
 - Prepared with `kotlinc -jvm-target 1.8` + `d8 --min-api 24 --lib kotlin-stdlib.jar`
@@ -17,20 +14,20 @@ measure syntax rather than recovery.
 
 | method | semantics |
 |---|---|
-| `Counter` | ✔ `INSTANCE` + 私有构造器 + static 块，正是 Kotlin object 的编译形态 |
-| `add` | ✔ 静态 `total` 累加正确 |
+| `Counter` | ✔ INSTANCE, the private constructor and static block retain the lowered Kotlin object form. |
+| `add` | ✔ Static total accumulation agrees. |
 | `getTotal` | ✔ |
 
 ### Findings
 
-- object 的 `INSTANCE` 形态被完整保留：`public static final Counter INSTANCE` + static 块 `new Counter()`
-- companion 出现我们的内部标记 `static_preparation_before_clinit { Companion = null; PREFIX = "case:"; created = implicit_default; }`
-- 合成访问器 `access$getCreated$cp` / `access$setCreated$cp` 作为普通方法出现在正文
+- The object INSTANCE field and static construction are retained. Recorded forms: `public static final Counter INSTANCE`, `new Counter()`.
+- Companion initialization exposes static_preparation_before_clinit, a null assignment and implicit_default notation. Recorded forms: `static_preparation_before_clinit { Companion = null; PREFIX = "case:"; created = implicit_default; }`.
+- Synthetic accessors access$getCreated$cp / access$setCreated$cp appear as ordinary methods.
 
 ### Ranked fixes
 
-`static_preparation_before_clinit` 与 `implicit_default` 移出正文；companion 的常量直接内联
+Improve companion constants and initialization notation while retaining original initialization facts. Recorded forms: `static_preparation_before_clinit`, `implicit_default`.
 
 ## Rounds
 
-- R1 2026-11-08: not scored (Kotlin source); object 的 `INSTANCE` 形态被完整保留：`public static final Counter INSTANCE` + static 块 `new Counter()`
+- R1 2026-11-08: The object INSTANCE field and static construction are retained. Recorded forms: `public static final Counter INSTANCE`, `new Counter()`.

@@ -1,9 +1,6 @@
 # Fixture: kotlin-suspend-state
 
-suspend functions and the continuation state machine. Written in Kotlin, so the source is the semantic reference only: this
-fixture is **never scored** (`score.py` refuses it) and the review below is the
-record. Kotlin has no lexical counterpart in Java-like output, so a number would
-measure syntax rather than recovery.
+suspend functions and the continuation state machine. The Kotlin source is the semantic reference for the LLM review below.
 
 - Provenance: authored for this repository. No third-party code or data.
 - Prepared with `kotlinc -jvm-target 1.8` + `d8 --min-api 24 --lib kotlin-stdlib.jar`
@@ -17,23 +14,23 @@ measure syntax rather than recovery.
 
 | method | semantics |
 |---|---|
-| `Case` | ? 未判定 |
-| `load` | ✔ 负数抛 IllegalStateException，否则返回 2×value |
-| `fetch` | ~ 状态机结构（label 切换、COROUTINE_SUSPENDED、`I$0` 保存）都在，未逐行核对取值 |
-| `guarded` | ✔ try/catch 与 `throwOnFailure` 顺序正确 |
-| `total` | ~ 循环内挂起，未逐行核对 |
+| `Case` | ? Not judged. |
+| `load` | ✔ Negative values throw IllegalStateException; other inputs return twice the value. |
+| `fetch` | ? Not reviewed line by line for values; label selection, COROUTINE_SUSPENDED and I$0 state storage remain visible. |
+| `guarded` | ✔ Try/catch and throwOnFailure ordering agree. |
+| `total` | ? Not reviewed line by line for suspension inside the loop. |
 
 ### Findings
 
-- `suspend` 修饰符完全丢失：方法签名是 `Object fetch(int, Continuation<? super Integer>)`
-- 状态机以 `switch (label) { case 0: … case 1: … }` + `goto L6/L7` 呈现，`IntrinsicsKt.getCOROUTINE_SUSPENDED()` 与 `ResultKt.throwOnFailure` 裸露
-- 出现内部类型关键字 `reference v29;`（不是 Java 也不是 Kotlin）
-- `I$0`/`I$1`/`label` 这些 Continuation 字段直接作为成员读写
+- The suspend modifier is absent; fetch has the lowered Object/Continuation signature. Recorded forms: `Object fetch(int, Continuation<? super Integer>)`.
+- The state machine exposes label switching, goto L6/L7, getCOROUTINE_SUSPENDED and throwOnFailure. Recorded forms: `switch (label) { case 0: … case 1: … }`, `IntrinsicsKt.getCOROUTINE_SUSPENDED()`, `ResultKt.throwOnFailure`.
+- The internal reference v29 declaration is visible instead of a Java/Kotlin source type. Recorded forms: `reference v29;`.
+- Continuation fields I$0/I$1/label are read and written explicitly.
 
 ### Ranked fixes
 
-suspend 形态与状态机折叠；`reference` 关键字出正文；Continuation 字段不暴露
+Improve suspend/state-machine, reference-type and continuation-field presentation without removing original state facts.
 
 ## Rounds
 
-- R1 2026-11-08: not scored (Kotlin source); `suspend` 修饰符完全丢失：方法签名是 `Object fetch(int, Continuation<? super Integer>)`
+- R1 2026-11-08: The suspend modifier is absent; fetch has the lowered Object/Continuation signature. Recorded forms: `Object fetch(int, Continuation<? super Integer>)`.

@@ -6,44 +6,31 @@ so a review needs no toolchain.
 
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
-- Current numbers from `python3 quality/score.py --slug complex-recursion`:
-  structure 66%, naming 55%.
 
 ## Current verdict — round 1, 2026-11-08
 
 ### Semantics
 
-The verdict is written by reading the reference next to the output. `score.py`
-never substitutes for it.
+The verdict is written by reading the reference next to the output.
 
 | method | semantics |
 |---|---|
-| `isEven` | ✔ 反演但等价（`if (p0 != 0) return isOdd(p0-1)`） |
+| `isEven` | ✔ The inverted test still selects the original recursive branch. |
 | `isOdd` | ✔ |
-| `sumTo` | ✔ 入口转调私有重载 |
-| `fibonacci` | ✔ 记忆化：先查 `memo`、缺失时递归并写回 |
-| `factorial` | ✔ 迭代连乘 |
-
-### Score
-
-| method | structure | naming |
-|---|---|---|
-| `isEven` | 62% | 67% |
-| `isOdd` | 62% | 67% |
-| `sumTo` | 95% | 50% |
-| `fibonacci` | 48% | 67% |
-| `factorial` | 63% | 25% |
+| `sumTo` | ✔ The entry delegates to the private overload. |
+| `fibonacci` | ✔ Memo lookup precedes recursive computation and write-back. |
+| `factorial` | ✔ Iterative multiplication agrees. |
 
 ### Findings
 
-- 互递归与累加器递归都正确；`fibonacci` 的记忆化读/写顺序保持
-- `Map<Integer, Long> memo` 的声明保留了泛型，但 `this.memo = hashMap` 的右侧是原始 `HashMap`
-- 结构 48%~95%，扣分主要来自临时变量与 `while` 形态
+- Mutual and accumulator recursion agree; fibonacci retains memo read/write order.
+- The memo field retains Map<Integer, Long>, but its initializer uses a raw HashMap expression. Recorded forms: `Map<Integer, Long> memo`, `this.memo = hashMap`.
+- Intermediate locals and while-loop spelling account for remaining readability differences.
 
 ### Ranked fixes
 
-字段声明与初始化右侧的泛型一致；临时变量收敛
+Improve consistency between generic field declarations and initialization expressions; reduce redundant locals.
 
 ## Rounds
 
-- R1 2026-11-08: structure 66%, naming 55%; 互递归与累加器递归都正确；`fibonacci` 的记忆化读/写顺序保持
+- R1 2026-11-08: Mutual and accumulator recursion agree; fibonacci retains memo read/write order.

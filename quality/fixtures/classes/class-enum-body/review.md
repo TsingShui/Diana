@@ -6,22 +6,12 @@ so a review needs no toolchain.
 
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
-- Current numbers from `python3 quality/score.py --slug class-enum-body`:
-  structure 90%, naming 83%.
 
 ## Current verdict — round 1, 2026-11-08
 
-### Per method
-
-| method | structure | naming | first divergence |
-|---|---|---|---|
-| `weight` | 91% | 100% | `insert: ref=- ours=this .` |
-| `scaled` | 89% | 67% | `insert: ref=- ours=( this .` |
-
 ### Semantics
 
-The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
-
+The recorded LLM verdict compares reference and output; `?` marks unjudged behavior.
 | method | semantics |
 |---|---|
 | `weight` | ✔ |
@@ -29,15 +19,15 @@ The semantics verdict is written by reading the reference next to the output; `?
 
 ### Findings
 
-- `weight()` 91%、`scaled()` 89%：方法体正确
-- 枚举常量没有还原成 `FIRST(1), SECOND(2) { … }`，而是 `public static final dex_flags<enum> … ` + static 块里的 `new ClassEnumBody("FIRST", 0, 1)`
-- 常量体类 `ClassEnumBody$1` 在 static 块里被直接 `new`，方法体重写不可见
-- `dex_flags<enum>`/`dex_flags<synthetic>` 与 `@… system` 进入正文
+- weight() and scaled() bodies agree.
+- Enum constants expand into static final dex_flags<enum> fields and static-block construction rather than source-style constant declarations. Recorded forms: `FIRST(1), SECOND(2) { … }`, `public static final dex_flags<enum> … `, `new ClassEnumBody("FIRST", 0, 1)`.
+- The constant-body class ClassEnumBody$1 is instantiated in the static block; its override is not visible in that class view. Recorded forms: `new`.
+- DEX enum/synthetic flags and system annotation visibility appear in the main text. Recorded forms: `dex_flags<enum>`, `dex_flags<synthetic>`, `@… system`.
 
 ### Ranked fixes
 
-枚举常量与常量体还原成声明形式；`dex_flags<>`/`system` 移出正文；构造器参数名恢复
+Improve enum constant/body declarations, flag/visibility presentation and constructor parameter names. Recorded forms: `dex_flags<>`, `system`.
 
 ## Rounds
 
-- R1 2026-11-08: structure 90%, naming 83%; `weight()` 91%、`scaled()` 89%：方法体正确
+- R1 2026-11-08: weight() and scaled() bodies agree.

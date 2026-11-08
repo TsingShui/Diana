@@ -24,7 +24,7 @@ found under the README's helper and monitor models.
 The current text is unchanged from the inspected `6d663d9` engine. The finally
 and monitor cleanup remain split across the natural inner try and an explicit
 chain. Fresh delivery has no stopped member or rendering issue. Behavioral
-execution remains unrun; R1 scores below are historical.
+execution remains unrun.
 
 ## Prior review — round 1
 
@@ -32,9 +32,9 @@ execution remains unrun; R1 scores below are historical.
 
 This is a manual source/output reading judgment, not an automated execution result.
 
-| Method | Semantics | Structure | Naming |
-|---|---|---|---|
-| `syncFinally` | ~ Equivalent behavior with a different shape: close-before-release, record placement, early-return skipping and exception replacement agree; the monitor release is an explicit `H10` path. | 38.8% | 60.0% |
+| Method | Semantics |
+| --- | --- |
+| `syncFinally` | ~ Equivalent behavior with a different shape: close-before-release, record placement, early-return skipping and exception replacement agree; the monitor release is an explicit `H10` path. |
 
 ### Path comparison
 
@@ -91,12 +91,6 @@ obstacles; the execution facts are preserved.
 - The null-lock monitor failure and asynchronous exceptions are not executed.
 - No automated behavioral execution or Rust fixture test was run.
 
-### Score (supplementary)
-
-`python3 quality/score.py --slug sync-finally-return` reports structure 38.8% and
-naming 60.0%. The explicit release and `H10` block dominate the structural loss;
-the score is not a verdict.
-
 ### Commands
 
 ```sh
@@ -106,7 +100,6 @@ cargo run -p diana-decomp --example dbg_shell --locked -- \
 cargo run -p diana-decomp --example dbg_shell --locked -- \
   --dex quality/fixtures/exceptions/sync-finally-return/classes.dex \
   --exec '{"cmd":"p6-all","details":true}'
-python3 quality/score.py --slug sync-finally-return
 ```
 
 ## Rounds

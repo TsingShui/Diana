@@ -32,7 +32,7 @@ P2 retains the two constant-3 definitions at PCs 17 and 23, and P5 records
 `Materialization::Literal` for both. Printing record(3) folds those pure local
 definitions; it does not lose the original instruction facts or change an effect.
 Fresh delivery has no stopped member or rendering issue. Behavioral execution
-remains unrun; R1 scores below are historical.
+remains unrun.
 
 ## Prior review — round 1
 
@@ -40,10 +40,10 @@ remains unrun; R1 scores below are historical.
 
 This is a manual source/output reading judgment, not an automated execution result.
 
-| Method | Semantics | Structure | Naming |
-|---|---|---|---|
-| `localReturn` | ~ Equivalent behavior: the saved pre-finally value is returned and the finally's observable record call runs on both paths. The dead local assignment `result = 3` is folded into `record(3)`, so the finally body is not printed as a separate local write. | 47.9% | 60.0% |
-| `fieldReturn` | ~ Equivalent behavior: the field is read before the overwrite, the returned local keeps the old value, and the field write and record use the new value. The generated local is named `state` and shadows the field. | 43.3% | 80.0% |
+| Method | Semantics |
+| --- | --- |
+| `localReturn` | ~ Equivalent behavior: the saved pre-finally value is returned and the finally's observable record call runs on both paths. The dead local assignment `result = 3` is folded into `record(3)`, so the finally body is not printed as a separate local write. |
+| `fieldReturn` | ~ Equivalent behavior: the field is read before the overwrite, the returned local keeps the old value, and the field write and record use the new value. The generated local is named `state` and shadows the field. |
 
 ### Path comparison
 
@@ -95,12 +95,6 @@ saved-value and record ordering are preserved.
   is dead after the return; this relies on the source not reading it elsewhere.
 - No automated behavioral execution or Rust fixture test was run.
 
-### Score (supplementary)
-
-`python3 quality/score.py --slug finally-return-capture` reports `localReturn`
-47.9% structure / 60% naming and `fieldReturn` 43.3% / 80%, aggregate 45.6% / 70%.
-The score reflects the explicit chains and handler labels; it is not a verdict.
-
 ### Commands
 
 ```sh
@@ -110,7 +104,6 @@ cargo run -p diana-decomp --example dbg_shell --locked -- \
 cargo run -p diana-decomp --example dbg_shell --locked -- \
   --dex quality/fixtures/exceptions/finally-return-capture/classes.dex \
   --exec '{"cmd":"p6-all","details":true}'
-python3 quality/score.py --slug finally-return-capture
 ```
 
 ## Rounds

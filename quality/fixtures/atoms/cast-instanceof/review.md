@@ -6,42 +6,30 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
-- Current numbers from `python3 quality/score.py --slug cast-instanceof`:
-  structure 84%, naming 77%%.
 
 ## Current verdict — round 2, 2026-11-08
 
-### Per method
-
-| method | structure | naming |
-|---|---|---|
-| `isString` | 94% | 75% |
-| `castToNumber` | 85% | 80% |
-| `castAfterTest` | 81% | 86% |
-| `arrayCast` | 79% | 67% |
-
 ### Semantics
 
-The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
-
+The recorded LLM verdict compares reference and output; `?` marks unjudged behavior.
 | method | semantics |
 |---|---|
 | `isString` | ✔ |
-| `castToNumber` | ✔ 多一次临时 |
-| `castAfterTest` | ✔ 反演但等价 |
-| `arrayCast` | ✔ 多一次临时 |
+| `castToNumber` | ✔ Equivalent with an additional temporary. |
+| `castAfterTest` | ✔ Inverted but equivalent. |
+| `arrayCast` | ✔ Equivalent with an additional temporary. |
 
 ### Findings
 
-- `instanceof` 与 `(Number) v1` 转换正确
-- 检查折到声明处：`int[] v1 = (int[]) p0; return v1;`、`Number v1 = (Number) p0;`
-- 结构分 87% → 84% 是形态代价：参考里 `return (int[]) value` 是一行，现在拆成声明加返回
+- instanceof and the Number cast agree. Recorded forms: `(Number) v1`.
+- Checks appear at declarations: `int[] v1 = (int[]) p0; return v1;` and `Number v1 = (Number) p0;`.
+- A direct return of a cast becomes a declaration followed by return. Recorded forms: `return (int[]) value`.
 
 ### Ranked fixes
 
-cast 直接作用于原值，不再中转临时变量；参数名恢复
+Improve direct cast expression presentation and parameter naming.
 
 ## Rounds
 
-- R2 2026-11-08: structure 84%, naming 77%; 转换折进声明，`arrayCast`/`castToNumber` 不再有 `Object` 临时；结构分小幅下降是行数形态变化
-- R1 2026-11-08: structure 87%, naming 77%; `instanceof` 与 `(Number) v1` 转换正确
+- R2 2026-11-08: Casts moved into declarations; arrayCast/castToNumber no longer need Object intermediates, but still split declaration and return.
+- R1 2026-11-08: instanceof and the Number cast agree. Recorded forms: `(Number) v1`.

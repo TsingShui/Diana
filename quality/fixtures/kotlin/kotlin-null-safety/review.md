@@ -1,8 +1,7 @@
 # Fixture: kotlin-null-safety
 
 Kotlin null-safety forms and the DEX they produce: `?.`, `?:`, `!!`, and a chain of
-safe calls. This fixture is judged by reading, semantics only: it is never scored,
-and no numeric threshold applies. The verdict below is the record.
+safe calls. The LLM review below compares semantic behavior against the Kotlin source.
 
 - Provenance: authored for this repository. No third-party code or data.
 - Prepared with `kotlinc -jvm-target 1.8` + `d8 --min-api 24 --lib kotlin-stdlib.jar`
@@ -15,8 +14,6 @@ and no numeric threshold applies. The verdict below is the record.
 ## Current verdict — round 1, 2026-11-08
 
 ### Semantics
-
-Kotlin is judged by reading only; there is no numeric score.
 
 | method | semantics | shape | notation |
 |---|---|---|---|
@@ -49,4 +46,4 @@ as a separate statement.
 
 ## Rounds
 
-- R1 2026-11-08: not scored (Kotlin source); semantics correct in 4/4, safe-call chains fall back to `goto` labels.
+- R1 2026-11-08: semantics correct in 4/4, safe-call chains fall back to `goto` labels.

@@ -71,22 +71,11 @@ Make the remaining outer finally protocol easier to follow. Improve expression
 and construction spelling only when original evaluation and check order remain
 visible.
 
-### Historical score
-
-R1 only; not rerun in R2 or R3. Aggregate structure 30%, naming 63%.
-
-| Method | Structure | Naming |
-|---|---|---|
-| `parseOrThrow` | 43% | 82% |
-| `nestedFinally` | 11% | 57% |
-| `resources` | 46% | 29% |
-| `multiAndInstance` | 20% | 86% |
-
 ## Rounds
 
 - R3: Direct manual reading finds resource behavior consistent with the source;
   automated behavioral execution remains separate and unrun.
 - R2: Resource cleanup moved into nested try/catch inside the loop; the manual
   semantic judgment was left pending.
-- R1, 2026-11-08: Structure 30%, naming 63%. Detached resource handlers obstructed
+- R1, 2026-11-08: Detached resource handlers obstructed
   reading; this was not an independently established behavioral mismatch.

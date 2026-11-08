@@ -6,38 +6,27 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
-- Current numbers from `python3 quality/score.py --slug exception-one-catch`:
-  structure 48%, naming 57%.
 
 ## Current verdict — round 1, 2026-11-08
 
-### Per method
-
-| method | structure | naming |
-|---|---|---|
-| `catchReturns` | 55% | 50% |
-| `catchRethrows` | 56% | 60% |
-| `sideEffectsInTry` | 34% | 60% |
-
 ### Semantics
 
-The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
-
+The recorded LLM verdict compares reference and output; `?` marks unjudged behavior.
 | method | semantics |
 |---|---|
 | `catchReturns` | ✔ |
-| `catchRethrows` | ✔ state 置 2 后重抛原异常 |
-| `sideEffectsInTry` | ✔ 顺序正确 |
+| `catchRethrows` | ✔ State becomes 2 before the original exception is rethrown. |
+| `sideEffectsInTry` | ✔ Ordering agrees. |
 
 ### Findings
 
-- 语义全部正确（catch 返回、catch 内 rethrow、try 内效果顺序都保住）
-- 每个操作挂 `[exn c0]`，方法头多一行 `exception_chain`，try 前多 `nop;`
+- Catch return, catch rethrow and protected effect order agree.
+- Per-operation exn markers, an exception-chain line and a pre-try nop remain visible. Recorded forms: `[exn c0]`, `exception_chain`, `nop;`.
 
 ### Ranked fixes
 
-`[exn cN]`/`exception_chain`/`nop` 移出正文；`catch` 形如 `catch (T e)`
+Improve catch-variable and protection presentation while keeping original routes and facts available. Recorded forms: `[exn cN]`, `exception_chain`, `nop`, `catch (T e)`.
 
 ## Rounds
 
-- R1 2026-11-08: structure 48%, naming 57%; 语义全部正确（catch 返回、catch 内 rethrow、try 内效果顺序都保住）
+- R1 2026-11-08: Catch return, catch rethrow and protected effect order agree.

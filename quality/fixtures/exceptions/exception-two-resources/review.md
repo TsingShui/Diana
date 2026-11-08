@@ -65,19 +65,11 @@ expanded cleanup rather than a compact `try (resource...)` declaration.
 Improve local names and cleanup concision while retaining primary exception
 identity, reverse close order and suppression order.
 
-### Historical score
-
-R1 only; not rerun in R2 or R3. Token similarity is not a semantic verdict.
-
-| Method | Structure | Naming | First divergence |
-|---|---|---|---|
-| `sum` | 8% | 33% | `insert: ref=- ours=ID ID ; ID ID` |
-
 ## Rounds
 
 - R3: Direct manual path comparison finds the resource behavior consistent with
   the source. Automated behavioral execution remains separate and unrun.
 - R2: Nested protection became readable; the semantic judgment was left pending.
-- R1, 2026-11-08: Structure 8%, naming 33%. Handlers appeared after return and a
+- R1, 2026-11-08: Handlers appeared after return and a
   cleanup try appeared after throw; the negative mark described that reading
   obstruction, not an established execution mismatch.

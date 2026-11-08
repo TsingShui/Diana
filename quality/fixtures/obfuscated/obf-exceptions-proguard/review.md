@@ -71,22 +71,11 @@ The three `a` overloads still require their full parameter signatures for review
 Improve local readability without replacing original obfuscated member identities
 or inventing missing class metadata.
 
-### Historical score
-
-R1 structure only; naming was destroyed by the obfuscator. Not rerun in R2 or R3.
-
-| Method | Structure |
-|---|---|
-| `parseOrThrow` | 43% |
-| `nestedFinally` | 17% |
-| `resources` | 45% |
-| `multiAndInstance` | 21% |
-
 ## Rounds
 
 - R3: Direct source/output reading, paired by original signature, finds resource
   behavior consistent. This is a manual judgment, not an executed behavioral test.
 - R2: The obfuscated resource loop recovered nested protection alongside the
   original fixture; its manual semantic judgment was left pending.
-- R1, 2026-11-08: Structure 31%; class flattening, removed member-class metadata
+- R1, 2026-11-08: class flattening, removed member-class metadata
   and overloaded short names complicated review.

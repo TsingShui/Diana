@@ -6,40 +6,29 @@ so a review needs no toolchain.
 
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
-- Current numbers from `python3 quality/score.py --slug complex-generics`:
-  structure 72%, naming 58%.
 
 ## Current verdict — round 1, 2026-11-08
 
 ### Semantics
 
-The verdict is written by reading the reference next to the output. `score.py`
-never substitutes for it.
+The verdict is written by reading the reference next to the output.
 
 | method | semantics |
 |---|---|
-| `largest` | ✔ 擦除后的 `Comparable` 比较正确；`<T extends Comparable<T>>` 只留在 `@Signature` |
-| `repeat` | ✔ 泛型 `List<T>` 恢复 |
-| `applyMapper` | ✔ `Mapper<String>` 与 cast 正确 |
-
-### Score
-
-| method | structure | naming |
-|---|---|---|
-| `largest` | 56% | 75% |
-| `repeat` | 81% | 50% |
-| `applyMapper` | 79% | 50% |
+| `largest` | ✔ The erased Comparable comparison agrees; the generic bound remains only in Signature metadata. |
+| `repeat` | ✔ The generic List<T> form is recovered. |
+| `applyMapper` | ✔ Mapper<String> and its cast agree. |
 
 ### Findings
 
-- 两个方法对泛型的处理不一致：`repeat` 恢复出 `<T> List<T>`，`largest` 只能给出 `java.lang.Comparable largest(java.util.List)` 加一条 `@Signature(...) system`
-- `@Signature`/`@MethodParameters` 以注解文本进入正文并带 `system` 尾词
-- `Identity.apply` 的桥接方法未被单独评审（内部类单独渲染）
+- Generic presentation is inconsistent: repeat recovers <T> List<T>, while largest retains an erased declaration plus Signature metadata. Recorded forms: `java.lang.Comparable largest(java.util.List)`, `@Signature(...) system`.
+- Signature/MethodParameters annotations and their system visibility appear in the main text. Recorded forms: `@Signature`, `@MethodParameters`.
+- The Identity.apply bridge was not separately reviewed; its inner class is rendered separately.
 
 ### Ranked fixes
 
-统一从 `@Signature` 恢复泛型签名；注解不进正文；参数名恢复
+Improve generic signatures from available metadata, annotation presentation and parameter names. Recorded forms: `@Signature`.
 
 ## Rounds
 
-- R1 2026-11-08: structure 72%, naming 58%; 两个方法对泛型的处理不一致：`repeat` 恢复出 `<T> List<T>`，`largest` 只能给出 `java.lang.Comparable largest(java.util.List)` 加一条 `@Signature(...) system`
+- R1 2026-11-08: Generic presentation is inconsistent: repeat recovers <T> List<T>, while largest retains an erased declaration plus Signature metadata. Recorded forms: `java.lang.Comparable largest(java.util.List)`, `@Signature(...) system`.

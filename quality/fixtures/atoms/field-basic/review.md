@@ -6,44 +6,30 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
-- Current numbers from `python3 quality/score.py --slug field-basic`:
-  structure 88%, naming 83%.
 
 ## Current verdict — round 1, 2026-11-08
 
-### Per method
-
-| method | structure | naming |
-|---|---|---|
-| `readStatic` | 92% | 100% |
-| `writeStatic` | 93% | 67% |
-| `readLabel` | 92% | 100% |
-| `readInstance` | 91% | 100% |
-| `writeInstance` | 93% | 67% |
-| `addToInstance` | 67% | 67% |
-
 ### Semantics
 
-The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
-
+The recorded LLM verdict compares reference and output; `?` marks unjudged behavior.
 | method | semantics |
 |---|---|
-| `readStatic` | ✔ 读写与顺序正确 |
-| `writeStatic` | ✔ 读写与顺序正确 |
-| `readLabel` | ✔ 读写与顺序正确 |
-| `readInstance` | ✔ 读写与顺序正确 |
-| `writeInstance` | ✔ 读写与顺序正确 |
-| `addToInstance` | ✔ 读写与顺序正确 |
+| `readStatic` | ✔ Reads, writes and ordering agree. |
+| `writeStatic` | ✔ Reads, writes and ordering agree. |
+| `readLabel` | ✔ Reads, writes and ordering agree. |
+| `readInstance` | ✔ Reads, writes and ordering agree. |
+| `writeInstance` | ✔ Reads, writes and ordering agree. |
+| `addToInstance` | ✔ Reads, writes and ordering agree. |
 
 ### Findings
 
-- 读写都正确，差异是插入 `this .` / `X . ` 限定与 `int ID = this.ID` 临时
-- `value += delta` 展开为读、加、写三步（66.7%）
+- Reads/writes agree; extra this/class qualification and field-read locals make the text longer. Recorded forms: `this .`, `X . `, `int ID = this.ID`.
+- `value += delta` expands into separate read, add and write operations.
 
 ### Ranked fixes
 
-复合赋值保留 `+=`；去掉不必要的 `this.`
+Improve compound-assignment presentation and unnecessary qualification. Recorded forms: `+=`, `this.`.
 
 ## Rounds
 
-- R1 2026-11-08: structure 88%, naming 83%; 读写都正确，差异是插入 `this .` / `X . ` 限定与 `int ID = this.ID` 临时
+- R1 2026-11-08: Reads/writes agree; extra this/class qualification and field-read locals make the text longer. Recorded forms: `this .`, `X . `, `int ID = this.ID`.

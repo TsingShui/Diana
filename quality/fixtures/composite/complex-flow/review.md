@@ -6,41 +6,30 @@ so a review needs no toolchain.
 
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
-- Current numbers from `python3 quality/score.py --slug complex-flow`:
-  structure 23%, naming 69%.
 
 ## Current verdict — round 1, 2026-11-08
 
 ### Semantics
 
-The verdict is written by reading the reference next to the output. `score.py`
-never substitutes for it.
+The verdict is written by reading the reference next to the output.
 
 | method | semantics |
 |---|---|
-| `advance` | ✔ 三元与嵌套 if 反演但等价；`case DONE/FAILED` 落 default 正确 |
-| `run` | ✔ `continue`/`break` 用 goto 表达；finally 在正常与异常两条路径都写回 steps |
-| `summarize` | ✔ `state == DONE ? … : name() + steps` 展开为临时 + if，等价 |
-
-### Score
-
-| method | structure | naming |
-|---|---|---|
-| `advance` | 18% | 73% |
-| `run` | 20% | 50% |
-| `summarize` | 31% | 86% |
+| `advance` | ✔ Inverted ternary/nested If selections agree; DONE/FAILED correctly take default. |
+| `run` | ✔ Continue/break use gotos; finally writes steps on normal and exceptional paths. |
+| `summarize` | ✔ The conditional result expands into locals and If with equivalent selection. |
 
 ### Findings
 
-- `switch` 的 `default: break;` 被提到最前，`case 0/1` 顺序保留
-- `state = input > 0 ? RUNNING : FAILED` 展开成 if/else 赋值给临时，三元丢失
-- 循环里出现空 `if (state != DONE) { }` 与 `goto L6/L8/L9/L10/L12`
-- `history[steps] = input` 把 `this.steps` 读了三次（当时无副作用，等价但脆弱）
+- default: break is printed first; case 0/1 order remains. Recorded forms: `switch`, `default: break;`.
+- The RUNNING/FAILED ternary expands into If/else assignments to a local. Recorded forms: `state = input > 0 ? RUNNING : FAILED`.
+- The loop contains an empty If and goto L6/L8/L9/L10/L12. Recorded forms: `if (state != DONE) { }`.
+- history[steps] reads this.steps three times; the recorded path had no intervening side effect, but the presentation is fragile. Recorded forms: `history[steps] = input`.
 
 ### Ranked fixes
 
-枚举/三元/空 if 与 goto 清理；`this.steps` 只读一次
+Improve enum/ternary presentation, empty branches and gotos; avoid redundant field-read presentation. Recorded forms: `this.steps`.
 
 ## Rounds
 
-- R1 2026-11-08: structure 23%, naming 69%; `switch` 的 `default: break;` 被提到最前，`case 0/1` 顺序保留
+- R1 2026-11-08: default: break is printed first; case 0/1 order remains. Recorded forms: `switch`, `default: break;`.

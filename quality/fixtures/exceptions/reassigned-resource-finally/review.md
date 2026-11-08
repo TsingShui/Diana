@@ -25,7 +25,7 @@ helper models.
 The current text is unchanged from the inspected `6d663d9` engine. Snapshot
 annotations and the constant-true normal ownership test obscure the source intent,
 but carry the required distinctions. Fresh delivery has no stopped member or
-rendering issue. Behavioral execution remains unrun; R1 scores are historical.
+rendering issue. Behavioral execution remains unrun.
 
 ## Prior review — round 1
 
@@ -33,9 +33,9 @@ rendering issue. Behavioral execution remains unrun; R1 scores are historical.
 
 This is a manual source/output reading judgment, not an automated execution result.
 
-| Method | Semantics | Structure | Naming |
-|---|---|---|---|
-| `rotate` | ~ Equivalent behavior with a different shape: acquisition order, reassignment, the conditional close and close-failure replacement agree; the acquired flag and current handle appear as snapshot registers and bracket annotations. | 18.2% | 50.0% |
+| Method | Semantics |
+| --- | --- |
+| `rotate` | ~ Equivalent behavior with a different shape: acquisition order, reassignment, the conditional close and close-failure replacement agree; the acquired flag and current handle appear as snapshot registers and bracket annotations. |
 
 ### Path comparison
 
@@ -87,12 +87,6 @@ preserved.
   not modeled.
 - No automated behavioral execution or Rust fixture test was run.
 
-### Score (supplementary)
-
-`python3 quality/score.py --slug reassigned-resource-finally` reports structure
-18.2% and naming 50.0%. The snapshot annotations and generated names are the main
-structural losses; the score is not a verdict.
-
 ### Commands
 
 ```sh
@@ -102,7 +96,6 @@ cargo run -p diana-decomp --example dbg_shell --locked -- \
 cargo run -p diana-decomp --example dbg_shell --locked -- \
   --dex quality/fixtures/exceptions/reassigned-resource-finally/classes.dex \
   --exec '{"cmd":"p6-all","details":true}'
-python3 quality/score.py --slug reassigned-resource-finally
 ```
 
 ## Rounds

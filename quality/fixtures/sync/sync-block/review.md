@@ -6,39 +6,28 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
-- Current numbers from `python3 quality/score.py --slug sync-block`:
-  structure 42%, naming 83%.
 
 ## Current verdict — round 1, 2026-11-08
 
-### Per method
-
-| method | structure | naming | first divergence |
-|---|---|---|---|
-| `add` | 41% | 75% | `insert: ref=- ours=int ID ; ID ID` |
-| `clearIfPositive` | 49% | 100% | `insert: ref=- ours=ID ID ; ID ID` |
-| `nested` | 35% | 75% | `insert: ref=- ours=int ID ; ID ID` |
-
 ### Semantics
 
-The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
-
+The recorded LLM verdict compares reference and output; `?` marks unjudged behavior.
 | method | semantics |
 |---|---|
-| `add` | ✔ 早返回前已释放 |
+| `add` | ✔ The monitor is released before early return. |
 | `clearIfPositive` | ✔ |
-| `nested` | ✔ 嵌套锁与释放正确 |
+| `nested` | ✔ Nested acquisition and release order agree. |
 
 ### Findings
 
-- `synchronized` 形状保留，嵌套块也正确嵌套（结构 35~49%）
-- 每个块都附 `try { … } catch (all) { release synchronized …; throw; }` 与 `goto L3`
-- 语义正确：早返回路径先释放再返回
+- Synchronized scopes and their nesting remain visible. Recorded forms: `synchronized`.
+- Each scope includes explicit catch-all release/rethrow handling and a goto L3. Recorded forms: `try { … } catch (all) { release synchronized …; throw; }`.
+- Early-return paths release before returning.
 
 ### Ranked fixes
 
-压缩成 `synchronized (lock) { … }` 单一容器；`release synchronized`/`goto` 移出正文；参数名恢复
+Improve synchronized and explicit-release/transfer presentation and parameter names. Recorded forms: `synchronized (lock) { … }`, `release synchronized`, `goto`.
 
 ## Rounds
 
-- R1 2026-11-08: structure 42%, naming 83%; `synchronized` 形状保留，嵌套块也正确嵌套（结构 35~49%）
+- R1 2026-11-08: Synchronized scopes and their nesting remain visible. Recorded forms: `synchronized`.

@@ -29,7 +29,7 @@ discard an already-created IAE.
 The current text is unchanged from the inspected `6d663d9` engine. P6 delivers
 zero natural try items, so the finally still appears as normal code plus H15.
 This is a readability obstruction. Fresh delivery has no stopped member or
-rendering issue. Behavioral execution remains unrun; R1 scores are historical.
+rendering issue. Behavioral execution remains unrun.
 
 ## Prior review — round 1
 
@@ -37,9 +37,9 @@ rendering issue. Behavioral execution remains unrun; R1 scores are historical.
 
 This is a manual source/output reading judgment, not an automated execution result.
 
-| Method | Semantics | Structure | Naming |
-|---|---|---|---|
-| `replaceExit` | ~ Equivalent behavior with a different shape: the finally copies run on the right paths in the right order, but no `try` or `finally` text is recovered. | 27.0% | 77.8% |
+| Method | Semantics |
+| --- | --- |
+| `replaceExit` | ~ Equivalent behavior with a different shape: the finally copies run on the right paths in the right order, but no `try` or `finally` text is recovered. |
 
 ### Path comparison
 
@@ -85,12 +85,6 @@ error.
 - Constructor failure is outside the scenarios and is not modeled.
 - No automated behavioral execution or Rust fixture test was run.
 
-### Score (supplementary)
-
-`python3 quality/score.py --slug finally-overrides-exit` reports structure 27.0%
-and naming 77.8%. The metric penalizes the explicit graph, the split construction
-and the `[exn c1]` markers; it is not a verdict.
-
 ### Commands
 
 ```sh
@@ -100,7 +94,6 @@ cargo run -p diana-decomp --example dbg_shell --locked -- \
 cargo run -p diana-decomp --example dbg_shell --locked -- \
   --dex quality/fixtures/exceptions/finally-overrides-exit/classes.dex \
   --exec '{"cmd":"p6-all","details":true}'
-python3 quality/score.py --slug finally-overrides-exit
 ```
 
 ## Rounds

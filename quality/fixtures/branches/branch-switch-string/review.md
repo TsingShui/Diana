@@ -38,15 +38,6 @@ labels followed by one return, rather than dispatching into a graph. The origina
 hash/equality stage remains explicit: its shared default joins are not linear
 case fallthrough chains.
 
-### Historical score
-
-R1 only; not rerun for this candidate. Aggregate structure 18%, naming 71%.
-
-| Method | Structure | Naming | First divergence |
-|---|---|---|---|
-| `dispatch` | 16% | 75% | `insert: ref=- ours=ID ID ; int ID` |
-| `describe` | 21% | 67% | `insert: ref=- ours=int ID ; int ID` |
-
 ## Ranked fixes
 
 Improve the hash/equality protocol's readability while retaining collision checks,
@@ -56,5 +47,5 @@ null behavior, field reference identity and original member facts.
 
 - R2: The grouped result switch is structured; direct LLM reading still finds
   agreement with source. The hash/equality protocol remains explicit.
-- R1, 2026-11-08: Structure 18%, naming 71%. Two-stage dispatch required following
+- R1, 2026-11-08: Two-stage dispatch required following
   hash constants, equality calls, labels and a multi-entry graph.

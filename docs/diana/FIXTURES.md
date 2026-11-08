@@ -131,7 +131,7 @@ Authors MUST derive expectations from the authored input, original instruction
 semantics and applicable product contracts, not from Diana's current output.
 Changing an expectation requires independent evidence and review; refreshing a
 snapshot to absorb a regression is not such evidence. Third-party decompiler
-output and similarity scores are investigation aids, not correctness gates.
+output is an investigation aid, not a correctness gate.
 
 Use the existing [`dbg_shell`](../../crates/diana-decomp/README.md) for engine
 inspection. Its products locate facts and failures; they do not independently
@@ -153,7 +153,7 @@ fixture reviews. Compare the authored input/source behavior and helper bodies
 with current decompiled output, path by path. Record the original member,
 reviewed scenarios, reasoning and unresolved paths in `review.md`.
 
-Structural checks, similarity scores and test results supplement this review;
+Structural checks and executed test results supplement this review;
 they do not replace semantic reading. A written judgment is not a claim that
 behavioral execution passed and does not override a failing test. The detailed
 [quality review workflow](../../quality/README.md#workflow) keeps semantic

@@ -7,8 +7,6 @@ so a review needs no toolchain.
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 - Selector: `Lfixture/ClassBridge;`
-- Current numbers from `python3 quality/score.py --slug class-bridge`:
-  structure 77%.
 
 ## Current verdict — round 1, 2026-11-08
 
@@ -17,25 +15,18 @@ so a review needs no toolchain.
 | method | semantics |
 |---|---|
 | `countAbove` | ✔ |
-| `copyInto` | ✔ 100%（`List<? super T>` 的 `addAll` 完全一致） |
-
-### Score
-
-| method | structure |
-|---|---|
-| `countAbove` | 54% |
-| `copyInto` | 100% |
+| `copyInto` | ✔ List<? super T>.addAll agrees. |
 
 ### Findings
 
-- 桥接方法被标成 `public dex_flags<bridge synthetic> int compare(Object, Object)`：身份对，记号是内部的
-- 泛型上界丢失：`Box<T extends Comparable<T>>` 只剩 `implements java.util.Comparator` + 一条 `@Signature`，而 `@Signature` 文本被切成 `<T::`、`Ljava/lang/Comparable<` 之类片段
-- `private final java.util.List items` 原始类型；`copyInto` 却完全正确（100%），说明信息在、只是没统一用
+- The bridge method retains its identity but exposes `dex_flags<bridge synthetic>` in its declaration. Recorded forms: `public dex_flags<bridge synthetic> int compare(Object, Object)`.
+- Generic bounds survive only as fragmented @Signature text rather than a Box<T extends Comparable<T>> declaration. Recorded forms: `implements java.util.Comparator`, `<T::`, `Ljava/lang/Comparable<`.
+- items uses a raw List declaration, while copyInto preserves its generic operation; presentation is inconsistent. Recorded forms: `private final java.util.List items`.
 
 ### Ranked fixes
 
-从 `@Signature` 恢复泛型声明与上界；`dex_flags<bridge synthetic>` 移出正文
+Improve generic declarations/bounds from available Signature facts and the presentation of bridge/synthetic flags. Recorded forms: `@Signature`, `dex_flags<bridge synthetic>`.
 
 ## Rounds
 
-- R1 2026-11-08: structure 77%; 桥接方法被标成 `public dex_flags<bridge synthetic> int compare(Object, Object)`：身份对，记号是内部的
+- R1 2026-11-08: The bridge method retains its identity but exposes `dex_flags<bridge synthetic>` in its declaration. Recorded forms: `public dex_flags<bridge synthetic> int compare(Object, Object)`.

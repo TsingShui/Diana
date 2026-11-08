@@ -7,8 +7,6 @@ with the fixture's `javac.args`/`d8.args` or the shared defaults (see
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 - Selector: `Lfixture/ComplexIndyConcat;`
-- Current numbers from `python3 quality/score.py --slug complex-indy-concat`:
-  structure 28%.
 
 ## Current verdict — round 1, 2026-11-08
 
@@ -16,28 +14,20 @@ with the fixture's `javac.args`/`d8.args` or the shared defaults (see
 
 | method | semantics |
 |---|---|
-| `simple` | ✔ call_site { … makeConcat … } + invoke<Custom>，bootstrap 与参数完整 |
-| `many` | ~ 未逐行核对 6 个参数的类型提升 |
-| `insideLoop` | ~ 未逐行核对循环内的 indy 调用 |
-
-### Score
-
-| method | structure |
-|---|---|
-| `simple` | 28% |
-| `many` | 25% |
-| `insideLoop` | 31% |
+| `simple` | ✔ The explicit call site retains the bootstrap and arguments. |
+| `many` | ? Not reviewed line by line for promotion of all six arguments. |
+| `insideLoop` | ? Not reviewed line by line for the indy call inside the loop. |
 
 ### Findings
 
-- invoke-custom 用显式形态打印：call_site r2 CallSite(CallSiteId(2)) { name: makeConcat; … bootstrap: StringConcatFactory.makeConcat<…>; } + invoke<Custom> call_site<r2; …>(p0, ":", p1)
-- 结构分只有 25%~32%：一行字符串拼接变成两行元数据 + 一次调用
-- 所有 indy 事实（bootstrap 方法、proto、参数个数）都保留，没有编造
+- invoke-custom prints explicit call-site metadata for StringConcatFactory.makeConcat followed by the original invocation and arguments.
+- A single concatenation expands into metadata and an explicit call.
+- Bootstrap method, prototype and argument count remain available; no replacement facts are invented.
 
 ### Ranked fixes
 
-给 StringConcatFactory 一个可读形态（a + ":" + b），call_site 元数据移到注释/JSON
+Improve StringConcatFactory expression presentation while keeping call-site metadata available.
 
 ## Rounds
 
-- R1 2026-11-08: structure 28%; invoke-custom 用显式形态打印：call_site r2 CallSite(CallSiteId(2)) { name: makeConcat; … bootstrap: StringConcatFactory.makeConcat<…>; } + invoke<Custom> call_site<r2; …>(p0, ":", p1)
+- R1 2026-11-08: invoke-custom prints explicit call-site metadata for StringConcatFactory.makeConcat followed by the original invocation and arguments.

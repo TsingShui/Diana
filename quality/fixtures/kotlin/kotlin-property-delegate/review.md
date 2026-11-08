@@ -1,9 +1,6 @@
 # Fixture: kotlin-property-delegate
 
-delegated properties, accessor pair and lateinit. Written in Kotlin, so the source is the semantic reference only: this
-fixture is **never scored** (`score.py` refuses it) and the review below is the
-record. Kotlin has no lexical counterpart in Java-like output, so a number would
-measure syntax rather than recovery.
+delegated properties, accessor pair and lateinit. The Kotlin source is the semantic reference for the LLM review below.
 
 - Provenance: authored for this repository. No third-party code or data.
 - Prepared with `kotlinc -jvm-target 1.8` + `d8 --min-api 24 --lib kotlin-stdlib.jar`
@@ -17,29 +14,29 @@ measure syntax rather than recovery.
 
 | method | semantics |
 |---|---|
-| `Case` | ? 未判定 |
-| `0` | ? 未判定 |
-| `getCached` | ~ 未逐行核对 |
-| `cache` | ✔ 走 `getCached()`，委托字段 `cached$delegate` 保留 |
-| `getLogged` | ~ 未逐行核对 |
-| `getObserved` | ~ 未逐行核对 |
-| `getReady` | ? 未判定 |
-| `prepare` | ✔ `setReady("ready")` 正确 |
-| `readyLength` | ✔ `this.ready == null` 即 `::ready.isInitialized` 的降级，正确 |
-| `setLogged` | ~ 未逐行核对 |
-| `setObserved` | ~ 未逐行核对 |
-| `setReady` | ? 未判定 |
+| `Case` | ? Not judged. |
+| `0` | ? Not judged. |
+| `getCached` | ? Not reviewed line by line. |
+| `cache` | ✔ getCached() is used and the cached$delegate field is retained. |
+| `getLogged` | ? Not reviewed line by line. |
+| `getObserved` | ? Not reviewed line by line. |
+| `getReady` | ? Not judged. |
+| `prepare` | ✔ setReady("ready") agrees. |
+| `readyLength` | ✔ The null check correctly represents the lowered ready.isInitialized test. |
+| `setLogged` | ? Not reviewed line by line. |
+| `setObserved` | ? Not reviewed line by line. |
+| `setReady` | ? Not judged. |
 
 ### Findings
 
-- 委托属性展开成 `$delegate` 字段 + `LazyKt.lazy(lambda)` + `ReadWriteProperty` 调用，装饰器语义在但形态全丢
-- `$$delegatedProperties` 数组用 `Reflection.mutableProperty1(new MutablePropertyReference1Impl(...))` 构造，且构造器被拆成 `new X;` + `.<init>`
-- `@Signature(KProperty<Object>[]) system` 这种注解进正文；`lateinit` 变成普通可空字段 + null 检查
+- Delegated properties expand into delegate fields, LazyKt.lazy(lambda) and ReadWriteProperty calls; the behavior remains but source syntax is absent. Recorded forms: `$delegate`.
+- The delegated-properties array is built through Reflection.mutableProperty1 and MutablePropertyReference1Impl; allocation and constructor invocation are split. Recorded forms: `$$delegatedProperties`, `Reflection.mutableProperty1(new MutablePropertyReference1Impl(...))`, `new X;`, `.<init>`.
+- Signature metadata appears in the body; lateinit expands into a nullable field and null check. Recorded forms: `@Signature(KProperty<Object>[]) system`.
 
 ### Ranked fixes
 
-委托属性的 `by lazy`/`by Delegate` 形态；`new X(...)` 合并；注解与内部标记出正文
+Improve delegated-property and constructor presentation while preserving metadata and initialization facts. Recorded forms: `by lazy`, `by Delegate`, `new X(...)`.
 
 ## Rounds
 
-- R1 2026-11-08: not scored (Kotlin source); 委托属性展开成 `$delegate` 字段 + `LazyKt.lazy(lambda)` + `ReadWriteProperty` 调用，装饰器语义在但形态全丢
+- R1 2026-11-08: Delegated properties expand into delegate fields, LazyKt.lazy(lambda) and ReadWriteProperty calls; the behavior remains but source syntax is absent. Recorded forms: `$delegate`.

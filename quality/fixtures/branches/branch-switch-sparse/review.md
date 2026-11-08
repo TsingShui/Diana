@@ -35,15 +35,6 @@ Both methods now have directly readable case bodies, without graph/goto dispatch
 The even-hole labels remain visible but no longer repeat separate gotos. Key
 identities and the two state writes remain explicit.
 
-### Historical score
-
-R1 only; not rerun for this candidate. Aggregate structure 55%.
-
-| Method | Structure |
-|---|---|
-| `map` | 88% |
-| `table` | 23% |
-
 ## Ranked fixes
 
 Keep the payload's original key/default facts available while improving their
@@ -53,5 +44,5 @@ presentation. Source-style brevity does not justify deleting original keys.
 
 - R2: Shared targets are grouped, with equivalent results and field effects by
   direct LLM reading. Automated behavioral execution is unrun.
-- R1, 2026-11-08: Structure 55%. Payload holes and explicit dispatch obscured the
+- R1, 2026-11-08: Payload holes and explicit dispatch obscured the
   otherwise understood key mapping.

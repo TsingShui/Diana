@@ -6,46 +6,32 @@ so a review needs no toolchain.
 
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
-- Current numbers from `python3 quality/score.py --slug complex-lambda`:
-  structure 64%, naming 57%.
 
 ## Current verdict — round 1, 2026-11-08
 
 ### Semantics
 
-The verdict is written by reading the reference next to the output. `score.py`
-never substitutes for it.
+The verdict is written by reading the reference next to the output.
 
 | method | semantics |
 |---|---|
-| `printer` | ✔ 捕获通过 `ComplexLambda$0(this, p0)`，lambda 体在 `lambda$printer$0$fixture-ComplexLambda` |
-| `counter` | ✔ 匿名类 `ComplexLambda$1` 带状态 |
+| `printer` | ✔ Capture uses ComplexLambda$0(this, p0); the original lambda body identity is retained. |
+| `counter` | ✔ The anonymous ComplexLambda$1 class retains its state. |
 | `applyTwice` | ✔ |
-| `sorted` | ? 未读 |
-| `describe` | ✔ `append("value:").append(p0)` 等价 |
-| `prefixer` | ✔ 方法引用变成 `ComplexLambda$2` |
-
-### Score
-
-| method | structure | naming |
-|---|---|---|
-| `printer` | 65% | 38% |
-| `counter` | 56% | 43% |
-| `applyTwice` | 61% | 43% |
-| `sorted` | 79% | 78% |
-| `describe` | 54% | 67% |
-| `prefixer` | 68% | 75% |
+| `sorted` | ? Not reviewed. |
+| `describe` | ✔ append("value:").append(p0) agrees. |
+| `prefixer` | ✔ The method reference appears as ComplexLambda$2. |
 
 ### Findings
 
-- lambda 体方法的真实名字是 `lambda$printer$0$fixture-ComplexLambda`，加上 `dex_flags<synthetic>` 进正文
-- 类体里出现 R8 合成名 `$r8$lambda$ey1lUbfxWqoov2vHAeHNf7_uUW8`（方法引用的实现体）
-- `sorted` 的 `Comparator.naturalOrder()` 未核实，结构 79%
+- The lambda body keeps its original synthetic name and exposes dex_flags<synthetic> in the body. Recorded forms: `lambda$printer$0$fixture-ComplexLambda`.
+- The method-reference implementation appears under its original R8-generated synthetic name. Recorded forms: `$r8$lambda$ey1lUbfxWqoov2vHAeHNf7_uUW8`.
+- Comparator.naturalOrder() in sorted was not confirmed.
 
 ### Ranked fixes
 
-lambda 体与其合成名不出正文；`dex_flags<>` 移出；恢复 `list.sort(...)` 形态
+Improve lambda, synthetic-member and flag presentation while retaining their identities and readable bodies. Recorded forms: `dex_flags<>`, `list.sort(...)`.
 
 ## Rounds
 
-- R1 2026-11-08: structure 64%, naming 57%; lambda 体方法的真实名字是 `lambda$printer$0$fixture-ComplexLambda`，加上 `dex_flags<synthetic>` 进正文
+- R1 2026-11-08: The lambda body keeps its original synthetic name and exposes dex_flags<synthetic> in the body. Recorded forms: `lambda$printer$0$fixture-ComplexLambda`.

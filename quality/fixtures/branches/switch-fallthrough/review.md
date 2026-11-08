@@ -59,8 +59,7 @@ through the ordinary Engine entry, including the original packed-switch examples
 They check grouping, original case coverage, source/PC anchors, initializer
 placement, conditional-break retention, width and explicit-layout guards.
 Run with `cargo nextest run --locked -p diana-decomp --test switch_fallthrough`.
-They do not independently execute the scenario table. No similarity score was
-used to determine the semantic verdict.
+They do not independently execute the scenario table. The semantic verdict comes from direct path comparison.
 
 ## Ranked fixes
 

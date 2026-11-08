@@ -11,21 +11,21 @@ get better*, separately from executed behavioral checks.
 
 Fixture reviews MUST primarily use LLM semantic-equivalence review: directly
 compare original input/source behavior and helper bodies or explicit helper
-models with current decompiled output, path by path. Structural assertions, similarity scores and test results
-are supporting evidence, not substitutes for this semantic reading.
+models with current decompiled output, path by path. Structural assertions and executed test results support
+this semantic reading; they do not replace it. Reviews record qualitative
+verdicts and reasoning rather than numerical structure or naming ratings.
 
 Missing effects or case bodies can be semantic
 errors; an explicit handler chain or graph can instead be a readability obstacle
 that preserves execution facts. The notation alone does not establish a semantic
-error. String metrics measure shape, not correctness, and never replace that
-judgement or independently executed behavioral checks.
+error. Reviewers explain the concrete effect, identity or recovery difference
+and keep their judgment separate from independently executed behavioral checks.
 
 ```text
 quality/
 ├── build.sh                     regenerate DEX from Smali or Java/Kotlin sources
 ├── dump.py                      reference + Diana output side by side, per method
-├── score.py                     structure/naming recovery per method, no thresholds
-├── lib.py                       method splitting and token normalisation
+├── lib.py                       fixture lookup and method extraction
 ├── .gitignore                   keeps the committed fixture DEX in the tree
 └── fixtures/<theme>/<slug>/     one focused hypothesis per directory
     ├── <Slug>.java              readable explanation; compile input without Smali
@@ -57,7 +57,6 @@ The commands and review steps below supply evidence for that loop.
 
 ```sh
 quality/build.sh                       # after editing assembly/compile inputs
-python3 quality/score.py               # structure/naming recovery per method
 python3 quality/dump.py                # writes .cache/review/<slug>.md
 python3 quality/dump.py --slug branch-if2
 ```
@@ -67,20 +66,9 @@ classpath before running `build.sh`. Its Java file is an explanation, not an
 alternative compile input. No tool is downloaded implicitly, and a failed
 assembly does not publish a replacement DEX.
 
-A fixture written in Kotlin is **never scored**. Its review is a semantic
-judgement written by reading the Kotlin reference next to the output: `?.`, `?:`,
-`!!`, `when` and safe-call chains have no lexical counterpart in Java-like output,
-so any number would measure syntax rather than recovery. `score.py` therefore
-refuses Kotlin fixtures outright instead of reporting a misleading value, and no
-hand-written Java "expected" file is added as a workaround.
-
-`score.py` measures **how much of the reference structure survived**: it
-normalises both bodies (identifiers to `ID`, string/char literals to `STR`/`CHR`,
-comments dropped, keywords/operators/numbers kept) and reports the token-stream
-similarity, the share of reference identifiers that reappear, and the first
-divergence. Interpret that number within the fixture's focused mechanism or
-interaction; it needs no hand-written token expectations. It is a measurement, not a verdict: a 100%
-match can still be wrong, and an equivalent shape can score low.
+For Kotlin, compare the Kotlin reference directly with the output. Review `?.`,
+`?:`, `!!`, `when`, safe-call chains and lowered coroutine/property protocols by
+behavior. Do not invent a Java reference to make the syntax resemble the output.
 
 1. `dump.py` prints every fixture method twice: the Java reference and Diana's
    output for the same method, plus the checks to apply.
@@ -94,12 +82,12 @@ match can still be wrong, and an equivalent shape can score low.
    calls, constants, identities), **shape** (reference constructs recovered) and
    **notation** (only-a-decompiler forms in the body) as separate findings.
 3. The judgement is written into the fixture itself, `quality/fixtures/<theme>/<slug>/review.md`.
-   **Every written quality review carries a per-method `### Semantics` table** - `✔` equivalent,
-   `~` equivalent but different shape, `✘` wrong, `?` not yet judged - next to the
-   numeric score. The numbers never replace the reading: `score.py` measures how
-   much structure survived, the semantics table says whether it still means the
-   same thing. That file already holds the coverage table and the preparation record,
-   while reproduction scenarios and test evidence stay in the fixture's README.
+   **Every written quality review carries a per-method `### Semantics` table**:
+   `✔` equivalent, `~` equivalent but different shape, `✘` wrong, `?` not established.
+   Each judgment includes path reasoning and its helper/environment assumptions.
+   A missing or partially reviewed path remains uncertain. Record concrete
+   readability and naming findings as prose, not percentages or aggregate ratings.
+   Reproduction scenarios and executed check evidence stay in the fixture's README.
 4. After a repair, complete EVOLUTION's new complexity challenge and original/prior
    effect review, rather than only re-dumping the seed. The **current verdict is
    rewritten in place** while `## Rounds` gains one line. The file stays bounded:
@@ -236,46 +224,46 @@ failed deterministic check; repair acceptance still follows
 | `kotlin-suspend-state` | suspend functions, continuation state machine, suspend inside try/loop |
 | `kotlin-range-loops` | `until`, `downTo`, `step`, `repeat`, `forEach`, labelled `break@` |
 
-Kotlin fixtures are **never scored**; their review is the record (see below).
+Each fixture's `review.md` records its qualitative LLM verdict and evidence.
 
 ## Reviews
 
 ### Atoms
 
-| fixture | structure / naming (round 1) | headline |
-|---|---|---|
-| `expr-constants` | 96% / 96% | `char` prints as `120`, class literal becomes a temp assignment |
-| `invoke-basic` | 92% / 62% | all four call forms exact; generics and constructor temporaries differ |
-| `field-basic` | 88% / 83% | `this.`/`X.` qualification and `+=` expansion |
-| `cast-instanceof` | 87% / 77% | correct; casts go through an extra `Object v1 = p0;` |
-| `expr-arith` | 86% / 44% | correct; each expression becomes `int v = (…); return v;` |
-| `array-basic` | 85% / 60% | correct; array creation/literals go through a temporary |
-| `expr-compare` | 53% / 38% | predicates expanded to temporaries plus `if` |
-| `expr-wide` | 60% / 40% | all correct; `cmpl/cmpg` print as `compare<CmplDouble>(…)` |
+| fixture | headline |
+| --- | --- |
+| `expr-constants` | `char` prints as `120`, class literal becomes a temp assignment |
+| `invoke-basic` | all four call forms exact; generics and constructor temporaries differ |
+| `field-basic` | `this.`/`X.` qualification and `+=` expansion |
+| `cast-instanceof` | correct; casts go through an extra `Object v1 = p0;` |
+| `expr-arith` | correct; each expression becomes `int v = (…); return v;` |
+| `array-basic` | correct; array creation/literals go through a temporary |
+| `expr-compare` | predicates expanded to temporaries plus `if` |
+| `expr-wide` | all correct; `cmpl/cmpg` print as `compare<CmplDouble>(…)` |
 
 ### Branches
 
-| fixture | structure / naming (round 1) | headline |
-|---|---|---|
-| `branch-ifz` | 89% / 70% | branches kept; losses are naming and field qualification only |
-| `branch-if2` | 71% / 50% | correct but inverted (`<` → `>=`) and split into early returns |
-| `branch-if-inverted` | 77% / 75% | inverted empty-arm controls keep origin anchors; float and exception notation remains explicit |
-| `branch-switch-string` | 18% / 71% | two-level hash/equals switch plus `graph<MultipleEntry>` |
-| `branch-switch-enum` | 42% / 25% | `ordinal()` switch correct, temporaries and `default` order differ |
-| `branch-switch-packed` | 55% / 60% | fallthrough and grouped cases correct; case bodies move into `graph<MultipleEntry>` |
-| `branch-switch-sparse` | 55% / 58% | correct; d8 lowers it to a packed table and every hole is listed |
+| fixture | headline |
+| --- | --- |
+| `branch-ifz` | branches kept; losses are naming and field qualification only |
+| `branch-if2` | correct but inverted (`<` → `>=`) and split into early returns |
+| `branch-if-inverted` | inverted empty-arm controls keep origin anchors; float and exception notation remains explicit |
+| `branch-switch-string` | two-level hash/equals switch plus `graph<MultipleEntry>` |
+| `branch-switch-enum` | `ordinal()` switch correct, temporaries and `default` order differ |
+| `branch-switch-packed` | fallthrough and grouped cases correct; case bodies move into `graph<MultipleEntry>` |
+| `branch-switch-sparse` | correct; d8 lowers it to a packed table and every hole is listed |
 
 ### Loops
 
-| fixture | structure / naming (round 1) | headline |
-|---|---|---|
-| `loop-for` | 62% / 38% | no `for`; `break`/`continue` are labels and gotos |
-| `loop-for-multi` | 64% / 26% | multi-init/update and empty segments all become independent assignments |
-| `loop-map-views` | 64% / 69% | map views and custom `Iterable` become `Iterator` + `Object` + cast |
-| `loop-do-while-sideeffect` | 61% / 51% | side-effecting conditions print in the loop body with an inverted `break`; the checked value now prints as a cast on its use, so the whole class is plain Java |
-| `loop-shared-exit` | 49% / 31% | private exit work stays in the branch; nested and labelled breaks replace the gotos |
-| `loop-do-while` | 54% / 34% | `do-while` recovered; `v1 = (v1 + 1)` against `index++` dominates the diff |
-| `loop-tail-shapes` | 82% / 58% | tail tests correct both ways; remaining `nop` and goto-based exits |
+| fixture | headline |
+| --- | --- |
+| `loop-for` | no `for`; `break`/`continue` are labels and gotos |
+| `loop-for-multi` | multi-init/update and empty segments all become independent assignments |
+| `loop-map-views` | map views and custom `Iterable` become `Iterator` + `Object` + cast |
+| `loop-do-while-sideeffect` | side-effecting conditions print in the loop body with an inverted `break`; the checked value now prints as a cast on its use, so the whole class is plain Java |
+| `loop-shared-exit` | private exit work stays in the branch; nested and labelled breaks replace the gotos |
+| `loop-do-while` | `do-while` recovered; `v1 = (v1 + 1)` against `index++` dominates the diff |
+| `loop-tail-shapes` | tail tests correct both ways; remaining `nop` and goto-based exits |
 
 ### Loop semantics evidence
 
@@ -283,73 +271,73 @@ Executed differential check, 2026-11-08: original fixture methods against Diana'
 
 ### Exceptions
 
-| fixture | structure / naming (round 1) | headline |
-|---|---|---|
-| `exception-one-catch` | 48% / 57% | semantics correct; `[exn c0]`, `exception_chain`, `nop` dominate the diff |
-| `exception-finally` | 78% / 50% | `finally` becomes a duplicated normal path plus `catch (all)` rethrow |
-| `exception-multi-catch` | 43% / 80% | `\|` becomes two catches plus `goto`; declarations hoisted |
-| `exception-two-resources` | **7.6%** / 33% | handlers printed outside their protected range; no `try (` form |
-| `exception-finally-transfer` | 49% / 61% | correct, including break/return inside `finally`; no `finally` keyword survives |
+| fixture | headline |
+| --- | --- |
+| `exception-one-catch` | semantics correct; `[exn c0]`, `exception_chain`, `nop` dominate the diff |
+| `exception-finally` | `finally` becomes a duplicated normal path plus `catch (all)` rethrow |
+| `exception-multi-catch` | `\|` becomes two catches plus `goto`; declarations hoisted |
+| `exception-two-resources` | handlers printed outside their protected range; no `try (` form |
+| `exception-finally-transfer` | correct, including break/return inside `finally`; no `finally` keyword survives |
 
 ### Synchronization
 
-| fixture | structure / naming (round 1) | headline |
-|---|---|---|
-| `sync-block` | 42% / 83% | `synchronized` kept, but every block carries `catch (all)`, `release`, `goto` |
+| fixture | headline |
+| --- | --- |
+| `sync-block` | `synchronized` kept, but every block carries `catch (all)`, `release`, `goto` |
 
 ### Classes and inner types
 
-| fixture | structure / naming (round 1) | headline |
-|---|---|---|
-| `class-enum-body` | 90% / 83% | methods correct; enum constants become `static final dex_flags<enum>` plus a static block |
-| `class-inner-static` | 89% / 54% | nested type referenced by name; constructor result goes through a temporary |
-| `class-inner-member` | 84% / 67% | inner class rendered separately; `this.` qualification added |
-| `class-interface-default` | 78% / 89% | `default` keyword lost; `plus()` condition inverted |
-| `class-anonymous` | 73% / 67% | capture via `new Outer$1(this, p0)` is right; result goes through a temporary |
-| `class-init-order` | 68% / 100% | static block, initializer and instance block order correct; field reads go through temporaries |
-| `class-bridge` | 77% / 60% | bridge method rendered and delegating; bounds only survive as `@Signature` fragments |
+| fixture | headline |
+| --- | --- |
+| `class-enum-body` | methods correct; enum constants become `static final dex_flags<enum>` plus a static block |
+| `class-inner-static` | nested type referenced by name; constructor result goes through a temporary |
+| `class-inner-member` | inner class rendered separately; `this.` qualification added |
+| `class-interface-default` | `default` keyword lost; `plus()` condition inverted |
+| `class-anonymous` | capture via `new Outer$1(this, p0)` is right; result goes through a temporary |
+| `class-init-order` | static block, initializer and instance block order correct; field reads go through temporaries |
+| `class-bridge` | bridge method rendered and delegating; bounds only survive as `@Signature` fragments |
 
 ### Generic, lambda, stream and iteration
 
-| fixture | structure / naming (round 1) | headline |
-|---|---|---|
-| `complex-generics` | 72% / 58% | `repeat` recovers `<T> List<T>`, `largest` only keeps `@Signature`; annotations enter the body |
-| `complex-iteration` | 66% / 59% | enhanced `for` and `Map.Entry` become `Iterator` + `Object` + cast |
-| `complex-lambda` | 64% / 57% | captures correct; lambda body name and `$r8$lambda$…` leak into the class body |
-| `complex-stream` | 62% / 73% | pipelines and method references correct; lambda bodies and `$r8$lambda$…` names enter the class body |
+| fixture | headline |
+| --- | --- |
+| `complex-generics` | `repeat` recovers `<T> List<T>`, `largest` only keeps `@Signature`; annotations enter the body |
+| `complex-iteration` | enhanced `for` and `Map.Entry` become `Iterator` + `Object` + cast |
+| `complex-lambda` | captures correct; lambda body name and `$r8$lambda$…` leak into the class body |
+| `complex-stream` | pipelines and method references correct; lambda bodies and `$r8$lambda$…` names enter the class body |
 
 ### Algorithms
 
-| fixture | structure / naming (round 1) | headline |
-|---|---|---|
-| `algo-graph` | 50% / 45% | BFS/DFS values correct; `Deque`/`ArrayDeque` generics and element casts lose the declared type |
-| `algo-sort` | 29% / 31% | all three sorts correct; `[repeat: …]` gone, every index still goes through a temporary and `for` is lost |
-| `algo-dp` | 14% / 37% | all three recurrences correct; the 2D array is now declared `int[][]` with one cast on its initializer |
-| `algo-string` | 38% / 62% | KMP and counting correct; `new StringBuilder` split into `new` + `.<init>` |
-| `algo-tree` | 34% / 60% | recursion correct; every field read goes through a temporary, generics dropped |
-| `algo-matrix` | 28% / 29% | all three correct; `new int[m][n]` becomes `Array.newInstance` and the result is returned as `Object` |
+| fixture | headline |
+| --- | --- |
+| `algo-graph` | BFS/DFS values correct; `Deque`/`ArrayDeque` generics and element casts lose the declared type |
+| `algo-sort` | all three sorts correct; `[repeat: …]` gone, every index still goes through a temporary and `for` is lost |
+| `algo-dp` | all three recurrences correct; the 2D array is now declared `int[][]` with one cast on its initializer |
+| `algo-string` | KMP and counting correct; `new StringBuilder` split into `new` + `.<init>` |
+| `algo-tree` | recursion correct; every field read goes through a temporary, generics dropped |
+| `algo-matrix` | all three correct; `new int[m][n]` becomes `Array.newInstance` and the result is returned as `Object` |
 
 ### Composite flows
 
-| fixture | structure / naming (round 1) | headline |
-|---|---|---|
-| `complex-indy-lambda` | 32% / 68% | method references stay as `LambdaMetafactory` `call_site` metadata |
-| `complex-indy-concat` | 28% / 60% | one `a + b + c` becomes two lines of `call_site` metadata plus `invoke<Custom>` |
-| `complex-inner` | 74% / 36% | captures and inner construction correct; generic type arguments lost |
-| `complex-exceptions` | 30% / 63% | correct except the TWR-in-loop handler placement; constructors print as `new X;` + `x.<init>(…)` |
-| `complex-flow` | 23% / 70% | behaviour correct; ternary, enum cases and loop exits are all expanded into temporaries, empty `if`s and gotos |
-| `complex-switch-nested` | 17% / 38% | labelled `break`/`continue` collapse into gotos; every operation carries an `[after_operands_before_effect]` snapshot |
-| `complex-recursion` | 66% / 55% | mutual/accumulator recursion and memoisation correct; temporaries everywhere |
-| `complex-map-nested` | 54% / 69% | `computeIfAbsent` lambdas correct; nested generic arguments lost, `via` and dangling casts appear |
-| `complex-annotation` | 92% / 78% | annotations kept; enum values print the value and the type twice |
+| fixture | headline |
+| --- | --- |
+| `complex-indy-lambda` | method references stay as `LambdaMetafactory` `call_site` metadata |
+| `complex-indy-concat` | one `a + b + c` becomes two lines of `call_site` metadata plus `invoke<Custom>` |
+| `complex-inner` | captures and inner construction correct; generic type arguments lost |
+| `complex-exceptions` | correct except the TWR-in-loop handler placement; constructors print as `new X;` + `x.<init>(…)` |
+| `complex-flow` | behaviour correct; ternary, enum cases and loop exits are all expanded into temporaries, empty `if`s and gotos |
+| `complex-switch-nested` | labelled `break`/`continue` collapse into gotos; every operation carries an `[after_operands_before_effect]` snapshot |
+| `complex-recursion` | mutual/accumulator recursion and memoisation correct; temporaries everywhere |
+| `complex-map-nested` | `computeIfAbsent` lambdas correct; nested generic arguments lost, `via` and dangling casts appear |
+| `complex-annotation` | annotations kept; enum values print the value and the type twice |
 
 ### Obfuscated
 
-| fixture | structure / naming (round 1) | headline |
-|---|---|---|
-| `obf-flow-r8` | 43% / obf | R8-renamed enum switch renders as Kotlin `when` and loses the `default:` order |
-| `obf-exceptions-proguard` | 31% / obf | nested classes flattened, `@MemberClasses` dropped, one short name reused for overloads |
-| `obf-dp-r8` | 30% / obf | scores match the unobfuscated source fixture: renaming alone costs no structure |
+| fixture | headline |
+| --- | --- |
+| `obf-flow-r8` | R8-renamed enum switch renders as Kotlin `when` and loses the `default:` order |
+| `obf-exceptions-proguard` | nested classes flattened, `@MemberClasses` dropped, one short name reused for overloads |
+| `obf-dp-r8` | mapped members retain the source fixture's lowered array and loop forms |
 
 ### Obfuscated fixtures
 
@@ -359,31 +347,20 @@ are local tools only - R8 comes from the Android Studio install, ProGuard jars
 live under `.cache/tools/proguard/` (GPLv2, never committed) - while the
 generated DEX and `mapping.txt` are ours and do stay in the tree.
 
-`score.py` reads `mapping.txt` and pairs each reference method with the produced
-body through the mapped name **and parameter types**, because an obfuscator may
-give one short name to several overloads. Structure is comparable with the
-unobfuscated source fixture; naming is reported as `obf` because the obfuscator
-destroyed it.
+For obfuscated fixtures, use `mapping.txt` to resolve original owners, names and
+full method prototypes. A short mapped name alone is ambiguous; body resemblance
+is not member identity. The mapping supports fixture review, not external
+runtime declaration input to Diana.
 
-Kotlin fixtures (6) are reviewed by reading only: `score.py` refuses them and the
-review carries a per-method semantics verdict plus the Kotlin-specific findings
-(`@Metadata` into the body, `copy$default` masks, `INSTANCE` singletons,
-`$delegate` fields, continuation state machines, `when` lowered to `instanceof`).
+Kotlin reviews also record language-specific findings: Metadata presentation,
+copy$default masks, object singletons, delegated properties, continuation state
+and exhaustive type selection.
 
 A fixture may pin its own `javac.args` / `d8.args` (`complex-indy-*` need
 `--release 11 -XDstringConcat=indy` and `--no-desugaring --min-api 28` to keep
 `invoke-custom` in the DEX); the default stays `--release 8 -g` and `--min-api 24`.
 
-Corpus totals: **structure 63%, naming 60%** over 241 methods (the
-obfuscated fixtures contribute structure only; Kotlin fixtures are unreviewed by
-the score). The
-`complex-*` and `algo-*` fixtures are the lowest scorers: real code multiplies the
-temporary variables, `while (true)` loops with an inverted exit and goto-based exits that the
-single-structure fixtures isolate. The second
-batch (loops, switches, exceptions, synchronization) is exactly where the recovery
-is weakest: string switch 18%, two-resource TWR 8%, synchronized 42%.
-
-An external comparison for context: over `dex-decompiler`'s fixture corpus the
-same kind of reading gave ASC the best shape recovery, `dex-decompiler` the best
-names with several wrong methods, and Diana the fewest wrong methods with the
-weakest shapes.
+The catalog's round-one headlines are historical observations, not current
+acceptance results. Use each fixture's current review for its original members,
+reviewed paths, concrete findings and remaining uncertainty. Actual execution
+counts describe only the stated checks; they are not quality ratings.

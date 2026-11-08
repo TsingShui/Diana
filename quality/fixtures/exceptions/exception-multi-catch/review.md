@@ -6,37 +6,27 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
-- Current numbers from `python3 quality/score.py --slug exception-multi-catch`:
-  structure 43%, naming 80%.
 
 ## Current verdict — round 1, 2026-11-08
 
-### Per method
-
-| method | structure | naming | first divergence |
-|---|---|---|---|
-| `parse` | 43% | 80% | `insert: ref=- ours=int ID ; ID ID` |
-| `rethrow` | 42% | 80% | `insert: ref=- ours=int ID ; ID ID` |
-
 ### Semantics
 
-The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
-
+The recorded LLM verdict compares reference and output; `?` marks unjudged behavior.
 | method | semantics |
 |---|---|
 | `parse` | ✔ |
-| `rethrow` | ✔ 两 catch 汇合后 `throw new IllegalStateException(error)` |
+| `rethrow` | ✔ Both catches converge before throwing the new IllegalStateException(error). |
 
 ### Findings
 
-- multi-catch 被拆成两个 `catch` 加 `goto` 汇合，`|` 形态丢失
-- 方法头多出 `int v; Type v;` 前置声明与 `exception_chain c0`
-- 语义正确：两个 catch 都置 `state` 后返回/重抛
+- Multi-catch becomes two catch clauses joining through goto rather than a compound catch label. Recorded forms: `|`.
+- Extra local declarations and an exception-chain line precede the body. Recorded forms: `int v; Type v;`, `exception_chain c0`.
+- Both catches update state before the original return or rethrow.
 
 ### Ranked fixes
 
-还原 `catch (A | B e)`；去掉前置声明与 `exception_chain`；参数名恢复
+Improve compound-catch, declaration and exception-route presentation; preserve clause order and parameter identity. Recorded forms: `catch (A | B e)`, `exception_chain`.
 
 ## Rounds
 
-- R1 2026-11-08: structure 43%, naming 80%; multi-catch 被拆成两个 `catch` 加 `goto` 汇合，`|` 形态丢失
+- R1 2026-11-08: Multi-catch becomes two catch clauses joining through goto rather than a compound catch label. Recorded forms: `|`.

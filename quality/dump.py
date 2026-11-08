@@ -2,9 +2,8 @@
 """Review dump: Java reference next to Diana's output, one method at a time.
 
 This produces the artifact an LLM (or a person) reads when judging decompilation
-quality. It deliberately does not score anything: the judgement is about whether
-the decompiled method means the same thing, keeps the original facts, and reads
-like the reference - which no string metric decides.
+quality. The written judgment compares semantic behavior, retained original
+facts and readability, with reasoning for each relevant path.
 
     python3 quality/dump.py                 # every fixture -> .cache/review/<slug>.md
     python3 quality/dump.py --slug complex  # one fixture, printed to stdout
@@ -74,7 +73,7 @@ def dump(binary: str, slug: str) -> str:
         "4. **notation** - does anything only a decompiler would print appear in the body",
         "   (`test {`, `graph<`, `goto`, `capture_exception`, `via `, `dex_flags<`)?",
         "",
-        f"Record a semantics verdict per method in `{directory.relative_to(ROOT).as_posix()}/review.md`; do not score them.",
+        f"Record a semantics verdict per method in `{directory.relative_to(ROOT).as_posix()}/review.md`, with path reasoning and unresolved behavior.",
         "",
     ]
     if kotlin_only:

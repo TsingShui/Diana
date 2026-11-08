@@ -29,7 +29,7 @@ Existing fixture or authorized real input
 | Confirm | Distinguish a semantic defect, readability limitation, absent fact, wrong selector or faulty expectation. Reduce a real-input discovery to a focused fixture. | Original DEX evidence, applicable contracts and independently recorded results/effect order or targeted recovery criteria. |
 | Repair | Change the general mechanism in its owning stage. | Producer/consumer obligations remain consistent; the original symptom improves without a case-name patch, alternate method chain or hidden fragments. |
 | Challenge | After the repair, author more complex fixtures exercising the same cause and its interactions. | Prepared Java/Smali inputs, independent scenarios, the retained trigger and the added complexity dimension. |
-| Review | Compare the same prepared challenge inputs on pre-fix and candidate revisions. Perform LLM path-by-path review of the original and challenge outputs. | Results, effects, exceptions, identities and targeted recovery agree with the input; improvement and uncertainty are explained, not inferred from shape scores. |
+| Review | Compare the same prepared challenge inputs on pre-fix and candidate revisions. Perform LLM path-by-path review of the original and challenge outputs. | Results, effects, exceptions, identities and targeted recovery agree with the input; improvement and uncertainty are explained, not inferred from surface resemblance. |
 | Regress | Revisit earlier effects and run applicable implemented checks, including every admitted behavioral case. | The required old fixture set, compared paths, actual check outcomes and preserved recovery/coverage are explicit. |
 | Decide | Apply the iteration decision below. | The repair generalizes to the challenge and preserves earlier effects, with evidence limits stated. |
 | Integrate | Run applicable repository checks and obtain the required integration authorization. | The reviewed candidate and its fixture/review/check records; a completed iteration is not commit or merge permission. |
@@ -312,6 +312,6 @@ Contributors MUST report that coverage limit rather than infer whole-program
 correctness from the reviewed set.
 
 LLM judgments are primary semantic-review evidence, not substitutes for executed
-checks. Other decompilers and similarity scores assist investigation; neither
-they nor an LLM judgment can override a failed deterministic case. Output diffs are diagnostic aids, not the acceptance
+checks. Other decompilers assist investigation; neither their output nor an LLM judgment
+can override a failed deterministic case. Output diffs are diagnostic aids, not the acceptance
 standard and not a reason to replace fixed behavioral expectations.

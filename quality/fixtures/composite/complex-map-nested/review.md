@@ -6,44 +6,31 @@ so a review needs no toolchain.
 
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
-- Current numbers from `python3 quality/score.py --slug complex-map-nested`:
-  structure 54%, naming 69%.
 
 ## Current verdict — round 1, 2026-11-08
 
 ### Semantics
 
-The verdict is written by reading the reference next to the output. `score.py`
-never substitutes for it.
+The verdict is written by reading the reference next to the output.
 
 | method | semantics |
 |---|---|
-| `add` | ✔ `computeIfAbsent` + lambda 类正确 |
-| `total` | ✔ null 检查与求和正确 |
-| `totals` | ✔ 双重迭代与写回正确 |
+| `add` | ✔ computeIfAbsent and its lambda class agree. |
+| `total` | ✔ Null selection and summation agree. |
+| `totals` | ✔ Nested iteration and write-back agree. |
 | `countOrZero` | ✔ `getOrDefault(key, new ArrayList<>())` |
-| `merge` | ✔ `computeIfAbsent` + `addAll` 正确 |
-
-### Score
-
-| method | structure | naming |
-|---|---|---|
-| `add` | 61% | 50% |
-| `total` | 56% | 70% |
-| `totals` | 44% | 75% |
-| `countOrZero` | 63% | 86% |
-| `merge` | 48% | 65% |
+| `merge` | ✔ computeIfAbsent and addAll agree. |
 
 ### Findings
 
-- `Map<String, List<Integer>>` 声明只留下 `Map groups`（泛型实参全丢），元素取出后再 cast
-- `via Map$Entry` 与悬空语句 `((String) key); // Diana: check-cast, value not reassigned` 进入正文
-- `entrySet()` 的增强 for 变成 `Iterator` + `Object`
+- The nested Map<String, List<Integer>> declaration becomes raw Map groups, with casts on retrieved elements.
+- Explicit owner notation and the standalone `((String) key);` check-cast statement appear in the body. Recorded forms: `via Map$Entry`, `((String) key); // Diana: check-cast, value not reassigned`.
+- Enhanced entrySet iteration expands into Iterator and Object values. Recorded forms: `entrySet()`.
 
 ### Ranked fixes
 
-保留嵌套泛型实参；去掉 `via`/悬空 cast；恢复 `for (Map.Entry<…> e : …)`
+Improve nested generic and entry-iteration presentation while preserving actual checks and owners. Recorded forms: `via`, `for (Map.Entry<…> e : …)`.
 
 ## Rounds
 
-- R1 2026-11-08: structure 54%, naming 69%; `Map<String, List<Integer>>` 声明只留下 `Map groups`（泛型实参全丢），元素取出后再 cast
+- R1 2026-11-08: The nested Map<String, List<Integer>> declaration becomes raw Map groups, with casts on retrieved elements.

@@ -6,22 +6,12 @@ so a review needs no toolchain.
 
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
-- Current numbers from `python3 quality/score.py --slug class-init-order`:
-  structure 68%, naming 100%.
 
 ## Current verdict — round 1, 2026-11-08
 
-### Per method
-
-| method | structure | naming | first divergence |
-|---|---|---|---|
-| `total` | 45% | 100% | `replace: ref=return ours=int ID = this .` |
-| `label` | 91% | 100% | `insert: ref=- ours=. ID` |
-
 ### Semantics
 
-The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
-
+The recorded LLM verdict compares reference and output; `?` marks unjudged behavior.
 | method | semantics |
 |---|---|
 | `total` | ✔ |
@@ -29,14 +19,14 @@ The semantics verdict is written by reading the reference next to the output; `?
 
 ### Findings
 
-- 静态块、实例字段初始化、实例块的**顺序正确**（`second = 2` → 实例块 → `first = p0`）
-- `total()` 44.8%：每个字段先取到局部再相加（`int first = this.first; …`）
-- 无参构造器正确保留 `this(1);`；`static final LABEL` 经临时赋入静态块
+- Static/instance initialization order agrees: second=2, then the instance block, then first=p0. Recorded forms: `second = 2`, `first = p0`.
+- total() loads each field into a local before addition. Recorded forms: `int first = this.first; …`.
+- The no-arg constructor retains this(1); the static final LABEL value is assigned through a temporary in the static block.
 
 ### Ranked fixes
 
-字段读取不再中转局部变量；`static final` 直接赋字面量；参数名恢复
+Improve field-read composition, constant presentation and parameter names. Recorded forms: `static final`.
 
 ## Rounds
 
-- R1 2026-11-08: structure 68%, naming 100%; 静态块、实例字段初始化、实例块的**顺序正确**（`second = 2` → 实例块 → `first = p0`）
+- R1 2026-11-08: Static/instance initialization order agrees: second=2, then the instance block, then first=p0. Recorded forms: `second = 2`, `first = p0`.

@@ -6,42 +6,30 @@ so a review needs no toolchain.
 
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
-- Current numbers from `python3 quality/score.py --slug complex-inner`:
-  structure 74%, naming 36%.
 
 ## Current verdict — round 1, 2026-11-08
 
 ### Semantics
 
-The verdict is written by reading the reference next to the output. `score.py`
-never substitutes for it.
+The verdict is written by reading the reference next to the output.
 
 | method | semantics |
 |---|---|
-| `adding` | ✔ 捕获以构造参数出现（`new ComplexInner$1(this, p0)`） |
-| `runVisitor` | ✔ 两次 visit 顺序正确 |
-| `runAccumulator` | ✔ 累加正确 |
-| `runBag` | ✔ 泛型实参丢失（`new ComplexInner$Bag()`），取值正确 |
-
-### Score
-
-| method | structure | naming |
-|---|---|---|
-| `adding` | 52% | 14% |
-| `runVisitor` | 97% | 43% |
-| `runAccumulator` | 63% | 38% |
-| `runBag` | 82% | 50% |
+| `adding` | ✔ Captures appear as constructor arguments to ComplexInner$1(this, p0). |
+| `runVisitor` | ✔ Both visit calls retain their order. |
+| `runAccumulator` | ✔ Accumulation agrees. |
+| `runBag` | ✔ Generic arguments are absent from the declaration, but the retrieved value agrees. |
 
 ### Findings
 
-- 匿名类的捕获通过 `ComplexInner$1(this, p0)` 表达，语义正确但类名是合成名
-- 泛型类型实参全部丢失：`Bag<String> bag = new Bag<>()` 印成 `ComplexInner$Bag bag = new ComplexInner$Bag()`
-- `runVisitor` 结构 97%，其余方法主要差在临时变量与循环形态
+- Anonymous-class capture is represented by ComplexInner$1(this, p0); the class name remains synthetic.
+- Bag<String> declarations/construction are rendered with raw ComplexInner$Bag types. Recorded forms: `Bag<String> bag = new Bag<>()`, `ComplexInner$Bag bag = new ComplexInner$Bag()`.
+- Other methods differ mainly through intermediate locals and loop presentation. Recorded forms: `runVisitor`.
 
 ### Ranked fixes
 
-恢复泛型实参；匿名类可读性（捕获字段与 `run` 方法）单独评审
+Improve generic arguments and separately review capture fields and the anonymous run implementation.
 
 ## Rounds
 
-- R1 2026-11-08: structure 74%, naming 36%; 匿名类的捕获通过 `ComplexInner$1(this, p0)` 表达，语义正确但类名是合成名
+- R1 2026-11-08: Anonymous-class capture is represented by ComplexInner$1(this, p0); the class name remains synthetic.

@@ -25,8 +25,7 @@ The current text is unchanged from the inspected `6d663d9` engine. H9/H11/H13
 still separate resource catch, suppression and monitor cleanup. The extra
 planned-continuation goto is unreachable because the preceding arms already
 jump or throw. Both are readability findings. Fresh delivery has no stopped
-member or rendering issue. Behavioral execution remains unrun; R1 scores below
-are historical.
+member or rendering issue. Behavioral execution remains unrun.
 
 ## Prior review — round 1
 
@@ -34,9 +33,9 @@ are historical.
 
 This is a manual source/output reading judgment, not an automated execution result.
 
-| Method | Semantics | Structure | Naming |
-|---|---|---|---|
-| `guarded` | ~ Equivalent behavior with a different shape: lock acquisition and release order, close/suppression order, primary identity and the normal close after release agree; the catch and monitor cleanup are explicit graphs. | 52.7% | 57.1% |
+| Method | Semantics |
+| --- | --- |
+| `guarded` | ~ Equivalent behavior with a different shape: lock acquisition and release order, close/suppression order, primary identity and the normal close after release agree; the catch and monitor cleanup are explicit graphs. |
 
 ### Path comparison
 
@@ -98,12 +97,6 @@ readability obstacle; the execution facts are preserved.
 - Asynchronous exceptions and monitor implementation failures are not modeled.
 - No automated behavioral execution or Rust fixture test was run.
 
-### Score (supplementary)
-
-`python3 quality/score.py --slug sync-cleanup-rethrow` reports structure 52.7%
-and naming 57.1%. The score still reflects explicit chains and handler labels; it
-is not a verdict.
-
 ### Commands
 
 ```sh
@@ -113,7 +106,6 @@ cargo run -p diana-decomp --example dbg_shell --locked -- \
 cargo run -p diana-decomp --example dbg_shell --locked -- \
   --dex quality/fixtures/exceptions/sync-cleanup-rethrow/classes.dex \
   --exec '{"cmd":"p6-all","details":true}'
-python3 quality/score.py --slug sync-cleanup-rethrow
 ```
 
 ## Rounds

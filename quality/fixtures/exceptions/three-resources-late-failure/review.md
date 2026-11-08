@@ -25,7 +25,7 @@ The result is saved before closes. No new semantic mismatch was found.
 The current text is unchanged from the inspected `6d663d9` engine. Its expanded
 resource protocol is readable; compact resource syntax is not required for this
 judgment. Fresh delivery has no stopped member or rendering issue. Behavioral
-execution remains unrun; R1 scores below are historical.
+execution remains unrun.
 
 ## Prior review — round 1
 
@@ -33,9 +33,9 @@ execution remains unrun; R1 scores below are historical.
 
 This is a manual source/output reading judgment, not an automated execution result.
 
-| Method | Semantics | Structure | Naming |
-|---|---|---|---|
-| `openThree` | ✔ Equivalent by path comparison: acquisition order, reverse close order, primary identity and suppression order agree. | 12.4% | 46.2% |
+| Method | Semantics |
+| --- | --- |
+| `openThree` | ✔ Equivalent by path comparison: acquisition order, reverse close order, primary identity and suppression order agree. |
 
 ### Path comparison
 
@@ -69,12 +69,6 @@ names and the absence of compact `try (resource...)` syntax are notation limits,
 not execution mismatches. No `exception_chain` line or detached handler is needed
 for this method.
 
-### Score (supplementary)
-
-`python3 quality/score.py --slug three-resources-late-failure` reports structure
-12.4% and naming 46.2%. The metric penalizes the expanded resource protocol and
-explicit captures; it is not a semantic verdict.
-
 ### Commands
 
 ```sh
@@ -84,7 +78,6 @@ cargo run -p diana-decomp --example dbg_shell --locked -- \
 cargo run -p diana-decomp --example dbg_shell --locked -- \
   --dex quality/fixtures/exceptions/three-resources-late-failure/classes.dex \
   --exec '{"cmd":"p6-all","details":true}'
-python3 quality/score.py --slug three-resources-late-failure
 ```
 
 No automated behavioral execution and no Rust fixture test were run.

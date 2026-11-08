@@ -152,8 +152,10 @@ chapters describe the existing implementation until migrated to this target.
   the original input/source behavior with the current decompiled output path by
   path, including helper behavior, results, effect order and exception handling.
   Reviewers MUST record their reasoning and mark uncertain or unreviewed paths.
-  Structural checks, similarity scores and test results are supporting evidence,
-  not substitutes for that review. Written judgments do not establish executed
+  Structural checks and executed test results are supporting evidence, not
+  substitutes for that review. Contributors MUST NOT generate or include numeric
+  structure, naming or token-similarity quality ratings in fixture tooling or
+  review records. Written judgments do not establish executed
   behavioral checks or override failed tests and regression acceptance rules.
 - Rust tests MUST run through `cargo nextest run`, not `cargo test`. Use package
   and test filters for the affected scope. Missing nextest is a setup failure;

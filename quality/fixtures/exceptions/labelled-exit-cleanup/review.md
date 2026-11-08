@@ -24,8 +24,7 @@ outside that resource handler. No new semantic mismatch was found.
 The two zero initializations now appear separately in their original definition
 order. This changes no call, result or loop path. The remaining `goto L9` is a
 readability limitation, not a demonstrated wrong transfer. Fresh delivery has no
-stopped member or rendering issue. Behavioral execution remains unrun; R1 scores
-below are historical.
+stopped member or rendering issue. Behavioral execution remains unrun.
 
 ## Prior review — round 1
 
@@ -33,9 +32,9 @@ below are historical.
 
 This is a manual source/output reading judgment, not an automated execution result.
 
-| Method | Semantics | Structure | Naming |
-|---|---|---|---|
-| `scan` | ✔ Equivalent by path comparison: every inner-loop exit closes the current handle once, in the same order as the source, and exceptional close failures suppress on the primary. | 19.2% | 28.6% |
+| Method | Semantics |
+| --- | --- |
+| `scan` | ✔ Equivalent by path comparison: every inner-loop exit closes the current handle once, in the same order as the source, and exceptional close failures suppress on the primary. |
 
 ### Path comparison
 
@@ -67,12 +66,6 @@ the continue-versus-body split, the `R39:` label, and the generated capture name
 No `exception_chain` line is needed. The absence of a compact `try (resource...)`
 form is a shape limitation, not a semantic mismatch.
 
-### Score (supplementary)
-
-`python3 quality/score.py --slug labelled-exit-cleanup` reports structure 19.2%
-and naming 28.6%. The token metric penalizes labelled loops, explicit closes and
-captures; it is not a verdict.
-
 ### Commands
 
 ```sh
@@ -82,7 +75,6 @@ cargo run -p diana-decomp --example dbg_shell --locked -- \
 cargo run -p diana-decomp --example dbg_shell --locked -- \
   --dex quality/fixtures/exceptions/labelled-exit-cleanup/classes.dex \
   --exec '{"cmd":"p6-all","details":true}'
-python3 quality/score.py --slug labelled-exit-cleanup
 ```
 
 No automated behavioral execution and no Rust fixture test were run.

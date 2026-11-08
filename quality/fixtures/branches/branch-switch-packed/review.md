@@ -47,15 +47,6 @@ that their code remains available without graph/goto dispatch. Their source
 initializer and call-origin checks supplement this LLM judgment; they are not
 independent execution of these methods.
 
-### Historical score
-
-R1 only; not rerun for this candidate. Aggregate structure 54%.
-
-| Method | Structure |
-|---|---|
-| `classify` | 53% |
-| `clustered` | 56% |
-
 ## Ranked fixes
 
 Improve local names and expression concision while preserving original member
@@ -65,5 +56,5 @@ identities, the shared return and selected-entry assignment behavior.
 
 - R2: Grouped labels and accumulator fallthrough are structured; direct LLM path
   comparison finds agreement with source. Automated behavioral execution is unrun.
-- R1, 2026-11-08: Structure 54%. Behavior was judged equivalent, but every case
+- R1, 2026-11-08: Behavior was judged equivalent, but every case
   dispatched into a multi-entry graph and required following labels.
