@@ -16,16 +16,30 @@ Diana-Gui will support more than Dex,but still in devlopment.
 
 ## Install
 
-Install from a release:
+With Cargo (Rust 1.93+ and native build tools; installs the CLI only):
 
 ```sh
-<Todo>
+cargo install --git https://github.com/TsingShui/Diana.git --branch main --locked diana
 ```
 
-Build from source:
+From a release (macOS/Linux):
 
 ```sh
-git clone --branch Diana https://github.com/TsingShui/rasc.git diana
+curl -fsSL https://raw.githubusercontent.com/TsingShui/Diana/main/install.sh -o install-diana.sh &&
+  sh install-diana.sh
+```
+
+The [installer](install.sh) detects x86_64/aarch64 and installs into
+`~/.local/bin`. Use `DIANA_INSTALL_DIR` for another directory, or pass a release
+tag: `sh install-diana.sh v0.1.0`. It accepts `diana-<target>.tar.gz`,
+`diana-<version>-<target>.tar.gz` or `diana-v<version>-<target>.tar.gz` containing
+one `diana` executable. Currently the releases contain only legacy rasc binaries;
+use Cargo until a Diana binary release is available.
+
+From a local checkout:
+
+```sh
+git clone --branch main https://github.com/TsingShui/Diana.git diana
 cd diana
 cargo install --path apps/diana --locked
 ```
@@ -143,15 +157,16 @@ peak RSS in MiB** across three fresh processes with warm filesystem caches.
 | `fields`         | All definitions                  |  0.10 / 228.2 |  0.04 / 173.8 |
 | `methods`        | All definitions                  |  0.16 / 267.5 |  0.07 / 202.8 |
 | `strings`        | All pool values                  |  0.06 / 106.1 |  0.04 / 103.1 |
-| `resources`      | All configurations¹              |   0.07 / 55.6 |   0.01 / 12.9 |
+| `resources`      | Configurations (first APK partial) |   0.07 / 55.6 |   0.01 / 12.9 |
 | `get-class`      | One class (19 / 8 methods)       |   0.02 / 30.1 |   0.02 / 24.2 |
 | `get-method`     | One method                       |   0.02 / 27.7 |   0.01 / 23.0 |
 | `outline-class`  | Same class, no callee expansion  |   0.02 / 30.6 |   0.02 / 24.5 |
 | `outline-method` | Same method, no callee expansion |   0.02 / 28.0 |   0.01 / 23.3 |
 | `extract`        | One DEX (8.9 / 10.5 MiB)         |   0.01 / 28.1 |   0.02 / 28.7 |
-| `xref`           | All onCreate method references   |  1.51 / 521.8 |  0.64 / 232.4 |
+| `xref`           | Regex `^onCreate$`, unlimited     |  1.51 / 521.8 |  0.64 / 232.4 |
 | `manifest`       | Full manifest                    |   0.01 / 10.1 |   <0.01 / 4.7 |
 
-Lists are unfiltered; `xref` uses `method '^onCreate$' --regex --no-limit`.
+Lists are unfiltered. The `xref` row uses `method '^onCreate$' --regex --no-limit`:
+case-insensitive regex matching, not fuzzy matching or relevance ranking.
 Class/method commands use canonical locators for one nontrivial class/method per
 APK, not whole-APK decompilation.
