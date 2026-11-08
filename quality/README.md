@@ -133,7 +133,14 @@ Commands are only re-verified with the ordinary equivalence checks (`get-class`,
 | `obf-flow-r8` | R8-obfuscated `complex-flow` (enum switch, loop, try/finally, ternary) |
 | `obf-dp-r8` | R8-obfuscated `algo-dp` (2D arrays, nested loops, `Math.min`) |
 | `obf-exceptions-proguard` | ProGuard-obfuscated `complex-exceptions` (nested try/finally, TWR in a loop, multi-catch) |
-| `kotlin-null-safety` | `?.`, `?:`, `!!`, safe-call chain, `@Metadata` (Kotlin source; review only, no Java reference to score against) |
+| `kotlin-null-safety` | `?.`, `?:`, `!!`, safe-call chain, `@Metadata` |
+| `kotlin-data-class` | data class, `componentN`, `copy`, `copy$default`, `equals`/`hashCode`/`toString` |
+| `kotlin-sealed-when` | sealed hierarchy, exhaustive `when`, smart casts |
+| `kotlin-object-singleton` | `object` with `INSTANCE`, companion object, synthetic accessors |
+| `kotlin-property-delegate` | `by lazy`, custom `ReadWriteProperty`, custom setter, `lateinit` |
+| `kotlin-suspend-state` | suspend functions, continuation state machine, suspend inside try/loop |
+
+Kotlin fixtures are **never scored**; their review is the record (see below).
 
 ## Reviews
 
@@ -203,8 +210,14 @@ give one short name to several overloads. Structure is comparable with the
 unobfuscated source fixture; naming is reported as `obf` because the obfuscator
 destroyed it.
 
+Kotlin fixtures (6) are reviewed by reading only: `score.py` refuses them and the
+review carries a per-method semantics verdict plus the Kotlin-specific findings
+(`@Metadata` into the body, `copy$default` masks, `INSTANCE` singletons,
+`$delegate` fields, continuation state machines, `when` lowered to `instanceof`).
+
 Corpus totals (round 1): **structure 62%, naming 60%** over 183 methods (the
-obfuscated fixtures contribute structure only). The
+obfuscated fixtures contribute structure only; Kotlin fixtures are unreviewed by
+the score). The
 `complex-*` and `algo-*` fixtures are the lowest scorers: real code multiplies the
 temporary variables, `while (test { … })` loops and goto-based exits that the
 single-structure fixtures isolate. The second
