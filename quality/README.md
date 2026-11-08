@@ -99,6 +99,12 @@ Commands are only re-verified with the ordinary equivalence checks (`get-class`,
 | `branch-switch-string` | switch over `String`, grouped `case` labels, effects in branches |
 | `branch-switch-enum` | switch over an enum with a `default` arm |
 | `sync-block` | `synchronized` block, early return inside it, nested blocks |
+| `class-inner-member` | member inner class, synthetic accessor to a private field |
+| `class-inner-static` | static nested class with its own state |
+| `class-anonymous` | anonymous class capturing a local and a field |
+| `class-enum-body` | enum with constructor state, method and a constant body |
+| `class-interface-default` | interface `default` and `static` methods |
+| `class-init-order` | field initializers, instance block, static init, `this(...)` |
 | `kotlin-null-safety` | `?.`, `?:`, `!!`, safe-call chain, `@Metadata` (Kotlin source; review only, no Java reference to score against) |
 
 ## Reviews
@@ -123,8 +129,14 @@ Commands are only re-verified with the ordinary equivalence checks (`get-class`,
 | `branch-switch-string` | 18% / 71% | two-level hash/equals switch plus `graph<MultipleEntry>` |
 | `branch-switch-enum` | 42% / 25% | `ordinal()` switch correct, temporaries and `default` order differ |
 | `sync-block` | 42% / 83% | `synchronized` kept, but every block carries `catch (all)`, `release`, `goto` |
+| `class-enum-body` | 90% / 83% | methods correct; enum constants become `static final dex_flags<enum>` plus a static block |
+| `class-inner-static` | 89% / 54% | nested type referenced by name; constructor result goes through a temporary |
+| `class-inner-member` | 84% / 67% | inner class rendered separately; `this.` qualification added |
+| `class-interface-default` | 78% / 89% | `default` keyword lost; `plus()` condition inverted |
+| `class-anonymous` | 73% / 67% | capture via `new Outer$1(this, p0)` is right; result goes through a temporary |
+| `class-init-order` | 68% / 100% | static block, initializer and instance block order correct; field reads go through temporaries |
 
-Corpus totals (round 1): **structure 74%, naming 62%** over 75 methods. The second
+Corpus totals (round 1): **structure 75%, naming 65%** over 88 methods. The second
 batch (loops, switches, exceptions, synchronization) is exactly where the recovery
 is weakest: string switch 18%, two-resource TWR 8%, synchronized 42%.
 

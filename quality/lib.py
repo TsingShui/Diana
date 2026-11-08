@@ -22,7 +22,7 @@ KEYWORDS = set(
 )
 
 METHOD = re.compile(
-    r"(?m)^[ \t]*(?:public|private|protected|static|final|abstract|synchronized|native)[ \t]+"
+    r"(?m)^[ \t]*(?:public|private|protected|static|final|abstract|synchronized|native|default)[ \t]+"
     r"[^;{}()\n=]*?(\w+)\s*\("
 )
 STRING = re.compile(r'"(?:\\.|[^"\\])*"')
