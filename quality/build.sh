@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Regenerate the quality fixtures: Java source -> classes.dex next to it.
+# Build every quality fixture in one pass: sources -> classes -> classes.dex.
 #
-# The generated DEX is committed on purpose: scoring only needs the Diana CLI and
-# the Java reference, so `measure.py` runs without a JDK or an Android SDK. Run
-# this script only when a fixture's Java source changes.
+# There is one pipeline for every fixture. Any mix of `*.java` and `*.kt` in a
+# fixture directory is compiled into the same classes directory and then dexed
+# once; fixtures are never classified by language. The generated DEX is committed
+# on purpose, so a review needs no toolchain - this script is only for the author
+# who changed a fixture.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -23,27 +25,52 @@ if [ -z "$D8" ]; then
     echo "error: no d8 found; set ANDROID_HOME (or ANDROID_SDK_ROOT)" >&2
     exit 1
 fi
-if ! command -v javac >/dev/null 2>&1; then
-    echo "error: javac not found (a JDK is required to regenerate fixtures)" >&2
-    exit 1
-fi
 
-echo "javac       $(javac -version 2>&1)"
+KOTLINC="${KOTLINC:-}"
+if [ -z "$KOTLINC" ]; then
+    KOTLINC="/Applications/Android Studio.app/Contents/plugins/Kotlin/kotlinc/bin/kotlinc"
+fi
+KOTLIN_LIB="$(dirname "$KOTLINC")/../lib/kotlin-stdlib.jar"
+
 echo "d8          $D8"
 echo "build-tools $(basename "$(dirname "$D8")")"
+echo "javac       $(javac -version 2>&1)"
+if [ -x "$KOTLINC" ]; then
+    echo "kotlinc     $("$KOTLINC" -version 2>&1 | head -1)"
+else
+    echo "kotlinc     not found (only needed by fixtures with .kt sources)"
+fi
 
 for slug_dir in "$QUALITY"/fixtures/*/; do
     slug="$(basename "$slug_dir")"
-    sources=("$slug_dir"*.java)
-    if [ ! -e "${sources[0]}" ]; then
-        echo "skip $slug: no Java source"
-        continue
-    fi
     out="$WORK/$slug"
     rm -rf "$out"
     mkdir -p "$out/classes" "$out/dex"
-    javac --release 8 -g -d "$out/classes" "${sources[@]}"
-    "$D8" --min-api 24 --output "$out/dex" $(find "$out/classes" -name '*.class')
+
+    java_sources=("$slug_dir"*.java)
+    kotlin_sources=("$slug_dir"*.kt)
+
+    if [ -e "${java_sources[0]}" ]; then
+        javac --release 8 -g -d "$out/classes" "${java_sources[@]}"
+    fi
+    if [ -e "${kotlin_sources[0]}" ]; then
+        if [ ! -x "$KOTLINC" ]; then
+            echo "error: $slug has Kotlin sources but kotlinc is missing" >&2
+            exit 1
+        fi
+        "$KOTLINC" -jvm-target 1.8 -d "$out/classes" "${kotlin_sources[@]}"
+    fi
+
+    class_files=$(find "$out/classes" -name '*.class')
+    if [ -z "$class_files" ]; then
+        echo "error: $slug produced no classes" >&2
+        exit 1
+    fi
+    if [ -f "$KOTLIN_LIB" ]; then
+        "$D8" --min-api 24 --lib "$KOTLIN_LIB" --output "$out/dex" $class_files
+    else
+        "$D8" --min-api 24 --output "$out/dex" $class_files
+    fi
     cp "$out/dex/classes.dex" "$slug_dir/classes.dex"
     echo "wrote quality/fixtures/$slug/classes.dex ($(wc -c < "$slug_dir/classes.dex" | tr -d ' ') bytes)"
 done

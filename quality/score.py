@@ -40,7 +40,7 @@ def selector(java: Path) -> str:
     import re
 
     text = java.read_text()
-    package = re.search(r"(?m)^package\s+([\w.]+)\s*;", text)
+    package = re.search(r"(?m)^package\s+([\w.]+)\s*;?", text)
     stem = java.stem
     if package:
         return "L" + package.group(1).replace(".", "/") + "/" + stem + ";"
@@ -50,9 +50,19 @@ def selector(java: Path) -> str:
 def score_fixture(binary: str, slug: str) -> tuple[list[float], list[float]] | None:
     directory = FIXTURES / slug
     java_files = sorted(directory.glob("*.java"))
+    kotlin_files = sorted(directory.glob("*.kt"))
     dex = directory / "classes.dex"
-    if not java_files or not dex.is_file():
-        print(f"{slug}: need a .java and classes.dex", file=sys.stderr)
+    if not dex.is_file():
+        print(f"{slug}: need a classes.dex (run quality/build.sh)", file=sys.stderr)
+        return None
+    if kotlin_files:
+        # Kotlin fixtures are judged by reading, semantics only. Kotlin syntax has no
+        # lexical counterpart in the Java-like output, so any number here would
+        # measure syntax instead of recovery.
+        print(f"\n== {slug}\n  Kotlin fixture: review only, no score (semantics judged by reading)")
+        return None
+    if not java_files:
+        print(f"{slug}: no reference source", file=sys.stderr)
         return None
     java = java_files[0]
     result = subprocess.run(

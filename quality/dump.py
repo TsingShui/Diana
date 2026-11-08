@@ -31,7 +31,7 @@ methods = lib.methods
 
 def selector_for(java: Path) -> str:
     text = java.read_text()
-    package = re.search(r"(?m)^package\s+([\w.]+)\s*;", text)
+    package = re.search(r"(?m)^package\s+([\w.]+)\s*;?", text)
     stem = java.stem
     if package:
         return "L" + package.group(1).replace(".", "/") + "/" + stem + ";"
@@ -41,10 +41,13 @@ def selector_for(java: Path) -> str:
 def dump(binary: str, slug: str) -> str:
     directory = QUALITY / "fixtures" / slug
     java_files = sorted(directory.glob("*.java"))
+    kotlin_files = sorted(directory.glob("*.kt"))
     dex = directory / "classes.dex"
-    if not java_files or not dex.is_file():
-        raise SystemExit(f"{slug}: need a .java and classes.dex (run quality/build.sh)")
-    java = java_files[0]
+    if not dex.is_file():
+        raise SystemExit(f"{slug}: need a classes.dex (run quality/build.sh)")
+    if not java_files and not kotlin_files:
+        raise SystemExit(f"{slug}: no source file")
+    java = java_files[0] if java_files else kotlin_files[0]
     selector = selector_for(java)
     result = subprocess.run(
         [binary, "get-class", str(dex), selector], capture_output=True, text=True
@@ -52,7 +55,8 @@ def dump(binary: str, slug: str) -> str:
     if result.returncode != 0:
         raise SystemExit(f"{slug}: {result.stderr.strip()}")
 
-    reference = methods(java.read_text(), java.stem)
+    kotlin_only = not java_files
+    reference = {} if kotlin_only else methods(java.read_text(), java.stem)
     produced = methods(result.stdout)
     lines = [
         f"# Review: {slug}",
@@ -74,6 +78,11 @@ def dump(binary: str, slug: str) -> str:
         f"Write the findings as a new round in `quality/fixtures/{slug}/review.md`; do not score them.",
         "",
     ]
+    if kotlin_only:
+        lines += ["Reference (Kotlin):", "", "```kotlin", java.read_text().rstrip(), "```", ""]
+        lines += ["Diana:", "", "```java", result.stdout.rstrip(), "```", ""]
+        return "\n".join(lines)
+
     for name, source in reference.items():
         lines += [f"## `{name}`", "", "Reference (Java):", "", "```java", source, "```", ""]
         actual = produced.get(name)

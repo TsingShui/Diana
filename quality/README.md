@@ -43,6 +43,13 @@ python3 quality/dump.py                # writes .cache/review/<slug>.md
 python3 quality/dump.py --slug branch-if2
 ```
 
+A fixture written in Kotlin is **never scored**. Its review is a semantic
+judgement written by reading the Kotlin reference next to the output: `?.`, `?:`,
+`!!`, `when` and safe-call chains have no lexical counterpart in Java-like output,
+so any number would measure syntax rather than recovery. `score.py` therefore
+refuses Kotlin fixtures outright instead of reporting a misleading value, and no
+hand-written Java "expected" file is added as a workaround.
+
 `score.py` measures **how much of the reference structure survived**: it
 normalises both bodies (identifiers to `ID`, string/char literals to `STR`/`CHR`,
 comments dropped, keywords/operators/numbers kept) and reports the token-stream
@@ -84,6 +91,7 @@ Commands are only re-verified with the ordinary equivalence checks (`get-class`,
 | `branch-ifz` | single-register branches, `null` check |
 | `cast-instanceof` | `instanceof`, `check-cast`, array cast |
 | `exception-one-catch` | one catch that returns, one that rethrows, effect order inside `try` |
+| `kotlin-null-safety` | `?.`, `?:`, `!!`, safe-call chain, `@Metadata` (Kotlin source; review only, no Java reference to score against) |
 
 ## Reviews
 
