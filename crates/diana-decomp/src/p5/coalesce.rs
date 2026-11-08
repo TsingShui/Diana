@@ -2,6 +2,7 @@
 //! positions do not change. P5 selects representatives before its one copy
 //! scheduling pass; later stages do not perform liveness or rename storage.
 mod graph;
+mod literals;
 
 use super::build::*;
 use super::*;
@@ -21,7 +22,10 @@ fn identity_source(
         return None;
     }
     match (view, f.locals[destination.0 as usize].storage_type) {
-        (Interpretation::Direct(a), StorageType::Family { family: b, .. }) if a == b => Some(local),
+        (
+            Interpretation::Direct(a) | Interpretation::Literal { family: a, .. },
+            StorageType::Family { family: b, .. },
+        ) if a == b => Some(local),
         (Interpretation::CopyBits(a), StorageType::NumericBits { width: b, .. }) if a == b => {
             Some(local)
         }
@@ -90,35 +94,50 @@ fn value_of(local: &Local) -> Option<ValueId> {
         _ => None,
     }
 }
-fn compatible(typed: &TypedMethod<'_>, f: &StorageFacts, a: LocalId, b: LocalId) -> bool {
-    if f.locals[a.0 as usize].storage_type != f.locals[b.0 as usize].storage_type {
-        return false;
+fn compatible(
+    typed: &TypedMethod<'_>,
+    f: &StorageFacts,
+    a: LocalId,
+    b: LocalId,
+) -> Result<bool, StorageError> {
+    let storage_type = f.locals[a.0 as usize].storage_type;
+    if storage_type != f.locals[b.0 as usize].storage_type {
+        return Ok(false);
     }
     let (Some(a), Some(b)) = (
         value_of(&f.locals[a.0 as usize]),
         value_of(&f.locals[b.0 as usize]),
     ) else {
-        return false;
+        return Ok(false);
     };
-    let (Some(a), Some(b)) = (typed.facts().value(a), typed.facts().value(b)) else {
-        return false;
+    let (Some(left), Some(right)) = (typed.facts().value(a), typed.facts().value(b)) else {
+        return Ok(false);
     };
-    // Consumers can retain the representative's declared-type sources only
-    // when all members carry precisely those same facts; no type join is guessed.
-    // The solver appends a source per reaching use, so the same sources in
-    // another arrival order describe the same declaration and still merge.
-    same_type_sources(a.types(), b.types())
-        && a.has_unknown_type_source() == b.has_unknown_type_source()
+    // Declared sources must agree. An undeclared constant is also compatible
+    // with the canonical primitive storage selected by all its delivered reads.
+    Ok((same_type_sources(left.types(), right.types())?
+        && left.has_unknown_type_source() == right.has_unknown_type_source())
+        || match storage_type {
+            StorageType::Family { family, .. } => {
+                literals::compatible(typed, a, b, family)
+                    || literals::compatible(typed, b, a, family)
+            }
+            _ => false,
+        })
 }
-fn same_type_sources(a: &[TypeNameId], b: &[TypeNameId]) -> bool {
+fn same_type_sources(a: &[TypeNameId], b: &[TypeNameId]) -> Result<bool, StorageError> {
     if a.len() != b.len() {
-        return false;
+        return Ok(false);
     }
-    let mut left: Vec<u32> = a.iter().map(|id| id.0).collect();
-    let mut right: Vec<u32> = b.iter().map(|id| id.0).collect();
+    let mut left = Vec::new();
+    let mut right = Vec::new();
+    crate::substrate::owned::reserve(&mut left, a.len())?;
+    crate::substrate::owned::reserve(&mut right, b.len())?;
+    left.extend(a.iter().map(|id| id.0));
+    right.extend(b.iter().map(|id| id.0));
     left.sort_unstable();
     right.sort_unstable();
-    left == right
+    Ok(left == right)
 }
 fn root(parent: &[LocalId], mut id: LocalId) -> LocalId {
     while parent[id.0 as usize] != id {
@@ -139,6 +158,7 @@ pub(super) fn construct(typed: &TypedMethod<'_>, f: &mut StorageFacts) -> Result
     if f.operations.iter().any(|o| o.inputs.is_err()) {
         return Ok(());
     }
+    let promotions = literals::prepare(typed, f)?;
     let pinned = pinned(typed, f)?;
     let mut affinities = Vec::new();
     for p in &f.copies {
@@ -176,6 +196,8 @@ pub(super) fn construct(typed: &TypedMethod<'_>, f: &mut StorageFacts) -> Result
         }
     }
     if affinities.is_empty() {
+        promotions.restore_independent(f, None);
+        promotions.finish(f);
         return Ok(());
     }
     let graph = graph::Graph::construct(typed, f)?;
@@ -188,7 +210,7 @@ pub(super) fn construct(typed: &TypedMethod<'_>, f: &mut StorageFacts) -> Result
     }
     for (a, b) in affinities {
         let (a, b) = (root(&parent, a), root(&parent, b));
-        if a == b || !compatible(typed, f, a, b) {
+        if a == b || !compatible(typed, f, a, b)? {
             continue;
         }
         if members[a.0 as usize].iter().any(|member| {
@@ -213,7 +235,9 @@ pub(super) fn construct(typed: &TypedMethod<'_>, f: &mut StorageFacts) -> Result
         local.reused = members[representative.0 as usize].len() > 1;
         reused += usize::from(local.id != representative);
     }
+    promotions.restore_independent(f, Some(&parent));
     if reused == 0 {
+        promotions.finish(f);
         return Ok(());
     }
     for binding in &mut f.bindings {
@@ -254,6 +278,7 @@ pub(super) fn construct(typed: &TypedMethod<'_>, f: &mut StorageFacts) -> Result
             redirect(read, &parent);
         }
     }
+    promotions.finish(f);
     #[cfg(feature = "trace-passes")]
     {
         let key = typed.execution().owner_facts().key();

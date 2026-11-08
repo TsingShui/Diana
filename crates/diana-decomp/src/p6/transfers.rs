@@ -122,7 +122,9 @@ pub(super) fn transfers(f: &mut RegionFacts, g: &Graph) -> Result<(), RegionErro
                         action = TransferAction::Break(id);
                         break;
                     }
-                    RegionKind::Sequence if !crossed_loop && !pending_sibling => {
+                    RegionKind::Sequence | RegionKind::Switch { cases: Some(_), .. }
+                        if !crossed_loop && !pending_sibling =>
+                    {
                         for pair in r.children.windows(2) {
                             let a = &f.regions[pair[0].0 as usize];
                             let b = &f.regions[pair[1].0 as usize];
@@ -161,7 +163,7 @@ pub(super) fn transfers(f: &mut RegionFacts, g: &Graph) -> Result<(), RegionErro
         if let (Some(parent), Some(follow)) = (f.parents[i], r.follow) {
             let p = &f.regions[parent.0 as usize];
             match &p.kind {
-                RegionKind::Sequence => {
+                RegionKind::Sequence | RegionKind::Switch { cases: Some(_), .. } => {
                     if let Some(position) = p.children.iter().position(|r| r.0 as usize == i) {
                         if let Some(next) = p.children.get(position + 1) {
                             if f.regions[next.0 as usize].entry == Some(follow) {
@@ -232,10 +234,9 @@ pub(super) fn transfers(f: &mut RegionFacts, g: &Graph) -> Result<(), RegionErro
                 while let Some(scope) = at {
                     let parent = &f.regions[scope.0 as usize];
                     match parent.kind {
-                        RegionKind::Switch {
-                            private_cases: true,
-                            ..
-                        } if parent.follow == Some(follow) => {
+                        RegionKind::Switch { cases: Some(_), .. }
+                            if parent.follow == Some(follow) =>
+                        {
                             continuation = Continuation::Break(scope);
                             break;
                         }

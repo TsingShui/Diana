@@ -38,14 +38,22 @@ fn kind(c: &mut Context<'_, '_>, r: &p6::Region) -> Result<ControlKind, Expressi
                 continue_target: label(c, p.continue_target())?,
             }
         }
-        RegionKind::Switch {
-            arms,
-            private_cases,
-        } => ControlKind::Switch {
-            private_cases: *private_cases,
-            terminal: terminal(c, r.entry().ok_or(bug("switch has no selector node"))?),
-            arms: ids(arms, |a| TransferId(a.0))?,
-        },
+        RegionKind::Switch { arms, cases } => {
+            let cases = if let Some(cases) = cases {
+                let mut groups = Vec::new();
+                for group in cases {
+                    push(&mut groups, ids(group, |a| TransferId(a.0))?)?;
+                }
+                Some(groups)
+            } else {
+                None
+            };
+            ControlKind::Switch {
+                cases,
+                terminal: terminal(c, r.entry().ok_or(bug("switch has no selector node"))?),
+                arms: ids(arms, |a| TransferId(a.0))?,
+            }
+        }
         RegionKind::LabelledBlock { target } => ControlKind::LabelledBlock {
             target: label(c, *target)?,
         },

@@ -48,17 +48,23 @@ pub(super) fn branch_proposal(
         },
     )?;
     for (target, arm) in [(t, &a), (e, &b)] {
+        let nodes = list(arm)?;
+        let arm_follow = if nodes.is_empty() {
+            Some(target)
+        } else {
+            follow
+        };
         push(
             &mut parts,
             Part {
                 completion: PartCompletion::Ordinary,
-                nodes: list(arm)?,
+                nodes,
                 entry: if Some(target) == follow || boundary[target.0 as usize] {
                     None
                 } else {
                     Some(target)
                 },
-                follow,
+                follow: arm_follow,
             },
         )?;
     }
@@ -353,7 +359,10 @@ pub(super) fn candidates(
         let arms = copy(&g.outgoing[n.0 as usize])?;
         let mut starts = Vec::new();
         for &l in &arms {
-            push(&mut starts, f.links[l.0 as usize].to)?;
+            let target = f.links[l.0 as usize].to;
+            if !starts.contains(&target) {
+                push(&mut starts, target)?;
+            }
         }
         let follow = match s.follow(n).filter(|node| in_scope[node.0 as usize]) {
             Some(follow) => Some(follow),
@@ -375,10 +384,7 @@ pub(super) fn candidates(
                 follow,
             },
         )?;
-        let kind = RegionKind::Switch {
-            arms,
-            private_cases: false,
-        };
+        let kind = RegionKind::Switch { arms, cases: None };
         push(
             &mut out,
             Candidate {

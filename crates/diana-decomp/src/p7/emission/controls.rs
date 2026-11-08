@@ -113,8 +113,8 @@ fn layout(
         ControlKind::Switch {
             terminal,
             arms,
-            private_cases,
-        } => switch_layout(plan, c, *terminal, arms, *private_cases)?,
+            cases,
+        } => switch_layout(plan, c, *terminal, arms, cases.as_deref())?,
         ControlKind::LabelledBlock { .. } => EmissionLayout::Labelled,
         ControlKind::Try { finally, .. } => try_layout(code, plan, c, finally.as_ref())?,
         ControlKind::Synchronized { acquire, .. } => EmissionLayout::Synchronized {
@@ -159,20 +159,27 @@ fn switch_layout(
     c: &Control,
     terminal: BlockId,
     arms: &[TransferId],
-    private_cases: bool,
+    cases: Option<&[Vec<TransferId>]>,
 ) -> Result<EmissionLayout, ExpressionError> {
-    if private_cases {
-        if c.children.len() != arms.len() + 1 {
-            return Err(bug("private switch lost its case children"));
+    let cases = if let Some(cases) = cases {
+        if c.children.len() != cases.len() + 1 {
+            return Err(bug("switch lost its case-group children"));
         }
         for &arm in arms {
             plan.transfers[arm.0 as usize].spelling = TransferSpelling::Fallthrough;
         }
-    }
+        let mut groups = Vec::new();
+        for group in cases {
+            push(&mut groups, copy(group)?)?;
+        }
+        Some(groups)
+    } else {
+        None
+    };
     Ok(EmissionLayout::Switch {
         header: child(c, 0)?,
         bodies: copy(c.children.get(1..).ok_or(bug("switch lost its body"))?)?,
-        private_cases,
+        cases,
         terminal,
     })
 }

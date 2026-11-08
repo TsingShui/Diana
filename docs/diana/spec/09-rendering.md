@@ -163,8 +163,11 @@ its selected goto/break/continue after that control's normal body; an original
 abrupt terminal leaves before it. A private switch default can have no body
 operations while retaining its selected-edge Copy/Transfer anchors followed by
 the delivered break. Successful case returns retain their own terminal/operand
-origins, and the shared continuation prints once outside the switch. P9 does not
-infer scope completion or shared targets from adjacency. An explicit Condition uses the selected
+origins, and the shared continuation prints once outside the switch. For grouped
+switch placement, P9 prints the supplied case/default labels followed by their
+single supplied body, in P7's lexical order. Identity-copy anchors do not require
+visible assignments or trailing spaces. P9 does not group entries, reorder bodies,
+infer scope completion or discover shared targets from adjacency. An explicit Condition uses the selected
 P6-derived order and child completions in the emission controls, not the retained
 source control's tests/shared/other order or source continuation evidence. In particular, predicate-exit copies do
 not appear in a loop's common continuation, where an independent break could

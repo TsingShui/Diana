@@ -1,7 +1,5 @@
-//! Plans a switch's private case parts. This happens before transfer planning so
-//! a common-follow exit leaves the switch, not an artificial labelled wrapper
-//! around a multi-entry graph. Exact disjoint arm interfaces are selected before
-//! constructing their nested owners; shared continuation work stays outside.
+//! Partitions an original switch at its distinct case entries, then orders
+//! disjoint bodies into linear fallthrough chains without copying shared work.
 
 use super::super::build::*;
 use super::super::graph::Graph;
@@ -9,24 +7,141 @@ use super::super::*;
 use super::parts::*;
 use crate::p5::StorageMethod;
 
+pub(super) struct SwitchParts {
+    pub parts: Vec<Part>,
+    pub cases: Vec<Vec<LinkId>>,
+}
+
+struct Case {
+    entry: NodeId,
+    arms: Vec<LinkId>,
+    nodes: Vec<NodeId>,
+    next: Option<usize>,
+}
+
+fn groups(
+    f: &RegionFacts,
+    arms: &[LinkId],
+) -> Result<(Vec<Case>, Vec<Option<usize>>), RegionError> {
+    let mut cases: Vec<Case> = Vec::new();
+    let mut entries = filled(f.nodes.len(), None)?;
+    for &arm in arms {
+        let entry = f.links[arm.0 as usize].to;
+        let index = if let Some(index) = entries[entry.0 as usize] {
+            index
+        } else {
+            let index = cases.len();
+            entries[entry.0 as usize] = Some(index);
+            push(
+                &mut cases,
+                Case {
+                    entry,
+                    arms: Vec::new(),
+                    nodes: Vec::new(),
+                    next: None,
+                },
+            )?;
+            index
+        };
+        push(&mut cases[index].arms, arm)?;
+    }
+    Ok((cases, entries))
+}
+
+fn copy_free(storage: &StorageMethod<'_>, f: &RegionFacts, arms: &[LinkId]) -> bool {
+    arms.iter().all(|arm| {
+        f.link_plans[arm.0 as usize].copies.iter().all(|id| {
+            let plan = &storage.facts().copy_plans()[id.0 as usize];
+            plan.is_complete() && plan.steps().is_empty()
+        })
+    })
+}
+
 pub(super) fn private_switch_parts(
     storage: &StorageMethod<'_>,
     f: &RegionFacts,
     g: &Graph,
     c: &Candidate,
     boundary: &[bool],
-) -> Result<Option<Vec<Part>>, RegionError> {
+) -> Result<Option<SwitchParts>, RegionError> {
     let RegionKind::Switch { arms, .. } = &c.kind else {
         return Ok(None);
     };
     if arms.len() < 2 {
         return Ok(None);
     }
-    let body = &c.parts[1];
-    let set = mask(f.nodes.len(), &body.nodes)?;
-    let mut starts = Vec::new();
-    let mut partition = filled(f.nodes.len(), false)?;
+    let (mut cases, entries) = groups(f, arms)?;
+    let set = mask(f.nodes.len(), &c.parts[1].nodes)?;
+    let mut owners = filled(f.nodes.len(), None)?;
+    let mut interfaces = Vec::new();
+    for (index, case) in cases.iter_mut().enumerate() {
+        if Some(case.entry) != c.follow
+            && (!set[case.entry.0 as usize] || boundary[case.entry.0 as usize])
+        {
+            return Ok(None);
+        }
+        let mut frontier = copy(boundary)?;
+        for (node, &group) in entries.iter().enumerate() {
+            if group.is_some_and(|other| other != index) {
+                frontier[node] = true;
+            }
+        }
+        let arm = super::completion::reachable(f, g, &[case.entry], &frontier, c.follow)?;
+        case.nodes = list(&arm)?;
+        let interface =
+            super::completion::CompletionInterface::collect(storage, f, g, &case.nodes)?;
+        if !interface.exceptional_entrances.is_empty() {
+            return Ok(None);
+        }
+        for &node in &case.nodes {
+            if !set[node.0 as usize] || owners[node.0 as usize].is_some() {
+                return Ok(None);
+            }
+            owners[node.0 as usize] = Some(index);
+            if g.outgoing[node.0 as usize].is_empty() && !interface.abrupt.contains(&node) {
+                return Ok(None);
+            }
+        }
+        for &outlet in &interface.outlets {
+            let target = f.links[outlet.0 as usize].to;
+            if Some(target) == c.follow {
+                continue;
+            }
+            if let Some(next) = entries[target.0 as usize] {
+                if case.next.is_some_and(|previous| previous != next) {
+                    return Ok(None);
+                }
+                case.next = Some(next);
+            } else if !boundary[target.0 as usize] {
+                return Ok(None);
+            }
+        }
+        if !normal_arm_acyclic(f, g, &arm)? {
+            return Ok(None);
+        }
+        push(&mut interfaces, interface)?;
+    }
+    if c.parts[1]
+        .nodes
+        .iter()
+        .any(|n| owners[n.0 as usize].is_none())
+    {
+        return Ok(None);
+    }
+    for (case, interface) in cases.iter().zip(&interfaces) {
+        if interface.entrances.iter().any(|id| {
+            let incoming = f.links[id.0 as usize];
+            incoming.to != case.entry
+                || (incoming.from != c.entry && owners[incoming.from.0 as usize].is_none())
+        }) {
+            return Ok(None);
+        }
+    }
+    let Some(order) = order(storage, f, &cases, c.follow)? else {
+        return Ok(None);
+    };
     let mut parts = Vec::new();
+    let mut ordered_cases = Vec::new();
     push(
         &mut parts,
         Part {
@@ -36,52 +151,78 @@ pub(super) fn private_switch_parts(
             completion: PartCompletion::Ordinary,
         },
     )?;
-    for &link in arms {
-        let entry = f.links[link.0 as usize].to;
-        if starts.contains(&entry) {
-            return Ok(None);
-        }
-        push(&mut starts, entry)?;
-        let arm = super::completion::reachable(f, g, &[entry], boundary, c.follow)?;
-        let nodes = list(&arm)?;
-        let interface = super::completion::CompletionInterface::collect(storage, f, g, &nodes)?;
-        if interface.entrances.iter().any(|id| {
-            let incoming = f.links[id.0 as usize];
-            incoming.from != c.entry || incoming.to != entry
-        }) || !interface.exceptional_entrances.is_empty()
-            || interface.outlets.iter().any(|id| {
-                let to = f.links[id.0 as usize].to;
-                Some(to) != c.follow && !boundary[to.0 as usize]
-            })
-        {
-            return Ok(None);
-        }
-        for &node in &interface.nodes {
-            if !set[node.0 as usize] || partition[node.0 as usize] {
-                return Ok(None);
-            }
-            partition[node.0 as usize] = true;
-            if g.outgoing[node.0 as usize].is_empty() && !interface.abrupt.contains(&node) {
-                return Ok(None);
-            }
-        }
-        if !normal_arm_acyclic(f, g, &arm)? {
-            return Ok(None);
-        }
+    for index in order {
+        let follow = cases[index].next.map(|next| cases[next].entry).or(c.follow);
+        let case = &mut cases[index];
+        let nodes = std::mem::take(&mut case.nodes);
         push(
             &mut parts,
             Part {
-                entry: (!nodes.is_empty()).then_some(entry),
+                entry: (!nodes.is_empty()).then_some(case.entry),
                 nodes,
-                follow: c.follow,
+                follow,
                 completion: PartCompletion::Ordinary,
             },
         )?;
+        push(&mut ordered_cases, std::mem::take(&mut case.arms))?;
     }
-    if body.nodes.iter().any(|n| !partition[n.0 as usize]) {
+    Ok(Some(SwitchParts {
+        parts,
+        cases: ordered_cases,
+    }))
+}
+
+fn order(
+    storage: &StorageMethod<'_>,
+    f: &RegionFacts,
+    cases: &[Case],
+    follow: Option<NodeId>,
+) -> Result<Option<Vec<usize>>, RegionError> {
+    let mut previous = filled(cases.len(), None)?;
+    for (index, case) in cases.iter().enumerate() {
+        if let Some(next) = case.next {
+            if previous[next].is_some() {
+                return Ok(None);
+            }
+            previous[next] = Some(index);
+        }
+    }
+    for (index, case) in cases.iter().enumerate() {
+        // A header's copy would also run on lexical fallthrough. Shared labels
+        // similarly cannot execute each other's entry copies. Keep such cases
+        // explicit unless P5 has already established identity copies.
+        if (previous[index].is_some() || case.arms.len() > 1) && !copy_free(storage, f, &case.arms)
+        {
+            return Ok(None);
+        }
+    }
+    let empty = cases.iter().position(|case| Some(case.entry) == follow);
+    let mut order = Vec::new();
+    let mut seen = filled(cases.len(), false)?;
+    for (root, predecessor) in previous.iter().enumerate() {
+        if predecessor.is_some() || Some(root) == empty {
+            continue;
+        }
+        let mut at = Some(root);
+        while let Some(index) = at {
+            if seen[index] {
+                return Ok(None);
+            }
+            seen[index] = true;
+            push(&mut order, index)?;
+            at = cases[index].next;
+        }
+    }
+    // A direct dispatch to the external follow must not accidentally enter the
+    // next case body. Its empty group is therefore last, including its copies.
+    if let Some(empty) = empty {
+        seen[empty] = true;
+        push(&mut order, empty)?;
+    }
+    if seen.iter().any(|&seen| !seen) {
         return Ok(None);
     }
-    Ok(Some(parts))
+    Ok(Some(order))
 }
 
 fn normal_arm_acyclic(f: &RegionFacts, g: &Graph, arm: &[bool]) -> Result<bool, RegionError> {

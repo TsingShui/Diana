@@ -233,16 +233,36 @@ impl<'f, 'a> Context<'f, 'a> {
             }
         }
     }
-    pub fn literal(
+    pub fn definition_literal(
         &mut self,
+        operation: OpId,
         value: u64,
         width: crate::SlotWidth,
     ) -> Result<ExprId, ExpressionError> {
+        let family = self
+            .planned
+            .storage_facts()
+            .operation_definitions(operation)
+            .and_then(|definitions| match definitions {
+                [definition] => match definition.materialization() {
+                    crate::p5::Materialization::Store(local) => {
+                        match self.planned.storage_facts().locals()[local.0 as usize].storage_type()
+                        {
+                            crate::p5::StorageType::Family { family, .. } => Some(family),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                },
+                _ => None,
+            });
         let bits = Bits { value, width };
         self.expression(
             ExprKind::Literal {
                 bits,
-                view: Interpretation::LiteralBits(bits),
+                view: family.map_or(Interpretation::LiteralBits(bits), |family| {
+                    Interpretation::Literal { bits, family }
+                }),
             },
             None,
         )

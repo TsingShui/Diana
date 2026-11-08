@@ -80,13 +80,32 @@ no member conflicts with the other group. No output validation or symbolic
 execution runs as part of this admission.
 
 Candidates require equal storage representation and identical delivered declared
-type sources/unknown-source flags. Parameters, snapshots, allocation identities,
+type sources/unknown-source flags, apart from the numeric-constant case below.
+Parameters, snapshots, allocation identities,
 uncertain reference initialization, dependency gaps and locals touched by
 before-throw/handler-receive plans stay independent. An unavailable operation
 input layout supplies no complete read set, so the method retains its existing
 independent storage selection. Other declined candidates do not suppress code.
 Allocation and constructor publication reuse requires its actual materialization
 positions and is not inferred from the raw allocation commit.
+
+An original numeric `Const` feeding normal Phi copies can propose a materialized
+local at its original definition/commit position. Every delivered use and incoming
+view must agree on one numeric family or preserve its exact bits; reference,
+mixed-interpretation, unavailable and unknown-type sources decline the proposal.
+An undeclared constant can share canonical primitive storage whose type sources
+name that family exactly; it does not import a reference or narrow declaration.
+P4 value/type facts remain unchanged. Ordinary literal reads stay folded; only
+normal copy sources use the proposed storage.
+
+Temporary constant candidates participate in the same liveness/interference pass.
+A candidate not merged into original storage returns to literal materialization;
+its temporary local never enters the published product. A retained candidate
+keeps its original constant operation and commit. Copies sharing its representative
+become identity copies; other requirements remain on their original transfers.
+This materializes an existing definition, not a hoisted
+selected-edge assignment or an invented default. P7 consumes its delivered storage
+family when spelling that definition.
 
 Each Local retains its original id/kind and publishes its selected representative
 and whether that representative has several value bindings. Bindings, definitions,

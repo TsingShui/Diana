@@ -12,19 +12,19 @@ impl Expressions<'_, '_> {
         id: ControlId,
         header: ControlId,
         bodies: &[ControlId],
-        private_cases: bool,
+        cases: Option<&[Vec<TransferId>]>,
         terminal: crate::p2::BlockId,
     ) -> Result<(), RenderError> {
         push(work, Event::Close)?;
-        if private_cases {
-            let TerminalKind::Switch { arms, .. } =
-                &self.code.terminals()[terminal.0 as usize].kind
-            else {
-                return Err(RenderError::Invariant("switch lost its arms"));
-            };
-            for (&body, &arm) in bodies.iter().zip(arms).rev() {
+        if let Some(cases) = cases {
+            if bodies.len() != cases.len() {
+                return Err(RenderError::Invariant("switch lost its case-group bodies"));
+            }
+            for (&body, group) in bodies.iter().zip(cases).rev() {
                 push(work, Event::Control(body))?;
-                push(work, Event::Case(arm))?;
+                for &arm in group.iter().rev() {
+                    push(work, Event::Case(arm))?;
+                }
             }
         } else {
             for &body in bodies.iter().rev() {
@@ -71,10 +71,7 @@ impl Expressions<'_, '_> {
         self.out.open()?;
         if !matches!(
             self.code.emission().controls()[id.0 as usize].layout,
-            EmissionLayout::Switch {
-                private_cases: true,
-                ..
-            }
+            EmissionLayout::Switch { cases: Some(_), .. }
         ) {
             self.switch_arms(arms)?;
         }
@@ -93,9 +90,13 @@ impl Expressions<'_, '_> {
                 return Err(RenderError::Invariant("switch arm lost its original role"));
             }
         }
-        if !self.code.emission().transfers()[arm.0 as usize]
+        if self.code.emission().transfers()[arm.0 as usize]
             .copies
-            .is_empty()
+            .iter()
+            .any(|id| {
+                let bundle = &self.code.copies()[id.0 as usize];
+                !bundle.steps.is_empty() || bundle.assignments.iter().any(|a| a.issue().is_some())
+            })
         {
             self.out.put(" ")?;
         }

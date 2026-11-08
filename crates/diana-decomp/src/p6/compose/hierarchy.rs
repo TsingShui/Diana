@@ -106,9 +106,9 @@ pub(super) fn construct(
                     if let Some(parts) =
                         super::switch::private_switch_parts(storage, f, g, &candidate, &boundary)?
                     {
-                        candidate.parts = parts;
-                        if let RegionKind::Switch { private_cases, .. } = &mut candidate.kind {
-                            *private_cases = true;
+                        candidate.parts = parts.parts;
+                        if let RegionKind::Switch { cases, .. } = &mut candidate.kind {
+                            *cases = Some(parts.cases);
                         }
                     }
                     let completion =

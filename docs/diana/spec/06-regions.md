@@ -131,6 +131,10 @@ without visiting F; the candidate owns only `{predicate} union A` and follows F.
 The arm targeting F is empty, with no entry and follow F. The other arm enters S
 and follows F. Header/true/false child positions and original link identities do
 not change. P6 MUST retain the selected edge's copies even for an empty arm.
+An arm empty because its original target is an enclosing completion boundary
+keeps that actual target as its own follow. P6 MUST NOT replace it with the
+containing If's different follow; the selected enclosing scope can then deliver
+its original break/continue, or retain an explicit goto.
 
 Before committing a successor-boundary candidate, P6 MUST establish:
 
@@ -397,26 +401,37 @@ classified RegionStop behavior.
 
 Original switch case keys, default, roles and duplicate-target edges remain distinct.
 A switch with no concrete postdominator can use one unique first shared actual
-normal target as its external continuation. Reach counts identify sharing of
-original targets, not equality of returned values. Multiple first shared targets
+normal target as its external continuation. Reach counts start at distinct case
+targets: duplicate selector edges do not manufacture an external follow.
+They identify sharing of original targets, not equality of returned values. Multiple first shared targets
 remain unresolved and explicit.
 
-Before child construction, P6 can give a switch one private child per original
-arm instead of one multi-entry body. `private_cases` identifies this child layout:
-selector first, then bodies in original arm order. Admission requires distinct
-arm targets, disjoint normal reach sets inside the common completion boundary,
-only the selector's original normal entrances, no executable exceptional arrivals,
-whole construction groups/scopes and complete body coverage. Each arm has no
-normal cycle and completes by original return/throw or an established outlet.
-A default targeting the follow has an empty child, not missing selected-edge
-copies. Shared follow work has one external owner. Normal completion of a case
-body becomes Break only against the selected Switch; successful abrupt terminals
-retain their identities. No shared tail is duplicated or arm disjointness relaxed.
+Before child construction, P6 can group original selector links by their exact
+entry and give each group one private child instead of one multi-entry body.
+`RegionKind::Switch::cases` records those groups in selected lexical order;
+`None` retains the explicit shared-body layout. Original keys, default roles,
+link identities and selector order remain in the original arm list.
 
-A rejected private-case composition retains the existing single body, including
-its local graph with multiple case entrances and fallthrough. Duplicate-target
-arms retain that layout. The selector has one execution owner; recovery does not
-introduce a state variable, generated dispatcher or repeated selector evaluation.
+Normal membership stops at other distinct case entries and the established
+completion boundary. Bodies are disjoint, cover the original body exactly, have
+no normal cycle or executable exceptional entrance, and retain whole construction
+groups/scopes. Normal entrances come only from selection or another case body
+at that body's entry. A body can have at most one other case-entry outlet, and
+that entry can have at most one fallthrough predecessor. These chains determine
+adjacent lexical placement; cyclic or conflicting chains remain explicit.
+
+A shared-label header or a header reached by fallthrough requires complete,
+zero-step selector copies already established by P5. Otherwise its entry-only
+assignment would also run on fallthrough, so P6 declines the layout instead of
+moving or hiding that copy. Other selected copies remain on their original edge.
+A direct target of the external follow has an empty final child, retaining its
+selected copies and switch completion. Shared follow work has one external owner.
+
+Adjacent case completion can become Next only for the exact supplied next entry.
+Normal completion to the external follow becomes Break only against the selected
+Switch; original Return/Throw and enclosing exits retain their identities. A
+rejected composition keeps the original single body and explicit graph. No tail
+is duplicated, selector repeated, storage invented or dispatcher generated.
 
 `Continuation` records whether a completed region finishes its source parent,
 reaches a confirmed next position, or needs an explicit goto/break/continue.

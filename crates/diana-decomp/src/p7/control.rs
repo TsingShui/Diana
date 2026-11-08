@@ -225,7 +225,7 @@ pub enum ControlKind {
     Switch {
         terminal: crate::p2::BlockId,
         arms: Vec<TransferId>,
-        private_cases: bool,
+        cases: Option<Vec<Vec<TransferId>>>,
     },
     LabelledBlock {
         target: LabelId,

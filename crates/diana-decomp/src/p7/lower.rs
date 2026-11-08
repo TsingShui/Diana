@@ -208,7 +208,7 @@ pub(super) fn semantic(
         }
         OpKind::Const { bits, width } => {
             return Ok(StatementKind::Evaluate {
-                expression: c.literal(*bits, *width)?,
+                expression: c.definition_literal(at, *bits, *width)?,
             });
         }
         OpKind::ConstString { .. } => ExprKind::String(c.first_reference(at)?),

@@ -237,7 +237,7 @@ pub enum EmissionLayout {
     Switch {
         header: ControlId,
         bodies: Vec<ControlId>,
-        private_cases: bool,
+        cases: Option<Vec<Vec<TransferId>>>,
         terminal: BlockId,
     },
     Labelled,

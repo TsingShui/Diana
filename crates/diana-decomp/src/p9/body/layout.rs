@@ -130,10 +130,10 @@ impl Expressions<'_, '_> {
             EmissionLayout::Switch {
                 header,
                 bodies,
-                private_cases,
+                cases,
                 terminal,
             } => {
-                self.switch_layout(work, id, *header, bodies, *private_cases, *terminal)?;
+                self.switch_layout(work, id, *header, bodies, cases.as_deref(), *terminal)?;
             }
             EmissionLayout::Try {
                 body,

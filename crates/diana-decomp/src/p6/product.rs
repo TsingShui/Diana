@@ -501,7 +501,9 @@ pub enum RegionKind {
     Loop(LoopId),
     Switch {
         arms: Vec<LinkId>,
-        private_cases: bool,
+        /// One child per group, in lexical fallthrough order. Every original
+        /// selector link occurs once; None retains the explicit shared body.
+        cases: Option<Vec<Vec<LinkId>>>,
     },
     LabelledBlock {
         target: NodeId,
@@ -515,7 +517,8 @@ pub enum RegionKind {
     },
 }
 /// Children are positional: If=(header,true,false), Loop=(body),
-/// Switch=(header,body), Try=(body,handlers...), Sync=(enter,body,cleanup...).
+/// Switch=(header,body) or (header,case-groups...), Try=(body,handlers...),
+/// Sync=(enter,body,cleanup...).
 /// A display alternative over selected If regions. The source tree stays intact.
 #[derive(Debug, serde::Serialize)]
 pub struct DecisionPlan {

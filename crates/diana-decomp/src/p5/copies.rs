@@ -177,7 +177,10 @@ fn identity(f: &StorageFacts, copy: &CopyAssignment) -> bool {
         return false;
     }
     match (view, f.locals[destination.0 as usize].storage_type) {
-        (Interpretation::Direct(a), StorageType::Family { family: b, .. }) => a == b,
+        (
+            Interpretation::Direct(a) | Interpretation::Literal { family: a, .. },
+            StorageType::Family { family: b, .. },
+        ) => a == b,
         (
             Interpretation::CopyBits(a),
             StorageType::Family { width: b, .. } | StorageType::NumericBits { width: b, .. },

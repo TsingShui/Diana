@@ -331,11 +331,13 @@ Graph kinds, child ownership and original continuation evidence. Labels have fix
 method-local display names. Block completion distinguishes ordinary terminals from
 syntax-owned predicates/exits; retained evidence is not a second emission.
 All original switch roles, duplicate-target links and selected-edge copies survive.
-P7 consumes P6's `private_cases` child layout without finding regions again. Its
-switch emission lists the supplied bodies in arm order. Each original arm prints
-its case/default label and selected-edge copies before its unique body, without
-a dispatch goto. An empty default body still executes its original selected-edge
-copies and the delivered switch completion. Case-body normal completion can be a
+P7 consumes P6's optional case groups without finding regions again. Its switch
+emission lists the supplied bodies in lexical fallthrough order. Each group
+prints its original case/default labels once, then its single body, without a
+dispatch goto. P6 has established zero-step selector copies for shared labels and
+fallthrough entries; P7 does not repeat that control or storage analysis. An empty
+default body still executes its original selected-edge copies and delivered
+switch completion. Case-body normal completion can be a
 selected Break; a successful original Return/Throw bypasses it. P7 lowers P6's
 scope completion without discovering another target, and chooses an unlabelled
 break/continue only for the supplied innermost selected scope. The selector

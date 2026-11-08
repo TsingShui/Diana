@@ -130,6 +130,7 @@ failed deterministic check; repair acceptance still follows
 | `branch-switch-enum` | switch over an enum with a `default` arm |
 | `branch-switch-packed` | packed switch: fallthrough, grouped cases, negative and default arms |
 | `branch-switch-sparse` | sparse switch: non-contiguous and large case values |
+| `switch-fallthrough` | Java/Smali cases for grouped entries, linear fallthrough, selected-entry copies and boundary guards |
 
 ### Loops
 

@@ -84,8 +84,11 @@ The [P4 chapter](../../docs/diana/spec/04-types.md) records its algorithm and gu
 P5 privately retains P4 in `StorageMethod`; P6 privately retains that product in
 `PlannedMethod`. P7 consumes this mature plan in the same method task.
 It initially maps each SSA value to a parameter, independent local, exact literal
-or explicit reference carrier, preserving P4 numeric bit storage without choosing
-a new family. Before copy scheduling, compatible Move/normal-copy locals can
+or explicit reference carrier, preserving P4 nonliteral numeric bit storage.
+Numeric constants with consistent delivered views can materialize at their
+original definitions when normal-copy liveness permits sharing canonical primitive
+storage; independent or mixed-view constants keep their literal form. No P4 type
+fact or original execution position changes. Before copy scheduling, compatible Move/normal-copy locals can
 share storage when exception-aware liveness establishes no interference. Original
 value/state identities and Local representative mappings remain inspectable;
 parameters, snapshots and construction-related carriers remain independent.
@@ -105,7 +108,10 @@ and explicit Graph regions through the same method chain. Synchronized plans
 separate held execution from individual release outlets and retain cleanup control,
 handler receives and before/after-release P5 obligations. Normal LT dominators,
 finite-exit postdominator candidates and iterative SCC analysis drive composition.
-Labels and selected edge copies remain concrete. Ordered throw-site chains,
+Labels and selected edge copies remain concrete. Original switch links can share
+one case body, with private bodies ordered into linear fallthrough chains. Entry
+copies that still require selected-only execution and conflicting shared tails
+retain explicit layout. Ordered throw-site chains,
 original captures, P5 construction ownership and explicit monitor separation reasons
 survive failed natural composition. The [P6 chapter](../../docs/diana/spec/06-regions.md)
 defines the boundary and scope rules. A single unlocked catch-all cleanup can
@@ -178,9 +184,10 @@ Integration checks live in `tests/` and consume prepared inputs from
 [nested private loop exits](../../quality/fixtures/loops/nested-loop-exits/README.md).
 Four [resource-cleanup checks](../../quality/fixtures/exceptions/resource-cleanup/README.md)
 cover loop-private handlers, nested protection, propagation-only sites and shared
-handler separation. These checks cover
-ownership, transfer spelling and source anchors, not independent execution of the
-final plan.
+handler separation. Nine [switch checks](../../quality/fixtures/branches/switch-fallthrough/README.md)
+cover grouped entries, fallthrough, original constant placement, conditional
+breaks, wide values and explicit-layout guards. These checks cover ownership,
+transfer spelling and source anchors, not independent execution of the final plan.
 The retained independent verifier code is not enabled on ordinary requests. Real-input corpus runs have not encountered custom/polymorphic
 invokes or method-handle/type constants.
 
