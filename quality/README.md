@@ -114,6 +114,12 @@ Commands are only re-verified with the ordinary equivalence checks (`get-class`,
 | `algo-sort` | insertion, quick and merge sort |
 | `algo-graph` | BFS, DFS and connected components on an adjacency matrix |
 | `algo-dp` | edit distance, longest increasing subsequence, knapsack |
+| `algo-tree` | binary search tree: recursive insert/height/inOrder, iterative contains |
+| `algo-string` | KMP prefix/search, word frequency over `HashMap`, reversal |
+| `complex-generics` | generic class, bounded generic method, bridge method, generic call |
+| `complex-lambda` | lambdas, capturing lambda, anonymous supplier, method reference, comparator |
+| `complex-iteration` | iterator loops, enhanced `for`, `Map.Entry`, `iterator.remove()` |
+| `complex-switch-nested` | `switch` inside a loop inside `try`, labelled `break`/`continue` |
 | `kotlin-null-safety` | `?.`, `?:`, `!!`, safe-call chain, `@Metadata` (Kotlin source; review only, no Java reference to score against) |
 
 ## Reviews
@@ -150,8 +156,14 @@ Commands are only re-verified with the ordinary equivalence checks (`get-class`,
 | `complex-exceptions` | 30% / 63% | correct except the TWR-in-loop handler placement; constructors print as `new X;` + `x.<init>(…)` |
 | `algo-dp` | 29% / 37% | all three recurrences correct; 2D arrays go through `Array.newInstance` with uncast reads |
 | `complex-flow` | 23% / 70% | behaviour correct; ternary, enum cases and loop exits are all expanded into temporaries, empty `if`s and gotos |
+| `complex-generics` | 72% / 58% | `repeat` recovers `<T> List<T>`, `largest` only keeps `@Signature`; annotations enter the body |
+| `complex-iteration` | 66% / 59% | enhanced `for` and `Map.Entry` become `Iterator` + `Object` + cast |
+| `complex-lambda` | 64% / 57% | captures correct; lambda body name and `$r8$lambda$…` leak into the class body |
+| `algo-string` | 38% / 62% | KMP and counting correct; `new StringBuilder` split into `new` + `.<init>` |
+| `algo-tree` | 34% / 60% | recursion correct; every field read goes through a temporary, generics dropped |
+| `complex-switch-nested` | 17% / 38% | labelled `break`/`continue` collapse into gotos; every operation carries an `[after_operands_before_effect]` snapshot |
 
-Corpus totals (round 1): **structure 69%, naming 62%** over 108 methods. The
+Corpus totals (round 1): **structure 66%, naming 61%** over 131 methods. The
 `complex-*` and `algo-*` fixtures are the lowest scorers: real code multiplies the
 temporary variables, `while (test { … })` loops and goto-based exits that the
 single-structure fixtures isolate. The second
