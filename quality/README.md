@@ -170,12 +170,12 @@ Kotlin fixtures are **never scored**; their review is the record (see below).
 | `loop-for` | 62% / 38% | no `for`; `break`/`continue` are labels and gotos |
 | `loop-for-multi` | 64% / 26% | multi-init/update and empty segments all become independent assignments |
 | `loop-map-views` | 64% / 69% | map views and custom `Iterable` become `Iterator` + `Object` + cast |
-| `loop-do-while-sideeffect` | 63% / 54% | side-effecting conditions move into `test { … }`; `do-while` still has no `do` |
+| `loop-do-while-sideeffect` | 61% / 54% | side-effecting conditions print in the loop body with an inverted `break`; `do-while` still has no `do` |
 | `loop-shared-exit` | 47% / 30% | `&& !found` moves into the body; `break outer` needs goto inspection |
 | `complex-indy-lambda` | 32% / 68% | method references stay as `LambdaMetafactory` `call_site` metadata |
 | `complex-indy-concat` | 28% / 60% | one `a + b + c` becomes two lines of `call_site` metadata plus `invoke<Custom>` |
 | `loop-do-while` | 54% / 34% | `do-while` recovered; `v1 = (v1 + 1)` against `index++` dominates the diff |
-| `loop-tail-shapes` | 76% / 58% | tail tests correct both ways; remaining `while (test { … })` and `nop` |
+| `loop-tail-shapes` | 82% / 58% | tail tests correct both ways; remaining `nop` and goto-based exits |
 | `branch-switch-string` | 18% / 71% | two-level hash/equals switch plus `graph<MultipleEntry>` |
 | `branch-switch-enum` | 42% / 25% | `ordinal()` switch correct, temporaries and `default` order differ |
 | `sync-block` | 42% / 83% | `synchronized` kept, but every block carries `catch (all)`, `release`, `goto` |
@@ -234,11 +234,11 @@ A fixture may pin its own `javac.args` / `d8.args` (`complex-indy-*` need
 `--release 11 -XDstringConcat=indy` and `--no-desugaring --min-api 28` to keep
 `invoke-custom` in the DEX); the default stays `--release 8 -g` and `--min-api 24`.
 
-Corpus totals (round 1): **structure 61%, naming 60%** over 228 methods (the
+Corpus totals (round 2): **structure 62%, naming 60%** over 228 methods (the
 obfuscated fixtures contribute structure only; Kotlin fixtures are unreviewed by
 the score). The
 `complex-*` and `algo-*` fixtures are the lowest scorers: real code multiplies the
-temporary variables, `while (test { … })` loops and goto-based exits that the
+temporary variables, `while (true)` loops with an inverted exit and goto-based exits that the
 single-structure fixtures isolate. The second
 batch (loops, switches, exceptions, synchronization) is exactly where the recovery
 is weakest: string switch 18%, two-resource TWR 8%, synchronized 42%.

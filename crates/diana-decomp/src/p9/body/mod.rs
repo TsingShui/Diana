@@ -266,7 +266,11 @@ impl Expressions<'_, '_> {
                                         push(&mut work, Event::Close)?;
                                         push(&mut work, Event::Control(*body))?;
                                     } else {
-                                        self.out.put("while (test")?;
+                                        // The predicate keeps its own statements, so
+                                        // the loop states them where they run and
+                                        // leaves through the original condition
+                                        // instead of an unprintable test block.
+                                        self.out.put("while (true)")?;
                                         self.out.open()?;
                                         push(&mut work, Event::Close)?;
                                         push(&mut work, Event::Control(*body))?;
@@ -636,14 +640,19 @@ impl Expressions<'_, '_> {
                     }
                 }
                 Event::LoopHead(test) => {
+                    // `while (cond) body` keeps the predicate's statements in the
+                    // loop and tests them again after each iteration: the body
+                    // runs only when the original condition holds.
                     self.out.indent()?;
-                    self.out.put("yield ")?;
-                    self.predicate(test)?;
-                    self.out.put(";\n")?;
-                    self.out.close()?;
-                    self.out.indent()?;
+                    self.out.put("if (")?;
+                    self.predicate(PredicateEmission {
+                        negate: !test.negate,
+                        ..test
+                    })?;
                     self.out.put(")")?;
                     self.out.open()?;
+                    self.out.line("break;")?;
+                    self.out.close()?;
                 }
                 Event::CompactLoopTail(predicate, test) => {
                     self.out.close()?;
