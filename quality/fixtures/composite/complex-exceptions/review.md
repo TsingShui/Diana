@@ -1,53 +1,92 @@
 # Fixture: complex-exceptions
 
-nested try with finally, caught rethrow with cause, TWR in a loop, multi-catch. The Java source is the reference; the DEX is generated from it with
-`javac --release 8 -g` + `d8 --min-api 24` (see `quality/build.sh`) and committed
-so a review needs no toolchain.
+Nested finally, caught rethrow with a cause, resources inside a loop and
+multi-catch. `ComplexExceptions.java` is the authored reference; the committed
+DEX was prepared with `javac --release 8 -g` and `d8 --min-api 24` through
+`quality/build.sh`.
 
-- Provenance: authored for this repository. No third-party code or data.
-- Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
-- Round-1 numbers from `python3 quality/score.py --slug complex-exceptions`:
-  structure 30%, naming 63%.
+- Provenance: authored for this repository; no third-party code or data.
+- Regenerate from the sources; never edit the DEX by hand.
 
-## Current verdict — round 2
+## Current verdict — round 3
 
-当前普通 Engine 输出已恢复循环内资源清理的保护层级。下表数值为 R1；本轮未重跑 score。
+The resource method and its helper were compared directly with the current
+ordinary Engine output at `650dade`:
+
+```sh
+cargo run -p diana-decomp --example dbg_shell --locked -- \
+  --dex quality/fixtures/composite/complex-exceptions/classes.dex \
+  --exec '{"cmd":"p9-all","text_only":true}'
+```
 
 ### Semantics
 
-The verdict is written by reading the reference next to the output. `score.py`
-never substitutes for it.
+These are manual source/output reading judgments, not automated execution results.
+R3 focuses on `Lfixture/ComplexExceptions;->resources(I)I`; the other entries
+retain their previous manual judgments.
 
-| method | semantics |
+| Method | Semantics |
 |---|---|
-| `parseOrThrow` | ✔ 语义正确，但构造器调用印成 `new IllegalArgumentException;` + `e.<init>(msg, cause)` |
-| `nestedFinally` | ✔ 内层 finally 在正常/异常两条路径都执行，外层 finally 同样，catch 返回 -1 |
-| `resources` | ? 资源读取及其清理 handler 已同属循环内 try/catch；独立行为场景尚未执行 |
-| `multiAndInstance` | ✔ `instanceof`/cast/两个 catch 与 return -2/-3 正确；`via` 与悬空 cast 语句是记号问题 |
+| `parseOrThrow` | Previously judged equivalent: parsing, the bad-input log and the rethrow cause agree. Construction remains explicitly split. |
+| `nestedFinally` | Previously judged equivalent: inner and outer cleanup execute on their applicable normal/exceptional paths; the arithmetic catch returns -1. |
+| `resources` | Equivalent by direct manual path comparison: acquisition, read/update, close, increment and exceptional cleanup agree. |
+| `multiAndInstance` | Previously judged equivalent: the Number branch and the -2/-3 catch results agree. Explicit cast/owner notation remains. |
 
-### Score
+### Resource path comparison
 
-| method | structure | naming |
+| Path | Reference and recovered behavior |
+|---|---|
+| `count <= 0` | Return 0 without constructing or closing a resource. |
+| Successful iteration | Construct `Res(index)`, call `read()`, update total, close that resource, then increment index. |
+| Normal result | Reads contribute `2 * index` with the same integer arithmetic. `resources(3)` yields 6. |
+| Construction fails | Propagate without closing that unacquired resource or starting another iteration. Earlier iterations have already closed their resources. |
+| Read fails with E | Capture E, attempt close, then rethrow E; no total update, increment or later iteration occurs. |
+| Read fails with E and close fails with C | Call `E.addSuppressed(C)` and rethrow E, assuming distinct identities and a normally returning `addSuppressed`. |
+| Normal close fails | Propagate the close failure; do not enter the read-failure catch, retry close or increment index. |
+
+The recovered while loop has the same entry test and update position as the
+source for loop. Normal close is outside the read-protection try; exceptional
+close and suppression remain inside its catch. The helper still tests `closed`
+and returns `id * 2`; close still sets the same field.
+
+The fixture's concrete close only writes its flag, and a newly constructed
+resource is read before close. The throwing cases above describe a manual
+comparison of exception routing, not injected faults exercised by this input.
+Automated behavioral execution has not been performed.
+
+### Readability
+
+- Resource handlers are now inside the loop body, including the nested
+  close/suppression catch. This method needs no detached handler or explicit
+  exception chain.
+- `nestedFinally` has a natural inner try, but the outer mixed catch/finally
+  protocol still requires following explicit exception chains.
+- Split construction, `via` disclosure, explicit runtime casts and field-load
+  temporaries remain elsewhere in the class. They are not evidence of an
+  execution mismatch by themselves.
+
+### Ranked fixes
+
+Make the remaining outer finally protocol easier to follow. Improve expression
+and construction spelling only when original evaluation and check order remain
+visible.
+
+### Historical score
+
+R1 only; not rerun in R2 or R3. Aggregate structure 30%, naming 63%.
+
+| Method | Structure | Naming |
 |---|---|---|
 | `parseOrThrow` | 43% | 82% |
 | `nestedFinally` | 11% | 57% |
 | `resources` | 46% | 29% |
 | `multiAndInstance` | 20% | 86% |
 
-### Findings
-
-- `resources` 的私有 handler 现在属于循环词法体，包含 close/suppression 的内层 try/catch；正常 close 在读取保护之外，正文不再依赖游离 handler 或显式异常链
-- `nestedFinally` 的内层保护已恢复，外层混合 catch/finally 仍使用显式异常链
-- 构造器调用被拆成 `new X;` + `x.<init>(…)`，正文里出现 `IllegalArgumentException illegalArgumentException = new IllegalArgumentException;`
-- `(v3 via Number)` 与 `((Number) v3) [exn c0];` 这类记号进入正文
-- `log.add` 前的 `List log = this.log` 每次重新取字段
-
-### Ranked fixes
-
-执行资源关闭/异常顺序的独立场景；继续核对混合 finally 结构；保留构造与运行时 cast 的原始顺序
-
 ## Rounds
 
-- R2: `resources` 恢复循环内嵌套 try/catch；旧 ✘ 的结构障碍已消除，行为验证仍为 ?，未重测结构分。
-
-- R1 2026-11-08: structure 30%, naming 63%; `resources` 与 `exception-two-resources` 是同一个缺陷：handler 打在保护范围外
+- R3: Direct manual reading finds resource behavior consistent with the source;
+  automated behavioral execution remains separate and unrun.
+- R2: Resource cleanup moved into nested try/catch inside the loop; the manual
+  semantic judgment was left pending.
+- R1, 2026-11-08: Structure 30%, naming 63%. Detached resource handlers obstructed
+  reading; this was not an independently established behavioral mismatch.

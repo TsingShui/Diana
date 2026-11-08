@@ -1,53 +1,92 @@
 # Fixture: obf-exceptions-proguard
 
-ProGuard-obfuscated nested try/finally, TWR in a loop and multi-catch. Built from the same Java reference as its source fixture with an
-obfuscator, so the decompiled bodies can be compared against a known-good
-reference.
+ProGuard-obfuscated nested finally, resource cleanup inside a loop and
+multi-catch. The Java reference is authored for this repository; no third-party
+program or data is used.
 
-- Provenance: authored for this repository. No third-party code or data; the
-  obfuscated DEX is generated from our own source.
-- Toolchain: R8, or ProGuard when the rules file starts with `# obfuscator:
-  proguard`; `-dontshrink -dontoptimize` unless the rules say otherwise.
-  `quality/build.sh` runs whichever tool the fixture's own rules file names.
-- `mapping.txt` records the renaming. `score.py` pairs methods through it,
-  matching name and parameter types, so the score stays comparable with the
-  source fixture even when the obfuscator reuses one short name for overloads.
-- Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
+- `rules.pro` selects the local obfuscator used by `quality/build.sh`.
+- `mapping.txt` pairs original names and full signatures with the obfuscated
+  declarations. Overloaded short names alone do not identify a method.
+- Regenerate from the sources; never edit the DEX by hand.
 
-## Current verdict — round 2
+## Current verdict — round 3
 
-当前普通 Engine 输出已恢复循环内资源清理的保护层级。下表分数保留 R1；本轮未重跑 score。
+The Java resource method and helper were compared directly with current ordinary
+Engine output at `650dade`, using the mapping only for this written review:
+
+```sh
+cargo run -p diana-decomp --example dbg_shell --locked -- \
+  --dex quality/fixtures/obfuscated/obf-exceptions-proguard/classes.dex \
+  --exec '{"cmd":"p9-all","text_only":true}'
+```
 
 ### Semantics
 
-| method | semantics |
-|---|---|
-| `parseOrThrow` | ✔ 构造器与 cause 正确（`new X;` + `x.<init>` 的记法问题依旧） |
-| `nestedFinally` | ✔ 内层/外层 finally 两条路径都执行 |
-| `resources` | ? 混淆后的资源循环同样恢复嵌套 try/catch；独立行为场景尚未执行 |
-| `multiAndInstance` | ✔ 两个 catch 的返回与 multi 分支正确 |
+These are manual source/output reading judgments, not automated execution results.
+R3 focuses on the mapped resource method; other entries retain their previous
+manual judgments.
 
-### Score (structure only: naming is destroyed by the obfuscator)
+| Reference method | DEX identity | Semantics |
+|---|---|---|
+| `parseOrThrow` | `La/a;->a(Ljava/lang/String;)I` | Previously judged equivalent: parsing, logging and the rethrow cause agree. |
+| `nestedFinally` | `La/a;->a(I)I` | Previously judged equivalent: inner and outer cleanup retain their normal/exceptional paths. |
+| `resources` | `La/a;->b(I)I` | Equivalent by direct manual path comparison: loop order, one close per successful iteration, primary exception and suppression agree. |
+| `multiAndInstance` | `La/a;->a(Ljava/lang/Object;)I` | Previously judged equivalent: the Number branch and catch results agree. |
 
-| method | structure |
+### Resource path comparison
+
+The mapping identifies the resource as `a.b`, `read()` as `a()` and `close()` as
+`close()`. The recovered `b(I)I` performs:
+
+1. Initialize total and index to zero; test `index < count` before acquisition.
+2. Construct `a.b(index)` and call its `a()` method.
+3. Add the read result, close the resource, then increment index.
+4. On a read failure E, attempt close and rethrow E; if close fails with C,
+   call `E.addSuppressed(C)` first, assuming distinct identities and a normally
+   returning `addSuppressed`.
+5. Propagate a normal-close failure without closing again or advancing the loop.
+
+This matches the unobfuscated Java resource loop, including no acquisition for
+nonpositive count and the expected result 6 for count 3. The helper's renamed
+fields still store the id and closed flag; its read computes twice the id and
+its close writes the flag.
+
+The concrete close does not deliberately throw, and the freshly acquired object
+is read before close. Failure paths above were compared by reading their control
+and catch structure, not by executing injected faults. Automated behavioral
+execution has not been performed.
+
+### Readability and identities
+
+The cleanup handler and its close/suppression catch now belong to the loop body,
+without a detached handler or explicit exception chain in the resource method.
+The same recovery works for the original and obfuscated member identities.
+
+ProGuard flattened the nested classes to `a.a` and `a.b` and removed
+`@MemberClasses`. Missing input attributes cannot be reconstructed from a name.
+The three `a` overloads still require their full parameter signatures for review.
+
+### Ranked fixes
+
+Improve local readability without replacing original obfuscated member identities
+or inventing missing class metadata.
+
+### Historical score
+
+R1 structure only; naming was destroyed by the obfuscator. Not rerun in R2 or R3.
+
+| Method | Structure |
 |---|---|
 | `parseOrThrow` | 43% |
 | `nestedFinally` | 17% |
 | `resources` | 45% |
 | `multiAndInstance` | 21% |
 
-### Findings
-
-- ProGuard 把 `ComplexExceptions` 命名为 `a.a`、`Res` 命名为 `a.b`（**嵌套类拍平**），`@MemberClasses` 丢失
-- 同名重载严重：`parseOrThrow`/`nestedFinally`/`multiAndInstance` 全部叫 `a`，靠参数类型区分——`score.py` 必须用 mapping 里的签名配对，否则配错
-- TWR-in-loop 的读取及私有清理 handler 已同属循环体，关闭失败的 suppression 保留在内层 catch；恢复不依赖原类名或成员名
-
-### Ranked fixes
-
-执行关闭与 suppressed 顺序的独立场景；输入已丢失的嵌套类属性不能凭名字补造
-
 ## Rounds
 
-- R2: 混淆版本的资源循环与未混淆版本同时恢复保护层级；行为验证保留 ?，未重测结构分。
-
-- R1 2026-11-08: structure 31% (no naming score); ProGuard 把 `ComplexExceptions` 命名为 `a.a`、`Res` 命名为 `a.b`（**嵌套类拍平**），`@MemberClasses` 丢失
+- R3: Direct source/output reading, paired by original signature, finds resource
+  behavior consistent. This is a manual judgment, not an executed behavioral test.
+- R2: The obfuscated resource loop recovered nested protection alongside the
+  original fixture; its manual semantic judgment was left pending.
+- R1, 2026-11-08: Structure 31%; class flattening, removed member-class metadata
+  and overloaded short names complicated review.

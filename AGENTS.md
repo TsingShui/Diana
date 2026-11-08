@@ -107,6 +107,9 @@ chapters describe the existing implementation until migrated to this target.
   file verification, corpus handling and reference isolation, read
   [CONTRIBUTING](docs/diana/CONTRIBUTING.md) for the relevant work. Read
   [WRITING](docs/diana/WRITING.md) before editing Diana documentation.
+- All repository documentation MUST be written exclusively in English, including
+  READMEs, specifications, fixture reviews and AGENTS.md files. Contributors MUST
+  NOT write documentation in Chinese or any other non-English language.
 - For development verification of the engine, use the `dbg_shell` Cargo example
   as the single inspection entry:
   `cargo run -p diana-decomp --example dbg_shell --locked -- --dex <classes.dex> --exec '<json>'`.

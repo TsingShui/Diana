@@ -1,45 +1,83 @@
 # Fixture: exception-two-resources
 
-try-with-resources over two resources. The Java source is the reference and the expectation; the DEX is
-generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
-`quality/build.sh`) and committed so a review needs no toolchain.
+Two-resource try-with-resources. `ExceptionTwoResources.java` is the authored
+reference; `classes.dex` was prepared with `javac --release 8 -g` and
+`d8 --min-api 24` through `quality/build.sh`.
 
-- Provenance: authored for this repository. No third-party code or data.
-- Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
-- Round-1 numbers from `python3 quality/score.py --slug exception-two-resources`:
-  structure 8%, naming 33%.
+- Provenance: authored for this repository; no third-party code or data.
+- Regenerate from the sources; never edit the DEX by hand.
+- Original subject: `Lfixture/ExceptionTwoResources;->sum(I)I`.
 
-## Current verdict — round 2
+## Current verdict — round 3
 
-当前普通 Engine 输出已恢复嵌套保护层级。下表数值保留 R1 测量；本轮未重跑 score。
+The current text was compared directly with the Java reference, including both
+resource helper bodies, using the ordinary Engine implementation at `650dade`:
 
-### Per method
-
-| method | structure | naming | first divergence |
-|---|---|---|---|
-| `sum` | 8% | 33% | `insert: ref=- ours=ID ID ; ID ID` |
+```sh
+cargo run -p diana-decomp --example dbg_shell --locked -- \
+  --dex quality/fixtures/exceptions/exception-two-resources/classes.dex \
+  --exec '{"cmd":"p9-all","text_only":true}'
+```
 
 ### Semantics
 
-The semantics verdict is written by reading the reference next to the output; `?` means not yet judged. `score.py` never substitutes for it.
+This is a manual source/output reading judgment, not an automated execution result.
 
-| method | semantics |
+| Method | Semantics |
 |---|---|
-| `sum` | ? 已恢复双资源嵌套 try/catch；独立行为场景尚未执行 |
+| `sum` | Equivalent by manual path comparison: evaluation, reverse close order, primary exception and suppression order agree. |
 
-### Findings
+### Path comparison
 
-- 第二资源的创建、读取与关闭位于外层 try；读取的 catch 内保留关闭第二资源及其 suppression 的内层 try/catch
-- 第一资源的正常 close 保持在外层 try/catch 之后，失败不会重新进入同一清理路径
-- handler 不再游离于 return 之后，正文不再需要 exception_chain、`[exn cN]` 或 goto
-- 没有 `try (Res a = …; Res b = …)` 形态
+The throwable identities below are distinct, and `addSuppressed` is assumed to
+return normally for those cases.
+
+| Path | Reference and recovered behavior |
+|---|---|
+| Normal completion | Construct first, construct second, read first, read second, compute the result, close second, close first, return the saved result. `sum(5)` yields 8. |
+| First construction fails | Propagate the construction failure without closing an unacquired resource. |
+| Second construction fails | Close only first; a first-close failure is suppressed on the construction failure. |
+| A read fails with E | Attempt second close, then first close; rethrow E. The second read is skipped if the first read fails. |
+| A read fails with E and both closes fail with C2/C1 | Record `E.addSuppressed(C2)` before `E.addSuppressed(C1)`; rethrow E. |
+| Normal second close fails with C2 | Close first and propagate C2; if first close also fails with C1, suppress C1 on C2. Second is not closed again. |
+| Normal first close fails | Propagate that failure without reentering first cleanup. |
+
+The result expression is evaluated before either close, even though the printed
+return appears after cleanup. The catch capture is an explicit `move-exception`
+assignment, not another effectful helper call. If `addSuppressed` itself throws,
+that failure leaves its catch and reaches the enclosing protection, just as in
+the expanded resource protocol; the recovered text adds no retry.
+
+The concrete helper `close()` only sets `closed = true`, and neither read occurs
+after a successful close. Thus close-failure cases above are manual reasoning
+about the recovered exception protocol, not faults exercised by these helpers.
+Automated execution of these paths has not been performed.
+
+### Readability
+
+Handlers now belong to nested try/catch scopes instead of appearing after a
+method-level return. The body needs no `exception_chain`, inline exception marker
+or goto. Remaining noise is explicit capture storage, generated local names and
+expanded cleanup rather than a compact `try (resource...)` declaration.
 
 ### Ranked fixes
 
-执行独立场景核对关闭和 suppressed 顺序；再评估资源声明形态与名字恢复
+Improve local names and cleanup concision while retaining primary exception
+identity, reverse close order and suppression order.
+
+### Historical score
+
+R1 only; not rerun in R2 or R3. Token similarity is not a semantic verdict.
+
+| Method | Structure | Naming | First divergence |
+|---|---|---|---|
+| `sum` | 8% | 33% | `insert: ref=- ours=ID ID ; ID ID` |
 
 ## Rounds
 
-- R2: 双资源保护范围恢复为嵌套 try/catch；旧 ✘ 记录的是结构阅读障碍，并非已证实的执行不等价。当前行为验证保留 ?；未重测结构分。
-
-- R1 2026-11-08: structure 8%, naming 33%; 结构 7.6% —— 语料里最差：handler `H6`/`H8` 打在 `return` 之后的方法层级，`try { H10:` 出现在 `throw v7` 之后
+- R3: Direct manual path comparison finds the resource behavior consistent with
+  the source. Automated behavioral execution remains separate and unrun.
+- R2: Nested protection became readable; the semantic judgment was left pending.
+- R1, 2026-11-08: Structure 8%, naming 33%. Handlers appeared after return and a
+  cleanup try appeared after throw; the negative mark described that reading
+  obstruction, not an established execution mismatch.
