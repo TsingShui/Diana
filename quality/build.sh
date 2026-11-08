@@ -53,8 +53,19 @@ for slug_dir in "$QUALITY"/fixtures/*/; do
     java_sources=("$slug_dir"*.java)
     kotlin_sources=("$slug_dir"*.kt)
 
+    # A fixture may pin its own compiler arguments (an indy fixture needs a newer
+    # release and/or `--no-desugaring`); the default is the shared Java 8 baseline.
+    javac_args=(--release 8 -g)
+    if [ -f "$slug_dir/javac.args" ]; then
+        read -r -a javac_args < "$slug_dir/javac.args"
+    fi
+    d8_args=(--min-api 24)
+    if [ -f "$slug_dir/d8.args" ]; then
+        read -r -a d8_args < "$slug_dir/d8.args"
+    fi
+
     if [ -e "${java_sources[0]}" ]; then
-        javac --release 8 -g -d "$out/classes" "${java_sources[@]}"
+        javac "${javac_args[@]}" -d "$out/classes" "${java_sources[@]}"
     fi
     if [ -e "${kotlin_sources[0]}" ]; then
         if [ ! -x "$KOTLINC" ]; then
@@ -97,9 +108,9 @@ for slug_dir in "$QUALITY"/fixtures/*/; do
             cp "$out/mapping.txt" "$slug_dir/mapping.txt"
         fi
     elif [ -f "$KOTLIN_LIB" ]; then
-        "$D8" --min-api 24 --lib "$KOTLIN_LIB" --output "$out/dex" $class_files
+        "$D8" "${d8_args[@]}" --lib "$KOTLIN_LIB" --output "$out/dex" $class_files
     else
-        "$D8" --min-api 24 --output "$out/dex" $class_files
+        "$D8" "${d8_args[@]}" --output "$out/dex" $class_files
     fi
     cp "$out/dex/classes.dex" "$slug_dir/classes.dex"
     echo "wrote quality/fixtures/$slug/classes.dex ($(wc -c < "$slug_dir/classes.dex" | tr -d ' ') bytes)"

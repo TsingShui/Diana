@@ -98,6 +98,10 @@ Commands are only re-verified with the ordinary equivalence checks (`get-class`,
 | `exception-finally` | `finally` on the normal path and on the throwing path |
 | `exception-two-resources` | try-with-resources over two resources, `close` + `addSuppressed` |
 | `loop-for` | classic `for` with `break` and `continue` in the body |
+| `loop-for-multi` | several initialisers/updaters, `for(;;)`, empty update/condition |
+| `loop-shared-exit` | nested loops leaving through a flag or a labelled break |
+| `loop-map-views` | `values()`, `keySet()`, custom `Iterable`, iterator removal |
+| `loop-do-while-sideeffect` | loop conditions that call something on every test |
 | `loop-do-while` | `do-while`, `do-while` with `break`, nested `do-while` |
 | `branch-switch-string` | switch over `String`, grouped `case` labels, effects in branches |
 | `branch-switch-enum` | switch over an enum with a `default` arm |
@@ -121,6 +125,8 @@ Commands are only re-verified with the ordinary equivalence checks (`get-class`,
 | `complex-iteration` | iterator loops, enhanced `for`, `Map.Entry`, `iterator.remove()` |
 | `complex-switch-nested` | `switch` inside a loop inside `try`, labelled `break`/`continue` |
 | `complex-stream` | stream pipelines, method references, `Optional`, `IntStream` |
+| `complex-indy-concat` | `invoke-custom` string concatenation (`javac.args` + `d8.args`) |
+| `complex-indy-lambda` | lambdas and every method-reference kind kept as `invoke-custom` |
 | `complex-map-nested` | `Map<String, List<Integer>>`, `computeIfAbsent`, `getOrDefault`, entry loops |
 | `complex-recursion` | mutual recursion, accumulator recursion, memoised Fibonacci |
 | `algo-matrix` | matrix multiply, transpose, spiral traversal |
@@ -139,6 +145,7 @@ Commands are only re-verified with the ordinary equivalence checks (`get-class`,
 | `kotlin-object-singleton` | `object` with `INSTANCE`, companion object, synthetic accessors |
 | `kotlin-property-delegate` | `by lazy`, custom `ReadWriteProperty`, custom setter, `lateinit` |
 | `kotlin-suspend-state` | suspend functions, continuation state machine, suspend inside try/loop |
+| `kotlin-range-loops` | `until`, `downTo`, `step`, `repeat`, `forEach`, labelled `break@` |
 
 Kotlin fixtures are **never scored**; their review is the record (see below).
 
@@ -160,6 +167,12 @@ Kotlin fixtures are **never scored**; their review is the record (see below).
 | `exception-multi-catch` | 43% / 80% | `\|` becomes two catches plus `goto`; declarations hoisted |
 | `exception-two-resources` | **7.6%** / 33% | handlers printed outside their protected range; no `try (` form |
 | `loop-for` | 62% / 38% | no `for`; `break`/`continue` are labels and gotos |
+| `loop-for-multi` | 64% / 26% | multi-init/update and empty segments all become independent assignments |
+| `loop-map-views` | 64% / 69% | map views and custom `Iterable` become `Iterator` + `Object` + cast |
+| `loop-do-while-sideeffect` | 63% / 54% | side-effecting conditions move into `test { … }`; `do-while` still has no `do` |
+| `loop-shared-exit` | 47% / 30% | `&& !found` moves into the body; `break outer` needs goto inspection |
+| `complex-indy-lambda` | 32% / 68% | method references stay as `LambdaMetafactory` `call_site` metadata |
+| `complex-indy-concat` | 28% / 60% | one `a + b + c` becomes two lines of `call_site` metadata plus `invoke<Custom>` |
 | `loop-do-while` | 54% / 34% | `do` lost entirely; body wrapped in `while (test { graph<Unstructured> … })` |
 | `branch-switch-string` | 18% / 71% | two-level hash/equals switch plus `graph<MultipleEntry>` |
 | `branch-switch-enum` | 42% / 25% | `ordinal()` switch correct, temporaries and `default` order differ |
@@ -215,7 +228,11 @@ review carries a per-method semantics verdict plus the Kotlin-specific findings
 (`@Metadata` into the body, `copy$default` masks, `INSTANCE` singletons,
 `$delegate` fields, continuation state machines, `when` lowered to `instanceof`).
 
-Corpus totals (round 1): **structure 62%, naming 60%** over 183 methods (the
+A fixture may pin its own `javac.args` / `d8.args` (`complex-indy-*` need
+`--release 11 -XDstringConcat=indy` and `--no-desugaring --min-api 28` to keep
+`invoke-custom` in the DEX); the default stays `--release 8 -g` and `--min-api 24`.
+
+Corpus totals (round 1): **structure 60%, naming 60%** over 211 methods (the
 obfuscated fixtures contribute structure only; Kotlin fixtures are unreviewed by
 the score). The
 `complex-*` and `algo-*` fixtures are the lowest scorers: real code multiplies the
