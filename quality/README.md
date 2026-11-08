@@ -124,6 +124,12 @@ Commands are only re-verified with the ordinary equivalence checks (`get-class`,
 | `complex-map-nested` | `Map<String, List<Integer>>`, `computeIfAbsent`, `getOrDefault`, entry loops |
 | `complex-recursion` | mutual recursion, accumulator recursion, memoised Fibonacci |
 | `algo-matrix` | matrix multiply, transpose, spiral traversal |
+| `branch-switch-packed` | packed switch: fallthrough, grouped cases, negative and default arms |
+| `branch-switch-sparse` | sparse switch: non-contiguous and large case values |
+| `expr-wide` | `long` shifts/arithmetic, `float`/`double`, NaN comparison, narrowing casts |
+| `exception-finally-transfer` | `finally` with `return`/`break`/`continue`, try inside catch |
+| `class-bridge` | bounded generics, a real bridge method, wildcard signatures |
+| `complex-annotation` | runtime annotations with array, enum, class and default values |
 | `obf-flow-r8` | R8-obfuscated `complex-flow` (enum switch, loop, try/finally, ternary) |
 | `obf-dp-r8` | R8-obfuscated `algo-dp` (2D arrays, nested loops, `Math.min`) |
 | `obf-exceptions-proguard` | ProGuard-obfuscated `complex-exceptions` (nested try/finally, TWR in a loop, multi-catch) |
@@ -173,6 +179,12 @@ Commands are only re-verified with the ordinary equivalence checks (`get-class`,
 | `complex-stream` | 62% / 73% | pipelines and method references correct; lambda bodies and `$r8$lambda$…` names enter the class body |
 | `complex-map-nested` | 54% / 69% | `computeIfAbsent` lambdas correct; nested generic arguments lost, `via` and dangling casts appear |
 | `algo-matrix` | 28% / 29% | all three correct; `new int[m][n]` becomes `Array.newInstance` and the result is returned as `Object` |
+| `branch-switch-packed` | 55% / 60% | fallthrough and grouped cases correct; case bodies move into `graph<MultipleEntry>` |
+| `branch-switch-sparse` | 55% / 58% | correct; d8 lowers it to a packed table and every hole is listed |
+| `expr-wide` | 60% / 40% | all correct; `cmpl/cmpg` print as `compare<CmplDouble>(…)` |
+| `exception-finally-transfer` | 49% / 61% | correct, including break/return inside `finally`; no `finally` keyword survives |
+| `class-bridge` | 77% / 60% | bridge method rendered and delegating; bounds only survive as `@Signature` fragments |
+| `complex-annotation` | 92% / 78% | annotations kept; enum values print the value and the type twice |
 | `obf-flow-r8` | 43% / obf | R8-renamed enum switch renders as Kotlin `when` and loses the `default:` order |
 | `obf-exceptions-proguard` | 31% / obf | nested classes flattened, `@MemberClasses` dropped, one short name reused for overloads |
 | `obf-dp-r8` | 30% / obf | scores match the unobfuscated source fixture: renaming alone costs no structure |
@@ -191,8 +203,8 @@ give one short name to several overloads. Structure is comparable with the
 unobfuscated source fixture; naming is reported as `obf` because the obfuscator
 destroyed it.
 
-Corpus totals (round 1): **structure 62%, naming 61%** over 164 methods (164
-includes the obfuscated fixtures, which contribute structure only). The
+Corpus totals (round 1): **structure 62%, naming 60%** over 183 methods (the
+obfuscated fixtures contribute structure only). The
 `complex-*` and `algo-*` fixtures are the lowest scorers: real code multiplies the
 temporary variables, `while (test { … })` loops and goto-based exits that the
 single-structure fixtures isolate. The second
