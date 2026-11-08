@@ -266,8 +266,10 @@ None, a list of Fallthrough transfers whose copy bundles have no executable step
 or unavailable assignments, or a Goto terminal with no terminal phases and such a
 transfer. Other terminals retain the branch. For an explicit If terminal, P7 MUST
 omit the false arm only when its transfer is such a Fallthrough and all terminal
-phases are empty. P9 consumes this separate terminal display flag without
-recomputing emptiness.
+phases are empty. P9 consumes this one display choice per branch terminal without
+recomputing emptiness: each terminal selects exactly one of both arms, no false
+arm, an inverted single arm, or no text at all, so two display decisions can
+never contradict each other.
 
 When an If's true arm is empty under the same rules and its false arm prints, P7
 selects an inverted single-arm display using `PredicateEmission`'s exact negation.

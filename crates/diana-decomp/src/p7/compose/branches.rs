@@ -7,6 +7,12 @@ use super::super::*;
 pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
     let mut empty = filled(code.controls.len(), false)?;
     let mut single_if = filled(code.controls.len(), false)?;
+    // One fact per original branch terminal: both arms print nothing, only the
+    // false arm prints nothing, only the true arm prints nothing. `ifs` then
+    // selects the single printed form from those facts.
+    let mut both_silent = filled(code.terminals.len(), false)?;
+    let mut false_silent = filled(code.terminals.len(), false)?;
+    let mut true_silent = filled(code.terminals.len(), false)?;
     let mut work = Vec::new();
     if let Some(root) = code.root {
         push(&mut work, (root, false))?;
@@ -79,7 +85,7 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
                         ..
                     } = code.terminals[terminal.0 as usize].kind
                 {
-                    code.emission.empty_if[terminal.0 as usize] =
+                    both_silent[terminal.0 as usize] =
                         [when_true, when_false].iter().all(|&edge| {
                             matches!(
                                 code.emission.transfers[edge.0 as usize].spelling,
@@ -148,10 +154,10 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
             _ => {}
         }
     }
-    for index in 0..code.terminals.len() {
+    for (index, silent) in false_silent.iter_mut().enumerate() {
         if let TerminalKind::If { when_false, .. } = code.terminals[index].kind {
             let phases = &code.emission.terminals[index];
-            code.emission.empty_else[index] = phases.before.is_empty()
+            *silent = phases.before.is_empty()
                 && phases.snapshots.is_empty()
                 && phases.after.is_empty()
                 && arm_prints_nothing(code, when_false, false);
@@ -175,7 +181,7 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
         else {
             continue;
         };
-        if owned[index] || code.emission.empty_if[index] {
+        if owned[index] || both_silent[index] {
             continue;
         }
         let phases = &code.emission.terminals[index];
@@ -194,7 +200,7 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
                 negate: false,
             };
             if !displayed_predicate_site(code, test) {
-                code.emission.inverted_if[index] = true;
+                true_silent[index] = true;
             }
         }
     }
@@ -213,14 +219,14 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
             continue;
         };
         let terminal = test.terminal.0 as usize;
-        if code.emission.empty_if[terminal] {
+        if both_silent[terminal] {
             continue;
         }
         let phases = &code.emission.terminals[terminal];
         let moves_nothing =
             phases.before.is_empty() && phases.snapshots.is_empty() && phases.after.is_empty();
         if empty[no.0 as usize] {
-            code.emission.empty_else[terminal] = true;
+            false_silent[terminal] = true;
         } else if moves_nothing
             && empty[yes.0 as usize]
             && arm_prints_nothing(code, test.when_true, false)
@@ -228,8 +234,22 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
         {
             // `if (c) { } else { X }` prints the same behavior as `if (!c) { X }`,
             // and the predicate is still evaluated once, in the same place.
-            code.emission.inverted_if[terminal] = true;
+            true_silent[terminal] = true;
         }
+    }
+    for index in 0..code.terminals.len() {
+        if !matches!(code.terminals[index].kind, TerminalKind::If { .. }) {
+            continue;
+        }
+        code.emission.ifs[index] = if both_silent[index] {
+            IfDisplay::Omitted
+        } else if false_silent[index] {
+            IfDisplay::NoElse
+        } else if true_silent[index] {
+            IfDisplay::Inverted
+        } else {
+            IfDisplay::Both
+        };
     }
     Ok(())
 }
@@ -314,7 +334,7 @@ fn display_empty_end(code: &MethodCode, end: &BlockEnd) -> bool {
         BlockEnd::Transfers(transfers) => transfers
             .iter()
             .all(|&id| arm_prints_nothing(code, id, false)),
-        BlockEnd::Terminal(id) if code.emission.empty_if[id.0 as usize] => true,
+        BlockEnd::Terminal(id) if code.emission.ifs[id.0 as usize] == IfDisplay::Omitted => true,
         BlockEnd::Terminal(id) => {
             let phases = &code.emission.terminals[id.0 as usize];
             phases.before.is_empty()

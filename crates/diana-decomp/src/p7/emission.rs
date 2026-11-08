@@ -164,6 +164,19 @@ pub enum LoopPlacement {
         compact: bool,
     },
 }
+/// The single printed form of one original branch terminal. The variants are
+/// mutually exclusive, so no two display decisions can contradict each other.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub enum IfDisplay {
+    /// `if (c) { yes } else { no }`
+    Both,
+    /// `if (c) { yes }`; the false arm prints nothing and keeps its anchors.
+    NoElse,
+    /// `if (!c) { no }`; the true arm prints nothing and keeps its anchors.
+    Inverted,
+    /// Nothing prints; both arms keep zero-length anchors.
+    Omitted,
+}
 #[derive(Clone, Copy, Debug, Serialize)]
 pub enum IfShape {
     IfElse,
@@ -352,17 +365,11 @@ pub struct EmissionPlan {
     pub(super) deferred_controls: Vec<bool>,
     pub(super) operations: Vec<EvaluationPhases>,
     pub(super) terminals: Vec<EvaluationPhases>,
-    /// Display-only omission of a copy-free fallthrough false arm.
-    pub(super) empty_else: Vec<bool>,
-    /// Display-only inversion: the true arm prints nothing, so the false arm
-    /// prints under the negated predicate and no empty block remains.
-    pub(super) inverted_if: Vec<bool>,
+    /// The one If display choice per original branch terminal.
+    pub(super) ifs: Vec<IfDisplay>,
     /// Display-only omission of a method body's closing void return, whose
     /// closing brace performs the same exit.
     pub(super) omitted_returns: Vec<bool>,
-    /// Both explicit If arms are fallthrough with only nonprinting copies;
-    /// the predicate has no evaluation or phase that needs to print.
-    pub(super) empty_if: Vec<bool>,
     pub(super) transfers: Vec<EmissionTransfer>,
     pub(super) initial: Vec<CopyPlanId>,
     pub(super) statement_operations: Vec<Option<OpId>>,
@@ -454,10 +461,8 @@ impl EmissionPlan {
             deferred_controls: Vec::new(),
             operations: Vec::new(),
             terminals: Vec::new(),
-            empty_else: Vec::new(),
-            inverted_if: Vec::new(),
+            ifs: Vec::new(),
             omitted_returns: Vec::new(),
-            empty_if: Vec::new(),
             transfers: Vec::new(),
             initial: Vec::new(),
             statement_operations: Vec::new(),
@@ -594,14 +599,11 @@ impl EmissionPlan {
     pub fn operations(&self) -> &[EvaluationPhases] {
         &self.operations
     }
-    pub fn inverted_if(&self, id: BlockId) -> bool {
-        self.inverted_if
+    pub fn if_display(&self, id: BlockId) -> IfDisplay {
+        self.ifs
             .get(id.0 as usize)
             .copied()
-            .unwrap_or(false)
-    }
-    pub fn empty_else(&self, id: BlockId) -> bool {
-        self.empty_else.get(id.0 as usize).copied().unwrap_or(false)
+            .unwrap_or(IfDisplay::Both)
     }
     pub fn omitted_return(&self, id: BlockId) -> bool {
         self.omitted_returns
@@ -609,9 +611,7 @@ impl EmissionPlan {
             .copied()
             .unwrap_or(false)
     }
-    pub fn empty_if(&self, id: BlockId) -> bool {
-        self.empty_if.get(id.0 as usize).copied().unwrap_or(false)
-    }
+
     pub fn terminals(&self) -> &[EvaluationPhases] {
         &self.terminals
     }
@@ -743,10 +743,8 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
     crate::substrate::owned::reserve(&mut plan.terminals, code.terminals.len())?;
     plan.terminals
         .resize_with(code.terminals.len(), EvaluationPhases::default);
-    plan.empty_else = filled(code.terminals.len(), false)?;
-    plan.inverted_if = filled(code.terminals.len(), false)?;
+    plan.ifs = filled(code.terminals.len(), IfDisplay::Both)?;
     plan.omitted_returns = filled(code.terminals.len(), false)?;
-    plan.empty_if = filled(code.terminals.len(), false)?;
     plan.statement_operations = filled(code.statements.len(), None)?;
     plan.origin_only_operations = filled(code.operations.len(), false)?;
     plan.origin_only_terminals = filled(code.terminals.len(), false)?;

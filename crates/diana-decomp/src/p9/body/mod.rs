@@ -16,6 +16,7 @@ mod transfer;
 use super::expressions::Expressions;
 use super::*;
 use crate::p2::{BlockId, BranchOp};
+use crate::p7::IfDisplay;
 use crate::{
     p2::OpId,
     p7::{
@@ -207,7 +208,8 @@ impl Expressions<'_, '_> {
                                         // A false arm that prints nothing keeps only its
                                         // origins; the `else` block would state no work.
                                         let silent_false = self.code.emission().omitted(*no)
-                                            || self.code.emission().empty_else(test.terminal);
+                                            || self.code.emission().if_display(test.terminal)
+                                                == IfDisplay::NoElse;
                                         if !self.code.emission().omitted(*no) {
                                             if silent_false {
                                                 push(&mut work, Event::EmptyArmAnchors(*no))?;
@@ -224,7 +226,8 @@ impl Expressions<'_, '_> {
                                             test: *test,
                                             chained,
                                             omitted_false: self.code.emission().omitted(*no)
-                                                || self.code.emission().empty_else(test.terminal),
+                                                || self.code.emission().if_display(test.terminal)
+                                                    == IfDisplay::NoElse,
                                         },
                                     )?;
                                 }
@@ -561,7 +564,10 @@ impl Expressions<'_, '_> {
                                     when_true,
                                     when_false,
                                     ..
-                                } if empty_arm && self.code.emission().empty_if(terminal) => {
+                                } if empty_arm
+                                    && self.code.emission().if_display(terminal)
+                                        == IfDisplay::Omitted =>
+                                {
                                     self.selected(when_true, false)?;
                                     self.selected(when_false, false)?;
                                 }

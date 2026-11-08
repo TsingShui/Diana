@@ -21,7 +21,7 @@ impl Expressions<'_, '_> {
                 },
             );
         }
-        if self.code.emission().empty_if(id) {
+        if self.code.emission().if_display(id) == IfDisplay::Omitted {
             let TerminalKind::If {
                 when_true,
                 when_false,
@@ -119,7 +119,8 @@ impl Expressions<'_, '_> {
                 // `if (c) { } else { X }` prints as `if (!c) { X }`: the
                 // predicate and both routes keep their original facts, and the
                 // empty arm's copies keep their anchors.
-                let inverted = self.code.emission().inverted_if(id);
+                let display = self.code.emission().if_display(id);
+                let inverted = display == IfDisplay::Inverted;
                 let previous = self.check_carrier.replace(CheckCarrier::Terminal(id));
                 self.out.put("if (")?;
                 let rendered = self.condition(condition, inverted);
@@ -137,7 +138,7 @@ impl Expressions<'_, '_> {
                 self.out.close()?;
                 if inverted {
                     self.selected(*when_true, false)?;
-                } else if !self.code.emission().empty_else(id) {
+                } else if display != IfDisplay::NoElse {
                     self.out.indent()?;
                     self.out.put("else")?;
                     self.out.open()?;

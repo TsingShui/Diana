@@ -120,7 +120,7 @@ for diagnostics. The adapter MUST use these rules:
 - Resolve jumps to labels at their displayed locations. A referenced but missing
   label is a check failure; do not invent its placement from an earlier graph.
 - Lower `Fallthrough` to sequential execution. Lower an ordinary branch according
-  to its actual emission: an `empty_if` contributes no predicate or hidden route.
+  to its actual emission: an omitted If display contributes no predicate or hidden route.
 - Preserve selected-edge copies and before/effect/commit order. Do not execute
   both arms' copies or use the destination of an omitted transfer to repair it.
 - Reject an execution form whose semantics are not implemented. Unknown forms
