@@ -82,6 +82,8 @@ Commands are only re-verified with the ordinary equivalence checks (`get-class`,
 
 ## Fixtures
 
+### Atoms
+
 | slug | covers |
 |---|---|
 | `expr-constants` | every constant form: int, long, float, double, char, boolean, String, null, class literal |
@@ -90,13 +92,25 @@ Commands are only re-verified with the ordinary equivalence checks (`get-class`,
 | `field-basic` | static/instance reads and writes, compound assignment |
 | `invoke-basic` | static, virtual, interface, constructor, `invoke-range` args, generic call |
 | `array-basic` | sized and literal arrays, byte/boolean arrays, read, write, `.length`, 2D |
+| `cast-instanceof` | `instanceof`, `check-cast`, array cast |
+| `expr-wide` | `long` shifts/arithmetic, `float`/`double`, NaN comparison, narrowing casts |
+
+### Branches
+
+| slug | covers |
+|---|---|
 | `branch-if2` | two-register branches with effects on both sides |
 | `branch-ifz` | single-register branches, `null` check |
-| `cast-instanceof` | `instanceof`, `check-cast`, array cast |
-| `exception-one-catch` | one catch that returns, one that rethrows, effect order inside `try` |
-| `exception-multi-catch` | one multi-catch clause, one caught rethrow |
-| `exception-finally` | `finally` on the normal path and on the throwing path |
-| `exception-two-resources` | try-with-resources over two resources, `close` + `addSuppressed` |
+| `branch-if-inverted` | empty-arm inversion, side effects, copies, float comparisons and protected branches |
+| `branch-switch-string` | switch over `String`, grouped `case` labels, effects in branches |
+| `branch-switch-enum` | switch over an enum with a `default` arm |
+| `branch-switch-packed` | packed switch: fallthrough, grouped cases, negative and default arms |
+| `branch-switch-sparse` | sparse switch: non-contiguous and large case values |
+
+### Loops
+
+| slug | covers |
+|---|---|
 | `loop-for` | classic `for` with `break` and `continue` in the body |
 | `loop-for-multi` | several initialisers/updaters, `for(;;)`, empty update/condition |
 | `loop-shared-exit` | nested loops leaving through a flag or a labelled break |
@@ -104,42 +118,81 @@ Commands are only re-verified with the ordinary equivalence checks (`get-class`,
 | `loop-do-while-sideeffect` | loop conditions that call something on every test |
 | `loop-do-while` | `do-while`, `do-while` with `break`, nested `do-while` |
 | `loop-tail-shapes` | every tail-test shape next to the head tests that must stay `while` |
-| `branch-switch-string` | switch over `String`, grouped `case` labels, effects in branches |
-| `branch-switch-enum` | switch over an enum with a `default` arm |
+
+### Exceptions
+
+| slug | covers |
+|---|---|
+| `exception-one-catch` | one catch that returns, one that rethrows, effect order inside `try` |
+| `exception-multi-catch` | one multi-catch clause, one caught rethrow |
+| `exception-finally` | `finally` on the normal path and on the throwing path |
+| `exception-two-resources` | try-with-resources over two resources, `close` + `addSuppressed` |
+| `exception-finally-transfer` | `finally` with `return`/`break`/`continue`, try inside catch |
+
+### Synchronization
+
+| slug | covers |
+|---|---|
 | `sync-block` | `synchronized` block, early return inside it, nested blocks |
+
+### Classes and inner types
+
+| slug | covers |
+|---|---|
 | `class-inner-member` | member inner class, synthetic accessor to a private field |
 | `class-inner-static` | static nested class with its own state |
 | `class-anonymous` | anonymous class capturing a local and a field |
 | `class-enum-body` | enum with constructor state, method and a constant body |
 | `class-interface-default` | interface `default` and `static` methods |
 | `class-init-order` | field initializers, instance block, static init, `this(...)` |
-| `complex-flow` | enum state machine: switch, loop with break/continue, try/finally, ternary |
-| `complex-exceptions` | nested `try`/`finally`, caught rethrow with cause, TWR in a loop, multi-catch |
-| `complex-inner` | anonymous class, member inner, static nested, generic bag |
+| `class-bridge` | bounded generics, a real bridge method, wildcard signatures |
+
+### Generic, lambda, stream and iteration
+
+| slug | covers |
+|---|---|
+| `complex-generics` | generic class, bounded generic method, bridge method, generic call |
+| `complex-lambda` | lambdas, capturing lambda, anonymous supplier, method reference, comparator |
+| `complex-iteration` | iterator loops, enhanced `for`, `Map.Entry`, `iterator.remove()` |
+| `complex-stream` | stream pipelines, method references, `Optional`, `IntStream` |
+
+### Algorithms
+
+| slug | covers |
+|---|---|
 | `algo-sort` | insertion, quick and merge sort |
 | `algo-graph` | BFS, DFS and connected components on an adjacency matrix |
 | `algo-dp` | edit distance, longest increasing subsequence, knapsack |
 | `algo-tree` | binary search tree: recursive insert/height/inOrder, iterative contains |
 | `algo-string` | KMP prefix/search, word frequency over `HashMap`, reversal |
-| `complex-generics` | generic class, bounded generic method, bridge method, generic call |
-| `complex-lambda` | lambdas, capturing lambda, anonymous supplier, method reference, comparator |
-| `complex-iteration` | iterator loops, enhanced `for`, `Map.Entry`, `iterator.remove()` |
+| `algo-matrix` | matrix multiply, transpose, spiral traversal |
+
+### Composite flows
+
+| slug | covers |
+|---|---|
+| `complex-flow` | enum state machine: switch, loop with break/continue, try/finally, ternary |
+| `complex-exceptions` | nested `try`/`finally`, caught rethrow with cause, TWR in a loop, multi-catch |
+| `complex-inner` | anonymous class, member inner, static nested, generic bag |
 | `complex-switch-nested` | `switch` inside a loop inside `try`, labelled `break`/`continue` |
-| `complex-stream` | stream pipelines, method references, `Optional`, `IntStream` |
 | `complex-indy-concat` | `invoke-custom` string concatenation (`javac.args` + `d8.args`) |
 | `complex-indy-lambda` | lambdas and every method-reference kind kept as `invoke-custom` |
 | `complex-map-nested` | `Map<String, List<Integer>>`, `computeIfAbsent`, `getOrDefault`, entry loops |
 | `complex-recursion` | mutual recursion, accumulator recursion, memoised Fibonacci |
-| `algo-matrix` | matrix multiply, transpose, spiral traversal |
-| `branch-switch-packed` | packed switch: fallthrough, grouped cases, negative and default arms |
-| `branch-switch-sparse` | sparse switch: non-contiguous and large case values |
-| `expr-wide` | `long` shifts/arithmetic, `float`/`double`, NaN comparison, narrowing casts |
-| `exception-finally-transfer` | `finally` with `return`/`break`/`continue`, try inside catch |
-| `class-bridge` | bounded generics, a real bridge method, wildcard signatures |
 | `complex-annotation` | runtime annotations with array, enum, class and default values |
+
+### Obfuscated
+
+| slug | covers |
+|---|---|
 | `obf-flow-r8` | R8-obfuscated `complex-flow` (enum switch, loop, try/finally, ternary) |
 | `obf-dp-r8` | R8-obfuscated `algo-dp` (2D arrays, nested loops, `Math.min`) |
 | `obf-exceptions-proguard` | ProGuard-obfuscated `complex-exceptions` (nested try/finally, TWR in a loop, multi-catch) |
+
+### Kotlin
+
+| slug | covers |
+|---|---|
 | `kotlin-null-safety` | `?.`, `?:`, `!!`, safe-call chain, `@Metadata` |
 | `kotlin-data-class` | data class, `componentN`, `copy`, `copy$default`, `equals`/`hashCode`/`toString` |
 | `kotlin-sealed-when` | sealed hierarchy, exhaustive `when`, smart casts |
@@ -152,61 +205,113 @@ Kotlin fixtures are **never scored**; their review is the record (see below).
 
 ## Reviews
 
+### Atoms
+
 | fixture | structure / naming (round 1) | headline |
 |---|---|---|
 | `expr-constants` | 96% / 96% | `char` prints as `120`, class literal becomes a temp assignment |
 | `invoke-basic` | 92% / 62% | all four call forms exact; generics and constructor temporaries differ |
-| `branch-ifz` | 89% / 70% | branches kept; losses are naming and field qualification only |
 | `field-basic` | 88% / 83% | `this.`/`X.` qualification and `+=` expansion |
 | `cast-instanceof` | 87% / 77% | correct; casts go through an extra `Object v1 = p0;` |
 | `expr-arith` | 86% / 44% | correct; each expression becomes `int v = (…); return v;` |
 | `array-basic` | 85% / 60% | correct; array creation/literals go through a temporary |
-| `branch-if2` | 71% / 50% | correct but inverted (`<` → `>=`) and split into early returns |
 | `expr-compare` | 53% / 38% | predicates expanded to temporaries plus `if` |
-| `exception-one-catch` | 48% / 57% | semantics correct; `[exn c0]`, `exception_chain`, `nop` dominate the diff |
-| `exception-finally` | 78% / 50% | `finally` becomes a duplicated normal path plus `catch (all)` rethrow |
-| `exception-multi-catch` | 43% / 80% | `\|` becomes two catches plus `goto`; declarations hoisted |
-| `exception-two-resources` | **7.6%** / 33% | handlers printed outside their protected range; no `try (` form |
+| `expr-wide` | 60% / 40% | all correct; `cmpl/cmpg` print as `compare<CmplDouble>(…)` |
+
+### Branches
+
+| fixture | structure / naming (round 1) | headline |
+|---|---|---|
+| `branch-ifz` | 89% / 70% | branches kept; losses are naming and field qualification only |
+| `branch-if2` | 71% / 50% | correct but inverted (`<` → `>=`) and split into early returns |
+| `branch-if-inverted` | 77% / 75% | inverted empty-arm controls keep origin anchors; float and exception notation remains explicit |
+| `branch-switch-string` | 18% / 71% | two-level hash/equals switch plus `graph<MultipleEntry>` |
+| `branch-switch-enum` | 42% / 25% | `ordinal()` switch correct, temporaries and `default` order differ |
+| `branch-switch-packed` | 55% / 60% | fallthrough and grouped cases correct; case bodies move into `graph<MultipleEntry>` |
+| `branch-switch-sparse` | 55% / 58% | correct; d8 lowers it to a packed table and every hole is listed |
+
+### Loops
+
+| fixture | structure / naming (round 1) | headline |
+|---|---|---|
 | `loop-for` | 62% / 38% | no `for`; `break`/`continue` are labels and gotos |
 | `loop-for-multi` | 64% / 26% | multi-init/update and empty segments all become independent assignments |
 | `loop-map-views` | 64% / 69% | map views and custom `Iterable` become `Iterator` + `Object` + cast |
 | `loop-do-while-sideeffect` | 61% / 54% | side-effecting conditions print in the loop body with an inverted `break`; `do-while` still has no `do` |
 | `loop-shared-exit` | 49% / 31% | private exit work stays in the branch; nested and labelled breaks replace the gotos |
-| `complex-indy-lambda` | 32% / 68% | method references stay as `LambdaMetafactory` `call_site` metadata |
-| `complex-indy-concat` | 28% / 60% | one `a + b + c` becomes two lines of `call_site` metadata plus `invoke<Custom>` |
 | `loop-do-while` | 54% / 34% | `do-while` recovered; `v1 = (v1 + 1)` against `index++` dominates the diff |
 | `loop-tail-shapes` | 82% / 58% | tail tests correct both ways; remaining `nop` and goto-based exits |
-| `branch-switch-string` | 18% / 71% | two-level hash/equals switch plus `graph<MultipleEntry>` |
-| `branch-switch-enum` | 42% / 25% | `ordinal()` switch correct, temporaries and `default` order differ |
+
+### Loop semantics evidence
+
+Executed differential check, 2026-11-08: original fixture methods against Diana's rendered methods over generated inputs (equal return values, exception classes, mutated arrays and static state). 1134 comparisons across `loop-for`, `loop-for-multi`, `loop-do-while` and `algo-sort`, 0 mismatches; `algo-sort.quick` contributes 896 of them and is rendered without any Diana-only notation. The checker is sensitive: a changed loop bound in `LoopDoWhile.countUp` produced 5 mismatches, and a broken swap in `quick` produced array mismatches. Not covered: methods whose rendered text still needs Diana-only notation (`via` in `loop-do-while-sideeffect`), methods that are not type-correct (`algo-matrix` returns an `Object` local from an `int[][]` method), and loops that render with `goto`. This is a bounded behavioral comparison, not a proof for all inputs.
+
+### Exceptions
+
+| fixture | structure / naming (round 1) | headline |
+|---|---|---|
+| `exception-one-catch` | 48% / 57% | semantics correct; `[exn c0]`, `exception_chain`, `nop` dominate the diff |
+| `exception-finally` | 78% / 50% | `finally` becomes a duplicated normal path plus `catch (all)` rethrow |
+| `exception-multi-catch` | 43% / 80% | `\|` becomes two catches plus `goto`; declarations hoisted |
+| `exception-two-resources` | **7.6%** / 33% | handlers printed outside their protected range; no `try (` form |
+| `exception-finally-transfer` | 49% / 61% | correct, including break/return inside `finally`; no `finally` keyword survives |
+
+### Synchronization
+
+| fixture | structure / naming (round 1) | headline |
+|---|---|---|
 | `sync-block` | 42% / 83% | `synchronized` kept, but every block carries `catch (all)`, `release`, `goto` |
+
+### Classes and inner types
+
+| fixture | structure / naming (round 1) | headline |
+|---|---|---|
 | `class-enum-body` | 90% / 83% | methods correct; enum constants become `static final dex_flags<enum>` plus a static block |
 | `class-inner-static` | 89% / 54% | nested type referenced by name; constructor result goes through a temporary |
 | `class-inner-member` | 84% / 67% | inner class rendered separately; `this.` qualification added |
 | `class-interface-default` | 78% / 89% | `default` keyword lost; `plus()` condition inverted |
 | `class-anonymous` | 73% / 67% | capture via `new Outer$1(this, p0)` is right; result goes through a temporary |
 | `class-init-order` | 68% / 100% | static block, initializer and instance block order correct; field reads go through temporaries |
-| `complex-inner` | 74% / 36% | captures and inner construction correct; generic type arguments lost |
-| `algo-graph` | 50% / 45% | BFS/DFS values correct; `Deque`/`ArrayDeque` generics and element casts lose the declared type |
-| `algo-sort` | 50% / 49% | all three sorts correct; every index goes through a temporary and `for` is lost |
-| `complex-exceptions` | 30% / 63% | correct except the TWR-in-loop handler placement; constructors print as `new X;` + `x.<init>(…)` |
-| `algo-dp` | 29% / 37% | all three recurrences correct; 2D arrays go through `Array.newInstance` with uncast reads |
-| `complex-flow` | 23% / 70% | behaviour correct; ternary, enum cases and loop exits are all expanded into temporaries, empty `if`s and gotos |
+| `class-bridge` | 77% / 60% | bridge method rendered and delegating; bounds only survive as `@Signature` fragments |
+
+### Generic, lambda, stream and iteration
+
+| fixture | structure / naming (round 1) | headline |
+|---|---|---|
 | `complex-generics` | 72% / 58% | `repeat` recovers `<T> List<T>`, `largest` only keeps `@Signature`; annotations enter the body |
 | `complex-iteration` | 66% / 59% | enhanced `for` and `Map.Entry` become `Iterator` + `Object` + cast |
 | `complex-lambda` | 64% / 57% | captures correct; lambda body name and `$r8$lambda$…` leak into the class body |
+| `complex-stream` | 62% / 73% | pipelines and method references correct; lambda bodies and `$r8$lambda$…` names enter the class body |
+
+### Algorithms
+
+| fixture | structure / naming (round 1) | headline |
+|---|---|---|
+| `algo-graph` | 50% / 45% | BFS/DFS values correct; `Deque`/`ArrayDeque` generics and element casts lose the declared type |
+| `algo-sort` | 29% / 31% | all three sorts correct; `[repeat: …]` gone, every index still goes through a temporary and `for` is lost |
+| `algo-dp` | 29% / 37% | all three recurrences correct; 2D arrays go through `Array.newInstance` with uncast reads |
 | `algo-string` | 38% / 62% | KMP and counting correct; `new StringBuilder` split into `new` + `.<init>` |
 | `algo-tree` | 34% / 60% | recursion correct; every field read goes through a temporary, generics dropped |
+| `algo-matrix` | 28% / 29% | all three correct; `new int[m][n]` becomes `Array.newInstance` and the result is returned as `Object` |
+
+### Composite flows
+
+| fixture | structure / naming (round 1) | headline |
+|---|---|---|
+| `complex-indy-lambda` | 32% / 68% | method references stay as `LambdaMetafactory` `call_site` metadata |
+| `complex-indy-concat` | 28% / 60% | one `a + b + c` becomes two lines of `call_site` metadata plus `invoke<Custom>` |
+| `complex-inner` | 74% / 36% | captures and inner construction correct; generic type arguments lost |
+| `complex-exceptions` | 30% / 63% | correct except the TWR-in-loop handler placement; constructors print as `new X;` + `x.<init>(…)` |
+| `complex-flow` | 23% / 70% | behaviour correct; ternary, enum cases and loop exits are all expanded into temporaries, empty `if`s and gotos |
 | `complex-switch-nested` | 17% / 38% | labelled `break`/`continue` collapse into gotos; every operation carries an `[after_operands_before_effect]` snapshot |
 | `complex-recursion` | 66% / 55% | mutual/accumulator recursion and memoisation correct; temporaries everywhere |
-| `complex-stream` | 62% / 73% | pipelines and method references correct; lambda bodies and `$r8$lambda$…` names enter the class body |
 | `complex-map-nested` | 54% / 69% | `computeIfAbsent` lambdas correct; nested generic arguments lost, `via` and dangling casts appear |
-| `algo-matrix` | 28% / 29% | all three correct; `new int[m][n]` becomes `Array.newInstance` and the result is returned as `Object` |
-| `branch-switch-packed` | 55% / 60% | fallthrough and grouped cases correct; case bodies move into `graph<MultipleEntry>` |
-| `branch-switch-sparse` | 55% / 58% | correct; d8 lowers it to a packed table and every hole is listed |
-| `expr-wide` | 60% / 40% | all correct; `cmpl/cmpg` print as `compare<CmplDouble>(…)` |
-| `exception-finally-transfer` | 49% / 61% | correct, including break/return inside `finally`; no `finally` keyword survives |
-| `class-bridge` | 77% / 60% | bridge method rendered and delegating; bounds only survive as `@Signature` fragments |
 | `complex-annotation` | 92% / 78% | annotations kept; enum values print the value and the type twice |
+
+### Obfuscated
+
+| fixture | structure / naming (round 1) | headline |
+|---|---|---|
 | `obf-flow-r8` | 43% / obf | R8-renamed enum switch renders as Kotlin `when` and loses the `default:` order |
 | `obf-exceptions-proguard` | 31% / obf | nested classes flattened, `@MemberClasses` dropped, one short name reused for overloads |
 | `obf-dp-r8` | 30% / obf | scores match the unobfuscated source fixture: renaming alone costs no structure |
@@ -234,7 +339,7 @@ A fixture may pin its own `javac.args` / `d8.args` (`complex-indy-*` need
 `--release 11 -XDstringConcat=indy` and `--no-desugaring --min-api 28` to keep
 `invoke-custom` in the DEX); the default stays `--release 8 -g` and `--min-api 24`.
 
-Corpus totals (round 2): **structure 62%, naming 60%** over 228 methods (the
+Corpus totals: **structure 63%, naming 61%** over 241 methods (the
 obfuscated fixtures contribute structure only; Kotlin fixtures are unreviewed by
 the score). The
 `complex-*` and `algo-*` fixtures are the lowest scorers: real code multiplies the
