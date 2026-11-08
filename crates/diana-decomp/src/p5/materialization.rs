@@ -323,13 +323,23 @@ fn candidate(
     };
     let aliases_object =
         |operation: crate::p2::OpId| aliases_allocation(typed, allocation, operation);
+    // Construction membership is asked once per member and per use, so it is a
+    // mask over the operation arena instead of a scan of `members`.
+    let mut own_member = super::build::filled(typed.execution().operations().len(), false)?;
+    for &operation in &members {
+        own_member[operation.0 as usize] = true;
+    }
     let mut preparations = Vec::new();
     for &operation in &members {
         match f.operation_emission[operation.0 as usize] {
             OperationEmission::Ordinary => {}
             OperationEmission::Construction { group, .. } => {
                 let nested = &f.construction_groups()[group.0 as usize];
-                if nested.members().iter().any(|m| !members.contains(m)) {
+                if nested
+                    .members()
+                    .iter()
+                    .any(|member| !own_member[member.0 as usize])
+                {
                     return Ok(Err(Separation::SharedAllocation));
                 }
                 return Ok(Err(Separation::InterveningOperation(operation)));
@@ -392,8 +402,10 @@ fn candidate(
         {
             continue;
         }
-        let own =
-            matches!(usage.site(),UseSite::Operation{operation,..}if members.contains(&operation));
+        let own = matches!(
+            usage.site(),
+            UseSite::Operation { operation, .. } if own_member[operation.0 as usize]
+        );
         // The use either belongs to one of the construction's own members, or is
         // reached only after its single normal completion.
         let after_initialization = own || (normal_single && s.dominates(normal, usage.point()));

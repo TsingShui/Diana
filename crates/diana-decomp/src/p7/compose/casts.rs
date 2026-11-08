@@ -40,6 +40,14 @@ struct Carrier<'a> {
     code: &'a MethodCode,
     protection: &'a [Option<ControlId>],
     found: &'a [(StatementId, InlineCheck)],
+    /// The operation that owns each statement, so a carrier never rescans.
+    operation_of: &'a [Option<OpId>],
+    /// Whether a suspension surface owns that statement's operands.
+    suspended: &'a [bool],
+    /// Where the driver found this check in the printed order.
+    node: usize,
+    index: usize,
+    operation: OpId,
 }
 /// What one carrier decided for one check statement.
 enum Carried {
@@ -76,20 +84,6 @@ const CARRIERS: &[Find] = &[
     distant_carrier,
 ];
 
-/// The block and action position of one statement in the printed order.
-fn block_and_index(code: &MethodCode, statement: StatementId) -> Option<(usize, usize)> {
-    for (node, block) in code.emission.blocks.iter().enumerate() {
-        for (index, action) in block.actions.iter().enumerate() {
-            if let BodyAction::Statement { statement: s, .. } = action
-                && *s == statement
-            {
-                return Some((node, index));
-            }
-        }
-    }
-    None
-}
-
 fn why_at(slots: &mut [Option<&'static str>], statement: StatementId, why: &'static str) {
     if let Some(slot) = slots.get_mut(statement.0 as usize)
         && slot.is_none()
@@ -108,6 +102,20 @@ pub(super) fn construct(
         super::super::build::filled(code.statements.len(), None)?;
     let mut found: Vec<(StatementId, InlineCheck)> = Vec::new();
     let protection = protected_contexts(code)?;
+    let mut operation_of: Vec<Option<OpId>> =
+        super::super::build::filled(code.statements.len(), None)?;
+    for (index, operation) in code.operations.iter().enumerate() {
+        if let Some(statement) = operation.statement {
+            operation_of[statement.0 as usize] = Some(OpId(
+                u32::try_from(index).map_err(|_| crate::RequestError::PlatformCapacity)?,
+            ));
+        }
+    }
+    let mut suspended: Vec<bool> = super::super::build::filled(code.statements.len(), false)?;
+    for surface in code.emission.suspensions() {
+        suspended[surface.statement.0 as usize] = true;
+    }
+    let mut claimed: Vec<bool> = super::super::build::filled(code.statements.len(), false)?;
     // One traversal: every check statement asks the carriers in priority order,
     // and the driver applies the one decision that answers.
     for node in 0..code.emission.blocks.len() {
@@ -119,7 +127,7 @@ pub(super) fn construct(
             else {
                 continue;
             };
-            if found.iter().any(|(check, _)| *check == statement)
+            if claimed[statement.0 as usize]
                 || omitted
                     .get(statement.0 as usize)
                     .is_some_and(Option::is_some)
@@ -133,16 +141,23 @@ pub(super) fn construct(
                 code,
                 protection: &protection,
                 found: &found,
+                operation_of: &operation_of,
+                suspended: &suspended,
+                node,
+                index,
+                operation,
             };
             for find in CARRIERS {
                 match find(&carrier, statement, storage) {
                     Ok(Some(Carried::At(check))) => {
+                        claimed[statement.0 as usize] = true;
                         push(&mut found, check)?;
                         break;
                     }
                     Ok(Some(Carried::Declare { check, local, ty })) => {
                         code.emission.local_types[local.0 as usize] = LocalSpelling::Named(ty);
                         code.locals[local.0 as usize].declared_types = vec![ty];
+                        claimed[statement.0 as usize] = true;
                         push(&mut found, check)?;
                         break;
                     }
@@ -439,9 +454,7 @@ fn statement_carrier(
     storage: StorageId,
 ) -> Result<Option<Carried>, Stop> {
     let code = carrier.code;
-    let Some((node, index)) = block_and_index(code, statement) else {
-        return Ok(None);
-    };
+    let (node, index) = (carrier.node, carrier.index);
     let actions = &code.emission.blocks[node].actions;
     let Some(next_action) = actions.get(index + 1) else {
         return Ok(None);
@@ -459,12 +472,7 @@ fn statement_carrier(
     let Some((_, reference)) = eligible_check(code, operation, statement, None) else {
         return Ok(None);
     };
-    if code
-        .emission
-        .suspensions()
-        .iter()
-        .any(|s| s.statement == next)
-    {
+    if carrier.suspended[next.0 as usize] {
         // This surface has an implicit continuation occurrence. Keep a
         // preceding check at its original action rather than attach it
         // to an operand that this surface does not print.
@@ -522,9 +530,7 @@ fn definition_carrier(
     storage: StorageId,
 ) -> Result<Option<Carried>, Stop> {
     let code = carrier.code;
-    let Some((node, index)) = block_and_index(code, statement) else {
-        return Ok(None);
-    };
+    let (node, index) = (carrier.node, carrier.index);
     let Some(previous) = index.checked_sub(1) else {
         return Ok(None);
     };
@@ -621,10 +627,8 @@ fn distant_carrier(
     storage: StorageId,
 ) -> Result<Option<Carried>, Stop> {
     let code = carrier.code;
-    let Some((node, index)) = block_and_index(code, statement) else {
-        return Ok(None);
-    };
-    let BodyAction::Statement { operation, .. } = code.emission.blocks[node].actions[index] else {
+    let (node, operation) = (carrier.node, carrier.operation);
+    let BodyAction::Statement { .. } = code.emission.blocks[node].actions[carrier.index] else {
         return Ok(None);
     };
     let Some((_, reference)) = eligible_check(code, operation, statement, None) else {
@@ -643,10 +647,8 @@ fn distant_carrier(
         let Some((_, occurrence)) = first_read(code, candidate.id, storage)? else {
             continue;
         };
-        let Some(consumed) = code
-            .operations
-            .iter()
-            .find(|source| source.statement == Some(candidate.id))
+        let Some(consumed) = carrier.operation_of[candidate.id.0 as usize]
+            .and_then(|operation| code.operations.get(operation.0 as usize))
         else {
             continue;
         };
@@ -939,9 +941,7 @@ fn copy_carrier(
     storage: StorageId,
 ) -> Result<Option<Carried>, Stop> {
     let code = carrier.code;
-    let Some((node, index)) = block_and_index(code, statement) else {
-        return Ok(None);
-    };
+    let (node, index) = (carrier.node, carrier.index);
     let block = &code.emission.blocks[node];
     if index + 1 != block.actions.len() {
         return Ok(None);
@@ -1057,9 +1057,7 @@ fn terminal_carrier(
     storage: StorageId,
 ) -> Result<Option<Carried>, Stop> {
     let code = carrier.code;
-    let Some((node, index)) = block_and_index(code, statement) else {
-        return Ok(None);
-    };
+    let (node, index) = (carrier.node, carrier.index);
     let block = &code.emission.blocks[node];
     if index + 1 != block.actions.len() {
         return Ok(None);

@@ -74,6 +74,9 @@ fn corridor(
         }
     }
     let mut nodes = Vec::new();
+    // Membership of the walked corridor grows with the walk itself, so it is a
+    // mask rather than a scan of `nodes` at every step.
+    let mut walked = mask(f.nodes.len(), &[])?;
     let mut at = f.links[exit.0 as usize].to;
     loop {
         // An inner exit can finish its private work inside an enclosing core,
@@ -89,7 +92,7 @@ fn corridor(
             break;
         }
         if plan.members.contains(&at)
-            || nodes.contains(&at)
+            || walked[at.0 as usize]
             || f.loops
                 .iter()
                 .any(|other| other.members.contains(&at) && !enclosing.contains(&other.id))
@@ -115,6 +118,7 @@ fn corridor(
         }) {
             return Ok(None);
         }
+        walked[at.0 as usize] = true;
         push(&mut nodes, at)?;
         match g.outgoing[at.0 as usize].as_slice() {
             [] if node.terminal
@@ -129,7 +133,7 @@ fn corridor(
             _ => return Ok(None),
         }
     }
-    let set = mask(f.nodes.len(), &nodes)?;
+    let set = walked;
     for &node in &nodes {
         if node == NodeId(0)
             || g.incoming[node.0 as usize].iter().any(|link| {

@@ -108,8 +108,18 @@ pub(super) fn candidates(
     boundary: &[bool],
 ) -> Result<Vec<Candidate>, RegionError> {
     let mut out = Vec::new();
+    // One membership mask answers every "is this node in the part" question
+    // below, instead of scanning the part for each node of each candidate.
+    let mut in_scope = super::super::build::filled(f.nodes.len(), false)?;
+    for &node in &scope.nodes {
+        in_scope[node.0 as usize] = true;
+    }
     for l in &f.loops {
-        if !l.lexical_members.iter().all(|n| scope.nodes.contains(n)) {
+        if !l
+            .lexical_members
+            .iter()
+            .all(|&node| in_scope[node.0 as usize])
+        {
             continue;
         }
         let members = copy(&l.lexical_members)?;
@@ -164,7 +174,7 @@ pub(super) fn candidates(
         )?;
     }
     for p in &f.tries {
-        if !p.members.iter().all(|n| scope.nodes.contains(n)) {
+        if !p.members.iter().all(|&node| in_scope[node.0 as usize]) {
             continue;
         }
         let mut parts = Vec::new();
@@ -216,7 +226,7 @@ pub(super) fn candidates(
         )?;
     }
     for p in &f.synchronized {
-        if !p.members.iter().all(|n| scope.nodes.contains(n)) {
+        if !p.members.iter().all(|&node| in_scope[node.0 as usize]) {
             continue;
         }
         if p.separation.is_some() {
@@ -256,7 +266,7 @@ pub(super) fn candidates(
         )?;
     }
     for index in 0..f.nodes.len() {
-        if !scope.nodes.contains(&NodeId(id(index)?)) || !f.nodes[index].terminal {
+        if !in_scope[index] || !f.nodes[index].terminal {
             continue;
         }
         let n = f.nodes[index].id();
@@ -345,7 +355,7 @@ pub(super) fn candidates(
         for &l in &arms {
             push(&mut starts, f.links[l.0 as usize].to)?;
         }
-        let follow = match s.follow(n).filter(|node| scope.nodes.contains(node)) {
+        let follow = match s.follow(n).filter(|node| in_scope[node.0 as usize]) {
             Some(follow) => Some(follow),
             None => super::completion::shared_target(f, g, &starts, boundary)?.or(scope.follow),
         };
