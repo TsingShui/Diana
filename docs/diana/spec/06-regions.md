@@ -96,6 +96,16 @@ Candidate frontiers are derived from the input; a mismatch does not restart meth
 analysis or launch an unbounded template search. Scratch and result allocation are
 fallible and checked, without a configured numeric quota.
 
+P6 MUST classify an original link as implicit `Next` only when selected lexical
+completion reaches its actual destination. During the ancestor walk, the first
+pending Sequence sibling blocks fallthrough to any outer sibling or follow unless
+that pending sibling's entry is the link destination. A link bypassing that work
+retains an explicit transfer. The walk still resolves enclosing break, continue
+and lock exits, which can legitimately bypass the pending sibling. P7 consumes
+this distinction without rechecking the graph; an unowned conditional with
+separate destinations MUST NOT lose a route merely because both destinations
+are reachable through enclosing completions.
+
 ## Ordinary branch boundaries
 
 An ordinary branch first proposes its normal postdominator follow when it lies

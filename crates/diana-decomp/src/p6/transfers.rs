@@ -1,7 +1,8 @@
 //! Plans what each original link prints as, then what each region's own
 //! continuation is. A transfer keeps its original destination; the plan only
 //! names the selected construct that already carries that destination, so no
-//! transfer is invented, retargeted or dropped.
+//! transfer is invented, retargeted or dropped. A pending Sequence sibling
+//! prevents fallthrough to an outer continuation, but not an explicit scope exit.
 
 use super::graph::Graph;
 use super::*;
@@ -81,6 +82,7 @@ pub(super) fn transfers(f: &mut RegionFacts, g: &Graph) -> Result<(), RegionErro
         }
         if !handled {
             let mut crossed_loop = false;
+            let mut pending_sibling = false;
             let mut at = Some(f.labels[l.from.0 as usize].owner);
             while let Some(id) = at {
                 let r = &f.regions[id.0 as usize];
@@ -120,13 +122,17 @@ pub(super) fn transfers(f: &mut RegionFacts, g: &Graph) -> Result<(), RegionErro
                         action = TransferAction::Break(id);
                         break;
                     }
-                    RegionKind::Sequence if !crossed_loop => {
+                    RegionKind::Sequence if !crossed_loop && !pending_sibling => {
                         for pair in r.children.windows(2) {
                             let a = &f.regions[pair[0].0 as usize];
                             let b = &f.regions[pair[1].0 as usize];
-                            if a.nodes.contains(&l.from) && b.entry == Some(l.to) {
-                                action = TransferAction::Next(l.to);
-                                handled = true;
+                            if a.nodes.contains(&l.from) {
+                                if b.entry == Some(l.to) {
+                                    action = TransferAction::Next(l.to);
+                                    handled = true;
+                                } else {
+                                    pending_sibling = true;
+                                }
                                 break;
                             }
                         }
@@ -135,7 +141,7 @@ pub(super) fn transfers(f: &mut RegionFacts, g: &Graph) -> Result<(), RegionErro
                         }
                     }
                     RegionKind::If { .. } | RegionKind::Condition(_) | RegionKind::Try(_)
-                        if !crossed_loop && r.follow == Some(l.to) =>
+                        if !crossed_loop && !pending_sibling && r.follow == Some(l.to) =>
                     {
                         action = TransferAction::Next(l.to);
                         break;
