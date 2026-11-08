@@ -1,0 +1,2 @@
+# Measurement fixtures ship their generated DEX so scoring needs no JDK or d8.
+!fixtures/**/classes.dex
