@@ -171,7 +171,7 @@ Kotlin fixtures are **never scored**; their review is the record (see below).
 | `loop-for-multi` | 64% / 26% | multi-init/update and empty segments all become independent assignments |
 | `loop-map-views` | 64% / 69% | map views and custom `Iterable` become `Iterator` + `Object` + cast |
 | `loop-do-while-sideeffect` | 61% / 54% | side-effecting conditions print in the loop body with an inverted `break`; `do-while` still has no `do` |
-| `loop-shared-exit` | 47% / 30% | `&& !found` moves into the body; `break outer` needs goto inspection |
+| `loop-shared-exit` | 49% / 31% | private exit work stays in the branch; nested and labelled breaks replace the gotos |
 | `complex-indy-lambda` | 32% / 68% | method references stay as `LambdaMetafactory` `call_site` metadata |
 | `complex-indy-concat` | 28% / 60% | one `a + b + c` becomes two lines of `call_site` metadata plus `invoke<Custom>` |
 | `loop-do-while` | 54% / 34% | `do-while` recovered; `v1 = (v1 + 1)` against `index++` dominates the diff |

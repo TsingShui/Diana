@@ -7,6 +7,10 @@ use super::parts::{copy, mask};
 use crate::p2::{OpKind, Terminal};
 use crate::p5::StorageMethod;
 
+#[cfg(test)]
+#[path = "loop_exits_tests.rs"]
+mod tests;
+
 pub(super) fn construct(
     storage: &StorageMethod<'_>,
     f: &mut RegionFacts,
@@ -61,15 +65,34 @@ fn corridor(
     exit: LinkId,
 ) -> Result<Option<Vec<NodeId>>, RegionError> {
     let plan = &f.loops[index];
+    let mut enclosing = Vec::new();
+    for other in &f.loops {
+        if other.members.len() > plan.members.len()
+            && plan.members.iter().all(|node| other.members.contains(node))
+        {
+            push(&mut enclosing, other.id)?;
+        }
+    }
     let mut nodes = Vec::new();
     let mut at = f.links[exit.0 as usize].to;
     loop {
-        if plan.follow == Some(at) {
+        // An inner exit can finish its private work inside an enclosing core,
+        // or leave through that loop's original break/continue destination.
+        // Those destinations stay outside the corridor; only a selected scope
+        // can later spell the outgoing original link as break or continue.
+        if plan.follow == Some(at)
+            || enclosing.iter().any(|id| {
+                let outer = &f.loops[id.0 as usize];
+                outer.follow == Some(at) || outer.continue_target() == at
+            })
+        {
             break;
         }
         if plan.members.contains(&at)
             || nodes.contains(&at)
-            || f.loops.iter().any(|other| other.members.contains(&at))
+            || f.loops
+                .iter()
+                .any(|other| other.members.contains(&at) && !enclosing.contains(&other.id))
             || f.tries.iter().any(|scope| scope.members.contains(&at))
             || f.synchronized
                 .iter()

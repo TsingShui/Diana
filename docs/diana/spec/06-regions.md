@@ -368,16 +368,21 @@ the loop follow; lexical ownership does not skip exit-side work.
 
 Before candidate enumeration, P6 can add a private corridor from another
 original loop exit. Admission requires a finite single-normal-successor path ending
-at its original return/throw or at the predicate's actual normal follow. The follow
-remains outside lexical membership. The corridor has that exit as its only normal
-entrance and no executable exceptional entrance. The path cannot reach the core,
-intersect another loop core or an established try/synchronized plan, contain a
-monitor, or throw to a local handler. Construction groups stay whole in the enlarged
+at its original return/throw, at the predicate's actual normal follow, or at an
+enclosing loop's original follow or continue target. Strict containment of the
+whole backedge core establishes an enclosing loop; header proximity or overlap
+alone does not. Follow and continue destinations remain outside the corridor.
+The corridor has that exit as its only normal entrance and no executable exceptional
+entrance. It can lie inside an enclosing core, but cannot reenter its own core,
+intersect any non-enclosing loop core or an established try/synchronized plan,
+contain a monitor, or throw to a local handler. Construction groups stay whole in the enlarged
 loop; candidate partitioning also keeps them whole in each child. Shared corridor work, cycles, branching corridors and unknown completion retain
 explicit control. The selected body interface retains private operations and the
 original outgoing copies before its selected break; predicate-exhaustion copies
 remain on their distinct original edge. A candidate loop supplies no break scope
-until that Loop region is selected.
+until that Loop region is selected. Stopping at an enclosing boundary does not
+supply an exit scope: transfer planning resolves break/continue only through the
+selected ancestors and otherwise retains the original explicit transfer.
 P6 does not compare returned values, merge terminals or manufacture an edge for a
 throw. The enlarged candidate still passes normal/exceptional entry closure,
 whole-current-owner, scope and partition checks before commitment. Rejection affects

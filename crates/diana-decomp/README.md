@@ -172,9 +172,12 @@ navigation; P9 does not start callee analysis or recover structure from text.
 The development shell accepts `"outline":true` on a `p9` request to inspect the
 same product. See the [P9 outline contract](../../docs/diana/spec/09-rendering.md#outline-presentation).
 
-The previous core test was removed by operator decision; no test case is present
-in the current tree. The retained independent verifier code is not enabled on
-ordinary requests. Real-input corpus runs have not encountered custom/polymorphic
+The previous core test was removed by operator decision. Six focused structural
+checks now cover nested private loop exits through the ordinary Engine entry;
+prepare [their Java/Smali fixture](../../fixtures/nested-loop-exits/README.md),
+then run `cargo nextest run --locked -p diana-decomp`. These checks cover ownership,
+transfer spelling and source anchors, not independent execution of the final plan.
+The retained independent verifier code is not enabled on ordinary requests. Real-input corpus runs have not encountered custom/polymorphic
 invokes or method-handle/type constants.
 
 A [Verus trial](proofs/README.md) proves the wide-copy patch predicate used by
