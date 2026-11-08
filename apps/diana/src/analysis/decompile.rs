@@ -79,6 +79,24 @@ pub fn run_with_jobs(
     selector: &Selector,
     jobs: usize,
 ) -> Result<Decompiled, DecompileError> {
+    run_presentation(scope, selector, jobs, false)
+}
+
+/// The same method/class chain, with P9's optional outline facts enabled.
+pub(super) fn run_outline(
+    scope: &RequestScope,
+    selector: &Selector,
+    jobs: usize,
+) -> Result<Decompiled, DecompileError> {
+    run_presentation(scope, selector, jobs, true)
+}
+
+fn run_presentation(
+    scope: &RequestScope,
+    selector: &Selector,
+    jobs: usize,
+    outline: bool,
+) -> Result<Decompiled, DecompileError> {
     let class_selector = match selector {
         Selector::Class(class) => class,
         Selector::Method(method) => &method.class,
@@ -105,6 +123,11 @@ pub fn run_with_jobs(
         });
     }
     let engine = Engine::open(inputs)?.with_method_jobs(jobs);
+    let engine = if outline {
+        engine.with_outline()
+    } else {
+        engine
+    };
     let class = ClassKey {
         dex: selected.image.dex,
         class_def: selected.class_def,
@@ -151,7 +174,7 @@ pub fn run_with_jobs(
     })
 }
 
-fn select_method(
+pub(super) fn select_method(
     facts: &ClassFacts,
     selector: &MethodSelector,
 ) -> Result<MethodId, DecompileError> {

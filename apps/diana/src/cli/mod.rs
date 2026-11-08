@@ -8,6 +8,7 @@
 mod extract_cli;
 mod get;
 mod matching;
+mod outline;
 mod output;
 mod resources;
 mod table;
@@ -206,6 +207,10 @@ enum Command {
         /// Write the result to this file instead of stdout
         output: Option<PathBuf>,
     },
+    /// Show all original class members with structured method outlines
+    OutlineClass(outline::ClassArgs),
+    /// Show one method's structure and optionally expand referenced calls
+    OutlineMethod(outline::OutlineArgs),
     /// Extract one physical entry
     #[command(
         long_about = "Writes exactly one entry. A binary XML payload is decoded to text XML by default; --raw keeps the original payload. Publication is atomic."
@@ -326,6 +331,8 @@ pub fn run() -> std::process::ExitCode {
             output.as_deref(),
         ),
         Command::Tree(args) => tree::run(args),
+        Command::OutlineClass(args) => outline::class(args),
+        Command::OutlineMethod(args) => outline::method(args),
         Command::Entries {
             input,
             format,

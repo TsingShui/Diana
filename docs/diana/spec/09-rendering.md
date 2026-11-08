@@ -443,6 +443,29 @@ for a cross-node composition. P9 does not manufacture textual operations
 merely to give every original instruction a nonempty range. Offsets are measured
 while writing; they are never reused from an earlier qualified-name rendering.
 
+## Outline presentation
+
+An Engine request with `with_outline()` asks the same P9 traversal to retain
+line ranges, lexical depths, member/header identities and original call targets.
+Ordinary retrieval does not allocate this optional presentation product. P9 records
+scope boundaries while printing the delivered emission plan; an outline consumer
+MUST NOT parse Java-like text or recover control structure from indentation.
+Outline lines refer to the existing UTF-8 publication, without block-closing
+punctuation. Conditions, copies, effects, explicit transfers, protection and
+local diagnostics retain their original order and lexical placement. Calls in
+origin-only cleanup or ABI attachments retain that status; they are not additional
+executions. An origin-only call has a method-local anchor, not an invented lexical
+body location.
+
+The application consumes these immutable lines and call facts for `outline-class`
+and `outline-method`. It owns original locators, declaration-only target selection
+and cross-method traversal. Every expanded body uses the ordinary Engine entry;
+P9 MUST NOT start another method analysis. Class members keep their declaration
+positions, including an initializer whose ordinary spelling is empty. Repeated
+bodies are references, not duplicate reconstructions. Dynamic dispatch, unavailable
+declarations and incomplete scans remain explicit; a referenced declaration body
+is not a claim about the runtime target. Text and JSON use one flat outline arena.
+
 ## Failure locality and output errors
 
 Existing input, type, storage and control gaps remain content of the result, not

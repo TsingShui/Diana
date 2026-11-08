@@ -428,6 +428,7 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
                 };
                 let explicit = matches!(syntax, InitializationSyntax::Explicit);
                 if explicit && let Some(receiver) = c.receiver {
+                    self.outline_call(c.target, c.kind)?;
                     if self.call_owner(c.target, c.qualification).is_some() {
                         self.out.put("(")?;
                     }
@@ -974,6 +975,7 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
                 self.argument_events(work, id, elements)?;
             }
             ExprKind::Call(call) => {
+                self.outline_call(call.target, call.kind)?;
                 if matches!(
                     call.kind,
                     crate::p2::InvokeKind::Custom | crate::p2::InvokeKind::Polymorphic
@@ -1016,6 +1018,7 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
                 constructor,
                 arguments,
             } => {
+                self.outline_call(*constructor, crate::p2::InvokeKind::Direct)?;
                 if !self.kotlin_notation() {
                     self.out.put("new ")?;
                 }
@@ -1411,6 +1414,7 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
         initialization: Option<InitializationSyntax>,
         relation: Option<crate::p4::ConstructorRelation>,
     ) -> Result<(), RenderError> {
+        self.outline_call(c.target, c.kind)?;
         if let Some(InitializationSyntax::This | InitializationSyntax::Super) = initialization {
             let start = self.out.position();
             self.out.put(

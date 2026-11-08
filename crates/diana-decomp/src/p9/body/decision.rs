@@ -27,6 +27,7 @@ impl Expressions<'_, '_> {
             self.out.put(&emission.label)?;
             self.out.put(": ")?;
         }
+        self.out.mark_outline("when");
         self.out.put("when (")?;
         self.operand(first.selector)?;
         self.out.span(

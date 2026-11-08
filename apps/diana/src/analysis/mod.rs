@@ -18,6 +18,7 @@ pub mod filter;
 pub mod images;
 pub mod input;
 pub mod manifest;
+pub mod outline;
 pub mod query;
 pub mod request;
 pub mod resources;
