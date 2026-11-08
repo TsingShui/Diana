@@ -201,6 +201,16 @@ pub(super) fn copy<T: Copy>(data: &[T]) -> Result<Vec<T>, RequestError> {
 pub(super) fn id(n: usize) -> Result<u32, RequestError> {
     u32::try_from(n).map_err(|_| RequestError::PlatformCapacity)
 }
+/// A type in `java.lang` needs no import line: every compilation unit already
+/// resolves that package. Its simple spelling stays a plan fact; only the written
+/// import is dropped.
+const JAVA_LANG: &[u8] = b"java.lang";
+fn implicitly_imported(full: &[u16], package_end: usize) -> bool {
+    full[..package_end]
+        .iter()
+        .copied()
+        .eq(JAVA_LANG.iter().copied().map(u16::from))
+}
 fn target(descriptor: &[u16], at: TargetId) -> Result<TypeTarget, RequestError> {
     let rank = descriptor.iter().take_while(|&&v| v == 91).count();
     let base = &descriptor[rank..];
@@ -373,6 +383,7 @@ pub(super) fn construct(
         let mut import = None;
         if spelling == Spelling::Simple
             && t.full[..t.package_end] != owner.full[..owner.package_end]
+            && !implicitly_imported(&t.full, t.package_end)
         {
             import = plan
                 .imports

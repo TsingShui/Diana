@@ -238,14 +238,14 @@ Kotlin fixtures are **never scored**; their review is the record (see below).
 | `loop-for` | 62% / 38% | no `for`; `break`/`continue` are labels and gotos |
 | `loop-for-multi` | 64% / 26% | multi-init/update and empty segments all become independent assignments |
 | `loop-map-views` | 64% / 69% | map views and custom `Iterable` become `Iterator` + `Object` + cast |
-| `loop-do-while-sideeffect` | 61% / 54% | side-effecting conditions print in the loop body with an inverted `break`; `do-while` still has no `do` |
+| `loop-do-while-sideeffect` | 61% / 51% | side-effecting conditions print in the loop body with an inverted `break`; the checked value now prints as a cast on its use, so the whole class is plain Java |
 | `loop-shared-exit` | 49% / 31% | private exit work stays in the branch; nested and labelled breaks replace the gotos |
 | `loop-do-while` | 54% / 34% | `do-while` recovered; `v1 = (v1 + 1)` against `index++` dominates the diff |
 | `loop-tail-shapes` | 82% / 58% | tail tests correct both ways; remaining `nop` and goto-based exits |
 
 ### Loop semantics evidence
 
-Executed differential check, 2026-11-08: original fixture methods against Diana's rendered methods over generated inputs (equal return values, exception classes, mutated arrays and static state). 1134 comparisons across `loop-for`, `loop-for-multi`, `loop-do-while` and `algo-sort`, 0 mismatches; `algo-sort.quick` contributes 896 of them and is rendered without any Diana-only notation. The checker is sensitive: a changed loop bound in `LoopDoWhile.countUp` produced 5 mismatches, and a broken swap in `quick` produced array mismatches. Not covered: methods whose rendered text still needs Diana-only notation (`via` in `loop-do-while-sideeffect`), methods that are not type-correct (`algo-matrix` returns an `Object` local from an `int[][]` method), and loops that render with `goto`. This is a bounded behavioral comparison, not a proof for all inputs.
+Executed differential check, 2026-11-08: original fixture methods against Diana's rendered methods over generated inputs (equal return values, exception classes, mutated arrays, deque contents and static state). 1186 comparisons across `loop-for`, `loop-for-multi`, `loop-do-while`, `loop-do-while-sideeffect` and `algo-sort`, 0 mismatches; `algo-sort.quick` contributes 896 of them and `loop-do-while-sideeffect` 52. Both classes render as plain Java. The checker is sensitive: a changed loop bound in `LoopDoWhile.countUp` produced 5 mismatches, a broken swap in `quick` produced array mismatches, and an inverted null test in `consume` produced mismatches. Not covered: methods that are not type-correct (`algo-matrix` returns an `Object` local from an `int[][]` method) and loops that render with `goto`. This is a bounded behavioral comparison, not a proof for all inputs.
 
 ### Exceptions
 

@@ -167,11 +167,14 @@ import candidates. Parameter names also participate in lexical shadowing for
 ordinary type uses.
 
 Incomplete lexical evidence or uninterpreted signature scope keeps qualified
-spelling. A reference into `java.lang` is not assumed to be unaffected by an
-unestablished same-package declaration: the planner adds an explicit single-type
-import for it, because Java resolves a single-type import before the package and
-before `java.lang.*`. The usage then shortens without asserting anything the
-input did not establish, and no external classpath query is involved.
+spelling. A `java.lang` target shortens without an import line: every compilation
+unit already resolves that package, so the written import stated nothing and is
+dropped from the plan. A delivered same-package type of the same simple name is
+the one case where the written import could still bind differently; a class that
+uses both keeps qualified spelling through the same-name conflict rule below, and
+a class that uses only the `java.lang` type keeps the simple spelling. The plan
+therefore does not claim to have established the input's whole package; it states
+what the delivered class itself needed.
 
 Unambiguous same-package uses shorten without import; other established simple
 uses receive explicit single-type imports. Imports are deduplicated by full binary
