@@ -120,6 +120,10 @@ Commands are only re-verified with the ordinary equivalence checks (`get-class`,
 | `complex-lambda` | lambdas, capturing lambda, anonymous supplier, method reference, comparator |
 | `complex-iteration` | iterator loops, enhanced `for`, `Map.Entry`, `iterator.remove()` |
 | `complex-switch-nested` | `switch` inside a loop inside `try`, labelled `break`/`continue` |
+| `complex-stream` | stream pipelines, method references, `Optional`, `IntStream` |
+| `complex-map-nested` | `Map<String, List<Integer>>`, `computeIfAbsent`, `getOrDefault`, entry loops |
+| `complex-recursion` | mutual recursion, accumulator recursion, memoised Fibonacci |
+| `algo-matrix` | matrix multiply, transpose, spiral traversal |
 | `kotlin-null-safety` | `?.`, `?:`, `!!`, safe-call chain, `@Metadata` (Kotlin source; review only, no Java reference to score against) |
 
 ## Reviews
@@ -162,8 +166,12 @@ Commands are only re-verified with the ordinary equivalence checks (`get-class`,
 | `algo-string` | 38% / 62% | KMP and counting correct; `new StringBuilder` split into `new` + `.<init>` |
 | `algo-tree` | 34% / 60% | recursion correct; every field read goes through a temporary, generics dropped |
 | `complex-switch-nested` | 17% / 38% | labelled `break`/`continue` collapse into gotos; every operation carries an `[after_operands_before_effect]` snapshot |
+| `complex-recursion` | 66% / 55% | mutual/accumulator recursion and memoisation correct; temporaries everywhere |
+| `complex-stream` | 62% / 73% | pipelines and method references correct; lambda bodies and `$r8$lambda$…` names enter the class body |
+| `complex-map-nested` | 54% / 69% | `computeIfAbsent` lambdas correct; nested generic arguments lost, `via` and dangling casts appear |
+| `algo-matrix` | 28% / 29% | all three correct; `new int[m][n]` becomes `Array.newInstance` and the result is returned as `Object` |
 
-Corpus totals (round 1): **structure 66%, naming 61%** over 131 methods. The
+Corpus totals (round 1): **structure 65%, naming 61%** over 149 methods. The
 `complex-*` and `algo-*` fixtures are the lowest scorers: real code multiplies the
 temporary variables, `while (test { … })` loops and goto-based exits that the
 single-structure fixtures isolate. The second
