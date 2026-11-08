@@ -256,8 +256,11 @@ exact negation. Original true/false edge identities and child ownership stay
 unchanged; the false-edge copies begin the displayed body. A true-edge copy
 bundle with no executable steps or unavailable assignments is nonprinting; P9
 retains its zero-length copy and transfer origins without moving any step.
-A displayed predicate exception site prevents inversion. If both arms are empty,
-P7 suppresses the test only when it has no terminal phases, displayed site or
+The omitted true child retains zero-length control, label, terminal and silent
+transfer origins at the displayed arm; P9 emits those anchors without evaluating
+or printing the omitted child. A displayed predicate exception site prevents
+inversion. If both arms are empty, P7 suppresses the test only when it has no
+terminal phases, displayed site or
 composed operand evaluation, and its control has no continuation or deferred
 control; its header still prints at the original position. This omission requires
 both arms' copy bundles to have no executable steps or unavailable assignments.

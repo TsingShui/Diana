@@ -186,6 +186,9 @@ impl Expressions<'_, '_> {
                                 IfShape::Inverted => {
                                     push(&mut work, Event::Close)?;
                                     push(&mut work, Event::Control(*no))?;
+                                    // The omitted empty arm still owns controls,
+                                    // labels and any silent original transfers.
+                                    push(&mut work, Event::EmptyArmAnchors(*yes))?;
                                     push(
                                         &mut work,
                                         Event::If {
@@ -482,7 +485,8 @@ impl Expressions<'_, '_> {
                     }
                     push(&mut work, Event::Control(yes))?;
                 }
-                Event::Anchors(control) => {
+                Event::Anchors(control) | Event::EmptyArmAnchors(control) => {
+                    let empty_arm = matches!(event, Event::EmptyArmAnchors(_));
                     let start = self.out.position();
                     self.out.span(
                         start,
@@ -540,6 +544,20 @@ impl Expressions<'_, '_> {
                         };
                         if let Some(terminal) = terminal {
                             let start = self.out.position();
+                            match self.code.terminals()[terminal.0 as usize].kind {
+                                TerminalKind::Goto(link) if empty_arm => {
+                                    self.selected(link, false)?;
+                                }
+                                TerminalKind::If {
+                                    when_true,
+                                    when_false,
+                                    ..
+                                } if empty_arm && self.code.emission().empty_if(terminal) => {
+                                    self.selected(when_true, false)?;
+                                    self.selected(when_false, false)?;
+                                }
+                                _ => {}
+                            }
                             self.out.span(
                                 start,
                                 Origin::Terminal {
@@ -552,7 +570,14 @@ impl Expressions<'_, '_> {
                         let children = self.code.emission().controls()[control.0 as usize]
                             .children(&self.code.controls()[control.0 as usize]);
                         for &child in children.iter().rev() {
-                            push(&mut work, Event::Anchors(child))?;
+                            push(
+                                &mut work,
+                                if empty_arm {
+                                    Event::EmptyArmAnchors(child)
+                                } else {
+                                    Event::Anchors(child)
+                                },
+                            )?;
                         }
                     }
                 }
@@ -870,6 +895,7 @@ enum Event {
     /// A delivered control subtree that prints no text still anchors its
     /// original controls, labels, transfers and copies.
     Anchors(ControlId),
+    EmptyArmAnchors(ControlId),
     Else(TransferId),
     ElseIf(TransferId),
     LoopHead(PredicateEmission),
