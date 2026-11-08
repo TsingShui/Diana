@@ -48,10 +48,13 @@ promote it to a completed MethodResult. The production method chain has no paral
 
 P5 Local representatives select execution storage, not new source identities.
 P7 retains alias Local records and hides only their redundant declarations.
-Existing single-value expression and array composition refuse reused storage;
-adjacent check carriers additionally retain exact ValueId/StateId matching,
-while the old nonadjacent carrier search cannot consume reused storage.
-P4-established redundant checks remain a separate omission decision.
+Existing single-value expression and array composition refuse reused storage; a
+check carrier accepts the checked read or the read of a pure reference copy of it,
+whose own input read names exactly the checked `ValueId`/`StateId`. A reused
+representative therefore no longer blocks the carrier search: copying a reference
+does not change the object's type, so the copy publishes a state that still holds
+the checked value. P4-established redundant checks remain a separate omission
+decision.
 
 A phase-free, site-free Move with a direct read and store to the same reused
 representative contributes origin-only text at its original position. Other
@@ -79,7 +82,10 @@ P7 composes a check-cast's display into the first printed read of its checked
 local only when that read is the first evaluated value of the following statement
 or the first executed step of this block's single unconditional transfer copy set.
 The carrier names that exact statement and read-expression occurrence, so a second
-read of the same storage in the printed form never carries the check. The check's
+read of the same storage in the printed form never carries the check. A carrier
+read whose state a pure reference copy of the checked value published also carries
+it: the copy's input read is the checked `ValueId`/`StateId` itself, so no other
+event sits between the check and the copied value. The check's
 own statement, operation, exception site, reference, resolved type name and
 original copy steps MUST stay in the product with their source origins; composition
 removes one display action, not the check event, and P7 MUST refuse the composition

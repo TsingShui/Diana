@@ -60,21 +60,26 @@ pub(super) fn construct(
     distant_uses(code, &protection, &omitted, &mut found, &mut why_slots)?;
     // A redundant check has no text to carry, so its value's read keeps its own
     // spelling and the check's statement only contributes its origins.
-    found.retain(|(statement, check)| {
+    let mut kept: Vec<(StatementId, InlineCheck)> = Vec::new();
+    for (statement, check) in found {
         if omitted
             .get(statement.0 as usize)
             .is_some_and(Option::is_some)
         {
-            return false;
+            continue;
         }
-        if code.locals[check.value.0 as usize].original.is_reused()
-            && !same_checked_read(code, *statement, check.occurrence)
-        {
-            why_at(&mut why_slots, *statement, "carrier_value_state_changed");
-            return false;
+        let copied = if code.locals[check.value.0 as usize].original.is_reused() {
+            checked_copy_states(code, statement, check.value)?
+        } else {
+            Vec::new()
+        };
+        if !carries_check(code, statement, check.value, check.occurrence, &copied) {
+            why_at(&mut why_slots, statement, "carrier_value_state_changed");
+            continue;
         }
-        true
-    });
+        push(&mut kept, (statement, check))?;
+    }
+    let found = kept;
     if !found.is_empty() {
         for (_, check) in &found {
             let index = u32::try_from(code.emission.inline_checks.len())
@@ -210,21 +215,85 @@ fn eligible_check(
 }
 
 fn same_checked_read(code: &MethodCode, statement: StatementId, occurrence: ExprId) -> bool {
+    matches!(
+        (checked_read(code, statement), read_of(code, occurrence)),
+        (Some((a, sa)), Some((b, sb))) if a == b && sa == sb
+    )
+}
+/// The published `(value, state)` of a check's own read.
+fn checked_read(
+    code: &MethodCode,
+    statement: StatementId,
+) -> Option<(crate::p3::ValueId, crate::p3::StateId)> {
     let StatementKind::CheckCast { value, .. } = code.statements[statement.0 as usize].kind else {
-        return false;
+        return None;
     };
-    let source = code.expressions[value.0 as usize]
+    read_of(code, value)
+}
+fn read_of(
+    code: &MethodCode,
+    expression: ExprId,
+) -> Option<(crate::p3::ValueId, crate::p3::StateId)> {
+    match code
+        .expressions
+        .get(expression.0 as usize)?
         .origin
-        .as_ref()
-        .and_then(|o| o.read.ok());
-    let use_ = code.expressions[occurrence.0 as usize]
-        .origin
-        .as_ref()
-        .and_then(|o| o.read.ok());
-    matches!((source, use_), (
-        Some(crate::p5::StorageRead::Value { value: a, state: sa, .. }),
-        Some(crate::p5::StorageRead::Value { value: b, state: sb, .. })
-    ) if a == b && sa == sb)
+        .as_ref()?
+        .read
+        .ok()?
+    {
+        crate::p5::StorageRead::Value { value, state, .. } => Some((value, state)),
+        _ => None,
+    }
+}
+/// States in which the storage holds a pure copy of the checked value.
+///
+/// P5 can merge the copy of a checked local into that local, which then carries
+/// several value bindings and blocks the reused-storage carrier below. Copying a
+/// reference does not change the object's type, so the copy's own read keeps the
+/// check: it reads exactly the checked `(value, state)`, and the carrier read is
+/// the state that copy published. No other event sits between them, because the
+/// copy's input already names the checked read itself.
+fn checked_copy_states(
+    code: &MethodCode,
+    statement: StatementId,
+    storage: StorageId,
+) -> Result<Vec<crate::p3::StateId>, ExpressionError> {
+    let Some(source) = checked_read(code, statement) else {
+        return Ok(Vec::new());
+    };
+    let mut states = Vec::new();
+    for candidate in &code.statements {
+        if candidate.id == statement {
+            continue;
+        }
+        let StatementKind::Move { expression, .. } = candidate.kind else {
+            continue;
+        };
+        if read_of(code, expression) != Some(source) {
+            continue;
+        }
+        let [output] = candidate.outputs.as_slice() else {
+            continue;
+        };
+        if !matches!(output.materialization(), Materialization::Store(local) if StorageId(local.0) == storage)
+        {
+            continue;
+        }
+        push(&mut states, output.state())?;
+    }
+    Ok(states)
+}
+fn carries_check(
+    code: &MethodCode,
+    statement: StatementId,
+    storage: StorageId,
+    occurrence: ExprId,
+    copied: &[crate::p3::StateId],
+) -> bool {
+    !code.locals[storage.0 as usize].original.is_reused()
+        || same_checked_read(code, statement, occurrence)
+        || read_of(code, occurrence).is_some_and(|(_, state)| copied.contains(&state))
 }
 fn carried_check(
     code: &MethodCode,
@@ -378,10 +447,11 @@ fn distant_uses(
             else {
                 continue;
             };
-            if code.locals[storage.0 as usize].original.is_reused() {
-                why_at(why_slots, statement, "distant_storage_has_multiple_values");
-                continue;
-            }
+            let copied = if code.locals[storage.0 as usize].original.is_reused() {
+                checked_copy_states(code, statement, storage)?
+            } else {
+                Vec::new()
+            };
             let mut why = None;
             let mut carried = None;
             for candidate in &code.statements {
@@ -406,6 +476,12 @@ fn distant_uses(
                 }
                 if !rendered_once(code, candidate.id, occurrence)? {
                     why = Some("distant_read_renders_twice");
+                    continue;
+                }
+                // A merged local publishes several value bindings; its check still
+                // carries to the read of a pure copy of the checked value.
+                if !carries_check(code, statement, storage, occurrence, &copied) {
+                    why = Some("distant_checked_value_changed");
                     continue;
                 }
                 carried = Some(carried_check(
