@@ -91,6 +91,14 @@ Commands are only re-verified with the ordinary equivalence checks (`get-class`,
 | `branch-ifz` | single-register branches, `null` check |
 | `cast-instanceof` | `instanceof`, `check-cast`, array cast |
 | `exception-one-catch` | one catch that returns, one that rethrows, effect order inside `try` |
+| `exception-multi-catch` | one multi-catch clause, one caught rethrow |
+| `exception-finally` | `finally` on the normal path and on the throwing path |
+| `exception-two-resources` | try-with-resources over two resources, `close` + `addSuppressed` |
+| `loop-for` | classic `for` with `break` and `continue` in the body |
+| `loop-do-while` | `do-while`, `do-while` with `break`, nested `do-while` |
+| `branch-switch-string` | switch over `String`, grouped `case` labels, effects in branches |
+| `branch-switch-enum` | switch over an enum with a `default` arm |
+| `sync-block` | `synchronized` block, early return inside it, nested blocks |
 | `kotlin-null-safety` | `?.`, `?:`, `!!`, safe-call chain, `@Metadata` (Kotlin source; review only, no Java reference to score against) |
 
 ## Reviews
@@ -107,8 +115,18 @@ Commands are only re-verified with the ordinary equivalence checks (`get-class`,
 | `branch-if2` | 71% / 50% | correct but inverted (`<` → `>=`) and split into early returns |
 | `expr-compare` | 53% / 38% | predicates expanded to temporaries plus `if` |
 | `exception-one-catch` | 48% / 57% | semantics correct; `[exn c0]`, `exception_chain`, `nop` dominate the diff |
+| `exception-finally` | 78% / 50% | `finally` becomes a duplicated normal path plus `catch (all)` rethrow |
+| `exception-multi-catch` | 43% / 80% | `\|` becomes two catches plus `goto`; declarations hoisted |
+| `exception-two-resources` | **7.6%** / 33% | handlers printed outside their protected range; no `try (` form |
+| `loop-for` | 62% / 38% | no `for`; `break`/`continue` are labels and gotos |
+| `loop-do-while` | 54% / 34% | `do` lost entirely; body wrapped in `while (test { graph<Unstructured> … })` |
+| `branch-switch-string` | 18% / 71% | two-level hash/equals switch plus `graph<MultipleEntry>` |
+| `branch-switch-enum` | 42% / 25% | `ordinal()` switch correct, temporaries and `default` order differ |
+| `sync-block` | 42% / 83% | `synchronized` kept, but every block carries `catch (all)`, `release`, `goto` |
 
-Corpus totals (round 1): **structure 82%, naming 65%** over 58 methods.
+Corpus totals (round 1): **structure 74%, naming 62%** over 75 methods. The second
+batch (loops, switches, exceptions, synchronization) is exactly where the recovery
+is weakest: string switch 18%, two-resource TWR 8%, synchronized 42%.
 
 An external comparison for context: over `dex-decompiler`'s fixture corpus the
 same kind of reading gave ASC the best shape recovery, `dex-decompiler` the best

@@ -7,7 +7,10 @@ and no numeric threshold applies. The verdict below is the record.
 - Provenance: authored for this repository. No third-party code or data.
 - Prepared with `kotlinc -jvm-target 1.8` + `d8 --min-api 24 --lib kotlin-stdlib.jar`
   (see `quality/build.sh` output for the versions in use).
-- Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
+- Regenerate with `quality/build.sh`; never edit `classes.dex` by hand. `kotlinc`
+  output is not byte-reproducible (rebuilding changes the DEX bytes while the
+  decompiled result stays identical), so a rebuild-only change to this file needs
+  no commit.
 
 ## Current verdict — round 1, 2026-11-08
 
