@@ -100,6 +100,9 @@ chapters describe the existing implementation until migrated to this target.
   changes.
   Identify consumed facts, guarantees, invariants and classified failure behavior.
   If contracts conflict with the change, stop and request a decision.
+- For discovery, fixture reduction and repair acceptance, follow
+  [EVOLUTION](docs/diana/EVOLUTION.md). Unimplemented, unrun or unsupported
+  checks MUST NOT be reported as passing.
 - For detailed architecture, Rust conventions, dependency choices, acceptance,
   file verification, corpus handling and reference isolation, read
   [CONTRIBUTING](docs/diana/CONTRIBUTING.md) for the relevant work. Read
@@ -111,10 +114,23 @@ chapters describe the existing implementation until migrated to this target.
   delivered P0/P1/P2/P3/P4/P5/P6/P7/P8/P9 products. `class` is the `class_def` index of that image and
   `method` is the engine-wide `MethodId`, not an index inside the class. Do not add phase-specific debug binaries, renderers or
   debug examples.
-- Contributors MUST NOT develop, add or restore unit, integration, end-to-end or
-  other automated tests, including inline `#[test]` functions, new `#[cfg(test)]`
-  modules, private-phase test harnesses, fixtures and CI test jobs. The previous
-  core test was removed by operator decision.
+- Contributors MAY develop unit, integration, end-to-end and regression tests,
+  fixture preparation tools and CI test jobs. Tests MUST use independent
+  expectations and current product contracts. Review historical cases before
+  reuse; do not restore obsolete output gates or alternate analysis routes.
+  Engine correspondence/replay checkers MUST remain under `cfg(test)`, consuming
+  products delivered through the ordinary Engine entry without widening stage
+  access or construction authority.
+- Contributors MAY author paired Java explanations, Smali inputs and independent
+  expectations for reproduction and regression under
+  [FIXTURES](docs/diana/FIXTURES.md).
+  Track source pairs in `fixtures/<slug>/`; assemble Smali into DEX under
+  `.cache/fixtures/<slug>/` without a per-fixture tool-version pin. Record the
+  actual assembly environment and keep generated output out of version control.
+  `quality/` is a separate output-quality area: its fixtures commit their DEX so a
+  review needs no toolchain, and its reviews are written judgements, not tests or
+  acceptance evidence; the exception covers `quality/fixtures/**/classes.dex` only.
+  Test authorization does not permit independent validation on production requests.
 - Production input safety, analysis invariants and semantics-preserving transform
   checks remain required. Existing independent verifier code MUST NOT run in
   ordinary requests. Build/lint success does not establish semantic correctness.
@@ -139,8 +155,10 @@ The CLI and engine hold the 1.93 minimum and CI gates them on that toolchain on
 Linux, macOS and Windows. The GPUI desktop application follows current stable and
 needs the platform GUI libraries; CI gates the full workspace on Linux stable only.
 
-Run applicable format, lint and build checks. Report failures and unrun evidence
-accurately; do not report removed tests or missing semantic evidence as a pass.
+Run applicable format, lint, build and implemented test checks. Before integrating
+an evolution repair, run its required regression set under EVOLUTION. Report
+failures, missing cases and unrun evidence accurately; an empty test run or an
+unimplemented checker is not acceptance evidence.
 
 ## Documentation map
 
@@ -150,6 +168,8 @@ accurately; do not report removed tests or missing semantic evidence as a pass.
 - [spec](docs/diana/spec/): product boundary and implemented P0/input/P1/P2/P3 contracts.
 - [SOURCE_MAP](docs/diana/SOURCE_MAP.md): sources, attribution and reference use.
 - [CONTRIBUTING](docs/diana/CONTRIBUTING.md): detailed contribution rules.
+- [FIXTURES](docs/diana/FIXTURES.md): Java/Smali pairs and DEX reproduction evidence.
+- [EVOLUTION](docs/diana/EVOLUTION.md): discovery-to-repair workflow and test-side acceptance design.
 - [WRITING](docs/diana/WRITING.md): documentation conventions.
 
 PIPELINE_DESIGN is the approved architecture, not an implementation-status claim.

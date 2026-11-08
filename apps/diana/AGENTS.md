@@ -13,6 +13,10 @@ DESIGN and ALGORITHMS sections before changing application behavior.
   libdeflater is approved; active Rust code forbids unsafe.
 - Do not delegate to or depend on rasc, dexdec or rusty-dex. Reuse historical
   input/ZIP ideas only after focused review with compatibility and security evidence.
-- Contributors MUST NOT develop, add or restore unit tests. Follow the root
-  testing policy; preserve production input, query, extraction and safety checks.
+- Source fixtures and regression inputs follow
+  [FIXTURES](../../docs/diana/FIXTURES.md).
+- Automated tests follow the root testing policy. Exercise ordinary application
+  commands or owning-module interfaces; preserve production input, query,
+  extraction and safety checks. Test authorization does not add production
+  verification or another engine path.
 - Build from the repository root with `cargo build --locked -p diana`.

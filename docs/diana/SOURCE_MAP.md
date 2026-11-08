@@ -113,13 +113,14 @@ implementations. Both workspace packages declare `Apache-2.0`; the repository
 added, per the repository instruction to retain existing files rather than
 introduce a new bundle.
 
-Test inputs are self-made. Java sources are compiled with the locked Temurin
-21.0.8+9 `--release 8`; DEX fixtures come from locked D8 8.3.37, the self-made
-D085 Python builder or hand-written Smali assembled by locked smali 2.5.2, and
-declaration facts come from that locked JDK, locked classfiles or the same
-self-made definitions. `Polymorphic.smali` and the D085 builder are authored here,
-not recovered output or downloaded programs. Reference papers and tools stay in
-ignored `.cache/references/` and are used as specifications and assertions, not as
+Fixture inputs are self-made. [FIXTURES](FIXTURES.md) defines Java/Smali source
+pairs, assembly-environment records without exact-version admission gates, and
+independent expectation evidence. A public
+project's control-flow pattern can motivate an independently authored reduction;
+copying its source still requires license and attribution review. Compilation
+libraries and fixture stubs are preparation inputs, not external declaration
+facts for Diana's engine. Reference papers and tools stay in ignored
+`.cache/references/` and are used as specifications and assertions, not as
 oracles or copied fixtures.
 
 One generated data asset exists: `apps/diana/src/analysis/attr_names.rs` maps public
@@ -379,4 +380,4 @@ Independent normative basis for case revisions (R10): [DEX access_flags/encoded_
 
 `.cache/` is this repository's explicitly uncommitted generated directory, not a private-machine dependency; **all required content must be reproducible**. Input source, expectations, manifests, recipes and tool versions are checked in; do not resolve missing files with “it exists on my machine.” Scripts locate their command working directories relative to themselves/the checkout; the shell need not start in a particular directory.
 
-Actual reference URLs/commits/sparse paths are maintained only in REFERENCES at the top of tools/fetch_references.py. Network access occurs only on explicit execution; --list does not access the network or write the cache. Reuse existing nonempty TXT, without re-downloading PDFs or overwriting modifications. Check source HEAD/origin/cleanliness, without reference checksums; do not build/test reference projects or run downloaded scripts. Keep papers/slides only as same-name UTF-8 TXT, mark OCR for scanned documents, retain original URLs and revisit originals when formulas/figures are in doubt. E2E tools/fixtures require version/dependency locks and independent semantic evidence for the core E2E cases. SHA-256 records are informational only and are not verified.
+Actual reference URLs/commits/sparse paths are maintained only in REFERENCES at the top of tools/fetch_references.py. Network access occurs only on explicit execution; --list does not access the network or write the cache. Reuse existing nonempty TXT, without re-downloading PDFs or overwriting modifications. Check source HEAD/origin/cleanliness, without reference checksums; do not build/test reference projects or run downloaded scripts. Keep papers/slides only as same-name UTF-8 TXT, mark OCR for scanned documents, retain original URLs and revisit originals when formulas/figures are in doubt. Fixture assembly and independent evidence follow [FIXTURES](FIXTURES.md); record the actual environment rather than require per-fixture tool-version locks. Reference source revision pins remain unchanged. SHA-256 records are informational only and are not verified.

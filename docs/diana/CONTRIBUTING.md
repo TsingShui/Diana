@@ -154,22 +154,34 @@ reproducible inputs; no private APKs are committed.
 
 ## Testing policy
 
-The root [AGENTS.md](../../AGENTS.md) prohibits developing, adding or restoring
-tests. The previous core test and other cases were removed by operator decision.
-CI runs format, lint and build checks without test jobs.
-Contributors MUST NOT restore removed cases or test-only construction paths.
+The root [AGENTS.md](../../AGENTS.md) permits automated tests, regression tools
+and CI test jobs. This includes maintenance and build-tool tests. Contributors
+MUST review historical cases against current contracts before reuse. Test-only
+construction paths MUST NOT bypass the shared method chain or stage authority.
 
-Contributors MUST NOT write tests for non-core code, including maintenance
-scripts, downloaders, documentation generators and build/release helpers.
-Contributors MUST NOT bypass this prohibition with self-tests or automated smoke
-checks, and MUST NOT request an exception.
+Contributors MAY author paired Java explanations, Smali inputs and independent
+expectations for reproduction and regression. [FIXTURES](FIXTURES.md) defines
+their layout, assembly-environment records and source-only publication; it does
+not require Java/D8/R8 compilation or exact assembler versions.
+
+`quality/` holds readable output-quality fixtures and their written reviews. Its
+DEX is committed so a review needs no toolchain, and a review records judgement,
+not a test result: it MUST NOT be cited as regression or acceptance evidence, and
+it does not gate a change.
+
+[EVOLUTION](EVOLUTION.md) fixes the discovery-to-repair procedure, checker design
+and acceptance criteria. Contributors MUST distinguish independent expectations
+from observed engine output. Cases that cannot be prepared or evaluated MUST
+remain explicit failures or unchecked results, not successful skips. Reports
+MUST identify the required scenarios, exercised subset and actual outcomes.
+Current suite and CI availability belong in [README](README.md#regression-workflow-status).
 
 Production retains safe parsing, range/arithmetic checks, fallible allocation and
 necessary construction error handling. Independent output audits, symbolic replay,
 duplicate graph/dominance checks and transform-correspondence verification MUST
 compile only under `cfg(test)`. Ordinary debug/release requests MUST NOT execute
-them, and no runtime or feature switch enables them. No test case is present to
-invoke these existing verifiers. A successful production product means construction
+them, and no runtime or feature switch enables them. Test authorization does not
+change this separation. A successful production product means construction
 completed, not that an independent verifier accepted it.
 
 Regression review checks original member identities, readable availability and
@@ -331,7 +343,8 @@ Prefer small self-made fixtures with documented source/license/recipe.
 ## Contribution and releases
 
 Check existing design first and follow the root testing policy. Run applicable
-active-only format, lint and build gates and report blocked or not-run evidence.
+active-only format, lint, build and implemented test gates, and report blocked or
+not-run evidence.
 Use Conventional Commit messages. Agents MUST prefix every commit subject with
 `[AUTOMATED] ` before the Conventional Commit type, for example
 `[AUTOMATED] feat: decode original debug programs`. When commits are authorized,

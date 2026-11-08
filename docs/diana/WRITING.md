@@ -140,9 +140,10 @@ artifacts, semantic traces and public results are evidence sources. Mere file
 existence or exit code zero is insufficient when the contract requires semantic
 correctness, completeness or integrity.
 
-Authors MUST follow the testing policy in the root AGENTS.md. Writing rules do
-not authorize prohibited tests or restoring removed cases. Independent acceptance
-values remain independent of engine output.
+Authors MUST follow the testing policy in the root AGENTS.md. Describing a
+check does not establish that it exists or has run. Historical cases require
+review against current contracts; independent acceptance values remain
+independent of engine output.
 
 Batch records MUST use repository-tracked input/test paths, fixed revisions,
 reproduction commands and explicit observed outcomes as their evidence references.

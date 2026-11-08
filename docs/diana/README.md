@@ -31,6 +31,9 @@ construction boundaries and later-stage responsibilities are in [phases](phases.
 | [GUI DESIGN](../../apps/diana-gui/DESIGN.md) | Host-level resource, identity, navigation, view and result contracts; not an Engine integration status claim. |
 | [SOURCE_MAP.md](SOURCE_MAP.md) | Source attribution, reproducibility and evidence boundaries. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution, Rust and acceptance rules. |
+| [FIXTURES.md](FIXTURES.md) | Java explanations, Smali inputs, assembly records and independent expectations. |
+| [quality/README](../../quality/README.md) | Output-quality fixtures, their committed DEX and the written reviews. |
+| [EVOLUTION.md](EVOLUTION.md) | Agreed discovery-to-repair workflow and test-side final-plan acceptance design. |
 | [WRITING.md](WRITING.md) | Documentation conventions. |
 
 Archived implementations are not active stages or alternate recovery paths. Removed specifications and historical
@@ -40,6 +43,19 @@ or method-analysis route.
 
 Engine inspection uses the single `dbg_shell` Cargo example. Build/lint success,
 byte roundtrip and finite corpus checks have different evidence scopes; none alone
-proves complete decompilation correctness. Test cases and fixtures were removed
-by operator decision; root AGENTS.md prohibits adding tests. Production safety
-and stage-owned transform checks remain required.
+proves complete decompilation correctness. Production safety and stage-owned
+transform checks remain required.
+
+## Regression workflow status
+
+[EVOLUTION](EVOLUTION.md) defines the agreed workflow. [FIXTURES](FIXTURES.md)
+uses paired Java explanations and Smali assembly inputs without requiring a
+fixed Java/D8/R8 toolchain or exact assembler version.
+
+The final-output-plan executor and admitted regression suite are not implemented.
+There is no automated acceptance command or regression CI job to report as passing.
+The root testing policy now permits automated tests and CI test jobs. That
+permission does not implement the checker or activate a nonexistent suite.
+[Checker implementation](EVOLUTION.md#checker-implementation) defines the planned
+Rust modules and their qualification. Plan behavior and P9 textual fidelity
+remain separate evidence scopes.

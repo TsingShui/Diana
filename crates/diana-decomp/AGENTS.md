@@ -15,10 +15,14 @@ changing an engine capability.
   failure handling.
 - Remain independent of rasc, dexdec, rusty-dex, Kuna and radguard code. Consult
   `docs/diana/SOURCE_MAP.md` before reviewing or reusing reference material.
-- Contributors MUST NOT develop, add or restore tests. Preserve production input
-  and necessary construction errors. Existing independent correspondence
-  verifiers compile only under `cfg(test)` and MUST NOT run on ordinary Engine
-  requests.
+- Source fixtures and regression inputs follow
+  [FIXTURES](../../docs/diana/FIXTURES.md).
+- Automated tests follow the root testing policy and
+  [EVOLUTION](../../docs/diana/EVOLUTION.md). Engine regression cases MUST use the
+  shared ordinary Engine entry and independent expectations without widening
+  stage access or construction authority. Independent correspondence checkers
+  compile only under `cfg(test)` and MUST NOT run on ordinary Engine requests.
+  Preserve production input safety and necessary construction errors.
 - Engine development verification uses the `dbg_shell` example:
   `cargo run -p diana-decomp --example dbg_shell --locked -- --dex <classes.dex> --exec '<json>'`.
   It is the single P0–P9 inspection entry and accepts a bare DEX. `class` is the

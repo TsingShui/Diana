@@ -1,13 +1,7 @@
 /target/
+# Track fixture source recipes, not generated APK/DEX binaries.
 *.apk
 *.dex
-!/crates/diana-decomp/tests/fixtures/anonymous/classes.dex
-!/crates/diana-decomp/tests/fixtures/container/container.dex
-!/crates/diana-decomp/tests/fixtures/static-fields/classes.dex
-!/crates/diana-decomp/tests/fixtures/numeric-fields/classes.dex
-!/crates/diana-decomp/tests/fixtures/numeric-fields/invalid.dex
-!/crates/diana-decomp/tests/fixtures/numeric-fields/projected.dex
-!/crates/diana-decomp/tests/fixtures/throw-state/classes.dex
 *.jar
 *.zip
 .DS_Store
