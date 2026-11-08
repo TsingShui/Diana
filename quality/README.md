@@ -15,12 +15,20 @@ both false-positive and false-negative prone.
 quality/
 ├── build.sh                     regenerate every fixture's classes.dex
 ├── dump.py                      reference + Diana output side by side, per method
+├── score.py                     structure/naming recovery per method, no thresholds
+├── lib.py                       method splitting and token normalisation
 ├── .gitignore                   keeps the committed fixture DEX in the tree
-└── fixtures/<slug>/             one self-contained fixture per directory
-    ├── <Slug>.java              readable reference and compile input
+└── fixtures/<slug>-<structure>/ one structure per directory
+    ├── <Slug>.java              readable reference, compile input, the expectation
     ├── classes.dex              generated input, committed for reproducibility
-    └── review.md                coverage, preparation, current verdict, round log
+    └── review.md                current verdict, ranked fixes, round log
 ```
+
+A fixture tests **one structure** (constants, two-register branches, one catch):
+that is what makes the Java source a usable expectation and keeps a review short.
+The corpus is grouped by category prefix: `expr-`, `field-`, `invoke-`, `array-`,
+`branch-`, then later `loop-`, `exception-`, `sync-`, `class-`, `kotlin-`,
+`malformed-`.
 
 The fixture DEX is committed **on purpose**: a review then needs only the Diana
 CLI, with no JDK, Android SDK or network. That is a deliberate exception to the
@@ -30,9 +38,18 @@ CLI, with no JDK, Android SDK or network. That is a deliberate exception to the
 
 ```sh
 quality/build.sh                       # only after editing a fixture's Java
+python3 quality/score.py               # structure/naming recovery per method
 python3 quality/dump.py                # writes .cache/review/<slug>.md
-python3 quality/dump.py --slug complex # one fixture, to stdout
+python3 quality/dump.py --slug branch-if2
 ```
+
+`score.py` measures **how much of the reference structure survived**: it
+normalises both bodies (identifiers to `ID`, string/char literals to `STR`/`CHR`,
+comments dropped, keywords/operators/numbers kept) and reports the token-stream
+similarity, the share of reference identifiers that reappear, and the first
+divergence. Because a fixture holds one structure, that number is meaningful, and
+it needs no hand-written expectations. It is a measurement, not a verdict: a 100%
+match can still be wrong, and an equivalent shape can score low.
 
 1. `dump.py` prints every fixture method twice: the Java reference and Diana's
    output for the same method, plus the checks to apply.
@@ -57,15 +74,33 @@ Commands are only re-verified with the ordinary equivalence checks (`get-class`,
 
 | slug | covers |
 |---|---|
-| `shapes` | one method per basic shape: for / enhanced for / do-while / ternary / `\|\|` / packed switch / string switch / try-finally / try-with-resources / synchronized / nested loops / string building |
-| `complex` | the shapes real code has: enum switch, string switch with side effects, nested try + finally, multi-catch, two-resource TWR, synchronized method, break+continue in one loop, builder with a conditional skip, varargs, try inside a loop |
+| `expr-constants` | every constant form: int, long, float, double, char, boolean, String, null, class literal |
+| `expr-arith` | add, subtract, multiply, modulo, bits, shifts, negation |
+| `expr-compare` | `<`, `>=`, `==`, `!=`, `&&`, `\|\|`, `!` |
+| `field-basic` | static/instance reads and writes, compound assignment |
+| `invoke-basic` | static, virtual, interface, constructor, `invoke-range` args, generic call |
+| `array-basic` | sized and literal arrays, byte/boolean arrays, read, write, `.length`, 2D |
+| `branch-if2` | two-register branches with effects on both sides |
+| `branch-ifz` | single-register branches, `null` check |
+| `cast-instanceof` | `instanceof`, `check-cast`, array cast |
+| `exception-one-catch` | one catch that returns, one that rethrows, effect order inside `try` |
 
 ## Reviews
 
-| fixture | round 1 headline |
-|---|---|
-| [fixtures/complex](fixtures/complex/review.md) | semantics correct in 9/10; `twoResources` handlers are printed outside their `try`; `build` prints `append<(char)>(59)`; `tryInsideLoop` and string switch fall back to `graph<…>` |
-| [fixtures/shapes](fixtures/shapes/review.md) | all semantics correct; `do-while`, `for`, enhanced `for`, ternary, `\|\|`, `+=`/`++` and `try (` are not recovered; `synchronized` is |
+| fixture | structure / naming (round 1) | headline |
+|---|---|---|
+| `expr-constants` | 96% / 96% | `char` prints as `120`, class literal becomes a temp assignment |
+| `invoke-basic` | 92% / 62% | all four call forms exact; generics and constructor temporaries differ |
+| `branch-ifz` | 89% / 70% | branches kept; losses are naming and field qualification only |
+| `field-basic` | 88% / 83% | `this.`/`X.` qualification and `+=` expansion |
+| `cast-instanceof` | 87% / 77% | correct; casts go through an extra `Object v1 = p0;` |
+| `expr-arith` | 86% / 44% | correct; each expression becomes `int v = (…); return v;` |
+| `array-basic` | 85% / 60% | correct; array creation/literals go through a temporary |
+| `branch-if2` | 71% / 50% | correct but inverted (`<` → `>=`) and split into early returns |
+| `expr-compare` | 53% / 38% | predicates expanded to temporaries plus `if` |
+| `exception-one-catch` | 48% / 57% | semantics correct; `[exn c0]`, `exception_chain`, `nop` dominate the diff |
+
+Corpus totals (round 1): **structure 82%, naming 65%** over 58 methods.
 
 An external comparison for context: over `dex-decompiler`'s fixture corpus the
 same kind of reading gave ASC the best shape recovery, `dex-decompiler` the best

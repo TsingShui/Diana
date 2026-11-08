@@ -21,45 +21,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 QUALITY = ROOT / "quality"
-KEYWORDS = set(
-    """abstract assert boolean break byte case catch char class const continue
-    default do double else enum extends final finally float for goto if implements
-    import instanceof int interface long native new package private protected public
-    return short static strictfp super switch synchronized this throw throws
-    transient try void volatile while true false var record yield""".split()
-)
-METHOD = re.compile(
-    r"(?m)^[ \t]*(?:public|private|protected|static|final|abstract|synchronized|native)[ \t]+"
-    r"[^;{}()\n=]*?(\w+)\s*\("
-)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import lib  # noqa: E402
+
+methods = lib.methods
 
 
-def methods(source: str, stem: str = "") -> dict[str, str]:
-    """Top-level members of the fixture class: name -> declaration + body."""
-    found: dict[str, str] = {}
-    for match in METHOD.finditer(source):
-        name = match.group(1)
-        if name in KEYWORDS or name == stem:
-            continue
-        matched = match.group(0)
-        if len(matched) - len(matched.lstrip()) > 4:
-            continue
-        start = source.rfind("\n", 0, match.start()) + 1
-        body = source.find("{", match.end())
-        semi = source.find(";", match.end())
-        if body < 0 or (semi >= 0 and semi < body):
-            continue
-        depth = 0
-        for index in range(body, len(source)):
-            char = source[index]
-            if char == "{":
-                depth += 1
-            elif char == "}":
-                depth -= 1
-                if depth == 0:
-                    found.setdefault(name, source[start : index + 1].rstrip())
-                    break
-    return found
 
 
 def selector_for(java: Path) -> str:
