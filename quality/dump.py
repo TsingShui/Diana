@@ -20,7 +20,6 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-QUALITY = ROOT / "quality"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lib  # noqa: E402
 
@@ -39,7 +38,7 @@ def selector_for(java: Path) -> str:
 
 
 def dump(binary: str, slug: str) -> str:
-    directory = QUALITY / "fixtures" / slug
+    directory = lib.fixture_dir(slug)
     java_files = sorted(directory.glob("*.java"))
     kotlin_files = sorted(directory.glob("*.kt"))
     dex = directory / "classes.dex"
@@ -61,7 +60,7 @@ def dump(binary: str, slug: str) -> str:
     lines = [
         f"# Review: {slug}",
         "",
-        f"- fixture: `quality/fixtures/{slug}/`",
+        f"- fixture: `{directory.relative_to(ROOT).as_posix()}/`",
         f"- selector: `{selector}`",
         f"- binary: `{binary}`",
         "",
@@ -75,7 +74,7 @@ def dump(binary: str, slug: str) -> str:
         "4. **notation** - does anything only a decompiler would print appear in the body",
         "   (`test {`, `graph<`, `goto`, `capture_exception`, `via `, `dex_flags<`)?",
         "",
-        f"Record a semantics verdict per method in `quality/fixtures/{slug}/review.md`; do not score them.",
+        f"Record a semantics verdict per method in `{directory.relative_to(ROOT).as_posix()}/review.md`; do not score them.",
         "",
     ]
     if kotlin_only:
@@ -106,7 +105,7 @@ def main() -> int:
     slugs = (
         [args.slug]
         if args.slug
-        else sorted(path.name for path in (QUALITY / "fixtures").iterdir() if path.is_dir())
+        else lib.fixture_slugs()
     )
     out_dir = ROOT / ".cache/review"
     for slug in slugs:

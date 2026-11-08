@@ -18,7 +18,7 @@ quality/
 ├── score.py                     structure/naming recovery per method, no thresholds
 ├── lib.py                       method splitting and token normalisation
 ├── .gitignore                   keeps the committed fixture DEX in the tree
-└── fixtures/<slug>-<structure>/ one structure per directory
+└── fixtures/<theme>/<slug>/     one structure per directory, one theme per parent
     ├── <Slug>.java              readable reference, compile input, the expectation
     ├── classes.dex              generated input, committed for reproducibility
     └── review.md                current verdict, ranked fixes, round log
@@ -26,9 +26,10 @@ quality/
 
 A fixture tests **one structure** (constants, two-register branches, one catch):
 that is what makes the Java source a usable expectation and keeps a review short.
-The corpus is grouped by category prefix: `expr-`, `field-`, `invoke-`, `array-`,
-`branch-`, then later `loop-`, `exception-`, `sync-`, `class-`, `kotlin-`,
-`malformed-`.
+The themes are `atoms/`, `branches/`, `loops/`, `exceptions/`, `sync/`,
+`classes/`, `generics/`, `algorithms/`, `composite/`, `obfuscated/` and
+`kotlin/`; the two catalog tables below use the same grouping, and a slug stays
+unique across themes so `--slug` needs no path.
 
 The fixture DEX is committed **on purpose**: a review then needs only the Diana
 CLI, with no JDK, Android SDK or network. That is a deliberate exception to the
@@ -64,7 +65,7 @@ match can still be wrong, and an equivalent shape can score low.
    (same values, effects, call order, exceptions, locks), **facts** (original
    calls, constants, identities), **shape** (reference constructs recovered) and
    **notation** (only-a-decompiler forms in the body).
-3. The judgement is written into the fixture itself, `fixtures/<slug>/review.md`.
+3. The judgement is written into the fixture itself, `fixtures/<theme>/<slug>/review.md`.
    **Every fixture carries a per-method `### Semantics` table** - `✔` equivalent,
    `~` equivalent but different shape, `✘` wrong, `?` not yet judged - next to the
    numeric score. The numbers never replace the reading: `score.py` measures how

@@ -35,8 +35,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lib  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURES = ROOT / "quality" / "fixtures"
-
 
 def original_class(java: Path) -> str:
     text = java.read_text()
@@ -77,7 +75,7 @@ def mapped_names(mapping: Path) -> dict[str, set[str]]:
 
 
 def score_fixture(binary: str, slug: str) -> tuple[list[float], list[float]] | None:
-    directory = FIXTURES / slug
+    directory = lib.fixture_dir(slug)
     java_files = sorted(directory.glob("*.java"))
     kotlin_files = sorted(directory.glob("*.kt"))
     dex = directory / "classes.dex"
@@ -162,7 +160,7 @@ def main() -> int:
     slugs = (
         [args.slug]
         if args.slug
-        else sorted(path.name for path in FIXTURES.iterdir() if path.is_dir())
+        else lib.fixture_slugs()
     )
     all_structure: list[float] = []
     all_naming: list[float] = []

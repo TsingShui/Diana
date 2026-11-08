@@ -7,6 +7,9 @@ literals kept.
 
 Naming is measured separately from structure: `identifiers` returns the source
 names, which is the other half of the output quality question.
+
+The fixtures live one theme per directory, `fixtures/<theme>/<slug>/`; a slug stays
+unique across themes, so a tool resolves it by name instead of by path.
 """
 
 from __future__ import annotations
@@ -14,6 +17,21 @@ from __future__ import annotations
 import difflib
 import re
 from pathlib import Path
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+
+def fixture_dir(slug: str):
+    """The theme directory that holds `slug`; a missing or doubled slug is an error."""
+    matches = sorted(path for path in FIXTURES.glob("*/" + slug) if path.is_dir())
+    if len(matches) != 1:
+        raise SystemExit(f"{slug}: expected one fixture directory, found {len(matches)}")
+    return matches[0]
+
+
+def fixture_slugs() -> list[str]:
+    return sorted(path.name for path in FIXTURES.glob("*/*") if path.is_dir())
+
 
 KEYWORDS = set(
     """abstract assert boolean break byte case catch char class const continue

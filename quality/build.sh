@@ -44,7 +44,7 @@ else
     echo "kotlinc     not found (only needed by fixtures with .kt sources)"
 fi
 
-for slug_dir in "$QUALITY"/fixtures/*/; do
+for slug_dir in "$QUALITY"/fixtures/*/*/; do
     slug="$(basename "$slug_dir")"
     out="$WORK/$slug"
     rm -rf "$out"
@@ -113,5 +113,5 @@ for slug_dir in "$QUALITY"/fixtures/*/; do
         "$D8" "${d8_args[@]}" --output "$out/dex" $class_files
     fi
     cp "$out/dex/classes.dex" "$slug_dir/classes.dex"
-    echo "wrote quality/fixtures/$slug/classes.dex ($(wc -c < "$slug_dir/classes.dex" | tr -d ' ') bytes)"
+    echo "wrote ${slug_dir#"$QUALITY"/}classes.dex ($(wc -c < "$slug_dir/classes.dex" | tr -d ' ') bytes)"
 done
