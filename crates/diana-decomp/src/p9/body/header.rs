@@ -83,24 +83,7 @@ impl Expressions<'_, '_> {
     }
 
     pub(super) fn clause(&mut self, c: &Clause) -> Result<(), RenderError> {
-        if let Some(catch) = &c.catch {
-            match &catch.descriptor {
-                Ok(t) => self.ty(*t)?,
-                Err(e) => {
-                    self.out
-                        .fmt(format_args!("unavailable_catch<{}; ", catch.original.0))?;
-                    self.out.quote(&e.detail)?;
-                    self.out.put(">")?;
-                }
-            }
-            if let Some(e) = &catch.use_issue {
-                self.out.put(" [")?;
-                self.out.quote(&e.detail)?;
-                self.out.put("]")?;
-            }
-        } else {
-            self.out.put("all")?;
-        }
+        self.clause_type(c)?;
         self.out.put(" -> ")?;
         if let Some(target) = c.target {
             self.label_name(target)?;

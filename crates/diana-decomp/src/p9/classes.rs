@@ -1,11 +1,12 @@
+mod declarations;
+mod methods;
+mod recovery;
+
 use super::{
-    Origin, RenderError, SourceProduct,
-    buffer::Buffer,
-    expressions::Expressions,
-    names::{Lookup, MethodNames},
-    values::Attachments,
+    Origin, RenderError, SourceProduct, buffer::Buffer, names::Lookup, values::Attachments,
 };
-use crate::{MethodId, p0::Fact, p7, p8};
+use crate::{p0::Fact, p8};
+use methods::member;
 
 pub(super) fn render(out: &mut Buffer, source: &SourceProduct) -> Result<(), RenderError> {
     match source {
@@ -62,8 +63,11 @@ pub(super) fn render(out: &mut Buffer, source: &SourceProduct) -> Result<(), Ren
         }
     }
 }
-fn class_result(out: &mut Buffer, class: &p8::ClassResult) -> Result<(), RenderError> {
-    let lookup = Lookup::complete(class.names())?;
+fn preamble(
+    out: &mut Buffer,
+    lookup: &Lookup<'_>,
+    class: &p8::ClassResult,
+) -> Result<(), RenderError> {
     if let Some(package) = class.names().package()
         && !package.units.is_empty()
     {
@@ -82,13 +86,14 @@ fn class_result(out: &mut Buffer, class: &p8::ClassResult) -> Result<(), RenderE
         out.units(&target.full, false)?;
         out.put(";\n")?;
     }
-    // Annotation records print at the declaration they describe. A record whose
-    // owner is not a printed declaration keeps the residual block in the
-    // metadata position, so no record is dropped or printed twice.
-    let attachments = Attachments::class(class)?;
-    attachments.print_residual(out, &lookup)?;
-    attachments.print_class(out, &lookup)?;
-    let start = out.position();
+    Ok(())
+}
+
+fn class_header(
+    out: &mut Buffer,
+    lookup: &Lookup<'_>,
+    class: &p8::ClassResult,
+) -> Result<(), RenderError> {
     out.outline_header = Some(Origin::Class);
     let header = class.header();
     super::names::flags(
@@ -109,15 +114,15 @@ fn class_result(out: &mut Buffer, class: &p8::ClassResult) -> Result<(), RenderE
     })?;
     out.name(&header.name.units, header.name.form)?;
     if let Some(parameters) = lookup.class_parameters() {
-        super::names::type_parameters(out, &lookup, parameters)?;
+        super::names::type_parameters(out, lookup, parameters)?;
     }
     // P8 already decided whether the clause prints at all; a delivered generic
     // superclass prints its interpreted arguments.
     if let p8::SuperclassClause::Printed(superclass) = &header.superclass {
         out.put(" extends ")?;
         match lookup.signature(p8::SignatureOwner::Superclass) {
-            Some(root) => super::names::signature(out, &lookup, root)?,
-            None => type_expression(out, &lookup, superclass)?,
+            Some(root) => super::names::signature(out, lookup, root)?,
+            None => type_expression(out, lookup, superclass)?,
         }
     }
     match &header.interfaces {
@@ -131,8 +136,8 @@ fn class_result(out: &mut Buffer, class: &p8::ClassResult) -> Result<(), RenderE
                     RenderError::Invariant("interface index exceeds the delivered coordinate")
                 })?;
                 match lookup.signature(p8::SignatureOwner::Interface(index)) {
-                    Some(root) => super::names::signature(out, &lookup, root)?,
-                    None => type_expression(out, &lookup, &interface.name)?,
+                    Some(root) => super::names::signature(out, lookup, root)?,
+                    None => type_expression(out, lookup, &interface.name)?,
                 }
             }
         }
@@ -140,44 +145,59 @@ fn class_result(out: &mut Buffer, class: &p8::ClassResult) -> Result<(), RenderE
         p8::InterfaceList::Unavailable => out.put(" interfaces_unavailable")?,
         _ => {}
     }
-    out.open()?;
-    for f in class.fields() {
-        attachments.print_field(out, &lookup, f.id)?;
-        out.indent()?;
-        let a = out.position();
-        out.outline_header = Some(Origin::Field(f.id));
-        super::names::flags(out, f.flags, super::names::FlagScope::Field)?;
-        match &f.expression {
-            p8::FieldExpression::Declared {
-                name,
-                form,
-                field_type,
-            } => {
-                match lookup.signature(p8::SignatureOwner::Field(f.id)) {
-                    Some(root) => super::names::signature(out, &lookup, root)?,
-                    None => lookup.print(out, *field_type)?,
-                }
-                out.put(" ")?;
-                out.name(name, *form)?;
+    Ok(())
+}
+
+fn field(
+    out: &mut Buffer,
+    lookup: &Lookup<'_>,
+    class: &p8::ClassResult,
+    attachments: &Attachments<'_>,
+    f: &p8::FieldMember,
+) -> Result<(), RenderError> {
+    attachments.print_field(out, lookup, f.id)?;
+    out.indent()?;
+    let a = out.position();
+    out.outline_header = Some(Origin::Field(f.id));
+    super::names::flags(out, f.flags, super::names::FlagScope::Field)?;
+    match &f.expression {
+        p8::FieldExpression::Declared {
+            name,
+            form,
+            field_type,
+        } => {
+            match lookup.signature(p8::SignatureOwner::Field(f.id)) {
+                Some(root) => super::names::signature(out, lookup, root)?,
+                None => lookup.print(out, *field_type)?,
             }
-            p8::FieldExpression::Absent => {
-                out.fmt(format_args!("field#{} absent_declaration", f.id.0))?
-            }
-            p8::FieldExpression::NotRead => {
-                out.fmt(format_args!("field#{} declaration_not_read", f.id.0))?
-            }
-            p8::FieldExpression::Unavailable => {
-                out.fmt(format_args!("field#{} unavailable_declaration", f.id.0))?;
-                if let Some(original) = class.facts().field_entry(f.id)
-                    && let Fact::Unavailable(error) = original.declaration()
-                {
-                    out.fmt(format_args!("<{error}>"))?;
-                }
+            out.put(" ")?;
+            out.name(name, *form)?;
+        }
+        p8::FieldExpression::Absent => {
+            out.fmt(format_args!("field#{} absent_declaration", f.id.0))?
+        }
+        p8::FieldExpression::NotRead => {
+            out.fmt(format_args!("field#{} declaration_not_read", f.id.0))?
+        }
+        p8::FieldExpression::Unavailable => {
+            out.fmt(format_args!("field#{} unavailable_declaration", f.id.0))?;
+            if let Some(original) = class.facts().field_entry(f.id)
+                && let Fact::Unavailable(error) = original.declaration()
+            {
+                out.fmt(format_args!("<{error}>"))?;
             }
         }
-        out.put(";\n")?;
-        out.span(a, Origin::Field(f.id))?;
     }
+    out.put(";\n")?;
+    out.span(a, Origin::Field(f.id))?;
+    Ok(())
+}
+
+fn preparations(
+    out: &mut Buffer,
+    lookup: &Lookup<'_>,
+    class: &p8::ClassResult,
+) -> Result<(), RenderError> {
     if class.preparation_has_values() {
         out.indent()?;
         out.put("static_preparation_before_clinit")?;
@@ -205,7 +225,7 @@ fn class_result(out: &mut Buffer, class: &p8::ClassResult) -> Result<(), RenderE
                     match range {
                         Some(range) => super::values::values(
                             out,
-                            &lookup,
+                            lookup,
                             &class.values().expressions()[range.start as usize..range.end as usize],
                         )?,
                         None => out.put("encoded_value_unavailable")?,
@@ -234,17 +254,10 @@ fn class_result(out: &mut Buffer, class: &p8::ClassResult) -> Result<(), RenderE
         }
         out.close()?;
     }
-    for m in class.methods() {
-        member(
-            out,
-            &lookup,
-            class.facts(),
-            Some(&attachments),
-            m,
-            Some(&class.header().name),
-            class.initializer_prints_nothing(m.id),
-        )?;
-    }
+    Ok(())
+}
+
+fn class_issues(out: &mut Buffer, class: &p8::ClassResult) -> Result<(), RenderError> {
     for (kind, error) in [
         ("fields", class.facts().fields_issue()),
         ("methods", class.facts().methods_issue()),
@@ -261,6 +274,37 @@ fn class_result(out: &mut Buffer, class: &p8::ClassResult) -> Result<(), RenderE
             "directory_suffix_not_located<file_byte={offset}>;\n"
         ))?;
     }
+    Ok(())
+}
+
+fn class_result(out: &mut Buffer, class: &p8::ClassResult) -> Result<(), RenderError> {
+    let lookup = Lookup::complete(class.names())?;
+    preamble(out, &lookup, class)?;
+    // Annotation records print at the declaration they describe. A record whose
+    // owner is not a printed declaration keeps the residual block in the
+    // metadata position, so no record is dropped or printed twice.
+    let attachments = Attachments::class(class)?;
+    attachments.print_residual(out, &lookup)?;
+    attachments.print_class(out, &lookup)?;
+    let start = out.position();
+    class_header(out, &lookup, class)?;
+    out.open()?;
+    for f in class.fields() {
+        field(out, &lookup, class, &attachments, f)?;
+    }
+    preparations(out, &lookup, class)?;
+    for m in class.methods() {
+        member(
+            out,
+            &lookup,
+            class.facts(),
+            Some(&attachments),
+            m,
+            Some(&class.header().name),
+            class.initializer_prints_nothing(m.id),
+        )?;
+    }
+    class_issues(out, class)?;
     out.close()?;
     out.span(start, Origin::Class)
 }
@@ -275,478 +319,4 @@ fn type_expression(
         p8::TypeExpression::NotRead => out.put("type_not_read"),
         p8::TypeExpression::Unavailable => out.put("unavailable_type"),
     }
-}
-struct MethodRenderState {
-    prints_nothing: bool,
-    header_printed: bool,
-}
-
-fn member(
-    out: &mut Buffer,
-    lookup: &Lookup<'_>,
-    facts: &crate::p0::ClassFacts,
-    attachments: Option<&Attachments<'_>>,
-    member: &p8::MethodMember,
-    class_name: Option<&p8::ValueName>,
-    prints_nothing: bool,
-) -> Result<(), RenderError> {
-    let initial_depth = out.depth;
-    let initial_comment = out.abi_comment;
-    let initial_origin_only = out.origin_only;
-    let initial_method = out.outline_method.replace(member.id);
-    let start = out.position();
-    let mut state = MethodRenderState {
-        prints_nothing,
-        header_printed: false,
-    };
-    let result = method(
-        out,
-        lookup,
-        facts,
-        attachments,
-        member,
-        class_name,
-        &mut state,
-    );
-    // A failed attachment cannot comment out a sibling's recovered code or its
-    // method-local recovery diagnostic.
-    out.abi_comment = initial_comment;
-    out.origin_only = initial_origin_only;
-    match result {
-        Ok(()) => {}
-        Err(RenderError::Invariant(message)) => {
-            out.problem(member.id, super::LocalRenderError::Invariant(message))?;
-            while out.depth > initial_depth {
-                out.close()?;
-            }
-            if !state.header_printed
-                && let Some(attachments) = attachments
-            {
-                attachments.print_unrepresented_method_signature(out, lookup, member.id)?;
-            }
-        }
-        Err(RenderError::MethodScratch(error)) => {
-            if out.depth == initial_depth {
-                original_header(out, facts, member.id)?;
-                out.put(";\n")?;
-            }
-            out.problem(member.id, super::LocalRenderError::Scratch(error))?;
-            while out.depth > initial_depth {
-                out.close()?;
-            }
-            if !state.header_printed
-                && let Some(attachments) = attachments
-            {
-                attachments.print_unrepresented_method_signature(out, lookup, member.id)?;
-            }
-        }
-        Err(e) => return Err(e),
-    }
-    out.outline_method = initial_method;
-    out.span(start, Origin::Method(member.id))
-}
-fn method(
-    out: &mut Buffer,
-    lookup: &Lookup<'_>,
-    facts: &crate::p0::ClassFacts,
-    attachments: Option<&Attachments<'_>>,
-    member: &p8::MethodMember,
-    class_name: Option<&p8::ValueName>,
-    state: &mut MethodRenderState,
-) -> Result<(), RenderError> {
-    // P8 omits the `static { ... }` block of a class initializer whose printed
-    // body states nothing, because Java writes no empty initializer. The member
-    // stays in the product; its own span still anchors it here.
-    if state.prints_nothing {
-        return Ok(());
-    }
-    // A record of this member prints above the header that names it; that header
-    // is the declaration, so no owner prefix is printed with it. A standalone
-    // publication has no class header to carry the residual block, which stays
-    // in this member's local error scope.
-    if let Some(attachments) = attachments {
-        if attachments.prints_residual_here() {
-            attachments.print_residual(out, lookup)?;
-        }
-        attachments.print_method(out, lookup, member.id)?;
-    }
-    match &member.delivery {
-        Ok(p8::MethodDelivery::Expressed(result) | p8::MethodDelivery::Declared(result)) => {
-            let header = result.header();
-            if let Some(error) = &header.metadata_error {
-                out.indent()?;
-                out.fmt(format_args!("method_metadata_unavailable<{error}>;\n"))?;
-            }
-            let names = MethodNames::collect(
-                member.id,
-                result.code().map_or(0, |c| c.types().len()),
-                header.declaration.parameter_count(),
-                lookup,
-            )?;
-            let suspending = result
-                .code()
-                .is_some_and(|code| code.emission().coroutine_body().is_some());
-            if suspending {
-                out.line("// Diana: ABI-derived suspend body; original entry/reentry and error code retained below")?;
-            }
-            header_line(
-                out,
-                lookup,
-                &names,
-                header,
-                (class_name, lookup.find_use(p8::TypeSource::Owner)),
-                attachments,
-                suspending,
-            )?;
-            state.header_printed = true;
-            if let Some(code) = result.code() {
-                let block_start = out.position();
-                out.open()?;
-                let body_start = out.position();
-                let mut pending = Vec::new();
-                pending
-                    .try_reserve_exact(code.emission().controls().len())
-                    .map_err(RenderError::MethodScratch)?;
-                pending.resize(code.emission().controls().len(), None);
-                let mut context = Expressions {
-                    out,
-                    method: member.id,
-                    code,
-                    names: &names,
-                    lookup,
-                    pending_controls: Some(&mut pending),
-                    statement: None,
-                    check_carrier: None,
-                };
-                context.body()?;
-                if out.position() == body_start {
-                    out.close_empty(block_start)?;
-                } else {
-                    out.close()?;
-                }
-            } else if matches!(header.kind, p7::MethodKind::ClassInitializer) {
-                out.put(" { }\n")?;
-            } else {
-                out.put(";\n")?;
-            }
-        }
-        Ok(p8::MethodDelivery::Stopped(stop)) => {
-            if let Some(header) = stop.expression.as_ref().and_then(|p| p.header()) {
-                let names = MethodNames::collect(
-                    member.id,
-                    stop.expression.as_ref().map_or(0, |p| p.type_uses().len()),
-                    header.declaration.parameter_count(),
-                    lookup,
-                )?;
-                header_line(
-                    out,
-                    lookup,
-                    &names,
-                    header,
-                    (None, None),
-                    attachments,
-                    false,
-                )?;
-            } else {
-                original_header(out, facts, member.id)?;
-            }
-            out.open()?;
-            out.indent()?;
-            out.fmt(format_args!(
-                "unrecovered_control<stage={:?}; kind={:?}; ",
-                stop.stage, stop.cause_kind
-            ))?;
-            match &stop.cause {
-                Ok(c) => out.quote(&c.detail)?,
-                Err(e) => out.fmt(format_args!("diagnostic_unavailable: {e}"))?,
-            }
-            out.put(">;\n")?;
-            if let Some(prefix) = &stop.expression {
-                let names = MethodNames::collect(
-                    member.id,
-                    prefix.type_uses().len(),
-                    prefix
-                        .header()
-                        .map_or(0, |h| h.declaration.parameter_count()),
-                    lookup,
-                )?;
-                let mut context = Expressions {
-                    out,
-                    method: member.id,
-                    code: prefix.as_ref(),
-                    names: &names,
-                    lookup,
-                    pending_controls: None,
-                    statement: None,
-                    check_carrier: None,
-                };
-                for local in prefix.local_declarations() {
-                    context.out.indent()?;
-                    context.out.put("storage_fact ")?;
-                    super::expressions::machine_type(context.out, local.original.storage_type())?;
-                    context.out.put(" ")?;
-                    context.out.put(&local.name)?;
-                    context
-                        .out
-                        .put("; // original storage, display not published\n")?;
-                }
-                for bundle in prefix.copies() {
-                    context.out.indent()?;
-                    context.out.fmt(format_args!(
-                        "copy_fact #{} at {:?}: {{",
-                        bundle.id.0, bundle.location
-                    ))?;
-                    context.copy(bundle.id)?;
-                    context
-                        .out
-                        .put("} // source obligation, not a reconstructed schedule\n")?;
-                }
-                for (op, statement) in prefix.fragments() {
-                    context.out.indent()?;
-                    let a = context.out.position();
-                    context.out.fmt(format_args!("fragment @{} {{ ", op.pc.0))?;
-                    context.assignment(statement)?;
-                    context.semantic(statement)?;
-                    context.out.put("; } // control not published\n")?;
-                    context.out.span(
-                        a,
-                        Origin::Operation {
-                            method: member.id,
-                            operation: op.source,
-                            pc: op.pc,
-                        },
-                    )?;
-                }
-            }
-            match &stop.decoded {
-                Ok(items) => {
-                    for item in items {
-                        out.indent()?;
-                        let a = out.position();
-                        out.fmt(format_args!("decoded @{}: {item:?};\n", item.pc().0))?;
-                        out.span(
-                            a,
-                            Origin::Raw {
-                                method: member.id,
-                                pc: Some(item.pc()),
-                            },
-                        )?;
-                    }
-                }
-                Err(e) => {
-                    out.indent()?;
-                    out.fmt(format_args!("decoded_prefix_unavailable<{e}>;\n"))?;
-                }
-            }
-            match &stop.raw {
-                Ok(Some(raw)) => {
-                    out.indent()?;
-                    let a = out.position();
-                    out.fmt(format_args!(
-                        "raw_code<file_bytes={}..{}; registers={}; incoming={}; outgoing={}> [",
-                        raw.range.start.0,
-                        raw.range.end.0,
-                        raw.registers,
-                        raw.incoming,
-                        raw.outgoing
-                    ))?;
-                    for b in &raw.bytes {
-                        out.fmt(format_args!("{b:02x} "))?;
-                    }
-                    out.put("];\n")?;
-                    out.span(
-                        a,
-                        Origin::Raw {
-                            method: member.id,
-                            pc: None,
-                        },
-                    )?;
-                }
-                Ok(None) => out.line("raw_code_not_available;")?,
-                Err(e) => {
-                    out.indent()?;
-                    out.fmt(format_args!("raw_code_retention_failed<{e}>;\n"))?;
-                }
-            }
-            out.close()?;
-        }
-        Err(error) => {
-            original_header(out, facts, member.id)?;
-            out.open()?;
-            out.indent()?;
-            out.fmt(format_args!("member_delivery_unavailable<{error}>;\n"))?;
-            out.close()?;
-        }
-    }
-    Ok(())
-}
-fn header_line(
-    out: &mut Buffer,
-    lookup: &Lookup<'_>,
-    names: &MethodNames,
-    h: &p7::MethodHeader,
-    owner: (Option<&p8::ValueName>, Option<p8::TypeUseId>),
-    attachments: Option<&Attachments<'_>>,
-    suspending: bool,
-) -> Result<(), RenderError> {
-    out.outline_header = Some(Origin::Method(h.key.method));
-    out.indent()?;
-    // A class initializer is a static block. DEX may give it access bits that
-    // Java cannot express there; they stay in the original flags of the product.
-    if matches!(h.kind, p7::MethodKind::ClassInitializer) {
-        out.put("static")?;
-        return Ok(());
-    }
-    let varargs = varargs_parameter(lookup, names, h);
-    super::names::flags(
-        out,
-        h.access_flags,
-        super::names::FlagScope::Method {
-            initializer: matches!(h.kind, p7::MethodKind::Constructor),
-            varargs,
-        },
-    )?;
-    if suspending {
-        out.put("suspend ")?;
-    }
-    let method = h.key.method;
-    if let Some(parameters) = lookup.method_parameters(method)
-        && !parameters.is_empty()
-    {
-        super::names::type_parameters(out, lookup, parameters)?;
-        out.put(" ")?;
-    }
-    match h.kind {
-        p7::MethodKind::ClassInitializer => unreachable!("handled above"),
-        // A constructor carries the owner name and no return type.
-        p7::MethodKind::Constructor => {
-            // The class declaration name is the constructor name. A reference
-            // spelling can be qualified by an unrelated field or local shadow.
-            match owner {
-                (Some(name), _) => out.name(&name.units, name.form)?,
-                (None, Some(id)) => lookup.print(out, id)?,
-                (None, None) => out.name(h.declaration.name_units(), h.name_form)?,
-            }
-            out.put("(")?;
-            parameters(out, lookup, names, h, attachments, varargs)?;
-            out.put(")")?;
-            return Ok(());
-        }
-        p7::MethodKind::Ordinary => {}
-    }
-    match lookup.signature(p8::SignatureOwner::Return(method)) {
-        Some(root) => super::names::signature(out, lookup, root)?,
-        None => match names.result {
-            Some(ty) => lookup.print(out, ty)?,
-            None => {
-                out.put("type<")?;
-                out.units(h.declaration.return_type.units(), true)?;
-                out.put("; display unavailable>")?;
-            }
-        },
-    }
-    out.put(" ")?;
-    out.name(h.declaration.name_units(), h.name_form)?;
-    out.put("(")?;
-    parameters(out, lookup, names, h, attachments, varargs)?;
-    out.put(")")
-}
-
-fn varargs_parameter(lookup: &Lookup<'_>, names: &MethodNames, h: &p7::MethodHeader) -> bool {
-    if h.access_flags & crate::substrate::flags::VARARGS == 0 {
-        return false;
-    }
-    let Some((index, ty)) = h.declaration.parameter_types.iter().enumerate().next_back() else {
-        return false;
-    };
-    if ty.units().first() != Some(&u16::from(b'[')) {
-        return false;
-    }
-    let Ok(parameter) = u32::try_from(index) else {
-        return false;
-    };
-    match lookup.signature(p8::SignatureOwner::Parameter {
-        method: h.key.method,
-        index: parameter,
-    }) {
-        Some(root) => super::names::signature_varargs_available(lookup, root),
-        None => names
-            .parameters
-            .get(index)
-            .copied()
-            .flatten()
-            .and_then(|id| lookup.varargs_dimensions(id))
-            .is_some(),
-    }
-}
-
-fn parameters(
-    out: &mut Buffer,
-    lookup: &Lookup<'_>,
-    names: &MethodNames,
-    h: &p7::MethodHeader,
-    attachments: Option<&Attachments<'_>>,
-    varargs: bool,
-) -> Result<(), RenderError> {
-    let method = h.key.method;
-    for (i, ty) in h.declaration.parameter_types.iter().enumerate() {
-        if i > 0 {
-            out.put(", ")?;
-        }
-        let index = u32::try_from(i).map_err(|_| RenderError::Capacity)?;
-        // A parameter record prints inline before the type it describes, because
-        // this parameter list is that record's declaration.
-        if let Some(attachments) = attachments {
-            attachments.print_parameter(out, lookup, method, index)?;
-        }
-        if let Some(root) = lookup.signature(p8::SignatureOwner::Parameter { method, index }) {
-            if varargs && i + 1 == h.declaration.parameter_types.len() {
-                super::names::signature_varargs(out, lookup, root)?;
-            } else {
-                super::names::signature(out, lookup, root)?;
-            }
-            out.put(" ")?;
-            out.put(&h.parameter_names[i])?;
-            continue;
-        }
-        if let Some(id) = names.parameters[i] {
-            if varargs && i + 1 == h.declaration.parameter_types.len() {
-                lookup.print_varargs(out, id)?;
-            } else {
-                lookup.print(out, id)?;
-            }
-        } else {
-            out.put("type<")?;
-            out.units(ty.units(), true)?;
-            out.put("; display unavailable>")?;
-        }
-        out.put(" ")?;
-        out.put(&h.parameter_names[i])?;
-    }
-    Ok(())
-}
-
-fn original_header(
-    out: &mut Buffer,
-    facts: &crate::p0::ClassFacts,
-    id: MethodId,
-) -> Result<(), RenderError> {
-    out.outline_header = Some(Origin::Method(id));
-    out.indent()?;
-    out.fmt(format_args!("method#{} ", id.0))?;
-    if let Some(entry) = facts.method_entry(id) {
-        match entry.declaration() {
-            Fact::Present(d) => {
-                out.units(d.name_units(), true)?;
-                out.put(" ")?;
-                out.units(d.prototype_units(), true)?;
-            }
-            Fact::Unavailable(e) => out.fmt(format_args!("unavailable_declaration<{e}>"))?,
-            Fact::NotRead => out.put("declaration_not_read")?,
-            Fact::Absent => out.put("absent_declaration")?,
-        }
-    } else {
-        out.put("directory_entry_unavailable")?;
-    }
-    Ok(())
 }

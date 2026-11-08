@@ -7,6 +7,70 @@ use crate::p5::Materialization;
 use crate::p7::*;
 
 impl Expressions<'_, '_> {
+    fn statement_content(
+        &mut self,
+        op: OpId,
+        s: &Statement,
+        release: Option<ControlId>,
+    ) -> Result<(), RenderError> {
+        if let Some(scope) = release {
+            let control = &self.code.emission().controls()[scope.0 as usize];
+            self.out.put("release synchronized ")?;
+            // A release names its control only when that control prints the
+            // label; otherwise the enclosing synchronized header identifies it.
+            if control.label_required {
+                self.out.put(&control.label)?;
+            }
+            self.out.put("(")?;
+            let StatementKind::Monitor { lock, .. } = s.kind else {
+                return Err(RenderError::Invariant("release syntax lost its monitor"));
+            };
+            self.operand(lock)?;
+            self.out.put(")")?;
+        } else {
+            // Only the statement's own operands may carry an inlined check: the
+            // copies printed before it and any snapshot value after it are not
+            // the check's first use.
+            let previous = self.check_carrier.replace(CheckCarrier::Statement(s.id));
+            let statement = self.statement.replace(s.id);
+            let rendered = if let Some(plan) = self.code.emission().suspension(op) {
+                self.suspension_assignment(plan)
+            } else if self.code.emission().allocation_declaration(s.id) {
+                self.allocation_declaration(s)
+            } else {
+                self.assignment(s).and_then(|()| self.semantic(s))
+            };
+            self.check_carrier = previous;
+            self.statement = statement;
+            rendered?;
+        }
+        Ok(())
+    }
+
+    fn statement_notes(&mut self, op: OpId, s: &Statement) -> Result<(), RenderError> {
+        if let Some(plan) = self.code.emission().suspension(op) {
+            self.out.fmt(format_args!(
+                " // Diana: inferred suspension, continuation=this, resume state={}; ABI ",
+                plan.original.state()
+            ))?;
+            let previous = std::mem::replace(&mut self.out.abi_comment, true);
+            let binding = self.member(plan.target, None, true);
+            self.out.abi_comment = previous;
+            binding?;
+        }
+        if let Some(note) = self.generated_note(s) {
+            self.out.put(" ")?;
+            self.out.put(note)?;
+        }
+        for definition in &s.outputs {
+            if let Materialization::Unavailable(gap) = definition.materialization() {
+                self.out
+                    .fmt(format_args!(" unavailable_definition<{gap:?}>;"))?;
+            }
+        }
+        Ok(())
+    }
+
     /// A trailing note for a statement printed in Diana syntax rather than Java.
     /// It names the original instruction and the one fact the form hides.
     pub(super) fn generated_note(&self, s: &Statement) -> Option<&'static str> {
@@ -44,155 +108,15 @@ impl Expressions<'_, '_> {
         let s = &self.code.statements()[id.0 as usize];
         let phases = &self.code.emission().operations()[op.0 as usize];
         if release.is_none() && self.code.emission().omitted_literal(id) {
-            // Every use prints the literal itself, so this statement states
-            // nothing; its original facts keep zero-length anchors here.
-            let position = self.out.position();
-            if let StatementKind::Move { expression, .. } | StatementKind::Evaluate { expression } =
-                s.kind
-            {
-                self.out.span(
-                    position,
-                    Origin::Expression {
-                        method: self.method,
-                        expression,
-                    },
-                )?;
-            }
-            self.out.span(
-                position,
-                Origin::Statement {
-                    method: self.method,
-                    statement: id,
-                },
-            )?;
-            self.out.span(
-                position,
-                Origin::Operation {
-                    method: self.method,
-                    operation: op,
-                    pc: original.pc,
-                },
-            )?;
-            if let Some(pc) = original.result_pc {
-                self.out.span(
-                    position,
-                    Origin::ResultCommit {
-                        method: self.method,
-                        operation: op,
-                        pc,
-                    },
-                )?;
-            }
-            return Ok(());
+            return self.literal_origins(op, original, s);
         }
         if self.code.emission().omitted_nop(id) {
-            // A `nop` performs nothing, so the plan prints no text for it and
-            // keeps the statement, operation and PC as zero-length anchors.
-            let position = self.out.position();
-            for &site in &s.sites {
-                self.out.span(
-                    position,
-                    Origin::Site {
-                        method: self.method,
-                        site,
-                    },
-                )?;
-            }
-            self.out.span(
-                position,
-                Origin::Statement {
-                    method: self.method,
-                    statement: id,
-                },
-            )?;
-            self.out.span(
-                position,
-                Origin::Operation {
-                    method: self.method,
-                    operation: op,
-                    pc: original.pc,
-                },
-            )?;
-            return Ok(());
+            return self.nop_origins(op, original, s);
         }
         if release.is_none()
             && let Some(omitted) = self.code.emission().omitted_check(id)
         {
-            // P4 established from pre-check facts that this check cannot add
-            // behavior at this position, so the plan prints no text for it. Its
-            // statement, operation, routes, checked value and resolved target
-            // name keep zero-length anchors here; its phases and definitions
-            // were empty by admission.
-            let position = self.out.position();
-            let StatementKind::CheckCast { value, reference } = s.kind else {
-                return Err(RenderError::Invariant(
-                    "omitted check lost its original check-cast kind",
-                ));
-            };
-            self.out.span(
-                position,
-                Origin::Expression {
-                    method: self.method,
-                    expression: value,
-                },
-            )?;
-            self.out.span(
-                position,
-                Origin::Reference {
-                    method: self.method,
-                    reference,
-                },
-            )?;
-            // The printed check's delivered type name keeps its original Type
-            // origin. P8 already maps this reference's method-scoped type use to
-            // the named use it printed before omission; this adds no type fact.
-            let declaration =
-                self.code
-                    .references()
-                    .get(reference.0 as usize)
-                    .ok_or(RenderError::Invariant(
-                        "omitted check lost its reference declaration",
-                    ))?;
-            if let Ok(ReferenceDeclaration::Type { type_use }) = &declaration.declaration
-                && let Some(name) = self.names.body.get(type_use.0 as usize).copied().flatten()
-            {
-                self.out.span(position, Origin::Type(name))?;
-            }
-            for &site in &s.sites {
-                self.out.span(
-                    position,
-                    Origin::Site {
-                        method: self.method,
-                        site,
-                    },
-                )?;
-            }
-            self.out.span(
-                position,
-                Origin::Statement {
-                    method: self.method,
-                    statement: id,
-                },
-            )?;
-            self.out.span(
-                position,
-                Origin::Operation {
-                    method: self.method,
-                    operation: omitted.operation,
-                    pc: omitted.pc,
-                },
-            )?;
-            if let Some(pc) = original.result_pc {
-                self.out.span(
-                    position,
-                    Origin::ResultCommit {
-                        method: self.method,
-                        operation: omitted.operation,
-                        pc,
-                    },
-                )?;
-            }
-            return Ok(());
+            return self.omitted_check_origins(original, s, omitted);
         }
         self.out.indent()?;
         self.copies(&phases.before)?;
@@ -200,104 +124,14 @@ impl Expressions<'_, '_> {
         if matches!(s.kind, StatementKind::Construction(_)) {
             self.copies(&phases.snapshots)?;
         }
-        if let Some(scope) = release {
-            let control = &self.code.emission().controls()[scope.0 as usize];
-            self.out.put("release synchronized ")?;
-            // A release names its control only when that control prints the
-            // label; otherwise the enclosing synchronized header identifies it.
-            if control.label_required {
-                self.out.put(&control.label)?;
-            }
-            self.out.put("(")?;
-            let StatementKind::Monitor { lock, .. } = s.kind else {
-                return Err(RenderError::Invariant("release syntax lost its monitor"));
-            };
-            self.operand(lock)?;
-            self.out.put(")")?;
-        } else {
-            // Only the statement's own operands may carry an inlined check: the
-            // copies printed before it and any snapshot value after it are not
-            // the check's first use.
-            let previous = self.check_carrier.replace(CheckCarrier::Statement(id));
-            let statement = self.statement.replace(id);
-            let rendered = if let Some(plan) = self.code.emission().suspension(op) {
-                self.suspension_assignment(plan)
-            } else if self.code.emission().allocation_declaration(id) {
-                self.allocation_declaration(s)
-            } else {
-                self.assignment(s).and_then(|()| self.semantic(s))
-            };
-            self.check_carrier = previous;
-            self.statement = statement;
-            rendered?;
-        }
+        self.statement_content(op, s, release)?;
         if !matches!(s.kind, StatementKind::Construction(_)) {
             self.phases(&phases.snapshots, "after_operands_before_effect")?;
         }
         self.sites(&s.sites, start)?;
         self.out.put(";")?;
-        if let Some(plan) = self.code.emission().suspension(op) {
-            self.out.fmt(format_args!(
-                " // Diana: inferred suspension, continuation=this, resume state={}; ABI ",
-                plan.original.state()
-            ))?;
-            let previous = std::mem::replace(&mut self.out.abi_comment, true);
-            let binding = self.member(plan.target, None, true);
-            self.out.abi_comment = previous;
-            binding?;
-        }
-        if let Some(note) = self.generated_note(s) {
-            self.out.put(" ")?;
-            self.out.put(note)?;
-        }
-        for definition in &s.outputs {
-            if let Materialization::Unavailable(gap) = definition.materialization() {
-                self.out
-                    .fmt(format_args!(" unavailable_definition<{gap:?}>;"))?;
-            }
-        }
-        self.out.span(
-            start,
-            Origin::Statement {
-                method: self.method,
-                statement: id,
-            },
-        )?;
-        if let StatementKind::Construction(g) = s.kind {
-            for &member in &self.code.constructions()[g.0 as usize].members {
-                let source = &self.code.operations()[member.0 as usize];
-                if !matches!(source.emission, Emission::Construction(_)) {
-                    continue;
-                }
-                self.out.span(
-                    start,
-                    Origin::Operation {
-                        method: self.method,
-                        operation: member,
-                        pc: source.pc,
-                    },
-                )?;
-            }
-        } else {
-            self.out.span(
-                start,
-                Origin::Operation {
-                    method: self.method,
-                    operation: op,
-                    pc: original.pc,
-                },
-            )?;
-        }
-        if let Some(pc) = original.result_pc {
-            self.out.span(
-                start,
-                Origin::ResultCommit {
-                    method: self.method,
-                    operation: op,
-                    pc,
-                },
-            )?;
-        }
+        self.statement_notes(op, s)?;
+        self.statement_origins(op, original, s, start)?;
         if !phases.after.is_empty() {
             self.out.put(" ")?;
             self.copies(&phases.after)?;
