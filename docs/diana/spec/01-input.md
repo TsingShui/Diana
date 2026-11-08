@@ -301,6 +301,35 @@ checked hierarchy reader and return class-level sites without opening code items
 or invoking method analysis. Read and allocation failures retain classification;
 a missing target definition is not a missing operand or hierarchy reference.
 
+## Extended reference query producers
+
+The input reference reader owns dynamic-reference expansion. It delivers resolved
+string/type/member/prototype leaves with the original call-site/handle path, using
+the existing checked dynamic and encoded-value readers. The application receives
+no private table, cursor or stage-construction access. Expansion describes encoded
+references, not runtime dispatch. A leaf failure retains its classified issue and
+does not erase independently located leaves.
+
+Declaration xref consumes P0 ClassFacts, including field/method signatures,
+preparation and annotation records. Class/method readers remain the only producers;
+queries do not interpret method values or construct later-stage products. The
+application builds an input-local declaration graph for recursive hierarchy and
+method relation searches. Missing, ambiguous and cyclic declaration paths remain
+Unknown; they do not establish absence or authorize external declarations.
+
+Reference delivery contains rows and local issues. A method-body failure stops
+only that method's unavailable suffix; a located reference failure stops only
+that reference. Class-data boundary failures retain known members and stop that
+class's unlocatable suffix. Physical-root failures retain sibling roots. Query
+publication reports recovered match counts and incomplete coverage separately;
+a complete total is absent when coverage is incomplete.
+
+The application owns resource-table bytes and checked chunk/string-pool readers.
+Resource rows retain physical entry, package/type/entry ID, configuration and
+value facts. Resource-ID xref reports original integer-literal candidates, not
+proven resource access or reconstructed data flow. All input-derived ranges,
+counts and buffer growth remain checked and fallible.
+
 ## Application input safety
 
 The application owns input snapshots, physical archive identity and decompression.

@@ -504,7 +504,8 @@ impl<'w> ChunkSink<'w> {
 /// publishes explicit display coverage and warnings. Other tables retain schema 1.
 fn schema_version(command: &str) -> u8 {
     match command {
-        "strings" | "xref" => 2,
+        "xref" | "resources" => 3,
+        "strings" => 2,
         _ => 1,
     }
 }
@@ -513,6 +514,7 @@ fn schema_version(command: &str) -> u8 {
 pub(super) struct RowSummary<'a> {
     pub total: usize,
     pub warning: Option<&'a str>,
+    pub issues: &'a [crate::analysis::xref::Issue],
 }
 
 /// Publishes already formatted columns with their shared selection summary.
@@ -525,12 +527,23 @@ pub(super) fn publish_rows(
     output: Option<&Path>,
     summary: RowSummary<'_>,
 ) -> Result<(), Failure> {
+    for issue in summary.issues {
+        eprintln!(
+            "diana: warning: {}: {}: {}",
+            issue.context, issue.kind, issue.reason
+        );
+    }
     let text = match format {
         Format::Text => {
             let mut text = String::new();
             if let Some(warning) = summary.warning {
                 text.push_str(warning);
                 text.push('\n');
+            }
+            if !summary.issues.is_empty() {
+                text.push_str(
+                    "//Diana Warn: coverage incomplete; counts describe recovered matches only\\n",
+                );
             }
             text.push_str(&columns.join("\t"));
             text.push('\n');
@@ -559,7 +572,10 @@ pub(super) fn publish_rows(
                 "schema_version": schema_version(command),
                 "command": command,
                 "items": items,
-                "total": summary.total,
+                "total": if summary.issues.is_empty() { Some(summary.total) } else { None },
+                "recovered_total": summary.total,
+                "complete": summary.issues.is_empty(),
+                "issues": summary.issues,
                 "shown": rows.len(),
                 "truncated": rows.len() < summary.total,
                 "warnings": summary.warning.into_iter().collect::<Vec<_>>(),

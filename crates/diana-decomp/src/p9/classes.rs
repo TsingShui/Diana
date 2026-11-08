@@ -67,6 +67,7 @@ fn class_result(out: &mut Buffer, class: &p8::ClassResult) -> Result<(), RenderE
     if let Some(package) = class.names().package()
         && !package.units.is_empty()
     {
+        out.mark_outline("package");
         out.put("package ")?;
         let owner = &lookup.uses[class.header().owner.0 as usize];
         let target = &lookup.targets[owner.target.0 as usize];
@@ -75,6 +76,7 @@ fn class_result(out: &mut Buffer, class: &p8::ClassResult) -> Result<(), RenderE
         out.put(";\n\n")?;
     }
     for import in class.names().imports() {
+        out.mark_outline("import");
         let target = &lookup.targets[import.target.0 as usize];
         out.put("import ")?;
         out.units(&target.full, false)?;
@@ -87,6 +89,7 @@ fn class_result(out: &mut Buffer, class: &p8::ClassResult) -> Result<(), RenderE
     attachments.print_residual(out, &lookup)?;
     attachments.print_class(out, &lookup)?;
     let start = out.position();
+    out.outline_header = Some(Origin::Class);
     let header = class.header();
     super::names::flags(
         out,
@@ -142,6 +145,7 @@ fn class_result(out: &mut Buffer, class: &p8::ClassResult) -> Result<(), RenderE
         attachments.print_field(out, &lookup, f.id)?;
         out.indent()?;
         let a = out.position();
+        out.outline_header = Some(Origin::Field(f.id));
         super::names::flags(out, f.flags, super::names::FlagScope::Field)?;
         match &f.expression {
             p8::FieldExpression::Declared {
@@ -289,6 +293,7 @@ fn member(
     let initial_depth = out.depth;
     let initial_comment = out.abi_comment;
     let initial_origin_only = out.origin_only;
+    let initial_method = out.outline_method.replace(member.id);
     let start = out.position();
     let mut state = MethodRenderState {
         prints_nothing,
@@ -337,6 +342,7 @@ fn member(
         }
         Err(e) => return Err(e),
     }
+    out.outline_method = initial_method;
     out.span(start, Origin::Method(member.id))
 }
 fn method(
@@ -583,6 +589,7 @@ fn header_line(
     attachments: Option<&Attachments<'_>>,
     suspending: bool,
 ) -> Result<(), RenderError> {
+    out.outline_header = Some(Origin::Method(h.key.method));
     out.indent()?;
     // A class initializer is a static block. DEX may give it access bits that
     // Java cannot express there; they stay in the original flags of the product.
@@ -724,6 +731,7 @@ fn original_header(
     facts: &crate::p0::ClassFacts,
     id: MethodId,
 ) -> Result<(), RenderError> {
+    out.outline_header = Some(Origin::Method(id));
     out.indent()?;
     out.fmt(format_args!("method#{} ", id.0))?;
     if let Some(entry) = facts.method_entry(id) {

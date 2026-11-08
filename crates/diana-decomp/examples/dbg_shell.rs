@@ -61,6 +61,15 @@ impl Shell {
         }])
         .map_err(RequestError::Input)?
         .with_method_jobs(self.method_jobs);
+        let engine = if request
+            .get("outline")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            engine.with_outline()
+        } else {
+            engine
+        };
         let command = request
             .get("cmd")
             .and_then(Value::as_str)
@@ -1998,10 +2007,10 @@ fn expression_counts(counts: &mut BTreeMap<String, u64>, result: &diana_decomp::
 fn rendering_json(result: &diana_decomp::p9::RenderOutcome, details: bool) -> Value {
     match result {
         diana_decomp::p9::RenderOutcome::Ready(r) => {
-            json!({"stage":"p9","class":r.source().class(),"text":r.text(),"spans":r.spans(),"issues":r.issues(),"result":details.then(||json!(r))})
+            json!({"stage":"p9","class":r.source().class(),"text":r.text(),"spans":r.spans(),"issues":r.issues(),"outline":r.outline(),"result":details.then(||json!(r))})
         }
         diana_decomp::p9::RenderOutcome::Stopped(s) => {
-            json!({"stage":"p9","stopped":true,"class":s.source().class(),"error":s.error().to_string(),"kind":format!("{:?}",s.error().kind()),"text_prefix":s.text_prefix(),"spans":s.spans(),"source":details.then(||json!(s.source()))})
+            json!({"stage":"p9","stopped":true,"class":s.source().class(),"error":s.error().to_string(),"kind":format!("{:?}",s.error().kind()),"text_prefix":s.text_prefix(),"spans":s.spans(),"outline":s.outline(),"source":details.then(||json!(s.source()))})
         }
     }
 }

@@ -88,6 +88,7 @@ impl Expressions<'_, '_> {
                 Event::Finally => {
                     self.out.close()?;
                     self.out.indent()?;
+                    self.out.mark_outline("finally");
                     self.out.put("finally")?;
                     self.out.open()?;
                 }
@@ -133,6 +134,7 @@ impl Expressions<'_, '_> {
                                 self.out.put(if graph { ": " } else { ":" })?;
                             }
                             if graph {
+                                self.out.mark_outline("graph");
                                 if let ControlKind::Graph {
                                     reason, entries, ..
                                 } = &c.kind
@@ -228,6 +230,7 @@ impl Expressions<'_, '_> {
                             push(&mut work, Event::Control(*header))?;
                         }
                         EmissionLayout::Loop { body, placement } => {
+                            self.out.mark_outline("loop");
                             self.out.indent()?;
                             if p.label_required {
                                 self.out.put(&p.label)?;
@@ -315,6 +318,7 @@ impl Expressions<'_, '_> {
                                 self.out.put(&p.label)?;
                                 self.out.put(": ")?;
                             }
+                            self.out.mark_outline("try");
                             self.out.put("try")?;
                             self.out.open()?;
                             push(&mut work, Event::Close)?;
@@ -413,6 +417,7 @@ impl Expressions<'_, '_> {
                     if !chained {
                         self.out.indent()?;
                     }
+                    self.out.mark_outline("if");
                     self.out.put("if (")?;
                     for i in 0..count {
                         if i > 0 {
@@ -571,6 +576,7 @@ impl Expressions<'_, '_> {
                         &self.code.emission().terminals()[test.terminal.0 as usize].before,
                     )?;
                     let a = self.out.position();
+                    self.out.mark_outline("if");
                     self.out.put("if (")?;
                     self.predicate_expression(test, false)?;
                     self.out.put(")")?;
@@ -615,6 +621,7 @@ impl Expressions<'_, '_> {
                 Event::Else(edge) => {
                     self.out.close()?;
                     self.out.indent()?;
+                    self.out.mark_outline("else");
                     self.out.put("else")?;
                     self.out.open()?;
                     if !self.code.emission().transfers()[edge.0 as usize]
@@ -640,6 +647,7 @@ impl Expressions<'_, '_> {
                 }
                 Event::CompactLoopTail(predicate, test) => {
                     self.out.close()?;
+                    self.out.mark_outline("loop-condition");
                     self.out.indent()?;
                     self.out.put("while (")?;
                     self.compact_predicate(predicate, test)?;
@@ -647,6 +655,7 @@ impl Expressions<'_, '_> {
                 }
                 Event::LoopTailStart => {
                     self.out.close()?;
+                    self.out.mark_outline("loop-condition");
                     self.out.indent()?;
                     self.out.put("while (test")?;
                     self.out.open()?;
@@ -672,6 +681,7 @@ impl Expressions<'_, '_> {
                             .put(&self.code.emission().controls()[id.0 as usize].label)?;
                         self.out.put(": ")?;
                     }
+                    self.out.mark_outline("switch");
                     self.out.put("switch (")?;
                     self.operand(*selector)?;
                     self.phases(
@@ -698,6 +708,7 @@ impl Expressions<'_, '_> {
                     }
                 }
                 Event::Case(arm) => {
+                    self.out.mark_outline("case");
                     self.out.indent()?;
                     match self.code.transfers()[arm.0 as usize].role {
                         Some(crate::p2::NormalEdge::SwitchCase { key, .. }) => {
@@ -722,6 +733,7 @@ impl Expressions<'_, '_> {
                 Event::Catch(id, index) => {
                     self.out.close()?;
                     self.out.indent()?;
+                    self.out.mark_outline("catch");
                     self.out.put("catch (")?;
                     let ControlKind::Try { chain, clauses, .. } =
                         &self.code.controls()[id.0 as usize].kind
@@ -756,6 +768,7 @@ impl Expressions<'_, '_> {
                         self.out.put(&control.label)?;
                         self.out.put(": ")?;
                     }
+                    self.out.mark_outline("synchronized");
                     self.out.put("synchronized (")?;
                     self.operand(*lock)?;
                     self.out.put(")")?;

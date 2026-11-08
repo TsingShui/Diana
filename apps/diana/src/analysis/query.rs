@@ -73,6 +73,8 @@ pub enum QueryKind {
 
 #[derive(Debug, thiserror::Error)]
 pub enum QueryError {
+    #[error("{reason}")]
+    Local { kind: FailureKind, reason: String },
     #[error(transparent)]
     Input(#[from] InputError),
     /// A checked DEX read failure; its own kind survives unchanged.
@@ -94,6 +96,7 @@ pub enum QueryError {
 impl QueryError {
     pub fn kind(&self) -> FailureKind {
         match self {
+            Self::Local { kind, .. } => *kind,
             Self::Input(error) => error.kind(),
             Self::Engine(error) => error.kind(),
             Self::Method(error) => error.kind(),

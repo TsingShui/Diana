@@ -163,6 +163,15 @@ Engine requests do not run symbolic replay, output audits or duplicate dominator
 verification. There is no runtime or feature switch. Parsing and construction
 still enforce input safety, checked arithmetic and allocation failures.
 
+`Engine::with_outline()` optionally retains line ranges, lexical depths, header
+identities and original call facts during the same P9 traversal. `Rendered` and
+`RenderStop` expose this owned presentation through `outline()`. Normal text/JSON
+retrieval keeps its existing publication without allocating outline facts. The
+CLI's `outline-class` and `outline-method` consume these facts for finite call
+navigation; P9 does not start callee analysis or recover structure from text.
+The development shell accepts `"outline":true` on a `p9` request to inspect the
+same product. See the [P9 outline contract](../../docs/diana/spec/09-rendering.md#outline-presentation).
+
 The previous core test was removed by operator decision; no test case is present
 in the current tree. The retained independent verifier code is not enabled on
 ordinary requests. Real-input corpus runs have not encountered custom/polymorphic

@@ -105,6 +105,8 @@ impl SourceProduct {
 }
 #[derive(Serialize)]
 pub struct Rendered {
+    #[serde(skip)]
+    pub(super) outline: Option<super::Outline>,
     pub(super) class: ClassKey,
     pub(super) notation: &'static str,
     pub(super) source: SourceProduct,
@@ -113,6 +115,9 @@ pub struct Rendered {
     pub(super) issues: Vec<RenderIssue>,
 }
 impl Rendered {
+    pub fn outline(&self) -> Option<&super::Outline> {
+        self.outline.as_ref()
+    }
     pub fn text(&self) -> &str {
         &self.text
     }
@@ -138,6 +143,8 @@ impl Rendered {
 /// suffix was silently truncated, and the owned input product is still retained.
 #[derive(Serialize)]
 pub struct RenderStop {
+    #[serde(skip)]
+    pub(super) outline: Option<super::Outline>,
     pub(super) issues: Vec<RenderIssue>,
     pub(super) source: SourceProduct,
     #[serde(serialize_with = "crate::substrate::serialization::debug")]
@@ -146,6 +153,9 @@ pub struct RenderStop {
     pub(super) spans: Vec<SourceSpan>,
 }
 impl RenderStop {
+    pub fn outline(&self) -> Option<&super::Outline> {
+        self.outline.as_ref()
+    }
     pub fn issues(&self) -> &[RenderIssue] {
         &self.issues
     }

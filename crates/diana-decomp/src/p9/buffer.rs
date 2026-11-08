@@ -10,10 +10,17 @@ pub(super) struct Buffer {
     /// records origins while writing, rather than editing completed text.
     pub abi_comment: bool,
     pub origin_only: bool,
+    pub outline: Option<super::Outline>,
+    pub outline_method: Option<crate::MethodId>,
+    pub outline_header: Option<Origin>,
+    pub outline_kind: &'static str,
+    line_start: usize,
+    line_end: Option<usize>,
+    hide_line: bool,
     allocation: Option<std::collections::TryReserveError>,
 }
 impl Buffer {
-    pub fn new() -> Self {
+    pub fn new(outline: bool) -> Self {
         Self {
             text: String::new(),
             spans: Vec::new(),
@@ -21,6 +28,13 @@ impl Buffer {
             depth: 0,
             abi_comment: false,
             origin_only: false,
+            outline: outline.then(super::Outline::new),
+            outline_method: None,
+            outline_header: None,
+            outline_kind: "code",
+            line_start: 0,
+            line_end: None,
+            hide_line: false,
             allocation: None,
         }
     }
@@ -28,10 +42,43 @@ impl Buffer {
         if self.origin_only {
             return Ok(());
         }
+        self.append(text)
+    }
+    fn append(&mut self, text: &str) -> Result<(), RenderError> {
         self.text
             .try_reserve(text.len())
             .map_err(RenderError::Allocation)?;
+        if let Some(outline) = &mut self.outline {
+            outline
+                .lines
+                .try_reserve(text.bytes().filter(|&b| b == b'\n').count())
+                .map_err(RenderError::Allocation)?;
+        }
+        let start = self.text.len();
         self.text.push_str(text);
+        if let Some(outline) = &mut self.outline {
+            for (offset, byte) in text.bytes().enumerate() {
+                if byte != b'\n' {
+                    continue;
+                }
+                let end = start + offset;
+                if !self.hide_line && end > self.line_start {
+                    outline.lines.push(super::OutlineLine {
+                        start: TextOffset(self.line_start),
+                        end: TextOffset(self.line_end.unwrap_or(end)),
+                        depth: self.depth,
+                        method: self.outline_method,
+                        header: self.outline_header,
+                        kind: self.outline_kind,
+                    });
+                }
+                self.line_start = end + 1;
+                self.line_end = None;
+                self.hide_line = false;
+                self.outline_header = None;
+                self.outline_kind = "code";
+            }
+        }
         Ok(())
     }
     pub fn fmt(&mut self, args: std::fmt::Arguments<'_>) -> Result<(), RenderError> {
@@ -40,6 +87,31 @@ impl Buffer {
                 Some(e) => RenderError::Allocation(e),
                 None => RenderError::OutputInvariant("formatting an existing display fact failed"),
             })
+    }
+    pub fn finish_outline(&mut self) -> Result<(), RenderError> {
+        if let Some(outline) = &mut self.outline
+            && !self.hide_line
+            && self.text.len() > self.line_start
+        {
+            outline
+                .lines
+                .try_reserve(1)
+                .map_err(RenderError::Allocation)?;
+            outline.lines.push(super::OutlineLine {
+                start: TextOffset(self.line_start),
+                end: TextOffset(self.line_end.unwrap_or(self.text.len())),
+                depth: self.depth,
+                method: self.outline_method,
+                header: self.outline_header,
+                kind: self.outline_kind,
+            });
+        }
+        Ok(())
+    }
+    pub fn mark_outline(&mut self, kind: &'static str) {
+        if !self.origin_only {
+            self.outline_kind = kind;
+        }
     }
     pub fn position(&self) -> TextOffset {
         TextOffset(self.text.len())
@@ -78,6 +150,9 @@ impl Buffer {
     }
     /// A block without a header line of its own, indented at the block start.
     pub fn open_plain(&mut self) -> Result<(), RenderError> {
+        if !self.origin_only {
+            self.line_end = Some(self.text.len());
+        }
         self.put("{\n")?;
         self.enter()
     }
@@ -94,6 +169,9 @@ impl Buffer {
         Ok(())
     }
     pub fn close(&mut self) -> Result<(), RenderError> {
+        if !self.origin_only {
+            self.hide_line = true;
+        }
         self.depth = self
             .depth
             .checked_sub(1)
@@ -111,6 +189,21 @@ impl Buffer {
             .checked_sub(1)
             .ok_or(RenderError::OutputInvariant("unbalanced output scope"))?;
         self.text.truncate(start.0);
+        if let Some(outline) = &mut self.outline {
+            // The empty-body rewrite replaces the already recorded header line.
+            // Its replacement keeps the same header identity and brace-free range.
+            let begin = self.text.rfind('\n').map_or(0, |n| n + 1);
+            if let Some(line) = outline.lines.last()
+                && line.start.0 == begin
+            {
+                self.outline_header = line.header;
+            }
+            outline
+                .lines
+                .truncate(outline.lines.partition_point(|line| line.start.0 < begin));
+            self.line_start = begin;
+            self.line_end = Some(start.0);
+        }
         self.put(" { }\n")
     }
     /// Exact UTF-16 identity is retained through escaping; comments and names
@@ -267,11 +360,11 @@ impl Write for Buffer {
         if self.origin_only {
             return Ok(());
         }
-        if let Err(e) = self.text.try_reserve(s.len()) {
-            self.allocation = Some(e);
-            return Err(std::fmt::Error);
-        }
-        self.text.push_str(s);
-        Ok(())
+        self.append(s).map_err(|error| {
+            if let RenderError::Allocation(error) = error {
+                self.allocation = Some(error);
+            }
+            std::fmt::Error
+        })
     }
 }

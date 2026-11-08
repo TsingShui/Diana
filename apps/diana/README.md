@@ -16,6 +16,8 @@ external classpaths, declarations and runtimes are not required.
 ```text
 get-class   Decompile one class
 get-method  Decompile one method
+outline-class   Show class members and structured method outlines
+outline-method  Show one method outline, with optional call expansion
 entries     List physical archive entries
 extract     Extract one physical entry
 strings     List original string values
@@ -45,6 +47,7 @@ matching modes retain completion order.
 | `xref` | `context, match, use` |
 | `manifest` | XML, or JSON with `status, xml, warnings` |
 | `get-class`, `get-method` | P9 Java-like text, or JSON schema 3 |
+| `outline-class`, `outline-method` | Structured tree with call links, or JSON schema 1 |
 | `extract` | One output file |
 
 `classes` supports `--filter`, `--extends`, `--implements`, `--subinterface`
@@ -132,6 +135,51 @@ arena. Each package carries `parent`, `children`, its display `name`, original
 input-derived nesting. A scan failure retains recovered nodes, marks the tree
 incomplete in both formats, and exits nonzero. Package/class siblings are not
 alphabetically sorted. File output uses the ordinary atomic publisher.
+
+## Class and method outlines
+
+```sh
+diana outline-class app.apk 'com.example.Worker'
+diana outline-method app.apk 'Lcom/example/Worker;->run()V' --call-depth 2
+diana outline-class classes.dex 'com.example.Worker' --expand-all --format json -o outline.json
+```
+
+These commands accept the same exact selectors as `get-class` and `get-method`.
+The default shows the selected method, or every original class member, without
+starting analysis of additional callees. `outline-class --jobs N` selects the
+ordinary Engine method workers. Imports/package lines are omitted from the tree;
+the retained publication still contains them.
+
+P9 records lexical scope, text ranges and original call facts during its existing
+render traversal. The outline preserves conditions, loops, ordered catches,
+selected finally/synchronized forms, writes, exits, explicit transfers and local
+gaps. It does not parse Java-like text or recover missing structures. Each method,
+class and available field declaration carries its canonical locator. An empty
+class initializer remains a member even when its ordinary code spelling is empty.
+
+`--call-depth N` permits that many cross-method levels; zero is the default.
+`--expand-all` instead follows every available referenced declaration body. The
+options are mutually exclusive. Class members keep their member positions, while
+additional bodies appear under `expanded methods`, not as invented class members.
+Each delivered call occurrence retains its original PC; repeated bodies and
+recursion link to a single method node. Origin-only cleanup and ABI attachments
+are marked as attachments, not additional executions. Breadth-first expansion gives a shared method its shortest depth from
+the selected roots. Loops show structure, not iterations. Expansion is finite in
+the input's original method identities, but has no implicit row or body limit.
+
+External owners, ambiguous definitions, missing declarations and dynamic dispatch
+remain explicit. Virtual/interface/super expansion shows the referenced declaration
+body, not a proven runtime target; custom/polymorphic targets are not guessed.
+Expansion caches one Engine per used physical root and uses the ordinary method
+entry. An unavailable callee does not erase the caller or another available body.
+
+Text and JSON present one flat node arena and the same call states. JSON contains
+`root`, `nodes` with parent indexes, `calls`, concrete `issues` and the retained
+ordinary P9 `publications`; source ranges index those publications. `complete`
+describes traversal/delivery availability, not semantic verification. Explicit
+depth boundaries and external references are normal leaves. Local input, selection,
+analysis or rendering failures retain output and exit nonzero. File publication
+uses the ordinary atomic publisher.
 
 ## Original identity and selection
 

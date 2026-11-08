@@ -14,6 +14,7 @@ mod error;
 pub(crate) mod formats;
 mod header;
 mod method;
+mod reference_leaves;
 mod retained;
 pub use retained::RetainedCode;
 pub(crate) mod operands;

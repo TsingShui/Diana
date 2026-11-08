@@ -8,7 +8,9 @@
 mod extract_cli;
 mod get;
 mod matching;
+mod outline;
 mod output;
+mod resources;
 mod table;
 mod tree;
 mod xref;
@@ -158,6 +160,18 @@ enum Command {
         /// Write the result to this file instead of stdout
         output: Option<PathBuf>,
     },
+    /// List resources.arsc IDs, names, configurations and original values
+    Resources {
+        input: PathBuf,
+        #[arg(long)]
+        filter: Option<String>,
+        #[command(flatten)]
+        matching: MatchArgs,
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
     /// Decompile one class
     #[command(
         long_about = "Displays the Engine/P9 Java-like text, including original members and local recovery gaps. JSON schema 3 carries the same text, source facts and byte spans."
@@ -193,6 +207,10 @@ enum Command {
         /// Write the result to this file instead of stdout
         output: Option<PathBuf>,
     },
+    /// Show all original class members with structured method outlines
+    OutlineClass(outline::ClassArgs),
+    /// Show one method's structure and optionally expand referenced calls
+    OutlineMethod(outline::OutlineArgs),
     /// Extract one physical entry
     #[command(
         long_about = "Writes exactly one entry. A binary XML payload is decoded to text XML by default; --raw keeps the original payload. Publication is atomic."
@@ -223,15 +241,21 @@ enum Command {
     },
     /// Find original reference sites and direct hierarchy relations
     #[command(
-        long_about = "Columns: context, match, use. Kinds: string, type, method, field, impl, extend. Defaults to ranked case-insensitive fuzzy matching; --substring, --regex and --exact select other modes. Canonical coordinates always select exact values."
+        long_about = "Columns: context, match, use. Kinds: string, type, method, field, impl, extend, resource. Defaults to ranked case-insensitive fuzzy matching; --substring, --regex and --exact select other modes. Canonical coordinates always select exact values."
     )]
     Xref {
         /// Input file (APK, ZIP or bare DEX)
         input: PathBuf,
-        /// Target kind: string, type, method, field, impl or extend
+        /// Target kind: string, type, method, field, impl, extend or resource
         kind: String,
         /// Name/descriptor pattern, owner->member, or canonical coordinate
         target: String,
+        /// Include indirect impl/extend relationships
+        #[arg(long)]
+        recursive: bool,
+        /// Method relationships instead of reference sites
+        #[arg(long, value_enum, default_value_t = MethodRelationArg::References)]
+        relation: MethodRelationArg,
         #[command(flatten)]
         matching: MatchArgs,
         #[arg(long)]
@@ -282,11 +306,33 @@ enum KindArg {
     Interface,
 }
 
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum MethodRelationArg {
+    References,
+    Implementations,
+    Overrides,
+}
+
 /// Runs one command and maps its classified failure to an exit code.
 pub fn run() -> std::process::ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
+        Command::Resources {
+            input,
+            filter,
+            matching,
+            format,
+            output,
+        } => resources::run(
+            &input,
+            filter.as_deref(),
+            matching,
+            format,
+            output.as_deref(),
+        ),
         Command::Tree(args) => tree::run(args),
+        Command::OutlineClass(args) => outline::class(args),
+        Command::OutlineMethod(args) => outline::method(args),
         Command::Entries {
             input,
             format,
@@ -338,6 +384,8 @@ pub fn run() -> std::process::ExitCode {
             input,
             kind,
             target,
+            recursive,
+            relation,
             matching,
             class,
             jobs,
@@ -351,6 +399,14 @@ pub fn run() -> std::process::ExitCode {
             &kind,
             &target,
             matching.mode(),
+            recursive,
+            match relation {
+                MethodRelationArg::References => crate::analysis::xref::MethodRelation::References,
+                MethodRelationArg::Implementations => {
+                    crate::analysis::xref::MethodRelation::Implementations
+                }
+                MethodRelationArg::Overrides => crate::analysis::xref::MethodRelation::Overrides,
+            },
             class.as_deref(),
             transitive.unwrap_or(0),
             if no_limit { 0 } else { limit },

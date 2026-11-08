@@ -50,6 +50,7 @@ struct IndexedImage<'a> {
 pub struct Engine<'a> {
     images: Vec<IndexedImage<'a>>,
     method_jobs: usize,
+    outline: bool,
     method_pool: std::sync::OnceLock<rayon::ThreadPool>,
     method_pool_build: std::sync::Mutex<()>,
 }
@@ -63,6 +64,13 @@ impl<'a> Engine<'a> {
         self.method_jobs = jobs.max(1);
         self.method_pool = std::sync::OnceLock::new();
         self.method_pool_build = std::sync::Mutex::new(());
+        self
+    }
+
+    /// Retains outline layout and call facts during the ordinary P9 traversal.
+    /// This changes presentation only; no additional method analysis runs.
+    pub fn with_outline(mut self) -> Self {
+        self.outline = true;
         self
     }
 
@@ -163,6 +171,7 @@ impl<'a> Engine<'a> {
         Ok(Self {
             images: indexed,
             method_jobs: 1,
+            outline: false,
             method_pool: std::sync::OnceLock::new(),
             method_pool_build: std::sync::Mutex::new(()),
         })
@@ -173,6 +182,7 @@ mod delivery;
 
 pub(crate) struct RenderTask {
     _sealed: (),
+    pub(crate) outline: bool,
 }
 pub(crate) struct ClassTask {
     _sealed: (),
@@ -308,6 +318,13 @@ impl MethodTask {
 }
 
 impl<'a> Engine<'a> {
+    fn render_task(&self) -> RenderTask {
+        RenderTask {
+            _sealed: (),
+            outline: self.outline,
+        }
+    }
+
     /// P0 only: class facts for one original class identity.
     pub fn class_facts(
         &self,
@@ -332,7 +349,7 @@ impl<'a> Engine<'a> {
         crate::substrate::owned::push(&mut members, delivery::member(method, &result))?;
         let display = crate::p8::method_display(&ClassTask { _sealed: () }, facts, members, method);
         let source = method_source(&display);
-        let rendered = crate::p9::render(&RenderTask { _sealed: () }, source);
+        let rendered = crate::p9::render(&self.render_task(), source);
         Ok(SingleMethodAnalysis {
             rendered,
             key: MethodKey { class, method },
@@ -413,7 +430,7 @@ impl<'a> Engine<'a> {
             }
             Presentation::Method(m) => method_source(m),
         };
-        let rendered = crate::p9::render(&RenderTask { _sealed: () }, source);
+        let rendered = crate::p9::render(&self.render_task(), source);
         Ok(ClassAnalysis {
             rendered,
             image: ImageFact {
