@@ -305,9 +305,14 @@ fn candidate(
     // Only the already established call-to-marker link enters protocol content
     // from a readable node. All other normal protocol links stay internal or
     // select the initial body / resume merge; no hidden jump becomes fallthrough.
+    // One mask answers both membership questions for every link.
+    let mut in_initial = filled(f.nodes.len(), false)?;
+    for &node in &f.regions[initial.0 as usize].nodes {
+        in_initial[node.0 as usize] = true;
+    }
     for link in &f.links {
-        let from_initial = f.regions[initial.0 as usize].nodes.contains(&link.from);
-        let to_initial = f.regions[initial.0 as usize].nodes.contains(&link.to);
+        let from_initial = in_initial[link.from.0 as usize];
+        let to_initial = in_initial[link.to.0 as usize];
         require!(
             !from_initial || to_initial || link.id == plan.normal,
             "body_initial_exit_bypasses_suspend_result"
@@ -426,8 +431,12 @@ fn invalid_arm(
     }
     let mut operations = Vec::new();
     let mut terminal = None;
+    let mut in_region = filled(f.nodes.len(), false)?;
+    for &inside in &r.nodes {
+        in_region[inside.0 as usize] = true;
+    }
     for _ in 0..r.nodes.len() {
-        if !r.nodes.contains(&node) {
+        if !in_region[node.0 as usize] {
             return Ok(Err(()));
         }
         for index in f.nodes[node.0 as usize].operations.clone() {

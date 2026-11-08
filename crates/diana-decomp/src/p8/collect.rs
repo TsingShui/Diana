@@ -877,17 +877,22 @@ pub(super) fn collect<'a>(
             }
         }
     }
+    // Annotation records are judged one by one; the method answer does not
+    // depend on the record, so it is built once.
+    let mut expressible: std::collections::HashMap<u32, bool> =
+        std::collections::HashMap::with_capacity(methods.len());
+    for member in methods {
+        let ordinary = matches!(&member.delivery,
+            Ok(super::MethodDelivery::Expressed(result) | super::MethodDelivery::Declared(result))
+            if !matches!(result.header().kind, crate::p7::MethodKind::ClassInitializer));
+        expressible.insert(member.id.0, ordinary);
+    }
     for (record, a) in facts.annotations().records().iter().enumerate() {
         let record = super::names::AnnotationId(id(record)?);
         let hidden_signature = match a.location() {
             AnnotationLocation::Method(method) => {
                 signatures.method_signature_record(method) == Some((record, true))
-                    && methods.iter().any(|member| {
-                        member.id == method
-                            && matches!(&member.delivery,
-                                Ok(super::MethodDelivery::Expressed(result) | super::MethodDelivery::Declared(result))
-                                if !matches!(result.header().kind, crate::p7::MethodKind::ClassInitializer))
-                    })
+                    && expressible.get(&method.0).copied().unwrap_or(false)
             }
             _ => false,
         };
@@ -900,7 +905,7 @@ pub(super) fn collect<'a>(
                 }
             }
             AnnotationLocation::Method(m) | AnnotationLocation::Parameter { method: m, .. } => {
-                if !methods.iter().any(|x| x.id == m) {
+                if !expressible.contains_key(&m.0) {
                     continue;
                 }
                 Scope::Method(m)

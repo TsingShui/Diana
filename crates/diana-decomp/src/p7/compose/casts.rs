@@ -935,23 +935,38 @@ fn statement_keeps_protection(
 /// whose transfer carries no earlier step is followed by that read immediately;
 /// a terminal, a second transfer, a Save or another bundle between them keeps
 /// the standalone statement.
+/// The check is the last action of its block: a copy or terminal carrier may
+/// only print at the event that follows it with nothing in between.
+fn last_action_check(
+    carrier: &Carrier<'_>,
+    statement: StatementId,
+) -> Option<(crate::p7::ReferenceId, usize)> {
+    let code = carrier.code;
+    let block = &code.emission.blocks[carrier.node];
+    if carrier.index + 1 != block.actions.len() {
+        return None;
+    }
+    let BodyAction::Statement { operation, .. } = block.actions[carrier.index] else {
+        return None;
+    };
+    let (_, reference) = eligible_check(code, operation, statement, None)?;
+    Some((reference, carrier.node))
+}
+
 fn copy_carrier(
     carrier: &Carrier<'_>,
     statement: StatementId,
     storage: StorageId,
 ) -> Result<Option<Carried>, Stop> {
     let code = carrier.code;
-    let (node, index) = (carrier.node, carrier.index);
+    let Some((reference, node)) = last_action_check(carrier, statement) else {
+        return Ok(None);
+    };
+    let BodyAction::Statement { operation, .. } = code.emission.blocks[node].actions[carrier.index]
+    else {
+        return Ok(None);
+    };
     let block = &code.emission.blocks[node];
-    if index + 1 != block.actions.len() {
-        return Ok(None);
-    }
-    let BodyAction::Statement { operation, .. } = block.actions[index] else {
-        return Ok(None);
-    };
-    let Some((_, reference)) = eligible_check(code, operation, statement, None) else {
-        return Ok(None);
-    };
     let BlockEnd::Transfers(transfers) = &block.end else {
         // A terminal evaluates its own operands and selects between its
         // original edges, so the check still precedes both outcomes.
@@ -1057,15 +1072,11 @@ fn terminal_carrier(
     storage: StorageId,
 ) -> Result<Option<Carried>, Stop> {
     let code = carrier.code;
-    let (node, index) = (carrier.node, carrier.index);
-    let block = &code.emission.blocks[node];
-    if index + 1 != block.actions.len() {
-        return Ok(None);
-    }
-    let BodyAction::Statement { operation, .. } = block.actions[index] else {
+    let Some((reference, node)) = last_action_check(carrier, statement) else {
         return Ok(None);
     };
-    let Some((_, reference)) = eligible_check(code, operation, statement, None) else {
+    let BodyAction::Statement { operation, .. } = code.emission.blocks[node].actions[carrier.index]
+    else {
         return Ok(None);
     };
     // The terminal may sit in a following portion of the same original

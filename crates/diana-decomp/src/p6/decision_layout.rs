@@ -55,6 +55,28 @@ fn alternative(
     root: RegionId,
 ) -> Result<Option<DecisionPlan>, RegionError> {
     let follow = f.regions[root.0 as usize].follow;
+    // Two arena-wide questions are asked once per visited region; the answers
+    // do not depend on the region, so they are built once.
+    let block_count = storage.execution().blocks().len();
+    let mut thrown_at = super::build::filled(block_count, false)?;
+    for site in &f.throws {
+        if let crate::p5::ThrowSite::Terminal(block) = site.site {
+            thrown_at[block.0 as usize] = true;
+        }
+    }
+    let mut copied_at = super::build::filled(block_count, false)?;
+    for copy in &f.copies {
+        match copy.location {
+            crate::p5::CopyLocation::BeforeThrow(crate::p5::ThrowSite::Terminal(block)) => {
+                copied_at[block.0 as usize] = true;
+            }
+            crate::p5::CopyLocation::Transfer {
+                site: crate::p5::TransferSite::BeforeTerminal(block),
+                ..
+            } => copied_at[block.0 as usize] = true,
+            _ => {}
+        }
+    }
     let mut current = root;
     let mut selector = None;
     let mut tests = Vec::new();
@@ -96,12 +118,7 @@ fn alternative(
         {
             return Ok(None);
         }
-        if f.throws.iter().any(|site| site.site == crate::p5::ThrowSite::Terminal(node.block))
-            || f.copies.iter().any(|copy| matches!(copy.location,
-                crate::p5::CopyLocation::BeforeThrow(crate::p5::ThrowSite::Terminal(block))
-                | crate::p5::CopyLocation::Transfer { site: crate::p5::TransferSite::BeforeTerminal(block), .. }
-                if block == node.block))
-        {
+        if thrown_at[node.block.0 as usize] || copied_at[node.block.0 as usize] {
             return Ok(None);
         }
         let Some((read, argument, key, equal)) = comparison(storage, node.block) else {
