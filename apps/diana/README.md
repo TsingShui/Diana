@@ -402,9 +402,10 @@ diagnostics. `--strict` reports a partial document as failure after publication.
 
 ## File publication and exit codes
 
-Result serialization writes directly to stdout or a private temporary file beside
-the requested target. A file is renamed into place only after serialization and
-flush complete. Writer/serializer/flush/rename failures do not replace the target.
+Result serialization streams through one fallibly allocated transfer buffer to
+stdout or a private temporary file beside the requested target. Large writes
+bypass that buffer; buffering is not an output limit. A file is renamed into place
+only after serialization and explicit flush complete. Writer/serializer/flush/rename failures do not replace the target.
 A P9 rendering stop is a fully delivered failure report, not an interrupted file
 write. Its text remains explicitly incomplete as described above.
 

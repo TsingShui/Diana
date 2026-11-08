@@ -69,8 +69,7 @@ pub(super) fn run(args: TreeArgs) -> Result<(), Failure> {
             message: error.to_string(),
         }),
     };
-    publish_with(args.output.as_deref(), &args.input, |writer| {
-        let mut writer = io::BufWriter::with_capacity(1 << 18, writer);
+    publish_with(args.output.as_deref(), &args.input, |mut writer| {
         match args.format {
             Format::Text => {
                 write_tree(&mut writer, &result.tree).map_err(Failure::output)?;
@@ -82,7 +81,7 @@ pub(super) fn run(args: TreeArgs) -> Result<(), Failure> {
             Format::Json => serde_json::to_writer(&mut writer, &document)
                 .map_err(|e| Failure::output(io::Error::other(e)))?,
         }
-        writer.flush().map_err(Failure::output)
+        Ok(())
     })?;
     match result.issue {
         Some(error) => Err(Failure::query(error, 1)),

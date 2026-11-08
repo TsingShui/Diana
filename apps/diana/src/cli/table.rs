@@ -396,14 +396,12 @@ where
     F: FnOnce(&mut ChunkSink<'_>) -> Result<(), Failure>,
 {
     publish_with(output, input, |writer| {
-        let mut buffered = std::io::BufWriter::with_capacity(1 << 18, writer);
-        let mut sink =
-            ChunkSink::new(&mut buffered, key, columns, format).map_err(Failure::output)?;
+        let mut sink = ChunkSink::new(writer, key, columns, format).map_err(Failure::output)?;
         sink.begin(command).map_err(Failure::output)?;
         let outcome = run(&mut sink);
         let write_failure = sink.failure.take();
         let finished = sink.finish().map_err(Failure::output);
-        let flushed = buffered.flush().map_err(Failure::output);
+        let flushed = writer.flush().map_err(Failure::output);
         if let Some(error) = write_failure {
             return Err(Failure::output(error));
         }
@@ -576,7 +574,6 @@ pub(super) fn publish_rows<R: Cells>(
         );
     }
     publish_with(output, input, |writer| {
-        let mut writer = std::io::BufWriter::with_capacity(1 << 18, writer);
         match format {
             Format::Text => {
                 if let Some(warning) = summary.warning {
@@ -589,15 +586,15 @@ pub(super) fn publish_rows<R: Cells>(
                     )
                     .map_err(Failure::output)?;
                 }
-                write_cells(&mut writer, columns.iter().copied()).map_err(Failure::output)?;
+                write_cells(writer, columns.iter().copied()).map_err(Failure::output)?;
                 for row in rows {
-                    write_cells(&mut writer, row.cells()).map_err(Failure::output)?;
+                    write_cells(writer, row.cells()).map_err(Failure::output)?;
                 }
             }
             Format::Json => {
                 let write = (|| -> Result<(), serde_json::Error> {
                     use serde::ser::SerializeMap;
-                    let mut serializer = serde_json::Serializer::new(&mut writer);
+                    let mut serializer = serde_json::Serializer::new(&mut *writer);
                     let mut object = serde::Serializer::serialize_map(&mut serializer, Some(10))?;
                     object.serialize_entry("schema_version", &schema_version(command))?;
                     object.serialize_entry("command", command)?;
@@ -617,7 +614,7 @@ pub(super) fn publish_rows<R: Cells>(
                 write.map_err(|error| Failure::output(std::io::Error::other(error)))?;
             }
         }
-        writer.flush().map_err(Failure::output)
+        Ok(())
     })
 }
 fn write_cells<'a>(

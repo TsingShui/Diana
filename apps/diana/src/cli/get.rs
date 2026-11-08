@@ -1,5 +1,6 @@
 //! Deliver the same Engine/P9 publication in either presentation.
 
+use std::io::Write;
 use std::path::Path;
 
 use diana_decomp::p9::RenderOutcome;

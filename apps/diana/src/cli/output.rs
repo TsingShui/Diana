@@ -1,5 +1,7 @@
 //! Checked result publication to stdout or an atomic file replacement.
 
+mod buffer;
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -56,13 +58,16 @@ pub fn publish(
     })
 }
 
-/// Serializes directly to the sink. A writer/flush/rename failure, including a
-/// closed pipe, is an error. Files become visible only after complete encoding;
+/// Streams through one fallibly allocated transfer buffer. A writer/flush/rename
+/// failure, including a closed pipe, is an error. Callbacks handle short writes
+/// and propagate write errors.
+/// Files become visible only after complete encoding and explicit flush;
 /// cleanup also runs when the serializer, rather than the file writer, fails.
+/// The concrete writer keeps token-sized serialization writes inlineable.
 pub fn publish_with(
     output: Option<&Path>,
     input: &Path,
-    write: impl FnOnce(&mut dyn Write) -> Result<(), Failure>,
+    write: impl FnOnce(&mut buffer::Buffered<'_>) -> Result<(), Failure>,
 ) -> Result<(), Failure> {
     match output {
         Some(path) => {
@@ -72,7 +77,7 @@ pub fn publish_with(
                 .filter(|path| !path.as_os_str().is_empty())
                 .unwrap_or_else(|| Path::new("."));
             let (mut file, temporary) = tempfile_in(directory).map_err(Failure::output)?;
-            let written = write(&mut file).and_then(|()| file.flush().map_err(Failure::output));
+            let written = write_buffered(&mut file, write);
             // Close before cleanup: Windows does not unlink an open temporary.
             drop(file);
             written?;
@@ -80,10 +85,26 @@ pub fn publish_with(
         }
         None => {
             let mut stdout = std::io::stdout().lock();
-            write(&mut stdout)?;
-            stdout.flush().map_err(Failure::output)
+            write_buffered(&mut stdout, write)
         }
     }
+}
+
+fn write_buffered(
+    sink: &mut dyn Write,
+    write: impl FnOnce(&mut buffer::Buffered<'_>) -> Result<(), Failure>,
+) -> Result<(), Failure> {
+    let mut writer = buffer::Buffered::new(sink)?;
+    let encoded = write(&mut writer);
+    // Retain a serializer's available prefix, but never retry a failed sink.
+    // The original callback failure takes precedence over a later flush failure.
+    let flushed = if !writer.failed() || encoded.is_ok() {
+        writer.flush().map_err(Failure::output)
+    } else {
+        Ok(())
+    };
+    encoded?;
+    flushed
 }
 
 fn check_target(target: &Path, input: &Path) -> std::io::Result<()> {
