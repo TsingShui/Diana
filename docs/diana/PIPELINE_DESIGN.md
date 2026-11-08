@@ -1,1337 +1,1748 @@
-# Diana 管线重构设计：完整产品交付与阶段信任
+# Diana pipeline redesign: complete product delivery and stage trust
 
-## 1. 设计定位
+## 1. Design positioning
 
-本方案定义单类反编译的目标数据流：P0 生产类事实，独立方法 reader 准备
-MethodSource，P1 反汇编，P2–P7 加工方法，P8 类级准备与组装，P9 渲染。
-方法输入准备不新增 P 编号。优化对象是正式单类请求的总延迟；
-`p0_debug` 是事实观察入口，不是性能目标。
+This plan defines the target data flow of single-class decompilation: P0 produces
+class facts, an independent method reader prepares MethodSource, P1 disassembles,
+P2–P7 process the method, P8 prepares and assembles the class, and P9 renders.
+Method input preparation adds no P number. The optimisation target is the total
+latency of a formal single-class request; `p0_debug` is a fact-inspection entry,
+not a performance target.
 
-这是目标设计，不是当前实现的能力声明。当前执行顺序见
-[phases.md](phases.md)，现有阶段契约见各 [spec 章节](README.md)。
-实现时，贡献者 MUST 同步修改受影响的契约、生产者和消费者；本方案不能
-被用作扩大已批准的产品访问/构造权限的依据。独立语义验证按第 6 节
-仅在测试构建执行，不进入正常反编译。已定目标内
-技术细化具有默认批准，禁止的额外变化见根
-[AGENTS.md](../../AGENTS.md#pipeline-refactoring-authority)。
+This is the target design, not a capability claim about the current
+implementation. The current execution order is in [phases.md](phases.md), and the
+active stage contracts are in the [spec chapters](README.md).
+During implementation, contributors MUST update the affected contracts, producers
+and consumers together; this plan cannot be used as grounds to widen approved
+product access or construction authority. Independent semantic verification runs
+only in test builds under §6 and does not enter ordinary decompilation. Technical
+detail within the agreed target has default approval; prohibited additional
+changes are listed in the root
+[AGENTS.md](../../AGENTS.md#pipeline-refactoring-authority).
 
-核心原则：**上一阶段交付满足其契约的完整产品，下一阶段信任该保证，
-只完成自己的加工。各阶段在内部完成自己的算法，通过产品契约
-衔接，不依赖其他阶段的算法实现或构建中间状态。**
+Core principle: **the previous stage delivers a complete product that satisfies its
+contract, and the next stage trusts that guarantee and performs only its own
+processing. Each stage completes its own algorithm internally, and stages meet
+through product contracts rather than depending on another stage's algorithm
+implementation or intermediate state.**
 
-这里的“完整”有三个限定：
+"Complete" here has three limits:
 
-- 本阶段应交付的事实、关联和读取状态完整，不代表未来阶段的分析已经完成。
-- 输入缺少可选事实时，明确交付 Absent 或 Unknown，不要求正常源码元数据齐全。
-- 原始依据与分析结果保持区别，不要求保留全部算法临时数据。
+- The facts, associations and read states that this stage owes are complete; this
+  does not mean that later-stage analysis has finished.
+- When the input lacks optional facts, the stage delivers Absent or Unknown
+  explicitly; it does not require complete ordinary source metadata.
+- Original evidence and analysis results stay distinct; the stage does not have to
+  retain all algorithmic scratch data.
 
-阶段类型、私有构造和测试共同约束实现；它们不能证明实现永远没有 bug。
-信息保留保证来自逐项产品契约和转换对应关系，不来自线性调用顺序本身。
+Stage types, private construction and tests constrain an implementation together;
+they cannot prove that an implementation never has bugs. Information-retention
+guarantees come from item-by-item product contracts and transformation
+correspondence, not from linear call order alone.
 
-## 2. 调用、数据流与持有关系
+## 2. Invocation, data flow and ownership
 
 ```text
-应用：持有原始 DEX 字节和输入 lease
+application: owns original DEX bytes and the input lease
                        │
                        ▼
-共享 DEX reader：容器、逻辑 header、索引空间、安全格式读取
+shared DEX reader: containers, logical headers, index spaces, safe format reads
                        │
                        ▼
-Engine：选择目标类，调用 P0
+Engine: selects the target class, calls P0
                        │
                        ▼
-P0：ClassFacts 返回 Engine 的当前类请求
+P0: ClassFacts returns to Engine for the current class request
                        │
              ┌─────────┴───────────────────────────┐
              │                                     │
-             │ 持有类事实，直到类组装完成           │ 枚举方法入口
-             │                                     ▼
-             │                          Engine 提交方法级任务
+             │ holds class facts until class       │ enumerates method entries
+             │ assembly completes                  ▼
+             │                          Engine submits method-level tasks
              │                                     │
              │              ┌──────────────────────┤
              │              │                      │
              │              ▼                      ▼
-             │        方法 A 的 worker        方法 B 的 worker
+             │        worker for method A     worker for method B
              │        reader → MethodSource   reader → MethodSource
              │          → P1 → … → P7           → P1 → … → P7
              │              │                      │
              │              └──────────┬───────────┘
-             │                         │ 拥有的 MethodResult
+             │                         │ owned MethodResult
              └─────────────────────────┤
                                        ▼
-                             Engine 调用 P8 类组装
+                             Engine calls P8 class assembly
                                        │
                                        ▼
                                   ClassResult
                                        │
                                        ▼
-                             Engine 调用 P9 渲染
+                             Engine calls P9 rendering
 ```
 
-Engine 依次调用 P0、方法 reader 和 P1。数据交付关系是
-P0 → Engine → 方法 reader → MethodSource → P1；方法声明和 owner 上下文
-通过 MethodSource 保留。reader 属于输入读取模块，不是新分析阶段。
-阶段之间由调度器交付产品，阶段实现 MUST NOT 调用其他阶段的分析构造入口。
+Engine calls P0, the method reader and P1 in order. The data delivery relation is
+P0 → Engine → method reader → MethodSource → P1; method declarations and owner
+context are retained through MethodSource. The reader belongs to the input-reading
+module and is not a new analysis stage.
+The scheduler delivers products between stages, and stage implementations MUST NOT
+call another stage's analysis-construction entry.
 
-Engine MUST 负责输入关联、产品持有、任务调度和结果汇合。Engine MUST NOT
-解析原始声明、修补缺失分析事实或执行阶段算法。
+Engine MUST own input association, product ownership, task scheduling and result
+joining. Engine MUST NOT parse original declarations, patch missing analysis facts
+or execute stage algorithms.
 
-每个 worker 先准备 MethodSource，再在同一方法任务中顺序执行 P1–P7；
-输入准备和阶段结束后直接进入下一调用，不经过中央逐阶段队列。
-不同方法之间没有全类 P1、P2、P3 的逐轮屏障。
+Each worker first prepares MethodSource and then runs P1–P7 in order inside the same
+method task;
+input preparation and stage completion lead directly to the next call without a
+central per-stage queue. Different methods have no class-wide P1, P2 or P3
+round barriers.
 
-必要的类级前置依赖见第 8 节；最终类组装等待所有已启动方法任务结束。
+Required class-level prerequisites are in §8; final class assembly waits for every
+started method task to finish.
 
-## 3. 原始输入与 P0 类产品
+## 3. Original input and the P0 class product
 
-### 3.1 共享 DEX reader
+### 3.1 Shared DEX reader
 
-共享 reader 负责容器与逻辑 DEX 地址空间、表范围、索引范围及编码语法。
-P0、方法输入准备、P1 引用解析和声明读取复用同一实现；reader 不生产
-CFG、SSA 或源码表达。
+The shared reader owns containers and logical DEX address spaces, table ranges,
+index ranges and encoding syntax. P0, method input preparation, P1 reference
+resolution and declaration reads reuse one implementation; the reader does not
+produce CFG, SSA or source expressions.
 
-各读取模块 MUST 在切片和分配前检查范围、计数和算术，并保持原始物理
-byte offset。不同逻辑 DEX 的同号索引 MUST NOT 被合并。
+Every reading module MUST check ranges, counts and arithmetic before slicing or
+allocating, and MUST retain original physical byte offsets. Same-number indices of
+different logical DEX images MUST NOT be merged.
 
 ### 3.2 ClassFacts
 
-P0 是类声明与成员目录的生产者，返回一份不可变 `ClassFacts`：
+P0 is the producer of class declarations and member directories, and returns one
+immutable `ClassFacts`:
 
-| 部分 | 事实 |
+| Part | Facts |
 |---|---|
-| 类身份和声明 | 原始 ClassKey、逻辑 header、type ID、descriptor、类 flags、父类和直接接口引用 |
-| 字段目录 | 原始 FieldKey、static/instance 分组、声明、字段 flags、static ordinal |
-| 静态准备 | 编码初值、原始范围/tag/bits；显式编码默认值与隐式默认分开 |
-| 方法目录 | 原始 MethodKey、direct/virtual 分组、声明/prototype、方法 flags、原始 code offset |
-| 元数据 | 类/字段注解、可选 source file、方法/参数注解的关联及定位结果 |
-| 读取保证 | 四组原始数量、目录覆盖、单项声明与元数据的读取状态和具体错误 |
+| Class identity and declaration | Original ClassKey, logical header, type ID, descriptor, class flags, superclass and direct interface references |
+| Field directory | Original FieldKey, static/instance grouping, declaration, field flags, static ordinal |
+| Static preparation | Encoded initial values, original range/tag/bits; explicitly encoded defaults are separate from implicit defaults |
+| Method directory | Original MethodKey, direct/virtual grouping, declaration/prototype, method flags, original code offset |
+| Metadata | Class/field annotations, optional source file, method/parameter annotation association and location results |
+| Read guarantees | Four original group counts, directory coverage, read states and concrete errors of individual declarations and metadata |
 
-P0 MUST NOT 打开方法体或决定成员隐藏、构造器恢复、泛型语义和源码嵌套归属。
-静态编码初值是类准备事实；`<clinit>` 中执行的赋值属于方法分析。
+P0 MUST NOT open method bodies or decide member hiding, constructor recovery,
+generic semantics or source-level nesting ownership. Static encoded initial values
+are class-preparation facts; assignments executed in `<clinit>` belong to method
+analysis.
 
-方法入口只能从所属 `ClassFacts` 获得，不能由调用者任意拼接 owner、方法和
-code offset。调度器 MUST 保持入口与所选逻辑 DEX 的原始身份一致。
+A method entry is obtainable only from its owning `ClassFacts`; a caller MUST NOT
+compose owner, method and code offset arbitrarily. The scheduler MUST keep the
+entry consistent with the original identity of the selected logical DEX.
 
-P0 MUST 将目录遍历完整性与单成员声明失败分开。单个字段声明失败不得阻止
-仍可安全关联的初值读取；一个接口解析失败不得丢弃其他接口的原始引用。
-不可安全定位的后缀保持明确的覆盖不足，不猜下一条记录的位置。
+P0 MUST separate directory-traversal completeness from individual member
+declaration failure. A failed field declaration MUST NOT block initial-value reads
+that can still be associated safely; a failed interface resolution MUST NOT discard
+the original references of the other interfaces.
+A suffix that cannot be located safely keeps explicit insufficient coverage
+instead of guessing the position of the next record.
 
-### 3.3 flags 和混淆输入
+### 3.3 Flags and obfuscated input
 
-`ClassAccessFlags`、`FieldAccessFlags`、`MethodAccessFlags` 按 DEX 成员种类
-提供实际需要的语义位查询，同时保留 raw 和未知位。消费者 MUST 使用命名
-位或语义查询，MUST NOT 匹配样本中的整字常量。
+`ClassAccessFlags`, `FieldAccessFlags` and `MethodAccessFlags` provide the semantic
+bit queries each DEX member kind actually needs, while retaining raw and unknown
+bits. Consumers MUST use named bits or semantic queries and MUST NOT match whole-word
+constants from a sample.
 
-原始分组来自 class-data，不从 flags 反推。synthetic/bridge 标记不能独立
-证明成员可隐藏，未知位不能独立成为整个类的拒绝理由。
+Original grouping comes from class-data and is not inferred backwards from flags.
+A synthetic/bridge mark cannot on its own prove that a member may be hidden, and an
+unknown bit cannot on its own be a reason to reject a whole class.
 
-生产者 MUST 保留原始名称，但不得赋予名称模式额外语义。source/debug、
-Signature、Throws 和嵌套辅助元数据不是启动普通方法分析的必要条件。
-输入中没有的声明保持 Unknown，不使用 classpath、android.jar 或网络事实。
-普通注解可能具有运行时意义，不能因为可选读取而忽略其原始存在和读取问题。
+Producers MUST retain original names but MUST NOT give name patterns extra
+semantics. Source/debug information, Signature, Throws and nested auxiliary metadata
+are not prerequisites for starting ordinary method analysis.
+Declarations absent from the input stay Unknown; classpath, android.jar or network
+facts are not used. Ordinary annotations may have runtime meaning, so an optional
+read MUST NOT ignore their original presence or their read problems.
 
-### 3.4 独立方法输入准备：MethodSource
+### 3.4 Independent method input preparation: MethodSource
 
-方法 reader 接收 P0 绑定的方法入口、owner 上下文和所选逻辑 DEX 的读取
-能力。Engine 在方法任务中调用它；Engine 不自己实现原始记录读取。
+The method reader receives the P0-bound method entry, owner context and the read
+capability of the selected logical DEX. Engine calls it inside the method task;
+Engine does not implement original record reading itself.
 
-输入准备负责 code item header、指令 bytes 范围、原始 try/handler 区段和
-元数据位置，检查原始长度、计数、编码语法及算术。它不反汇编指令流，
-不计算语义 CFG，也不根据未知的指令边界判断分支或 handler 目标。
+Input preparation owns the code item header, instruction byte ranges, original
+try/handler sections and metadata positions, and checks original lengths, counts,
+encoding syntax and arithmetic. It does not disassemble the instruction stream,
+does not compute a semantic CFG, and does not decide branch or handler targets from
+unknown instruction boundaries.
 
-MethodSource 保留：
+MethodSource retains:
 
-- 原始方法身份、声明读取结果、分组及语义 flags；
-- 必要 owner 上下文及原始逻辑 DEX 关联；
-- 代码存在、确认无代码或读取失败的互斥状态；
-- 原始 registers/ins/outs 计数、指令 bytes 和已检查范围；
-- 原始 try/handler 记录、typed catch 的 TypeId/descriptor 读取结果及使用问题；
-- debug/注解位置及独立读取状态；
-- 可用原始区段、覆盖与具体局部问题。
+- the original method identity, declaration read result, grouping and semantic flags;
+- the necessary owner context and the original logical DEX association;
+- mutually exclusive states for present code, confirmed absence of code and read failure;
+- original registers/ins/outs counts, instruction bytes and checked ranges;
+- original try/handler records, TypeId/descriptor read results of typed catches and their use issues;
+- debug/annotation positions and their independent read states;
+- available original sections, coverage and concrete local issues.
 
-代码区段存在且范围可读，不表示指令已正确解码。寄存器原始计数被读出，
-不表示指令操作数和参数入口布局已检查；这些是 P1 的义务。
-原始 try/handler 的编码解析与其指令边界关联同样分属 reader 和 P1。
-reader 按原始类型身份保留 typed catch 的独立读取结果；descriptor 读取失败
-不抹去已确定的记录范围、目标和顺序，也不作为整个方法停止的默认理由。
+The presence of a readable code range does not mean the instructions have been
+decoded correctly. Reading the original register counts does not mean instruction
+operands and parameter entry layout have been checked; those are P1's obligations.
+Parsing the encoding of original try/handler records and associating them with
+instruction boundaries likewise belong to the reader and P1 respectively.
+The reader retains independent read results of typed catches by original type
+identity; a failed descriptor read does not erase the already established record
+range, target and order, and is not a default reason to stop the whole method.
 
-输入准备 MUST NOT 重建类成员目录或重解析 P0 已交付的方法声明。
-无法定位的区段不能作为已检查切片交付；独立可读区段、声明和元数据仍
-保留其事实状态。确认无代码的成员保留声明路径，不创建空指令流。
+Input preparation MUST NOT rebuild the class member directory or re-parse method
+declarations already delivered by P0.
+A section that cannot be located MUST NOT be delivered as a checked slice;
+independently readable sections, declarations and metadata keep their fact state.
+A member with confirmed absence of code keeps its declaration path and does not
+create an empty instruction stream.
 
-后续分析 MUST NOT 绕过 P1，用 MethodSource 建立另一份完整反汇编或方法
-分析。只读原始展示可以消费已检查区段，不能把它们宣称为已解码事实。
+Later analysis MUST NOT bypass P1 and use MethodSource to build another complete
+disassembly or method analysis. Read-only original presentation may consume checked
+sections but cannot claim them as decoded facts.
 
-## 4. 方法产品模型
+## 4. Method product model
 
-### 4.1 成熟度与增量
+### 4.1 Maturity and increment
 
-以下为概念结构，不是可直接落地的 Rust 签名：
+The following is a conceptual structure, not a directly usable Rust signature:
 
 ```text
-MethodSource   = 原始方法来源 + 已安全定位的区段/记录 + 局部读取状态
-DecodedMethod  = MethodSource + 原始位置覆盖 + 指令/关联事实及局部可用性
+MethodSource   = original method source + safely located sections/records + local read state
+DecodedMethod  = MethodSource + original position coverage + instruction/association facts and local availability
 FlowMethod     = DecodedMethod + FlowFacts
 SsaMethod      = FlowMethod     + SsaFacts
 TypedMethod    = SsaMethod      + TypeFacts
 StorageMethod  = TypedMethod    + StorageFacts
 PlannedMethod  = StorageMethod  + RegionFacts
-MethodResult   = P7 方法表达 + 必要原始事实 + 具体结果/诊断
+MethodResult   = P7 method expression + required original facts + concrete result/diagnostics
 ```
 
-各阶段产品 MUST 使用不同类型表达成熟度。只有拥有该阶段输出保证的构造器
-能够创建产品；调度器不能自行包装缺少分析的产品。
+Each stage product MUST express maturity through a different type. Only a
+constructor that owns that stage's output guarantee can create the product; the
+scheduler cannot wrap a product that lacks analysis.
 
-成熟产品的“完整”表示来源覆盖、已建立事实、局部缺口及影响范围交代完整，
-不是每个位置都分析成功。消费者只能对已建立事实使用相应保证，对 Unknown
-或 Unavailable 按第 9.1 节继续独立工作。阶段构造快照不满足此保证，不能
-改个状态标签就作为成熟产品交付。
+"Complete" for a mature product means that source coverage, established facts,
+local gaps and their impact are accounted for, not that every position was analysed
+successfully. A consumer may use the corresponding guarantee only for established
+facts, and continues independent work for Unknown or Unavailable under §9.1.
+A stage-construction snapshot does not satisfy this guarantee and cannot be
+delivered as a mature product after a state label is changed.
 
-“+”表示所有权移动与事实增加，不表示克隆全部上游数据。实现 SHOULD 保留
-完整上游产品，避免拆散后逐字段搬运遗漏。局部表示转换必须记录来源和对应。
+"+" denotes ownership transfer and added facts, not cloning all upstream data.
+An implementation SHOULD retain the complete upstream product rather than breaking
+it apart and moving it field by field with omissions. Local representation
+conversions MUST record their source and correspondence.
 
-阶段产品 MUST NOT 使用包含可任意缺失阶段的万能 `Option` 集合表达成熟度。
-声明-only 成员与可执行成员使用不同状态，不能伪造空 CFG 或 SSA。
+Stage products MUST NOT express maturity through a catch-all `Option` collection
+whose stages may be arbitrarily absent. Declaration-only members and executable
+members use different states and cannot fake an empty CFG or SSA.
 
-MethodSource 的安全读取保证与 DecodedMethod 的指令/关联保证不同。
-P1 MUST 保留原始来源和已解码事实，即使它无法完成反汇编。调度器 MUST NOT
-将安全定位的 bytes 或解码前缀当作完整 DecodedMethod。只有 P1 能发布覆盖
-和局部状态完整的 DecodedMethod；其中不可用范围不是已解码指令。该区别
-不是整个方法的合法性徽章，也不构成有用原始信息的展示门槛。
+MethodSource's safe-read guarantee differs from DecodedMethod's
+instruction/association guarantee.
+P1 MUST retain original provenance and decoded facts even when it cannot finish
+disassembly. The scheduler MUST NOT treat safely located bytes or a decoded prefix
+as a complete DecodedMethod. Only P1 can publish a DecodedMethod with complete
+coverage and local state; its unavailable ranges are not decoded instructions.
+That distinction is not a whole-method legality badge and is not a gate on showing
+useful original information.
+### 4.2 A complete product is not full access
 
-### 4.2 完整产品不等于全量访问
+A product owns upstream data, and consumers use the previous stage's formal
+semantic interfaces. A product MUST NOT expose all internal stage data and the
+entire ProgramIndex through public fields or a `Deref` chain.
 
-产品持有上游数据，消费者使用上一阶段的正式语义接口。产品 MUST NOT
-通过公共字段或 `Deref` 链暴露所有内部阶段数据与整个 ProgramIndex。
+The previous stage's interface contains the existing facts that real downstream
+consumers need; passing a declared type does not mean P3 must interpret types.
+A product cannot retain only the width that the immediately adjacent stage happens
+to use and then let P4 re-read original bytes to recover a discarded declaration.
 
-上一阶段的接口包含后续真实消费者需要的既有事实；传递声明类型不意味着
-P3 要解释类型。产品不能只保留紧邻阶段眼下使用的宽度，然后让 P4 回读
-原始 bytes 恢复被丢弃的声明。
+Consumption interfaces MUST distinguish:
 
-消费接口 MUST 区分：
+- established operation, value, type, storage and protection facts;
+- original identities and origins travelling with the product;
+- explicit Unknown, Absent, Unavailable and coverage states.
 
-- 已建立的操作、值、类型、存储和保护事实；
-- 随产品传递的原始身份和来源；
-- 明确的 Unknown、Absent、Unavailable 和覆盖状态。
+An analysis implementation MUST NOT re-decode original bytes to supply missing
+upstream semantic facts. An original view genuinely needed for independent
+transform replay is provided by an explicit inspection interface, not by a general
+analysis entry.
 
-分析实现 MUST NOT 重新解码原始 bytes 来补缺失的上游语义事实。确有独立
-转换重放需要的原始视图由明确的检查接口提供，不是通用分析入口。
+### 4.3 Stages close internally; products depend one way
 
-### 4.3 阶段内部闭合，产品之间单向依赖
+"Stages do not depend on each other" means that algorithm implementations and
+construction responsibilities do not cross, not that data dependencies are removed.
+P3 must consume P2's execution graph, and P4 must consume P3's value sources; without
+those products the corresponding processing cannot start. A stage may depend on
+formal product interfaces, not on how their producing algorithm is implemented.
 
-“各阶段不互相依赖”指算法实现与构建职责不交叉，不是取消数据依赖。
-P3 必须消费 P2 的执行图，P4 必须消费 P3 的值来源；没有这些产品就不能
-开始相应加工。阶段可以依赖正式产品接口，不能依赖其生产算法如何实现。
+Each stage MUST complete its own construction, bounded fact iteration and required
+error handling internally. Independent output verification MUST compile only into
+tests and is not a processing step of an ordinary method request.
+Stage implementations MUST NOT call another stage's algorithm helpers, start its
+analysis or patch its results.
+Shared identity/coordinate types, resource control and original-format reading stay
+as a single shared implementation, but shared facilities must not hide another
+stage's whole-method analysis.
 
-每个阶段 MUST 在内部完成自己负责的构建、有限事实迭代及必要错误处理。
-独立输出验证 MUST 仅编译到测试中，不是普通方法请求的处理步骤。
-阶段实现 MUST NOT 调用其他阶段的算法 helper、启动其分析或修补其结果。
-共同的身份/坐标类型、资源控制和原始格式读取设施保持共享唯一实现，
-但共享设施不得隐藏另一阶段的整方法分析。
+The scheduler calls each stage entry and delivers a ready product or a classified
+result. Stages do not complete processing through shared mutable method state,
+callbacks into another algorithm or cross-stage iteration.
+A fixed point belongs inside its stage; P3–P5 are not combined into one mutually
+feeding fixed point.
 
-调度器调用各阶段入口并交付 ready 产品或分类结果。各阶段不通过共享
-可变方法状态、回调对方算法或跨阶段互相迭代来完成加工。
-固定点属于其阶段内部，不把 P3–P5 合成互相反馈的固定点。
+When a consumer needs new facts, it first states the product contract and the actual
+producer. The producer completes its own work before delivery, and the consumer must
+not add its own parsing or bypass a gap through broad re-exports.
+Each algorithm change should stay inside the owning stage; when a contract really
+changes, the affected consumers are updated with it.
 
-消费者需要新增事实时，先明确产品契约和实际生产者。生产者内部补足
-自己的工作后交付，消费者不得自行补解析或通过宽泛 re-export 绕过缺口。
-每次算法变化优先局限于拥有阶段；契约确需变化时同步调整相关消费者。
+Independent transformation verification checks this stage's product inside tests and
+does not rebuild another stage's analysis product. Its original-evidence obligations
+are retained under §6 and do not replay or accept products during ordinary
+processing.
 
-独立转换验证在测试中核对本阶段产物，不重建其他阶段的分析产品。其原始
-证据义务按第 6 节保留，不在正常处理过程中另行重放或验收产物。
+### 4.4 Product ownership, construction and consumption interfaces
 
-### 4.4 产品持有、构造与消费接口
+Product fields and builders stay inside the owning module, consumers receive
+immutable queries, and the next stage takes ownership of the upstream product and
+retains it inside its own product. The scheduler may move products but cannot take
+out mutable internal state, arbitrarily splice products of different methods or wrap
+a success type on the owner's behalf.
 
-产品字段和构建器保留在拥有模块内部，消费者获得不可变查询，下一阶段
-取得上游产品的所有权并将它保留到自己的产品中。调度器可以移动产品，
-但不能取出可变内部状态、任意拼接不同方法的产品或替拥有者封装成功类型。
-
-| 产品 | 唯一生产者 | 生命周期/持有 | 正式消费者及其所需查询 |
+| Product | Sole producer | Lifetime/ownership | Formal consumers and the queries they need |
 |---|---|---|---|
-| ClassFacts | P0 类事实收集 | 当前类请求拥有 | 方法 reader 获取绑定入口；P4 获取必要 owner/字段/声明事实；P8 获取类组装事实 |
-| MethodSource | 方法 reader | 方法任务拥有，借用 DEX 区段及 P0 声明 | P1 获取安全代码来源、原始计数、声明、原始异常记录和独立元数据状态 |
-| DecodedMethod | P1 反汇编与原始关联检查 | 后续方法产品移动持有 | P2 获取指令、payload、引用事实、入口布局和原始转移关联 |
-| FlowMethod | P2 执行模型构建 | SsaMethod 内部持有 | P3 获取操作/终结点的有序读写、SlotKey、提交规则、块与各类转移 |
-| SsaMethod | P3 SSA 构建 | TypedMethod 内部持有 | P4 获取定义、使用、Phi/incoming、宽度、值可用性及原始操作/声明约束 |
-| TypedMethod | P4 约束与使用解释 | StorageMethod 内部持有 | P5 获取表示、使用视图、incoming 适配、位置相关初始化和必要执行关系 |
-| StorageMethod | P5 存储与传递构建 | PlannedMethod 内部持有 | P6 获取带存储访问的操作、转移、复制、快照、初始化及锁值事实 |
-| PlannedMethod | P6 控制规划 | P7 调用期间拥有 | P7 获取区域/显式图、语句来源、使用/存储、标签和保护/锁表达计划 |
-| MethodResult | P7 方法表达 | 请求收集拥有；随后 ClassResult 拥有 | P8 获取声明、表达、原始成员身份、类相关事实与类型使用；P9 渲染已有表达 |
-| ClassResult / TypeNamePlan | P8 类组装/名称规划 | 报告拥有 | P9 获取完整展示产品、成员结果、名称计划和来源映射 |
+| ClassFacts | P0 class-fact collection | Owned by the current class request | Method reader obtains bound entries; P4 obtains required owner/field/declaration facts; P8 obtains class-assembly facts |
+| MethodSource | Method reader | Owned by the method task; borrows DEX sections and P0 declarations | P1 obtains safe code provenance, original counts, declarations, original exception records and independent metadata states |
+| DecodedMethod | P1 disassembly and original-association checks | Moved into later method products | P2 obtains instructions, payloads, reference facts, entry layout and original transfer associations |
+| FlowMethod | P2 execution-model construction | Held privately inside SsaMethod | P3 obtains ordered reads/writes of operations/terminals, SlotKeys, commit rules, blocks and each transfer kind |
+| SsaMethod | P3 SSA construction | Held privately inside TypedMethod | P4 obtains definitions, uses, Phi/incoming, widths, value availability and original operation/declaration constraints |
+| TypedMethod | P4 constraints and use interpretations | Held privately inside StorageMethod | P5 obtains representations, use views, incoming adaptations, position-related initialization and required execution relations |
+| StorageMethod | P5 storage and transfer construction | Held privately inside PlannedMethod | P6 obtains operations with storage accesses, transfers, copies, snapshots, initialization and lock-value facts |
+| PlannedMethod | P6 control planning | Owned during the P7 call | P7 obtains regions/explicit graphs, statement provenance, uses/storage, labels and protection/lock expression plans |
+| MethodResult | P7 method expressions | Owned by request collection; then owned by ClassResult | P8 obtains declarations, expressions, original member identities, class-related facts and type uses; P9 renders existing expressions |
+| ClassResult / TypeNamePlan | P8 class assembly/name planning | Owned by the report | P9 obtains the complete display product, member outcomes, name plans and origin mappings |
 
-本表所有阶段的正式查询 MUST 同时表达相关事实的可用性和缺口影响，不能
-只为 P1–P3 增加局部状态，而让后续阶段仍以任一单项失败撤销整个产品。
-全链路的具体归属见第 9.2 节。
+Every stage's formal queries in this table MUST state the availability and gap
+impact of the facts concerned, rather than adding local states only to P1–P3 and
+letting later stages still cancel a whole product on any single failure.
+Concrete responsibilities along the chain are in §9.2.
 
-表中上游事实通过直接前置产品的语义接口传递，不开放整份 ProgramIndex、
-跨阶段 Deref 链或上游构建中间状态。例如 P6 获取的是 P5 已承诺的执行图与
-存储视图，而不是取得 P1 后重新构建方法。必要原始检查证据与普通分析查询
-使用不同的只读接口；检查不能成为分析构造的旁路。
+The upstream facts in the table pass through the semantic interfaces of the directly
+preceding product; they do not open the whole ProgramIndex, cross-stage Deref chains
+or upstream construction scratch. P6, for example, obtains the execution graph and
+storage view already promised by P5 rather than taking P1 and rebuilding the method.
+Original inspection evidence and ordinary analysis queries use different read-only
+interfaces; inspection cannot become a bypass for analysis construction.
 
-阶段入口采用消费式转换：消费前置产品，返回本阶段拥有者构造的成熟产品
-或分类停止结果。每个方法任务只持有一条成熟度递增的产品链，不并列复制
-七份完整方法事实，也不创建包含全部阶段可变状态的全局 MethodContext。
+Stage entries use consuming conversion: they consume the preceding product and
+return a mature product constructed by this stage's owner or a classified stop
+result. Each method task holds exactly one product chain of increasing maturity; it
+neither duplicates seven full method fact sets side by side nor creates a global
+MethodContext holding every stage's mutable state.
 
-已有 sealed product 不能通过为迁移新增 pub 字段、公开构造器或可变 getter
-放宽保证。新增私有持有和正式只读查询必须限于本表及实际消费者的需要；
-它们不是任意增加阶段访问或对应用公开全部分析 IR 的许可。
+An existing sealed product MUST NOT loosen its guarantee by adding public fields,
+public constructors or mutable getters for a migration. New private ownership and
+formal read-only queries must stay limited to this table and the needs of actual
+consumers; they are not a licence to add arbitrary stage access or to expose all
+analysis IR to the application.
 
-### 4.5 独立读取状态、阶段停止与诊断
+### 4.5 Independent read states, stage stops and diagnostics
 
-原始事实结果保持 Present、Absent、NotRead、Unavailable 的区别，目录覆盖
-另行描述 Complete 或可定位前缀及终止位置。事实解释的 Unknown 不覆盖读取
-错误，完整遍历也不抹掉单项声明损坏。不存在是拥有者读出的事实，不是把
-Err 转成 None 后得到的结论。
+Original fact results keep the distinction between Present, Absent, NotRead and
+Unavailable, and directory coverage separately describes Complete or a locatable
+prefix and its termination position. An Unknown interpretation of a fact does not
+overwrite a read error, and a complete traversal does not erase a single damaged
+declaration. Absence is a fact the owner read out, not a conclusion reached by
+turning `Err` into `None`.
 
-局部事实失败和阶段构造停止 MUST 分开。拥有者能交代来源覆盖、局部缺口及
-影响范围时，MUST 发布带明确局部状态的产品，让后继继续独立加工；不能把
-每个单项错误直接升级为整方法阶段停止。
+Local fact failure and stage-construction stop MUST stay separate. When the owner can
+account for source coverage, local gaps and their impact, it MUST publish a product
+with explicit local states and let successors continue independent processing; it
+cannot escalate every single-item error directly into a whole-method stage stop.
 
-无法维持产品最低保证或记录后续结果时，阶段停止保留方法身份、具体失败
-原因、最后可用产品及已安全建立的本阶段局部事实。停止结果不是成熟产品，
-下游不能按成熟契约消费它。
-已经形成的独立可读内容可以进入最终展示，但缺失定义不能被替换成一个
-假的 ValueId、默认变量或空操作。
+When the product's minimum guarantee or the retention of later results cannot be
+maintained, the stage stop retains the method identity, the concrete failure cause,
+the last usable product and the stage-local facts that were safely established. A
+stop result is not a mature product, and downstream cannot consume it under a mature
+contract.
+Independent readable content already formed may enter final presentation, but a
+missing definition cannot be replaced by a fake ValueId, a default variable or an
+empty operation.
 
-无代码状态只确认原始 code offset 为零；它与 abstract/native 位是否一致
-是单独的原始关系检查。P0 保留原始 offset/flags，reader 不伪造空代码，
-P1 保留具体矛盾及可用声明。无代码成员不需要假 Flow/SSA 产品。
+The no-code state confirms only that the original code offset is zero; whether it
+agrees with the abstract/native bits is a separate original-relationship check. P0
+retains the original offset/flags, the reader does not fabricate empty code, and P1
+retains the concrete contradiction and available declarations. No-code members do
+not need fake Flow/SSA products.
 
-诊断在产生问题的模块保留原始方法、操作/site、slot 或边身份，区分读取
-失败、能力未支持、来源/解释未知和内部违约。Engine 仅做原始身份关联及
-局部诊断编号汇合，不根据报错文字重新分类或撤销已经确认的损坏。
+Diagnostics retain the original method, operation/site, slot or edge identity in the
+module that produced the problem, and distinguish read failure, unsupported
+capability, unknown source/interpretation and internal violation. Engine only joins
+original identities and local diagnostic numbers; it does not reclassify or revoke
+already confirmed damage from error text.
 
-正常方法分析与局部原始展示消费同一条链已经交付的事实，不增加恢复开关、
-独立账本或重试路径。资源和 InternalInvariant 的停止范围遵循第 9 节，
-不能仅凭分类终止整个方法，也不能因保存最后输入而重跑分析或成功截断。
-Engine 不提供请求取消回调、token 或检查点参数；CLI/宿主负责进程级终止。
+Ordinary method analysis and local original presentation consume facts already
+delivered by the same chain and add no recovery switch, separate ledger or retry
+path. The stop scope of resource and InternalInvariant errors follows §9: it cannot
+terminate a whole method on kind alone, and it cannot re-run analysis or
+successfully truncate output to preserve the last input.
+Engine provides no request cancellation callback, token or checkpoint parameter;
+the CLI/host owns process-level termination.
 
-## 5. P1–P7 的加工和交付保证
+## 5. P1–P7 processing and delivery guarantees
 
-### 5.1 P1：反汇编，产出 DecodedMethod
+### 5.1 P1: disassembly producing DecodedMethod
 
-输入：方法 reader 交付的 MethodSource，以及原始引用解析所需的受限读取
-能力。P1 不再自行选择方法、定位 code item 或重新建立输入来源。
+Input: the MethodSource delivered by the method reader, plus the restricted read
+capability that original reference resolution needs. P1 no longer selects the
+method, locates the code item or re-establishes the input source itself.
 
-P1 将指令 bytes 反汇编成结构化指令目录，解析 opcode、宽度、寄存器操作数、
-常量 bits、引用和 payload，建立分支、结果及异常入口的原始关联保证。
-反汇编文本是数据展示，不是阶段间协议，也不承诺 Smali 或重组装能力。
+P1 disassembles instruction bytes into a structured instruction directory and
+resolves opcodes, widths, register operands, constant bits, references and payloads,
+establishing the original association guarantees of branches, results and
+exception entries. Disassembly text is data presentation, not a stage protocol, and
+promises no Smali or reassembly capability.
 
-P1 产品 MUST 交代原始代码范围的覆盖：已解码指令、payload、范围已确定的
-未恢复片段，以及边界无法确定的区段。指令的格式、操作数、引用和关联按
-各自事实状态交付，不能把一个引用失败扩散为整条指令所有事实不可用。
-已解码项保留明确位置、类别及已建立的操作数和引用事实；未恢复区段不能
-伪装成指令。纯数值常量保留 bits 与宽度；P1 不选择最终源码类型。
-已解析的事实不能仅变成“检查通过”后丢弃，迫使后续再解析。
+A P1 product MUST account for coverage of the original code range: decoded
+instructions, payloads, unrecovered fragments with determined ranges, and sections
+whose boundaries are undetermined. Instruction format, operands, references and
+associations are delivered under their own fact states; one failed reference must
+not spread into every fact of an instruction.
+Decoded items retain explicit positions, kinds and established operand and
+reference facts; an unrecovered section cannot pretend to be instructions. Pure
+numeric constants retain bits and width; P1 does not choose the final source type.
+Resolved facts cannot merely become "check passed" and then be discarded, forcing
+later stages to parse again.
 
-#### 5.1.1 输入准备与指令关联检查的归属
+#### 5.1.1 Ownership of input preparation and instruction-association checks
 
-方法 reader 建立安全读取保证，P1 建立原始指令与记录之间的结构关系。
-P1 信任 MethodSource 的安全范围，不重复解析 code item header 和已交付的
-原始记录；实际读取路径的范围与算术检查仍由共享 reader 执行。
+The method reader establishes the safe-read guarantee, and P1 establishes the
+structural relation between original instructions and records. P1 trusts
+MethodSource's safe ranges and does not re-parse the code item header or already
+delivered original records; range and arithmetic checks on the actual read path are
+still performed by the shared reader.
 
-| 拥有者 | 检查项 | 保护什么 | 消费者 | 失败影响范围 |
+| Owner | Check | Protects | Consumers | Failure scope |
 |---|---|---|---|---|
-| 方法 reader | code/header/指令 bytes/handler 的范围、长度、编码计数和算术 | 不越界、不溢出、不按不可信数量无界分配 | P1、原始事实消费者 | 停止不可靠读取，保留已检查范围与可用前缀；不能安全定位的区段不伪装成可读 |
-| 方法 reader | 方法入口、owner 和逻辑 DEX 的身份关联 | 输入来自所选原始方法 | P1 和方法结果关联 | 返回具体关联错误，不混用不同输入或方法的记录 |
-| P1 | 指令格式、宽度和完整操作数 | 可靠切分原始指令流 | P2 指令到操作的转换 | 无法确定宽度时停止该范围，不通过寻找后面的 return 猜测恢复边界 |
-| P1 | 寄存器编号、指令宽值跨度、参数/this 入口布局 | 原始指令引用方法中存在的寄存器 words | P2 操作读写、P3 经 P2 获得的入口布局 | 保留原始操作数和问题，不交付违反相应保证的分析输入 |
-| 共享引用 reader / P1 | 原始索引范围、引用声明读取及 opcode 对引用类别的要求 | 可靠解析同一逻辑 DEX 的原始引用 | P2 引用语义、P4 声明事实 | reader 保留读取错误，P1 保留指令关联问题；缺少目标定义保持 Unknown |
-| P1 | 分支/switch/handler 目标和 payload 关联 | 目标与已确定的指令或数据位置对应 | P2 建图 | 保留原始目标及关联错误，明确哪些关联未建立；不猜目标或撤销其他已建立事实 |
-| P1 | invoke 参数 words、宽参数邻接、producer/result 原始邻接及类别 | 原始调用与结果布局满足格式约束 | P2 参数和结果绑定 | 保留原始引用/words 与失败原因，不伪造参数或结果 |
-| 方法 reader / P1 | try/handler 原始记录及指令边界关系 | reader 负责记录范围、计数和编码；P1 负责指令边界、目标及原始顺序约束 | P2 异常边构建 | 原始记录可读与异常关联可用于分析分开，不丢弃已读事实 |
-| 方法元数据 reader / P1 | debug/方法注解/参数注解局部读取与关联 | reader 负责记录安全解析，P1 只处理确需指令边界的关联 | P7/P8 元数据消费者 | 独立记录读取问题，不阻止完好的代码进入 P2，不撤销已有输入损坏分类 |
+| Method reader | ranges, lengths, encoded counts and arithmetic of code/header/instruction bytes/handlers | no out-of-bounds, no overflow, no unbounded allocation from untrusted counts | P1, original-fact consumers | stops unreliable reads and retains checked ranges and usable prefixes; sections it cannot locate safely are not presented as readable |
+| Method reader | identity association of method entry, owner and logical DEX | input comes from the selected original method | P1 and method-result association | returns a concrete association error instead of mixing records of different inputs or methods |
+| P1 | instruction format, width and complete operands | reliable division of the original instruction stream | P2 instruction-to-operation conversion | stops that range when the width is undetermined instead of guessing boundaries by searching for a later return |
+| P1 | register numbers, wide-value spans of instructions, parameter/this entry layout | original instructions refer to register words that exist in the method | P2 operation reads/writes, P3 entry layout obtained through P2 | retains original operands and the problem; does not deliver analysis input that violates the corresponding guarantee |
+| Shared reference reader / P1 | original index ranges, reference-declaration reads and the reference category an opcode requires | reliable resolution of original references within the same logical DEX | P2 reference semantics, P4 declaration facts | reader retains read errors and P1 retains instruction-association issues; a missing target definition stays Unknown |
+| P1 | branch/switch/handler targets and payload association | targets correspond to determined instruction or data positions | P2 graph construction | retains original targets and association errors and states which associations were not established; no guessing targets or revoking other established facts |
+| P1 | invoke argument words, wide-argument adjacency, original producer/result adjacency and category | original call and result layout meets format constraints | P2 argument and result binding | retains original references/words and the failure cause; fabricates no arguments or results |
+| Method reader / P1 | original try/handler records and their relation to instruction boundaries | the reader owns record ranges, counts and encoding; P1 owns instruction boundaries, targets and original order constraints | P2 exception-edge construction | readable original records and analysis-usable exception associations stay separate; already read facts are not discarded |
+| Method metadata reader / P1 | local reads and association of debug/method-annotation/parameter-annotation records | the reader owns safe record parsing and P1 handles only associations that genuinely need instruction boundaries | P7/P8 metadata consumers | read problems are tracked independently and do not block intact code from entering P2 or revoke an existing input-damage classification |
 
-表中共同涉及 reader 和 P1 的事项有不同义务，不要求两者重复验证同一关系。
-引用声明解码由共享 reader 完成；P1 将原始指令引用与读取结果关联。
-安全读取、范围和分配检查不能因混淆输入而关闭。
+Items shared by the reader and P1 in this table carry different obligations and do
+not require both to verify the same relation twice. Reference-declaration decoding
+belongs to the shared reader; P1 associates original instruction references with
+the read results.
+Safe reading, range and allocation checks cannot be disabled by obfuscated input.
 
-P1 的原始关联检查只建立消费者需要的事实保证，不证明整个方法的 ART
-合法性。P1 MUST NOT 以正确性检查为名引入 CFG 结构化或源码准入。
-引用索引合法不表示目标定义完整，生产者 MUST 保留目标缺失与记录损坏的区别。
+P1's original association checks establish only the fact guarantees consumers need;
+they do not prove the ART legality of the whole method. P1 MUST NOT introduce CFG
+structuring or source admission under the name of correctness checking.
+A legal reference index does not mean the target declaration is complete, and a
+producer MUST retain the difference between a missing target and a damaged record.
 
-#### 5.1.2 混淆指令不是拒绝理由
+#### 5.1.2 Obfuscated instructions are not a rejection reason
 
-P1 MUST 如实反汇编跳转链、控制流平坦化、大型 switch、冗余 move、无用或
-不可达指令。只要原始格式可以可靠读取，P1 不因这些形状异常而拒绝方法。
+P1 MUST faithfully disassemble jump chains, control-flow flattening, large switches,
+redundant moves and useless or unreachable instructions. As long as the original
+format can be read reliably, P1 does not reject a method because of these shapes.
 
-P1 MUST NOT 要求自然循环、单入口区域、正常构造器模板、有意义的名称或
-Java 可表达的 flags 组合。多入口循环和不可规约图由后续阶段按职责处理；
-源码文件、参数名、局部变量名、行号、泛型和嵌套辅助元数据缺失不构成
-方法反汇编或普通方法分析的准入失败。
+P1 MUST NOT require natural loops, single-entry regions, ordinary constructor
+templates, meaningful names or Java-expressible flag combinations. Multi-entry loops
+and irreducible graphs are handled by later stages under their own responsibilities;
+missing source files, parameter names, local variable names, line numbers, generics
+and nested auxiliary metadata do not constitute an admission failure for method
+disassembly or ordinary method analysis.
 
-已知编码但未支持的语义不能伪装成 NOP。未知宽度不能被猜测。确定违反
-原始格式的记录保持 Malformed；已知但不支持的格式或处理能力保持
-Unsupported；无法确定时不得仅因形状像混淆而声称输入损坏。
+A known encoding with unsupported semantics cannot be disguised as NOP. An unknown
+width cannot be guessed. A record that definitely violates the original format stays
+Malformed; a known but unsupported format or processing capability stays
+Unsupported; when it cannot be determined, the implementation must not claim input
+damage merely because the shape looks obfuscated.
 
-#### 5.1.3 分级交付与下游信任
+#### 5.1.3 Graduated delivery and downstream trust
 
 ```text
-P0 方法入口 + 选定 DEX reader
+P0 method entry + selected DEX reader
                     │
                     ▼
-方法 reader：原始区段定位、安全读取
+method reader: original section location, safe reads
                     │
                     ▼
-MethodSource：来源、可读区段、原始计数、局部状态
+MethodSource: provenance, readable sections, original counts, local states
                     │
                     ▼
-P1：反汇编、原始指令关联检查
+P1: disassembly, original instruction-association checks
                     │
                     ▼
-解码指令事实 + 覆盖 + 具体局部问题
+decoded instruction facts + coverage + concrete local issues
                     │
           ┌─────────┴───────────────────────────┐
           │                                    │
-来源覆盖、局部状态及必要关联可交代       无法维持产品最低保证
+source coverage, local states and          the product's minimum
+required associations can be accounted for guarantee cannot be maintained
           │                                    │
           ▼                                    ▼
-DecodedMethod                          最后可信输入与局部事实
-包含已建立事实及明确缺口                    + 分类停止原因
-          │                              进入只读展示出口
+DecodedMethod                          last trusted input and local facts
+with established facts and             + classified stop cause
+explicit gaps                          entering the read-only display exit
+          │
           ▼
-P2 按事实状态加工，不重复输入准备或反汇编
+P2 processes by fact state without repeating input preparation or disassembly
 ```
 
-方法 reader 是 MethodSource 的生产者，P1 是 DecodedMethod 的生产者。
-调度器交付这些产品，不自行通过一个总布尔值把部分结果升级为完整输入。
-完整指令覆盖和元数据局部状态可以同时存在，不得将可选元数据失败合并成
-整个方法的反汇编拒绝。
+The method reader is the producer of MethodSource, and P1 is the producer of
+DecodedMethod. The scheduler delivers these products and does not itself upgrade a
+partial result into a complete input through one overall boolean.
+Complete instruction coverage and local metadata states may coexist, and an
+optional metadata failure must not be merged into a disassembly rejection of the
+whole method.
 
-确认不存在是 Absent，存在但读取失败是 Unavailable，主动未读是 NotRead；
-Unknown 表示尚不能确立语义结论，不是缺少原始记录的替代词。
+Confirmed absence is Absent, present-but-failed reads are Unavailable, and
+deliberate non-reading is NotRead; Unknown means a semantic conclusion cannot yet
+be established and is not a synonym for a missing original record.
 
-P2 信任 DecodedMethod 中已建立事实的保证，并消费其局部状态，不信任
-“方法完全合法”的徽章。只有前缀却没有后缀覆盖和缺口状态的构造快照，
-MUST NOT 被当作完整方法输入。局部错误不自动阻断 P2；只有最低产品保证
-无法维持时才保留 MethodSource 及局部事实并停止受影响的构造。
+P2 trusts the guarantees of facts already established in DecodedMethod and consumes
+its local states; it does not trust a "fully legal method" badge. A construction
+snapshot with a prefix but no suffix coverage and gap states MUST NOT be treated as
+a complete method input. A local error does not automatically block P2; only when
+the minimum product guarantee cannot be maintained does P2 retain MethodSource and
+the local facts and stop the affected construction.
 
-P1 MUST NOT 重建类目录、重新定位方法来源、构建语义 CFG、SSA 或恢复源码。
+P1 MUST NOT rebuild the class directory, relocate method sources, build a semantic
+CFG or SSA, or recover source code.
 
-### 5.2 P2：完整方法执行模型 FlowMethod
+### 5.2 P2: complete method execution model FlowMethod
 
-输入：满足 P1 覆盖与局部状态契约的 DecodedMethod。P2 信任其中已建立的
-指令边界、原始操作数和关联保证，按显式缺口限制加工，不再反汇编、重新
-定位方法来源或重建原始声明。
+Input: a DecodedMethod satisfying P1's coverage and local-state contract. P2 trusts
+the established instruction boundaries, original operands and association
+guarantees, limits its processing by explicit gaps, and does not disassemble again,
+relocate the method source or rebuild original declarations.
 
-P2 回答“这个方法执行哪些行为，按哪些路径和顺序发生”。设计以重构后的
-执行语义契约为依据，不以当前 P3 的数据布局或辅助函数为约束。
-P2 的产品不预设后续 SSA 必须采用固定入口 Phi 或支配边界方案。
+P2 answers "which behaviours this method executes, along which paths and in which
+order". The design rests on the reconstructed execution-semantics contract, not on
+the current P3 data layout or helper functions.
+P2's product does not presuppose that later SSA must use fixed entry Phis or a
+dominance-frontier scheme.
 
-#### 5.2.1 一个产品，三部分相互关联的事实
+#### 5.2.1 One product, three correlated fact groups
 
 ```text
 P1 DecodedMethod
        │
        ▼
-P2：指令语义转换、结果绑定、建图与可达性
+P2: instruction semantics, result binding, graph construction and reachability
        │
        ▼
 FlowMethod
- ├─ Operations / Terminals：执行什么、读写什么、产生什么效果
- ├─ CFG / Transfers：按哪条正常或异常路径执行
- └─ Origins / Coverage：对应哪些原始指令，哪些仅保留为原始事实
+ ├─ Operations / Terminals: what executes, what it reads/writes, what it effects
+ ├─ CFG / Transfers: along which normal or exceptional path it executes
+ └─ Origins / Coverage: which original instructions it corresponds to, which exist only as original facts
 ```
 
-这不是操作列表与 CFG 两份独立结果。操作有所属基本块，正常转移关联块尾
-终结点，异常转移关联具体执行位置。P2 MUST 在内部完成这些关联后交付产品，
-不得让 P3 补连接、重新判断指令语义或修复 P2 的覆盖。
+This is not two independent results, an operation list and a CFG. Operations belong
+to basic blocks, normal transfers are associated with block-end terminals, and
+exceptional transfers are associated with concrete execution positions. P2 MUST
+complete these associations internally before delivering the product, and must not
+require P3 to patch connections, re-judge instruction semantics or repair P2's
+coverage.
 
-FlowMethod 保留 DecodedMethod 的必要依据，并增加完整执行关系。这里的
-完整不表示每条条件路径都已证明可行，也不表示全部指令都进入可达操作图，
-更不表示每个操作或转移都已恢复。各执行事实分别保留可用性，未恢复行为
-和未确定转移按第 9.1 节保留位置、原因及可能影响范围。
+FlowMethod retains the required basis of DecodedMethod and adds complete execution
+relations. Complete here does not mean that every conditional path is proven
+feasible, that every instruction enters the reachable operation graph, or that every
+operation and transfer has been recovered. Each execution fact keeps its own
+availability; unrecovered behaviour and undetermined transfers retain their
+positions, causes and possible impact under §9.1.
 
-#### 5.2.2 操作契约
+#### 5.2.2 Operation contract
 
-每个操作 MUST 明确交付下列事实或各项不可用状态；缺少一项不得默认其为空：
+Every operation MUST deliver the following facts or their individual unavailable
+states explicitly; a missing item must not default to empty:
 
-| 事实 | 含义 |
+| Fact | Meaning |
 |---|---|
-| 身份与来源 | 方法内操作身份、原始指令身份/位置及合并来源 |
-| 行为 | 算术、复制、调用、字段/数组访问、分配、转换、锁等原始语义 |
-| 有序读取 | 读取的寄存器 slots、word 宽度和原始解释要求 |
-| 正常写入 | 目标 slots、word 宽度及写入发生时机 |
-| 提交与异常规则 | 正常结果何时提交，异常路径是否提交寄存器结果及特殊选择位置 |
-| 效果 | heap read/write、call、may-throw、monitor、class initialization |
+| Identity and origin | method-local operation identity, original instruction identity/position and merged origins |
+| Behaviour | original semantics of arithmetic, copies, calls, field/array accesses, allocation, conversions, locks and so on |
+| Ordered reads | register slots read, word widths and the required original interpretation |
+| Normal writes | destination slots, word widths and when the write happens |
+| Commit and exception rules | when a normal result commits, whether an exceptional path commits a register result, and special selection positions |
+| Effects | heap read/write, call, may-throw, monitor, class initialization |
 
-这些是静态执行事实，不是运行指令求出的值，也不是最终 Java 类型或表达式。
-原始引用和 formal 声明来自 P1 产品；P2 不推导外部调用纯度或完整继承层次。
+These are static execution facts, not values obtained by running the instruction,
+and not final Java types or expressions. Original references and formal declarations
+come from the P1 product; P2 does not derive external call purity or a complete
+inheritance hierarchy.
 
-例如 add-int/2addr 被规范化为读取旧目标和源、再写目标的整数加法操作。
-move、move-object、move-wide 可以共用复制处理逻辑，但 P2 MUST 保留其宽度
-与语义解释要求。编码形式可以规范化，原始语义区别不能消失。
+For example, add-int/2addr is normalised into an integer-add operation reading the
+old destination and a source and writing the destination. move, move-object and
+move-wide may share copy-processing logic, but P2 MUST retain their widths and
+semantic interpretation requirements. Encoded forms may be normalised; original
+semantic differences must not disappear.
 
-终结点也是执行行为，其条件、switch selector、返回和 throw 的读取必须
-明确交付，不能因不在普通操作列表中而被遗漏。
+Terminals are execution behaviour too: their condition, switch selector, return and
+throw reads must be delivered explicitly and cannot be omitted because they are not
+in the ordinary operation list.
 
-P2 MUST 保留原始常量 bits、字段/方法/type 引用和调用参数 words 的次序。
-它不选择源码变量类型，不因为 Java 类型暂不可表示而拒绝原本可建立的流
-产品，也不以返回值未使用为理由删除有执行效果的操作。
+P2 MUST retain original constant bits, field/method/type references and the order of
+call argument words. It does not choose source variable types, reject a flow product
+that could be established merely because a Java type is not yet expressible, and
+does not delete an operation with execution effects because its return value is
+unused.
 
-#### 5.2.3 正常 CFG 与转移身份
+#### 5.2.3 Normal CFG and transfer identity
 
-基本块持有有序操作和终结点。CFG 的转移契约 MUST 区分顺序继续、原始
-无条件跳转、条件成立/不成立、switch case/default 及方法退出。
+Basic blocks hold ordered operations and a terminal. The CFG transfer contract MUST
+distinguish sequential continuation, original unconditional jumps, condition
+true/false, switch case/default and method exit.
 
-每条图边有独立身份，并关联其来源终结点或异常位置。两个分支具有相同
-目标，不表示它们是同一条转移；P2 MUST NOT 仅按 source/target 去重。
-条件和 case key 可存于终结点，边关联其角色，不要求在两处复制同一事实。
+Every graph edge has an independent identity and is associated with its source
+terminal or exceptional position. Two branches with the same target are not the same
+transfer; P2 MUST NOT deduplicate by source/target alone.
+Condition and case keys may live in the terminal while edges carry their roles;
+the same fact need not be duplicated in both places.
 
-return 和未捕获异常是退出，不要求虚构普通基本块来承接。P2 的异常转移
-与正常后继分开，不能把 handler 当作普通跳转目标合并进正常支配分析。
+return and uncaught exceptions are exits and do not require invented ordinary basic
+blocks to receive them. P2's exceptional transfers are separate from normal
+successors, and a handler must not be merged into normal dominance analysis as an
+ordinary jump target.
 
-CFG 是后续支配关系和循环分析的输入，不被支配树替代。P2 的核心输出
-不预计算源码区域，也不为某一种后续算法额外启动支配树或 SSA 构造。
+The CFG is the input to later dominance and loop analysis and is not replaced by a
+dominator tree. P2's core output does not precompute source regions, nor does it
+start an extra dominator-tree or SSA construction for one later algorithm.
 
-#### 5.2.4 producer/result 与异常转移
+#### 5.2.4 Producers/results and exception transfers
 
-P2 内部依据 P1 已建立的原始关联约束绑定 producer 和 move-result。
-合并操作 MUST 保留全部来源、正常输出和真实抛出位置。图分割位置调整
-不得改写原始 try 范围、参数顺序或指令位置。
+P2 binds producers and move-result internally using the original association
+constraints established by P1. Merged operations MUST retain every source, normal
+output and actual throw position. Adjusting graph-split positions must not rewrite
+original try ranges, argument order or instruction positions.
 
 ```text
-读取调用输入 → 执行调用
+read call inputs → execute call
                   │
         ┌─────────┴────────────┐
         │                      │
-      正常完成               抛出异常
+   normal completion      throws an exception
         │                      │
         ▼                      ▼
-提交目标寄存器结果      不提交该目标寄存器结果
-转到正常后继            按原始优先级选择 handler
+commit destination register   do not commit that destination register
+go to the normal successor    select a handler by original priority
 ```
 
-P2 交付传递规则，不绑定具体旧值或新值的 ValueId；P3 增加值来源。
-异常不表示回滚已经发生的 heap 效果。monitor-exit 等 DEX 定义的特殊异常
-选择位置必须在 P2 产品中明确表达，不让下游重新解释 opcode。
+P2 delivers transfer rules and does not bind concrete old or new ValueIds; P3 adds
+value sources. An exception does not mean that heap effects already performed are
+rolled back. Special exception-selection positions defined by DEX instructions such
+as monitor-exit must be expressed explicitly in the P2 product so that downstream
+does not reinterpret the opcode.
 
-每个异常转移 MUST 保留抛出位置、异常选择位置、原始 handler 优先级、catch
-类型及 handler 目标。P2 不在这里猜测调用实际会抛哪一种异常来删减路径。
-无法建立精确 transfer 时保留具体失败、已知来源和可能影响的目标范围；
-不能把该转移删掉、当作正常退出或猜成 fallthrough。其他独立事实继续交付。
+Every exceptional transfer MUST retain the throw position, the exception-selection
+position, original handler priority, catch types and handler targets. P2 does not
+guess which exception a call actually throws to prune paths.
+When an exact transfer cannot be established, retain the concrete failure, the known
+sources and the potentially affected target ranges; the transfer must not be deleted,
+treated as a normal exit or guessed as fallthrough. Other independent facts continue
+to be delivered.
 
-#### 5.2.5 可达性、来源和覆盖
+#### 5.2.5 Reachability, origin and coverage
 
-P2 计算结构可达性，不证明条件的实际可满足性。平坦化、大型 switch、
-不透明谓词、跳转链和不可规约图不能单独成为建图的拒绝理由。
-P2 MUST NOT 猜测条件恒真、进行分支删除或为源码美观重排效果。
+P2 computes structural reachability and does not prove satisfiability of conditions.
+Flattening, large switches, opaque predicates, jump chains and irreducible graphs are
+not on their own rejection reasons for graph construction.
+P2 MUST NOT assume conditions are always true, perform branch deletion or reorder
+effects for source aesthetics.
 
-产品 MUST 区分完整原始指令记录与可达执行部分。来源/覆盖关系说明原始
-指令被操作或终结点承接、属于 payload，或仅保留为未进入可达图的原始
-事实。多指令合并记录多来源，不通过相等的指令数和操作数证明覆盖。
+The product MUST distinguish the complete original instruction record from the
+reachable executed part. Origin/coverage relations state that an original instruction
+is carried by an operation or terminal, belongs to a payload, or exists only as an
+original fact that did not enter the reachable graph. A merged instruction records
+multiple origins; coverage is not proven by equal instruction and operation counts.
 
-未进入可达分析的原始内容不能被清空或伪装为 NOP。保留原始编码也不能
-被当作已经生产该指令的完整执行语义；必需操作语义不支持时保留分类结果，
-不能让后续阶段猜行为后继续。
+Original content outside reachable analysis cannot be cleared or disguised as NOP.
+Retaining the original encoding also cannot be treated as having produced that
+instruction's complete execution semantics; when required operation semantics are
+unsupported the classified result is retained, and later stages may not guess the
+behaviour and continue.
 
-#### 5.2.6 内部加工与输出保证
+#### 5.2.6 Internal processing and output guarantees
 
-P2 内部完成指令语义转换和受约束结果绑定，确定基本块分割，连接正常和
-有序异常转移，建立结构可达性与来源覆盖。具体扫描与索引布局由 P2 拥有，
-其变化不能要求消费者参与内部构建或依赖中间构建状态。
+P2 completes instruction-semantics conversion and constrained result binding
+internally, determines block splits, connects normal and ordered exceptional
+transfers, and establishes structural reachability and origin coverage. The concrete
+scan and index layout is owned by P2, and its changes must not require consumers to
+join internal construction or depend on intermediate construction state.
 
-P2 的测试 MUST 核对操作/终结点读写、提交规则、效果、图边角色和来源覆盖
-与输入的对应。普通构建直接交付算法产物，不运行该验证，也不使用 P3 的
-SSA 构建或 P4 类型求解来补足本阶段事实。
+P2's tests MUST check the correspondence between the input and operation/terminal
+reads and writes, commit rules, effects, edge roles and origin coverage. Ordinary
+construction delivers the algorithm product directly, does not run that verification,
+and does not use P3's SSA construction or P4's type solving to supply this stage's
+facts.
 
-FlowMethod 的正式接口提供操作输入/输出、入口布局、正常/异常转移及
-来源事实。后续阶段信任这些保证，只增加自己的事实，不重新解码指令、
-连接 CFG 或修补异常规则。P2 无法交付时按第 9 节保留身份、原始事实和原因。
+FlowMethod's formal interface provides operation inputs/outputs, entry layout,
+normal/exceptional transfers and origin facts. Later stages trust these guarantees and
+add only their own facts; they do not re-decode instructions, connect the CFG or patch
+exception rules. When P2 cannot deliver, it retains identity, original facts and
+causes under §9.
 
-### 5.3 P3：异常感知的 Pruned SSA 与按需 IDF
+### 5.3 P3: exception-aware pruned SSA with on-demand IDF
 
-选定算法：活跃性剪枝的 SSA（Pruned SSA），使用支配树和按需迭代支配边界
-（Iterated Dominance Frontier，IDF）放置 Phi，再沿支配树绑定定义与使用。
-这是重构目标，替代普通方法的固定块入口 Phi 路线，不是新增可选恢复算法。
+Chosen algorithm: liveness-pruned SSA, placing Phis with a dominator tree and
+on-demand iterated dominance frontiers (IDF), then binding definitions and uses along
+the dominator tree. This is the refactoring target that replaces the fixed
+block-entry Phi route for ordinary methods; it is not an additional optional
+recovery algorithm.
 
-输入：覆盖和局部可用性描述完整的 FlowMethod，通过正式接口取得已建立的
-入口布局、有序读写、宽度、语义要求、转移与提交规则，以及缺口影响范围。
-P3 不依赖 P2 的构建器、
-扫描顺序或内部表示转换 helper，也不等待 P4 的类型结论。
+Input: a FlowMethod whose coverage and local availability are fully described,
+providing through formal interfaces the established entry layout, ordered reads and
+writes, widths, semantic requirements, transfers and commit rules, and the impact
+range of gaps. P3 does not depend on P2's builders, scan order or internal
+representation-conversion helpers, and does not wait for P4's type conclusions.
 
-P3 只生产值来源：参数、this、操作结果、异常对象的定义与 ValueId，以及
-使用绑定和必要的合流 Phi。SSA 定义是静态身份，不是运行时求出的值。
+P3 produces value sources only: definitions and ValueIds for parameters, this,
+operation results and exception objects, plus use bindings and necessary merge Phis.
+An SSA definition is a static identity, not a value obtained at runtime.
 
-#### 5.3.1 为什么选择这条路线
+#### 5.3.1 Why this route
 
-在 P2 已建立控制关系的分析范围内，P3 集中计算支配关系和定义汇合。
-未知转移对入口和可用性的影响另按第 9.1 节处理，不能删边后套用全图保证。
-一个定义能
-支配相应使用时直接绑定，不为每个 live-in slot 的每个块建立入口 Phi。
-只有可能汇合的定义进入 IDF 计算，并结合实际使用需求剪除无用 Phi。
+Within the analysis scope where P2 has established control relations, P3 computes
+dominance relations and definition merges in one place. The effect of unknown
+transfers on entries and availability is handled separately under §9.1; edges cannot
+be deleted and the whole-graph guarantee then reapplied. A definition that
+dominates the corresponding use binds directly, without creating an entry Phi for
+every block of every live-in slot.
+Only definitions that can merge enter IDF computation, and unused Phis are pruned
+against actual use demand.
 
-这减少固定入口策略引入的冗余合流，目标同时考虑 P3 构建成本和带给
-P4–P7 的类型传播、存储、复制与表达成本。性能优于其他方案尚需正式单类
-请求测量；Phi 较少不自动证明总延迟或峰值内存最优。
+This reduces the redundant merges introduced by a fixed entry strategy, and the
+target considers both P3 construction cost and the type-propagation, storage, copy
+and expression costs it imposes on P4–P7. Being faster than other schemes still
+requires measurement on formal single-class requests; fewer Phis do not by
+themselves prove optimal total latency or peak memory.
 
-算法依据为 [Cytron 等的 SSA 构建](https://doi.org/10.1145/115372.115320)
-所定义的支配、支配边界与重命名，并结合活跃性剪枝和按需 IDF。
-minimal/pruned 性质只针对固定控制流、定义和使用模型；它不等于最少 Java
-变量或全局最短源码。DEX 异常和宽值映射必须单独建立正确性，不能继承
-标准 SSA 文献的证明后直接宣称整个方法转换无损。
+The algorithm follows the dominance, dominance frontier and renaming defined by
+[SSA construction in Cytron et al.](https://doi.org/10.1145/115372.115320), combined
+with liveness pruning and on-demand IDF. The minimal/pruned property holds only for a
+fixed control flow and definition/use model; it does not mean the fewest Java
+variables or globally shortest source. DEX exceptions and wide values must establish
+correctness separately: a reference paper's proof cannot be inherited to claim that
+the whole method transformation is lossless.
 
-#### 5.3.2 P3 内部的异常感知分析视图
+#### 5.3.2 P3's internal exception-aware analysis view
 
-P3 使用 P2 已交付的精确提交规则，建立私有的值状态分析视图。原始 CFG、
-操作和异常边保持不可变；视图中的位置映射回原始操作、边或方法入口。
-它不重新解析 opcode、推断 handler，也不对外增加虚构的执行操作。
+P3 uses the precise commit rules already delivered by P2 to build a private
+value-state analysis view. Original CFG, operations and exception edges stay
+immutable; positions in the view map back to original operations, edges or the
+method entry.
+It does not re-parse opcodes, infer handlers or add invented execution operations
+outward.
 
 ```text
-P2 调用操作
+P2 call operation
        │
        ▼
-P3 私有执行位置：读取输入、执行调用
+P3 private execution position: read inputs, execute call
        │
-       ├─ 异常转移 ──────────────→ Handler：保持旧目标值
+       ├─ exceptional transfer ────→ handler: keeps old destination values
        │
-       └─ 正常完成 → 结果提交点 → 正常后继：获得新目标值
+       └─ normal completion → result commit point → normal successor: obtains new destination values
 ```
 
-正常完成才发生的定义放在正常提交位置，而不是同时支配异常后继的位置。
-P3 的 SSA 支配分析 MUST 纳入相应正常和异常转移；只在正常 CFG 上计算
-支配关系，再把异常输入附加到结果上，不足以建立值可用性。
-异常 handler 优先级和特殊选择位置仍来自 P2，不能合并为普通无条件跳转。
+A definition that happens only on normal completion sits at the normal commit
+position, not at a position that also dominates the exceptional successor.
+P3's SSA dominance analysis MUST include the corresponding normal and exceptional
+transfers; computing dominance on the normal CFG alone and then attaching exceptional
+inputs to the result is insufficient to establish value availability.
+Exception handler priority and special selection positions still come from P2 and
+cannot be merged into an ordinary unconditional jump.
 
-方法初次入口使用私有入口位置提供参数和 this。入口回边保持独立转移，
-不能把初始值和后续迭代值混用。handler 异常对象是独立定义，不是普通
-寄存器的旧值或调用结果。未捕获异常是退出，不创建伪 handler。
+The method's initial entry uses a private entry position that provides parameters and
+this. Entry back-edges keep independent transfers, and initial values must not be
+mixed with later iteration values. A handler exception object is an independent
+definition, not an old value of an ordinary register or a call result. An uncaught
+exception is an exit and creates no pseudo-handler.
 
-#### 5.3.3 构建步骤
+#### 5.3.3 Construction steps
 
 ```text
 FlowMethod
     │
     ▼
-建立私有提交/状态位置及原始关联
+establish private commit/state positions and original associations
     │
     ▼
-建立定义/使用索引和受影响 slot 的活跃需求
+build definition/use indexes and live demand of affected slots
     │
     ▼
-计算可达分析图的支配树
+compute the dominator tree of the reachable analysis graph
     │
     ▼
-按定义集合计算 IDF，结合 live-in 放置必要 Phi
+compute IDF over definition sets, placing required Phis with live-in
     │
     ▼
-沿支配树重命名：绑定使用、提交定义、填充边参数
+rename along the dominator tree: bind uses, commit definitions, fill edge parameters
     │
     ▼
-完成来源可用性与状态位置映射
+complete origin availability and state-position mapping
     │
     ▼
 SsaMethod = FlowMethod + SsaFacts
 ```
 
-1. P3 根据操作和终结点的真实读取、写入及异常提交规则建立定义/使用索引。
-   无写入的效果操作不产生伪结果，但其全部实际输入仍被绑定。
-2. P3 反向计算受影响 slot 的 live-in，用阶段内部工作队列传播，仅在事实
-   变化时处理相关位置。实际需要的宽度与重叠关系不能缩成裸寄存器编号。
-3. P3 在控制关系足以建立保证的私有分析范围内构建支配树，不要求自然循环
-   或可规约形状。支配树构建采用 Lengauer–Tarjan 路线，遍历使用显式栈；
-   不能忽略可能进入该范围的未知转移。
-4. P3 按 slot 状态的定义集合计算活跃性剪枝的 IDF。计算按实际定义需求
-   展开，不预先物化每个块的完整支配边界集合或 register×edge 矩阵。
-5. Phi 位置确定后创建相应 ValueId。P3 沿支配树维护状态版本，先绑定全部
-   输入，再处理正常提交。每条 incoming 根据其原始转移身份填入来源。
-6. P3 计算来源可用性和缺口影响，保留实际使用所需的 Phi 闭包。来源绑定或
-   不可用状态及其影响交代完整后封装 SsaMethod；独立对应验证仅在测试运行。
+1. P3 builds definition/use indexes from the real reads, writes and exception commit
+   rules of operations and terminals.
+   An effect operation with no write produces no pseudo-result, but all of its actual
+   inputs are still bound.
+2. P3 computes live-in of affected slots backwards with a stage-private work queue,
+   processing related positions only when a fact changes. Real required widths and
+   overlap relations cannot be reduced to bare register numbers.
+3. P3 builds the dominator tree within the private analysis scope where control
+   relations suffice to establish the guarantee, without requiring natural loops or a
+   reducible shape. Dominator construction uses the Lengauer–Tarjan route with an
+   explicit stack; transfers that may enter that scope cannot be ignored.
+4. P3 computes liveness-pruned IDF over definition sets of slot states. The
+   computation expands by actual definition demand and does not pre-materialise each
+   block's complete dominance-frontier set or a register×edge matrix.
+5. Once Phi positions are fixed, the corresponding ValueIds are created. P3 maintains
+   state versions along the dominator tree, binding all inputs first and then handling
+   normal commits. Each incoming is filled from its original transfer identity.
+6. P3 computes origin availability and gap impact and retains the Phi closure that
+   actual uses need. SsaMethod is sealed only after origin bindings or unavailable
+   states and their impact are fully accounted for; independent correspondence checks
+   run only in tests.
 
-固定的定义集合与图可能需要有限迭代，但 ValueId 不在 P3/P4 互相反馈中
-创建或替换。不同控制转移指向相同块时仍分别关联 Phi incoming。
-使用绑定允许跨块直接引用支配该使用的定义，不再要求一律经过入口 Phi。
+A fixed definition set and graph may require bounded iteration, but ValueIds are not
+created or replaced in a P3/P4 feedback loop. Different control transfers that point
+to the same block still carry separate Phi incomings.
+A use binding may reference a definition that dominates the use directly across
+blocks; passing through an entry Phi is no longer required.
 
-P3 不进行值常量传播、操作删除或面向源码的变量合并。可证明冗余或无用的
-Phi 处理属于 SSA 内部规范化，必须保留原始操作身份和必要语义要求；不能
-将删除 Phi 扩展成删除调用、cast、堆访问或异常路径。
+P3 performs no constant propagation, operation deletion or source-oriented variable
+merging. Provably redundant or useless Phi handling belongs to SSA-internal
+normalisation and must retain original operation identities and required semantic
+requirements; Phi deletion must not expand into deleting calls, casts, heap accesses
+or exception paths.
 
-#### 5.3.4 宽值、重叠覆盖与未定义状态
+#### 5.3.4 Wide values, overlapping coverage and undefined states
 
-标准 IDF 依赖明确的变量状态模型。DEX 寄存器 words 会被单字和宽值写入
-交叉覆盖，因此不能将两个 words 各自重命名后任意拼成一个宽 ValueId。
+Standard IDF depends on an explicit variable-state model. DEX register words are
+overwritten in crossing patterns by single-word and wide writes, so two words cannot
+be renamed independently and then arbitrarily assembled into one wide ValueId.
 
-P3 使用固定的 SlotKey=(起始寄存器, One|Two)，其 word 区间为
-[start,start+width)。slot 集合只由 P2 已交付的参数、读取和写入产生，
-不在 IDF 或类型求解过程中猜测新 slot，不预先建立 register×edge 状态矩阵。
+P3 uses fixed SlotKey=(start register, One|Two) whose word interval is
+[start,start+width). The slot set arises only from parameters, reads and writes
+already delivered by P2; it does not guess new slots during IDF or type solving and
+does not pre-build a register×edge state matrix.
 
-每个 SlotKey 在私有分析图中是一个独立状态变量。它的状态来源包括：
+Each SlotKey is an independent state variable in the private analysis graph. Its state
+sources are:
 
-- Value：同起点、同宽度的原始定义或已建立的 Phi 值；
-- Undefined：该 slot 在原始方法入口没有对应参数或定义；
-- Invalidated：一个有原始来源的重叠写入使该 slot 不再承载完整值；
-- 来源不可确立：P2 明示的写入、提交或进入关系缺口影响该 slot，保留具体
-  位置、影响范围和原因；不与 Undefined、Invalidated 或构建 Pending 混同。
+- Value: an original definition of the same start and width, or an established Phi value;
+- Undefined: the slot has no corresponding parameter or definition at the original method entry;
+- Invalidated: an overlapping write with original provenance means the slot no longer carries a complete value;
+- origin not establishable: a write, commit or entry relation that P2 states as a gap
+  affects the slot, retaining the concrete position, impact range and cause; this is
+  not conflated with Undefined, Invalidated or construction Pending.
 
-Invalidated 和 Undefined 是状态定义，不是可执行的默认值。构建时的
-Pending 与这些已知状态分开，全部连接前不能将 Pending 当作 Undefined。
-成功值绑定必须保持 exact slot；单字读取不能从宽值的高 word 猜一个值，
-宽读取也不能拼接两个独立单字定义。
+Invalidated and Undefined are state definitions, not executable default values.
+Construction-time Pending is separate from these known states, and Pending must not be
+treated as Undefined before all connections are made.
+A successful value binding must preserve the exact slot; a single-word read cannot
+guess a value from the high word of a wide value, and a wide read cannot splice two
+independent single-word definitions.
 
-一次目标为 D 的写入，在其实际正常提交位置建立以下 transfer：
+A write to destination D establishes the following transfer at its actual normal
+commit position:
 
 ```text
-所有输入先从写入前的状态读取
+all inputs are read from the state before the write
 
-state[D] = Value(本次结果)
-对每个与 D 的 word 区间重叠、但 SlotKey 不同的被跟踪 slot S：
-    state[S] = Invalidated(本次原始写入)
+state[D] = Value(this result)
+for every tracked slot S whose word interval overlaps D but whose SlotKey differs:
+    state[S] = Invalidated(this original write)
 
-未重叠 slot 的状态不变
+states of slots that do not overlap are unchanged
 ```
 
-入口参数按其准确 slot 提供初始值，其重叠的不同宽度 slot 不取得可读值。
-实现可以用稀疏的寄存器到 slot 索引查找重叠候选；word 宽度只有 One/Two，
-不需要每次遍历全部 slot。每个索引和区间计算仍检查范围与平台容量。
+Entry parameters provide initial values at their exact slot, and differently sized
+slots that overlap them do not obtain a readable value.
+An implementation may use a sparse register-to-slot index to look up overlap
+candidates; widths are only One/Two, so a full slot scan per write is unnecessary.
+Every index and interval computation still checks ranges and platform capacity.
 
-定义位置集合 MUST 包含重叠失效，而不只包含该 slot 的显式值写入。
-正常提交才产生失效，操作异常不提交结果，也不提交这次正常写入造成的
-失效。多个输出若存在，输入统一先读取，再按 P2 的整体提交规则建立状态。
+The definition-position set MUST include overlapping invalidation, not only explicit
+value writes to that slot.
+Invalidation arises only on normal commit; an exceptional operation commits neither a
+result nor the invalidation caused by this normal write. When there are several
+outputs, all inputs are read first and states are then established under P2's overall
+commit rules.
 
-活跃性和按需 IDF 对这些完整状态变量工作。沿支配树重命名时，版本栈
-同时处理值、Undefined、Invalidated 及来源不可确立状态；Phi incoming
-保留其精确边来源或明确的未确定进入影响。
-状态 Phi 的结果可成为完整值、失效或可用性未证实，不能因为存在一个
-有值输入就默认忽略其他输入。状态传播完成后，SsaFacts 交付
-值宽度和每项使用的可用性结果，P4 不再配对寄存器 words。
+Liveness and on-demand IDF work over these complete state variables. During renaming
+along the dominator tree, the version stack handles values, Undefined, Invalidated and
+origin-not-establishable states together; Phi incomings retain their exact edge origin
+or the explicit impact of an undetermined entry.
+A state Phi's result may become a complete value, an invalidation or unproven
+availability; the presence of one valued input must not cause other inputs to be
+ignored by default. After state propagation, SsaFacts delivers value widths and the
+availability result of each use, and P4 no longer pairs register words.
 
 ```text
-初次定义：write (v0,Two) = x1
+initial definition: write (v0,Two) = x1
     state[(v0,Two)] = Value(x1)
 
-随后写入：write (v1,One) = x2
+later write: write (v1,One) = x2
     state[(v1,One)] = Value(x2)
-    state[(v0,Two)] = Invalidated(这次写入)
+    state[(v0,Two)] = Invalidated(this write)
 
-两条路径汇合后读取 (v0,Two)：
-    一条 incoming = Value(x1)
-    另一条 incoming = Invalidated
-    不能只使用 x1 声称存在完整宽值
+read (v0,Two) after the two paths merge:
+    one incoming = Value(x1)
+    the other incoming = Invalidated
+    x1 alone cannot be used to claim a complete wide value
 ```
 
-这个模型不修改原始寄存器、CFG 或操作，也不将原始宽值拆成两个任意
-可重组的普通 ValueId。标准 SSA 的放置与重命名在这个状态模型上应用；
-最小性只相对于该状态图与需求，不直接声称最终原始操作 Phi 或源码变量最少。
+This model does not modify original registers, CFG or operations, and does not split
+an original wide value into two ordinary ValueIds that may be recombined arbitrarily.
+Standard SSA placement and renaming apply over this state model; minimality holds
+only relative to that state graph and demand, and does not directly claim the fewest
+original operation Phis or source variables.
 
-P3 MUST NOT 将无效状态或缺失定义填成零、null 或任意值。当前使用是否
-确定违反输入约束，与保守路径集合导致无法证明可用性分开；没有路径
-可行性证据时不得把所有潜在坏来源都宣称为已执行的 Malformed。
-构建遗漏、错误 Phi 连接和外来身份保持 InternalInvariant。
+P3 MUST NOT fill an invalid state or missing definition with zero, null or an
+arbitrary value. Whether a current use definitely violates input constraints is
+separate from being unable to prove availability because of a conservative path set;
+without path-feasibility evidence, all potential bad sources must not be declared
+already-executed Malformed.
+Construction omissions, wrong Phi connections and foreign identities remain
+InternalInvariant.
 
-#### 5.3.5 输出与测试验证
+#### 5.3.5 Output and test verification
 
-SsaFacts MUST 交付定义、所有操作/终结点使用绑定、正常结果、必要 Phi、
-按边关联的 incoming，以及值宽度和可用性的具体处理结果。
-原始执行模型和声明/语义要求通过 SsaMethod 保留，P4 不重新猜寄存器来源。
+SsaFacts MUST deliver definitions, use bindings of all operations/terminals, normal
+results, required Phis, per-edge incoming associations, and concrete handling results
+for value width and availability.
+The original execution model and declaration/semantic requirements are retained
+through SsaMethod, and P4 does not re-guess register sources.
 
-P3 测试核对定义是否在相应使用或 incoming 的执行位置可用、块内读取是否
-遵守先读后写、正常和异常来源是否符合 P2 提交规则、宽值归属是否完整。
-支配关系是值可用性依据之一，不代替宽值和异常提交检查。
+P3 tests check that a definition is available at the execution position of the
+corresponding use or incoming, that intra-block reads respect read-before-write, that
+normal and exceptional origins agree with P2's commit rules, and that wide-value
+ownership is complete.
+Dominance is one basis of value availability and does not replace wide-value and
+exception-commit checks.
 
-测试验证不得只信任构建器的计数或 bool。已有独立原始重放测试义务在迁移时
-按第 6 节明确归属；P3 不调用 P2 的建图算法或重新检查调用原始编码。
-完成后释放活跃性、版本栈、IDF 和私有构建 scratch，保留后续所需产品与
-对应关系。不能把标准 IDF 的局部复杂度宣称为整条 DEX SSA 的线性成本。
+Test verification must not trust builder counts or booleans alone. Existing
+independent original-replay test obligations keep explicit ownership during
+migration under §6; P3 does not call P2's graph-construction algorithm or re-check
+original call encodings.
+On completion, liveness, version stacks, IDF and private construction scratch are
+released, while the products and correspondences later stages need are retained.
+Standard IDF's local complexity must not be claimed as linear cost for SSA of a whole
+DEX.
 
-#### 5.3.6 异常提交图与输出位置映射
+#### 5.3.6 Exceptional commit graph and output position mapping
 
-P3 的私有分析图从 FlowMethod 的已知块、操作顺序和 transfer 构造，不读
-原始 opcode。每个参数初始定义、操作输入读取、正常提交和 handler 异常
-对象绑定都有明确的位置，全部映射回原始方法入口、操作或转移身份。
+P3's private analysis graph is built from FlowMethod's known blocks, operation order
+and transfers and does not read original opcodes. Each parameter initial definition,
+operation input read, normal commit and handler exception-object binding has an
+explicit position, all mapped back to original method-entry, operation or transfer
+identities.
 
-对于可能抛出的有结果操作，异常边离开执行位置，正常路径经过提交位置
-才获得结果及 slot 失效；无结果操作不创建伪值定义。抛出终结点没有正常
-提交，只有原始异常链或向外退出。enter/exit 的特殊规则直接消费 P2。
+For a result-producing operation that may throw, the exceptional edge leaves the
+execution position while the normal path passes the commit position to obtain the
+result and slot invalidation; a result-less operation creates no pseudo-value
+definition. A throwing terminal has no normal commit, only the original exception
+chain or an outward exit. The special rules of enter/exit consume P2 directly.
 
-私有图存在的原因是建立值可用性，不是重写原始控制流。P3 的测试必须
-核对原始正常路径上的提交、异常路径上的旧状态以及 handler 绑定与视图
-相符。禁止为所有异常边使用来源块末尾的统一环境。
+The private graph exists to establish value availability, not to rewrite original
+control flow. P3's tests must check that commits on original normal paths, old states
+on exceptional paths and handler bindings agree with the view. Using one uniform
+environment at the end of the source block for every exceptional edge is forbidden.
 
-Phi 可能位于私有状态位置，SsaFacts MUST 交付其 StatePoint 身份与原始
-进入转移映射。下游通过前置产品得到 Phi 的入口/执行义务，不能假设每个
-Phi 只属于原始块头或每个 ValueId 的可用性仅由 PC 数值先后确定。
-必要的合成位置只承接状态与复制，不生成新的调用、heap 效果或 runtime
-分派；P5 在原始 normal edge、提交后继或 handler 入口落实相应传递。
+A Phi may sit at a private state position, so SsaFacts MUST deliver its StatePoint
+identity and original entering-transfer mapping. Downstream obtains the Phi's
+entry/execution obligations through the preceding product and must not assume that
+each Phi belongs to an original block head or that each ValueId's availability is
+determined only by numeric PC order.
+Necessary synthetic positions carry only states and copies and generate no new calls,
+heap effects or runtime dispatch; P5 realises the corresponding transfers at original
+normal edges, commit successors or handler entries.
 
-输出位置的映射必须在 P3 构造时完成，P5 不调用 P3 helper 推导哪个原始
-边对应某个私有前驱。后续发现缺失位置是产品违约，不由 P6/P7 猜补。
+Output-position mapping must be completed during P3 construction; P5 does not call
+P3 helpers to derive which original edge corresponds to some private predecessor.
+Discovering a missing position later is a product violation, and P6/P7 must not guess
+it.
 
-### 5.4 P4：值事实与使用解释，产出 TypedMethod
+### 5.4 P4: value facts and use interpretations producing TypedMethod
 
-输入：SsaMethod 中已交付的值来源、原始操作要求、引用声明事实和当前类声明。
-当前类声明由 P0 以不可变句柄随方法产品传递，P4 不从调度器另取上下文。
-普通引用读取不要求继承证明；确有行为相关消费者需要的跨类声明仍遵循
-§7.2 的受限只读查询契约，不为 Java 赋值或重载合法性查询完整层次。
+Input: value sources already delivered in SsaMethod, original operation requirements,
+reference-declaration facts and the current class declaration.
+The current class declaration travels with the method product as an immutable handle
+from P0, and P4 does not fetch context from the scheduler separately.
+Ordinary reference reads require no inheritance proof; cross-class declarations that
+behaviour-relevant consumers genuinely need still follow the restricted read-only
+query contract of §7.2, and the complete hierarchy is not queried for Java assignment
+or overload legality.
 
-P4 收集声明约束，求解值 family/type、Phi 合流、常量使用视图与每个使用点
-的转换，生产初始化、数组和调用相关证据。它不修改图或重新分配 ValueId。
-P2 的执行事实接口交付原 catch 类型读取结果和操作关联的数组 payload
-宽度、数量及借用 bits。P4 消费这些已建立事实，不从原始 code view 重解析。
-异常对象的原始定义与各 typed catch 声明保留；共享 handler 保留全部可能
-声明，不为普通引用读取另建 Throwable 可赋值性传播域。数组 fill 的元素解释来自 SSA 数组组件，不能仅按 payload
-宽度选择 int/float，也不能将批量填充改成新的 stores 或改变异常位置。
+P4 collects declaration constraints, solves value families/types, Phi joins, constant
+use views and conversions at each use, and produces initialization, array and
+call-related evidence. It does not modify the graph or reallocate ValueIds.
+P2's execution-fact interface delivers original catch-type read results and the array
+payload width, count and borrowed bits associated with an operation. P4 consumes these
+established facts and does not re-parse from the original code view.
+The original definition of an exception object and each typed catch declaration are
+retained; a shared handler retains every possible declaration, and no separate
+Throwable-assignability propagation domain is built for ordinary reference reads.
+Array-fill element interpretation comes from the SSA array component; int/float cannot
+be chosen from payload width alone, and a bulk fill must not become new stores or
+change exception positions.
 
-#### 5.4.1 直接消费原始引用签名
+#### 5.4.1 Consuming original reference signatures directly
 
-DEX 中的引用记录本身是可用事实，不要求目标类定义或方法实现存在于分析
-输入中。P4 MUST 直接消费已交付的 owner、名称、prototype、invoke kind
-及参数/返回 descriptor，不为获得相同事实重新解析引用记录。
+A reference record in DEX is itself a usable fact and does not require the target class
+definition or method implementation to exist in the analysis input. P4 MUST consume
+the already delivered owner, name, prototype, invoke kind and parameter/return
+descriptors directly and must not re-parse the reference record to obtain the same
+facts.
 
-例如原始引用 `Ljava/lang/String;->length()I` 已提供 owner、方法名、无显式
-参数和 int 返回约束。即使输入中没有 String 类定义，P4 仍使用这些事实。
-调用的 receiver、参数顺序和调用形式来自已有执行产品，不能因定义缺失
-改成未知方法或丢弃原始引用身份。
+For example, the original reference `Ljava/lang/String;->length()I` already supplies
+the owner, method name, no explicit parameters and an int return constraint. Even when
+the input contains no String class definition, P4 still uses these facts.
+The receiver, argument order and call form come from existing execution products and
+cannot be changed into an unknown method or stripped of the original reference
+identity because a definition is missing.
 
-引用签名不证明运行时分派的具体实现，也不提供完整继承关系、定义 flags、
-重载集合或 Throws 元数据。P4 对输入中未提供的事实保持 Unknown；查询
-不得将定义缺失变成整个引用不可用，也不得依赖 classpath 或外部类库补全。
-源码绑定信息缺失不能独立成为方法输出门槛。已建立来源、宽度和引用
-读取表示的普通输入交付 Direct(Reference)，不以未知继承关系交付读取失败。
-这不证明 subtype、Java 赋值兼容或对象已初始化；原始声明仍独立保留。
-调用返回类型来源于原引用或独立调用原型，不按实参类型重新选择重载。
-确实无法建立保持原始语义的值解释或转换时，P4 保留具体问题，不伪造调用
-目标或转换。
+A reference signature does not prove the concrete implementation chosen at runtime,
+nor does it provide a complete inheritance relation, definition flags, overload sets or
+Throws metadata. P4 keeps Unknown for facts the input does not provide; a query must
+not turn a missing definition into an entirely unusable reference, nor depend on
+classpath or external libraries to fill it in.
+Missing source-binding information cannot independently become a method output gate.
+An ordinary input whose origin, width and reference read are established is delivered
+as Direct(Reference) rather than as a read failure because the inheritance relation is
+unknown.
+This does not prove subtype, Java assignment compatibility or prior initialization of
+the object; original declarations are still retained separately.
+A call's return type comes from the original reference or an independent invocation
+prototype and is not re-selected from argument types.
+When a value interpretation or conversion that preserves original semantics genuinely
+cannot be established, P4 retains the concrete problem and fabricates neither call
+target nor conversion.
 
-#### 5.4.2 ValueFacts 与 UseViews 分开
+#### 5.4.2 ValueFacts and UseViews are separate
 
-P4 MUST 将值的事实与各使用位置的解释分开，不用一个可反复改写的类型字段
-同时表达原始 bits、值类型、使用要求和转换结果。
+P4 MUST separate facts about a value from the interpretation at each use, and must not
+express original bits, value types, use requirements and conversion results through one
+type field that is rewritten repeatedly.
 
-| 产品部分 | 交付内容 |
+| Product part | Delivered content |
 |---|---|
-| ValueFacts | ValueId、原始生产事实关联、宽度、family/具体类型事实，以及有依据的零值来源和范围 |
-| UseViews | 操作或终结点的使用位置、对应 ValueId、原始语义/descriptor 要求，以及解释或转换结果 |
-| PhiViews | Phi 的共同表示、每条 incoming 的值与适配结果，按原始边身份关联 |
+| ValueFacts | ValueId, original producer-fact association, width, family/concrete-type facts, and evidenced zero-value origins and ranges |
+| UseViews | use position of an operation or terminal, corresponding ValueId, original semantic/descriptor requirements, and the interpretation or conversion result |
+| PhiViews | the Phi's common representation, the value and adaptation result of each incoming, associated by original edge identity |
 
-ValueFacts 关联已有产品中的原始 bits 和生产操作，不要求复制一份原始记录。
-UseViews MUST 覆盖全部保留的操作和终结点输入，明确直接读取、字面视图、
-有依据的转换、未知或具体不可表示原因，不留裸 None 让后续自行猜测。
+ValueFacts associates original bits and producing operations in existing products and
+does not copy a second original record.
+UseViews MUST cover every retained operation and terminal input, stating direct reads,
+literal views, evidenced conversions, unknown or concrete unrepresentable reasons, and
+must not leave a bare None for later stages to guess.
 
 ```text
-ValueFacts[x1]：原始 32 位常量，bits=0
+ValueFacts[x1]: original 32-bit constant, bits=0
                           │
                 ┌─────────┴──────────┐
                 ▼                    ▼
-调用 A 的 Object 参数使用     调用 B 的 int 参数使用
-UseViews[A, 参数0]             UseViews[B, 参数0]
-    → NullLiteral                 → IntLiteral(0)
+Object parameter use of call A   int parameter use of call B
+UseViews[A, parameter 0]         UseViews[B, parameter 0]
+    → NullLiteral                     → IntLiteral(0)
 ```
 
-这些使用视图不改写原始 bits，也不插入运行时整数到对象的转换。P4 不因一次
-引用使用把所有其他使用改成引用，也不因一次整数使用制造全方法类型冲突。
+These use views neither rewrite original bits nor insert a runtime integer-to-object
+conversion. P4 does not turn all other uses into references because of one reference
+use, nor create a whole-method type conflict because of one integer use.
 
-普通运行时 int 值不能因为某次可能为零就取得 null 视图。数值转换与 bits
-解释不同：运行时 int 到 float 的转换不能代替原始常量的浮点解释。
-只有原始转换语义或明确的值保持依据允许产生相应转换。
-经 move/Phi 传播的零值视图需要已建立的来源事实，不能仅根据寄存器编号或
-某处出现过零放行；非字面值合流仍需明确的共同表示。
+An ordinary runtime int value cannot obtain a null view because it may be zero at one
+use. Numeric conversion differs from bits interpretation: a runtime int-to-float
+conversion cannot replace the floating-point interpretation of an original constant.
+Only original conversion semantics or explicit value-preserving evidence may produce
+the corresponding conversion.
+A zero-value view propagated through move/Phi needs established origin facts; it
+cannot be admitted merely from a register number or the appearance of zero somewhere,
+and a merge of nonliteral values still needs an explicit common representation.
 
-Phi 的输入同宽不表示兼容。P4 MUST 分别交付共同表示、incoming 适配和
-普通使用解释。P4 MUST 先建立来源可用、字宽和表示相容的原样读取，再选择
-有证据的值保持视图。使用要求不反向证明值范围；原声明不自动产生无损窄化
-请求。范围不足只能阻止可选视图，不能否定已成立的读取；字面量和运行时值
-遵守同一规则。下游不能仅凭 Z 声明把普通整数表达式改成布尔表达式。
-原始 int-to-byte 和存储截断仍在原始操作位置执行，不因显示需要追加转换。
+Equal-width Phi inputs are not compatible by themselves. P4 MUST deliver the common
+representation, incoming adaptations and ordinary use interpretations separately. P4
+MUST first establish an as-is read with available origin, matching width and compatible
+representation, and only then choose an evidenced value-preserving view. A use
+requirement does not prove a value's range in reverse; an original declaration does not
+automatically produce a lossless narrowing request. Insufficient range evidence may
+block only an optional view, not deny an established read; literals and runtime values
+follow the same rule. Downstream cannot turn an ordinary integer expression into a
+boolean expression from a Z declaration alone.
+The original int-to-byte conversion and storage truncation still execute at their
+original operation positions and gain no extra conversion for display purposes.
 
-#### 5.4.3 下游交付与本阶段检查
+#### 5.4.3 Downstream delivery and the stage's own checks
 
-TypedMethod 保留 SsaMethod，并封装 ValueFacts、UseViews、PhiViews、原始
-声明约束、位置相关初始化事实和具体不确定性。
-TypeFacts MUST 为每个保留值和使用提供处理结果：已建立事实、明确未知、
-或阻止该表示的具体原因。Unknown 不能被伪装成已证明的转换。
-P4 MUST 按相关值、使用和 incoming 的真实约束传播问题，继续求解不受影响
-的部分；不能以一个空候选集或单项转换失败作为整方法返回错误的默认行为。
+TypedMethod retains SsaMethod and encapsulates ValueFacts, UseViews, PhiViews, original
+declaration constraints, position-related initialization facts and concrete
+uncertainties.
+TypeFacts MUST provide a handling result for every retained value and use: an
+established fact, explicit unknown, or the concrete reason preventing that
+representation. Unknown cannot be disguised as a proven conversion.
+P4 MUST propagate problems along the real constraints of the values, uses and
+incomings concerned and keep solving unaffected parts; an empty candidate set or a
+single failed conversion must not be the default whole-method error behavior.
 
-P5 消费 P4 已确定的表示和 incoming 适配来安排存储与边复制，不重新选择
-类型。P7 消费 UseViews 表达操作和转换，不猜打印 0、null 或浮点字面值，
-也不为源码便利添加任意 cast、boxing 或 helper。
+P5 consumes the representations and incoming adaptations already determined by P4 to
+schedule storage and edge copies and does not re-select types. P7 consumes UseViews to
+express operations and conversions, does not guess whether it should print 0, null or a
+floating literal, and adds no arbitrary cast, boxing or helper for source convenience.
 
-声明绑定、类型求解和最终源码使用的转换检查有不同义务，不能合成一个
-“全部正确”的布尔标记。P4 测试核对自己建立的类型和转换，不重做 SSA。
+Declaration binding, type solving and final source-use conversion checks carry
+different obligations and cannot be merged into one "all correct" boolean flag. P4
+tests check the types and conversions it establishes and do not redo SSA.
 
-#### 5.4.4 初始化事实不以自然 new 表达为前提
+#### 5.4.4 Initialization facts do not presuppose a natural new expression
 
-P4 基于已有分配、构造器调用、SSA 来源和执行转移建立初始化事实：原始
-分配身份、构造器引用、receiver/参数、别名及各使用位置的初始化状态。
-已知的构造器签名直接消费，例如 `Lexample/T;-><init>(I)V`，不要求 T 的
-完整定义或构造器方法体在输入中存在。
+P4 establishes initialization facts from existing allocations, constructor calls, SSA
+origins and execution transfers: the original allocation identity, constructor
+reference, receiver/arguments, aliases and the initialization state at each use.
+A known constructor signature is consumed directly, for example
+`Lexample/T;-><init>(I)V`, without requiring T's complete definition or constructor
+body to exist in the input.
 
-分配正常完成产生未初始化引用；构造器调用作用于同一对象，不再次分配，
-也不返回一个替代对象。初始化状态与执行位置和路径关联，正常完成后的
-引用可用性不能传播到构造器失败路径。构造器已发生的 heap/call 效果
-不会因异常而回滚，P4 不能把初始化失败解释成对象和效果从未存在。
+Normal completion of an allocation produces an uninitialized reference; the
+constructor call acts on the same object, allocates nothing further and returns no
+replacement object. Initialization state is associated with execution positions and
+paths, and reference availability after normal completion must not propagate to a
+constructor-failure path. Heap/call effects the constructor already performed are not
+rolled back by an exception, so P4 cannot interpret initialization failure as the object
+and its effects never having existed.
 
-P4 MUST 按已有 SSA 引用绑定和执行位置求初始化状态，不以唯一对象身份为
-准入条件。Phi 的各 incoming 使用原始转移完成后的状态；全为已初始化的
-来源合流后仍已初始化，即使身份为 Multiple。配对引用沿同一 incoming
-选择来源，不能把相同来源集合当作同一对象。Copy/Cast 捕获引用，不冻结
-初始化状态；后续构造器事件仍作用于已证明关联的对象。静态分配位置不代表
-循环中同一个动态实例。不可用来源和未扎根循环不能供应初始化完成证据。
+P4 MUST determine initialization state from existing SSA reference bindings and
+execution positions and must not make unique object identity an admission condition.
+A Phi uses the post-transfer state of each incoming; a merge whose sources are all
+initialized stays initialized even when the identity is Multiple. Paired references
+select their source along the same incoming, and equal source sets must not be treated
+as the same object. Copy/Cast capture a reference without freezing initialization state;
+later constructor events still act on the proven associated object. A static allocation
+position does not mean the same dynamic instance inside a loop. Unavailable origins and
+unrooted loops cannot supply completion evidence.
 
-待初始化的 constructor-this 可以消费输入内已证明的间接祖先关系，但 P4 MUST
-将它与直接父类关系分开交付；不能将原祖先构造器调用改写成普通 `super()`。
-新分配对象的 owner 匹配仍使用原分配类型，不因此接受任意祖先。缺少父类定义
-不能充当 owner 不匹配证据；当前查询仅限同一逻辑 DEX。
+A constructor-this awaiting initialization may consume a proven indirect ancestor
+relation within the input, but P4 MUST deliver it separately from a direct superclass
+relation; an original ancestor constructor call must not be rewritten as an ordinary
+`super()`. Owner matching of a newly allocated object still uses the original allocation
+type and does not accept an arbitrary ancestor because of this. A missing superclass
+definition cannot serve as owner-mismatch evidence; the current query is limited to the
+same logical DEX.
 
-P4 MUST 将原始初始化关系与自然 `new T(...)` 的合并条件分开。无法证明
-自然合并，不等于原始分配/初始化事实缺失，也不能仅因跨块、存在中间
-操作或保护链不同就撤掉已知执行事实。已知关系交给 P5/P7，由对应产品
-支持自然或显式表达；未建立的来源、状态或合法性保留具体 Unknown 或分类
-问题。普通分配与构造器调用关系明确，不因 DEX 拆成两条指令而成为表达问题。
+P4 MUST separate original initialization relations from the conditions for merging
+them into a natural `new T(...)`. Being unable to prove a natural merge does not mean
+the original allocation/initialization facts are missing, and known execution facts must
+not be withdrawn merely because of a block boundary, an intervening operation or a
+different protection chain. Known relations go to P5/P7, which support natural or
+explicit expression through the corresponding product; unestablished origins, states or
+legality keep concrete Unknown or classified problems. A clear relation between an
+ordinary allocation and a constructor call is not an expression problem merely because
+DEX splits it into two instructions.
 
-P4 不为满足 Java 构造器语法修改 ValueId、增加写入或要求固定编译器模板。
-相关方法产品 MUST 保留全部独立已知操作，不能让自然表示的受限 profile
-充当整个方法的分析准入。已确认的输入损坏和内部违约仍按原分类处理。
+P4 does not modify ValueIds, add writes or require a fixed compiler template in order to
+satisfy Java constructor syntax. The method product concerned MUST retain every
+independent known operation and must not let a restricted natural-expression profile act
+as analysis admission for the whole method. Confirmed input damage and internal
+violations keep their original classification.
 
-#### 5.4.5 分离约束域与稀疏求解
+#### 5.4.5 Separated constraint domains and sparse solving
 
-P4 的约束来源固定为前置产品已交付的声明、操作要求、定义和使用关系。
-它不修改 SSA 身份，也不把 consumers 希望的类型作为 producer 已知事实。
-内部求解使用不同域，不由一个可变 Kind 同时完成收窄、合流和 Unknown：
+P4's constraint sources are fixed to declarations, operation requirements, definitions
+and use relations already delivered by preceding products.
+It does not modify SSA identities, nor does it present a type the consumers desire as a
+fact already known to producers. Internal solving uses distinct domains, and one mutable
+Kind does not perform narrowing, joining and Unknown at once:
 
-| 域 | 初始事实与关系 | 单向变化 |
+| Domain | Initial facts and relations | One-way change |
 |---|---|---|
-| Representation family | word 宽度、原始 opcode 语义要求和 descriptor；非字面值的相容关系 | 合并等价组，组内 Allowed family 集合取交，不重新扩张已排除候选 |
-| 类型/数组来源 | 参数、字段、调用返回、new-array 等声明种子；move/Phi 和有限组件投影 | 已知来源只增加，Unknown 独立保留，数组维度只沿实际组件访问减少 |
-| 位置引用类型界 | 原 check-cast 的 receiver、目标声明及正常转移；原 SSA 复制、Phi incoming 和 load 位置 | 在覆盖的正常路径细化缺失声明界，不修改源值事实或修复不可用输入；有限位置/投影查询形成闭包 |
-| 零值来源 | 原始零常量、value-preserving move 和 Phi incoming | 建立全部来源均为零的有限闭包，未扎根的循环不能供应零证据 |
-| 数值范围 | 原始常量和声明/窄化操作的固定范围 | move 传递，Phi 区间 hull；边界来自固定种子，不从使用需求倒推 |
-| 引用身份来源 | 参数、分配及其他 reference producer；move、原始 cast 和 Phi | None→One(root)→Many；同 family 不表示同 root |
-| 初始化状态 | 分配身份、this、原始构造器调用及正常/异常提交 | 按执行位置传播状态及身份，合流保留路径差异，不全局将 Uninit 改成 Ref |
+| Representation family | word widths, original opcode semantic requirements and descriptors; compatibility relations of nonliteral values | merge equivalence groups; the group's Allowed family set is intersected, and excluded candidates are never re-admitted |
+| Type/array origin | declaration seeds such as parameters, fields, call returns and new-array; move/Phi and bounded component projections | known origins only accumulate, Unknown is retained independently, and array rank decreases only along actual component accesses |
+| Positional reference type bound | receiver and target declaration of an original check-cast plus its normal transfers; original SSA copies, Phi incomings and load positions | refine missing declaration bounds on covered normal paths without modifying source-value facts or repairing unusable input; bounded position/projection queries form the closure |
+| Zero-value origin | original zero constants, value-preserving moves and Phi incomings | establish a bounded closure whose sources are all zero; unrooted loops cannot supply zero evidence |
+| Numeric range | fixed ranges of original constants and declared/narrowing operations | propagate through move, hull of Phi intervals; bounds come from fixed seeds and are never derived backwards from use requirements |
+| Reference identity origin | parameters, allocations and other reference producers; moves, original casts and Phis | None→One(root)→Many; the same family does not mean the same root |
+| Initialization state | allocation identity, this, original constructor calls and normal/exception commits | propagate state and identity by execution position, keep per-path differences on merges, and do not globally turn Uninit into Ref |
 
-family 等价约束使用并查集，但只归并必须相容的表示，不归并 ValueId、
-对象身份或精确 reference 类型。纯常量为使用位置建立独立视图节点，不能
-将一个零常量的 reference 使用和 integral 使用强行合成同一运行时 family。
-运行时 Phi 的可用字面输入仍 MUST 约束该 Phi 的共同表示：按原始 bits 和
-宽度计算可选 family，在非字面值等价组归并前收集到 Phi 的本地约束。
-非零单 word 不能供应引用表示；零与宽值仍保留各自有依据的候选。该约束
-不归并字面源节点，也不改变它在其他使用位置的解释。冲突不得污染独立
-生产者，不可用输入不能供应字面证据，全为相同 bits 的纯字面 Phi 仍保留
-逐使用视图。
+Family equivalence constraints use a union-find, but merge only representations that must
+be compatible, never ValueIds, object identities or exact reference types. A pure
+constant establishes an independent view node per use position, and a reference use and
+an integral use of the same zero constant are not forced into one runtime family.
+Available literal inputs of a runtime Phi MUST still constrain that Phi's common
+representation: compute admissible families from original bits and width and collect
+them as local Phi constraints before nonliteral equivalence groups are merged.
+A nonzero single word cannot supply a reference representation; zero and wide values
+still keep their own evidenced candidates. This constraint neither merges literal source
+nodes nor changes their interpretation at other uses. A conflict must not pollute
+independent producers, unusable input cannot supply literal evidence, and a pure literal
+Phi whose bits are all equal still keeps per-use views.
 
-数组组件由 P4 的统一声明投影和位置类型界求解交付，保留已知组件集合和独立
-Unknown；替代路径合流取已知来源并集并保留全部未覆盖缺口。非数组声明上界
-不证明运行时对象不是数组，已知分支也不能覆盖未知分支。原 check-cast 没有
-SSA 输出；P4 MUST 仅在其正常完成后为已证明相同的引用应用检查界，不能改写
-原来源声明、回填检查前位置、污染异常路径或伪造写入。Phi 按原 incoming
-转移选择引用，多层数组投影在原 load 位置查询；数组与元素不是别名关系。
-成功检查 null 不贡献非空来源的组件类型，也不证明非空或原数组访问正常执行。
+Array components are delivered by P4's unified declaration projection and positional
+type-bound solving, retaining known component sets and independent Unknown; alternative
+path merges take the union of known origins and keep every uncovered gap. A non-array
+declaration upper bound does not prove that the runtime object is not an array, and a
+known branch cannot cover an unknown branch. An original check-cast has no SSA output;
+P4 MUST apply the checked bound only after its normal completion for a proven identical
+reference, and must not rewrite the original source declaration, backfill positions
+before the check, pollute exceptional paths or fabricate writes. A Phi selects its
+reference along the original incoming transfer, multi-level array projections are
+queried at the original load position, and an array and its element are not aliases.
+A successful null check contributes no component type from non-null origins and does not
+prove non-nullness or that the original array access executed normally.
 
-ArrayAccessView 为原 get/put/fill 交付同一份位置事实，下游不重新投影。普通
-读写依赖原 opcode 的编码和 SSA 绑定，不以组件声明完整为门槛；payload 的
-元素解释仍要求充分组件证据。完整位置界也不授权删除原 null、边界或协变
-存储检查。详细规则见 [P4 组件知识](spec/04-types.md#array-component-knowledge)。
+ArrayAccessView delivers the same positional facts for the original get/put/fill, and
+downstream does not project again. Ordinary reads and writes depend on the original
+opcode encoding and SSA bindings and are not gated on complete component declarations;
+the payload's element interpretation still requires sufficient component evidence.
+A complete positional bound also does not authorize deleting the original null, bounds
+or covariant-store checks. Detailed rules are in
+[P4 component knowledge](spec/04-types.md#array-component-knowledge).
 
-类型来源及数组组件先形成可用约束闭包，再结束 family 选择；例如 aget
-不能先默认 int 再因为 float[] 来源出现而返回上游重跑。域之间的依赖由
-P4 内部的有限事件和工作队列实现，不依赖 P5/P7 的表达尝试。
+Type origins and array components first form a usable constraint closure, and family
+selection ends afterwards; aget, for example, cannot default to int first and then
+return upstream for a rerun because a float[] origin appeared. Dependencies between
+domains are realised by bounded events and work queues inside P4 and do not depend on
+P5/P7 expression attempts.
 
-求解索引包含 ValueId 到操作使用、Phi 使用与相关约束的反向关系。只有
-事实变化才通知受影响使用，不每轮重新解码指令、重读整个声明目录或扫描
-所有无关操作。已交付的原始签名直接成为约束；新增输入内关系查询保留
-原始分类错误、覆盖和 Unknown，不以空候选集合掩盖读取失败。
+The solving index includes reverse relations from ValueId to operation uses, Phi uses and
+related constraints. Only fact changes notify affected uses; each round does not
+re-decode instructions, re-read the whole declaration directory or scan all unrelated
+operations. Delivered original signatures become constraints directly; a newly added
+in-input relation query keeps its original classified errors, coverage and Unknown and
+does not mask read failures with an empty candidate set.
 
-源类型事实与用于存储/显示的共同表示分开。已知 source descriptor 不能
-因为合流选择 Object 就被改写为 Object，也不能声称未知层次已证明 subtype。
-只有原始无效果解释或已建立的安全转换才能生成对应 UseView/PhiView；
-未知静态绑定可以伴随原始调用显示，不能靠新 runtime cast 解决。
-纯数值 Phi 转移只复制同宽 word/wide 编码；没有数值解释需求时，Runtime 的
-数值候选集合明确表示共同 bits 存储，incoming 保留 CopyBits/LiteralBits。
-P5 消费该已选存储，不另选 int/float 或 long/double。混合引用与数值的候选
-仍须建立相容表示；普通数值读取也保留自己的解释要求。
+Source-type facts stay separate from the common representation used for storage and
+display. A known source descriptor must not be rewritten to Object merely because a join
+chose Object, and an unknown hierarchy must not be claimed as a proven subtype.
+Only original effect-free interpretations or established safe conversions may generate
+the corresponding UseView/PhiView; unknown static binding may accompany the original
+call for display and must not be solved with a new runtime cast.
+A pure numeric Phi transfer copies only same-width word/wide encodings; when no numeric
+interpretation is required, Runtime's numeric candidate set explicitly denotes common
+bits storage, and incomings retain CopyBits/LiteralBits.
+P5 consumes that already selected storage and does not choose int/float or long/double
+again. Mixed reference and numeric candidates still must establish a compatible
+representation; an ordinary numeric read also keeps its own interpretation requirement.
 
-所有域的变化方向、种子和传播关系在 P4 内部固定。状态空间来自当前方法
-和实际查询到的输入事实，有限性不靠默认配额或求解超时证明。表示完成后
-一次交付结果，P5 不重新选 family，P7 不以生成 Java 是否成功回传类型。
+The change direction, seeds and propagation relations of every domain are fixed inside
+P4. The state space comes from the current method and the input facts actually queried,
+and finiteness is not proven by a default quota or solver timeout. Results are delivered
+once after representation completes: P5 does not re-select a family, and P7 does not feed
+back whether Java generation succeeded.
 
-### 5.5 P5：按边 Out-of-SSA 与存储传递计划
+### 5.5 P5: per-edge out-of-SSA and storage transfer plans
 
-当前封闭接口、计划覆盖及局部缺口见 [P5 产品契约](spec/05-variables.md)。
+The active closed interface, plan coverage and local gaps are in
+[the P5 product contract](spec/05-variables.md).
 
-选定算法：类型明确、按边执行的 SSA 消解（Out-of-SSA），使用复制依赖
-索引和就绪队列顺序化并行复制，使用临时存储打破环，使用异常快照落实
-必要的 handler 值传递。先建立独立存储，再由 P5 按原始 Move/复制关系进行
-受约束的存储复用（coalescing）。复用必须满足异常感知的活跃性、干涉和
-表示兼容条件；不能依赖 P6 的语法候选或改变原始提交与复制位置。
+Chosen algorithm: type-explicit, per-edge SSA elimination (out-of-SSA), ordering parallel
+copies through a copy-dependency index and a ready queue, breaking cycles with temporary
+storage, and realising required handler value transfer through exception snapshots.
+Independent storage is established first, after which P5 performs constrained storage
+reuse (coalescing) over original Move/copy relations. Reuse must satisfy
+exception-aware liveness, interference and representation compatibility conditions; it
+cannot depend on P6's syntax candidates or change original commit and copy positions.
 
-输入：TypedMethod 的定义/使用关系、ValueFacts、UseViews、PhiViews，以及
-位置相关初始化事实。P5 信任已有来源、宽度、类型和适配保证，不重建 SSA，
-不重新推导类型或解码原始指令。
+Input: definition/use relations of TypedMethod, ValueFacts, UseViews, PhiViews and
+position-related initialization facts. P5 trusts existing origin, width, type and
+adaptation guarantees, does not rebuild SSA and does not re-derive types or decode
+original instructions.
 
-#### 5.5.1 三项相关工作，一个产品
+#### 5.5.1 Three related jobs, one product
 
 ```text
 P4 TypedMethod
        │
        ▼
-值到存储映射：放在哪里？
+value-to-storage mapping: where is it kept?
        │
        ▼
-Phi incoming 到传递要求：沿选中路径传递什么？
+Phi incoming to transfer requirements: what is transferred along the selected path?
        │
-       ├─ 正常边 → 复制依赖调度 → 必要临时变量破环
+       ├─ normal edge → copy-dependency scheduling → required temporaries break cycles
        │
-       └─ 异常边 → 抛出前保存 → handler 入口接收
+       └─ exceptional edge → save before the throw → receive at the handler entry
        │
        ▼
-交付存储与传递计划
+deliver the storage and transfer plan
        │
        ▼
 StorageMethod
 ```
 
-三项工作共同完成“将类型明确的 SSA 值流落实为存储访问和传递计划”。
-P5 生成计划，不执行方法，也不直接输出 Java 文本。P6/P7 消费计划，不能
-重新求解复制依赖、Phi 来源或类型适配。
+The three jobs together turn a type-explicit SSA value flow into storage accesses and a
+transfer plan. P5 produces a plan, does not execute the method and does not emit Java
+text directly. P6/P7 consume the plan and cannot re-solve copy dependencies, Phi origins
+or type adaptations.
 
-#### 5.5.2 存储映射与物化
+#### 5.5.2 Storage mapping and materialization
 
-StorageBinding 使用互斥状态表达参数、普通局部存储、纯字面视图及初始化
-相关存储：显式未初始化引用，或有依据的自然合并延迟物化。ValueId 与
-LocalId 通过明确映射关联，编号不要求相等。
+StorageBinding uses mutually exclusive states to express parameters, ordinary local
+storage, pure literal views and initialization-related storage: an explicitly
+uninitialized reference, or an evidenced natural merge deferred to materialization.
+ValueId and LocalId are related by an explicit mapping, and their numbers need not be
+equal.
 
-参数直接绑定原始参数；需要物化的普通定义和 Phi 结果先获得独立存储，再按复用准入条件选择共同承载。
-纯字面值沿 P4 已确定的使用视图表达，不为每个 ValueId 强制创建变量。
-调用、字段/数组读取、分配等有执行效果的生产操作不能因结果未使用而
-删除，也不能被转换为多处重新执行的表达式。
+Parameters bind their original parameters directly; ordinary definitions and Phi results
+that need materialization first obtain independent storage and then choose a common
+carrier under the reuse admission conditions. Pure literals are expressed through the use
+views already determined by P4, and no variable is forced into existence for every
+ValueId.
+A producing operation with execution effects, such as a call, a field/array read or an
+allocation, cannot be deleted because its result is unused, nor converted into an
+expression executed again at several places.
 
-未初始化对象消费 P4 的位置相关状态和证据，内部保留分配位置产生的
-引用承载、原始别名复制和提交关系。内部未初始化状态不表示最终正文必须
-打印 uninit 或 allocate-instance；执行和存储对应成立的普通对象创建支持
-自然合并物化，P7 默认表达为 new T(...)。确需保留独立位置或状态时支持
-显式承载，不把它当作已经构造完成的普通 Java 对象变量，也不拒绝整个方法。
+An uninitialized object consumes P4's position-related states and evidence, and retains
+internally the reference carrier produced by the allocation position, original alias
+copies and commit relations. The internal uninitialized state does not mean the final
+body must print uninit or allocate-instance; ordinary object creation whose execution and
+storage correspond supports natural merge materialization and is expressed by default as
+`new T(...)` in P7. When an independent position or state genuinely must be kept, an
+explicit carrier is supported: it is neither treated as an already constructed ordinary
+Java object variable nor a reason to reject the whole method.
 
-P5 MUST 保留分配结果在分配正常完成时的提交、初始化前的别名和失败路径
-可观察的原始状态。P5 MUST NOT 给未初始化引用分配默认 null、在异常路径
-物化正常初始化结果，或把分配失败与构造器失败合成同一种存储状态。
-普通引用使用和快照不得假设未初始化承载已完成初始化；相关状态与传递
-依照 P4 的使用事实交付，不在 P5 重新推导初始化关系。
+P5 MUST retain the allocation result's commit on normal allocation completion, pre-
+initialization aliases and the original state observable on failure paths. P5 MUST NOT
+assign a default null to an uninitialized reference, materialize a normal initialization
+result on an exceptional path, or merge allocation failure and constructor failure into
+one storage state.
+Ordinary reference uses and snapshots must not assume an uninitialized carrier has
+completed initialization; the corresponding states and transfers follow P4's use facts,
+and P5 does not re-derive initialization relations.
 
-P5 不确定最终变量名或源码词法作用域。复用候选来自原始传递关系，而不是
-变量名或调试名称；相同类型和相连的 Phi 不代表值相等。原始状态转移上的
-正常提交与异常分支分别参与活跃性和干涉分析。复用不移动指令、定义、
-快照或边复制；复制调度只省略复用后仍满足原有条件的 Identity 自复制。
-未证明可复用的存储继续独立，局部缺口仍保留。该选择不保证最少变量、
-最少复制或最优性能，不增加跨阶段反馈或独立运行时验证。
+P5 does not fix final variable names or source lexical scope. Reuse candidates come from
+original transfer relations, not from variable or debug names; equal types and connected
+Phis do not mean equal values. Normal commits and exceptional branches on original state
+transitions participate separately in liveness and interference analysis. Reuse moves no
+instruction, definition, snapshot or edge copy; copy scheduling omits only Identity
+self-copies that still satisfy their original conditions after reuse.
+Storage not proven reusable stays independent, and local gaps are still retained. This
+choice does not guarantee the fewest variables, the fewest copies or optimal performance,
+and it adds no cross-stage feedback or independent runtime verification.
 
-#### 5.5.3 按原始边落实 Phi
+#### 5.5.3 Realizing Phis per original edge
 
-P5 从 P4 的 PhiViews 建立每条 incoming 的目标、来源和已确定适配：
+P5 builds the destination, source and already determined adaptation of each incoming from
+P4's PhiViews:
 
 ```text
-P4：x3 = Phi(edge A:x1, edge B:x2)，共同表示 int
+P4: x3 = Phi(edge A:x1, edge B:x2), common representation int
                   │
                   ▼
-P5：x1 → local1，x2 → local2，x3 → localJoin
-    edge A：localJoin ← local1
-    edge B：localJoin ← local2
+P5: x1 → local1, x2 → local2, x3 → localJoin
+    edge A: localJoin ← local1
+    edge B: localJoin ← local2
 ```
 
-正常复制只在对应边被选中之后执行。两条边具有相同目标也不能按目标
-合并；计划保留原始转移身份与角色，不放到来源块的统一末尾或目标块的
-无条件入口。P5 不修改原始 CFG；具体结构表达由 P6/P7 消费计划完成。
+A normal copy executes only after the corresponding edge is selected. Two edges with the
+same destination are not merged by destination; the plan retains original transfer
+identities and roles and does not place work at a uniform end of the source block or an
+unconditional entry of the target block. P5 does not modify the original CFG; concrete
+structural expression is completed by P6/P7 consuming the plan.
 
-没有 Phi 的跨块使用直接访问其已有存储，不添加伪入口 Phi 或复制。
-P5 MUST 接受 Pruned SSA 的跨块支配定义，不能要求来源必须定义在当前块。
-源值可用性来自 P3/P4；P5 负责建立对应存储的物化与使用保证。
+A cross-block use without a Phi accesses its existing storage directly and adds no
+pseudo-entry Phi or copy.
+P5 MUST accept pruned SSA's cross-block dominating definitions and cannot require the
+source to be defined in the current block. Source availability comes from P3/P4; P5 is
+responsible for establishing the materialization and use guarantees of the corresponding
+storage.
 
-Phi 入口若关联 P3 的私有 StatePoint，P4 必须沿产品保留其原始转移和
-执行义务映射。P5 依该映射安排初次入口、正常提交后继或 handler 接收，
-不按 Phi 的数值 ID 或 PC 重新寻找块头。没有原始映射不能被当作空复制。
-私有状态位置在存储产品中表现为明确传递义务，不新增原始 CFG 或效果。
+If a Phi entry is associated with a P3 private StatePoint, P4 must retain its original
+transfer and execution-obligation mapping along the product. P5 schedules the initial
+entry, normal commit successor or handler receive from that mapping, rather than
+re-finding a block head from the Phi's numeric ID or PC. A missing original mapping
+cannot be treated as an empty copy.
+A private state position appears in the storage product as an explicit transfer
+obligation and adds no original CFG or effect.
 
-Phi 共同表示、字面视图和 incoming 适配均由 P4 生产。P5 不因类型暂不方便
-增加 cast、boxing 或 helper。适配不足保持具体结果，不能自己重新选类型。
+Phi common representations, literal views and incoming adaptations are all produced by
+P4. P5 does not add a cast, boxing or helper because a type is temporarily inconvenient.
+Insufficient adaptation keeps a concrete result, and P5 cannot re-select a type itself.
 
-#### 5.5.4 复制依赖调度与环处理
+#### 5.5.4 Copy dependency scheduling and cycles
 
-同一条边上的复制集合具有同时赋值语义：全部来源读取旧存储状态，再
-写入目标。“并行复制”指这个语义，不是多线程执行。
+The copy set on one edge has simultaneous-assignment semantics: all sources are read from
+the old storage state and then destinations are written. "Parallel copy" refers to that
+semantics, not to multithreaded execution.
 
-P5 在内部建立来源读取依赖索引，记录哪些目标旧值仍被未完成复制需要。
-就绪队列选择可以安全覆盖的目标；完成复制后更新其来源依赖计数和队列，
-不为每次选择反复扫描全部 pending copies。
+P5 builds a source-read dependency index internally, recording which destination old
+values are still needed by unfinished copies.
+A ready queue selects destinations that can be overwritten safely; after a copy completes,
+its source dependency counts and the queue are updated, and each selection does not rescan
+all pending copies.
 
 ```text
-同时复制：a ← b，b ← c
-顺序步骤：a = b；b = c
+simultaneous: a ← b, b ← c
+sequential steps: a = b; b = c
 
-同时复制：a ← b，b ← a
-顺序步骤：temp = a；a = b；b = temp
+simultaneous: a ← b, b ← a
+sequential steps: temp = a; a = b; b = temp
 ```
 
-没有就绪复制而仍有依赖时，保存一个需要的旧存储到同类型临时变量，
-将所有相应待执行读取重定向到该保存值，更新依赖后继续调度。
-P5 MUST 保留一源多用和复制环的旧值，不只替换其中一次读取。
-临时存储的类型来自已有类型事实，不引入新的类型求解。
+When no copy is ready but dependencies remain, one needed old storage is saved into a
+temporary variable of the same type, every pending read that needs it is redirected to the
+saved value, and scheduling continues after dependency updates.
+P5 MUST retain the old values of multi-use sources and copy cycles and must not replace
+only one of the reads. The temporary's type comes from existing type facts and introduces
+no new type solving.
 
-来源可以是 P4 已确定的纯字面视图或无可观察效果的适配。依赖索引 MUST
-覆盖适配实际读取的全部存储；字面来源没有存储读取依赖，但它的目标旧值
-仍可能被其他复制读取。重定向改变承载存储，不抹掉原始 ValueId/UseView
-关联，也不移动、重复原始有执行效果的生产操作。
+A source may be a pure literal view already determined by P4 or an adaptation with no
+observable effect. The dependency index MUST cover every storage the adaptation actually
+reads; a literal source has no storage-read dependency, but its destination old value may
+still be read by other copies. Redirection changes the carrier storage without erasing
+original ValueId/UseView associations and without moving or duplicating an original
+effect-producing operation.
 
-只有同存储且语义完全相同的 Identity 自复制可以省略。不能因为 LocalId
-相等就删除不同视图或适配。复制步骤数量、依赖更新、临时存储和独立检查
-都消耗请求资源，不能把调度内核的局部成本宣称为整个 P5 的线性或最优成本。
+Only an Identity self-copy over the same storage with exactly the same semantics may be
+omitted. Equal LocalIds are not grounds for deleting different views or adaptations. Copy
+step counts, dependency updates, temporaries and independent checks all consume request
+resources, so the scheduling kernel's local cost must not be claimed as linear or optimal
+cost for all of P5.
 
-#### 5.5.5 异常快照与 handler 入口
+#### 5.5.5 Exception snapshots and handler entries
 
-异常转移没有可直接插入赋值的普通边执行位置。P5 只为实际需要的异常
-合流和存储传递安排快照，不复制整个寄存器环境。
+An exceptional transfer has no ordinary edge execution position at which an assignment
+can simply be inserted. P5 schedules snapshots only for the exception joins and storage
+transfers actually needed, and does not copy the whole register environment.
 
 ```text
-抛出位置前：shadow(handler, phi) ← 本次 incoming 的旧值存储
+before the throw position: shadow(handler, phi) ← old-value storage of this incoming
                       │
                       ▼
-                 执行原始操作
+            execute the original operation
                    /       \
-              正常完成     抛出异常
+        normal completion   throws
                  │            │
-          使用正常结果        ▼
-                    handler 入口按原始事实绑定异常对象
+        use the normal result ▼
+                    handler entry binds the exception object per original facts
                               │
-                    handler Phi 存储 ← shadow
+                    handler Phi storage ← shadow
 ```
 
-快照紧邻对应抛出位置之前，来源和解释来自 TypedMethod。它只能读取已可用
-且已按计划物化的存储或纯字面视图，不能增加抛出、调用、锁或 heap 效果。
-P5 不通过任意转换使未初始化或不可用来源满足快照要求。
+The snapshot sits immediately before the corresponding throw position, and its sources and
+interpretation come from TypedMethod. It may read only storage that is already available
+and materialized by plan, or a pure literal view, and it must not add throws, calls, locks
+or heap effects.
+P5 does not make an uninitialized or unusable source satisfy snapshot requirements through
+an arbitrary conversion.
 
-每个需要接收的 handler/Phi 保留独立保存存储。各抛出位置保存其对应
-incoming；handler 读取实际导致该异常转移的保存值，而不是一份全局
-“最新寄存器表”。多 handler、嵌套 handler 和 throw 终结点遵循同一规则。
-异常对象若由原始 handler 入口绑定，则保留该定义顺序，不重复定义。
-异常快照不表示回滚已经发生的 heap 效果。
+Every handler/Phi that needs to receive keeps an independent saved storage. Each throw
+position saves its corresponding incoming; the handler reads the saved value that actually
+caused that exceptional transfer, not one global "latest register table". Multiple
+handlers, nested handlers and throw terminals follow the same rule.
+When the exception object is bound by the original handler entry, that definition order is
+retained and the object is not defined twice.
+An exception snapshot does not mean heap effects already performed are rolled back.
 
-入口复制、正常边复制和 before-throw 快照有不同执行位置，不能合成
-“统一块尾赋值”。默认初始化不能补救缺失定义；只有已有存储传递事实
-确立初始值不会被任何实际使用观察时，才可保留必要的合成存储初始化。
-它不是原始 DEX 定义，也不是为了 Java 可编译而增加的程序行为。
+Entry copies, normal-edge copies and before-throw snapshots have different execution
+positions and cannot be merged into "uniform end-of-block assignments". Default
+initialization cannot repair a missing definition; synthetic storage initialization may be
+retained only when existing storage-transfer facts establish that no actual use can observe
+the initial value.
+It is neither an original DEX definition nor added program behaviour for Java
+compilability.
 
-#### 5.5.6 输出和本阶段检查
+#### 5.5.6 Output and the stage's own checks
 
-StorageMethod 保留 TypedMethod，新增：
+StorageMethod retains TypedMethod and adds:
 
-- ValueId 到 StorageBinding 的映射、局部与临时存储；
-- 各使用位置的存储访问及 P4 视图关联；
-- 方法初次入口和各正常边的复制计划；
-- before-throw 快照和 handler 入口接收计划；
-- 显式未初始化引用承载、别名复制和有依据的自然合并物化计划；
-- 各初始化使用的位置相关状态及具体不可用原因。
+- the ValueId-to-StorageBinding mapping, locals and temporaries;
+- storage accesses at each use position and their P4 view associations;
+- copy plans of the initial method entry and of every normal edge;
+- before-throw snapshots and handler-entry receive plans;
+- explicit uninitialized reference carriers, alias copies and evidenced natural-merge materialization plans;
+- position-related states of each initialization use and concrete unavailability reasons.
 
-P5 测试覆盖全部必需存储与使用，核对顺序步骤等价于指定的同时
-赋值、临时存储先写后读，以及每条必要异常转移的快照与入口对应。
-检查也建立存储物化、复制解释和原始执行效果没有被移动或重复的保证。
-它不重新证明 SSA 构建或类型求解，不依赖 P6 的结构恢复才能完成计划。
+P5 tests cover every required storage and use, checking that sequential steps are
+equivalent to the specified simultaneous assignment, that temporaries are written before
+they are read, and that each required exceptional transfer's snapshot matches its handler
+entry.
+The checks also establish the guarantee that storage materialization, copy interpretation
+and original execution effects were neither moved nor duplicated.
+They do not re-prove SSA construction or type solving and do not depend on P6 structure
+recovery to complete the plan.
 
-P5 无法建立某项存储、复制或快照时，MUST 保留其原始位置、原因和受影响
-的传递/使用，继续交付独立可用计划；不能以默认值或跳过复制伪装该项成功。
-StorageMethod 的覆盖包括这些局部状态，不能因一个计划缺口撤销全部存储。
-所有索引、复制、分配和测试检查保留范围、算术与可失败分配保证。
+When P5 cannot establish some storage, copy or snapshot, it MUST retain that item's
+original position, cause and affected transfers/uses and keep delivering the independent
+usable plan; it must not disguise the item as successful with a default value or a skipped
+copy. StorageMethod's coverage includes these local states, and one plan gap must not
+cancel all storage.
+All indexes, copies, allocations and test checks keep range, arithmetic and fallible
+allocation guarantees.
 
-### 5.6 P6：自然区域优先，保留显式转移的 Java-like 控制计划
+### 5.6 P6: natural regions first, a Java-like control plan with explicit transfers preserved
 
-选定路线：支配/后支配与循环分析驱动的出口导向区域构建。优先形成正常
-结构化区域；无法自然表达的部分保留带标签和显式转移的 GraphRegion。
-它们属于同一个 PlannedMethod，不重新执行方法分析，也不生成 dispatcher。
+Chosen route: exit-directed region construction driven by dominance/post-dominance and
+loop analysis. Normal structured regions are formed first; parts that cannot be expressed
+naturally keep a GraphRegion with labels and explicit transfers.
+They belong to the same PlannedMethod, which neither re-executes method analysis nor
+generates a dispatcher.
 
-Java-like 伪码是认可的结果记法。goto 不是合法 Java 语法；P6/P7/P9 MUST
-明确其记法，不以 Java 合法性或自然结构完成度决定方法结果是否交付。
-结构恢复不足记录具体恢复诊断，不自动变成整方法 Debug 或 Malformed。
-已有输入损坏、内部不变量失败和资源终止仍保持各自分类。
+Java-like pseudo code is an accepted result notation. goto is not legal Java syntax; P6/P7/P9
+MUST state its notation explicitly and must not make method delivery depend on Java legality
+or how completely natural structure was recovered.
+Insufficient structure recovery records concrete recovery diagnostics and does not
+automatically become a whole-method Debug or Malformed result.
+Existing input damage, internal invariant failures and resource termination keep their own
+classifications.
 
-输入：StorageMethod 的执行图、操作/终结点、有类型的使用、存储、边复制、
-异常快照、handler 入口及初始化事实。P6 信任这些产品保证，不重新计算
-Phi、使用转换或复制依赖，不回读原始指令解释控制语义。
+Input: the execution graph, operations/terminals, typed uses, storage, edge copies,
+exception snapshots, handler entries and initialization facts of StorageMethod. P6 trusts
+these product guarantees and does not recompute Phis, use conversions or copy dependencies,
+nor re-read original instructions to interpret control semantics.
 
-#### 5.6.1 同一执行模型上的区域构建
+#### 5.6.1 Region construction on the same execution model
 
 ```text
 P5 StorageMethod
         │
         ▼
-建立图索引、正常结构关系、保护和锁约束
+build graph indexes, normal structural relations, protection and lock constraints
         │
         ▼
-原始块/转移作为基本区域，全部已知执行内容可保留
+original blocks/transfers as elementary regions; all known execution content is kept
         │
         ▼
-出口导向组合局部区域
- ├─ Sequence / If / Loop / 原始 Switch / LabelledBlock
- ├─ 可以保持作用范围的 Try / Synchronized
- └─ 无法安全组合的部分保留 GraphRegion + 明确标签/转移
+compose local regions in exit-directed order
+ ├─ Sequence / If / Loop / original Switch / LabelledBlock
+ ├─ Try / Synchronized that can keep their scope
+ └─ parts that cannot be composed safely keep GraphRegion + explicit labels/transfers
         │
         ▼
-交付区域、转移、复制、异常和锁的位置映射
+deliver position mappings of regions, transfers, copies, exceptions and locks
         │
         ▼
-PlannedMethod → P7 方法表达 → P9 文本/JSON
+PlannedMethod → P7 method expressions → P9 text/JSON
 ```
 
-P6 内部计算正常图的支配/后支配关系、SCC 和自然循环及其嵌套。支配树
-采用 Lengauer–Tarjan 路线，SCC 使用显式栈；正常结构与异常/锁状态分析
-分开，不复用 P3 私有异常提交图的支配结论。
-原始块通过唯一 BlockPlan 保留入口与顺序覆盖；monitor、保护边界及终结点
-可以使用块内段定位。段间 WithinBlock 只表达既有顺序，不新增 DEX 边、
-操作、效果或 SSA 值；原始 EdgeId 仍到达原始目标块入口。
+P6 computes dominance/post-dominance relations of the normal graph, SCCs and natural loops
+with their nesting internally. The dominator tree uses the Lengauer–Tarjan route and SCC
+analysis uses an explicit stack; normal structure and exception/lock state analysis stay
+separate and do not reuse dominance conclusions from P3's private exceptional commit graph.
+Original blocks retain entry and order coverage through a unique BlockPlan; monitors,
+protection boundaries and terminals may use intra-block positions. A WithinBlock position
+between segments expresses only existing order and adds no DEX edge, operation, effect or
+SSA value; the original EdgeId still reaches the original target block entry.
 
-后支配关系提供后续位置候选，不单独证明一个区域可以组合。P6 检查
-区域外部入口、出口、循环关系和保护约束，不把 SCC 直接当成 while。
-不能到达所选退出的无限路径保留原始语义，不为计算后支配添加运行时
-break 或 return。
+Post-dominance supplies later-position candidates and does not on its own prove that a
+region can be composed. P6 checks
+that region external entries, exits, loop relations and protection constraints hold, and
+does not treat an SCC directly as a while.
+Infinite paths that cannot reach the selected exit keep their original semantics, and no
+runtime break or return is added just to compute post-dominance.
 
-RegionContext 记录当前入口、后续位置、嵌套循环、continue/break 目标和
-异常/锁约束。出口归属明确后构建子区域，再组合外层区域。采用显式栈与
-有限工作队列，不依赖 host recursion 或无界候选搜索。
+RegionContext records the current entry, later positions, nesting loops, continue/break
+targets and exception/lock constraints. Child regions are built after exit ownership is
+clear, and outer regions are composed afterwards. An explicit stack and a bounded work
+queue are used, without host recursion or unbounded candidate search.
 
-分支、循环和 switch 可以嵌套，不限定整个方法必须符合一种固定模板。
-公共后续内容有唯一结构归属，不重复吞进各分支。普通区域构建失败只
-停止该候选组合，保留已知块和转移，不通过 visited 跳过内容。
+Branches, loops and switches may nest, and the whole method is not required to match one
+fixed template. Common continuation content has a unique structural owner and is not
+repeated inside every branch. A failed ordinary region construction stops only that
+candidate composition and keeps the known blocks and transfers; content is not skipped
+through a visited set.
 
-#### 5.6.2 操作、边和结构转移的对应
+#### 5.6.2 Correspondence of operations, edges and structural transfers
 
-RegionPlan 包含 Block、Sequence、If、Loop、原始 Switch、LabelledBlock、
-Try、Synchronized 与 GraphRegion。每个原始可达块和操作保留唯一执行
-归属；边通过 TransferPlan 关联原始 EdgeId、P5 CopyPlan、角色与目标。
+RegionPlan contains Block, Sequence, If, Loop, original Switch, LabelledBlock, Try,
+Synchronized and GraphRegion. Every original reachable block and operation keeps a unique
+execution owner; edges associate their original EdgeId, P5 CopyPlan, role and target
+through TransferPlan.
 
-正常转移可以表达为顺序继续、分支臂、case/default、break、continue、
-return 或 throw。无法用这些结构表达的已知转移使用显式 goto，不是一个
-目标未确定的占位符。条件与 selector 来自已有使用产品，不重新求值。
+A normal transfer can be expressed as sequential continuation, a branch arm, case/default,
+break, continue, return or throw. A known transfer that none of these structures can
+express uses an explicit goto, not a placeholder with an undetermined target. Conditions
+and selectors come from existing use products and are not re-evaluated.
 
-正常边 MUST 先选定原始分支，再执行该边复制，最后完成目标转移。
-label/goto 同样执行 P5 已确定的复制，不能通过一个裸跳转丢掉合流赋值。
-不同边到达相同目标仍分别保留原始身份与复制关系。
+A normal edge MUST first select the original branch, then execute that edge's copies, and
+finally complete the target transfer.
+A label/goto likewise executes the copies already determined by P5; a bare jump must not
+discard a join assignment. Different edges that reach the same target still keep their
+original identities and copy relations.
 
 ```text
-原始边 E：B1 → B3，复制 C
+original edge E: B1 → B3, copy C
     ↓
-B1：执行原始操作 → 执行 C → goto B3
+B1: execute original operations → execute C → goto B3
 ```
 
-GraphRegion 保留完整的块内容、有序条件转移和明确出口。P6 在需要的
-共同范围内保留显式图表示，不强行向已结构化分支内部跳入。
-区域组合必须建立入口和出口对应；若组合不能成立，保留或展开为已有
-图区域，而不是复制原始有执行效果的操作来凑自然结构。
+A GraphRegion retains the complete block contents, ordered conditional transfers and
+explicit exits. P6 retains explicit graph representation within the required common
+scope and does not force a jump into already structured branch interiors.
+Region composition must establish entry and exit correspondence; when composition cannot
+hold, the plan keeps or expands to an existing graph region instead of duplicating original
+effect-producing operations to fake natural structure.
 
-P6 不新增 state 变量或合成 while/switch 分派，不用 helper 隐藏跳转。
-原始 DEX 的 switch，包括混淆器生成的平坦化 switch，仍正常恢复，不能
-将“不生成 dispatcher”解释为删除原始分派行为。
+P6 adds no state variables or synthesised while/switch dispatch and hides no jump behind a
+helper. A switch from the original DEX, including a flattened switch produced by an
+obfuscator, is still recovered normally; "no generated dispatcher" must not be read as
+deleting original dispatch behaviour.
 
-#### 5.6.3 循环表达：while 与 do-while
+#### 5.6.3 Loop expression: while and do-while
 
-自然循环只选择 while(condition)、do-while 或 while(true) 加原位置退出
-判断。P6/P7 MUST NOT 恢复传统 for、增强 for 或 for-each，也不建立专用
-For/ForEach 区域。
+A natural loop chooses only while(condition), do-while or while(true) with exits judged at
+their original positions. P6/P7 MUST NOT recover the traditional for, the enhanced for or
+for-each, and create no dedicated For/ForEach region.
 
-入口条件适合表达为 while，尾部条件适合表达为 do-while；只有求值次数、
-原始操作和边复制位置均可保持时才能采用。无法安全提升条件的已建立
-循环使用 while(true)，在原位置判断，不把尾部条件提前到第一次入口。
+A head condition suits while and a tail condition suits do-while; the form may be used only
+when the evaluation count, original operations and edge-copy positions can all be
+preserved. An established loop whose condition cannot be hoisted safely uses while(true)
+and judges at the original position instead of moving the tail condition to the first
+entry.
 
-for 家族不恢复只改变表达，不删除原始初始化、更新、迭代器调用和数组
-访问。continue 与回边仍执行对应更新、条件求值和边复制，do-while 的
-continue 必须到达正确尾部判断。条件退出的正常后续绑定该原始边的实际
-目标，不能用越过出口侧操作的公共后支配位置代替。必要的 labelled break/continue 保持
-准确结构目标；不可规约循环仍可完整保留为 GraphRegion。
+The for family is not recovered, which changes only expression and deletes no original
+initialization, update, iterator call or array access. continue and the back edge still
+execute the corresponding update, condition evaluation and edge copies, and a do-while
+continue must reach the correct tail test. A condition exit's normal continuation binds
+that original edge's actual target and must not be replaced by a common post-dominating
+position past the exit-side operations. A required labelled break/continue keeps its exact
+structural target; an irreducible loop can still be retained completely as a GraphRegion.
 
-#### 5.6.4 异常、锁与显式跳转的记法
+#### 5.6.4 Notation for exceptions, locks and explicit jumps
 
-自然 try/catch 和 synchronized 只有在每个原始抛出位置、handler 次序、
-锁获得/释放及异常清理能保持时才采用。catch-all 不自动成为 finally，
-重复清理也不因源码外观相似就合并。
+Natural try/catch and synchronized are used only when every original throw position, handler
+order, lock acquire/release and exception cleanup can be preserved. A catch-all does not
+automatically become finally, and duplicated cleanup is not merged because the source looks
+similar.
 
-若某保护或锁范围不能自然组合，P6 保留受影响范围的显式图、每个抛出
-位置的有序 HandlerChain、异常提交规则、P5 快照/入口及原始 monitor
-操作。P7 消费这些事实生成明确的 Java-like 执行记法，不猜 Java 作用域。
+If a protection or lock scope cannot be composed naturally, P6 retains the explicit graph
+of the affected scope, each throw position's ordered HandlerChain, exception commit rules,
+P5 snapshots/entries and the original monitor operations. P7 consumes these facts to
+generate explicit Java-like execution notation and does not guess Java scopes.
 
-显式 goto 的语义是完成相应边传递后跳到标签；它本身不额外执行 finally、
-释放锁、回滚 heap 或建立已初始化对象。若自然结构会隐式触发这些行为，
-跨范围转移必须已证明对应，否则将受影响共同范围保留为显式图表示。
+An explicit goto means jumping to the label after completing the corresponding edge's
+transfer; on its own it executes no finally, releases no lock, rolls back no heap and
+creates no initialized object. If natural structure would trigger those behaviours
+implicitly, a cross-scope transfer must have been proven equivalent; otherwise the affected
+common scope is retained as explicit graph representation.
 
-不能自然表达的保护关系 MUST 作为方法表达的一部分明确展示，不仅在
-可隐藏的诊断中提及。伪码以具体操作位置、原始优先级和 handler 标签
-描述捕获关系，明确异常对象的入口绑定，不将它伪装成普通 goto。
-显式 monitor-enter/exit 是原始同步操作的记法，不是新增运行时 helper。
+A protection relation that cannot be expressed naturally MUST be shown explicitly as part
+of the method expression, not only mentioned in a diagnostic that may be hidden. Pseudo
+code describes catch relations with concrete operation positions, original priority and
+handler labels, states the exception object's entry binding explicitly, and does not
+disguise it as an ordinary goto.
+Explicit monitor-enter/exit is notation for the original synchronization operation, not an
+added runtime helper.
 
-P6 无法证明某锁结构时不新增 synchronized，也不删除原始 enter/exit。
-异常值来源和快照来自 P5，P6 不重新安排保存语义；每个快照仍在对应
-操作之前。相关不确定性保持具体，不转换为虚假的自然保护范围。
+When P6 cannot prove a lock structure, it adds no synchronized and deletes no original
+enter/exit.
+Exception value sources and snapshots come from P5, and P6 does not reschedule save
+semantics; each snapshot stays before its corresponding operation. The associated
+uncertainty stays concrete and is not converted into a false natural protection scope.
 
-#### 5.6.5 完整交付、诊断与实现范围
+#### 5.6.5 Complete delivery, diagnostics and implementation scope
 
-PlannedMethod 保留 StorageMethod，并交付区域、正常转移、抛出位置的
-保护关系、锁表达方案及其局部状态和具体诊断。P6 MUST 保留独立可规划部分，
-将缺失存储、转移或保护事实的影响限制在实际依赖范围；不能把未知控制流
-当成普通 GraphRegion 来冒充已恢复计划。P7 直接落实计划，不重新判断
-分支汇合或识别循环，不在 printer 中补 goto 目标或 handler 关系。
+PlannedMethod retains StorageMethod and delivers regions, normal transfers, protection
+relations of throw positions, lock expression plans, and their local states and concrete
+diagnostics. P6 MUST retain independently plannable parts and limit the impact of missing
+storage, transfer or protection facts to the actual dependents; unknown control flow must
+not be presented as an ordinary GraphRegion that pretends to be a recovered plan. P7
+realises the plan directly, does not re-judge branch joins or identify loops, and does not
+supply goto targets or handler relations in the printer.
 
-P6 测试 MUST 覆盖原始操作和转移，确保执行次数、顺序、条件/selector、
-边复制、异常快照、handler 优先级及锁行为没有因结构组合改变。
-有序 handler 链和明确跳转能保留控制表达，但它们本身不是整方法正确性
-证明；类型、存储和语义转换的保证仍由各自生产者建立。
+P6 tests MUST cover original operations and transfers, ensuring that execution counts,
+order, conditions/selectors, edge copies, exception snapshots, handler priority and lock
+behaviour did not change because of structural composition.
+Ordered handler chains and explicit jumps preserve control expression, but they are not by
+themselves a whole-method correctness proof; guarantees for types, storage and semantic
+conversion are still established by their own producers.
 
-“不完全自然结构化”和“执行事实缺失”是不同状态。前者交付包含显式
-转移的完整 Java-like 计划，不触发整方法 Debug；后者保留缺失范围与具体
-原因，不能用假目标、默认值或省略块构造完整计划。输入损坏、资源
-和 InternalInvariant 的处理遵循第 9 节，不因伪码输出许可被掩盖。
+"Incompletely natural structuring" and "missing execution facts" are different states. The
+former delivers a complete Java-like plan containing explicit transfers and does not trigger
+whole-method Debug; the latter retains the missing ranges and concrete causes, and must not
+build a complete plan from fake targets, default values or omitted blocks. Damage to the
+input, resources and InternalInvariant follow §9 and are not concealed by the licence to
+print pseudo code.
 
-本方案学习 JADX 正常模式的分层区域构建、嵌套上下文与出口归属，不
-复制其修改原始 CFG、模式重试或异常桩行为。结构恢复不要求与原源码
-外观一致，也不以 Java 可编译性作为完成条件。
+This plan learns from layered region construction, nested contexts and exit ownership in
+JADX's normal mode, without copying its rewriting of the original CFG, pattern retries or
+exception stubs. Structure recovery does not require the same appearance as the original
+source and does not make Java compilability a completion condition.
 
-以下定义区域计划的交付面以及 P7/P9 的目标消费记法。
+The following defines the delivery surface of region plans and the target consumption
+notation for P7/P9.
 
-#### 5.6.6 标签、区域入口与转移目标
+#### 5.6.6 Labels, region entries and transfer targets
 
-P6 为每个需要显式转移的入口建立方法内唯一的 LabelId。LabelId 绑定原始
-BlockId、块内入口种类及区域归属，不绑定源码行号、文本位置或块的遍历次序。
-原始跳转仍绑定原始块入口；段内 continuation 标签仅承接同一块的既有顺序。
-P7 将 LabelId 一次映射成方法内无歧义的显示名称，P9 只打印既有映射。
-原始成员名称保持不变；合成标签不承诺跨请求稳定。
+P6 creates a method-unique LabelId for every entry that needs an explicit transfer. A
+LabelId binds the original BlockId, the intra-block entry kind and the region owner, not a
+source line number, text position or block traversal order.
+An original jump still binds the original block entry; an intra-segment continuation label
+carries only existing order within the same block.
+P7 maps a LabelId once to an unambiguous method-local display name, and P9 prints only that
+existing mapping. Original member names stay unchanged; a synthetic label promises no
+stability across requests.
 
-标签位于对应块入口，目标块的原始操作和必要入口接收尚未执行。
-来源边的 CopyPlan 在跳转前执行，不能把来源相关的复制无条件放到目标标签。
-handler 标签保留异常入口种类；不能把异常边替换成普通 goto，也不能新增
-指向 handler 的普通边来模拟异常发生。
+A label sits at the corresponding block entry, where the target block's original operations
+and required entry receives have not yet executed.
+The source edge's CopyPlan executes before the jump, and source-specific copies cannot
+unconditionally move to the target label.
+A handler label keeps the exceptional entry kind; an exceptional edge must not be replaced
+by an ordinary goto, and no ordinary edge to the handler may be added to simulate an
+exception.
 
-| ControlTarget | 目标含义 | 转移之前的义务 |
+| ControlTarget | Target meaning | Obligations before the transfer |
 |---|---|---|
-| Next | 已确认的顺序后继 | 执行选中边的复制 |
-| Break(RegionId) | 已确认区域的后续位置 | 执行退出边复制；原始清理不能被跳过 |
-| Continue(LoopId) | 该循环的准确继续位置 | 保留更新、条件求值和回边复制 |
-| Goto(LabelId) | 明确的原始块入口 | 执行该边复制，不新增隐式清理 |
-| Return / Throw | 原始方法退出或抛出行为 | 保留既有使用解释、原始前置操作和异常关系 |
+| Next | confirmed sequential successor | execute the selected edge's copies |
+| Break(RegionId) | confirmed region continuation | execute exit-edge copies; original cleanup must not be skipped |
+| Continue(LoopId) | the loop's exact continuation position | preserve update, condition evaluation and back-edge copies |
+| Goto(LabelId) | explicit original block entry | execute that edge's copies, add no implicit cleanup |
+| Return / Throw | original method exit or throw behaviour | preserve existing use interpretations, original prior operations and exception relations |
 
-这些是概念状态，不是允许调用者任意构造的 Rust enum。P6 的生产者建立
-目标与原始转移的对应，P7 不从文本邻接或最近循环猜目标。
-Return/Throw 不需要虚构 normal EdgeId，关联其原始终结点身份即可。
+These are conceptual states, not a Rust enum that callers may construct freely. P6's producer
+establishes the correspondence between targets and original transfers, and P7 does not guess
+targets from text adjacency or the nearest loop.
+Return/Throw need no invented normal EdgeId; associating with the original terminal identity
+suffices.
 
-P6 的混合表示以区域入口闭合为条件：外部转移只能进入已经导出的区域入口，
-不能绕过 If 条件、进入一条自然分支的内部，也不能进入已经隐式加锁的体内。
-内部转移离开自然区域时，其目标和隐式保护/释放行为必须与原始边一致。
+P6's mixed representation is conditional on region-entry closure: an external transfer may
+enter only an already exported region entry, and cannot bypass an If condition, enter a
+natural branch interior or enter a body that already holds a lock implicitly. When an
+internal transfer leaves a natural region, its target and implicit protection/release
+behaviour must agree with the original edge.
 
-如果两项已候选结构之间存在无法承接的交叉跳转，P6 不增加新状态或复制块。
-它在最小可确认的共同拥有范围内停止这些结构组合，保留为 GraphRegion；
-不能确定更小的闭合范围时，整个方法可以是可读的标签图。展开已有候选树
-只改变计划节点，不复制、删除或重新分析原始操作。
+If an unbridgeable cross jump exists between two candidate structures, P6 adds no new state
+and duplicates no block. It stops composing those structures within the smallest confirmable
+common owning scope and keeps a GraphRegion; when no smaller closed scope can be determined,
+the whole method may be a readable label graph. Expanding an existing candidate tree changes
+plan nodes only and does not copy, delete or re-analyse original operations.
 
 ```text
-可以保持：Sequence [自然区域 A, GraphRegion G, 自然区域 C]
-条件：G 的所有入口和出口与 A/C 的实际结构转移对应。
+allowed: Sequence [natural region A, GraphRegion G, natural region C]
+condition: every entry and exit of G corresponds to actual structural transfers of A/C.
 
-不可以：goto 直接进入自然 If 的 then 内部而跳过条件。
-处理：保留包含交叉跳转的共同范围为显式图，条件和块都继续展示。
+not allowed: goto directly into the interior of a natural If's then, skipping the condition.
+handling: retain the common scope containing the cross jump as an explicit graph; the
+          condition and both blocks continue to be shown.
 ```
 
-GraphRegion 内保留显式入口转移、有序块及全部终结点。入口不由“打印的第一
-块”推断，布局不决定跳转含义。可以显示多条已知边，但不得因 source/target
-相同而丢掉分支角色或 P5 复制。仅有 P6 已建立的 Next 才能省去显示 goto。
+A GraphRegion retains explicit entry transfers, ordered blocks and all terminals. Its entry
+is not inferred from "the first printed block", and layout does not decide jump meaning.
+Several known edges may be shown, but branch roles or P5 copies must not be dropped because
+source/target coincide. Only a Next established by P6 can omit the printed goto.
 
-基本显式图提供全部可用操作和转移，区域组合只在对应条件建立后替换计划
-节点。一个候选不匹配不撤销其他可用表达，不重新启动方法分析。候选替换
-减少尚未组合的区域或待处理转移；所有遍历、分配和对应检查仍保留范围、
-算术和可失败分配保证，不为提高结构完成度进行无界搜索。
+The elementary explicit graph supplies all available operations and transfers, and region
+composition replaces plan nodes only after the corresponding conditions are established. One
+non-matching candidate does not revoke other usable expression and does not restart method
+analysis. Candidate replacement reduces not-yet-composed regions or pending transfers; all
+traversals, allocations and correspondence checks keep range, arithmetic and fallible
+allocation guarantees, and no unbounded search is performed to improve structural
+completeness.
 
-以下是已知多入口控制流的目标表达示意，不是可编译 Java 或实际输出快照：
+The following illustrates the target expression of known multi-entry control flow. It is not
+compilable Java and not an actual output snapshot:
 
 ```text
 void difficult(boolean enterAtB) {
@@ -1348,22 +1759,29 @@ B2:
 }
 ```
 
-示例省略没有要求的边复制；实际产品有 CopyPlan 时，P7 在各分支内先落实
-复制再跳转。repeat 调用与使用其结果的条件是不同操作，不重复执行调用。
-方法不是空桩或原始指令 dump，仍表达已有计算、调用与值流。
+The example omits edge copies that were not required; when the actual product has a
+CopyPlan, P7 realises the copies inside each branch before jumping. The repeat call and the
+condition that uses its result are different operations, and the call is not executed twice.
+The method is not an empty stub or a raw instruction dump and still expresses existing
+computation, calls and value flow.
 
-#### 5.6.7 不能自然包装的异常关系记法
+#### 5.6.7 Notation for exception relations that cannot be wrapped naturally
 
-显式保护记法采用方法内的 ThrowSiteId、HandlerChainId 和 handler 标签。
-P6 绑定这些身份与 P2 的原始异常位置、选择位置和有序链；P7 保留其关联。
-链为原始 descriptor 与目标的有序序列，不能按类型排序，不能因定义缺失
-删除 catch，也不能把 catch-all 改造成 finally。
+Explicit protection notation uses method-local ThrowSiteId, HandlerChainId and handler
+labels. P6 binds these identities to P2's original exception positions, selection positions
+and ordered chains; P7 retains the association.
+A chain is an ordered sequence of original descriptors and targets; it cannot be sorted by
+type, no catch may be deleted because of a missing definition, and a catch-all cannot be
+converted into finally.
 
-目标展示以 exception_map 声明具体 site 的链，在原始抛出操作处显示 site
-锚点。它是执行关系记法，不是普通 Java 注解、函数调用或运行时异常分派器。
-site 锚点只覆盖其关联的那次原始操作，不把后续 goto 或操作纳入同一保护。
-正常完成进入明确的正常转移；抛出时按原始顺序匹配链，不提交该操作的
-正常寄存器结果。未匹配项向外传播，不新增默认 handler。
+The target display declares a site's chain with exception_map and shows the site anchor at
+the original throw operation. It is execution-relation notation, not an ordinary Java
+annotation, function call or runtime exception dispatcher.
+A site anchor covers only the one original operation it is associated with and does not
+extend the same protection to later goto or other operations.
+Normal completion enters an explicit normal transfer; on a throw the chain is matched in
+original order and the operation's normal register result is not committed. An unmatched item
+propagates outward and adds no default handler.
 
 ```text
 exception_map {
@@ -1371,13 +1789,13 @@ exception_map {
 }
 
 B0:
-    shadowH0 = oldValue;          // P5 已交付的 before-throw 保存
+    shadowH0 = oldValue;          // before-throw save already delivered by P5
 site S0:
     result = target.compute(arg);
     goto B1;
 
 handler H0(exception e0):
-    recovered = shadowH0;         // P5 已交付的入口接收
+    recovered = shadowH0;         // handler-entry receive already delivered by P5
     recover(recovered);
     return;
 
@@ -1385,191 +1803,234 @@ handler H1(exception e1):
     throw e1;
 ```
 
-这段示意中的 Failure 与 compute 引用仅表示原始事实，不要求外部类定义。
-handler 的 exception 参数表达原始异常入口绑定，不构造新的异常对象。
-如果原始 handler 不读取异常对象，产品保留相应入口事实，不添加伪使用。
-recover 或 rethrow 若有自己的异常链，必须在自己的 site 显示；不能自动继承
-同一个 try 的兄弟 catches，也不能把表中链作为整个文本范围的默认保护。
+The Failure and compute references in this illustration stand for original facts only and
+require no external class definition.
+A handler's exception parameter expresses the original exception entry binding and does not
+construct a new exception object.
+If the original handler does not read the exception object, the product retains the
+corresponding entry fact and adds no fake use.
+When recover or rethrow has its own exception chain, that chain must be shown at its own
+site; it must not automatically inherit the sibling catches of the same try, and the chain in
+the table must not serve as default protection for the whole text range.
 
-site 锚点属于操作执行位置，快照在其之前，正常结果赋值只在成功后完成。
-一个表达如果包含多个真实抛出位置且保护链不同，P7 MUST 保持分开的执行
-表达，不合并成一个无法区分保护语义的大表达式。无异常链的抛出向外传播；
-monitor-exit 等特殊异常选择位置仍由产品保留，不从打印位置重新计算。
+A site anchor belongs to an operation execution position, the snapshot precedes it, and the
+normal result assignment completes only on success.
+When one expression contains several real throw positions with different protection chains,
+P7 MUST keep separate execution expressions instead of merging them into one large expression
+whose protection semantics cannot be distinguished. A throw without an exception chain
+propagates outward; special exception-selection positions such as monitor-exit are still
+retained by the product and are not recomputed from printed positions.
 
-自然 Try 与 exception_map 在同一 site 只能有一种捕获所有权，不能两者都
-执行捕获。P6 若不能证明混合范围的实际 handler 选择一致，就将该共同
-范围保留为显式保护图，避免文本中的 Java try 额外捕获 handler 或 goto。
-显式保护关系在默认文本与 JSON 的方法表达中保留，不依赖 verbose 诊断。
+A natural Try and an exception_map can each own only one kind of catch ownership at the same
+site; both must not execute catches. If P6 cannot prove that the actual handler selection
+agrees across a mixed scope, it retains that common scope as an explicit protection graph, so
+that a Java try in the text does not catch extra handlers or gotos.
+Explicit protection relations are retained in the method expression of the default text and
+JSON, and do not depend on verbose diagnostics.
 
-#### 5.6.8 锁范围的两种表达
+#### 5.6.8 Two expressions of lock scopes
 
-Synchronized 区域表示已经证明对应的原始加锁、释放和清理。P7 消费其
-映射，不再次寻找 canonical 模板。原始锁操作虽由自然语法承接，身份和
-执行对应仍在产品中保留。获取链接和每个 SyncExit 分别保留原始进入、
-释放、后续目标及释放前后的 P5 复制引用；锁范围不要求全体路径共用一个
-释放点。P7 MUST 按所选出口承接这些义务，不从语法位置重建链接或把
-释放后的路径专属复制、调用移入锁内，也不新增 dispatcher。
-锁引用稳定性消费既有 P4 身份和 P5 写入位置；静态 Root 或分配来源集合
-本身不证明同次动态捕获。
+A Synchronized region denotes original lock acquisition, release and cleanup that have been
+proven to correspond. P7 consumes its mapping and does not search for a canonical template
+again. Although the original lock operation is carried by natural syntax, its identity and
+execution correspondence are still retained in the product. The acquisition link and every
+SyncExit retain separately the original entry, release, subsequent target, and the P5 copy
+references before and after release; a lock scope does not require one shared release point
+for all paths. P7 MUST accept these obligations at the selected exits, and must not rebuild
+links from syntax positions, move path-specific post-release copies or calls into the locked
+body, or add a dispatcher.
+Lock reference stability consumes existing P4 identities and P5 write positions; a static Root
+or an allocation-source set alone does not prove the same dynamic acquisition.
 
-真实清理中的捕获、handler 接收、操作、分支和二次异常仍保留在原保护
-区域；自然同步只承接已经对应的 monitor 事件。无法在现有区域中保持
-出口和复制位置时，P6 保留完整显式计划及具体原因。实现契约见
-[锁范围与出口](spec/06-regions.md#monitor-capture-and-scope-proof)。
+Captures, handler receives, operations, branches and secondary exceptions inside real cleanup
+still stay in their original protection region; natural synchronization carries only monitor
+events that already correspond. When exits and copy positions cannot be preserved in existing
+regions, P6 retains the complete explicit plan and the concrete reasons. The implementation
+contract is in [lock scopes and exits](spec/06-regions.md#monitor-capture-and-scope-proof).
 
-若不能建立自然锁范围，使用如下显式伪码操作：
+When a natural lock scope cannot be established, use the following explicit pseudo-code
+operations:
 
 ```text
 monitor-enter lockValue;
-// 原始体内操作与转移
+// original body operations and transfers
 monitor-exit lockValue;
 ```
 
-monitor-enter/exit 是原始操作的展示记法，不是新增 helper。必要的抛出 site
-锚点和 exception_map 仍绑定这些操作。enter 成功才获得锁，enter 抛出
-不获得锁；释放和其异常规则消费已有执行产品，不从文本嵌套推测。
+monitor-enter/exit is display notation for original operations, not an added helper. Required
+throw site anchors and exception_map still bind these operations. Only a successful enter
+acquires the lock; an enter that throws acquires nothing. Release and its exception rules
+consume existing execution products and do not infer from textual nesting.
 
-显式 goto 只转移控制，不自动释放锁。原始释放若位于目标路径，必须仍能
-到达并执行；若在来源路径，必须先执行后跳转。某个锁操作不能同时被
-Synchronized 语法承接又作为显式操作执行。无法建立别名或范围证据时，
-保留具体不确定性和原始 lockValue，不虚构“锁已平衡”的结论。
+An explicit goto transfers control only and does not release a lock automatically. An original
+release on the target path must still be reachable and execute; one on the source path must
+execute before the jump. One lock operation cannot be carried by Synchronized syntax and also
+execute as an explicit operation. When alias or scope evidence cannot be established, retain
+the concrete uncertainty and the original lockValue instead of inventing a "lock is balanced"
+conclusion.
 
-#### 5.6.9 P6 到 P7 的最小交付面
+#### 5.6.9 Minimum delivery surface from P6 to P7
 
-PlannedMethod 的只读接口提供：
+PlannedMethod's read-only interface provides:
 
-| 产品事实 | P7 的消费方式 |
+| Product fact | How P7 consumes it |
 |---|---|
-| RegionArena / root | 构造同一份自然/显式控制树，不重新划分区域 |
-| Block 内容及操作身份 | 使用统一的操作降低逻辑，在已有顺序生成语句 |
-| 有类型的使用与 StorageBinding | 落实值表达和物化，不重求来源或类型 |
-| TransferPlan | 执行 P5 复制后使用已决定的 Next/Break/Continue/Goto |
-| LabelPlan | 将已绑定目标转换为可显示名称，不从源码布局补目标 |
-| ProtectionPlan | 生成自然 Try 或 site/exception_map 记法，保留有序链 |
-| MonitorPlan | 生成自然 Synchronized 或显式 monitor 操作，不补释放 |
-| 原始来源与恢复诊断 | 关联方法、操作、site、边和相关区域，保留具体问题 |
+| RegionArena / root | build the same natural/explicit control tree without re-partitioning regions |
+| Block contents and operation identities | use the unified operation-lowering logic to generate statements at existing order |
+| typed uses and StorageBinding | realise value expressions and materialization without re-solving origins or types |
+| TransferPlan | execute P5 copies and then use the already decided Next/Break/Continue/Goto |
+| LabelPlan | convert an already bound target into a displayable name; no target is supplied from source layout |
+| ProtectionPlan | generate natural Try or site/exception_map notation and retain ordered chains |
+| MonitorPlan | generate natural Synchronized or explicit monitor operations; no release is added |
+| original origins and recovery diagnostics | associate method, operation, site, edge and related region and retain concrete problems |
 
-构建中的 RegionContext、支配树工作表、候选搜索和可变 node ownership 不
-交给 P7。P6 交付闭合计划后才能释放这些临时数据，不把半棵树交给 P7 补齐。
+Construction-only RegionContext, dominator-tree work tables, candidate search and mutable node
+ownership are not handed to P7. P6 may release that scratch only after delivering a closed
+plan and must not hand P7 a half tree to complete.
 
-P6 的输出测试验证每个可达原始块的执行所有权、每条正常边的实际到达目标、
-每个 site 的保护链和每次锁操作的表达归属。自然区域可以多次动态执行，
-唯一所有权只表示没有两个重复的静态表达位置，不能当作循环只执行一次。
-检查必须包含入口转移、边复制、提前退出和不终止路径，不能只数节点。
+P6's output tests verify execution ownership of every reachable original block, the actual
+reached target of every normal edge, the protection chain of every site and the expression
+owner of every lock operation. A natural region may execute many times dynamically; unique
+ownership means only that no two duplicate static expression positions exist and must not be
+read as the loop executing once.
+The checks must include entry transfers, edge copies, early exits and non-terminating paths,
+not merely node counts.
 
-#### 5.6.10 P9 展示与来源位置
+#### 5.6.10 P9 presentation and source positions
 
-P7 的表达节点保留原始 MethodKey、操作/终结点来源、EdgeId、site 以及
-handler 关联。P9 在打印这些已有节点时计算最终 UTF-8 byte spans，不用
-原始 DEX PC 充当源码位置，也不通过重新解析伪码恢复关联。
+P7 expression nodes retain the original MethodKey, operation/terminal origins, EdgeIds, sites
+and handler associations. P9 computes final UTF-8 byte spans while printing these existing
+nodes, does not use original DEX PCs as source positions, and does not recover associations by
+re-parsing pseudo code.
 
-goto 的显示目标来自 LabelPlan；其来源关联原始转移与终结点，之前的复制
-关联 P5 CopyPlan 和相应 incoming。标签声明关联对应块入口。loop、if 或
-synchronized 语法承接多个原始位置时，P7 保留多来源映射，不虚构单一 PC。
+A goto's display target comes from LabelPlan; its origin associates the original transfer and
+terminal, and the preceding copies associate the P5 CopyPlan and the corresponding incoming. A
+label declaration associates the corresponding block entry. When loop, if or synchronized
+syntax carries several original positions, P7 retains multiple origin mappings and invents no
+single PC.
 
-exception_map 的表项和 site 锚点都关联原始抛出位置，handler 标签关联
-原始入口，monitor 语句关联原始锁操作。合成标签、保存存储和复制不被
-宣称为原始 DEX 指令。来源映射不是执行覆盖或语义正确性的替代证明。
+Both exception_map entries and site anchors associate original throw positions, handler labels
+associate original entries, and monitor statements associate original lock operations.
+Synthetic labels, saved storage and copies are not claimed as original DEX instructions. Origin
+mapping is not a substitute proof of execution coverage or semantic correctness.
 
-自然结构和显式图都渲染同一份 MethodResult，文本/JSON 不选择不同能力。
-默认输出明确伪码记法及必要执行关系，不把整个方法塞进注释，不生成
-Method not decompiled 异常桩，不自动略过复杂块或将其当成功空方法。
+Natural structure and explicit graphs render the same MethodResult, and text/JSON do not select
+different capabilities. Default output states the pseudo-code notation and the required
+execution relations explicitly, does not stuff the whole method into comments, generates no
+"Method not decompiled" exception stub, and does not silently skip complex blocks or treat them
+as a successful empty method.
 
-### 5.7 P7：MethodResult
+### 5.7 P7: MethodResult
 
-输入：PlannedMethod，通过正式接口消费成熟的操作、绑定、类型、存储、
-区域与必要上下文。确认无代码的成员沿独立声明路径消费 P0 声明及方法
-reader 的无代码事实，不伪造 DecodedMethod，也不进入 P2–P6。
-封闭产品、执行阶段与局部失败的具体接口见 [P7 产品契约](spec/07-java.md)。
+Input: PlannedMethod, whose mature operations, bindings, types, storage, regions and required
+context are consumed through formal interfaces. A member with confirmed absence of code
+consumes the P0 declaration and the method reader's no-code facts along the independent
+declaration path, fabricates no DecodedMethod and enters no P2–P6 stage.
+The concrete interfaces of the sealed product, execution phases and local failure are in
+[the P7 product contract](spec/07-java.md).
 
-#### 5.7.1 默认逐操作表达
+#### 5.7.1 Default per-operation expression
 
-P7 使用同一套操作、使用视图和复制降低逻辑处理自然区域与 GraphRegion。
-区别只在已交付的控制节点，不建立独立的 graph-method 反编译入口、寄存器
-解释器或 fallback SSA。每个操作在自己的静态归属位置降低一次，区域节点
-引用对应表达；不会先生成一套自然代码，失败后再重跑一套图代码。
+P7 lowers natural regions and GraphRegions with the same set of operations, use views and copy
+logic. The only difference is the delivered control nodes; no independent graph-method
+decompilation entry, register interpreter or fallback SSA is created. Each operation is lowered
+once at its own static owner position and the region node references the corresponding
+expression; the implementation does not generate one natural body first and rerun a graph body
+after failure.
 
-P7 默认沿既有执行计划逐操作生成语句，保留 P5 已安排的必要临时存储。
-调用、字段/数组读取、转换和计算的结果先在对应位置产生，再由后续语句
-使用；不能仅为缩短代码把多处操作折叠成嵌套表达式。
+By default P7 generates statements along the existing execution plan and retains the required
+temporaries already scheduled by P5. Results of calls, field/array reads, conversions and
+computations are produced at their own positions and used by later statements; operations are
+not folded into nested expressions merely to shorten the code.
 
 ```text
-已有执行操作：
+existing executed operations:
     x1 = callA()
     x2 = callB()
     x3 = Add(x1, x2)
     return x3
 
-默认表达示意：
+default expression sketch:
     int t1 = callA();
     int t2 = callB();
     int t3 = t1 + t2;
     return t3;
 ```
 
-示例不约束实际变量名。P4 已确定的纯字面视图可以直接进入使用表达，
-不要求给每个常量新建变量；没有被使用的结果也不能导致其原始效果消失。
-逐操作不等于逐条原始指令强制生成一行：P2 已绑定的 producer/result 和
-有明确证据的初始化/操作展开仍按自己的执行对应规则表达。普通分配与
-构造器调用的关联及执行对应成立时，默认合成 new T(...)，不为了保持
-指令行数输出低层初始化记法。内部保留原始依据，不要求正文重复打印它们。
+The example does not constrain actual variable names. Pure literal views already determined by
+P4 may enter a use expression directly, and no variable is required for every constant; an
+unused result also must not make its original effect disappear.
+Per-operation does not mean one forced line per original instruction: a P2-bound producer/result
+and initialization/operation expansion with explicit evidence are still expressed under their
+own execution-correspondence rules. When the association and execution correspondence between
+an ordinary allocation and a constructor call hold, `new T(...)` is synthesised by default
+instead of printing low-level initialization notation to keep instruction-line counts. Original
+evidence is retained internally and need not be reprinted in the body.
 
-表达式合并只允许具体的语义保持规则，不能采用“单次使用所以可以内联”
-这一条作为全部依据。每次合并 MUST 保持输入读取与结果提交顺序、执行
-次数、值解释、异常位置及 handler 选择、锁和初始化顺序，并保留 P5 的
-复制/快照和 P6 的转移承接。保护链不同的真实抛出位置不得被合并成无法
-表达各自异常关系的同一表达式。
+Expression composition is allowed only under concrete semantics-preserving rules; "used once,
+so it may be inlined" cannot be the whole basis. Every composition MUST preserve input-read and
+result-commit order, execution count, value interpretation, exception positions and handler
+selection, lock and initialization order, and must retain P5 copies/snapshots and P6 transfer
+handling. Real throw positions with different protection chains must not be merged into one
+expression that cannot express their separate exception relations.
 
-某个合并规则无法建立这些保证时，保留逐步表达，不重新分析方法、不改变
-类型、不减少原始效果，也不将该方法降为 Debug。规则只能改变 P7 的表达
-产品，不修改 P2–P6 的既有事实。P9 不能再内联、合并或重排这些表达。
+When a composition rule cannot establish these guarantees, step-by-step expression is retained
+without re-analysing the method, changing types, reducing original effects or downgrading the
+method to Debug. A rule may change only P7's expression product and must not modify existing
+P2–P6 facts. P9 cannot inline, merge or reorder these expressions again.
 
 ```text
 PlannedMethod
     ↓
-固定标签显示名，保留类型引用和原始成员名称
+fix label display names, retain type references and original member names
     ↓
-统一降低操作/使用视图/P5 复制，保留 site 和原始来源
+lower operations/use views/P5 copies uniformly, retaining sites and original origins
     ↓
-按 P6 计划组装 If/Loop/Try/Synchronized/GraphRegion 和基础发射布局
+assemble If/Loop/Try/Synchronized/GraphRegion and the base emission layout per the P6 plan
     ↓
-P7 compose 消费既有位置、值和复制事实，形成唯一最终发射计划
+P7 compose consumes existing position, value and copy facts to form the single final emission plan
     ↓
-封装拥有的 MethodResult
+encapsulate the owned MethodResult
 ```
 
-#### 5.7.2 对象分配、初始化与构造器表达
+#### 5.7.2 Object allocation, initialization and constructor expression
 
-P7 消费 P4 初始化事实、P5 存储/物化计划和 P6 执行位置。普通对象创建的
-分配、构造器关联和执行对应已建立时，P7 MUST 默认使用 `new T(...)`。
-不能仅因 DEX 将分配与初始化分成两条指令，就认为它没有自然 Java 写法。
+P7 consumes P4 initialization facts, the P5 storage/materialization plan and P6 execution
+positions. When the allocation, constructor association and execution correspondence of
+ordinary object creation are established, P7 MUST use `new T(...)` by default.
+The fact that DEX splits allocation and initialization into two instructions is not by itself
+grounds to claim that no natural Java form exists.
 
 ```text
-原始行为：
+original behaviour:
     uninit<T> obj = allocate-instance T;
     init-direct obj, Lexample/T;-><init>()V, [];
     use(obj);
 
-默认自然表达：
+default natural expression:
     T obj = new T();
     use(obj);
 ```
 
-这个普通示例本身没有表达问题。原始分配和初始化身份仍保留在方法产品的
-来源与对应中，不意味着两者必须分别打印。只有需要保留独立执行位置、
-状态或其他自然 new 无法准确承接的关系时，才使用显式初始化伪码。
-自然合并条件不成立不是方法分析或可读结果的失败门槛。
+This ordinary example has no expression problem of its own. The original allocation and
+initialization identities are still retained in the method product's
+origins and correspondences, which does not mean the two must be printed separately. Explicit
+initialization pseudo code is used only when an independent execution position, state or other
+relation that natural new cannot carry accurately must be retained.
+A natural merge condition that does not hold is not a failure gate for method analysis or the
+readable result.
 
-| 原始行为 | 表达义务 |
+| Original behaviour | Expression obligation |
 |---|---|
-| new-instance | 在原位置分配对象，正常完成才提交目标引用，保留类型/初始化相关效果和异常 site |
-| 未初始化引用复制 | 复制同一对象引用，不再次分配，不假设初始化已完成 |
-| 对该引用执行 `<init>` | 调用原始构造器、使用原始 receiver/参数顺序，正常完成后沿对应路径取得已初始化状态 |
-| 构造器抛出 | 保留异常关系及尚未成功完成的状态，不回滚构造器已经发生的效果 |
-| this/super 初始化调用 | 保留 receiver 来源、原始目标、参数和调用位置，不为 Java 语法重排前置操作 |
+| new-instance | allocate the object at the original position, commit the destination reference only on normal completion, retain type/initialization-related effects and the exception site |
+| copy of an uninitialized reference | copies the same object reference, allocates nothing again and assumes no completed initialization |
+| `<init>` executed on that reference | calls the original constructor with the original receiver/argument order and obtains the initialized state along the corresponding path after normal completion |
+| constructor throws | retains the exception relation and the not-yet-completed state without rolling back effects the constructor already performed |
+| this/super initialization call | retains receiver origin, original target, arguments and call position without reordering prior operations for Java syntax |
 
-确需独立表达时，初始化采用以下 Java-like 记法，不是合法 Java、新增
-helper 或另一套解释器。类型、receiver 与目标引用均来自分析输入：
+When independent expression is genuinely required, initialization uses the following Java-like
+notation, which is not legal Java, an added helper or another interpreter. Types, receiver and
+target references all come from the analysis input:
 
 ```text
 uninit<T> obj = allocate-instance T;
@@ -1579,399 +2040,513 @@ init-direct obj, Lexample/T;-><init>(I)V, [arg];
 use(alias);
 ```
 
-`allocate-instance` 表达原始对象分配，不执行构造器，也不是 malloc。
-`init-direct` 在同一对象上执行指定构造器，其 V 返回不产生替代对象。
-`uninit<T>` 标示分配后、初始化前的引用状态；初始化调用正常完成后，该
-对象相关别名在对应使用位置消费已初始化状态，不通过新分配或重定义
-所有 SSA 值实现状态变化。静态身份相同不表示所有动态路径都已初始化。
+`allocate-instance` expresses the original object allocation, runs no constructor and is not
+malloc.
+`init-direct` executes the specified constructor on the same object, and its V return produces
+no replacement object.
+`uninit<T>` marks the reference state between allocation and initialization; after the
+initialization call completes normally, aliases of that object consume the initialized state at
+their use positions, without implementing the state change through a new allocation or by
+redefining every SSA value. Equal static identity does not mean every dynamic path is
+initialized.
 
-如果分配或初始化具有异常保护，P7 在各自原始位置保留 site 和相应链。
-分配成功而初始化失败时，原始已提交引用和可观察效果保持，不用 null
-覆盖，也不把初始化后的状态送到失败路径。具体无法证明的使用保留问题，
-不能因显式伪码可打印就宣称它满足已初始化引用的使用约束。
+When allocation or initialization has exception protection, P7 retains the site and the
+corresponding chain at their original positions.
+When allocation succeeds but initialization fails, the already committed reference and
+observable effects remain: they are not overwritten with null and the post-initialization state
+is not delivered to the failure path. A use that genuinely cannot be proven keeps its problem;
+printable explicit pseudo code must not be used to claim that it satisfies the use constraints
+of an initialized reference.
 
-带参数的普通创建也在原始执行对应建立后默认采用自然表达。例如已有
-参数值在分配之前产生，分配和初始化之间的别名与使用可被同一表达承接：
+Ordinary creation with arguments likewise uses natural expression by default once original
+execution correspondence is established. For example, when the argument value is produced
+before allocation and the alias and use between allocation and initialization can be carried by
+one expression:
 
 ```text
-原始操作：
+original operations:
     arg = computeArg();
     obj = allocate-instance T;
     init-direct obj, Lexample/T;-><init>(I)V, [arg];
     use(obj);
 
-有依据的自然表达：
+evidenced natural expression:
     int arg = computeArg();
     T obj = new T(arg);
     use(obj);
 ```
 
-合并条件包括同一对象、准确构造器引用及参数、一次分配、原始输入读取
-次序、结果提交、别名存储、初始化顺序与异常位置。正常 `new` 只在整个
-创建表达式成功后向外层赋值；若失败路径需观察分配后已经提交的原始
-引用，P7 不能用该赋值隐藏它。确有不同保护关系或中间内容需要独立位置，
-且既有自然合并规则无法准确承接时，保留显式操作，不扩大搜索或重跑上游
-分析。判断依据是实际产品事实，不能在普通创建中凭空假设存在这些问题。
+The merge conditions include the same object, exact constructor reference and arguments, one
+allocation, original input-read order, result commit, alias storage, initialization order and
+exception positions. A normal `new` assigns outward only after the whole creation expression
+succeeds; if a failure path must observe the original reference already committed after
+allocation, P7 cannot hide it behind that assignment. When protection relations or intervening
+content genuinely need independent positions and the existing natural merge rules cannot carry
+them accurately, the explicit operations are retained without widening the search or re-running
+upstream analysis. The judgement rests on actual product facts, and these problems cannot be
+assumed out of thin air for ordinary creation.
 
-Java 普通对象创建的运行时次序是分配对象、从左到右求值构造参数、调用
-构造器，见 [JLS §15.9.4](https://docs.oracle.com/javase/specs/jls/se8/html/jls-15.html#jls-15.9.4)。
-因此“分配后才计算参数”本身不证明 `new T(computeArg())` 改变顺序。
-是否可以合并，仍需建立原始 site、效果、提交和别名对应，不能仅凭这个
-表面顺序放行。本方案默认逐操作表达，不因这种 Java 求值次序自动内联
-中间有执行效果的参数计算。
+The runtime order of Java ordinary object creation is: allocate the object, evaluate constructor
+arguments from left to right, call the constructor; see
+[JLS §15.9.4](https://docs.oracle.com/javase/specs/jls/se8/html/jls-15.html#jls-15.9.4).
+Therefore "arguments are computed after allocation" does not by itself prove that
+`new T(computeArg())` changes order. Whether merging is possible still requires establishing the
+original site, effects, commit and alias correspondence, and cannot be admitted from this surface
+order alone. This plan expresses operations individually by default and does not automatically
+inline argument computation with intervening effects because of that Java evaluation order.
 
-this/super 调用能按原始顺序自然表达时采用 `this(...)` 或 `super(...)`。
-若初始化前已有独立操作或源码语法不能承接原始顺序，保留构造器伪码：
+When this/super calls can be expressed naturally in their original order, `this(...)` or
+`super(...)` is used. If independent operations precede initialization or the source syntax
+cannot carry the original order, constructor pseudo code is retained:
 
 ```text
 constructor T(int arg) {
-    // 原始初始化前操作，依照已有事实表达
+    // pre-initialization operations, expressed from existing facts
     init-direct this, Lexample/Base;-><init>(I)V, [arg];
-    // 原始初始化后操作
+    // post-initialization operations
 }
 ```
 
-这里的目标和 receiver 由已有产品确定，不从名称或外部层次猜测。
-P7 MUST NOT 为使 super 位于 Java 构造器首句而移动操作、前置计算、添加
-helper、默认初始化引用或撤掉方法。委托目标和相关未知/矛盾保持具体
-事实，不能把无法自然表示当作构造器不存在或原方法无效。
+Here the target and receiver are determined by existing products and are not guessed from names
+or an external hierarchy.
+P7 MUST NOT move operations, hoist computations, add helpers, default-initialize references or
+withdraw the method in order to put super first in a Java constructor body. Delegation targets
+and related unknowns or contradictions keep concrete facts, and inability to express naturally
+must not be treated as a missing constructor or an invalid original method.
 
-自然表达与显式表达共用同一初始化操作产品，P7 测试核对本次表达的对应，不
-运行自己的完整寄存器/别名追踪器。P9 只打印已选定的表达及原始来源，
-P8 组装类时不重新恢复构造器，也不为了类可编译添加构造器或初始化写入。
+Natural and explicit expression share the same initialization-operation product; P7 tests check
+the correspondence of the chosen expression and do not run their own complete register/alias
+tracker. P9 prints only the selected expression and original origins, and P8 does not recover
+constructors again when assembling the class or add constructors or initialization writes to
+make the class compile.
 
-#### 5.7.3 已支持操作的表达覆盖
+#### 5.7.3 Expression coverage of supported operations
 
-本方案的能力接入要求是：P2 已支持的执行操作，在 P7 都有对应的自然或
-明确伪码表达规则。经过 P3–P6 获得契约完整的 PlannedMethod 后，P7 不能
-仅因没有自然 Java 写法或缺少表达分支而撤掉方法结果。
+The capability requirement of this plan is: every execution operation already supported by P2 has
+a corresponding natural or explicit pseudo-code expression rule in P7. After P3–P6 deliver a
+contract-complete PlannedMethod, P7 cannot withdraw a method result merely because no natural
+Java form or no expression branch exists.
 
 ```text
-P2 已支持的执行操作
+execution operations already supported by P2
           │
           ▼
-P3–P6 完成各自加工，交付必需事实和明确状态
+P3–P6 complete their own processing and deliver required facts and explicit states
           │
           ▼
-P7 对每种操作都有自然或明确伪码表达规则
+P7 has a natural or explicit pseudo-code expression rule for every operation kind
           │
           ▼
-完整可读的方法结果
+a complete readable method result
 ```
 
-“表达覆盖完整”表示已恢复表达和明确未恢复片段共同交代原始覆盖，不表示
-每项语义都已恢复。必需的值来源、类型解释、存储或控制事实缺失时，P7 MUST
-保留对应范围、原因和独立已完成内容，不能用通用伪码节点伪装语义已恢复。
-资源和不变量错误保持原分类，其范围按第 9 节处理，不因状态名称撤销全部
-表达，也不因覆盖要求把损坏的构造状态当作可用 AST。
+"Complete expression coverage" means that recovered expression and explicit unrecovered fragments
+together account for original coverage, not that every semantic item was recovered. When required
+value sources, type interpretations, storage or control facts are missing, P7 MUST retain the
+corresponding ranges, causes and independently completed content and must not disguise them with
+generic pseudo-code nodes as if semantics were recovered.
+Resource and invariant errors keep their classification and their scope follows §9; a state name
+does not withdraw all expression, and a coverage requirement does not make a damaged construction
+state usable as an AST.
 
-操作语义已经完整，而 P7 暂时没有实现其表达，是需要补齐的一般能力缺口，
-不是该操作天然无法反编译。能力迁移 MUST 同步核对操作到输入/输出使用、
-存储、转移和最终表达的覆盖，不能只增加 P2 的识别就宣称端到端支持。
+When operation semantics are already complete but P7 does not yet implement their expression, that
+is a general capability gap to close, not a property that makes the operation undecompilable.
+Capability migrations MUST check coverage from operations through inputs/outputs, uses, storage,
+transfers and final expression together; adding P2 recognition alone cannot claim end-to-end
+support.
 
-普通调用默认采用自然方法表达，例如原始
-`Ljava/lang/String;->length()I` 的 virtual 调用表示为：
+Ordinary calls use natural method expression by default; for example, a virtual call of the
+original `Ljava/lang/String;->length()I` is expressed as:
 
 ```java
 int t2 = t1.length();
 ```
 
-原始 owner、名称、prototype、invoke kind、receiver、参数顺序和来源仍
-保留在方法产品中，不要求每次都在正文重复打印完整引用。缺少目标类定义
-不阻止该表达；源码绑定未知保留具体不确定性，不换目标或增加运行时转换。
-普通字段和数组同样优先使用自然访问记法。确有自然形式无法准确承接的
-原始操作关系才使用明确伪码，不为保守而把所有正常操作低层化。
+The original owner, name, prototype, invoke kind, receiver, argument order and origins are still
+retained in the method product, and the complete reference need not be reprinted in every body.
+A missing target class definition does not prevent that expression; unknown source binding retains
+concrete uncertainty without switching the target or adding a runtime conversion.
+Ordinary field and array accesses likewise prefer natural notation. Explicit pseudo code is used
+only where a natural form genuinely cannot carry an original operation relation, and ordinary
+operations are not lowered for conservatism.
 
-#### 5.7.3.1 原目标签名限定
+#### 5.7.3.1 Original-target signature qualification
 
-P7 的调用表达 MUST 保留原始逻辑 DEX 引用身份、owner、名称、完整原型和
-invoke kind，不按实参显示类型重新选择目标。virtual/interface 等原分派
-方式继续保留；原始引用不等于已求出的具体运行时实现。
+P7's call expression MUST retain the original logical DEX reference identity, owner, name,
+complete prototype and invoke kind, and must not re-select the target from displayed argument
+types. Original dispatch kinds such as virtual/interface are retained; an original reference does
+not equal an already solved concrete runtime implementation.
 
-Java-like 调用的目标签名限定是绑定信息，不是泛型类型实参、实参强转或
-运行时操作。下列两项保留不同的已交付原调用引用：
+Target-signature qualification in a Java-like call is binding information, not generic type
+arguments, argument casts or a runtime operation. The following two lines retain different
+delivered original call references:
 
 ```text
 Api.register<(Listener)>(h);
 Api.register<(Handler)>(h);
 ```
 
-限定符不改变 h 的值、类型来源、求值次数、初始化状态或调用顺序，不引入
-check-cast、辅助调用或新的异常位置，也不把原本不可用的来源变为可用。
-目标原型读取不全时，P7 MUST 保留原引用和具体未知，不能猜一个参数签名。
-限定形式是调用表达的语义，不是用注释替代不正确的调用目标。
+The qualifier does not change h's value, type origin, evaluation count, initialization state or
+call order, introduces no check-cast, helper call or new exception position, and does not turn an
+otherwise unusable origin into a usable one.
+When the target prototype cannot be read completely, P7 MUST retain the original reference and the
+concrete unknown rather than guess a parameter signature.
+The qualified form is part of the call expression's semantics, not a comment substituting for an
+incorrect call target.
 
-内部完整引用包括返回类型。P7 在需要披露引用差异时选择参数表限定
-`method<(ParameterTypes)>`；存在参数表相同而返回类型不同的原引用时，
-选择 `method<(ParameterTypes) -> ReturnType>`。其他必须明确引用的情况
-保留完整签名。类型名称由 P8 规划，P9 不直接打印带引号的 DEX descriptor；
-不可自然命名的类型保留既有明确形式。
+The internal complete reference includes the return type. P7 chooses parameter-list qualification
+`method<(ParameterTypes)>` when a reference difference must be disclosed, and chooses
+`method<(ParameterTypes) -> ReturnType>` when original references share a parameter list but differ
+in return type. Other cases that must state the reference explicitly keep the complete signature.
+Type names are planned by P8, and P9 does not print quoted DEX descriptors directly; a type that
+cannot be named naturally keeps its existing explicit form.
 
-已限定的实例调用在接收者的既有名义声明类型不能准确给出原 owner 时，
-P7 选择 `(receiver via Owner).method<...>(arguments)`。`via` 表示原始方法
-引用的 owner，不是实际声明所在类、运行时对象类型或已选择的具体实现。
-它不引入转换、检查或新的求值；virtual/interface 分派方式不变。
-静态调用以 `Owner.method` 给出 owner。super 调用仍以 `super` 表示原分派；
-需要披露其 owner 时写作 `(super via Owner).method<...>(arguments)`。
-构造委托继续使用 `this<...>(arguments)` 或 `super<...>(arguments)`，
-已分配对象的显式初始化在 `<init>` 后打印选定签名。
+For a qualified instance call whose receiver's existing nominal declared type cannot accurately
+supply the original owner, P7 chooses `(receiver via Owner).method<...>(arguments)`. `via` denotes
+the owner of the original method reference, not the class where the runtime value was declared, its
+runtime object type or the selected concrete implementation.
+It introduces no conversion, check or new evaluation; virtual/interface dispatch is unchanged.
+A static call states its owner as `Owner.method`. A super call still expresses original dispatch as
+`super`; when its owner must be disclosed it is written
+`(super via Owner).method<...>(arguments)`. Constructor delegation continues to use
+`this<...>(arguments)` or `super<...>(arguments)`, and explicit initialization of an allocated object
+prints the selected signature after `<init>`.
 
-原命名空间中的重复或歧义也不能被简写隐藏。P7 用已交付事实确定限定
-形式，P8 只落实既有类名/import 显示计划；P9 只打印既有表达，不求解重载
-或重新读取声明。默认自然调用只打印已确定的接收者、成员和实参；原引用
-身份、invoke kind 和调用原型保留在拥有的引用记录与来源 spans 中，不逐调用
-重复打印。实参显示类型只是向形参拓宽时不属于歧义。polymorphic/custom 调用仍保留各自的原引用、独立调用
-原型和 call-site/handle 身份，不能用限定符把它们重新绑定成普通调用。
+Duplicates or ambiguities in the original namespace likewise cannot be hidden by shorthand. P7
+determines the qualified form from delivered facts, P8 only realises the existing class-name/import
+display plan, and P9 only prints the existing expression without solving overloads or re-reading
+declarations. A default natural call prints only the determined receiver, member and arguments; the
+original reference identity, invoke kind and call prototype are retained in the owned reference
+records and origin spans and are not repeated per call. A displayed argument type that merely widens
+towards the parameter type is not an ambiguity. polymorphic/custom calls retain their own original
+references, independent call prototypes and call-site/handle identities, and qualifiers must not
+rebind them as ordinary calls.
 
-普通自然调用仍是默认显示；需要明确原目标时使用签名限定，不以生成
-可编译 Java 为门槛，也不为影响 Java 重载选择自动插入强转或类型别名。
-原 DEX 已有 check-cast 时，P7 MUST 保留其检查、解析和异常语义，不能用
-签名限定替换或省略它。
+Natural calls remain the default display; signature qualification is used when the original target
+must be stated, and neither generating compilable Java nor influencing Java overload selection
+justifies inserting automatic casts or type aliases.
+When the original DEX already has a check-cast, P7 MUST retain its check, resolution and exception
+semantics and cannot replace or omit it with signature qualification.
 
-P7 表达规则 MUST 保留操作的输入、正常结果、效果与异常位置，并覆盖
-结果被丢弃的操作和全部终结点。结果未使用不允许删除调用、字段/数组
-读取、cast 或除法等原始行为。P2 已绑定的 producer/result 和普通对象
-创建按各自完整对应表达，不要求原始指令与源码语句一一计数相等。
+P7's expression rules MUST preserve operation inputs, normal results, effects and exception
+positions, and cover operations whose results are discarded and every terminal. An unused result is
+no reason to delete a call, field/array read, cast or division. P2-bound producer/results and
+ordinary object creation are expressed under their own complete correspondence, and original
+instructions need not equal source statements one for one.
 
-实现 SHOULD 使用操作种类的穷尽分支来约束覆盖，不用 wildcard 将未处理
-操作默认为空语句、NOP、默认值或可打印字符串。展示规则属于 P7/P9 的
-既有职责，不增加第二条指令解码、类型恢复或整方法重试路线。
+An implementation SHOULD constrain coverage through exhaustive branches on operation kinds and must
+not use a wildcard that turns unhandled operations into empty statements, NOPs, default values or a
+printable string. Display rules belong to the existing P7/P9 responsibilities and add no second
+instruction-decoding, type-recovery or whole-method retry route.
 
-若实现仍存在表达缺口，保留该位置的原始身份、已知操作、结果关联和具体
-未完成原因，以及其他已形成表达；不能谎称完整语义，也不清空整个方法。
-完成本轮能力迁移前必须补齐已接入操作的表达，而不是把缺口作为正常出口。
+If an implementation still has an expression gap, it retains that position's original identity, known
+operations, result associations and concrete unfinished cause together with the other expressions
+already formed; it must not claim complete semantics or blank the whole method.
+Before this capability migration is complete, expression for already connected operations must be
+filled in, and the gap must not be treated as a normal exit.
 
-#### 5.7.4 方法产品与结果保证
+#### 5.7.4 Method product and result guarantees
 
-P7 消费 P6 已决定的转移目标与作用范围，只生成相应 AST，不重新识别循环、
-计算汇合点、选择 handler 或安排锁释放。字面值、转换和临时存储按已有
-P4/P5 产品表达，不能因 goto 记法而重新猜类型或重新物化初始化结果。
-原始成员名称无法使用正常 Java 拼写时保留原始身份并使用明确的原始名称
-记法，而不是全局重命名或撤掉整个方法。
+P7 consumes the transfer targets and scopes already decided by P6 and only generates the
+corresponding AST; it does not re-identify loops, compute join points, choose handlers or schedule
+lock releases. Literals, conversions and temporaries are expressed from existing P4/P5
+products and must not re-guess types or re-materialize initialization results because of goto
+notation. When an original member name cannot use normal Java spelling, the original
+identity is retained with explicit original-name notation instead of a global rename or
+withdrawing the whole method.
 
-P7 构造方法表达；测试另行核对操作、值、复制、控制、异常、锁和初始化
-转换。测试不重跑 P6 的区域算法或其他上游构建，也不只信任 AST 的计数。
-P7 MUST NOT 补做缺失的解码、SSA、类型或区域分析。P7 MUST 接受 P6
-已交付的 GraphRegion、标签/显式跳转和保护记法，不因它们不是合法 Java
-而撤掉已有方法表达。方法正文明确其 Java-like 记法，不生成假的异常桩。
+P7 constructs the method expression; tests separately check the conversion of operations,
+values, copies, control, exceptions, locks and initialization. Tests do not re-run P6's region
+algorithm or another upstream construction, and do not trust AST counts alone.
+P7 MUST NOT make up for missing decoding, SSA, type or region analysis. P7 MUST accept the
+GraphRegion, labels/explicit jumps and protection notation already delivered by P6 and must
+not withdraw an existing method expression because they are not legal Java. The method body
+states its Java-like notation and generates no fake exception stub.
 
-MethodResult 拥有原始 MethodKey、声明和表达节点、类型引用、标签表、保护
-表达、必要来源及具体不确定性；这些数据不借用 Engine、PlannedMethod 或
-DEX lease。类型使用保留原始引用身份、descriptor 和使用位置，不提前固化
-成可被字符串替换的最终类型拼写；P8 统一形成类范围的名称计划。
+MethodResult owns the original MethodKey, declarations and expression nodes, type references,
+label table, protection expressions, required origins and concrete uncertainties; this data
+borrows neither Engine, PlannedMethod nor a DEX lease. Type uses retain original reference
+identities, descriptors and use positions and are not frozen early into final type spellings
+that could be replaced by string manipulation; P8 forms the class-scoped name plan in one
+place.
 
-P0 以只读 MethodMetadata 共享原方法/参数注解的拥有内容与覆盖/问题；
-方法 reader/P1 将它沿唯一链交付。动态引用 reader/P1 保留 call-site 的
-bootstrap 参数事件、原字节及叶声明池，P7 只复制既有事实，不重读输入。
-ExpressedMethod 私有保留本次 P6 产品供 MethodInspection 借用观察；
-into_result 释放保留分析，返回不带输入生命周期的 Arc<MethodResult>。
-P8 与同次观察共享不可变拥有结果，不复制表达 arena；未发布表达前缀仍以
-ExpressionPartial 交付，不能改为成熟 MethodResult。
-观察接口不交出 owned predecessor、不提供构造或求解入口。
+P0 shares the owned contents, coverage and problems of original method/parameter annotations
+through read-only MethodMetadata; the method reader/P1 delivers it along the single chain. The
+dynamic reference reader/P1 retains call-site bootstrap argument events, original bytes and the
+leaf declaration pool, and P7 only copies existing facts without re-reading the input.
+ExpressedMethod privately retains this execution's P6 product for MethodInspection to observe
+by borrow; into_result releases the retained analysis and returns an Arc<MethodResult> with no
+input lifetime.
+P8 and same-execution observation share the immutable owned result without copying the
+expression arena; an unpublished expression prefix is still delivered as ExpressionPartial and
+cannot be turned into a mature MethodResult.
+The observation interface hands out no owned predecessor and offers no construction or solving
+entry.
 
-已建立的方法分析临时数据在不再被消费时释放。P9 使用既有表达和显式
-名称计划渲染，不在文本/JSON 之间改变表示模式、生成新跳转或重新读取
-引用声明。package/import 整理不重跑 P7，也不修改操作、类型和调用身份。
+Established method-analysis scratch is released once it is no longer consumed. P9 renders with
+existing expressions and the explicit name plan and does not switch representation mode between
+text and JSON, generate new jumps or re-read reference declarations. package/import arrangement
+does not re-run P7 and does not modify operations, types or call identities.
 
-P7 的 EmissionPlan 固定最终发射位置；原 control/outlet 表继续保留来源事实，
-不是第二份可执行日程。循环条件的两条原边在 predicate 内选择并承接复制，
-独立 break 不经过条件退出边的复制。语法拥有的 header/predicate 不单独
-发射 continuation，避免跳过自身条件或 monitor acquire。自然构造跨节点时
-按已有初始化点恢复后续，不按 PC 排列假定顺序落下。
+P7's EmissionPlan fixes final emission positions; the original control/outlet table continues to
+retain origin facts and is not a second executable schedule. Both original edges of a loop
+condition are selected inside the predicate and carry their copies, and an independent break
+does not pass through the condition-exit edge's copies. A syntax-owned header/predicate does not
+emit a separate continuation, avoiding skipping its own condition or monitor acquire. When
+natural construction spans nodes, continuation resumes at existing initialization points rather
+than falling in an assumed PC order.
 
-已匹配的 synchronized release、释放后复制和 routing terminal 在原节点
-发射。with_explicit_exits 容器的结束不额外释放锁；release 只结束该锁范围，
-不撤掉外围 try/catch。P9 直接打印这些既定位置和显式语义，不补控制分析。
+A matched synchronized release, post-release copies and routing terminals emit at their original
+nodes. The end of a with_explicit_exits container releases no extra lock; a release ends only
+that lock scope and does not remove an enclosing try/catch. P9 prints these established positions
+and explicit semantics directly and adds no control analysis.
 
-方法整体使用 Java-like 记法，不增加“合法 Java/验证通过”的完整性徽章。
-出现 goto、exception_map 或显式 monitor 时，记法标识和执行关系正文默认
-可见；可隐藏的恢复诊断不能成为这些关系的唯一承载。标签/goto 不改变
-结果的错误分类，真实损坏和不变量错误仍随结果保留。
+The method as a whole uses Java-like notation and adds no "legal Java/verified" completeness
+badge. When goto, exception_map or explicit monitor appears, the notation identifier and the
+execution-relation body are visible by default; hidden recovery diagnostics cannot be the only
+carrier of those relations. Labels/goto do not change the result's error classification, and
+real damage and invariant errors stay with the result.
 
-`<clinit>` 的执行体仍由方法链恢复，类组装不得重新分析该方法。
+The body of `<clinit>` is still recovered by the method chain, and class assembly must not
+re-analyse that method.
 
-## 6. 阶段信任与转换义务
+## 6. Stage trust and transformation obligations
 
-Pn 的分析算法信任 Pn−1 产品声明的保证，不重复上游准入、不修正上游结果。
-正常反编译 MUST NOT 执行独立输出验证、符号重放、重复图/支配检查或形式证明。
-这些代码 MUST 仅在 `cfg(test)` 编译；不得添加普通请求的运行时或 feature 开关。
-已有独立检查实现保留在测试配置中；按操作者决定，当前没有测试用例，
-后续不得编写测试。独立检查不是产物发布或可读输出的门槛。
+Pn's analysis algorithm trusts the guarantees declared by the Pn−1 product, does not repeat
+upstream admission and does not repair upstream results.
+Ordinary decompilation MUST NOT run independent output verification, symbolic replay, duplicate
+graph/dominance checks or formal proofs.
+That code MUST compile only under `cfg(test)`; no runtime or feature switch may be added to
+ordinary requests.
+Existing independent checks stay in the test configuration; by operator decision no test case
+exists now, and no tests may be written later. Independent checks are not a gate on product
+publication or readable output.
 
-原始输入的安全解析、范围/算术检查、可失败分配和必要构造错误处理继续保留。
-算法为了建立事实所需的求解、来源绑定、区域匹配条件不是额外验收过程；
-不得以本条删除必要算法。阶段构建与其测试由同一拥有模块负责，遵循第 4.3 节。
+Safe parsing of original input, range/arithmetic checks, fallible allocation and required
+construction error handling remain. The solving, origin binding and region-match conditions an
+algorithm needs to establish facts are not an extra acceptance process; this section must not be
+used to delete required algorithms. Stage construction and its tests are owned by the same
+module, per §4.3.
 
-各阶段实际产生的转换仍需满足下列语义义务：
+The transformations each stage actually performs must still satisfy the following semantic
+obligations:
 
-| 拥有者 | 检查义务 |
+| Owner | Check obligation |
 |---|---|
-| 方法 reader | 原始方法来源、安全区段和记录读取；元数据独立记录 |
-| P1 | 反汇编覆盖、操作数解释及消费者必需的原始指令关联关系 |
-| P2 | 原始指令到操作/效果/提交规则/图边角色的对应，含异常及来源覆盖 |
-| P3 | 异常感知状态映射、Pruned SSA 定义/使用/Phi、宽值与边传递的对应 |
-| P4 | 类型约束、事实选择及使用转换 |
-| P5 | 值到存储、按边 Out-of-SSA、复制顺序化、异常快照与物化的对应 |
-| P6 | 自然区域与显式图转移、复制承接、原始保护/锁表达的完整对应 |
-| P7 | 成熟分析产品到方法表达的执行对应 |
-| P8 | 原始成员、类准备与方法结果到类表示的对应 |
-| P9 | 既有表示到文本/JSON及 spans 的对应 |
+| Method reader | original method provenance, safe section and record reads; independent metadata records |
+| P1 | disassembly coverage, operand interpretation and the original instruction associations consumers require |
+| P2 | correspondence of original instructions to operations/effects/commit rules/edge roles, including exceptions and origin coverage |
+| P3 | exception-aware state mapping, pruned SSA definitions/uses/Phis, wide values and edge transfers |
+| P4 | type constraints, fact selection and use conversions |
+| P5 | value-to-storage, per-edge out-of-SSA, copy ordering, exception snapshots and materialization |
+| P6 | natural regions and explicit graph transfers, copy handling, complete correspondence of original protection/lock expression |
+| P7 | execution correspondence from mature analysis products to method expression |
+| P8 | correspondence of original members, class preparation and method results to class representation |
+| P9 | correspondence of existing representation to text/JSON and spans |
 
-独立转换验证不能只信任构建器的计数或布尔结果。需要原始证据的重放保持
-其独立义务，通过限定接口读取；它不授权分析实现建立另一条恢复路线。
+Independent transformation verification cannot trust builder counts or boolean results alone.
+Replay that needs original evidence keeps its independent obligation and reads through a
+restricted interface; it does not authorise an analysis implementation to build another
+recovery route.
 
-现有原始 replay 和 transform checks MUST 在迁移中逐项追踪义务、证据和
-拥有者。不能因“信任上游”直接删除，也不能机械移到 P1；P1 不负责证明
-尚未产生的 SSA、类型或源码转换。检查迁移须记录拥有者和证据义务，
-按根授权在已批准目标内落实，不扩大阶段权限或改变输出/调度约定。
+Existing original replay and transform checks MUST have their obligations, evidence and owners
+traced item by item during migration. They cannot be deleted under "trust upstream", nor moved
+mechanically to P1; P1 is not responsible for proving SSA, type or source transformations that
+have not been produced yet. Check migration must record the owner and evidence obligation and
+implement it within the approved target under the root authority, without widening stage
+permissions or changing output/scheduling agreements.
 
-Bugfix 定位第一个违约点：code item 区段/记录读取错误属于方法 reader，
-opcode/宽度/操作数解释错误属于 P1，操作/图错误属于 P2，绑定错误属于 P3。
-输出契约缺少真实消费者需要的事实时，修正生产者与消费者契约，
-不在下游回读原始输入掩盖缺口。发现上游产品矛盾时停止受影响加工并报告
-具体位置；不能修复后继续假成功，也不能把内部违约一律归咎于输入损坏。
+A bugfix locates the first violated point: a code-item section/record read error belongs to the
+method reader, an opcode/width/operand interpretation error to P1, an operation/graph error to
+P2, and a binding error to P3.
+When an output contract lacks a fact that real consumers need, fix the producer and consumer
+contract instead of re-reading original input downstream to hide the gap. When an upstream
+product contradiction is found, stop the affected processing and report the concrete position;
+neither continue with a fake success after repairing it nor attribute every internal violation
+to damaged input.
 
-## 7. 声明上下文、生命周期与并发
+## 7. Declaration context, lifetime and concurrency
 
-类请求持有 ClassFacts，方法入口与 owner 视图借用该产品。MethodSource
-借用原始 DEX 区段及必要类事实，在方法 worker 中交给 P1，再由 P1–P7 产品
-保留必要依据。只读上下文通过产品接口延续，不克隆全部类事实。
+A class request owns ClassFacts, and method entries and owner views borrow that product.
+MethodSource borrows original DEX sections and required class facts, is handed to P1 inside the
+method worker, and P1–P7 products retain the required evidence. Read-only context continues
+through product interfaces without cloning all class facts.
 
-原始 DEX 的生命周期与 P0 类事实的生命周期是不同来源，不强迫两者相等。
-仅确实借用这些数据的类型携带相关生命周期。方法结果和最终报告拥有输出
-所需数据，不反向借用整份分析临时状态，也不形成自引用报告。
+The lifetime of original DEX bytes and the lifetime of P0 class facts have different sources and
+are not forced to be equal.
+Only types that genuinely borrow that data carry the relevant lifetime. Method results and the
+final report own the data their output needs, do not borrow the whole analysis scratch backwards
+and do not form self-referential reports.
 
-输入 lease 持续到原始读取和必要检查结束；ClassFacts 至少持续到方法任务
-和类组装完成。借用不复制原数据，但保留时间影响峰值内存。
+The input lease lasts until original reads and required checks end; ClassFacts lasts at least
+until method tasks and class assembly finish. Borrowing copies no original data, but retention
+time affects peak memory.
 
-声明查询负责按原始身份定位和读取输入内事实。当前类复用 P0 的生产结果；
-其他类按需复用同一声明生产实现，不要求先收集所有类。查询不得将部分目录
-中的未找到解释为成员不存在，也不得提供方法分析构造权限。
+Declaration queries locate and read in-input facts by original identity. The current class reuses
+P0's produced result; other classes reuse the same declaration producer on demand, without
+requiring every class to be collected first. A query must not interpret "not found" in a partial
+directory as a non-existent member and must not offer method-analysis construction authority.
 
-Engine 使用作用域内的 Rayon 方法级任务，保持只读共享和独立方法状态。
-当前并发配置、池启动失败及结果汇合契约见
-[Engine 方法调度](phases.md#current-method-scheduling)。
-完成顺序不决定成员身份或原始程序顺序。分配失败和背压保持现有分类与
-行为；不增加数字配额或请求取消机制。
+Engine uses scoped Rayon method-level tasks, keeping read-only sharing and independent method
+state. The active concurrency configuration, pool-startup failure and result-joining contracts
+are in [Engine method scheduling](phases.md#current-method-scheduling).
+Completion order decides neither member identity nor original program order. Allocation failure
+and backpressure keep their existing classification and behaviour; no numeric quota or request
+cancellation mechanism is added.
 
-### 7.1 类事实借用与方法产品的具体生命周期
+### 7.1 Borrowing class facts and concrete lifetimes of method products
 
-当前类请求在方法任务启动前取得不可变 ClassFacts；所有任务使用该对象
-生成的绑定入口。ClassFacts 不持有对 Engine 可变状态或自己字段的引用。
-方法入口借用 P0 声明和必要 owner 事实，不为每个方法复制整份字段/方法目录。
+The current class request obtains immutable ClassFacts before method tasks start; all tasks use
+the bound entries produced from that object. ClassFacts holds no reference to Engine mutable
+state or to its own fields.
+Method entries borrow P0 declarations and required owner facts, and the whole field/method
+directory is not copied per method.
 
-方法 reader 的 MethodSource 有两种借用来源：DEX 区段的 `'dex` 与类事实
-的 `'class`。前置产品不存线程 worker 或可变声明查询状态；
-原始声明 reader 的受限访问能力独立于分析产品，不提供请求取消参数。
-P1 需要的受限引用读取能力由调度器交付，不放入后续任意可调用的 ProgramIndex。
+The method reader's MethodSource has two borrow sources: DEX sections with `'dex` and class facts
+with `'class`. Preceding products store no thread worker or mutable declaration-query state;
+the original declaration reader's restricted access capability is independent of analysis
+products and provides no request-cancellation parameter.
+The restricted reference-read capability P1 needs is delivered by the scheduler and is not
+placed in an arbitrarily callable ProgramIndex for later stages.
 
-方法产品移动后内部仍保留必要借用，所以任务的生命周期不能超出这两种
-来源。作用域内 Rayon 执行在 join 返回前结束借用，不要求任务 `'static`，
-不为避免生命周期设计增加 Arc<Mutex<ClassFacts>> 或复制整份 DEX。
+Method products retain required borrows internally after being moved, so a task's lifetime
+cannot exceed those two sources. Scoped Rayon execution ends the borrows before join returns, so
+tasks need not be `'static`; neither Arc<Mutex<ClassFacts>> nor a copy of the whole DEX is added
+to avoid a lifetime design.
 
-P7 形成拥有的 MethodResult，按实际输出需要复制声明、descriptor、字面值
-及原始事实；复制使用同一资源账本。结果不借用前置产品，方法 scratch 在
-最后消费者完成后释放。类组装移动这些方法结果，不在 ClassResult 中保存
-指向自己成员的引用。P8 的名称计划使用原始使用身份关联，不制造自引用。
+P7 forms the owned MethodResult and copies declarations, descriptors, literals and original
+facts as the actual output needs; the copy uses the same resource ledger. The result borrows no
+preceding product, and method scratch is released once the last consumer finishes. Class
+assembly moves these method results and keeps no reference to its own members inside
+ClassResult. P8's name plan associates by original use identity and creates no self-reference.
 
-最终报告只保留必须展示的事实和表达，不要求永久保存 P1–P6 全部分析图。
-输出资源耗尽不通过隐式截断解决；尚未交付的事实不能宣称完整。
+The final report retains only facts and expressions that must be displayed and does not have to
+keep every P1–P6 analysis graph permanently.
+Output resource exhaustion is not resolved by implicit truncation; facts not yet delivered
+cannot be claimed complete.
 
-### 7.2 受限声明查询与当前类的唯一生产
+### 7.2 Restricted declaration queries and the single production of the current class
 
-声明模块对外仅提供原始事实读取和有覆盖状态的只读目录查询；不提供
-方法体、CFG、SSA 或类型求解入口。每个引用都保留原始逻辑 DEX 身份和
-原始 UTF-16 descriptor，类型投影也保留根引用和维度，不伪造新的原始 ID。
+The declaration module exposes only original-fact reads and read-only directory queries with
+coverage states; it offers no method body, CFG, SSA or type-solving entry. Every reference
+retains its original logical DEX identity and original UTF-16 descriptor, and type projections
+retain the root reference and rank without inventing new original IDs.
 
-P4 的类级上下文分为：随方法产品交付的当前类声明、原始签名直接消费，
-以及有具体行为相关依赖时读取输入内已知定义。普通引用读取不需要先证明
-赋值相容，调用目标也不由该查询重新选择。返回状态区分存在、缺少定义、
-歧义和目录局部问题。
-没有目标定义不抹掉原始引用签名；不创建“默认 public/nonvolatile”声明。
+P4's class-level context divides into: the current class declaration delivered with the method
+product, original signatures consumed directly, and known in-input definitions read when a
+concrete behaviour-relevant dependency requires them. An ordinary reference read does not need
+assignment compatibility proven first, and the call target is not re-selected by that query. The
+returned state distinguishes present, missing definition, ambiguous and local directory
+problems.
+A missing target definition does not erase the original reference signature; no "default
+public/nonvolatile" declaration is created.
 
-当前类查询直接借用本次 ClassFacts 的声明只读视图，不通过 Context 再次
-materialize 同一类。Context 定位其他输入内类定义，按需使用同一 P0 声明
-生产实现；缓存持有不可变事实而不是第二份手工构造的目录。该生产查询由
-输入上下文层组合，不让 P4 实现获得调用 P0 分析构造的权限。
+A current-class query borrows this request's read-only ClassFacts declaration view directly and
+does not materialise the same class again through Context. Context locates other in-input class
+definitions and reuses the same P0 declaration producer on demand; the cache holds immutable
+facts rather than a second hand-built directory. That production query is composed by the input
+context layer and does not give P4's implementation authority to call P0 analysis construction.
 
-当前 superclass 关系查询只使用本逻辑 DEX 的已交付类头事实。P0 的私有
-OwnerContext 复用当前 OwnerFacts 和输入层共享声明读取视图，随方法产品传递；
-P4 只消费 Same、Ancestor、Unrelated 或带具体缺口的 Unknown，不获得目录、
-代码或阶段构造权限。命中原父类引用即可建立关系，无需目标定义；继续向上才
-要求唯一的本 DEX 定义。普通本类/直接父类判断不建立类位置索引，祖先慢查询
-才按需建立共享索引并读取必要类头，不预建全量祖先闭包，也不查询其他 DEX。
+The current superclass relation query uses only class-header facts already delivered for this
+logical DEX. P0's private OwnerContext reuses the current OwnerFacts and the input layer's shared
+declaration view and travels with the method product; P4 consumes only Same, Ancestor, Unrelated
+or Unknown with a concrete gap and receives no directory, code or stage-construction authority.
+Hitting the original superclass reference establishes the relation without a target definition;
+ascending further requires a unique definition within this DEX. Ordinary current-class/direct-
+superclass checks build no class position index, and only the slower ancestor query builds a
+shared index on demand and reads the required class headers; no full ancestor closure is
+pre-built and no other DEX is queried.
 
-确定的 malformed/unsupported 读取结果可以按现有规则缓存；资源
-和不变量失败不能缓存为“类不存在”。缓存查询保留原始身份和范围保证。
-本方案不增加跨请求可变方法分析缓存，也不按相同 descriptor 合并不同
-原始定义。部分目录不能建立不存在或完整层次唯一性的结论。
+Definite malformed/unsupported read results may be cached under existing rules; resource and
+invariant failures must not be cached as "class does not exist". Cached queries keep original
+identity and range guarantees.
+This plan adds no cross-request mutable method-analysis cache and does not merge different
+original definitions with the same descriptor. A partial directory cannot establish absence or
+hierarchy uniqueness.
 
-## 8. P8 类级准备与组装，P9 渲染
+## 8. P8 class preparation and assembly, P9 rendering
 
-P8 拥有类头/字段表达、静态准备、成员呈现归属、类范围的 package/import
-名称计划和类组装。其最终输入是 ClassFacts、全部方法结果和必要类级证据，
-产物为拥有的 ClassResult。封闭交付与名称选择接口见
-[P8 产品契约](spec/08-class.md)。
+P8 owns class-header/field expression, static preparation, member presentation ownership,
+class-scoped package/import name plans and class assembly. Its final input is ClassFacts, all
+method results and required class-level evidence, and its product is the owned ClassResult. The
+sealed delivery and name-selection interfaces are in
+[the P8 product contract](spec/08-class.md).
 
-组装以原始成员目录为依据，不以成功方法列表为依据。失败、声明-only 和
-生成成员保留原始身份；目录不完整时报告实际覆盖，不宣称全部成员已知。
-原始编码准备在原始 `<clinit>` 之前表示，不为 javac 增加初始化或构造器。
+Assembly is based on the original member directory, not on the list of successful methods.
+Failures, declaration-only members and generated members retain original identities; when the
+directory is incomplete, actual coverage is reported and all members are not claimed known.
+Original encoded preparation is expressed before the original `<clinit>`, and no initialization
+or constructor is added for javac.
 
-类级准备与最终组装是不同的执行时机：
+Class-level preparation and final assembly happen at different times:
 
-- 仅依赖 P0 的准备可以在方法任务前完成。
-- 影响方法恢复、但依赖代码或声明约束的证据，必须先由其阶段生产者建立。
-- 依赖方法最终结果的呈现归属和覆盖在组装时完成。
+- Preparation that depends only on P0 may complete before method tasks.
+- Evidence that affects method recovery but depends on code or declaration constraints must
+  first be established by its stage producer.
+- Presentation ownership and coverage that depend on final method results are completed during
+  assembly.
 
-P8 实现 MUST NOT 调用 P1/P4/P7 构造入口，亦不得自行解析方法代码。
-Engine 按所需产品调度这些入口。现有生成成员和 capture 的前置依赖需在
-迁移前逐项明确，不能为保持表面线性而推迟决策，也不能新增重跑方法路径。
-未建立证据时不得仅凭名称或 flags 隐藏成员。
+A P8 implementation MUST NOT call P1/P4/P7 construction entries, nor parse method code itself.
+Engine schedules those entries according to required products. Existing prerequisites of
+generated members and captures must be stated item by item before migration; decisions cannot be
+deferred to preserve a surface linearity, and no path that re-runs methods may be added.
+Without established evidence, members must not be hidden from name or flags alone.
 
-### 8.1 类范围的包名整理与 import 计划
+### 8.1 Class-scoped package arrangement and import plans
 
-包名整理指在单个类的输出范围内统一 package、显式 import 和类型显示
-名称，不合并不同包、不同类或 DEX 的分析身份，也不组织多类输出目录。
+Package arrangement means unifying package, explicit imports and type display names within the
+output scope of a single class; it does not merge analysis identities of different packages,
+classes or DEX images, and it does not organise a multi-class output directory.
 
 ```text
-P0 类头/字段事实 + P7 各方法的结构化类型引用
+P0 class header/field facts + structured type references of each P7 method
                           │
                           ▼
-P8：收集类型使用 → 处理显示名冲突 → 形成 TypeNamePlan
+P8: collect type uses → resolve display-name conflicts → form TypeNamePlan
                           │
                           ▼
-ClassResult：package + 显式 imports + 原始引用到显示名的映射
+ClassResult: package + explicit imports + mapping from original references to display names
                           │
                           ▼
-P9：打印既有 AST 和名称计划
+P9: print the existing AST and the name plan
 ```
 
-当前类的 package 只从原始 descriptor 的包路径确定，在类输出中出现一次。
-source file、选择器和其他方法的引用不能改写当前类的包名。
+The current class's package is determined only from the package path of the original descriptor and
+appears once in the class output. Source file, selectors and references from other methods cannot
+rewrite the current class's package name.
 
-P8 收集类头、字段、方法声明、方法表达及注解表达中的类型使用。P7 的 AST
-保留类型引用而不是完成渲染的字符串；P8 MUST NOT 用全文字符串替换删除
-包名前缀，否则可能修改字面字符串、同名类型、原始 descriptor 或诊断。
-纯原始事实中的完整 descriptor/方法签名继续原样保留，不应用 import 简写。
+P8 collects type uses in class headers, fields, method declarations, method expressions and
+annotation expressions. P7's AST keeps type references rather than finished rendered strings; P8
+MUST NOT delete package prefixes by whole-text string replacement, which could modify literal
+strings, same-named types, original descriptors or diagnostics.
+Complete descriptors and method signatures inside pure original facts are kept as they are and are
+not abbreviated by imports.
 
-TypeNamePlan 按原始类型身份和具体使用位置记录类型拼写。原始引用仍保留
-逻辑 DEX 索引空间，不按简称合并。重复使用同一显示目标只产生一个显式
-import；不同原始引用若有相同完整拼写，可以共享该 import 文本，但不得
-合并原始引用、声明或分析事实。定义歧义继续保留其具体问题。
+TypeNamePlan records type spellings by original type identity and concrete use position. Original
+references still keep their logical DEX index space and are not merged by short name. Repeated use
+of one display target produces one explicit import; different original references with the same
+complete spelling may share that import text but must not merge original references, declarations
+or analysis facts. A defined ambiguity keeps its concrete problem.
 
-名称选择规则：
+Name selection rules:
 
-- 同包和 java.lang 类型在没有已知冲突、相应使用可明确简称时使用简称。
-- 其他类型使用显式单类型 import，并在可明确简称的使用位置缩短拼写。
-- 不生成通配 import 或 static import，不枚举输入之外的包成员。
-- 同简称的不同类型、当前类/已知嵌套声明或使用范围发生遮蔽时，保留必要的
-  完整限定名；同一类型的不同使用可以有不同拼写，不全局强制简称。
-- 缺少事实不能被当作已证明不存在名称冲突。不能明确简称时保留完整拼写，
-  不加载外部声明。完整拼写也不自动证明 Java 名称解析或访问合法性。
-- 嵌套类型拼写只消费已有归属事实，不根据 `$` 拆分 owner；原始名字含 `$`
-  的顶层类继续保留它。不能因 import 便利重命名原始成员。
+- Same-package and java.lang types use their short name when there is no known conflict and the
+  corresponding use can be abbreviated unambiguously.
+- Other types use an explicit single-type import and are shortened at uses that can be
+  abbreviated unambiguously.
+- No wildcard or static imports are generated, and package members outside the input are not
+  enumerated.
+- Different types with the same short name, the current class or known nested declarations, or
+  shadowing use scopes keep the required fully qualified name; different uses of one type may be
+  spelled differently and the short name is not forced globally.
+- Missing facts cannot be treated as proof that no name conflict exists. When a short name cannot
+  be established, the complete spelling is kept without loading external declarations. A complete
+  spelling also does not by itself prove Java name resolution or access legality.
+- Nested type spellings consume only existing ownership facts and do not split the owner at `$`;
+  a top-level class whose original name contains `$` keeps it. Original members are not renamed for
+  import convenience.
 
-例如：
+For example:
 
 ```java
 package example;
@@ -1986,359 +2561,464 @@ class Case {
 }
 ```
 
-如果同时引用 java.util.Date 和 java.sql.Date，保留各自的完整限定名，
-不生成互相冲突的 Date import，也不通过重命名类型或新增 cast 解决冲突。
-实际使用不止字段类型，还包括静态调用 qualifier；P8 在具体使用范围内
-处理已知遮蔽，不能只统计类型声明就全局替换所有表达。
+When both java.util.Date and java.sql.Date are referenced, each keeps its fully qualified name; no
+conflicting Date import is generated, and the conflict is not resolved by renaming a type or adding
+a cast.
+Actual uses include static call qualifiers, not just field types; P8 handles known shadowing in the
+concrete use scope and must not replace all expressions globally after counting only type
+declarations.
 
-P8 的名称测试确认各拼写仍关联同一原始引用、import 没有重复/冲突，且
-字面值、原始 descriptor 和成员身份未改写。它不求解新的类型、重载或
-分派语义；无法建立普通 Java 拼写时保留完整原始名称记法和具体问题，
-不将名称整理失败变成整个类的输出门槛。
+P8's name tests confirm that each spelling still associates the same original reference, that
+imports have no duplicates or conflicts, and that literals, original descriptors and member
+identities were not rewritten. They solve no new type, overload or dispatch semantics; when an
+ordinary Java spelling cannot be established, the complete original-name notation and the concrete
+problem are retained, and name arrangement failure does not become an output gate for the whole
+class.
 
-import 输出顺序不承诺稳定；去重设施仅服务当前类的名称计划，不增加
-全局排序或方法完成顺序等待。引用收集、名称计划分配和输出保留范围、
-算术、可失败分配与背压保证，不引入数字配额。
+Import output order promises no stability; the deduplication facility serves only the current
+class's name plan and adds no global sorting or waiting for method completion order. Reference
+collection, name-plan allocation and output keep range, arithmetic, fallible allocation and
+backpressure guarantees and introduce no numeric quota.
 
-### 8.2 P7/P8/P9 的显示产品交付
+### 8.2 Display product delivery for P7/P8/P9
 
-P7 交付拥有的 MethodResult，类型引用与操作语义分开。P8 形成拥有的
-TypeNamePlan，并与类头、字段、静态准备和各方法结果一起保存在 ClassResult。
-显示映射通过原始引用及使用身份关联，不对 P7 AST 的执行含义做修改。
-P8 MUST 保留方法内部的已恢复表达与未恢复片段，不能将混合方法结果重新
-折叠为整方法不可用。名称或归属问题按原始引用/成员记录，独立代码继续
-组装；无法采用计划名称时，由 P8 保留已有原始显示事实及局部状态供渲染。
+P7 delivers the owned MethodResult with type references separate from operation semantics. P8 forms
+the owned TypeNamePlan and keeps it in ClassResult together with the class header, fields, static
+preparation and each method result.
+The display mapping associates through original references and use identities and does not modify
+the execution meaning of the P7 AST.
+P8 MUST retain recovered expression and unrecovered fragments inside a method and cannot fold a
+mixed method result back into whole-method unavailability. Name or ownership problems are recorded
+per original reference/member and independent code continues to assemble; when a planned name
+cannot be adopted, P8 retains the existing original display facts and local states for rendering.
 
-单方法请求仍不要求组装完整类。Engine 可以调用 P8 的同一名称规划能力，
-为选定 MethodResult 形成独立显示计划；没有类级 package/import 输出时
-保留完整限定名，不猜整个类的简称环境，也不重新分析其他方法。
+A single-method request still does not require assembling a complete class. Engine may call the same
+P8 name-planning capability to form a standalone display plan for the selected MethodResult; without
+class-level package/import output, fully qualified names are kept, the whole class's short-name
+environment is not guessed, and no other method is analysed again.
 
-P9 消费已有 MethodResult/ClassResult 及名称计划，输出文本/JSON并生成
-最终 UTF-8 spans。P9 不解析输入、不选择类型、不补语义、不决定 import
-或缩短名称；文本与 JSON 使用同一产品和显示计划。源码位置以实际输出
-计算，类型简称造成的字节长度变化不能沿用先前生成的 span。
-P9 MUST 按节点状态打印已恢复表达、未恢复范围及具体原因，不能因某一
-片段不可用而拒绝整个正文，也不能为恢复显示重新解析类型或执行分析。
-基础输出资源或目标失效时返回具体交付错误；中途截断不是部分恢复成功。
+P9 consumes existing MethodResult/ClassResult and the name plan, outputs text/JSON and generates
+final UTF-8 spans. P9 does not parse input, select types, supply semantics, decide imports or shorten
+names; text and JSON use the same product and display plan. Source positions are computed from the
+actual output, and byte-length changes caused by short type names cannot reuse previously generated
+spans.
+P9 MUST print recovered expression, unrecovered ranges and concrete causes according to node state,
+and must not reject the whole body because one fragment is unavailable, nor re-parse types or run
+analysis to restore the display.
+When basic output resources or the target fail, return a concrete delivery error; mid-way truncation
+is not a successful partial recovery.
 
-Engine 以 RenderTask 调用 P9。Rendered 拥有 UTF-8 文本、半开字节 spans、
-具体渲染问题及同一次不可变源产品；write_text/write_json 使用同一份文本。
-方法私有遍历/显示索引 scratch 失败局限于该成员；共享输出或类级显示上下文
-无法建立时交付 RenderStop，保留源产品和已完成前缀，不重标为成功结果。
-详细记法、生命周期和错误范围见 [P9 渲染](spec/09-rendering.md)。
+Engine calls P9 with a RenderTask. Rendered owns UTF-8 text, half-open byte spans, concrete rendering
+problems and the same immutable source product; write_text/write_json use that one text.
+A method-private traversal/display-index scratch failure is limited to that member; when shared
+output or class-level display context cannot be established, a RenderStop is delivered that retains
+the source product and the completed prefix and is not relabelled a success.
+Detailed notation, lifetime and error scope are in [P9 rendering](spec/09-rendering.md).
 
-### 8.3 类组装的成员契约
+### 8.3 Member contract of class assembly
 
-P8 输入的成员集合关联 P0 原始 FieldKey/MethodKey，不按名字、签名显示
-文本或 worker 完成顺序匹配。字段目录和方法目录中的每个已定位成员都有
-独立的声明、表达或具体失败结果；表达里出现伪码不影响整个类组装。
+P8's input member set is associated with P0 original FieldKeys/MethodKeys, not matched by name,
+signature display text or worker completion order. Every located member in the field and method
+directories has an independent declaration, expression or concrete failure result; pseudo code
+appearing in an expression does not affect assembly of the whole class.
 
-ClassResult 的内容包括：
+ClassResult contains:
 
-- 原始类身份、可用类声明与相关局部问题；
-- 字段身份、声明表达和原始 static ordinal；
-- 与隐式默认和显式编码区分的原始静态准备；
-- 全部已知方法成员的结果，包括构造器、初始化器和无代码声明；
-- 已有类级证据、成员呈现映射、TypeNamePlan 和具体诊断。
+- the original class identity, the available class declaration and related local problems;
+- field identities, declaration expressions and original static ordinals;
+- original static preparation distinguished from implicit defaults and explicit encodings;
+- the results of all known method members, including constructors, initializers and no-code declarations;
+- existing class-level evidence, member presentation mapping, TypeNamePlan and concrete diagnostics.
 
-组装可以在内部建立原始键索引，但不创建排序等待队列。重复成员结果、
-所属类不一致和已知目录项无结果是具体关联不变量错误，不静默略过。
-P0 目录只有前缀时，P8 保留原始覆盖不足，不凭输出数量声称类完整。
+Assembly may build original-key indexes internally but creates no sorting wait queue. Duplicate
+member results, mismatched owning classes and a known directory entry with no result are concrete
+association invariant errors and are not silently skipped.
+When the P0 directory has only a prefix, P8 retains the insufficient original coverage and does not
+claim class completeness from output counts.
 
-编码静态准备按原始 static ordinal 表示，位于原始 `<clinit>` 执行之前。
-P8 不移出构造器或 `<clinit>` 中的写入，不删除准备值后来的覆盖，也不
-添加满足 Java final/构造器合法性的初始化。P0 scalar/encoded facts 是
-唯一依据；选择可读表达属于 P8，解码原始 bytes 不属于 P8。
+Encoded static preparation is expressed by original static ordinal and placed before the original
+`<clinit>` executes. P8 does not move writes out of constructors or `<clinit>`, does not delete later
+overwrites of prepared values, and does not add initialization to satisfy Java final/constructor
+legality. P0 scalar/encoded facts are the only basis; choosing a readable expression belongs to P8,
+decoding original bytes does not.
 
-### 8.4 现有类级证据与前置调度的迁移约束
+### 8.4 Migration constraints for existing class-level evidence and prior scheduling
 
-旧 `engine/member_emission.rs`、`engine/constructor_chain.rs` 属于归档
-迁移审查材料，不是当前调度入口；不能整段挪进 P8 或改成新的方法分析入口。
-当前链没有生产相应归属证据时，P8 保留原始成员，不恢复旧分析路线。
+The old `engine/member_emission.rs` and `engine/constructor_chain.rs` are archived migration-review
+material, not current scheduling entries; they cannot be moved wholesale into P8 or turned into a
+new method-analysis entry.
+When the current chain has not produced the corresponding ownership evidence, P8 retains original
+members and does not restore the old analysis route.
 
-| 事项 | 原始/分析事实生产者 | 类级或表达消费者 | 迁移义务 |
+| Item | Original/analysis fact producer | Class-level or expression consumer | Migration obligation |
 |---|---|---|---|
-| 类头、字段、成员目录 | P0 | P8 | 直接消费，不重新 visit class-data |
-| Signature/Throws/嵌套注解 | 原始元数据 reader/P0/P1 | P4 声明解释，P8 类表达 | 保留原文和局部状态，不把缺失元数据当作无成员 |
-| 当前方法构造器 receiver/参数来源 | P3 | P4 初始化事实、P7 表达 | 消费 SSA 绑定，不维护第二套寄存器根追踪 |
-| 构造器委托目标与已知 this/super 关系 | 原始引用、P4 初始化/声明事实 | 已有委托关系检查及 P7/P8 | 保留原始调用，未知链不成为普通可读方法的输出门槛 |
-| capture 的值来源和初始化使用 | P0 声明、P3 值来源、P4 证据 | P5 存储、P7 方法表达、P8 归属 | 不通过方法名前缀或额外分析绕过缺失事实 |
-| enum/bridge 等现有成员对应证据 | 现有阶段拥有者的原始和分析证据 | P8 成员呈现 | 不增加隐藏规则，不按 flags 自动删除，不重跑成员补证据 |
+| Class header, fields, member directory | P0 | P8 | consume directly, do not re-visit class-data |
+| Signature/Throws/nested annotations | original metadata reader/P0/P1 | P4 declaration interpretation, P8 class expression | retain original text and local states; do not treat missing metadata as absent members |
+| Current method constructor receiver/argument origins | P3 | P4 initialization facts, P7 expression | consume SSA bindings, do not maintain a second register-root tracker |
+| Constructor delegation targets and known this/super relations | original references, P4 initialization/declaration facts | existing delegation checks and P7/P8 | retain original calls; an unknown chain does not become an output gate for ordinary readable methods |
+| Value origins and initialization uses of captures | P0 declarations, P3 value sources, P4 evidence | P5 storage, P7 method expression, P8 ownership | do not bypass missing facts through name prefixes or extra analysis |
+| Existing member correspondence evidence such as enum/bridge | original and analysis evidence of the existing stage owners | P8 member presentation | add no hiding rules, no automatic deletion by flags, no re-running members to supply evidence |
 
-本表记录已知消费需要，不授权扩大阶段输入或 helper 可见性。P8 不生成
-缺失的方法证据，P7 不调用 P2/P3 的 entry 构建器来补足构造器来源。
-方法前的类上下文只交付已建立的必要事实，不依赖完整类表示先生成一次。
+This table records known consumption needs and authorises neither wider stage input nor helper
+visibility. P8 generates no missing method evidence, and P7 does not call P2/P3 entry builders to
+supply constructor origins.
+Class context before a method delivers only established required facts and does not depend on a
+complete class representation being generated first.
 
-现有独立 entry 证据有明确的前缀范围，与普通完整方法产品保证不同；迁移
-必须保留其具体语义检查，不能当完整 MethodResult，也不能变成第二条
-普通方法恢复路线。入口构造的实际调度仍由 Engine 拥有，不能让后续阶段
-获权调用上游分析。若其调用无法在已批准调度和权限内收拢，停止受影响
-迁移，保留现有工作及具体冲突，不擅自扩大访问或撤销检查。
+Existing independent entry evidence has an explicit prefix scope and differs from the guarantee of
+an ordinary complete method product; migration must retain its concrete semantic checks, must not
+treat it as a complete MethodResult, and must not turn it into a second ordinary method recovery
+route. Actual scheduling of entry construction is still owned by Engine, and later stages cannot be
+given authority to call upstream analysis. If those calls cannot be gathered within the approved
+scheduling and permissions, stop the affected migration and keep the existing work and the concrete
+conflict instead of widening access or revoking checks.
 
-P8 默认保留原始成员，不扩大现有 Generated 规则。已建立的对应映射可以
-原样消费，映射到原始成员身份和所承接语法；不能因为整个类以 Java-like
-记法表示就新增成员隐藏，也不能因为特殊语法未恢复撤掉其他可读成员。
-没有归属证据时保留原始名称、字段与方法，不从 `$` 或 synthetic 猜归属。
+P8 retains original members by default and does not widen existing Generated rules. Established
+correspondence mappings may be consumed as they are, mapped to original member identities and the
+syntax they carried; members must not be newly hidden because the whole class is written in
+Java-like notation, and other readable members must not be withdrawn because a special syntax was
+not recovered.
+Without ownership evidence, original names, fields and methods are retained; ownership is not
+guessed from `$` or synthetic.
 
-## 9. 局部失败与方法退出
+## 9. Local failure and method exit
 
-**统一原则：错误只影响实际依赖范围；保留同一方法中的可恢复片段和其他
-正常成员，不把反编译做成整方法、整类或整个输入的全有或全无。**
+**Unified principle: an error affects only the scope that actually depends on it; recoverable
+fragments in the same method and other ordinary members are preserved, and decompilation is not
+made all-or-nothing for a whole method, class or input.**
 
-本节约束所有阶段、共享读取、缓存、调度、汇总和展示的错误处理，不是
-P1–P3 的特殊恢复选项。第 9.1 节细化方法内部，第 9.2 节规定全链路归属：
+This section constrains error handling in every stage, shared reads, caches, scheduling, aggregation
+and presentation; it is not a special recovery option for P1–P3. §9.1 details the inside of a
+method and §9.2 defines chain-wide ownership:
 
-1. 失败事实的拥有者 MUST 将影响限制在可可靠识别的最小范围，记录原始
-   身份、位置、原因与失效事实。未知只沿真实数据、控制、异常、锁或初始化
-   依赖传播；未受影响的分析和展示 MUST 继续。
-2. 错误分类和停止范围 MUST 分开。`Malformed`、`Unsupported`、
-   `InternalInvariant` 或 `ResourceExhausted` 的名称本身，不足以把方法私有
-   问题升级为整类、DEX 或请求终止。扩大停止范围 MUST 指明受损的共享事实、
-   无法定位的区段或已无法维持的调度、结果记录及输出资源。
-3. 局部事实缺失或不可用 MUST 按[事实状态](spec/00-overview.md#failure-kinds-and-fact-states)
-   显式交付，不能用 Unknown 抹去已记录的错误。局部表达无法恢复时，方法
-   结果 MUST 保留已恢复内容，在对应原始范围明确标注未恢复片段及可用 DEX
-   事实；不能只因该片段失败撤销整个方法。
-4. 无法确定指令边界、转移目标或状态关联时，拥有者 MUST 停止不可靠范围，
-   不能猜下一条指令、跳过坏操作或沿用可能已失效的状态。其他可独立定位、
-   不依赖该范围的片段、成员、类和 DEX MUST 保留并继续处理。
-5. 容错 MUST NOT 静默删除调用、写入、异常、锁或初始化效果，也不能补零、
-   null、NOP、空列表、异常桩或 dispatcher 掩盖缺口。局部容错通过明确的
-   事实状态和部分结果表达，不把阶段构造快照冒充完整前置产品。
-6. 方法私有资源申请失败后，任务 MUST 释放不再需要的 scratch，保留可交付
-   的既有事实；只要基础资源仍能维持独立工作，其他方法 MUST 继续。资源
-   彻底不可用时明确停止实际受影响范围，不保证通过新分配或重跑恢复成功。
-7. 汇总 MUST 组合成功、部分恢复和不可用结果，不因一个子结果失败撤销其他
-   结果。共享缓存 MUST NOT 把局部失败扩散为无关对象的失败，或把读取失败
-   缓存为不存在。缺失被调用方法的分析结果不构成调用者分析的失败依据。
+1. The owner of a failed fact MUST limit the impact to the smallest reliably identifiable scope and
+   record the original identity, position, cause and invalidated facts. Unknown propagates only
+   along real data, control, exception, lock or initialization dependencies; unaffected analysis and
+   presentation MUST continue.
+2. Error classification and stop scope MUST be separate. The name `Malformed`, `Unsupported`,
+   `InternalInvariant` or `ResourceExhausted` is not by itself enough to escalate a method-private
+   problem into termination of a whole class, DEX or request. Widening the stop scope MUST name the
+   damaged shared fact, the section that cannot be located, or the scheduling, result retention and
+   output resources that can no longer be maintained.
+3. Missing or unusable local facts MUST be delivered explicitly under
+   [fact states](spec/00-overview.md#failure-kinds-and-fact-states), and Unknown must not erase an
+   already recorded error. When a local expression cannot be recovered, the method result MUST keep
+   the recovered content and mark the unrecovered fragment and the available DEX facts explicitly in
+   the corresponding original range; the whole method must not be withdrawn because that fragment
+   failed.
+4. When instruction boundaries, transfer targets or state associations cannot be determined, the
+   owner MUST stop the unreliable range and must not guess the next instruction, skip a bad
+   operation or continue using a possibly invalidated state. Other independently locatable
+   fragments, members, classes and DEX images that do not depend on that range MUST be retained and
+   processed further.
+5. Fault tolerance MUST NOT silently delete calls, writes, exceptions, locks or initialization
+   effects, nor mask gaps with zero, null, NOP, an empty list, an exception stub or a dispatcher.
+   Local tolerance is expressed through explicit fact states and partial results, and a stage
+   construction snapshot is not passed off as a complete preceding product.
+6. After a method-private resource request fails, the task MUST release scratch it no longer needs
+   and retain the existing deliverable facts; as long as basic resources can still sustain
+   independent work, other methods MUST continue. When resources are thoroughly unavailable, stop
+   the actually affected scope explicitly and promise no recovery through new allocation or rerun.
+7. Aggregation MUST combine successful, partially recovered and unavailable results and must not
+   withdraw other results because one sub-result failed. A shared cache MUST NOT spread a local
+   failure to unrelated objects or cache a read failure as absence. A missing callee analysis result
+   is not grounds for the caller's analysis to fail.
 
-只有满足本阶段保证才交付成熟成功产品。已损坏的必需输入、未支持的语义
-形状和内部不变量错误保持具体分类，不能通过空列表或默认值隐藏。
+A mature success product is delivered only when this stage's guarantees are satisfied. Damaged
+required input, unsupported semantic shapes and internal invariant errors keep concrete
+classifications and cannot be hidden behind empty lists or default values.
 
-方法任务 MUST 保留失败方法的原始身份、独立可用事实、已有可恢复表达和
-阶段原因。失败后释放未用分析 scratch；未恢复片段所需的安全原始事实
-通过现有一次性只读出口交付。出口不重跑分析、不恢复缺失语义。
+A method task MUST retain the original identity of the failed method, its independently usable
+facts, existing recoverable expression and the stage cause. After failure it releases unused
+analysis scratch; safe original facts needed by unrecovered fragments are delivered through the
+existing one-time read-only exit. The exit does not re-run analysis and does not recover missing
+semantics.
 
-原始区段/记录读取由 reader 负责，指令解码事实由 P1 负责；只读出口复用
-相应生产者，P9 只渲染已有事实。
-确认的 Malformed 不因展示可用而撤销。资源失败保留已可用原始事实；
-不能以新的分配或重新分析保证恢复成功，也不能静默成功截断。
+Original section/record reads belong to the reader and instruction-decoding facts belong to P1; the
+read-only exit reuses the corresponding producers, and P9 renders only existing facts.
+Confirmed Malformed is not revoked because presentation is possible. Resource failure retains the
+already usable original facts; recovery cannot be promised through new allocation or re-analysis,
+and silent successful truncation is not allowed.
 
-方法内的局部失败不丢弃其他可恢复片段或成员的结果。缺少可选源码元数据与必需分析
-事实失败分开，已有可读结果及具体不确定性继续交付。P6 不能自然结构化
-的控制流按第 5.6 节保留为完整显式图表达，不作为普通方法分析失败进入
-整方法 Debug。真实执行事实缺失和内部错误仍保留具体分类，按实际受损
-范围停止，不因此自动撤销其余可恢复表达。
+Local failure inside a method does not discard the results of other recoverable fragments or
+members. Missing optional source metadata is kept separate from failure of required analysis facts,
+and existing readable results and concrete uncertainties continue to be delivered. Control flow
+that P6 cannot structure naturally is retained as complete explicit graph expression per §5.6 and
+does not enter whole-method Debug as an ordinary analysis failure. Missing real execution facts and
+internal errors keep concrete classifications and stop the actually damaged scope without
+automatically revoking the remaining recoverable expression.
 
-### 9.1 方法内部局部可用性契约
+### 9.1 The local-availability contract inside a method
 
-本节的交付目标是同一方法内继续分析和表达，不是只让下一个方法继续，也
-不是遇到一处问题就把整个方法降为反汇编。阶段内部继续使用自己的有限
-算法；局部状态不是正常请求的独立验证过程，也不要求新增通用错误框架。
+The delivery goal of this section is continued analysis and expression within the same method, not
+merely letting the next method continue, and not downgrading a whole method to disassembly at the
+first problem. A stage continues with its own bounded algorithm internally; a local state is not an
+independent verification process for ordinary requests and does not require a new general error
+framework.
 
-#### 产品保证与发布
+#### Product guarantees and publication
 
-- 生产者 MUST 区分已建立事实、解释 Unknown 和带原错误的 Unavailable。
-  一个原始引用的内容不可读，不自动否定已确定的指令宽度、寄存器或正常
-  转移。缺口按事实项记录，不使用一个“整条指令成功”布尔值抹掉其他事实。
-- 成熟阶段产品 MUST 完整交代来源覆盖、局部状态及后继加工所需的影响范围。
-  “完整”不要求全部事实已恢复；已建立项仍满足原保证，不可用项不能作为
-  可用输入消费。只有拥有者能发布产品，不把可变构造快照交给后继修补。
-- 生产者 MUST 先完成一个发布单元的事实与状态关联，再让其他单元引用它。
-  局部构造错误不能留下半条操作、悬空身份或未完成的 Phi 作为可用事实。
-  无法维持这些最低保证时保留最后可信产品并停止受影响的构造。
+- A producer MUST distinguish established facts, Unknown interpretations and Unavailable with the
+  original error. Unreadable contents of one original reference do not automatically negate a
+  determined instruction width, register or normal transfer. Gaps are recorded per fact item and
+  one "whole instruction succeeded" boolean must not erase other facts.
+- A mature stage product MUST account completely for source coverage, local states and the impact
+  range later processing needs. "Complete" does not require all facts recovered; established items
+  still satisfy their original guarantees, and unusable items cannot be consumed as usable input.
+  Only the owner can publish a product and must not hand a mutable construction snapshot to a
+  successor for repair.
+- A producer MUST complete the fact and state associations of one published unit before other units
+  refer to it. A local construction error must not leave half an operation, a dangling identity or
+  an unfinished Phi as a usable fact.
+  When these minimum guarantees cannot be maintained, keep the last trusted product and stop the
+  affected construction.
 
-#### 生产者与消费者
+#### Producers and consumers
 
-| 生产者 | 必须交付的局部信息 | 消费者及处理 |
+| Producer | Local information it must deliver | Consumers and handling |
 |---|---|---|
-| reader / P1 | 原始身份和可读范围；每项已确定边界；解码事实、原始引用和各关联的状态；未恢复区段与具体原因 | P2 只转换已建立事实，不猜长度、参数布局或缺失目标；缺口保留为执行模型中的未恢复位置 |
-| P2 | 操作/终结点身份；读、写、提交、正常/异常转移、heap/锁/初始化效果各自的事实或状态；不确定影响的寄存器/控制范围 | P3 按已建立关系构造来源，按缺口影响保留来源不确定；不读 opcode 或替 P2 补语义 |
-| P3 | 各定义/使用/进入的来源或不可用状态；宽值及重叠影响；缺口原因与原始位置 | P4 仅对有依据的事实求解；解释未知不能反向撤销已知 SSA 来源 |
-| P4 / P5 | 值与使用解释、存储/复制/快照各自的可用性及依赖关系 | P6 / P7 继续可建立的规划和表达；不能默认缺失的复制、快照或初始化不存在 |
-| P6 / P7 | 独立可恢复表达及按原始位置关联的未恢复片段、事实和原因 | P8 保留同一方法内的混合结果；P9 纯渲染，不重试或补做分析 |
+| reader / P1 | original identity and readable ranges; each determined boundary; decoded facts, original references and the state of each association; unrecovered sections and concrete causes | P2 converts only established facts and guesses no length, argument layout or missing target; a gap is retained as an unrecovered position in the execution model |
+| P2 | operation/terminal identities; facts or states for reads, writes, commits, normal/exception transfers and heap/lock/initialization effects separately; register/control scopes of uncertain impact | P3 builds origins from established relations, keeps origin uncertainty for gap impacts, reads no opcodes and supplies no P2 semantics on its behalf |
+| P3 | origin or unavailable state of each definition/use/entry; wide values and overlap impact; gap causes and original positions | P4 solves only from evidenced facts; an unknown interpretation cannot revoke a known SSA origin in reverse |
+| P4 / P5 | availability and dependencies of value and use interpretations, storage/copies/snapshots | P6 / P7 continue the planning and expression they can establish; a missing copy, snapshot or initialization cannot be assumed absent by default |
+| P6 / P7 | independently recoverable expression and unrecovered fragments with facts and causes associated to original positions | P8 retains the mixed result inside the same method; P9 is pure rendering and retries or redoes no analysis |
 
-正常路径和失败位置使用同一组原始身份、同一份操作定义和一条方法链。
-实现 MUST NOT 为缺口另建 opcode 解释器、区域重跑入口或第二套寄存器追踪。
-实际 Rust 类型布局由拥有模块决定；本表不扩大构造权限或上游输入访问。
+Normal paths and failed positions use the same set of original identities, the same operation
+definitions and one method chain.
+An implementation MUST NOT build a separate opcode interpreter, region-rerun entry or second
+register tracker for gaps.
+The actual Rust type layout is decided by the owning module; this table widens neither construction
+authority nor upstream input access.
 
-#### 缺口影响与值来源
+#### Gap impact and value sources
 
-1. P2 MUST 区分已知读取、已知正常写入和只知道可能受影响的寄存器范围。
-   未知读写不等于空读写；不确定范围无法收窄时，明确扩大到可能受影响的
-   范围，不能为局部外观强行声明无关。边界计算不预先展开稠密关系矩阵。
-2. P3 MUST 区分“值来自哪个定义”和“该值如何解释”。目标名称、常量内容或
-   类型解释未知时，只要定义、slot 和提交关系已建立，SSA 来源仍可保留。
-   缺少来源依据时才保持来源不可确立，不能伪造 ValueId 或默认寄存器初值。
-3. 写入或提交缺口只影响与其可能写入范围相交的被跟踪 slot，以及真正依赖
-   它们的来源推断。已知不相交的 slot 不受影响。控制关系已知时，一次明确
-   的后续写入可截断相关寄存器的不确定性，但不能顺带清除 heap、锁或异常
-   不确定性，也不能修复仍可能绕过该写入的未知进入。
-4. P2 MUST 为未确定转移保留来源、已知角色和可能进入的范围。P3 MUST NOT
-   删除该转移后，把已知边的投影当成完整 CFG 计算可信支配或 Phi。只有能
-   排除未知额外进入，或显式纳入其来源不确定性时，才能交付相应绑定。
-5. P3 MUST 分开正常和异常状态。提交规则未知时，不能默认“不写入”、保持
-   旧值或与正常路径相同；规则已建立时仍保留正常提交前的异常 frame。
-   缺少宽值或 incoming 依据保持局部不可用，不能拆拼宽值或忽略坏来源。
-6. 未确定范围可能影响整个方法时，生产者 MUST 如实扩大不确定范围；不保证
-   任意错误都只影响一条指令。即使分析无法继续，独立可用原始事实仍保留。
+1. P2 MUST distinguish known reads, known normal writes and a register range that is merely
+   possibly affected.
+   An unknown read or write is not an empty one; when an uncertain range cannot be narrowed, widen
+   it explicitly to the possibly affected range and do not force an unrelated declaration for local
+   appearance. Boundary computation does not pre-expand a dense relation matrix.
+2. P3 MUST distinguish "which definition the value comes from" from "how that value is
+   interpreted". When a target name, constant content or type interpretation is unknown but the
+   definition, slot and commit relations are established, the SSA origin can still be retained.
+   Only when origin evidence is missing does the origin stay unestablishable, and no ValueId or
+   default register initial value may be fabricated.
+3. A write or commit gap affects only tracked slots whose possible write range intersects it and the
+   origin inferences that genuinely depend on them. Known disjoint slots are unaffected. When
+   control relations are known, one definite later write can truncate the register's uncertainty,
+   but it must not clear heap, lock or exception uncertainty along with it, nor repair an unknown
+   entry that may still bypass that write.
+4. P2 MUST retain the origin, known roles and possible entering range of an undetermined transfer.
+   P3 MUST NOT delete that transfer and then compute trusted dominance or Phis from a projection of
+   known edges as if it were the complete CFG. The corresponding binding may be delivered only when
+   unknown extra entries can be excluded or their origin uncertainty is explicitly included.
+5. P3 MUST keep normal and exceptional states separate. When commit rules are unknown, "no write",
+   keeping the old value or treating the case as the normal path must not be assumed; when the rules
+   are established, the exception frame before the normal commit is still retained.
+   Missing wide-value or incoming evidence keeps a local unavailability; wide values must not be
+   spliced and bad sources must not be ignored.
+6. When an undetermined range may affect the whole method, the producer MUST widen the uncertain
+   range truthfully; arbitrary errors do not promise to affect only one instruction. Even when
+   analysis cannot continue, independently usable original facts are retained.
 
-#### 展示、失败和验收
+#### Presentation, failure and acceptance
 
-P7 MUST 在同一方法结果中保留可恢复表达及未恢复片段的原始范围、具体原因
-和可用 DEX 事实。缺口不是一个假运行时操作：不能生成补位调用、默认值、
-空语句或异常桩来掩盖未知行为。图形不自然仍按第 5.6 节表达；缺失执行
-事实不能只换成 goto 就宣称恢复。P9 不识别区域、推导类型或重跑任一阶段。
+P7 MUST retain, inside the same method result, the recoverable expression together with the original
+ranges, concrete causes and available DEX facts of unrecovered fragments. A gap is not a fake runtime
+operation: no padding call, default value, empty statement or exception stub may be generated to mask
+unknown behaviour. Unnatural graph shape is still expressed per §5.6; missing execution facts cannot
+be declared recovered by substituting a goto. P9 identifies no region, derives no type and re-runs no
+stage.
 
-阶段最低保证无法维持、基础结构不能安全定位或结果无法继续记录时，允许
-停止实际受影响范围。停止 MUST 保留已经发布的独立事实和表达。若只能
-交付原始片段，必须如实呈现，不能把它计为已有 Java-like 恢复。
+When a stage's minimum guarantee cannot be maintained, a basic structure cannot be located safely or
+results can no longer be recorded, stopping the actually affected scope is permitted. The stop MUST
+retain independently published facts and expression already delivered. If only original fragments
+can be delivered, they must be presented truthfully and not counted as existing Java-like recovery.
 
-验收：通过已有获准的公开 Engine 核心测试及正式观察入口，独立核对：
+Acceptance: through the existing approved public Engine core tests and formal observation entries,
+independently check that:
 
-- 同一方法的局部引用问题不阻止其后无依赖操作进入 P2/P3；原始错误仍存在。
-- 局部可能写入缺口只影响相关 slot；在控制关系已知时，明确重写后来源恢复。
-- 未知转移或异常提交不会因删边而产生假的支配、Phi 或可读值。
-- 无法确定宽度时不猜测后续边界；阶段构造失败不发布悬空身份或假完整产品。
-- 已有异常旧状态、宽值重叠、参数顺序和效果保留行为不退化。
+- A local reference problem in one method does not prevent its later independent operations from
+  entering P2/P3; the original error still exists.
+- A local possible-write gap affects only the dependent slots; with known control relations, origin
+  recovers after a definite rewrite.
+- An unknown transfer or exceptional commit does not produce false dominance, Phis or readable
+  values by deleting edges.
+- When a width cannot be determined, later boundaries are not guessed; a stage construction failure
+  publishes no dangling identities or falsely complete product.
+- Existing behaviours for old exceptional state, wide-value overlap, argument order and effect
+  retention do not regress.
 
-这些是目标契约和验收条件，不是当前实现通过声明。当前能力与未接通阶段
-仍以 [phases](phases.md) 和[引擎 README](../../crates/diana-decomp/README.md)为准。
+These are target contracts and acceptance conditions, not a claim that the current implementation
+passes. Current capabilities and stages not yet connected are governed by [phases](phases.md) and
+the [engine README](../../crates/diana-decomp/README.md).
 
-### 9.2 P1–P9 统一消费局部结果
+### 9.2 P1–P9 uniformly consume local results
 
-P1–P9 的每个拥有者 MUST 使用第 4 节的产品保证和第 9 节的影响范围规则。
-这条契约贯穿分析、存储、控制、表达、组装和渲染，不是 P1–P3 的特殊恢复
-机制，也不能由 Engine 外包一层捕获来代替。外围输入管理不替代本节工作。
+Every P1–P9 owner MUST use the product guarantees of §4 and the impact-scope rules of §9.
+This contract runs through analysis, storage, control, expression, assembly and rendering; it is not a
+special recovery mechanism for P1–P3, and Engine cannot replace it by wrapping an outer catch.
+Peripheral input management does not replace this work.
 
-| 阶段 | 输入的消费义务 | 本阶段局部结果与下一阶段保证 |
+| Stage | Consumption obligations on input | Local result of this stage and the next stage's guarantee |
 |---|---|---|
-| P1 | 消费 reader 已交付的安全范围和独立读取状态，不重建来源 | 分项保留解码、引用、操作数及关联状态；P2 能区分已解码项、已知范围缺口和边界未知区段 |
-| P2 | 对已建立的 P1 事实建立执行关系，不猜缺失声明、宽度或目标 | 分开读、写、提交、正常/异常转移及效果的可用性，交付缺口影响范围；P3 不需重解码或删边补图 |
-| P3 | 只使用 P2 已建立的执行关系及未确定影响，不将投影图当完整 CFG | 各定义、使用、incoming 保留来源或局部不可用；P4 得到准确宽度、可用性和原始原因，不把解释未知混成来源丢失 |
-| P4 | 按每项来源和原始约束求解，不伪造类型或反向修补 SSA | ValueFacts、UseViews、PhiViews 和初始化解释各自交付结果及影响；P5 可继续独立存储，不因一个使用失败撤销全方法类型结果 |
-| P5 | 对依据充分的表示、适配和位置建立存储，不为未知来源补默认值 | 存储绑定、复制、快照和初始化使用分别保留计划或缺口；P6/P7 能识别受影响使用和路径，不能把缺失计划当作无需执行 |
-| P6 | 消费存储和执行事实的局部状态，不补缺失复制、目标或 handler | 独立区域继续规划，已知非自然控制用 GraphRegion；真实缺口保留影响范围，P7 不需重新识别结构或假设未知转移已恢复 |
-| P7 | 仅表达已有语义和计划，不能因输入部分可用而重跑前置分析 | 同一 MethodResult 保留已恢复表达和有原始范围、原因、事实的未恢复片段；局部 AST 失败不清空其他正文，P8 不需二次恢复 |
-| P8 | 按原始身份组合成员和方法内片段，不要求全部成员或表达成功 | ClassResult/TypeNamePlan 保留混合结果与局部名称/归属问题；P9 获得已有显示事实和缺口状态，不因名称规划问题丢弃代码 |
-| P9 | 纯渲染既有表达、显示计划和未恢复事实，不做分析 | 文本/JSON 保留同样的可读片段、原始身份及原因；局部不可用不是整结果输出门槛，真实输出失败不冒充成功截断 |
+| P1 | consume the safe ranges and independent read states already delivered by the reader, rebuilding no source | retain decoding, reference, operand and association states per item; P2 can distinguish decoded items, known-range gaps and sections with unknown boundaries |
+| P2 | establish execution relations over established P1 facts, guessing no missing declaration, width or target | separate availability of reads, writes, commits, normal/exception transfers and effects and deliver gap impact ranges; P3 need not re-decode or delete edges to complete the graph |
+| P3 | use only established P2 execution relations and undetermined impacts, treating no projected graph as a complete CFG | every definition, use and incoming retains its origin or local unavailability; P4 obtains accurate widths, availability and original causes and does not confuse an unknown interpretation with a lost origin |
+| P4 | solve from each origin and original constraint, fabricating no type and repairing no SSA in reverse | ValueFacts, UseViews, PhiViews and initialization interpretations each deliver their result and impact; P5 can continue independent storage without one failed use revoking the method's type results |
+| P5 | establish storage from well-evidenced representations, adaptations and positions, supplying no defaults for unknown origins | storage bindings, copies, snapshots and initialization uses each retain a plan or a gap; P6/P7 can identify affected uses and paths and cannot treat a missing plan as needing no execution |
+| P6 | consume the local states of storage and execution facts, supplying no missing copy, target or handler | independent regions continue planning and known unnatural control uses GraphRegion; real gaps keep their impact range, and P7 need neither re-identify structure nor assume unknown transfers were recovered |
+| P7 | express only existing semantics and plans and must not re-run prior analysis because input is partly usable | the same MethodResult retains recovered expression and unrecovered fragments with original ranges, causes and facts; a local AST failure does not blank other body content, and P8 needs no second recovery |
+| P8 | combine members and intra-method fragments by original identity without requiring every member or expression to succeed | ClassResult/TypeNamePlan retain mixed results and local name/ownership problems; P9 obtains existing display facts and gap states and discards no code because of name-planning problems |
+| P9 | purely render existing expression, display plans and unrecovered facts, performing no analysis | text/JSON retain the same readable fragments, original identities and causes; a local unavailability is not an output gate for the whole result, and a real output failure does not masquerade as successful truncation |
 
-各消费者 MUST 在使用相关事实时处理其状态，而不是重新验证整份上游产品。
-各生产者 MUST 在自己的私有构造内完成局部状态与来源关联，不能把半成品
-留给下一阶段修补。后继可以扩大实际依赖影响，但 MUST NOT 丢失原始原因，
-或将上游局部状态无条件折叠为整方法失败。
+Each consumer MUST handle the state of the facts it uses rather than re-verifying the whole upstream
+product.
+Each producer MUST complete local state and origin associations inside its own private construction
+and must not leave a half-finished product for the next stage to repair. A successor may widen the
+actual dependency impact, but MUST NOT lose the original cause or unconditionally fold an upstream
+local state into whole-method failure.
 
-阶段算法针对已建立事实继续自己的有限加工，对依据不足部分交付具体状态。
-拥有者无法维持身份、覆盖或必要关系的最低保证时才停止相应构造；不要求
-为每个错误另建区域重跑、恢复分支或通用错误管理器。安全解析、范围/算术、
-分配失败和背压处理仍保留，独立验证仍只属测试。
+A stage algorithm continues its own bounded processing over established facts and delivers concrete
+states for insufficiently evidenced parts. The owner stops the corresponding construction only when
+it cannot maintain the minimum guarantees of identity, coverage or required relations; no separate
+region rerun, recovery branch or general error manager is required per error. Safe parsing,
+range/arithmetic checks, allocation failure and backpressure handling remain, and independent
+verification still belongs only to tests.
 
-验收 MUST 分开核对恢复内容、明确缺口和覆盖，不能用整结果布尔值代替。
-P1–P3 按第 9.1 节核对事实连续加工；P4–P6 核对一个使用、复制或区域问题
-不撤销其他已建立结果；P7–P9 核对同一方法的已恢复片段实际进入最终文本
-和 JSON，且缺口保留原始位置和原因。只保留反汇编、只让下一个方法继续，
-都不足以通过方法内部恢复的端到端验收。
+Acceptance MUST check recovered content, explicit gaps and coverage separately and cannot substitute
+a whole-result boolean. P1–P3 check continued fact processing per §9.1; P4–P6 check that one use, copy
+or region problem does not revoke other established results; P7–P9 check that the same method's
+recovered fragments actually reach the final text and JSON and that gaps retain original positions
+and causes. Keeping only disassembly, or letting only the next method continue, is insufficient for
+end-to-end acceptance of intra-method recovery.
 
-验收遵循现有测试授权范围，不授权新增测试套件、私有阶段 harness、非核心
-工具测试或 CI 工作流。进程终止、共享输入无法定位或基础资源彻底失效不
-保证继续；这些情况也不能成为普通局部错误全局停止的默认理由。
+Acceptance follows the existing authorisation for tests and authorises no new test suite, private
+stage harness, non-core tool test or CI workflow. Process termination, an unlocatable shared input or
+a thorough loss of basic resources promise no continuation; these situations also cannot become the
+default reason for a global stop on an ordinary local error.
 
-## 10. 新结构优先的实现策略
+## 10. Implementation strategy: new structures first
 
-### 10.1 当前实现仅作语义和算法对照
+### 10.1 The current implementation is only a semantic and algorithmic reference
 
-当前 P0 是独立 ClassSnapshot，没有接入正式方法调度。现有方法流程仍有
-固定入口 Phi、跨阶段原始查询与检查，以及整方法结构模板/dispatcher。
-这些布局和调用方式不是新实现的兼容目标；各阶段的产品契约才是实现依据。
+The current P0 is a standalone ClassSnapshot that is not connected to formal method scheduling. The
+existing method flow still has fixed entry Phis, cross-stage raw queries and checks, and whole-method
+structure templates/dispatchers.
+These layouts and call patterns are not compatibility targets for the new implementation; each
+stage's product contract is the basis for implementation.
 
-实现者 MAY 根据现有代码重新实现算法、产品和模块，不要求逐文件移动或
-保留旧 IR 字段、内部 helper、嵌套方式和调用签名。实现优先形成新结构的
-实际生产/消费关系，不用转发 wrapper 把旧路线包装成新产品。
+Implementers MAY reimplement algorithms, products and modules from the existing code and are not
+required to move files one by one or keep old IR fields, internal helpers, nesting and call
+signatures. Implementation first forms the actual producer/consumer relations of the new structures
+and does not wrap the old route in forwarding wrappers to look like new products.
 
-共享安全读取、格式/operand 表和确实适合新契约的局部算法可以复用。
-不适合的实现可以重写；复用与否由输入保证、语义不变量和消费需要决定，
-不是为了维持旧模块编译而放宽新接口。共享原始格式实现保持一份，不因
-重写建立第二套 opcode 宽度表或方法解码/恢复路线。
+Shared safe reads, format/operand tables and local algorithms that genuinely fit the new contracts
+may be reused. Unsuited implementations may be rewritten; reuse is decided by input guarantees,
+semantic invariants and consumption needs, not by relaxing new interfaces to keep old modules
+compiling. The shared original-format implementation stays single, and rewriting must not create a
+second opcode width table or method-decoding/recovery route.
 
-旧代码的价值是查明原始事实、语义条件、分类失败和检查义务。重写可以
-改变检查的实现形式，不能无理由删除其安全/语义义务。新的检查由对应
-转换拥有者内部完成，不把原始 replay 全部搬到 P1，也不通过重复上游
-算法建立阶段信任。
+The value of the old code is in identifying original facts, semantic conditions, classified failures
+and check obligations. A rewrite may change the implementation form of a check but cannot delete its
+safety/semantic obligations without reason. New checks are completed inside the owner of the
+corresponding transformation; original replay is not all moved to P1, and stage trust is not built by
+duplicating upstream algorithms.
 
-### 10.2 按新产品链实现
+### 10.2 Implement along the new product chain
 
-1. 落实新 P0 ClassFacts、语义 flags、四组成员目录和绑定方法入口，分开
-   目录覆盖、声明与元数据状态。不以当前 debug JSON 字段作为内部产品模型。
-2. 实现共享方法 reader 的 MethodSource 和 P1 DecodedMethod。明确原始
-   区段读取与反汇编/指令关联的区别，消费者不再次扫描目录或解码指令。
-3. 实现 P2 完整 FlowMethod，操作语义、提交、转移身份与来源覆盖在 P2
-   内部闭合，不依赖旧 P3 的字段或 helper。
-4. 实现 P3 异常感知 Pruned SSA、支配树、按需 IDF 与重命名。使用第 5.3
-   节的状态模型及私有位置映射，不保留“跨块必须经过入口 Phi”的旧假设。
-5. 实现 P4 分离约束域、ValueFacts/UseViews/PhiViews 和初始化事实，
-   直接消费原始签名，不让自然表达条件成为分析准入。
-6. 实现 P5 存储映射、依赖索引/就绪队列、复制破环及异常快照，消费完整
-   incoming 和 StatePoint 义务，不使用旧 LocalId=ValueId 的布局约定。
-7. 实现 P6 出口导向区域与 GraphRegion，正常结构优先，无法结构化时
-   保留 Java-like 转移。实现 P7 的统一操作表达，普通调用/new 自然表达，
-   保留完整伪码能力，不产生 dispatcher 或为表达不足撤掉整个方法。
-8. 实现 P8 全成员类组装、原始静态准备和 TypeNamePlan，以及 P9 纯渲染。
-   名称整理不回到完成的字符串中替换，方法结果不重跑，最终 spans 按实际
-   输出计算。
-9. 将新产品链接入 Engine 的已批准方法级调度和应用结果交付，删除实际
-   被替代的旧生产/分析/渲染路径，同步阶段文档与模块声明。
+1. Implement the new P0 ClassFacts, semantic flags, four-group member directory and bound method
+   entries, separating directory coverage, declaration and metadata states. Do not use current debug
+   JSON fields as the internal product model.
+2. Implement the shared method reader's MethodSource and P1 DecodedMethod. Make the distinction
+   between original section reads and disassembly/instruction association explicit, and have
+   consumers neither rescan directories nor decode instructions.
+3. Implement P2's complete FlowMethod, closing operation semantics, commits, transfer identities and
+   origin coverage inside P2 without depending on old P3 fields or helpers.
+4. Implement P3's exception-aware pruned SSA, dominator tree, on-demand IDF and renaming. Use the
+   state model and private position mapping of §5.3 and drop the old assumption that a cross-block use
+   must pass through an entry Phi.
+5. Implement P4's separated constraint domains, ValueFacts/UseViews/PhiViews and initialization facts,
+   consuming original signatures directly and never making natural-expression conditions an analysis
+   admission requirement.
+6. Implement P5's storage mapping, dependency index/ready queue, copy cycle breaking and exception
+   snapshots, consuming complete incoming and StatePoint obligations without the old LocalId=ValueId
+   layout convention.
+7. Implement P6's exit-directed regions and GraphRegion, with normal structure first and Java-like
+   transfers preserved when structuring fails. Implement P7's unified operation expression, natural
+   expression for ordinary calls/new, and full pseudo-code capability, without producing a dispatcher
+   or withdrawing a whole method for insufficient expression.
+8. Implement P8's all-member class assembly, original static preparation and TypeNamePlan, plus P9's
+   pure rendering. Name arrangement does not replace text inside finished strings, method results are
+   not re-run, and final spans are computed from actual output.
+9. Connect the new products to Engine's approved method-level scheduling and application result
+   delivery, delete old production/analysis/rendering paths that are actually superseded, and update
+   stage documents and module declarations with them.
 
-按产品逐段完成真实消费者，不先堆积无消费者的模块骨架。接入单位必须
-同时覆盖相关原始身份、局部失败、资源与检查义务，而不只验证成功路径。
+Complete real consumers product by product instead of accumulating module skeletons without
+consumers first. A connection unit must cover the relevant original identities, local failure,
+resource and check obligations together, not merely the success path.
 
-Engine 的持有、顺序调用、作用域内方法并发和类级汇合保持已批准关系。
-重写不授权新增阶段入口、扩大 exports 或构造权限。保留现有应用查询和
-输入安全契约，不要求以旧私有 IR 为基础构造一层长期兼容系统。
+Engine's ownership, ordered calls, scoped method concurrency and class-level joining keep the approved
+relations.
+A rewrite does not authorise new stage entries or wider exports or construction authority. Existing
+application queries and input-safety contracts are retained, and building a long-term compatibility
+layer on old private IR is not required.
 
-新实现准备期间尊重已有未提交工作；不为清理结构撤销无关改动。新产品链
-接入同一正式入口后，不能长期保留两套普通方法 pipeline，更不能按输入
-名称、失败或输出外观切回旧算法。重写不是增加第二次反编译机会。
+Respect existing uncommitted work while preparing the new implementation; do not withdraw unrelated
+changes to clean up structure. After the new product chain enters the same formal entry, two ordinary
+method pipelines cannot be kept long term, and switching back to the old algorithm by input name,
+failure or output appearance is forbidden. A rewrite is not an extra chance to decompile again.
 
-### 10.3 旧代码对照清单：保留义务，不要求搬文件
+### 10.3 Old-code comparison checklist: keep the obligations, do not move files
 
-| 旧代码对照位置 | 新结构中的义务 |
+| Old-code reference location | Obligation in the new structure |
 |---|---|
-| p1_input/catalog、field_declarations、annotation_facts | P0 类事实和共享 reader：成员/初值关联、局部失败、可用前缀与唯一事实生产 |
-| p1_input/code、method、structure、formats/operands | MethodSource/P1：范围、指令/引用/边界和元数据保证；共享格式表只保留一份 |
-| p2_flow/normal、local_ops、protection | P2：准确读写/效果、producer/result、normal/exception transfer 和来源覆盖 |
-| p3_ssa/normal、word_ownership | P3：值来源、宽值/失效、入口回边和异常旧状态；构建算法由新方案替换 |
-| p4_types/normal、numeric、zero、initialization、declarations | P4：类型/使用解释、原始引用、Unknown、初始化状态与有限求解 |
-| p5_variables/copies、exceptional、object_allocation | P5：同时赋值、临时存储、site 快照及物化，不重新推导来源/类型 |
-| p6_regions 的区域、保护和锁处理 | P6：完整区域/转移承接和保护/锁对应，原始 CFG 不改写 |
-| p7_java 的操作表达、构造器、class_unit 和静态准备 | P7 方法表达与 P8 类组装：原始身份、执行顺序、全成员结果，不继承 Java 资格门槛 |
-| p8_emit 与应用结果展示 | P9：既有产品渲染、具体诊断、原始来源、输出控制和文本/JSON 同一结果 |
-| engine/member_emission、constructor_chain 的证据编排 | 按第 8.4 节保留已知证据义务，不新增成员隐藏、entry 重跑或跨阶段构造权限 |
+| p1_input/catalog, field_declarations, annotation_facts | P0 class facts and shared reader: member/initial-value association, local failure, usable prefixes and single fact production |
+| p1_input/code, method, structure, formats/operands | MethodSource/P1: range, instruction/reference/boundary and metadata guarantees; the shared format table stays single |
+| p2_flow/normal, local_ops, protection | P2: accurate reads/writes/effects, producer/result, normal/exception transfers and origin coverage |
+| p3_ssa/normal, word_ownership | P3: value origins, wide values/invalidation, entry back-edges and old exceptional state; the construction algorithm is replaced by the new plan |
+| p4_types/normal, numeric, zero, initialization, declarations | P4: type/use interpretation, original references, Unknown, initialization state and bounded solving |
+| p5_variables/copies, exceptional, object_allocation | P5: simultaneous assignment, temporaries, site snapshots and materialization without re-deriving origins/types |
+| p6_regions region, protection and lock handling | P6: complete region/transfer handling and protection/lock correspondence without rewriting the original CFG |
+| p7_java operation expression, constructors, class_unit and static preparation | P7 method expression and P8 class assembly: original identities, execution order, all-member results, without inheriting a Java-eligibility gate |
+| p8_emit and application result presentation | P9: rendering of existing products, concrete diagnostics, original origins, output control and the same result for text/JSON |
+| engine/member_emission, constructor_chain evidence orchestration | retain the known evidence obligations per §8.4, adding neither member hiding, entry reruns nor cross-stage construction authority |
 
-本表不是迁移任务表，不要求每个旧文件都有一个新文件与之对应。已有逻辑
-可以删除、合并或独立重写，只要义务在新拥有者内明确实现，并移除被替代路径。
-缺少事实时修正其生产契约，不以重写为名把问题推给下游。
+This table is not a migration task list and does not require a new file for every old file. Existing
+logic may be deleted, merged or rewritten independently, as long as the obligation is implemented
+explicitly inside the new owner and the superseded path is removed.
+When a fact is missing, fix its production contract rather than pushing the problem downstream under
+the name of a rewrite.
 
-### 10.4 完成条件与实施前核对
+### 10.4 Completion conditions and pre-implementation checks
 
-完成条件是新产品链真实服务正式单类/单方法请求，阶段只消费已批准的产品
-接口，原始身份、可用内容与检查义务有明确拥有者，被替代路线已移除。
-目录更名、旧 IR 兼容或新类型编译成功不构成重构完成。
+The completion condition is that the new product chain actually serves formal single-class and
+single-method requests, stages consume only approved product interfaces, original identities,
+available content and check obligations have explicit owners, and superseded routes are removed.
+Directory renames, old-IR compatibility or successful compilation of new types do not constitute a
+completed refactoring.
 
-Acceptance：原始成员和指令/参数/效果顺序、数值 bits、异常/锁/初始化、
-局部失败、可用输出以及资源和背压行为按产品契约保持。遵循根
-AGENTS.md 的单元测试禁止规则；格式、Clippy、构建不能证明语义正确或
-代表性输入覆盖。性能结论只来自授权输入的 release 正式单类流程测量。
+Acceptance: original member and instruction/argument/effect order, numeric bits,
+exception/lock/initialization behaviour, local failure, available output, and resource and
+backpressure behaviour are preserved per the product contracts. Follow the unit-test prohibition in
+the root AGENTS.md; formatting, Clippy and builds cannot prove semantic correctness or representative
+input coverage. Performance conclusions come only from release measurements of the formal
+single-class flow on authorised inputs.
 
-第 4.4–4.5、5.3.4–5.3.6、5.4.5、7.1–7.2 和 8.3–8.4 节已明确产品持有、
-状态、异常/宽值、求解域、声明与类组装契约。它们是设计义务，不是实现
-或一般正确性证明。具体私有字段、索引和模块布局由实现者在实现该产品前
-确定，不要求逐项重复批准。
+Sections 4.4–4.5, 5.3.4–5.3.6, 5.4.5, 7.1–7.2 and 8.3–8.4 already state the contracts for product
+ownership, state, exceptions/wide values, solving domains, declarations and class assembly. They are
+design obligations, not proofs of implementation or general correctness. Concrete private fields,
+indexes and module layouts are decided by the implementer before implementing that product and do not
+require item-by-item re-approval.
 
-实现者 MUST 核对每类操作的输入/输出、语义解释、提交位置、转移和原始
-来源，特别包括重叠失效、保守路径的分类、site 保护和完整表达覆盖。
-已知类级证据也要核对其真实前置消费需要，不能额外改变调度来补缺口。
+Implementers MUST check the input/output, semantic interpretation, commit positions, transfers and
+original origins of each operation category, including in particular overlapping invalidation,
+classification of conservative paths, site protection and complete expression coverage.
+Known class-level evidence must also be checked for its real upstream consumption needs, and
+scheduling must not be changed additionally to close a gap.
 
-根 AGENTS.md 的四类禁止约束持续适用：不改变已认可输出、隐藏成员或新增
-dispatcher；不引入外部声明、新依赖或默认数字限制；不额外改变阶段归属或
-调度；不扩大阶段输入访问、exports 或构造权限。遇到真实冲突时停止受影响
-实现并报告原因，不补旁路、放宽保证或默默改变方案。
+The four prohibited constraint groups of the root AGENTS.md continue to apply: do not change agreed
+output, hide members or add a dispatcher; do not introduce external declarations, new dependencies or
+default numeric limits; do not additionally change stage ownership or scheduling; do not widen stage
+input access, exports or construction authority. On a real conflict, stop the affected implementation
+and report the cause instead of adding a bypass, relaxing a guarantee or quietly changing the plan.

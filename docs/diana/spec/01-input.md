@@ -167,7 +167,7 @@ not a whole-method legality badge.
 
 ## Local availability and publication
 
-P1 MUST follow [the P1–P9 contract](../PIPELINE_DESIGN.md#92-p1p9-统一消费局部结果).
+P1 MUST follow [the P1–P9 contract](../PIPELINE_DESIGN.md#92-p1p9-uniformly-consume-local-results).
 The coverage obligations here define that full target; the current publication
 floor and retained representations are specified under Outcomes below.
 Its published product MUST describe code coverage as decoded instructions,
@@ -366,6 +366,13 @@ and MUST NOT rewrite DEX headers or expose a partially written successful file.
 AXML decoding preserves usable partial content with explicit diagnostics rather
 than silently removing records. See the [CLI README](../../../apps/diana/README.md) for current selectors,
 publication options and output behavior.
+
+The shared application publisher owns fallible transfer buffering for all text
+and JSON consumers. It forwards large chunks without retaining the whole result,
+handles short/interrupted writes and zero progress, and does not retry a failed
+sink. A serializer failure retains its original cause; any available buffered
+prefix is flushed only while the sink remains usable. File publication explicitly
+flushes before atomic replacement and closes the private file before cleanup.
 
 All native reads, growth, decompression and publication MUST preserve classified
 failures and backpressure. There are no numeric resource quotas.

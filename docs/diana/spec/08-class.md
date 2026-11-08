@@ -1,6 +1,6 @@
 # P8 class assembly and type-name plans
 
-[PIPELINE_DESIGN §8](../PIPELINE_DESIGN.md#8-p8-类级准备与组装p9-渲染)
+[PIPELINE_DESIGN §8](../PIPELINE_DESIGN.md#8-p8-class-preparation-and-assembly-p9-rendering)
 defines the product contract. The implementation is
 `crates/diana-decomp/src/p8/`; execution observations belong in the
 [engine README](../../../crates/diana-decomp/README.md).

@@ -1,7 +1,7 @@
 # 04 — Value facts and use interpretations
 
 Code: `crates/diana-decomp/src/p4/`. The owning contract is
-[PIPELINE_DESIGN §5.4](../PIPELINE_DESIGN.md#54-p4值事实与使用解释产出-typedmethod).
+[PIPELINE_DESIGN §5.4](../PIPELINE_DESIGN.md#54-p4-value-facts-and-use-interpretations-producing-typedmethod).
 Engine's private method task consumes `SsaMethod` through `build_types` and receives
 `TypedMethod` or `TypeStop`. P4 retains P3 privately; no preceding product can be
 extracted or reconstructed through this interface.
@@ -271,7 +271,7 @@ result type. The original invocation kind, logical DEX reference identity,
 prototype, ordered bindings and completion rules remain in the retained execution
 product; P4 neither clones a second call directory nor changes those facts.
 
-[Signature-qualified calls](../PIPELINE_DESIGN.md#5731-原目标签名限定) express that
+[Signature-qualified calls](../PIPELINE_DESIGN.md#5731-original-target-signature-qualification) express that
 existing binding without converting an operand. They do not prove assignment
 compatibility or bypass an original runtime check. A source-expression consumer
 cannot repair unknown binding by adding casts, boxing, helpers or typed aliases

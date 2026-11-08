@@ -34,11 +34,11 @@ Diana is a decompiler: default class/method retrieval MUST expose available
 code, not require an entirely verified Java unit before showing anything.
 Keep partial Java, original DEX debug information and unavailable reasons explicit; a local failure
 MUST NOT discard independently recoverable fragments within that method or other
-members. All error handling follows [failure locality](PIPELINE_DESIGN.md#9-局部失败与方法退出).
+members. All error handling follows [failure locality](PIPELINE_DESIGN.md#9-local-failure-and-method-exit).
 Contributors MUST identify the owning producer, affected facts, actual dependents
 and retained output when adding or changing an error path. Any wider stop requires
 a concrete dependency/resource reason, not only an error kind or an Engine-level
-catch-and-continue patch. The [P1–P9 contract](PIPELINE_DESIGN.md#92-p1p9-统一消费局部结果)
+catch-and-continue patch. The [P1–P9 contract](PIPELINE_DESIGN.md#92-p1p9-uniformly-consume-local-results)
 applies to each stage's input, output and stop behavior, not only P1–P3 or outer
 scheduling. Contributors MUST update the owning producer and real consumers
 together; a later stage MUST NOT erase local results by reintroducing an all-or-nothing
@@ -55,7 +55,8 @@ qualification path. Fallback retains original facts when reconstruction is unava
 not a separate recovery subsystem or retry pipeline.
 
 Every authored Diana document, including this file and the package README/AGENTS
-files, MUST follow `docs/diana/WRITING.md`. Read it before editing documentation.
+files but excluding the project front page `README.md`, MUST follow
+`docs/diana/WRITING.md`. Read it before editing documentation.
 WRITING owns normative keyword strength, sentence roles, terminology, numbers,
 document ownership and the rules against duplicated narration and speculative
 roadmaps; those rules are not restated here. A style edit MUST NOT change

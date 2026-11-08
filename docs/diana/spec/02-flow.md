@@ -2,10 +2,10 @@
 
 Code: `crates/diana-decomp/src/p2/`; construction: the Engine method task calls
 `build.rs::build_flow` with its private scheduling credential.
-The approved product boundary is [PIPELINE_DESIGN §5.2](../PIPELINE_DESIGN.md#52-p2完整方法执行模型-flowmethod).
+The approved product boundary is [PIPELINE_DESIGN §5.2](../PIPELINE_DESIGN.md#52-p2-complete-method-execution-model-flowmethod).
 
 P2 consumes an owner-published `DecodedMethod`. Under the
-[P1–P9 contract](../PIPELINE_DESIGN.md#92-p1p9-统一消费局部结果), completeness means
+[P1–P9 contract](../PIPELINE_DESIGN.md#92-p1p9-uniformly-consume-local-results), completeness means
 coverage and local states are accounted for, not that every fact was recovered.
 P2 produces ordered operations, terminals, normal and exceptional transfers,
 exits, original-item coverage and explicit unavailable execution facts.

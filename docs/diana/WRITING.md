@@ -1,9 +1,15 @@
 # Diana Documentation Writing Rules
 
-This document governs active Diana documentation: `docs/diana/`, the root and
+This document governs active Diana documentation: `docs/diana/`, the
 application/engine READMEs, and their `AGENTS.md` files. Archived reference material
 is outside this scope. The intended readers are document authors and agents that
 follow the contract.
+
+The root `README.md` is a project front page rather than a technical contract, and
+is outside this scope: it MAY use ordinary README prose without normative keywords.
+A project-goals section that must read as ordinary prose, not as requirements, showed
+the conflict. Its factual claims stay subject to §4 evidence boundaries and to the
+prohibition on claiming unimplemented capability.
 
 ## 1. Meaning before sentence shape
 

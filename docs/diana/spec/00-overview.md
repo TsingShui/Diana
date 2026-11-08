@@ -52,8 +52,8 @@ producer did not read that fact. Complete directory coverage does not imply that
 every member declaration or method body is valid.
 
 P1–P9 MUST publish coverage, established facts and local unavailability as defined
-by [the common product model](../PIPELINE_DESIGN.md#41-成熟度与增量) and
-[stage-by-stage consumption](../PIPELINE_DESIGN.md#92-p1p9-统一消费局部结果).
+by [the common product model](../PIPELINE_DESIGN.md#41-maturity-and-increment) and
+[stage-by-stage consumption](../PIPELINE_DESIGN.md#92-p1p9-uniformly-consume-local-results).
 A complete availability description does not claim that every item was recovered.
 Established facts retain their guarantees; missing items retain their reasons and
 impact. A construction snapshot is not such a published product.
@@ -63,10 +63,10 @@ for an inability to maintain the minimum product guarantees or retain results.
 Stage stops MUST retain original identity, concrete reasons and available facts.
 They MUST NOT promote an incomplete product to success. Failure kind alone MUST
 NOT determine stop scope. All error handling MUST follow
-[PIPELINE_DESIGN §9](../PIPELINE_DESIGN.md#9-局部失败与方法退出): preserve independent
+[PIPELINE_DESIGN §9](../PIPELINE_DESIGN.md#9-local-failure-and-method-exit): preserve independent
 fragments and results, and widen a stop only for an actual shared dependency or
 resource failure. Product guarantees and read states remain governed by
-[§4.5](../PIPELINE_DESIGN.md#45-独立读取状态阶段停止与诊断) and the outcome contracts
+[§4.5](../PIPELINE_DESIGN.md#45-independent-read-states-stage-stops-and-diagnostics) and the outcome contracts
 in [02-flow](02-flow.md) and [03-ssa](03-ssa.md).
 
 ## Safety and evidence

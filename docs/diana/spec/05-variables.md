@@ -1,7 +1,7 @@
 # P5 storage and transfer products
 
 The algorithm and semantic obligations are defined in
-[PIPELINE_DESIGN §5.5](../PIPELINE_DESIGN.md#55-p5按边-out-of-ssa-与存储传递计划).
+[PIPELINE_DESIGN §5.5](../PIPELINE_DESIGN.md#55-p5-per-edge-out-of-ssa-and-storage-transfer-plans).
 This chapter describes the active product boundary and implementation in
 `crates/diana-decomp/src/p5/`. Execution observations belong in the
 [engine README](../../../crates/diana-decomp/README.md).

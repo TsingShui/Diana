@@ -1,80 +1,157 @@
-# Diana
+<p align="center">
+  <img src="assets/diana.png" width="176" height="176" alt="Diana — a white, laurel-crowned profile on black">
+</p>
+<h1 align="center">Diana</h1>
+<p align="center">Native APK/DEX decompilation and static code investigation.</p>
+<p align="center">
+  <a href="#about">About</a> · <a href="#install">Install</a> · <a href="#usage">Usage</a>
+</p>
 
-Native Rust APK/DEX decompiler, designed to replace rasc.
-The engine currently implements P0 → method reader → P1 → P2 → P3 → P4 → P5 → P6
-planning → P7 independently owned method expressions → P8 class assembly and
-scope-aware type-name plans → P9 text/JSON with UTF-8 source spans.
-The [CLI](apps/diana/README.md) delivers these same P9 products for class and
-standalone-method retrieval, as text or JSON schema 3. Readable output with
-original facts and uncertainty remains the goal, not Java compilability.
-Build and lint checks do not establish real-application coverage.
+## About
 
-## Active project
+Diana is an in-development Rust decompiler for APK and DEX files.
+Diana-Gui will support more than Dex,but still in devlopment.
 
-```text
-apps/diana/             # Diana CLI/application package
-apps/diana-gui/         # Native GPUI Kit GUI; bare DEX class preview
-apps/diana-web-ui/      # Future web interface: documentation placeholder only
-crates/diana-decomp/    # Independent native engine library
-docs/diana/            # Core design, algorithms and contribution rules
-# The archived rasc tree was removed at commit 5cb156c; it remains in git history only.
-```
+[Apache-2.0](LICENSE)
 
-The root is a virtual Cargo workspace containing **only Diana packages**. The
-rasc implementation and its crates/tests/release tooling remain in an independent
-archived reference tree removed at commit 5cb156c; it is not a production dependency
-and are not built, tested or released by this branch’s CI or root Cargo commands.
+## Install
 
-[Application targets](apps/README.md) share the `apps/` layout. The native GUI
-opens bare DEX files and displays class results; run it with
-`cargo run -p diana-gui --locked`. It is a workspace member but not a default
-member. The web UI remains a documentation placeholder with no selected framework.
-
-## Development
-
-Start with the [core documentation](docs/diana/README.md). Historical plans and
-batch records are available in git history.
-Run from the repository root (Rust 1.93 or newer):
+Install from a release:
 
 ```sh
-cargo build --locked
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo build --workspace --release --locked
+<Todo>
 ```
 
-Use `-p diana` or `-p diana-decomp` to select one package. Both share the root
-`Cargo.lock`; the archived reference retains its own lockfile. The active
-[Diana CI](.github/workflows/diana.yml) checks format, lint and release builds
-without publishing. Test cases and fixtures have been removed by operator
-decision; [AGENTS.md](AGENTS.md) prohibits adding tests. These checks do not
-establish semantic correctness or real-application coverage.
+Build from source:
 
+```sh
+git clone --branch Diana https://github.com/TsingShui/rasc.git diana
+cd diana
+cargo install --path apps/diana --locked
+```
 
-## Local reference material
+## Usage
 
-Use `python3 tools/fetch_references.py --list` or `--only <id> ...` to fetch
-public material into ignored `.cache/references/`. Papers/slides are TXT-only;
-existing text is reused. No reference checksum, builds/tests or production
-dependencies. See [sources and download policy](docs/diana/SOURCE_MAP.md).
+### CLI
 
-## Design
+Commands accept APK/ZIP or bare DEX input. Use `--format json` for machine-readable
+results and `-o <file>` for atomic file output.
 
-The decompiler contract exposes recovered code by default. A failed method is
-shown with its available fragments, original DEX facts and explicit gaps alongside
-other recovered methods. A local failure does not suppress the whole class.
-Class assembly records presentation coverage, not compilability. Hard failures
-remain separate from readable availability.
+```sh
+# Explore the input and find methods with ranked fuzzy search.
+diana tree app.apk --classes
+diana methods app.apk --filter oncrt
 
-- [Documentation entry](docs/diana/README.md)
-- [Approved architecture](docs/diana/PIPELINE_DESIGN.md)
-- [Product boundary](docs/diana/spec/00-overview.md)
-- [Sources and reproducibility](docs/diana/SOURCE_MAP.md)
-- Archived reference scope: removed from the tree at commit 5cb156c; see
-  [SOURCE_MAP](docs/diana/SOURCE_MAP.md) for the pinned upstream anchors
+# Read a class or one exact method.
+diana get-class app.apk 'com.example.Worker'
+diana get-method app.apk 'Lcom/example/Worker;->run()V' --format json
 
+# Navigate structure and expand referenced method bodies.
+diana outline-class app.apk 'com.example.Worker'
+diana outline-method app.apk 'Lcom/example/Worker;->run()V' --call-depth 2
 
-## License
+# Find callers, indirect implementations and method overrides.
+diana xref app.apk method 'Lcom/example/Worker;->run()V' --exact --transitive 2
+diana xref app.apk impl 'Ljava/lang/Runnable;' --exact --recursive
+diana xref app.apk method 'Lcom/example/Base;->run()V' --exact --relation overrides
 
-Apache-2.0; see [LICENSE](LICENSE). Existing reference crates retain their license
-files. There is no root NOTICE or additional license bundle.
+# Inspect manifests, resource values and resource-ID candidates.
+diana manifest app.apk
+diana resources app.apk --filter api_host --substring
+diana xref app.apk resource 0x7f120123
+```
+
+Search results carry canonical locators that select the original object without
+name ambiguity. Filtered searches default to relevance-ranked fuzzy matching;
+`--substring`, `--regex` and `--exact` select other modes.
+
+`xref` displays up to 50 rows by default and warns when limited; `--no-limit`
+displays all recovered matches. Incomplete scans retain available results and
+report coverage/issues separately from display truncation. Resource-ID hits are
+explicit candidates, not a resource-access or data-flow proof.
+
+See the [CLI guide](apps/diana/README.md) for all commands, selectors, schemas and
+failure behavior.
+
+### GUI
+
+Still in devlopment.
+
+### Project Goals
+
+#### Principles and intent
+
+Diana is an experimental project. For DEX decompilation it borrows the approach of
+[Kuna](https://github.com/Noelo-Lab/kuna) and tries to let an LLM improve the
+decompiler on its own.
+
+Traditional DEX decompilers chase Java source form. Analysis does not need that.
+Diana stays Java-primary, borrows other language features where they say exactly
+what happened, and prints low-level source rather than losing semantics. What it
+prints is a readable result, not a claim that the output compiles.
+
+#### Goals
+
+1. **Autonomous refinement** — as in Kuna, a dataset should let an LLM keep
+   improving the decompiler while we sleep. Diana has no dataset, metric or prompt
+   set for that yet.
+2. **Agent-first** — latency, accuracy, peak memory and token cost decide design
+   tradeoffs, because they bound large-scale reverse-engineering work. Compact JSON
+   and the `outline` presentations exist for this reason; see
+   [RSS / Speed](#rss--speed).
+
+#### Design principles
+
+- **Phase based** — every stage owns one narrow contract (P0 → method reader → P1 …
+  P9), so a change has an obvious home and a failure stays local. Map:
+  [phases.md](docs/diana/phases.md).
+- **Natural-language spec** — every impactful capability and algorithm is written
+  down, at least in part, in [spec/](docs/diana/spec/) next to the stage that owns
+  it. A human can audit the design without reading code, and a change lands against
+  a written contract instead of a guess.
+
+#### Where things are
+
+| Document                                            | Contents                                                           |
+| --------------------------------------------------- | ------------------------------------------------------------------ |
+| [phases.md](docs/diana/phases.md)                   | Stage map and current method scheduling.                           |
+| [PIPELINE_DESIGN.md](docs/diana/PIPELINE_DESIGN.md) | Approved P0–P9 architecture and stage contracts.                   |
+| [spec/](docs/diana/spec/)                           | Product, algorithm and failure contracts per stage.                |
+| Engine stage products                               | Inspect the delivered P0–P9 products with the `dbg_shell` example. |
+
+### RSS / Speed
+
+Release CLI with shared output buffering (working tree based on `74edfc4`),
+macOS ARM64, Apple M3 Pro, 36 GiB RAM.
+Each command starts with the complete APK as input. Query workers: eight where
+supported; class-method workers: one. JSON file output is included, except for
+raw DEX extraction.
+
+| APK size  | DEX files | Uncompressed DEX size |
+| --------- | --------: | --------------------: |
+| 198.6 MiB |        41 |             331.4 MiB |
+| 233.5 MiB |        14 |             132.8 MiB |
+
+After one warmup per command/input, **cells show median wall seconds / maximum
+peak RSS in MiB** across three fresh processes with warm filesystem caches.
+
+| Command          | Scope                            | 198.6 MiB APK | 233.5 MiB APK |
+| ---------------- | -------------------------------- | ------------: | ------------: |
+| `entries`        | All archive entries              |  <0.01 / 10.4 |   <0.01 / 4.8 |
+| `classes`        | All definitions                  |   0.03 / 73.4 |   0.01 / 59.8 |
+| `tree`           | All packages and class leaves    |  0.25 / 241.9 |  0.10 / 109.7 |
+| `fields`         | All definitions                  |  0.10 / 228.2 |  0.04 / 173.8 |
+| `methods`        | All definitions                  |  0.16 / 267.5 |  0.07 / 202.8 |
+| `strings`        | All pool values                  |  0.06 / 106.1 |  0.04 / 103.1 |
+| `resources`      | All configurations¹              |   0.07 / 55.6 |   0.01 / 12.9 |
+| `get-class`      | One class (19 / 8 methods)       |   0.02 / 30.1 |   0.02 / 24.2 |
+| `get-method`     | One method                       |   0.02 / 27.7 |   0.01 / 23.0 |
+| `outline-class`  | Same class, no callee expansion  |   0.02 / 30.6 |   0.02 / 24.5 |
+| `outline-method` | Same method, no callee expansion |   0.02 / 28.0 |   0.01 / 23.3 |
+| `extract`        | One DEX (8.9 / 10.5 MiB)         |   0.01 / 28.1 |   0.02 / 28.7 |
+| `xref`           | All onCreate method references   |  1.51 / 521.8 |  0.64 / 232.4 |
+| `manifest`       | Full manifest                    |   0.01 / 10.1 |   <0.01 / 4.7 |
+
+Lists are unfiltered; `xref` uses `method '^onCreate$' --regex --no-limit`.
+Class/method commands use canonical locators for one nontrivial class/method per
+APK, not whole-APK decompilation.

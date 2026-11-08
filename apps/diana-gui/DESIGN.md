@@ -1,192 +1,243 @@
-# Diana GUI：资源、身份、导航、视图与结果契约
+# Diana GUI: resource, identity, navigation, view and result contracts
 
-本文定义 GUI 宿主与反编译功能模块之间的数据契约，约束后续接入。
-它不是已实现能力声明。当前实现状态见 [README](README.md)，参考来源与
-许可边界见 [SOURCE_MAP §6.3](../../docs/diana/SOURCE_MAP.md#63-rxd-capability-reference)。
-字段表示语义要求，不冻结 Rust 布局、trait 签名、序列化或插件 ABI。
+This document defines the data contracts between the GUI host and decompilation
+capability modules, and constrains later integration.
+It is not a claim about implemented capability. Current implementation status is in
+[README](README.md); reference sources and licence boundaries are in
+[SOURCE_MAP §6.3](../../docs/diana/SOURCE_MAP.md#63-rxd-capability-reference).
+Fields express semantic requirements and freeze no Rust layout, trait signature,
+serialisation or plugin ABI.
 
-## 0. 职责与交付方向
+## 0. Responsibilities and delivery direction
 
-| 参与者 | 职责 |
+| Participant | Responsibility |
 | --- | --- |
-| Host（GUI 宿主） | 持有输入、管理资源与会话、提交后台请求、分发结果 |
-| 容器 reader | 安全读取成员目录与字节，提供原始容器关联 |
-| Backend Adapter | 将所属引擎的公开输入与交付产品映射为本契约的数据 |
-| 引擎 | 解析、分析、恢复及其内部任务调度 |
-| 渲染层 | 用 GPUI Kit 展示已交付的数据，发送用户操作请求 |
+| Host (GUI host) | owns input, manages resources and sessions, submits background requests, dispatches results |
+| Container reader | reads member directories and bytes safely, provides original container associations |
+| Backend Adapter | maps its engine's public inputs and delivered products into this contract's data |
+| Engine | parsing, analysis, recovery and its internal task scheduling |
+| Rendering layer | displays delivered data with GPUI Kit, sends user operation requests |
 
-Host MUST 保持引擎输入所需的字节和声明事实的借用有效。
-Adapter MUST 通过所属引擎的正式入口取得产品；缺少生产者时，Adapter MUST
-报告缺失能力，而不是访问私有 IR、补跑阶段或另起重建路线。
-渲染层 MUST NOT 启动分析、决定恢复策略或接收后端提供的 GPUI 控件。
-DEX 方法级调度和阶段构造权仍遵守 [PIPELINE_DESIGN](../../docs/diana/PIPELINE_DESIGN.md)。
-本契约不授予外部进程、非 Rust 运行时、`unsafe` 或外部声明输入的例外。
+The Host MUST keep the borrow of bytes and declaration facts that engine input needs valid.
+An Adapter MUST obtain products through its engine's formal entries; when a producer is
+missing, the Adapter MUST report the missing capability instead of accessing private IR,
+re-running stages or starting another reconstruction route.
+The rendering layer MUST NOT start analysis, decide recovery strategy or accept GPUI
+controls supplied by a backend.
+DEX method-level scheduling and stage construction authority still follow
+[PIPELINE_DESIGN](../../docs/diana/PIPELINE_DESIGN.md).
+This contract grants no exception for external processes, non-Rust runtimes, `unsafe` or
+externally declared input.
 
-## 1. 资源契约：分析的是哪一份输入
+## 1. Resource contract: which input is analysed
 
-资源是 Host 管理的一份不可变输入快照，既可以是打开的文件，也可以是容器
-成员或从原始输入派生的字节。资源不是类、函数或反编译文本。
+A resource is one immutable input snapshot managed by the Host; it may be an opened file,
+a container member, or bytes derived from original input. A resource is not a class, a
+function or decompiled text.
 
-| 字段 | 含义 |
+| Field | Meaning |
 | --- | --- |
-| `resource_id` | Host 分配的、不复用到另一份快照的资源引用 |
-| `kind` | 文件、容器成员或派生输入 |
-| `display_name` | 展示名称，不参与选择、去重或原始身份判断 |
-| `byte_length` | 已建立的实际字节长度；未取得该事实时为 Unknown |
-| `origin` | 用户打开的位置，或父资源、原始成员引用、派生操作 |
-| `availability` | 可取得输入，或不可用的具体范围与原因 |
+| `resource_id` | resource reference allocated by the Host and never reused for another snapshot |
+| `kind` | file, container member or derived input |
+| `display_name` | display name that takes part in no selection, deduplication or original identity decision |
+| `byte_length` | established actual byte length; Unknown when that fact was not obtained |
+| `origin` | the position the user opened, or the parent resource, original member reference and derivation operation |
+| `availability` | input obtainable, or the concrete unavailable range and cause |
 
-- Host MUST 保持同一 `resource_id` 对应的字节不变；重新打开或替换输入时，
-  Host MUST 发布新的资源引用，而不是原地改变旧快照。
-- Host MUST 通过容器 reader 获取成员。成员名重复时，Host MUST 保留各成员
-  的原始引用，不按路径字符串合并或覆盖。
-- 容器 reader MUST 在读取、切片、解压和分配前执行必要的范围与算术检查。
-  未经建立的长度声明 MUST NOT 被当作实际字节长度。
-- Host MUST 保留父子来源链。解压、解码产生的字节 MUST 使用自己的坐标空间；
-  Host MUST NOT 假定其偏移等于外层文件偏移。
-- Adapter MUST 只消费本次分析目标获准的输入资源及同源关联资源。
-  它 MUST NOT 从邻接目录、classpath、系统声明库或网络补充缺失声明。
-- 一个成员不可读时，Host MUST 保留仍可独立读取的其他成员及该成员的错误。
+- The Host MUST keep the bytes behind one `resource_id` unchanged; when it reopens or
+  replaces input, the Host MUST publish a new resource reference instead of changing the
+  old snapshot in place.
+- The Host MUST obtain members through the container reader. When member names repeat,
+  the Host MUST retain each member's original reference instead of merging or overwriting
+  by path string.
+- The container reader MUST perform the required range and arithmetic checks before
+  reading, slicing, inflating and allocating. An unestablished length declaration MUST NOT
+  be treated as the actual byte length.
+- The Host MUST retain the parent/child origin chain. Bytes produced by inflation or
+  decoding MUST use their own coordinate space; the Host MUST NOT assume their offsets
+  equal outer file offsets.
+- An Adapter MUST consume only the input resources admitted for this analysis target and
+  associated resources from the same source. It MUST NOT supply missing declarations from
+  adjacent directories, classpaths, system declaration libraries or the network.
+- When one member is unreadable, the Host MUST retain the other members that can still be
+  read independently and the error of that member.
 
-同一资源可以建立多个分析会话，例如 ELF 的 Native 与 Flutter 分析。
-识别只返回匹配候选和依据，不启动反编译；Host MUST NOT 将首个匹配视为排他
-所有权，也 MUST NOT 因某个已识别格式损坏而静默改用另一后端掩盖错误。
+One resource may establish several analysis sessions, for example ELF Native and Flutter
+analysis. Identification returns matching candidates and their evidence and starts no
+decompilation; the Host MUST NOT treat the first match as exclusive ownership, and MUST
+NOT silently switch to another backend to hide an error in one identified format.
 
-## 2. 身份契约：引用什么，位置属于哪里
+## 2. Identity contract: what is referenced, and where a position belongs
 
-运行期引用用于路由；原始身份来自输入事实。两者不是同一个概念。
+A runtime reference is used for routing; original identity comes from input facts. They are
+not the same concept.
 
-| 名称 | 含义与有效范围 |
+| Name | Meaning and valid scope |
 | --- | --- |
-| `BackendId` | 功能实现，例如 `diana.dex`、`rxd.dex`、`rxd.flutter` |
-| `FormatId` | 输入格式或方言；与功能实现分开，不用于排他路由 |
-| `SessionId` | 一次后端绑定，关联 BackendId、资源集合和有效参数 |
-| `EntityRef` | SessionId 加后端的实体键；实体键保留所属输入和原始坐标空间 |
-| `SubjectRef` | 一个 ResourceId 或 EntityRef，作为视图请求的目标 |
-| `NodeRef` | 资源导航或会话导航中的节点引用，不等同于实体身份 |
-| `LocationRef` | 后端作用域内的位置引用，由其所属 Adapter 解释与解析 |
-| `DocumentRef` | 一次发布的展示产品引用，包含其内容版本 |
+| `BackendId` | capability implementation, for example `diana.dex`, `rxd.dex`, `rxd.flutter` |
+| `FormatId` | input format or dialect; separate from the capability implementation and not used for exclusive routing |
+| `SessionId` | one backend binding, associating a BackendId, a resource set and effective parameters |
+| `EntityRef` | SessionId plus the backend's entity key; the entity key retains its owning input and original coordinate space |
+| `SubjectRef` | one ResourceId or EntityRef serving as the target of a view request |
+| `NodeRef` | node reference within resource navigation or session navigation; not equal to entity identity |
+| `LocationRef` | position reference within a backend scope, interpreted and resolved by its owning Adapter |
+| `DocumentRef` | reference to one published display product, including its content version |
 
-- Host MUST 为不同后端、会话及输入保留命名空间，不能因同名符号或相同数值
-  坐标而合并实体。会话关闭后，Host MUST NOT 将旧引用重新指向新对象。
-- Adapter MUST 保持同一会话内实体键的含义稳定，并保留逻辑 DEX、嵌套归档
-  成员、模块或地址空间等原始选择信息。
-- Adapter MUST NOT 使用显示名称或当前列表下标替代原始实体身份。
-- 渲染层 MUST 将 LocationRef 交还所属 Adapter。它 MUST NOT 猜测 DEX 指令
-  偏移、IL offset、Native 虚拟地址和文件 byte offset 之间的换算。
-- 文本链接的区间 MUST 绑定 DocumentRef 的具体版本；其单位为 UTF-8 byte，
-  不是原始指令偏移。文档被替换后，渲染层 MUST NOT 复用旧文本区间。
-- Host MUST 区分缺失位置与合法的零值位置。
+- The Host MUST keep separate namespaces for different backends, sessions and inputs and
+  must not merge entities because of a same-named symbol or equal numeric coordinates.
+  After a session closes, the Host MUST NOT re-point an old reference at a new object.
+- An Adapter MUST keep the meaning of an entity key stable within one session and must
+  retain original selection information such as logical DEX, nested archive member, module
+  or address space.
+- An Adapter MUST NOT substitute a display name or current list index for original entity
+  identity.
+- The rendering layer MUST hand a LocationRef back to its owning Adapter. It MUST NOT guess
+  conversions between DEX instruction offsets, IL offsets, Native virtual addresses and
+  file byte offsets.
+- The range of a text link MUST bind to a specific DocumentRef version; its unit is UTF-8
+  bytes, not an original instruction offset. After the document is replaced, the rendering
+  layer MUST NOT reuse old text ranges.
+- The Host MUST distinguish a missing position from a legitimate zero-valued position.
 
-不同导航分组可以指向同一个 EntityRef。引用结果中的 caller、target 和原始
-位置可以分开存在；缺少精确源码映射时，Adapter MUST 明示不可定位，不能
-伪造行号。原始名称、原始 token 和原始地址不会因 GUI 显示转义而被改写。
+Different navigation groups may point at the same EntityRef. Caller, target and original
+position in a reference result may exist separately; when an exact source mapping is
+missing, the Adapter MUST state that it cannot be located and must not fabricate a line
+number. Original names, original tokens and original addresses are not rewritten because
+the GUI escaped them for display.
 
-## 3. 导航契约：浏览入口，不假定都是类和方法
+## 3. Navigation contract: browse entries, assuming nothing is a class or method
 
-导航提供按需展开的结构，不意味着全部内容已分析。
+Navigation provides structures expanded on demand; it does not mean all content has been
+analysed.
 
-| 字段 | 含义 |
+| Field | Meaning |
 | --- | --- |
-| `node_ref` | 节点引用，其所有者是 Host 的资源导航或一个分析会话 |
-| `label` | 可展示的名称，与原始身份分开 |
-| `kind` | 分组、资源或实体，以及可选的语义角色 |
-| `children` | 已知叶子、可以请求子项或子项关系未知 |
-| `target` | 可选 ResourceId 或 EntityRef；纯分组可以没有分析目标 |
-| `diagnostics` | 此节点的具体问题，不代替兄弟节点的结果 |
+| `node_ref` | node reference whose owner is the Host's resource navigation or one analysis session |
+| `label` | displayable name, separate from original identity |
+| `kind` | group, resource or entity, plus an optional semantic role |
+| `children` | known leaves, children that may be requested, or an unknown child relation |
+| `target` | optional ResourceId or EntityRef; a pure group may have no analysis target |
+| `diagnostics` | concrete problems of this node; they do not replace the results of sibling nodes |
 
-- Host MUST 按节点所有者路由展开请求。资源成员由容器 reader 生产；分析条目
-  由所属引擎生产，Adapter 只做投影。
-- Adapter MUST 保留已建立的节点、原始顺序和局部不可用信息。
-  子项读取不完整 MUST NOT 被表示为“成功的空目录”或“已知叶子”。
-- Host MUST 支持纯分组节点和多个导航节点引用同一实体。
-- 渲染层 MUST 从语义角色选择图标和控件，不接收后端绘制的树或菜单。
+- The Host MUST route expansion requests by node owner. Resource members are produced by
+  the container reader; analysis entries are produced by their owning engine, and the
+  Adapter only projects them.
+- An Adapter MUST retain established nodes, original order and local unavailability
+  information.
+  An incomplete child read MUST NOT be represented as a "successful empty directory" or as
+  "known leaves".
+- The Host MUST support pure group nodes and several navigation nodes referencing the same
+  entity.
+- The rendering layer MUST choose icons and controls from the semantic role and must not
+  accept backend-drawn trees or menus.
 
-展开结果遵守第 5 节的覆盖契约。增量交付属于同一次导航请求，不是隐式分页；
-滚动位置、队列容量或 UI 可见行数 MUST NOT 截断成功结果。
+Expansion results follow the coverage contract of §5. Incremental delivery belongs to the
+same navigation request and is not implicit pagination; scroll position, queue capacity or
+the number of rows visible in the UI MUST NOT truncate a successful result.
 
-## 4. 视图契约：条目能看什么，实际处理哪个单元
+## 4. View contract: what an entry can show, and which unit is actually processed
 
-View 是某个 SubjectRef 的展示能力，不是全局固定的 Java／DEX 模式。
-纯导航分组没有 SubjectRef 时，不承诺其拥有分析视图。
+A view is the display capability of one SubjectRef, not a globally fixed Java/DEX mode.
+A pure navigation group without a SubjectRef makes no promise of owning an analysis view.
 
-| 字段 | 含义 |
+| Field | Meaning |
 | --- | --- |
-| `view_id` | 后端内稳定的视图标识，不使用显示标题作路由键 |
-| `title` | GUI 显示名称 |
-| `kind` | Text、Table、Properties 或 Bytes |
-| `availability` | 此目标上可请求，或不可用及具体原因 |
-| `render_target` | 实际分析／展示单元，与用户选中的条目允许不同 |
-| `parameters` | 后端声明的类型化参数及本次请求的有效值 |
+| `view_id` | view identity stable within a backend; the display title is not a routing key |
+| `title` | name displayed by the GUI |
+| `kind` | Text, Table, Properties or Bytes |
+| `availability` | requestable on this target, or unavailable with a concrete cause |
+| `render_target` | the actual analysis/display unit, which may differ from the entry the user selected |
+| `parameters` | typed parameters declared by the backend and their effective values for this request |
 
-- Adapter MUST 根据当前构建、运行条件和输入事实提供视图可用性，而不是把
-  编译 feature 当作引擎已安装或该输入可处理的证明。
-- Adapter MUST 明确真实粒度。方法、函数、类、代码对象、模块和整个 chunk
-  MUST NOT 被强制包装成同一种 `decompile(function)` 调用。
-- Host MUST 按会话、实际目标、视图及有效参数关联文档，避免把同一模块的
-  结果错误标注成若干互不相关的函数结果。
-- Adapter MUST 分开报告请求的视图和实际交付的表示。C# 不可用但取得 IL 时，
-  返回结果 MUST 标明 IL 及原因，不能把 IL 文本标成 C# 成功结果。
-- Host MUST NOT 自动切换 BackendId、融合不同后端的结果或靠轮流重试补齐视图。
-- Text 的语言／方言标签只控制展示；渲染层 MUST NOT 将高亮或语言合法性作为
-  输出可见性的门槛。
+- An Adapter MUST provide view availability from the current build, runtime conditions and
+  input facts, not treat a compile-time feature as proof that the engine is installed or
+  that this input is processable.
+- An Adapter MUST state the real granularity. Methods, functions, classes, code objects,
+  modules and whole chunks MUST NOT be forced into one `decompile(function)` call shape.
+- The Host MUST associate documents by session, actual target, view and effective
+  parameters, and must not mislabel one module's result as several unrelated function
+  results.
+- An Adapter MUST report the requested view and the actually delivered representation
+  separately. When C# is unavailable but IL is obtained, the result MUST state IL and the
+  cause, and must not label IL text as a successful C# result.
+- The Host MUST NOT switch BackendId automatically, merge results of different backends or
+  rotate through retries to fill in a view.
+- A Text language/dialect label only controls presentation; the rendering layer MUST NOT
+  make highlighting or language legality a gate on output visibility.
 
-Text 支持原样可读文本、语言标签和可选定位关联。Table 提供类型化列、行与
-可选引用，不能把 CLI 的制表文本或任意 JSON 当作整个 GUI 契约。
-Properties 提供有序名称和值；缺失值与空值分开。Bytes 提供资源引用及已建立
-的范围，读取和导出仍由 Host 持有输入、经所属 reader 完成，不把字节截断成预览
-后声称它是完整提取结果。搜索和交叉引用属于显式请求的可选能力，其条目复用
-EntityRef 与 LocationRef，并返回声明了原始语义的结果。
+Text supports as-is readable text, a language label and optional location associations.
+Table provides typed columns, rows and optional references; CLI tab-separated text or
+arbitrary JSON cannot be treated as the whole GUI contract.
+Properties provide ordered names and values, with a missing value separated from an empty
+value. Bytes provide a resource reference and an established range; reading and export are
+still performed by the Host, which owns the input, through the owning reader, and bytes are
+not truncated into a preview that is then claimed to be a complete extraction result.
+Search and cross-reference belong to explicitly requested optional capabilities; their
+entries reuse EntityRef and LocationRef and return results that state their original
+semantics.
 
-## 5. 结果契约：交付了什么，哪里不可用
+## 5. Result contract: what was delivered, and what is unavailable
 
-所有展开、定位和视图请求使用同一组结果语义；具体 payload 保持类型化。
+All expansions, locations and view requests use the same result semantics; concrete
+payloads stay typed.
 
-| 字段 | 含义 |
+| Field | Meaning |
 | --- | --- |
-| `request_id` | Host 分配的请求关联，不作为原始实体身份 |
-| `binding` | 资源引用、可选会话、请求目标、视图及有效参数 |
-| `payload` | 已交付的节点、定位目标或展示产品；展示产品携带实际目标和表示 |
-| `coverage` | 请求范围、已覆盖范围、已知不可用范围及未知覆盖 |
-| `diagnostics` | 原始分类、后端具体代码、原因、影响目标和已知位置 |
-| `termination` | 请求正常结束，或带具体受影响范围与原因的请求中断 |
+| `request_id` | request correlation allocated by the Host, not an original entity identity |
+| `binding` | resource reference, optional session, request target, view and effective parameters |
+| `payload` | delivered nodes, located targets or display product; a display product carries the actual target and representation |
+| `coverage` | requested range, covered range, known unavailable range and unknown coverage |
+| `diagnostics` | original classification, concrete backend code, cause, affected targets and known positions |
+| `termination` | the request ended normally, or the request was interrupted with a concrete affected scope and cause |
 
-- 生产者 MUST 显式交付覆盖事实。完整表示请求范围已交付，不表示输出经过
-  独立验证、能够编译或语义已获证明；部分覆盖是正常结果。
-- 生产者 MUST 保留混合结果。某个成员、片段或位置失败，MUST NOT 抹掉同一
-  请求中仍可独立交付的部分，或将未完成快照冒充完整产品。
-- 同一文档混合恢复文本与原始指令时，生产者 MUST 保留各片段的实际表示和
-  不可用信息，不能以单一成功标记掩盖差异。
-- Adapter MUST 保留材料性不确定性和具体错误分类。错误类别本身 MUST NOT
-  决定停止范围；扩大到其他成员、资源或会话需要具体共享输入／资源依据。
-- 不可用范围已知时，生产者 MUST 给出该范围及原因；范围不可安全确定时，
-  生产者 MUST 明示 Unknown，而不是编造区间或遗漏数量。
-- Host MUST 同时关联请求与当前视图绑定。迟到结果 MUST NOT 覆盖另一会话、
-  参数或文档版本；用户关闭标签不使底层输入 lease 提前失效。
-- 增量 payload MUST 保持后端建立的语义顺序。结束前，Host MUST NOT 把队列
-  暂时为空视为请求已完成；传输中断 MUST NOT 被表示为完整成功。
-- 搜索生产者 MUST 区分成功的零匹配、目标不存在、能力不支持和未知覆盖，
-  不能将它们全部表示为空列表。
-- GUI MUST 展示可用内容及具体局部问题，不展示整份结果的验证合格徽章。
+- A producer MUST deliver coverage facts explicitly. A complete representation means the
+  requested range was delivered, not that the output was independently verified, compiles
+  or has proven semantics; partial coverage is a normal result.
+- A producer MUST retain mixed results. When one member, fragment or position fails, it MUST
+  NOT erase the parts of the same request that can still be delivered independently, or
+  pass an unfinished snapshot off as a complete product.
+- When one document mixes recovered text and original instructions, the producer MUST
+  retain each fragment's actual representation and unavailability information and must not
+  hide the difference behind one success mark.
+- An Adapter MUST retain material uncertainty and concrete error classification. The error
+  category itself MUST NOT decide the stop scope; widening to other members, resources or
+  sessions requires a concrete shared-input/resource reason.
+- When an unavailable range is known, the producer MUST state that range and cause; when
+  the range cannot be determined safely, the producer MUST state Unknown instead of
+  inventing an interval or omitting a count.
+- The Host MUST associate both the request and the current view binding. A late result MUST
+  NOT overwrite another session, parameter set or document version; the user closing a tab
+  does not invalidate the underlying input lease early.
+- An incremental payload MUST keep the semantic order established by the backend. Before
+  the end arrives, the Host MUST NOT treat a temporarily empty queue as a completed
+  request; an interrupted transport MUST NOT be represented as complete success.
+- A search producer MUST distinguish a successful zero match, a missing target, an
+  unsupported capability and unknown coverage, and must not represent them all as an empty
+  list.
+- The GUI MUST show available content and concrete local problems, not a whole-result
+  verification badge.
 
-本契约不增加引擎取消 token、数值资源配额、运行时独立验证或新的分析路线。
-关闭视图后的结果去向属于 Host；已启动引擎任务的持有和交付义务不因此改变。
+This contract adds no engine cancellation token, numeric resource quota, runtime
+independent verification or new analysis route.
+Where a result goes after a view closes belongs to the Host; the ownership and delivery
+obligations of already started engine tasks do not change because of that.
 
-## 6. 格式差异的映射例子
+## 6. Mapping examples of format differences
 
-下表用于说明契约容纳的差异，不是后端已接入或特定输入已支持的声明。
-能力依据见 SOURCE_MAP §6.3。
+The following table illustrates differences the contract accommodates; it is not a claim
+that a backend is integrated or that a particular input is supported.
+Capability evidence is in SOURCE_MAP §6.3.
 
-| 功能 | 资源／导航 | 视图与粒度差异 |
+| Capability | Resource/navigation | View and granularity differences |
 | --- | --- | --- |
-| DEX | APK 成员 → 逻辑 DEX → 包／类／成员 | 事实、指令和实际已交付的恢复结果；保留逻辑 DEX 身份 |
-| JVM | JAR／嵌套归档 → class → 成员 | Java、字节码；坐标保留归档成员链 |
-| .NET | bundle → 程序集 → 类型／方法／资源 | IL 独立于可选 C#；标明实际返回的表示 |
-| Native | 映像 → 符号／函数 | 汇编与伪代码使用各自已建立的定位关系 |
-| Ark | HAP 成员 → 动态 ABC → record／method | 不把全部 ABC 方言当作已支持 |
-| Flutter | ELF 内的 Dart AOT 目标 → 类／函数 | 可以与 Native 分析共享输入资源，不共享实体坐标 |
-| PYC／PYZ | 归档成员 → 模块 → code object | 模块或代码体；片段不包含所选范围以外的绑定事实 |
-| Lua 家族 | chunk → prototype | 代码对象导航不意味着每个对象都有独立源码重建入口 |
-| WASM | module → section／function | 指令、结构信息与已实现的 C-like 重建 |
-| EVM | bytecode → 选择器／指令／元数据 | 不因统一接口存在源码视图就承诺 EVM 源码恢复 |
-| 归档资源 | ASAR／ZIP／HAP／PyInstaller／wxapkg 成员 | 目录、属性、字节读取与导出，不伪装成反编译器 |
+| DEX | APK member → logical DEX → package/class/member | facts, instructions and the actually delivered recovery result; logical DEX identity retained |
+| JVM | JAR/nested archive → class → member | Java, bytecode; coordinates retain the archive member chain |
+| .NET | bundle → assembly → type/method/resource | IL independent of optional C#; the actually returned representation is stated |
+| Native | image → symbol/function | assembly and pseudo code use their own established location relations |
+| Ark | HAP member → dynamic ABC → record/method | not every ABC dialect is treated as supported |
+| Flutter | Dart AOT target inside ELF → class/function | may share input resources with Native analysis without sharing entity coordinates |
+| PYC/PYZ | archive member → module → code object | module or code body; a fragment contains no binding facts outside the selected range |
+| Lua family | chunk → prototype | code-object navigation does not mean every object has its own source-reconstruction entry |
+| WASM | module → section/function | instructions, structural information and implemented C-like reconstruction |
+| EVM | bytecode → selector/instruction/metadata | the existence of a unified interface source view promises no EVM source recovery |
+| Archive resources | ASAR/ZIP/HAP/PyInstaller/wxapkg members | directories, properties, byte reads and export, not disguised as a decompiler |

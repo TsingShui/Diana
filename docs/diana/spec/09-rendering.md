@@ -1,6 +1,6 @@
 # P9 rendering and source spans
 
-[PIPELINE_DESIGN §8.2](../PIPELINE_DESIGN.md#82-p7p8p9-的显示产品交付)
+[PIPELINE_DESIGN §8.2](../PIPELINE_DESIGN.md#82-display-product-delivery-for-p7p8p9)
 defines the display boundary. Code lives in `crates/diana-decomp/src/p9/`;
 execution observations belong in the [engine README](../../../crates/diana-decomp/README.md).
 

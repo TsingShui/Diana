@@ -1,6 +1,6 @@
 # P7 owned method expressions
 
-[PIPELINE_DESIGN §5.7](../PIPELINE_DESIGN.md#57-p7methodresult) defines the
+[PIPELINE_DESIGN §5.7](../PIPELINE_DESIGN.md#57-p7-methodresult) defines the
 method-expression contract. The implementation is `crates/diana-decomp/src/p7/`.
 Capability and execution observations belong in the
 [engine README](../../../crates/diana-decomp/README.md).

@@ -42,10 +42,10 @@ package-local `AGENTS.md` before working in either package.
 
 ## Error handling
 
-- All error paths MUST follow [failure locality](docs/diana/PIPELINE_DESIGN.md#9-局部失败与方法退出):
+- All error paths MUST follow [failure locality](docs/diana/PIPELINE_DESIGN.md#9-local-failure-and-method-exit):
   contain failure to the smallest reliably identified scope and propagate missing
   facts only to their actual dependents. Partial method recovery is a normal result.
-- P1–P9 MUST each implement the [local-result contract](docs/diana/PIPELINE_DESIGN.md#92-p1p9-统一消费局部结果).
+- P1–P9 MUST each implement the [local-result contract](docs/diana/PIPELINE_DESIGN.md#92-p1p9-uniformly-consume-local-results).
   Published products describe coverage, established facts and local unavailability;
   a downstream stage MUST NOT collapse mixed input into whole-method failure merely
   because one item is unavailable. Keep owning-stage construction and one method chain.

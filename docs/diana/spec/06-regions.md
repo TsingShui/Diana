@@ -1,6 +1,6 @@
 # P6 control, protection and monitor plans
 
-[PIPELINE_DESIGN §5.6](../PIPELINE_DESIGN.md#56-p6自然区域优先保留显式转移的-java-like-控制计划)
+[PIPELINE_DESIGN §5.6](../PIPELINE_DESIGN.md#56-p6-natural-regions-first-a-java-like-control-plan-with-explicit-transfers-preserved)
 defines the product obligations. This chapter describes their implementation in
 `crates/diana-decomp/src/p6/`. Capability observations belong in the
 [engine README](../../../crates/diana-decomp/README.md).

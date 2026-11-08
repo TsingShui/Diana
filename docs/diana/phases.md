@@ -20,7 +20,7 @@ their owning modules.
 | P9 | `crates/diana-decomp/src/p9/` | Owned `Rendered`: existing expressions/names to UTF-8 text, JSON, source spans and concrete output diagnostics. |
 
 Archived implementations are not active stages or alternate recovery paths.
-The [P1–P9 local-result contract](PIPELINE_DESIGN.md#92-p1p9-统一消费局部结果) applies
+The [P1–P9 local-result contract](PIPELINE_DESIGN.md#92-p1p9-uniformly-consume-local-results) applies
 to every stage: mature products account for coverage, established facts and local
 unavailability, and downstream processing preserves independent results. This
 contract is broader than the currently supported local data/binding continuation;

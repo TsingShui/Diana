@@ -40,7 +40,7 @@ member outcomes. A method-task resource/invariant error no longer stops siblings
 Range/capacity checks and fallible allocation remain mandatory. The CLI/host owns process termination; Engine has no request
 cancellation callback/token or checkpoint parameter. There are no numeric quotas.
 
-The [P1–P9 local-result contract](../../docs/diana/PIPELINE_DESIGN.md#92-p1p9-统一消费局部结果)
+The [P1–P9 local-result contract](../../docs/diana/PIPELINE_DESIGN.md#92-p1p9-uniformly-consume-local-results)
 requires each stage to preserve independent results within the same method.
 P1–P3 now continue through local reference-read/use, register-span, invoke-grouping,
 result-use and return-kind issues. Target declarations, grouping and return category
@@ -306,7 +306,7 @@ failures were not exercised by this corpus.
 
 Signature-qualified Java-like calls (`Api.register<Listener>(h)`, with a complete
 original descriptor when needed) are specified under
-[the P7 contract](../../docs/diana/PIPELINE_DESIGN.md#5731-原目标签名限定).
+[the P7 contract](../../docs/diana/PIPELINE_DESIGN.md#5731-original-target-signature-qualification).
 They introduce no operand conversion. P7 now selects the display and P9 prints
 its complete raw-signature binding form when selected.
 

@@ -2,12 +2,12 @@
 
 Code: `crates/diana-decomp/src/p3/`; construction: Engine's private method task
 calls `build.rs::build_ssa`. The approved contract is
-[PIPELINE_DESIGN §5.3](../PIPELINE_DESIGN.md#53-p3异常感知的-pruned-ssa-与按需-idf).
+[PIPELINE_DESIGN §5.3](../PIPELINE_DESIGN.md#53-p3-exception-aware-pruned-ssa-with-on-demand-idf).
 
 P3 consumes an owner-published P2 `FlowMethod` with coverage and local fact states.
 It uses only established entry slots, ordered reads/writes, commit rules and
 transfers, plus the affected scope of facts P2 could not establish. It follows
-the [P1–P9 contract](../PIPELINE_DESIGN.md#92-p1p9-统一消费局部结果).
+the [P1–P9 contract](../PIPELINE_DESIGN.md#92-p1p9-uniformly-consume-local-results).
 P3 MUST NOT decode instructions, resolve declarations, infer handlers or perform
 P4 type analysis. `SsaMethod` privately owns P2 and exposes `SsaFacts`, borrowed
 `ExecutionFacts` and separate original `MethodEvidence`. Neither borrowed view

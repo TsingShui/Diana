@@ -182,7 +182,7 @@ public final class NotesRepository {
     public void sync() {
         List<Note> pending = store.findPending();
 
-        /* 此处保留原始调用，目标声明尚不完整。 */
+        /* The original call is retained here; its target declaration is still incomplete. */
         // Ldemo/notes/net/SyncApi;->push(Ljava/util/List;)V
 
         store.markSynced(pending);
@@ -492,7 +492,7 @@ public class SyncWorker extends Worker {
         }
     }
 
-    // 这里只演示阅读，不会执行任何调度。
+    // This demonstrates reading only; no scheduling is performed.
 
     public static void schedule() {
         WorkManager.getInstance().enqueue(
@@ -552,8 +552,8 @@ public final class SyncRequest {
 "#,
 };
 
-const DEMO_DEX: &str = r#"; 手写 DEX 指令示意，与 Java-like 页不建立对应关系
-; 未执行解码或分析
+const DEMO_DEX: &str = r#"; Hand-written DEX instruction illustration; it does not correspond to the Java-like page
+; No decoding or analysis was performed
 
 .method public example()V
 .registers 2
