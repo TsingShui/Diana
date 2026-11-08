@@ -4,12 +4,45 @@ use super::super::{Origin, RenderError};
 use crate::p7::{ControlId, Suspension};
 
 impl Expressions<'_, '_> {
+    pub(super) fn begin_abi(
+        &mut self,
+        section: &'static str,
+        control: ControlId,
+    ) -> Result<(), RenderError> {
+        self.out.abi_comment = false;
+        self.out.indent()?;
+        self.out
+            .fmt(format_args!("// Diana: ABI {section}, entry "))?;
+        let entry =
+            self.code.controls()[control.0 as usize]
+                .entry
+                .ok_or(RenderError::Invariant(
+                    "ABI attachment lost its delivered entry",
+                ))?;
+        self.label_name(entry)?;
+        self.out.put("\n")?;
+        self.out.abi_comment = true;
+        Ok(())
+    }
+
+    pub(super) fn end_abi(&mut self, initial: ControlId) -> Result<(), RenderError> {
+        self.out.abi_comment = false;
+        self.out.indent()?;
+        self.out.put("// Diana: suspend body, original entry ")?;
+        if let Some(entry) = self.code.controls()[initial.0 as usize].entry {
+            self.label_name(entry)?;
+        }
+        self.out.put("\n")?;
+        Ok(())
+    }
+
     pub(super) fn abi_operation(&mut self, operation: crate::p2::OpId) -> Result<(), RenderError> {
         let previous = std::mem::replace(&mut self.out.abi_comment, true);
         let rendered = self.statement(operation, None);
         self.out.abi_comment = previous;
         rendered
     }
+
     pub(super) fn abi_dispatch(&mut self) -> Result<(), RenderError> {
         let body = self
             .code
@@ -73,6 +106,7 @@ impl Expressions<'_, '_> {
         }
         Ok(())
     }
+
     pub(super) fn suspension_assignment(&mut self, plan: &Suspension) -> Result<(), RenderError> {
         let start = self.out.position();
         self.local(plan.merged)?;
@@ -101,6 +135,7 @@ impl Expressions<'_, '_> {
             },
         )
     }
+
     pub(super) fn suspension_tail(&mut self, index: u32) -> Result<(), RenderError> {
         let plan = self
             .code
@@ -142,6 +177,7 @@ impl Expressions<'_, '_> {
         }
         Ok(())
     }
+
     fn suspension_control_anchor(&mut self, control: ControlId) -> Result<(), RenderError> {
         let position = self.out.position();
         if let Some(label) = self.code.controls()[control.0 as usize].entry {

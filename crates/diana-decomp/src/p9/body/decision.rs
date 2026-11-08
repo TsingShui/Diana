@@ -6,6 +6,104 @@ use super::{Event, push};
 use crate::p7::*;
 
 impl Expressions<'_, '_> {
+    pub(super) fn switch_layout(
+        &mut self,
+        work: &mut Vec<Event>,
+        id: ControlId,
+        header: ControlId,
+        bodies: &[ControlId],
+        private_cases: bool,
+        terminal: crate::p2::BlockId,
+    ) -> Result<(), RenderError> {
+        push(work, Event::Close)?;
+        if private_cases {
+            let TerminalKind::Switch { arms, .. } =
+                &self.code.terminals()[terminal.0 as usize].kind
+            else {
+                return Err(RenderError::Invariant("switch lost its arms"));
+            };
+            for (&body, &arm) in bodies.iter().zip(arms).rev() {
+                push(work, Event::Control(body))?;
+                push(work, Event::Case(arm))?;
+            }
+        } else {
+            for &body in bodies.iter().rev() {
+                push(work, Event::Control(body))?;
+            }
+        }
+        push(work, Event::Switch(id, terminal))?;
+        push(work, Event::Control(header))?;
+        Ok(())
+    }
+
+    pub(super) fn switch_header(
+        &mut self,
+        id: ControlId,
+        terminal: crate::p2::BlockId,
+    ) -> Result<(), RenderError> {
+        let t = &self.code.terminals()[terminal.0 as usize];
+        let TerminalKind::Switch { selector, arms } = &t.kind else {
+            return Err(RenderError::Invariant("switch lost its selector"));
+        };
+        self.out.indent()?;
+        self.copies(&self.code.emission().terminals()[terminal.0 as usize].before)?;
+        let a = self.out.position();
+        if self.code.emission().controls()[id.0 as usize].label_required {
+            self.out
+                .put(&self.code.emission().controls()[id.0 as usize].label)?;
+            self.out.put(": ")?;
+        }
+        self.out.mark_outline("switch");
+        self.out.put("switch (")?;
+        self.operand(*selector)?;
+        self.phases(
+            &self.code.emission().terminals()[terminal.0 as usize].snapshots,
+            "after_operands_before_effect",
+        )?;
+        self.out.put(")")?;
+        self.out.span(
+            a,
+            Origin::Terminal {
+                method: self.method,
+                block: terminal,
+            },
+        )?;
+        self.out.open()?;
+        if !matches!(
+            self.code.emission().controls()[id.0 as usize].layout,
+            EmissionLayout::Switch {
+                private_cases: true,
+                ..
+            }
+        ) {
+            self.switch_arms(arms)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn case_header(&mut self, arm: TransferId) -> Result<(), RenderError> {
+        self.out.mark_outline("case");
+        self.out.indent()?;
+        match self.code.transfers()[arm.0 as usize].role {
+            Some(crate::p2::NormalEdge::SwitchCase { key, .. }) => {
+                self.out.fmt(format_args!("case {key}:"))?
+            }
+            Some(crate::p2::NormalEdge::SwitchDefault) => self.out.put("default:")?,
+            _ => {
+                return Err(RenderError::Invariant("switch arm lost its original role"));
+            }
+        }
+        if !self.code.emission().transfers()[arm.0 as usize]
+            .copies
+            .is_empty()
+        {
+            self.out.put(" ")?;
+        }
+        self.selected(arm, false)?;
+        self.out.put("\n")?;
+        Ok(())
+    }
+
     pub(super) fn decision(
         &mut self,
         control: ControlId,

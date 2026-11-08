@@ -2,9 +2,160 @@
 
 use super::super::expressions::Expressions;
 use super::super::{Origin, RenderError};
+use super::{Event, push};
 use crate::p7::*;
 
 impl Expressions<'_, '_> {
+    pub(super) fn end_control(
+        &mut self,
+        id: ControlId,
+        start: super::super::TextOffset,
+    ) -> Result<(), RenderError> {
+        if let Some(completion) = self.code.emission().controls()[id.0 as usize].continuation {
+            self.out.indent()?;
+            match completion {
+                ControlCompletion::Goto(label) => {
+                    self.out.put("goto ")?;
+                    self.label_name(label)?;
+                    self.out.put("; // planned continuation\n")?;
+                }
+                ControlCompletion::Break(scope) | ControlCompletion::Continue(scope) => {
+                    self.out
+                        .put(if matches!(completion, ControlCompletion::Break(_)) {
+                            "break "
+                        } else {
+                            "continue "
+                        })?;
+                    self.out
+                        .put(&self.code.emission().controls()[scope.0 as usize].label)?;
+                    self.out.put(";\n")?;
+                }
+                ControlCompletion::BreakHere(_) => self.out.put("break;\n")?,
+                ControlCompletion::ContinueHere(_) => self.out.put("continue;\n")?,
+            }
+        }
+        if self.code.emission().deferred_control(id) {
+            let slot = self
+                .pending_controls
+                .as_deref_mut()
+                .and_then(|pending| pending.get_mut(id.0 as usize))
+                .ok_or(RenderError::Invariant("deferred control is unavailable"))?;
+            if slot.replace(start).is_some() {
+                return Err(RenderError::Invariant("control was deferred twice"));
+            }
+        } else {
+            self.out.span(
+                start,
+                Origin::Control {
+                    method: self.method,
+                    control: id,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn control_anchors(
+        &mut self,
+        work: &mut Vec<Event>,
+        control: ControlId,
+        empty_arm: bool,
+    ) -> Result<(), RenderError> {
+        let start = self.out.position();
+        self.out.span(
+            start,
+            Origin::Control {
+                method: self.method,
+                control,
+            },
+        )?;
+        let node = match self.code.emission().controls()[control.0 as usize].layout {
+            EmissionLayout::Block(node) => Some(node),
+            _ => None,
+        };
+        if let Some(node) = node {
+            let start = self.out.position();
+            self.out.span(
+                start,
+                Origin::Label {
+                    method: self.method,
+                    label: LabelId(node.0),
+                },
+            )?;
+            let transfers = match &self.code.emission().blocks()[node.0 as usize].end {
+                BlockEnd::Transfers(links) => links.len(),
+                _ => 0,
+            };
+            for at in 0..transfers {
+                let link = match &self.code.emission().blocks()[node.0 as usize].end {
+                    BlockEnd::Transfers(links) => links[at],
+                    _ => {
+                        return Err(RenderError::Invariant("anchored block lost its transfer"));
+                    }
+                };
+                let start = self.out.position();
+                let copies = self.code.emission().transfers()[link.0 as usize]
+                    .copies
+                    .len();
+                for index in 0..copies {
+                    let copy = self.code.emission().transfers()[link.0 as usize].copies[index];
+                    self.copies(std::slice::from_ref(&copy))?;
+                }
+                self.out.span(
+                    start,
+                    Origin::Transfer {
+                        method: self.method,
+                        transfer: link,
+                    },
+                )?;
+            }
+            let terminal = match &self.code.emission().blocks()[node.0 as usize].end {
+                BlockEnd::Terminal(terminal) => Some(*terminal),
+                _ => None,
+            };
+            if let Some(terminal) = terminal {
+                let start = self.out.position();
+                match self.code.terminals()[terminal.0 as usize].kind {
+                    TerminalKind::Goto(link) if empty_arm => {
+                        self.selected(link, false)?;
+                    }
+                    TerminalKind::If {
+                        when_true,
+                        when_false,
+                        ..
+                    } if empty_arm
+                        && self.code.emission().if_display(terminal) == IfDisplay::Omitted =>
+                    {
+                        self.selected(when_true, false)?;
+                        self.selected(when_false, false)?;
+                    }
+                    _ => {}
+                }
+                self.out.span(
+                    start,
+                    Origin::Terminal {
+                        method: self.method,
+                        block: terminal,
+                    },
+                )?;
+            }
+        } else {
+            let children = self.code.emission().controls()[control.0 as usize]
+                .children(&self.code.controls()[control.0 as usize]);
+            for &child in children.iter().rev() {
+                push(
+                    work,
+                    if empty_arm {
+                        Event::EmptyArmAnchors(child)
+                    } else {
+                        Event::Anchors(child)
+                    },
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn block(&mut self, node: crate::p6::NodeId) -> Result<(), RenderError> {
         self.label(LabelId(node.0))?;
         let b = &self.code.emission().blocks()[node.0 as usize];

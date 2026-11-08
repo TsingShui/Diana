@@ -31,12 +31,16 @@ impl Expressions<'_, '_> {
                             crate::p4::Family::Reference => "reference",
                         })?
                     }
-                    LocalSpelling::Machine(t) => super::expressions::machine_type(self.out, t)?,
+                    LocalSpelling::Machine(t) => {
+                        super::super::expressions::machine_type(self.out, t)?
+                    }
                 }
             } else {
                 match self.code.emission().local_types()[l.id.0 as usize] {
                     LocalSpelling::Named(t) => self.ty(t)?,
-                    LocalSpelling::Machine(t) => super::expressions::machine_type(self.out, t)?,
+                    LocalSpelling::Machine(t) => {
+                        super::super::expressions::machine_type(self.out, t)?
+                    }
                 }
                 self.out.put(" ")?;
                 self.local(l.id)?;

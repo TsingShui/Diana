@@ -2,9 +2,36 @@
 
 use super::super::expressions::Expressions;
 use super::super::{Origin, RenderError};
-use super::{branch, complement, push};
+use super::push;
 use crate::p2::{BlockId, BranchOp};
 use crate::p7::*;
+
+fn complement(op: BranchOp) -> BranchOp {
+    match op {
+        BranchOp::Eq => BranchOp::Ne,
+        BranchOp::Ne => BranchOp::Eq,
+        BranchOp::Lt => BranchOp::Ge,
+        BranchOp::Ge => BranchOp::Lt,
+        BranchOp::Gt => BranchOp::Le,
+        BranchOp::Le => BranchOp::Gt,
+        BranchOp::Eqz => BranchOp::Nez,
+        BranchOp::Nez => BranchOp::Eqz,
+        BranchOp::Ltz => BranchOp::Gez,
+        BranchOp::Gez => BranchOp::Ltz,
+        BranchOp::Gtz => BranchOp::Lez,
+        BranchOp::Lez => BranchOp::Gtz,
+    }
+}
+fn branch(op: BranchOp) -> &'static str {
+    match op {
+        BranchOp::Eq | BranchOp::Eqz => " == ",
+        BranchOp::Ne | BranchOp::Nez => " != ",
+        BranchOp::Lt | BranchOp::Ltz => " < ",
+        BranchOp::Ge | BranchOp::Gez => " >= ",
+        BranchOp::Gt | BranchOp::Gtz => " > ",
+        BranchOp::Le | BranchOp::Lez => " <= ",
+    }
+}
 
 impl Expressions<'_, '_> {
     pub(super) fn terminal(&mut self, id: BlockId) -> Result<(), RenderError> {
