@@ -95,9 +95,22 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
                             },
                         );
                 }
-                empty[id.0 as usize] = block.actions.is_empty()
-                    && !block.show_label
-                    && display_empty_end(code, &block.end);
+                // A `nop` prints no text, so a block whose actions are all
+                // origin-only still prints nothing.
+                let silent_actions = block.actions.iter().all(|action| match action {
+                    BodyAction::Statement {
+                        operation,
+                        statement,
+                    } => {
+                        code.emission.omitted_nop(*statement)
+                            || code.emission.origin_only_operation(*operation)
+                    }
+                    BodyAction::Release { .. }
+                    | BodyAction::Receive { .. }
+                    | BodyAction::AbiOperation { .. } => false,
+                });
+                empty[id.0 as usize] =
+                    silent_actions && !block.show_label && display_empty_end(code, &block.end);
             }
             EmissionLayout::Sequence => {
                 empty[id.0 as usize] = true;
@@ -142,6 +155,80 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
                 && phases.snapshots.is_empty()
                 && phases.after.is_empty()
                 && arm_prints_nothing(code, when_false, false);
+        }
+    }
+    // A plain conditional terminal has no If control: its arms are the selected
+    // transfer spellings. An empty true arm and a printing false arm invert the
+    // same way, and the predicate still evaluates once at the same position.
+    let mut owned = vec![false; code.terminals.len()];
+    for control in &code.emission.controls {
+        if let EmissionLayout::If { test, .. } = &control.layout {
+            owned[test.terminal.0 as usize] = true;
+        }
+    }
+    for (index, terminal) in code.terminals.iter().enumerate() {
+        let TerminalKind::If {
+            when_true,
+            when_false,
+            ..
+        } = terminal.kind
+        else {
+            continue;
+        };
+        if owned[index] || code.emission.empty_if[index] {
+            continue;
+        }
+        let phases = &code.emission.terminals[index];
+        if !phases.before.is_empty() || !phases.snapshots.is_empty() || !phases.after.is_empty() {
+            continue;
+        }
+        if arm_prints_nothing(code, when_true, false)
+            && !arm_prints_nothing(code, when_false, false)
+        {
+            let test = PredicateEmission {
+                terminal: crate::p2::BlockId(
+                    u32::try_from(index).map_err(|_| crate::RequestError::PlatformCapacity)?,
+                ),
+                when_true,
+                when_false,
+                negate: false,
+            };
+            if !displayed_predicate_site(code, test) {
+                code.emission.inverted_if[index] = true;
+            }
+        }
+    }
+    // An arm that prints nothing is a selected control, not a fallthrough edge,
+    // so the empty-else decision above cannot see it. The control tree can: its
+    // printed body is exactly the child control's text.
+    for control in &code.emission.controls {
+        let EmissionLayout::If {
+            test,
+            yes,
+            no,
+            shape: IfShape::IfElse,
+            ..
+        } = &control.layout
+        else {
+            continue;
+        };
+        let terminal = test.terminal.0 as usize;
+        if code.emission.empty_if[terminal] {
+            continue;
+        }
+        let phases = &code.emission.terminals[terminal];
+        let moves_nothing =
+            phases.before.is_empty() && phases.snapshots.is_empty() && phases.after.is_empty();
+        if empty[no.0 as usize] {
+            code.emission.empty_else[terminal] = true;
+        } else if moves_nothing
+            && empty[yes.0 as usize]
+            && arm_prints_nothing(code, test.when_true, false)
+            && !displayed_predicate_site(code, *test)
+        {
+            // `if (c) { } else { X }` prints the same behavior as `if (!c) { X }`,
+            // and the predicate is still evaluated once, in the same place.
+            code.emission.inverted_if[terminal] = true;
         }
     }
     Ok(())
@@ -217,7 +304,7 @@ fn copies_print_nothing(code: &MethodCode, edge: TransferId) -> bool {
 /// additionally prints its transfer spelling.
 fn arm_prints_nothing(code: &MethodCode, id: TransferId, syntax_owned: bool) -> bool {
     let transfer = &code.emission.transfers[id.0 as usize];
-    transfer.copies.is_empty()
+    copies_print_nothing(code, id)
         && (syntax_owned || matches!(transfer.spelling, TransferSpelling::Fallthrough))
 }
 

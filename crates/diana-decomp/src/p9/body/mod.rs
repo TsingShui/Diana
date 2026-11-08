@@ -204,9 +204,17 @@ impl Expressions<'_, '_> {
                                         push(&mut work, Event::ElseIf(test.when_false))?;
                                     } else {
                                         push(&mut work, Event::Close)?;
+                                        // A false arm that prints nothing keeps only its
+                                        // origins; the `else` block would state no work.
+                                        let silent_false = self.code.emission().omitted(*no)
+                                            || self.code.emission().empty_else(test.terminal);
                                         if !self.code.emission().omitted(*no) {
-                                            push(&mut work, Event::Control(*no))?;
-                                            push(&mut work, Event::Else(test.when_false))?;
+                                            if silent_false {
+                                                push(&mut work, Event::EmptyArmAnchors(*no))?;
+                                            } else {
+                                                push(&mut work, Event::Control(*no))?;
+                                                push(&mut work, Event::Else(test.when_false))?;
+                                            }
                                         }
                                     }
                                     push(&mut work, Event::Control(*yes))?;
@@ -215,7 +223,8 @@ impl Expressions<'_, '_> {
                                         Event::If {
                                             test: *test,
                                             chained,
-                                            omitted_false: self.code.emission().omitted(*no),
+                                            omitted_false: self.code.emission().omitted(*no)
+                                                || self.code.emission().empty_else(test.terminal),
                                         },
                                     )?;
                                 }

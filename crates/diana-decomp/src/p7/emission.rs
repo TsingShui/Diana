@@ -354,6 +354,9 @@ pub struct EmissionPlan {
     pub(super) terminals: Vec<EvaluationPhases>,
     /// Display-only omission of a copy-free fallthrough false arm.
     pub(super) empty_else: Vec<bool>,
+    /// Display-only inversion: the true arm prints nothing, so the false arm
+    /// prints under the negated predicate and no empty block remains.
+    pub(super) inverted_if: Vec<bool>,
     /// Display-only omission of a method body's closing void return, whose
     /// closing brace performs the same exit.
     pub(super) omitted_returns: Vec<bool>,
@@ -452,6 +455,7 @@ impl EmissionPlan {
             operations: Vec::new(),
             terminals: Vec::new(),
             empty_else: Vec::new(),
+            inverted_if: Vec::new(),
             omitted_returns: Vec::new(),
             empty_if: Vec::new(),
             transfers: Vec::new(),
@@ -589,6 +593,12 @@ impl EmissionPlan {
     }
     pub fn operations(&self) -> &[EvaluationPhases] {
         &self.operations
+    }
+    pub fn inverted_if(&self, id: BlockId) -> bool {
+        self.inverted_if
+            .get(id.0 as usize)
+            .copied()
+            .unwrap_or(false)
     }
     pub fn empty_else(&self, id: BlockId) -> bool {
         self.empty_else.get(id.0 as usize).copied().unwrap_or(false)
@@ -734,6 +744,7 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
     plan.terminals
         .resize_with(code.terminals.len(), EvaluationPhases::default);
     plan.empty_else = filled(code.terminals.len(), false)?;
+    plan.inverted_if = filled(code.terminals.len(), false)?;
     plan.omitted_returns = filled(code.terminals.len(), false)?;
     plan.empty_if = filled(code.terminals.len(), false)?;
     plan.statement_operations = filled(code.statements.len(), None)?;

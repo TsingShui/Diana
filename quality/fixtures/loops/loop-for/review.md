@@ -7,7 +7,7 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 - Current numbers from `python3 quality/score.py --slug loop-for`:
-  structure 62%, naming 38%.
+  structure 64%, naming 38%%.
 
 ## Current verdict — round 1, 2026-11-08
 
@@ -40,5 +40,6 @@ The semantics verdict is written by reading the reference next to the output; `?
 还原 `for (init; cond; update)`；`break`/`continue` 直接印出；参数名恢复
 
 ## Rounds
+- R3 2026-11-08: 空分支清理；`else { }` 与空 `if` 不再打印，空真分支反演成单臂 if（谓词求值位置不变）
 
 - R1 2026-11-08: structure 62%, naming 38%; 三个 `for` 全部没有还原（首个差异就是 `for (` 缺失），变成 `while` + 循环前置赋值

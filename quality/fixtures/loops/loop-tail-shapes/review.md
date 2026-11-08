@@ -73,6 +73,7 @@ The semantics verdict is written by reading the reference next to the output; `?
 换回 `while (cond)`；随后是空体 `do { }` 的保留与 `nop;` 清理；参数名最后。
 
 ## Rounds
+- R3 2026-11-08: 空分支清理；`else { }` 与空 `if` 不再打印，空真分支反演成单臂 if（谓词求值位置不变）
 
-- R1 2026-11-08: structure 76%, naming 58%; 尾测试双向都正确，剩余 `test { }` 与 `nop;`
+- R1 2026-11-08: structure 82%, naming 58%%; 尾测试双向都正确，剩余 `test { }` 与 `nop;`
 - R2 2026-11-08: structure 81.3%, naming 57.8%; 谓词伪语法 `while (test { … yield … })` 改为 `while (true) { …; if (exit) break; }`

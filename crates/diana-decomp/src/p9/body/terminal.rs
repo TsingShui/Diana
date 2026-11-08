@@ -116,18 +116,28 @@ impl Expressions<'_, '_> {
             } => {
                 // The predicate evaluates its operands before selection, so the
                 // terminal's own carrier wraps only that evaluation.
+                // `if (c) { } else { X }` prints as `if (!c) { X }`: the
+                // predicate and both routes keep their original facts, and the
+                // empty arm's copies keep their anchors.
+                let inverted = self.code.emission().inverted_if(id);
                 let previous = self.check_carrier.replace(CheckCarrier::Terminal(id));
                 self.out.put("if (")?;
-                let rendered = self.condition(condition, false);
+                let rendered = self.condition(condition, inverted);
                 let rendered = rendered
                     .and_then(|()| self.phases(&p.snapshots, "after_operands_before_effect"));
                 self.check_carrier = previous;
                 rendered?;
                 self.out.put(")")?;
                 self.out.open()?;
-                self.branch_transfer(*when_true, true)?;
+                if inverted {
+                    self.branch_transfer(*when_false, true)?;
+                } else {
+                    self.branch_transfer(*when_true, true)?;
+                }
                 self.out.close()?;
-                if !self.code.emission().empty_else(id) {
+                if inverted {
+                    self.selected(*when_true, false)?;
+                } else if !self.code.emission().empty_else(id) {
                     self.out.indent()?;
                     self.out.put("else")?;
                     self.out.open()?;

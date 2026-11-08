@@ -260,16 +260,21 @@ a target. This same entry rule applies to transfers and planned continuations.
 P7 MUST omit an `else` emptied by this collapse only when its false-edge copies
 are empty and its control is an empty Block or a label-free Sequence of empty
 children. Each such control has no required label, continuation or deferred
-control; each block has no actions or displayed label. An empty block end is
-None, a list of copy-free Fallthrough transfers, or a Goto terminal with no
-terminal phases and a copy-free Fallthrough transfer. Other terminals retain the
-branch. For an explicit If terminal, P7 MUST omit the false arm only when its
-transfer is copy-free Fallthrough and all terminal phases are empty. P9 consumes
-this separate terminal display flag without recomputing emptiness.
+control; each block prints no text and has no displayed label, which means every
+action is an origin-only `nop` and its end prints nothing. An empty block end is
+None, a list of Fallthrough transfers whose copy bundles have no executable steps
+or unavailable assignments, or a Goto terminal with no terminal phases and such a
+transfer. Other terminals retain the branch. For an explicit If terminal, P7 MUST
+omit the false arm only when its transfer is such a Fallthrough and all terminal
+phases are empty. P9 consumes this separate terminal display flag without
+recomputing emptiness.
 
-When a syntax-owned If's true arm is empty under the same rules and its false
-arm prints, P7 selects an inverted single-arm display using `PredicateEmission`'s
-exact negation. Original true/false edge identities and child ownership stay
+When an If's true arm is empty under the same rules and its false arm prints, P7
+selects an inverted single-arm display using `PredicateEmission`'s exact negation.
+This covers both a syntax-owned If control, whose true arm is its child control,
+and an explicit If terminal, whose true arm is its Fallthrough transfer. The
+predicate is still evaluated once at the original position, so neither form adds
+or removes an evaluation. Original true/false edge identities and child ownership stay
 unchanged; the false-edge copies begin the displayed body. A true-edge copy
 bundle with no executable steps or unavailable assignments is nonprinting; P9
 retains its zero-length copy and transfer origins without moving any step.

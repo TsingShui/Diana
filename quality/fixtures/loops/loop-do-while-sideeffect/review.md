@@ -42,6 +42,7 @@ with the fixture's `javac.args`/`d8.args` or the shared defaults (see
 循环条件里的副作用按原位置打印（while ((v = poll()) != null)）；do-while 恢复
 
 ## Rounds
+- R3 2026-11-08: 空分支清理；`else { }` 与空 `if` 不再打印，空真分支反演成单臂 if（谓词求值位置不变）
 
 - R1 2026-11-08: structure 63%; 带副作用的循环条件被搬进 test { … } 块：while (test { v1 = p0.poll(); yield v1 != null; })
 - R2 2026-11-08: structure 61.0%, naming 54.4%; 谓词伪语法 `test { … yield … }` 改为循环体内倒置条件 + `break`

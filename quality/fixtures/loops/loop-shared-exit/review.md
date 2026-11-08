@@ -40,6 +40,7 @@ with the fixture's `javac.args`/`d8.args` or the shared defaults (see
 布尔标志恢复 boolean；条件中的数组读取合成与多余临时变量仍影响可读性
 
 ## Rounds
+- R3 2026-11-08: 空分支清理；`else { }` 与空 `if` 不再打印，空真分支反演成单臂 if（谓词求值位置不变）
 
 - R1 2026-11-08: structure 47%; for (… && !found; …) 的布尔条件被拆到循环体里（if (v12 != 0) break;），found 标志物化成 int
 - R2 2026-11-08: structure 49.4%, naming 31.2%; 嵌套私有退出路径保留在循环体，四处 goto 改为 break/带标签的 break；逐方法语义复读
