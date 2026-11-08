@@ -52,6 +52,10 @@ pub(super) trait ExpressionSource {
     ) -> Option<InlineCheck> {
         None
     }
+    /// A check the declaration carries prints on the stored value, not on a read.
+    fn definition_check(&self, _statement: StatementId) -> Option<InlineCheck> {
+        None
+    }
     fn statement_sites(&self, _statement: StatementId) -> &[SiteId] {
         &[]
     }
@@ -127,6 +131,9 @@ impl ExpressionSource for MethodCode {
     ) -> Option<InlineCheck> {
         self.emission().inline_check(carrier, occurrence, value)
     }
+    fn definition_check(&self, statement: StatementId) -> Option<InlineCheck> {
+        self.emission().definition_check(statement)
+    }
     fn statement_sites(&self, statement: StatementId) -> &[SiteId] {
         self.statements()
             .get(statement.0 as usize)
@@ -199,6 +206,23 @@ enum ExprEvent {
         previous_carrier: Option<CheckCarrier>,
         previous_statement: Option<StatementId>,
     },
+}
+
+/// The type a check names, from its own original type reference.
+fn check_reference_type<S: ExpressionSource>(
+    check: &InlineCheck,
+    code: &S,
+) -> Result<TypeUseId, RenderError> {
+    match code
+        .references()
+        .get(check.reference.0 as usize)
+        .map(|reference| &reference.declaration)
+    {
+        Some(Ok(ReferenceDeclaration::Type { type_use })) => Ok(*type_use),
+        _ => Err(RenderError::Invariant(
+            "definition check lost its type reference",
+        )),
+    }
 }
 
 fn push_event(work: &mut Vec<ExprEvent>, event: ExprEvent) -> Result<(), RenderError> {
@@ -306,6 +330,38 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
         match &s.kind {
             StatementKind::Nop => self.out.put("nop")?,
             StatementKind::Move { expression, .. } | StatementKind::Evaluate { expression } => {
+                if !self.kotlin_notation()
+                    && let Some(check) = self.code.definition_check(s.id)
+                {
+                    let start = self.out.position();
+                    self.out.put("(")?;
+                    self.ty(check_reference_type(&check, self.code)?)?;
+                    self.out.put(") ")?;
+                    self.out.span(
+                        start,
+                        Origin::Statement {
+                            method: self.method,
+                            statement: check.check,
+                        },
+                    )?;
+                    self.out.span(
+                        start,
+                        Origin::Operation {
+                            method: self.method,
+                            operation: check.operation,
+                            pc: check.pc,
+                        },
+                    )?;
+                    for &site in self.code.statement_sites(check.check) {
+                        self.out.span(
+                            start,
+                            Origin::Site {
+                                method: self.method,
+                                site,
+                            },
+                        )?;
+                    }
+                }
                 self.expr(*expression)?
             }
             StatementKind::FieldStore {

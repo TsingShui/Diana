@@ -7,9 +7,9 @@ so a review needs no toolchain.
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 - Current numbers from `python3 quality/score.py --slug algo-dp`:
-  structure 29%, naming 37%.
+  structure 14%, naming 37%.
 
-## Current verdict — round 1, 2026-11-08
+## Current verdict — round 2, 2026-11-08
 
 ### Semantics
 
@@ -18,7 +18,7 @@ never substitutes for it.
 
 | method | semantics |
 |---|---|
-| `editDistance` | ✔ 边界初始化、`Math.min` 三层与对角线递归都正确；但 2D 数组经 `Array.newInstance` 且读取缺 cast（`int[] v13 = v8[0]`） |
+| `editDistance` | ✔ 边界初始化、`Math.min` 三层与对角线递归都正确；2D 数组现声明为 `int[][]`，执行对比 64 组一致 |
 | `longestIncreasing` | ✔ 双重循环与 `best[i] = best[j] + 1` 正确 |
 | `knapsack` | ✔ 逆序容量循环与候选比较正确 |
 
@@ -38,8 +38,9 @@ never substitutes for it.
 
 ### Ranked fixes
 
-2D 数组声明与访问还原成 `int[][]`；数组读取不中转；循环形态恢复
+`new int[m][n]` 的原样还原；数组读取不中转；循环形态恢复
 
 ## Rounds
 
+- R2 2026-11-08: structure 14%, naming 37%（同一二进制下的重测值；R1 的 29% 来自更早的构建）；2D 数组声明恢复为 `int[][]`，三个方法通过执行对比（1646 组）
 - R1 2026-11-08: structure 29%, naming 37%; `new int[m][n]` 被解成 `Array.newInstance(Integer.TYPE, new int[]{m,n})` 加 `Object` 变量，多数读取带 `/* Object load */` 且缺 cast

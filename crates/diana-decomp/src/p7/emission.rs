@@ -54,6 +54,9 @@ pub enum CheckCarrier {
     /// An original terminal's operand: a return or throw value, a branch operand
     /// or a switch selector. `InlineCheck::occurrence` names its exact read.
     Terminal(BlockId),
+    /// The store that produced the checked value. The declaration names the
+    /// check's type and its initializer prints the cast, so no read repeats it.
+    Definition(StatementId),
 }
 /// A `check-cast` printed at the first use of its value instead of as its own
 /// statement. The check and its operation keep their provenance there.
@@ -323,6 +326,9 @@ pub struct EmissionPlan {
     pub(super) copy_check_uses: Vec<Vec<u32>>,
     /// Indices into `inline_checks`, by the terminal that carries the check.
     pub(super) terminal_check_uses: Vec<Vec<u32>>,
+    /// Indices into `inline_checks`, by the statement whose stored value the
+    /// check names.
+    pub(super) definition_check_uses: Vec<Vec<u32>>,
     pub(super) composed_uses: Vec<Option<ComposedExpression>>,
     pub(super) composed_operations: Vec<bool>,
     /// By the statement whose allocation prints the payload.
@@ -366,6 +372,13 @@ impl EmissionPlan {
             .get(reference.0 as usize)
             .copied()
             .flatten()
+    }
+    /// The check a statement's stored value was given, when the declaration and
+    /// its initializer print it instead of a later read.
+    pub fn definition_check(&self, statement: StatementId) -> Option<InlineCheck> {
+        let uses = self.definition_check_uses.get(statement.0 as usize)?;
+        let index = *uses.first()?;
+        self.inline_checks.get(index as usize).copied()
     }
     pub fn boolean_use(&self, expression: ExprId) -> bool {
         self.boolean_uses
@@ -425,6 +438,7 @@ impl EmissionPlan {
             check_uses: Vec::new(),
             copy_check_uses: Vec::new(),
             terminal_check_uses: Vec::new(),
+            definition_check_uses: Vec::new(),
             composed_uses: Vec::new(),
             composed_operations: Vec::new(),
             array_literals: Vec::new(),
@@ -488,6 +502,9 @@ impl EmissionPlan {
             CheckCarrier::Copy { bundle, .. } => self.copy_check_uses.get(bundle.0 as usize)?,
             CheckCarrier::Terminal(terminal) => {
                 self.terminal_check_uses.get(terminal.0 as usize)?
+            }
+            CheckCarrier::Definition(statement) => {
+                self.definition_check_uses.get(statement.0 as usize)?
             }
         };
         for &index in uses {
@@ -685,6 +702,7 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
     plan.check_uses = filled(code.statements.len(), Vec::new())?;
     plan.copy_check_uses = filled(code.copies.len(), Vec::new())?;
     plan.terminal_check_uses = filled(code.terminals.len(), Vec::new())?;
+    plan.definition_check_uses = filled(code.statements.len(), Vec::new())?;
     plan.composed_uses = filled(code.expressions.len(), None)?;
     plan.composed_operations = filled(code.operations.len(), false)?;
     plan.array_literals = filled(code.statements.len(), None)?;

@@ -98,6 +98,17 @@ portions on opposite sides of that boundary cannot share the check's display.
 A following statement already composed into another carrier must retain that
 same protection context through its selected composition chain.
 
+A check that reads exactly the value a store produced carries its own declaration
+instead when four facts hold: that store is the local's only store, the check's
+read state is that store's published state, the check action directly follows the
+store with no event between them, and the check's reference type replaces the
+erased `java.lang.Object` declaration. P7 then declares the local with the check's
+type and prints one cast on the store's expression, `T v = (T) <producer>;`. Later
+reads print the declared narrow type; a read carrier MUST NOT print the same check
+again. The store, its expression, the check's operation, pc, reference, route and
+origins all stay at their original positions, and a local with another store or a
+reused representative keeps the read carrier or the standalone statement.
+
 P7 omits a check-cast's own text only from P4's published `Redundant` disposition,
 which is a must-fact over every reaching transfer. The omitted statement keeps its
 statement, operation, pc, reference, resolved type name, original route and a

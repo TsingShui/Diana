@@ -245,7 +245,7 @@ Kotlin fixtures are **never scored**; their review is the record (see below).
 
 ### Loop semantics evidence
 
-Executed differential check, 2026-11-08: original fixture methods against Diana's rendered methods over generated inputs (equal return values, exception classes, mutated arrays, deque contents and static state). 1186 comparisons across `loop-for`, `loop-for-multi`, `loop-do-while`, `loop-do-while-sideeffect` and `algo-sort`, 0 mismatches; `algo-sort.quick` contributes 896 of them and `loop-do-while-sideeffect` 52. Both classes render as plain Java. The checker is sensitive: a changed loop bound in `LoopDoWhile.countUp` produced 5 mismatches, a broken swap in `quick` produced array mismatches, and an inverted null test in `consume` produced mismatches. Not covered: methods that are not type-correct (`algo-matrix` returns an `Object` local from an `int[][]` method) and loops that render with `goto`. This is a bounded behavioral comparison, not a proof for all inputs.
+Executed differential check, 2026-11-08: original fixture methods against Diana's rendered methods over generated inputs (equal return values, exception classes, mutated arrays, matrices, deque contents and static state). 2912 comparisons across `loop-for`, `loop-for-multi`, `loop-do-while`, `loop-do-while-sideeffect`, `algo-sort`, `algo-matrix` and `algo-dp`, 0 mismatches; `knapsack` contributes 1568, `quick` 896, `multiply` 64 and `editDistance` 64. All seven classes render as plain Java. The checker is sensitive: a changed loop bound in `LoopDoWhile.countUp` produced 5 mismatches, a broken swap in `quick` produced array mismatches, an inverted null test in `consume` produced mismatches, and one changed store in `editDistance` produced 33. Not covered: loops that render with `goto`. This is a bounded behavioral comparison, not a proof for all inputs.
 
 ### Exceptions
 
@@ -290,7 +290,7 @@ Executed differential check, 2026-11-08: original fixture methods against Diana'
 |---|---|---|
 | `algo-graph` | 50% / 45% | BFS/DFS values correct; `Deque`/`ArrayDeque` generics and element casts lose the declared type |
 | `algo-sort` | 29% / 31% | all three sorts correct; `[repeat: …]` gone, every index still goes through a temporary and `for` is lost |
-| `algo-dp` | 29% / 37% | all three recurrences correct; 2D arrays go through `Array.newInstance` with uncast reads |
+| `algo-dp` | 14% / 37% | all three recurrences correct; the 2D array is now declared `int[][]` with one cast on its initializer |
 | `algo-string` | 38% / 62% | KMP and counting correct; `new StringBuilder` split into `new` + `.<init>` |
 | `algo-tree` | 34% / 60% | recursion correct; every field read goes through a temporary, generics dropped |
 | `algo-matrix` | 28% / 29% | all three correct; `new int[m][n]` becomes `Array.newInstance` and the result is returned as `Object` |

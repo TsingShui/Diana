@@ -52,6 +52,9 @@ pub(super) fn construct(
         super::super::build::filled(code.statements.len(), None)?;
     let mut found: Vec<(StatementId, InlineCheck)> = Vec::new();
     let protection = protected_contexts(code)?;
+    // A value that the check names as a whole is declared and initialized with
+    // that type; this carrier owns the check before any read claims it.
+    definition_uses(code, &omitted, &mut found, &mut why_slots)?;
     statement_uses(code, &protection, &mut found, &mut why_slots)?;
     copy_uses(code, &mut found, &mut why_slots)?;
     terminal_uses(code, &protection, &mut found, &mut why_slots)?;
@@ -94,6 +97,9 @@ pub(super) fn construct(
                 }
                 CheckCarrier::Terminal(terminal) => {
                     &mut code.emission.terminal_check_uses[terminal.0 as usize]
+                }
+                CheckCarrier::Definition(statement) => {
+                    &mut code.emission.definition_check_uses[statement.0 as usize]
                 }
             };
             push(uses, index)?;
@@ -420,6 +426,143 @@ fn statement_uses(
 
 /// Attach a still standalone check to the first printed read of its value. The
 /// carrier must sit in the same protection context and render that read once.
+/// A check that names a whole stored value turns that store into its declaration.
+///
+/// The check reads exactly the value the store produced, the store is the only
+/// one for that local, and the check action follows it directly, so the cast can
+/// print on the initializer: `int[][] v = (int[][]) <producer>;`. Every later
+/// read then prints the narrow declared type instead of repeating a cast, which
+/// the single readable read carrier cannot do for a second use. Only a reference
+/// type that narrows the current declaration qualifies.
+fn definition_uses(
+    code: &mut MethodCode,
+    omitted: &[Option<OmittedCheck>],
+    found: &mut Vec<(StatementId, InlineCheck)>,
+    why_slots: &mut [Option<&'static str>],
+) -> Result<(), ExpressionError> {
+    for block in &code.emission.blocks {
+        let mut previous: Option<StatementId> = None;
+        for action in &block.actions {
+            let BodyAction::Statement {
+                operation,
+                statement,
+            } = action
+            else {
+                previous = None;
+                continue;
+            };
+            if omitted
+                .get(statement.0 as usize)
+                .is_some_and(Option::is_some)
+                || found.iter().any(|(check, _)| check == statement)
+            {
+                previous = Some(*statement);
+                continue;
+            }
+            let Some((storage, reference)) = eligible_check(code, *operation, *statement, None)
+            else {
+                previous = Some(*statement);
+                continue;
+            };
+            let Some(definition) = previous else {
+                why_at(why_slots, *statement, "definition_not_adjacent");
+                previous = Some(*statement);
+                continue;
+            };
+            let mut stores = code.statements.iter().filter(|s| {
+                s.outputs.iter().any(|output| {
+                    matches!(
+                        output.materialization(),
+                        Materialization::Store(local) if StorageId(local.0) == storage
+                    )
+                })
+            });
+            let unique =
+                stores.next().is_some_and(|s| s.id == definition) && stores.next().is_none();
+            if !unique {
+                why_at(why_slots, *statement, "definition_is_not_the_only_store");
+                previous = Some(*statement);
+                continue;
+            }
+            let defined = code.statements[definition.0 as usize]
+                .outputs
+                .iter()
+                .find(|output| {
+                    matches!(
+                        output.materialization(),
+                        Materialization::Store(local) if StorageId(local.0) == storage
+                    )
+                })
+                .map(|output| output.state());
+            if defined.is_none()
+                || checked_read(code, *statement).map(|(_, state)| state) != defined
+            {
+                why_at(why_slots, *statement, "definition_state_differs");
+                previous = Some(*statement);
+                continue;
+            }
+            let Ok(ReferenceDeclaration::Type { type_use }) =
+                &code.references[reference.0 as usize].declaration
+            else {
+                why_at(why_slots, *statement, "check_target_not_a_type");
+                previous = Some(*statement);
+                continue;
+            };
+            let Some(target) = code.types.get(type_use.0 as usize) else {
+                why_at(why_slots, *statement, "check_target_lost_its_use");
+                previous = Some(*statement);
+                continue;
+            };
+            // Only the erased declaration narrows: a second, unrelated reference
+            // type would replace a fact instead of recovering one.
+            let object = |units: &[u16]| {
+                units
+                    .iter()
+                    .copied()
+                    .eq(b"Ljava/lang/Object;".iter().copied().map(u16::from))
+            };
+            let reference_type = matches!(target.units.first(), Some(&unit) if unit == b'L' as u16 || unit == b'[' as u16);
+            let narrows = !object(&target.units)
+                && matches!(
+                    code.emission.local_types.get(storage.0 as usize).copied(),
+                    Some(LocalSpelling::Named(ty)) if object(&code.types[ty.0 as usize].units)
+                );
+            if !reference_type || !narrows || code.locals[storage.0 as usize].original.is_reused() {
+                why_at(why_slots, *statement, "definition_type_does_not_narrow");
+                previous = Some(*statement);
+                continue;
+            }
+            let pc = code
+                .operations
+                .get(operation.0 as usize)
+                .ok_or(bug("check-cast lost its operation"))?
+                .pc;
+            let occurrence = match code.statements[statement.0 as usize].kind {
+                StatementKind::CheckCast { value, .. } => value,
+                _ => return Err(bug("definition carrier lost its check")),
+            };
+            push(
+                found,
+                (
+                    *statement,
+                    InlineCheck {
+                        check: *statement,
+                        operation: *operation,
+                        pc,
+                        value: storage,
+                        reference,
+                        carrier: CheckCarrier::Definition(definition),
+                        occurrence,
+                    },
+                ),
+            )?;
+            code.emission.local_types[storage.0 as usize] = LocalSpelling::Named(*type_use);
+            code.locals[storage.0 as usize].declared_types = vec![*type_use];
+            previous = Some(*statement);
+        }
+    }
+    Ok(())
+}
 fn distant_uses(
     code: &MethodCode,
     protection: &[Option<ControlId>],
@@ -768,6 +911,9 @@ fn copy_uses(
         else {
             continue;
         };
+        if found.iter().any(|(check, _)| *check == statement) {
+            continue;
+        }
         let Some((storage, reference)) = eligible_check(code, operation, statement, None) else {
             continue;
         };
@@ -900,6 +1046,9 @@ fn terminal_uses(
         else {
             continue;
         };
+        if found.iter().any(|(check, _)| *check == statement) {
+            continue;
+        }
         let Some((storage, reference)) = eligible_check(code, operation, statement, None) else {
             continue;
         };
