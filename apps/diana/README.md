@@ -3,8 +3,10 @@
 Diana is the native command-line front end of the
 [Diana engine](../../crates/diana-decomp/README.md). `get-class` and `get-method`
 deliver the existing P0–P9 Engine result, without a second analysis or renderer.
-The binary is `diana` (`diana.exe` on Windows). The `0.0.0` version is an
-unpublished development marker.
+The binary is `diana` (`diana.exe` on Windows). CLI binary releases use
+`diana-v<version>` tags and are available from
+[GitHub Releases](https://github.com/TsingShui/Diana/releases). Cargo installation
+builds from Git or a local checkout; the crate is not published to crates.io.
 
 The [approved architecture](../../docs/diana/PIPELINE_DESIGN.md) owns product
 boundaries. This package owns input mapping, APK/ZIP access, selection,

@@ -31,10 +31,10 @@ curl -fsSL https://raw.githubusercontent.com/TsingShui/Diana/main/install.sh -o 
 
 The [installer](install.sh) detects x86_64/aarch64 and installs into
 `~/.local/bin`. Use `DIANA_INSTALL_DIR` for another directory, or pass a release
-tag: `sh install-diana.sh v0.1.0`. It accepts `diana-<target>.tar.gz`,
+tag: `sh install-diana.sh diana-v0.1.0`. It accepts `diana-<target>.tar.gz`,
 `diana-<version>-<target>.tar.gz` or `diana-v<version>-<target>.tar.gz` containing
-one `diana` executable. Currently the releases contain only legacy rasc binaries;
-use Cargo until a Diana binary release is available.
+one `diana` executable. Windows binaries are available as ZIP archives on the
+[releases page](https://github.com/TsingShui/Diana/releases).
 
 From a local checkout:
 

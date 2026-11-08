@@ -340,7 +340,11 @@ Do not commit, push, publish or create tags
 unless the user asks. Root NOTICE is removed as requested; retain existing crate
 license files without adding a license bundle.
 
-Diana packages remain `publish=false`, version `0.0.0` scaffold markers. No release
-workflow is active. The old rasc workflow/scripts were removed with the archived
-tree and exist only in git history; do not reactivate them or couple Diana versions
-to rasc. Future release policy requires explicit approval.
+Diana packages remain `publish=false`; CLI distribution uses GitHub binary
+releases, not crates.io. The CLI's `diana-vMAJOR.MINOR.PATCH` tag MUST match its
+Cargo package version. `.github/workflows/release.yml` builds only the CLI for
+macOS, Linux and Windows, then publishes a complete release after every target
+build succeeds. The engine and GUI retain independent development versions.
+Publishing a tag or release still requires an explicit operator request.
+The old rasc workflow/scripts remain archived; contributors MUST NOT reactivate
+them or couple Diana versions to rasc.

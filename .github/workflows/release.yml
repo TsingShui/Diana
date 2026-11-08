@@ -1,0 +1,164 @@
+name: Diana release
+
+on:
+  push:
+    tags:
+      - "diana-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing Diana release tag (diana-vMAJOR.MINOR.PATCH)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: diana-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.version.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Match the tag to the CLI version
+        id: version
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          if [[ ! "$TAG" =~ ^diana-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Unsupported Diana release tag: $TAG" >&2
+            exit 1
+          fi
+          version="${TAG#diana-v}"
+          manifest_version=$(awk -F '"' '/^version = / { print $2; exit }' apps/diana/Cargo.toml)
+          if [[ "$version" != "$manifest_version" ]]; then
+            echo "Tag version does not match apps/diana/Cargo.toml" >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - runner: macos-latest
+            target: x86_64-apple-darwin
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.runner }}
+    env:
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+
+      - name: Musl build tools
+        if: endsWith(matrix.target, '-linux-musl')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+          echo "CC=musl-gcc" >> "$GITHUB_ENV"
+          target_key=$(printf '%s' "$TARGET" | tr '[:lower:]-' '[:upper:]_')
+          echo "CARGO_TARGET_${target_key}_LINKER=musl-gcc" >> "$GITHUB_ENV"
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install 1.93.0 --profile minimal --target "$TARGET"
+          rustup default 1.93.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: diana-release-${{ matrix.target }}
+
+      - name: Build the CLI only
+        run: cargo build -p diana --bin diana --release --locked --target "$TARGET"
+
+      - name: Package
+        run: |
+          mkdir -p package dist
+          cp LICENSE package/
+          if [[ "$TARGET" == *-windows-* ]]; then
+            cp "target/$TARGET/release/diana.exe" package/
+            archive="$PWD/dist/diana-$VERSION-$TARGET.zip"
+            (cd package && 7z a -tzip "$archive" diana.exe LICENSE)
+          else
+            cp "target/$TARGET/release/diana" package/
+            chmod 755 package/diana
+            archive="$PWD/dist/diana-$VERSION-$TARGET.tar.gz"
+            tar -C package -czf "$archive" diana LICENSE
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: diana-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      COMMIT: ${{ needs.prepare.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: diana-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish the complete release
+        run: |
+          remote_commit=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha)
+          if [[ "$remote_commit" != "$COMMIT" ]]; then
+            echo "Release tag moved after the build; refusing to publish" >&2
+            exit 1
+          fi
+          if gh release view "$TAG" --json isDraft --jq .isDraft > existing-release; then
+            if [[ "$(< existing-release)" != true ]]; then
+              echo "Release is already published; refusing to replace its assets" >&2
+              exit 1
+            fi
+          else
+            gh release create "$TAG" --draft --verify-tag --target "$COMMIT" \
+              --title "Diana $VERSION" --notes-file .github/release-notes.md
+          fi
+          gh release upload "$TAG" dist/* --clobber
+          gh release edit "$TAG" --draft=false --latest
