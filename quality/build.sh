@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Build every quality fixture in one pass: sources -> classes -> classes.dex.
+# Prepare every fixture: assemble Smali, or compile sources and then dex classes.
 #
-# There is one pipeline for every fixture. Any mix of `*.java` and `*.kt` in a
-# fixture directory is compiled into the same classes directory and then dexed
-# once; fixtures are never classified by language. The generated DEX is committed
+# Smali, when present, is the assembly input; paired Java explains its behavior.
+# Otherwise any mix of Java and Kotlin is compiled together and dexed once.
+# The generated DEX is committed
 # on purpose, so a review needs no toolchain - this script is only for the author
 # who changed a fixture.
 set -euo pipefail
@@ -50,6 +50,19 @@ for slug_dir in "$QUALITY"/fixtures/*/*/; do
     rm -rf "$out"
     mkdir -p "$out/classes" "$out/dex"
 
+    smali_sources=("$slug_dir"*.smali)
+    if [ -e "${smali_sources[0]}" ]; then
+        if [ -z "${SMALI_CLASSPATH:-}" ]; then
+            echo "error: $slug needs a local Smali assembler; set SMALI_CLASSPATH" >&2
+            exit 1
+        fi
+        java -cp "$SMALI_CLASSPATH" org.jf.smali.Main assemble --api 24 \
+            -o "$out/dex/classes.dex" "$slug_dir"
+        cp "$out/dex/classes.dex" "$slug_dir/classes.dex"
+        echo "wrote ${slug_dir#"$QUALITY"/}classes.dex ($(wc -c < "$slug_dir/classes.dex" | tr -d ' ') bytes)"
+        continue
+    fi
+
     java_sources=("$slug_dir"*.java)
     kotlin_sources=("$slug_dir"*.kt)
 
@@ -81,8 +94,7 @@ for slug_dir in "$QUALITY"/fixtures/*/*/; do
         exit 1
     fi
 
-    # A fixture's own rules file selects the packaging step; there is no
-    # per-language or per-kind build route.
+    # Compiled-source fixtures use their own rules file for optional obfuscation.
     rules="$slug_dir/rules.pro"
     if [ -f "$rules" ]; then
         (

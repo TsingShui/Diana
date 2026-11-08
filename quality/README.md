@@ -1,27 +1,33 @@
 # Quality fixtures and review
 
-Diana's directory for **decompilation output quality**: hand-written Java
-fixtures, the DEX generated from them, and written reviews of what the CLI
-actually produced. It exists to answer one question — *did the readable output
-get better* — separately from semantic checks and from the source-only fixture
-workflow in `docs/diana/FIXTURES.md`.
+Diana's shared fixture directory is `quality/fixtures/<theme>/<slug>/`.
+It holds output-quality references, Java/Smali reproductions and regression
+inputs, with prepared DEX beside their sources. Reuse the corresponding theme
+or create it when absent; do not create a separate fixture tree.
+[FIXTURES](../docs/diana/FIXTURES.md) defines Java/Smali preparation and independent
+expectations. Executable engine checks live in `crates/diana-decomp/tests/` and
+refer to these inputs. The written-review workflow here answers *did the readable output
+get better*, separately from executed behavioral checks.
 
-No script scores the output. Quality is judged by reading, because the failures
-that matter here (a lost `case` body, a handler printed outside its `try`, a
-`for` turned into a graph) are semantic, and string metrics were measured to be
-both false-positive and false-negative prone.
+Quality is judged by reading. Missing effects or case bodies can be semantic
+errors; an explicit handler chain or graph can instead be a readability obstacle
+that preserves execution facts. The notation alone does not establish a semantic
+error. String metrics measure shape, not correctness, and never replace that
+judgement or independently executed behavioral checks.
 
 ```text
 quality/
-├── build.sh                     regenerate every fixture's classes.dex
+├── build.sh                     regenerate DEX from Smali or Java/Kotlin sources
 ├── dump.py                      reference + Diana output side by side, per method
 ├── score.py                     structure/naming recovery per method, no thresholds
 ├── lib.py                       method splitting and token normalisation
 ├── .gitignore                   keeps the committed fixture DEX in the tree
 └── fixtures/<theme>/<slug>/     one structure per directory, one theme per parent
-    ├── <Slug>.java              readable reference, compile input, the expectation
-    ├── classes.dex              generated input, committed for reproducibility
-    └── review.md                current verdict, ranked fixes, round log
+    ├── <Slug>.java              readable explanation; compile input without Smali
+    ├── <Slug>.smali             optional assembly input; takes precedence over Java
+    ├── classes.dex              prepared input, committed for reproducibility
+    ├── README.md                reproduction setup and independent scenarios, if applicable
+    └── review.md                written quality verdict, if applicable
 ```
 
 A fixture tests **one structure** (constants, two-register branches, one catch):
@@ -31,18 +37,23 @@ The themes are `atoms/`, `branches/`, `loops/`, `exceptions/`, `sync/`,
 `kotlin/`; the two catalog tables below use the same grouping, and a slug stays
 unique across themes so `--slug` needs no path.
 
-The fixture DEX is committed **on purpose**: a review then needs only the Diana
-CLI, with no JDK, Android SDK or network. That is a deliberate exception to the
-"source recipes only" rule, and it covers `quality/fixtures/**/classes.dex` only.
+The fixture DEX is committed **on purpose**: inspection and tests then need no
+JDK, Android SDK, assembler or network. The generated-output exception covers
+`quality/fixtures/**/classes.dex` only.
 
 ## Workflow
 
 ```sh
-quality/build.sh                       # only after editing a fixture's Java
+quality/build.sh                       # after editing assembly/compile inputs
 python3 quality/score.py               # structure/naming recovery per method
 python3 quality/dump.py                # writes .cache/review/<slug>.md
 python3 quality/dump.py --slug branch-if2
 ```
+
+For a fixture with Smali, set `SMALI_CLASSPATH` to a locally available assembler
+classpath before running `build.sh`. Its Java file is an explanation, not an
+alternative compile input. No tool is downloaded implicitly, and a failed
+assembly does not publish a replacement DEX.
 
 A fixture written in Kotlin is **never scored**. Its review is a semantic
 judgement written by reading the Kotlin reference next to the output: `?.`, `?:`,
@@ -65,13 +76,13 @@ match can still be wrong, and an equivalent shape can score low.
    (same values, effects, call order, exceptions, locks), **facts** (original
    calls, constants, identities), **shape** (reference constructs recovered) and
    **notation** (only-a-decompiler forms in the body).
-3. The judgement is written into the fixture itself, `fixtures/<theme>/<slug>/review.md`.
-   **Every fixture carries a per-method `### Semantics` table** - `✔` equivalent,
+3. The judgement is written into the fixture itself, `quality/fixtures/<theme>/<slug>/review.md`.
+   **Every written quality review carries a per-method `### Semantics` table** - `✔` equivalent,
    `~` equivalent but different shape, `✘` wrong, `?` not yet judged - next to the
    numeric score. The numbers never replace the reading: `score.py` measures how
    much structure survived, the semantics table says whether it still means the
    same thing. That file already holds the coverage table and the preparation record,
-   so a fixture is three files and no side directories.
+   while reproduction scenarios and test evidence stay in the fixture's README.
 4. Improvements are made, `dump.py` is re-run, and the **current verdict is
    rewritten in place** while `## Rounds` gains one line. The file stays bounded:
    it always opens with what is true now, and older rounds remain readable in
@@ -119,6 +130,7 @@ Commands are only re-verified with the ordinary equivalence checks (`get-class`,
 | `loop-do-while-sideeffect` | loop conditions that call something on every test |
 | `loop-do-while` | `do-while`, `do-while` with `break`, nested `do-while` |
 | `loop-tail-shapes` | every tail-test shape next to the head tests that must stay `while` |
+| `nested-loop-exits` | Java/Smali reproduction of private nested-loop exit ownership |
 
 ### Exceptions
 
@@ -129,6 +141,7 @@ Commands are only re-verified with the ordinary equivalence checks (`get-class`,
 | `exception-finally` | `finally` on the normal path and on the throwing path |
 | `exception-two-resources` | try-with-resources over two resources, `close` + `addSuppressed` |
 | `exception-finally-transfer` | `finally` with `return`/`break`/`continue`, try inside catch |
+| `resource-cleanup` | Java/Smali reproduction of loop cleanup, nested resources and a shared-handler guard |
 
 ### Synchronization
 

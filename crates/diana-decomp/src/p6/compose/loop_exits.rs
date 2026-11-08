@@ -7,10 +7,6 @@ use super::parts::{copy, mask};
 use crate::p2::{OpKind, Terminal};
 use crate::p5::StorageMethod;
 
-#[cfg(test)]
-#[path = "loop_exits_tests.rs"]
-mod tests;
-
 pub(super) fn construct(
     storage: &StorageMethod<'_>,
     f: &mut RegionFacts,
@@ -50,8 +46,13 @@ pub(super) fn construct(
                 }
             }
         }
-        members.sort_unstable();
-        f.loops[index].lexical_members = members;
+        let mut boundary = mask(f.nodes.len(), &plan.evaluation)?;
+        boundary[plan.header.0 as usize] = true;
+        let mut reached = mask(f.nodes.len(), &members)?;
+        // A private catch is lexical body content even when it cannot reach a
+        // backedge. Predicate protection and shared follows stay outside it.
+        super::completion::include_try_handlers(f, &boundary, plan.follow, &mut reached);
+        f.loops[index].lexical_members = super::parts::list(&reached)?;
         f.loops[index].private_exits = private_exits;
     }
     Ok(())

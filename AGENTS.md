@@ -116,21 +116,33 @@ chapters describe the existing implementation until migrated to this target.
   debug examples.
 - Contributors MAY develop unit, integration, end-to-end and regression tests,
   fixture preparation tools and CI test jobs. Tests MUST use independent
-  expectations and current product contracts. Review historical cases before
-  reuse; do not restore obsolete output gates or alternate analysis routes.
+  expectations and current product contracts. Fixture inputs and scenario
+  expectations MUST stay in `quality/fixtures/<theme>/<slug>/`. Engine fixture
+  checks MUST live in `crates/diana-decomp/tests/`, link to those inputs and use
+  the ordinary Engine entry; shared test helpers belong in `tests/support/` only
+  when actual cases need them. Keep test implementations out of production stage
+  modules. Review historical cases before reuse; do not restore obsolete output
+  gates or alternate analysis routes.
   Engine correspondence/replay checkers MUST remain under `cfg(test)`, consuming
   products delivered through the ordinary Engine entry without widening stage
   access or construction authority.
 - Contributors MAY author paired Java explanations, Smali inputs and independent
   expectations for reproduction and regression under
   [FIXTURES](docs/diana/FIXTURES.md).
-  Track source pairs in `fixtures/<slug>/`; assemble Smali into DEX under
-  `.cache/fixtures/<slug>/` without a per-fixture tool-version pin. Record the
-  actual assembly environment and keep generated output out of version control.
-  `quality/` is a separate output-quality area: its fixtures commit their DEX so a
-  review needs no toolchain, and its reviews are written judgements, not tests or
-  acceptance evidence; the exception covers `quality/fixtures/**/classes.dex` only.
+  All fixtures MUST live in `quality/fixtures/<theme>/<slug>/`, including
+  reproduction and regression Java/Smali pairs. Reuse the matching theme; create
+  it when absent. Do not create a top-level `fixtures/` or package-local fixture
+  tree. Keep source explanations, assembly inputs, independent expectations and
+  reviews beside the fixture. Assemble in `.cache/fixtures/<slug>/` without a
+  per-fixture tool-version pin, record the actual environment, and publish the
+  prepared `classes.dex` beside its sources so inspection/tests need no assembler.
+  Only `quality/fixtures/**/classes.dex` is exempt from the generated-output ban;
+  other generated files stay ignored. Written quality reviews are judgements,
+  not tests or regression acceptance evidence.
   Test authorization does not permit independent validation on production requests.
+- Rust tests MUST run through `cargo nextest run`, not `cargo test`. Use package
+  and test filters for the affected scope. Missing nextest is a setup failure;
+  do not silently substitute another runner.
 - Production input safety, analysis invariants and semantics-preserving transform
   checks remain required. Existing independent verifier code MUST NOT run in
   ordinary requests. Build/lint success does not establish semantic correctness.

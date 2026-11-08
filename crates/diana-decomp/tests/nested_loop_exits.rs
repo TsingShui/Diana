@@ -1,18 +1,20 @@
 //! Structural checks over the ordinary Engine delivery. These do not execute
 //! the final plan or establish behavioral correspondence; fixture scenarios and
-//! that missing evidence are recorded in fixtures/nested-loop-exits/README.md.
+//! that missing evidence are recorded in quality/fixtures/loops/nested-loop-exits/README.md.
 
-use crate::p6::{LoopPlan, RegionFacts, TransferAction};
-use crate::p9::{Origin, RenderOutcome, Rendered};
-use crate::{ByteOffset, ClassDefId, ClassKey, DexId, DexImage, Engine, ImageOrigin, InputId};
+use diana_decomp::p6::{LoopPlan, RegionFacts, TransferAction};
+use diana_decomp::p9::{Origin, RenderOutcome, Rendered};
+use diana_decomp::{
+    ByteOffset, ClassDefId, ClassKey, DexId, DexImage, Engine, ImageOrigin, InputId,
+};
 
 fn inspect(name: &str, check: impl FnOnce(&RegionFacts, &Rendered)) {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../.cache/fixtures/nested-loop-exits/classes.dex");
+        .join("../../quality/fixtures/loops/nested-loop-exits/classes.dex");
     let bytes = std::fs::read(path).expect(
-        "assemble fixtures/nested-loop-exits/LoopExits.smali first; see its README (missing input is not a skip)",
+        "read quality/fixtures/loops/nested-loop-exits/classes.dex (missing input is not a skip)",
     );
-    let index = crate::input::ProgramIndex::open(&bytes).unwrap();
+    let index = diana_decomp::input::ProgramIndex::open(&bytes).unwrap();
     let class = (0..index.class_count())
         .map(ClassDefId)
         .find(|&id| {
@@ -45,7 +47,7 @@ fn inspect(name: &str, check: impl FnOnce(&RegionFacts, &Rendered)) {
         )
         .unwrap();
     let analysis = engine.analyze_method(class, method).unwrap();
-    let crate::MethodOutcome::Expressed(expressed) = analysis.result.unwrap() else {
+    let diana_decomp::MethodOutcome::Expressed(expressed) = analysis.result.unwrap() else {
         panic!("fixture method did not reach P7");
     };
     let RenderOutcome::Ready(rendered) = analysis.rendered else {
@@ -57,12 +59,12 @@ fn inspect(name: &str, check: impl FnOnce(&RegionFacts, &Rendered)) {
     // This checks effect provenance, not execution of those operations. Literal
     // producers have no independent emitted action and are not covered here.
     for (index, operation) in code.operations().iter().enumerate() {
-        if !matches!(operation.original, crate::p2::OpKind::Invoke { .. }) {
+        if !matches!(operation.original, diana_decomp::p2::OpKind::Invoke { .. }) {
             continue;
         }
         let origin = Origin::Operation {
             method,
-            operation: crate::p2::OpId(u32::try_from(index).unwrap()),
+            operation: diana_decomp::p2::OpId(u32::try_from(index).unwrap()),
             pc: operation.pc,
         };
         assert_eq!(

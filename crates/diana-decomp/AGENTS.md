@@ -15,8 +15,14 @@ changing an engine capability.
   failure handling.
 - Remain independent of rasc, dexdec, rusty-dex, Kuna and radguard code. Consult
   `docs/diana/SOURCE_MAP.md` before reviewing or reusing reference material.
-- Source fixtures and regression inputs follow
-  [FIXTURES](../../docs/diana/FIXTURES.md).
+- All fixtures, including engine reproductions and regression inputs, MUST live
+  in `quality/fixtures/<theme>/<slug>/`. Reuse the matching theme or create it;
+  do not create top-level or package-local fixture trees. Keep Java/Smali pairs,
+  expectations and prepared DEX together, following
+  [FIXTURES](../../docs/diana/FIXTURES.md). Fixture checks MUST live in this
+  package's `tests/` directory, using the ordinary Engine entry and original
+  selectors. Add shared helpers in `tests/support/` only for actual consumers;
+  keep test implementations out of production stage modules.
 - Automated tests follow the root testing policy and
   [EVOLUTION](../../docs/diana/EVOLUTION.md). Engine regression cases MUST use the
   shared ordinary Engine entry and independent expectations without widening
@@ -29,4 +35,7 @@ changing an engine capability.
   `class_def` index of that image; `method` is the engine-wide `MethodId`, not an
   index inside the class. Do not add phase-specific debug renderers, binaries or
   examples.
+- Run Rust tests with `cargo nextest run --locked -p diana-decomp` (add
+  `--all-features` when applicable). Do not use `cargo test`; a missing nextest
+  installation is a setup failure, not permission to substitute another runner.
 - Build from the repository root with `cargo build --locked -p diana-decomp`.

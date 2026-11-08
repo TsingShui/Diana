@@ -8,36 +8,44 @@ regression acceptance. Fixture preparation follows the root
 
 ## Files and ownership
 
-Store each fixture in `fixtures/<slug>/`, using a lowercase, hyphenated name for
-the mechanism rather than the originating application.
+Store every fixture in `quality/fixtures/<theme>/<slug>/`, including quality,
+reproduction and regression inputs. Reuse the corresponding theme or create it
+when absent. Use a lowercase, hyphenated slug for the mechanism rather than the
+originating application. Do not create a top-level or package-local fixture tree.
 
 ```text
-fixtures/<slug>/
+quality/fixtures/<theme>/<slug>/
 ├── Case.java
 ├── Case.smali
+├── classes.dex
 └── README.md
 ```
 
 | File | Responsibility |
 |---|---|
 | `Case.java` | Readable explanation of the relevant behavior and effects. |
-| `Case.smali` | Actual assembly input, including branch targets and effect order. |
+| `Case.smali` | Actual assembly input, including branch targets and effect order; when present, it takes precedence over compiling the Java explanation. |
+| `classes.dex` | Prepared input kept with its sources so inspection and tests need no assembler. |
 | `README.md` | Provenance/license, Java–Smali correspondence, assembly commands, original selectors, expectations and observed reproduction status. |
 
 Authors MAY add supporting source types when required by the mechanism. Authors
-MUST keep APKs, generated DEX/class files, downloaded tools and inspection logs
-under ignored `.cache/` storage. Fixture outputs belong under
-`.cache/fixtures/<slug>/`; repository assets remain source-only.
+MUST keep APKs, generated class files, downloaded tools, scratch DEX and inspection
+logs under ignored `.cache/` storage. Assemble fixture DEX under
+`.cache/fixtures/<slug>/`, then copy the successful result to the fixture's
+`classes.dex`. Only `quality/fixtures/**/classes.dex` is exempt from the
+generated-output ban. A failed assembly MUST NOT publish or test a stale result.
 
-`quality/` is the single exception: its measurement fixtures commit the generated
-`classes.dex` next to the Java reference so a review needs no toolchain. Those DEX
-files are review inputs, not fixture expectations, regression cases or acceptance
-evidence; [quality/README](../../quality/README.md) owns their workflow.
+[quality/README](../../quality/README.md) describes the shared fixture directory
+and written-review workflow. Sharing a location does not turn DEX inputs or
+written reviews into behavioral expectations or regression acceptance evidence.
 
 There is no mandatory `expected.json` or per-fixture `build.sh`. Authors MUST write
 independent behavioral expectations in the README. An authorized regression case
-encodes those same expectations in executable checks and links back to the
-fixture; it does not introduce a competing source of expected behavior.
+encodes those same expectations in `crates/diana-decomp/tests/<case>.rs` and links
+back to the fixture; it does not introduce a competing source of expected behavior.
+Engine fixture tests MUST use the ordinary Engine entry and original selectors.
+Shared helpers belong in `tests/support/` when actual consumers require them;
+production stage modules MUST NOT hold fixture test implementations.
 
 ## Java and Smali correspondence
 
@@ -65,9 +73,10 @@ identities, data and mappings remain outside the repository.
 
 1. Use a locally available Smali assembler supporting the fixture's syntax and DEX format.
 2. Assemble the authored Smali into `.cache/fixtures/<slug>/classes.dex`.
-3. Record the actual assembler version, invocation and relevant format/API options.
-4. Resolve original class descriptors and full method prototypes in that generated DEX.
-5. Confirm that the required instruction structure survived assembly.
+3. Copy the successfully prepared DEX to `quality/fixtures/<theme>/<slug>/classes.dex`.
+4. Record the actual assembler version, invocation and relevant format/API options.
+5. Resolve original class descriptors and full method prototypes in that generated DEX.
+6. Confirm that the required instruction structure survived assembly.
 
 Fixture authors MUST NOT impose an exact assembler version as an admission gate.
 A missing tool, unsupported syntax, assembly failure or absent trigger structure

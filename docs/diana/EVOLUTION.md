@@ -87,19 +87,21 @@ of Diana's Java-like output.
 
 ## Checker implementation
 
-The implementation is a Rust test-only module, not a CLI feature or a JSON
-interpreter over inspection-formatted Debug strings. Planned files under
-`crates/diana-decomp/src/regression/` are:
+The implementation is Rust test-only code under `crates/diana-decomp/tests/`,
+not a CLI feature or a JSON interpreter over inspection-formatted Debug strings.
+Inputs and independent scenario expectations stay in
+`quality/fixtures/<theme>/<slug>/`. The planned file responsibilities are:
 
 | File | Responsibility |
 |---|---|
-| `mod.rs` | Prepare inputs, resolve original selectors, call the ordinary Engine entry, run required scenarios and report outcomes. |
-| `schedule.rs` | Translate final emission placement into a private executable instruction sequence with actual label locations. |
-| `execute.rs` | Interpret that sequence and its expressions/copies, tracking values, helper calls and ordered effects. |
-| `cases.rs` | Declare required fixture scenarios, deterministic helper behavior and independently authored expected observations. |
+| `<case>.rs` | Resolve fixture inputs and original selectors, call the ordinary Engine entry, declare scenarios/helper behavior/independent observations, run checks and report outcomes. |
+| `support/schedule.rs` | Translate final emission placement into a private executable instruction sequence with actual label locations. |
+| `support/execute.rs` | Interpret that sequence and its expressions/copies, tracking values, helper calls and ordered effects. |
 
-The crate root includes this module only under `cfg(test)`. These are planned
-files, not implemented capabilities. Fixture preparation uses the
+Cargo integration-test targets compile this code only for tests. Production
+stage modules contain no fixture test implementations or checker entry points.
+Shared helpers are added only for actual case needs; the executor files above
+are planned responsibilities, not implemented capabilities. Fixture preparation uses the
 [Smali procedure](FIXTURES.md#dex-preparation); the runner MUST NOT silently use a
 stale DEX when assembly fails. A fresh ordinary Engine request provides the owned
 `MethodResult`. `MethodResult::code()` and `MethodCode::emission()` are the checker
@@ -134,7 +136,7 @@ selection or P7 composition helpers to decide what should have been emitted.
 
 `execute.rs` accepts the executable sequence, scenario arguments/initial state
 and a fixture helper implementation. It returns an observation or an unchecked
-reason. The executor MUST NOT receive the expected observation; `mod.rs` compares
+reason. The executor MUST NOT receive the expected observation; `<case>.rs` compares
 actual and expected only after execution. A scenario starts with fresh locals and
 helper state, with explicit machine-width numeric behavior rather than host-sized
 arithmetic or fabricated values for unread storage.

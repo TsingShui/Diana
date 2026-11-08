@@ -154,20 +154,30 @@ reproducible inputs; no private APKs are committed.
 
 ## Testing policy
 
+Contributors MUST run Rust tests through `cargo nextest run`, with the applicable
+package and test filters, rather than `cargo test`. A missing nextest installation
+is a setup failure, not a successful skip or permission to substitute a runner.
+
 The root [AGENTS.md](../../AGENTS.md) permits automated tests, regression tools
-and CI test jobs. This includes maintenance and build-tool tests. Contributors
+and CI test jobs. Fixture inputs and scenario expectations stay under
+`quality/fixtures/<theme>/<slug>/`; engine fixture checks live in
+`crates/diana-decomp/tests/`, with shared helpers under `tests/support/` only when
+needed. Production stage modules do not hold fixture test implementations.
+This includes maintenance and build-tool tests. Contributors
 MUST review historical cases against current contracts before reuse. Test-only
 construction paths MUST NOT bypass the shared method chain or stage authority.
 
 Contributors MAY author paired Java explanations, Smali inputs and independent
 expectations for reproduction and regression. [FIXTURES](FIXTURES.md) defines
-their layout, assembly-environment records and source-only publication; it does
-not require Java/D8/R8 compilation or exact assembler versions.
+their shared `quality/fixtures/<theme>/<slug>/` layout, assembly-environment
+records and publication of prepared DEX beside its sources; it does not require
+Java/D8/R8 compilation or exact assembler versions.
 
-`quality/` holds readable output-quality fixtures and their written reviews. Its
-DEX is committed so a review needs no toolchain, and a review records judgement,
-not a test result: it MUST NOT be cited as regression or acceptance evidence, and
-it does not gate a change.
+`quality/fixtures/` holds all fixtures, including output-quality references and
+Java/Smali reproductions used by tests. Prepared DEX is committed beside its
+sources so inspection and tests need no toolchain. A written quality review
+records judgement, not a test result: it MUST NOT be cited as regression or
+acceptance evidence, and it does not gate a change.
 
 [EVOLUTION](EVOLUTION.md) fixes the discovery-to-repair procedure, checker design
 and acceptance criteria. Contributors MUST distinguish independent expectations

@@ -17,7 +17,7 @@ longer match: methods are then paired by mapped name and, when that is ambiguous
 (ProGuard reuses short names), by body similarity. Naming is reported as `obf`
 because the obfuscator destroyed it, not the decompiler.
 
-`quality/fixtures/<slug>/review.md` stays authoritative; this script is a
+`quality/fixtures/<theme>/<slug>/review.md` stays authoritative; this script is a
 measurement, not a verdict.
 """
 

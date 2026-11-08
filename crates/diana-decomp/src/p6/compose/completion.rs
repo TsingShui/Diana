@@ -97,9 +97,9 @@ pub(super) fn reachable(
     Ok(reached)
 }
 
-/// A branch containing a complete established try body must leave room for
-/// that try's handlers in the same child. Normal reachability alone strands
-/// abrupt catch bodies outside the branch before the try can be selected.
+/// A branch arm or loop body containing a complete established try body must
+/// leave room for its handlers in the same child. Normal reachability alone
+/// strands abrupt catch bodies before the try can be selected.
 /// Shared handlers and foreign entrances still pass ordinary admission.
 pub(super) fn include_try_handlers(
     f: &RegionFacts,

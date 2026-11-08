@@ -283,10 +283,9 @@ fn normal_follow_roots(
     }
     Ok(selected)
 }
-// A normal entrance from outside a handler's complete execution reach marks
-// a shared continuation, not private catch content. Include nested exception
-// paths while finding that frontier so their joins stay inside an enclosing
-// catch. The selected catch retains the original outbound edge and its copies.
+// Foreign normal or exceptional arrivals mark shared content, not a private
+// catch continuation. In particular an outer cleanup handler can also receive
+// failures from the normal body. Nested private exception paths stay inside.
 fn handler_frontiers(
     storage: &StorageMethod<'_>,
     f: &RegionFacts,
@@ -294,7 +293,9 @@ fn handler_frontiers(
 ) -> Result<Vec<Vec<NodeId>>, RegionError> {
     let mut frontiers = lists(f.nodes.len())?;
     let excluded = filled(f.nodes.len(), false)?;
+    let mut shared = filled(f.nodes.len(), false)?;
     for handler in &f.handlers {
+        shared.fill(false);
         let reach = reachable(storage, f, g, &[handler.node], None, &excluded, true)?;
         for node in &f.nodes {
             if node.id == handler.node || !reach[node.id.0 as usize] {
@@ -305,6 +306,23 @@ fn handler_frontiers(
                 .any(|link| !reach[f.links[link.0 as usize].from.0 as usize])
             {
                 push(&mut frontiers[handler.node.0 as usize], node.id)?;
+                shared[node.id.0 as usize] = true;
+            }
+        }
+        for (from, edges) in g.exceptions.iter().enumerate() {
+            if reach[from] {
+                continue;
+            }
+            for &edge in edges {
+                if Graph::exception_possible(f, edge)
+                    && let Some(to) = Graph::exception_target(f, storage, edge)
+                    && to != handler.node
+                    && reach[to.0 as usize]
+                    && !shared[to.0 as usize]
+                {
+                    push(&mut frontiers[handler.node.0 as usize], to)?;
+                    shared[to.0 as usize] = true;
+                }
             }
         }
     }
@@ -414,7 +432,7 @@ pub(super) fn plan(
         for &seed in &seeds {
             for &link in &g.outgoing[seed.0 as usize] {
                 let next = f.links[link.0 as usize].to;
-                if !follows.contains(&next) {
+                if !seeds.contains(&next) && !follows.contains(&next) {
                     push(&mut follows, next)?;
                 }
             }

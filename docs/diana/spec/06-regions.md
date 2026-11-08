@@ -361,8 +361,14 @@ predicate link. It is not a common postdominator beyond exit-side work. Other lo
 exits retain their own targets. A non-terminating region does not acquire a
 synthetic exit to make postdomination convenient. `LoopPlan::members()` retains
 the original backedge core, latches and exits. `lexical_members()` separately records
-the proposed lexical content, including closed synchronized scopes and their
-release/break corridors. `private_exits()` identifies original exits with admitted
+the proposed lexical content, including closed synchronized scopes, their
+release/break corridors and private established try handlers. Before child
+selection, P6 closes lexical membership over complete established try bodies
+using the same monotone membership rule as ordinary branch arms. A try touching
+the loop header, predicate evaluation or normal follow remains outside this
+closure. Original backedge membership and follow do not change; ordinary
+entry, partition and whole-owner checks still decide region admission.
+`private_exits()` identifies original exits with admitted
 private corridors. The predicate's actual exiting link and destination remain
 the loop follow; lexical ownership does not skip exit-side work.
 
@@ -530,8 +536,10 @@ address equality. A shared target does not merge different catch roles. Normal o
 sibling-catch entrances into a natural catch body reject that wrapping.
 
 Before enumerating protection candidates, P6 computes each original handler's
-normal and executable exceptional reach. A node with a normal arrival from
-outside that reach is a shared continuation frontier, not private catch content.
+normal and executable exceptional reach. A node with a normal or executable
+exceptional arrival from outside that reach is a shared frontier, not private
+catch content. This includes an outer cleanup handler that also receives
+exceptions from the normal protected body.
 The capture entry itself is never cut this way. Including nested exceptional
 paths keeps their private joins in the enclosing handler.
 
@@ -552,7 +560,10 @@ receives in favor of an implicit cleanup template. The unlocked cleanup alternat
 below retains these facts separately. Ordered prefix and suffix clauses remain unchanged. Candidate composition prefers the full catch frontier
 when equal memberships would otherwise let a suffix obscure it.
 
-Follow candidates start after guarded nodes. Within a synchronized context,
+Follow candidates start after guarded nodes. A successor that is itself one of
+the guarded seeds is internal protected content, not a follow constraint. P6
+omits those successors when deriving the common normal follow, while retaining
+every seed and original edge for membership and entrance checks. Within a synchronized context,
 handlers that complete through abrupt outlets do not constrain a shared normal
 follow; guarded nodes' own normal successors still constrain it. When no follow
 is common to the guarded successors and handlers, their normal-successor follow
