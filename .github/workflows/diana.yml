@@ -65,12 +65,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # GPUI resolves fonts through fontconfig and links the desktop toolkit.
+      # GPUI resolves fonts through fontconfig and links the X11/Wayland toolkit.
       - name: System libraries
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            pkg-config libfontconfig1-dev libfreetype-dev libxkbcommon-dev libwayland-dev
+            pkg-config libfontconfig1-dev libfreetype-dev libxkbcommon-dev \
+            libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
 
       - name: Toolchain
         run: |
