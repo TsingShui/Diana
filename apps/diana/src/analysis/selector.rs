@@ -77,6 +77,12 @@ impl SelectorError {
     }
 }
 
+impl From<super::runner::EmitFailed> for SelectorError {
+    fn from(_: super::runner::EmitFailed) -> Self {
+        Self::Image(super::images::ImageError::WorkerLost)
+    }
+}
+
 fn units(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()
 }

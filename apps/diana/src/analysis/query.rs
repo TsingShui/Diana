@@ -93,6 +93,12 @@ pub enum QueryError {
     InvalidJobs,
 }
 
+impl From<super::runner::EmitFailed> for QueryError {
+    fn from(_: super::runner::EmitFailed) -> Self {
+        Self::WorkerLost
+    }
+}
+
 impl QueryError {
     pub fn kind(&self) -> FailureKind {
         match self {

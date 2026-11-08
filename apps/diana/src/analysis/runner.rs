@@ -2,34 +2,51 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::thread;
 
-use super::query::QueryError;
+/// The consumer stopped accepting rows, so the worker must stop too. Callers
+/// convert it into their own classified failure; the consumer's own error is
+/// returned unchanged by [`run`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct EmitFailed;
 
 /// Each worker can queue one completed row; channel closure propagates sink
 /// failure directly to producers.
-enum Message<T> {
+enum Message<T, E> {
     Row(T),
-    Failed(QueryError),
+    Failed(E),
 }
 
 /// Runs `produce` over every image on a worker pool.
 ///
 /// `context` is called once per worker, so a worker can keep a scratch buffer
-/// alive across the roots it processes instead of allocating one per root.
-pub(super) fn run<T, C, P>(
+/// alive across the roots it processes instead of allocating one per root. The
+/// error type belongs to the caller so one pool serves row scans, image header
+/// reads and class-name resolution.
+pub(super) fn run<T, C, P, E>(
     images: usize,
     jobs: usize,
     context: impl Fn() -> C + Sync,
     produce: P,
-    sink: &mut impl FnMut(T) -> Result<(), QueryError>,
-) -> Result<(), QueryError>
+    sink: &mut impl FnMut(T) -> Result<(), E>,
+) -> Result<(), E>
 where
     T: Send,
     C: Send,
-    P: Fn(&mut C, usize, &mut dyn FnMut(T) -> Result<(), QueryError>) -> Result<(), QueryError>
-        + Sync,
+    E: Send + From<EmitFailed>,
+    P: Fn(&mut C, usize, &mut dyn FnMut(T) -> Result<(), E>) -> Result<(), E> + Sync,
 {
     let workers = jobs.min(images.max(1));
-    let (sender, receiver) = sync_channel::<Message<T>>(workers);
+    // One image needs no channel and no thread: a single-DEX request must not pay
+    // pool startup. Multi-image runs keep their producer/consumer split, which is
+    // what lets formatting overlap the caller's output even with one worker.
+    if images <= 1 {
+        let mut context = context();
+        for ordinal in 0..images {
+            let mut emit = |row| sink(row);
+            produce(&mut context, ordinal, &mut emit)?;
+        }
+        return Ok(());
+    }
+    let (sender, receiver) = sync_channel::<Message<T, E>>(workers);
     let next = AtomicUsize::new(0);
     thread::scope(|scope| {
         for _ in 0..workers {
@@ -47,16 +64,16 @@ where
     })
 }
 
-fn worker_loop<T, C, P>(
+fn worker_loop<T, C, P, E>(
     next: &AtomicUsize,
     images: usize,
     context: &mut C,
     produce: &P,
-    sender: &SyncSender<Message<T>>,
+    sender: &SyncSender<Message<T, E>>,
 ) where
     T: Send,
-    P: Fn(&mut C, usize, &mut dyn FnMut(T) -> Result<(), QueryError>) -> Result<(), QueryError>
-        + Sync,
+    E: Send + From<EmitFailed>,
+    P: Fn(&mut C, usize, &mut dyn FnMut(T) -> Result<(), E>) -> Result<(), E> + Sync,
 {
     loop {
         // Claim whole roots dynamically: a slow image must not leave the other
@@ -65,10 +82,12 @@ fn worker_loop<T, C, P>(
         if ordinal >= images {
             return;
         }
+        // A closed channel means the consumer already failed; the producer keeps
+        // its own error type and stops through the ordinary failure path.
         let mut emit = |row| {
             sender
                 .send(Message::Row(row))
-                .map_err(|_| QueryError::WorkerLost)
+                .map_err(|_| E::from(EmitFailed))
         };
         if let Err(error) = produce(context, ordinal, &mut emit) {
             let _ = sender.send(Message::Failed(error));
@@ -77,10 +96,10 @@ fn worker_loop<T, C, P>(
     }
 }
 
-fn consume<T>(
-    receiver: Receiver<Message<T>>,
-    sink: &mut impl FnMut(T) -> Result<(), QueryError>,
-) -> Result<(), QueryError> {
+fn consume<T, E>(
+    receiver: Receiver<Message<T, E>>,
+    sink: &mut impl FnMut(T) -> Result<(), E>,
+) -> Result<(), E> {
     while let Ok(message) = receiver.recv() {
         match message {
             Message::Row(row) => sink(row)?,

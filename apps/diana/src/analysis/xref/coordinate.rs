@@ -4,7 +4,8 @@
 use diana_decomp::StringId;
 
 use super::{Relation, Target, TextMatch};
-use crate::analysis::images::{ImageSet, resolve_class};
+use crate::analysis::image_jobs;
+use crate::analysis::images::ImageSet;
 use crate::analysis::request::RequestScope;
 use crate::analysis::selector::{Selector, SelectorError};
 
@@ -18,7 +19,7 @@ pub fn resolve_coordinate(
 ) -> Result<Target, SelectorError> {
     let class_selector = match (kind, selector) {
         ("string", Selector::String(selector)) => {
-            let images = ImageSet::open(scope, selector.entry)?;
+            let images = ImageSet::open(scope, selector.entry, image_jobs())?;
             let mut found = None;
             for image in images.images() {
                 if selector.logical != Some(image.logical.0) {
@@ -46,8 +47,8 @@ pub fn resolve_coordinate(
             ));
         }
     };
-    let images = ImageSet::open(scope, class_selector.entry)?;
-    let selected = resolve_class(&images, class_selector)?;
+    let (images, selection) = ImageSet::resolve(scope, class_selector, image_jobs())?;
+    let selected = images.selection(&selection);
     let index = images.program(selected.image)?;
     let class = index.class(selected.class_def)?;
     match selector {

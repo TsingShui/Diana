@@ -7,7 +7,7 @@ use diana_decomp::{
 };
 use serde::Serialize;
 
-use super::images::{ImageError, ImageSet, LogicalDex, resolve_class};
+use super::images::{ImageError, ImageSet, LogicalDex};
 use super::request::RequestScope;
 use super::selector::{MethodSelector, Selector, SelectorError};
 
@@ -104,25 +104,21 @@ fn run_presentation(
             return Err(SelectorError::Syntax("this command selects a class or a method").into());
         }
     };
-    let images = ImageSet::open(scope, class_selector.entry)?;
-    let selected = resolve_class(&images, class_selector)?;
-    let mut inputs = Vec::new();
-    inputs
-        .try_reserve_exact(images.images().len())
-        .map_err(RequestError::Allocation)?;
-    for image in images.images() {
-        inputs.push(DexImage {
-            bytes: images.bytes(image)?,
-            header_offset: image.header_offset,
-            origin: ImageOrigin {
-                input: InputId(
-                    u64::try_from(image.entry.map_or(0, |entry| entry.0))
-                        .map_err(|_| RequestError::PlatformCapacity)?,
-                ),
-            },
-        });
-    }
-    let engine = Engine::open(inputs)?.with_method_jobs(jobs);
+    let (images, selection) = ImageSet::resolve(scope, class_selector, super::image_jobs())?;
+    let selected = images.selection(&selection);
+    // One class request needs one image. The defining image keeps its original
+    // DexId, so published class keys still name the image the locator selected.
+    let defining = DexImage {
+        bytes: images.bytes(selected.image)?,
+        header_offset: selected.image.header_offset,
+        origin: ImageOrigin {
+            input: InputId(
+                u64::try_from(selected.image.entry.map_or(0, |entry| entry.0))
+                    .map_err(|_| RequestError::PlatformCapacity)?,
+            ),
+        },
+    };
+    let engine = Engine::focus(defining, selected.image.dex)?.with_method_jobs(jobs);
     let engine = if outline {
         engine.with_outline()
     } else {

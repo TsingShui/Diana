@@ -26,3 +26,14 @@ mod runner;
 pub mod selector;
 pub mod tree;
 pub mod xref;
+
+/// Worker count for independent DEX images on this host.
+///
+/// Image header reads, declaration scans and class-name resolution per image are
+/// independent and must not serialize behind one large root. This is the host's
+/// available parallelism; a request's method-worker setting stays separate.
+pub(crate) fn image_jobs() -> usize {
+    std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
+}
