@@ -202,6 +202,14 @@ entry/reentry, state publication and error paths remain explicit. The
 exercises another mutable value and effects around suspension. Mismatched spills,
 changed captures, and resumed-only effects retain their original explicit code.
 Multi-site and protected coroutine source-body recovery remains unestablished.
+The [multi-site branch](../../quality/fixtures/kotlin/suspend-two-step-branch/README.md),
+[two-site loop](../../quality/fixtures/kotlin/suspend-loop-two-sites/README.md), and
+[protected two-site](../../quality/fixtures/kotlin/suspend-finally-two-sites/README.md)
+inputs retain explicit state dispatch and original resume/protection facts.
+An [effectful-default challenge](../../quality/fixtures/kotlin/suspend-default-shared-capture/README.md)
+also preserves a shared seed across both sites. Their ordinary Engine checks
+cover available members, original call/capture origins and dispatch spelling;
+native helper effects and scheduling remain modeled, not executed.
 
 P8 produces owned `ClassResult`/`TypeNamePlan` from the original directory and
 joined method deliveries. Success, no-code and stopped members remain distinct.
