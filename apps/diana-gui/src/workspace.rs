@@ -1,11 +1,12 @@
-use std::cell::Cell;
+use std::{cell::Cell, path::PathBuf};
 
+use gpui_kit::assets::IconName as AssetIconName;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, IconName, IndexPath, Sizable, TitleBar, WindowExt,
+    ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable, TitleBar, WindowExt,
     alert::Alert,
     button::{Button, ButtonVariants},
     description_list::DescriptionList,
-    empty::{Empty, EmptyDescription, EmptyHeader, EmptyTitle},
+    empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle},
     h_flex,
     input::{Editor, EditorState, Position, TabSize},
     list::{List, ListEvent, ListState},
@@ -92,38 +93,110 @@ struct SearchSession {
     _subscription: Subscription,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum RealTarget {
+    Class {
+        image: usize,
+        header: diana_decomp::ByteOffset,
+        id: diana_decomp::ClassDefId,
+    },
+    Manifest,
+    Library(usize),
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct ProjectId(u64);
+
+struct Project {
+    id: ProjectId,
+    resource: crate::backend::Resource,
+    editor: Option<Entity<EditorState>>,
+    status: String,
+    selected: Option<RealTarget>,
+    warnings: Vec<String>,
+    generation: u64,
+}
+
 pub struct Workspace {
     focus: FocusHandle,
-    tree: Entity<TreeState>,
-    _tree_observation: Subscription,
+    demo_tree: Entity<TreeState>,
+    _demo_tree_observation: Subscription,
+    sidebar_tree: Entity<TreeState>,
+    _sidebar_observation: Subscription,
     _menu_observation: Subscription,
     search: Option<SearchSession>,
     documents: Vec<Document>,
     active: Option<ClassId>,
     demo_open: bool,
     code_size: f32,
-    resource: Option<crate::backend::Resource>,
-    real_editor: Option<Entity<EditorState>>,
-    real_status: String,
-    real_selected: Option<(diana_decomp::ByteOffset, diana_decomp::ClassDefId)>,
-    generation: u64,
+    projects: Vec<Project>,
+    active_project: Option<ProjectId>,
+    next_project_id: u64,
+    opening: bool,
+    opening_name: String,
+    open_error: Option<String>,
 }
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let tree = project_tree::new(cx);
-        let observation = cx.observe_in(&tree, window, |view, tree, window, cx| {
+        let demo_tree = project_tree::new(cx);
+        let demo_observation = cx.observe_in(&demo_tree, window, |view, tree, window, cx| {
             if view.demo_open
                 && let Some(id) = project_tree::selection(tree.read(cx))
                 && view.active != Some(id)
             {
                 // Tree owns keyboard focus and preview selection; do not steal it.
                 view.activate(id, false, window, cx);
-            } else if let Some(resource) = &view.resource
-                && let Some(class) = project_tree::resource_selection(tree.read(cx), resource)
-                && view.real_selected != Some((class.header, class.id))
+            }
+        });
+        let sidebar_tree = project_tree::empty(cx);
+        let sidebar_observation = cx.observe_in(&sidebar_tree, window, |view, tree, window, cx| {
+            let action = {
+                let state = tree.read(cx);
+                if let Some(project) = project_tree::selected_project(state) {
+                    Some((ProjectId(project), None))
+                } else {
+                    let projects = view
+                        .projects
+                        .iter()
+                        .map(|project| (project.id.0, &project.resource))
+                        .collect::<Vec<_>>();
+                    project_tree::project_selection(state, &projects)
+                        .map(|(project, selection)| (ProjectId(project), Some(selection)))
+                }
+            };
+            let Some((project_id, selection)) = action else {
+                return;
+            };
+            view.active_project = Some(project_id);
+            let Some(selection) = selection else {
+                view.activate_project(project_id, window, cx);
+                return;
+            };
+            let target = match &selection {
+                project_tree::ResourceSelection::Class(class) => RealTarget::Class {
+                    image: class.image,
+                    header: class.header,
+                    id: class.id,
+                },
+                project_tree::ResourceSelection::Manifest => RealTarget::Manifest,
+                project_tree::ResourceSelection::Library(index) => RealTarget::Library(*index),
+            };
+            if view
+                .project(project_id)
+                .is_none_or(|project| project.selected != Some(target))
             {
-                view.open_real_class(class, window, cx);
+                match selection {
+                    project_tree::ResourceSelection::Class(class) => {
+                        view.open_real_class(project_id, class, window, cx);
+                    }
+                    project_tree::ResourceSelection::Manifest => {
+                        view.open_manifest(project_id, window, cx);
+                    }
+                    project_tree::ResourceSelection::Library(index) => {
+                        view.open_library(project_id, index, window, cx);
+                    }
+                }
             }
         });
         let menu_observation = cx.observe_self(|view, cx| {
@@ -136,19 +209,22 @@ impl Workspace {
         });
         let view = Self {
             focus: cx.focus_handle(),
-            tree,
-            _tree_observation: observation,
+            demo_tree,
+            _demo_tree_observation: demo_observation,
+            sidebar_tree,
+            _sidebar_observation: sidebar_observation,
             _menu_observation: menu_observation,
             search: None,
             documents: Vec::new(),
             active: None,
             demo_open: false,
             code_size: style::CODE_SIZE,
-            resource: None,
-            real_editor: None,
-            real_status: String::new(),
-            real_selected: None,
-            generation: 0,
+            projects: Vec::new(),
+            active_project: None,
+            next_project_id: 0,
+            opening: false,
+            opening_name: String::new(),
+            open_error: None,
         };
         view.focus.focus(window, cx);
         cx.notify();
@@ -160,7 +236,7 @@ impl Workspace {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("Open DEX".into()),
+            prompt: Some("Open APK or DEX".into()),
         });
         cx.spawn_in(window, async move |this, cx| {
             let path = match prompt.await {
@@ -170,76 +246,230 @@ impl Workspace {
             let Some(path) = path else {
                 return;
             };
-            let Ok(generation) = this.update(cx, |view, _| {
-                view.generation = view.generation.wrapping_add(1);
-                if view.real_editor.is_none() {
-                    view.real_selected = None;
-                }
-                view.generation
-            }) else {
-                return;
+            _ = this.update_in(cx, |view, window, cx| view.open_path(path, window, cx));
+        })
+        .detach();
+    }
+
+    fn project(&self, id: ProjectId) -> Option<&Project> {
+        self.projects.iter().find(|project| project.id == id)
+    }
+
+    fn project_mut(&mut self, id: ProjectId) -> Option<&mut Project> {
+        self.projects.iter_mut().find(|project| project.id == id)
+    }
+
+    fn active_project(&self) -> Option<&Project> {
+        self.active_project.and_then(|id| self.project(id))
+    }
+
+    fn refresh_sidebar_tree(&self, cx: &mut Context<Self>) {
+        let projects = self
+            .projects
+            .iter()
+            .map(|project| (project.id.0, &project.resource))
+            .collect::<Vec<_>>();
+        project_tree::set_projects(&self.sidebar_tree, &projects, cx);
+    }
+
+    fn update_window_title(&self, window: &mut Window) {
+        if let Some(project) = self.active_project() {
+            let suffix = if self.projects.len() > 1 {
+                format!(" · {} open", self.projects.len())
+            } else {
+                String::new()
             };
+            window.set_window_title(&format!(
+                "Diana — {}{suffix}",
+                project.resource.display_name()
+            ));
+        } else {
+            window.set_window_title("Diana");
+        }
+    }
+
+    pub fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_paths(vec![path], window, cx);
+    }
+
+    pub fn open_paths(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        if paths.is_empty() {
+            return;
+        }
+        if self.opening {
+            return;
+        }
+        if self.projects.len() + paths.len() > 2 {
+            self.open_error =
+                Some("Two APKs are already open. Close one before opening another.".to_owned());
+            cx.notify();
+            return;
+        }
+        self.opening = true;
+        self.open_error = None;
+        self.opening_name = if paths.len() == 1 {
+            paths[0]
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| paths[0].display().to_string())
+        } else {
+            format!("{} files", paths.len())
+        };
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
             let result = cx
-                .background_spawn(async move { crate::backend::open(path) })
+                .background_spawn(async move {
+                    paths
+                        .into_iter()
+                        .map(|path| {
+                            let name = path
+                                .file_name()
+                                .map(|name| name.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| path.display().to_string());
+                            (name, crate::backend::open(path))
+                        })
+                        .collect::<Vec<_>>()
+                })
                 .await;
-            _ = this.update_in(cx, |view, _, cx| {
-                if view.generation != generation {
-                    return;
-                }
-                match result {
-                    Ok(resource) => {
-                        view.demo_open = false;
-                        project_tree::set_resource(&view.tree, &resource, cx);
-                        view.real_editor = None;
-                        view.real_selected = None;
-                        view.real_status = if resource.issues.is_empty() {
-                            format!("{} classes", resource.classes.len())
-                        } else {
-                            resource.issues.join("\n")
-                        };
-                        view.resource = Some(resource);
-                    }
-                    Err(error) => {
-                        view.real_status = format!("Cannot open DEX: {error}");
+            _ = this.update_in(cx, |view, window, cx| {
+                view.opening = false;
+                let mut last_project = None;
+                let mut errors = Vec::new();
+                for (name, result) in result {
+                    match result {
+                        Ok(resource) => {
+                            view.demo_open = false;
+                            let id = view.add_project(resource, cx);
+                            view.active_project = Some(id);
+                            last_project = Some(id);
+                        }
+                        Err(error) => {
+                            errors.push(format!("Cannot open {name}: {error}"));
+                        }
                     }
                 }
+                if let Some(id) = last_project {
+                    view.active_project = Some(id);
+                    view.update_window_title(window);
+                    view.sidebar_tree
+                        .update(cx, |tree, cx| tree.focus(window, cx));
+                }
+                view.open_error = if errors.is_empty() {
+                    None
+                } else {
+                    Some(errors.join("\n"))
+                };
                 cx.notify();
             });
         })
         .detach();
     }
 
+    fn add_project(
+        &mut self,
+        resource: crate::backend::Resource,
+        cx: &mut Context<Self>,
+    ) -> ProjectId {
+        let id = ProjectId(self.next_project_id);
+        self.next_project_id = self.next_project_id.wrapping_add(1);
+        let status = if resource.classes.is_empty() {
+            format!("{} · no readable classes", resource.summary())
+        } else {
+            resource.summary()
+        };
+        self.projects.push(Project {
+            id,
+            resource,
+            editor: None,
+            status,
+            selected: None,
+            warnings: Vec::new(),
+            generation: 0,
+        });
+        self.refresh_sidebar_tree(cx);
+        id
+    }
+
+    fn activate_project(&mut self, id: ProjectId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.project(id).is_none() {
+            return;
+        }
+        self.active_project = Some(id);
+        self.demo_open = false;
+        self.open_error = None;
+        self.update_window_title(window);
+        self.sidebar_tree
+            .update(cx, |tree, cx| tree.focus(window, cx));
+        cx.notify();
+    }
+
+    fn close_project(&mut self, id: ProjectId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.projects.iter().position(|project| project.id == id) else {
+            return;
+        };
+        self.projects.remove(index);
+        self.open_error = None;
+        if self.active_project == Some(id) {
+            self.active_project = self
+                .projects
+                .get(index)
+                .or_else(|| self.projects.last())
+                .map(|project| project.id);
+        }
+        self.refresh_sidebar_tree(cx);
+        self.update_window_title(window);
+        self.sidebar_tree
+            .update(cx, |tree, cx| tree.focus(window, cx));
+        cx.notify();
+    }
+
     fn open_real_class(
         &mut self,
+        project_id: ProjectId,
         class: crate::backend::Class,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(resource) = &self.resource else {
+        let key = RealTarget::Class {
+            image: class.image,
+            header: class.header,
+            id: class.id,
+        };
+        let Some((bytes, archive, image, generation)) =
+            self.project_mut(project_id).and_then(|project| {
+                if project.selected == Some(key) {
+                    return None;
+                }
+                let image = project.resource.images.get(class.image).cloned()?;
+                let bytes = project.resource.bytes.clone();
+                let archive = project.resource.archive.clone();
+                project.selected = Some(key);
+                project.warnings.clear();
+                project.generation = project.generation.wrapping_add(1);
+                project.status = format!("Decompiling {}…", class.label);
+                project.editor = None;
+                Some((bytes, archive, image, project.generation))
+            })
+        else {
             return;
         };
-        let key = (class.header, class.id);
-        if self.real_selected == Some(key) {
-            return;
-        }
-        let bytes = resource.bytes.clone();
-        self.real_selected = Some(key);
-        self.generation = self.generation.wrapping_add(1);
-        let generation = self.generation;
-        self.real_status = format!("Decompiling {}…", class.label);
-        self.real_editor = None;
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
-                .background_spawn(async move { crate::backend::decompile(bytes, class) })
+                .background_spawn(
+                    async move { crate::backend::decompile(bytes, archive, image, class) },
+                )
                 .await;
             _ = this.update_in(cx, |view, window, cx| {
-                if view.generation != generation {
+                let Some(project) = view.project_mut(project_id) else {
+                    return;
+                };
+                if project.generation != generation {
                     return;
                 }
                 match result {
                     Ok(text) => {
-                        view.real_editor = Some(cx.new(|cx| {
+                        project.editor = Some(cx.new(|cx| {
                             let mut editor = EditorState::new(window, cx)
                                 .language("java")
                                 .default_value(text)
@@ -249,11 +479,12 @@ impl Workspace {
                             editor.set_readonly(true, cx);
                             editor
                         }));
-                        view.real_status = "Diana Engine · Java-like".into();
+                        project.status = "Diana Engine · Java-like".into();
                     }
                     Err(error) => {
-                        view.real_selected = None;
-                        view.real_status = format!("Decompilation failed: {error}");
+                        project.selected = None;
+                        project.warnings.clear();
+                        project.status = format!("Decompilation failed: {error}");
                     }
                 }
                 cx.notify();
@@ -262,47 +493,267 @@ impl Workspace {
         .detach();
     }
 
-    fn real_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let resource = self.resource.as_ref();
-        h_flex()
+    fn open_manifest(
+        &mut self,
+        project_id: ProjectId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(project) = self.project_mut(project_id) else {
+            return;
+        };
+        let Some(manifest) = project.resource.manifest.as_ref().cloned() else {
+            project.status = "AndroidManifest.xml is unavailable.".into();
+            cx.notify();
+            return;
+        };
+        project.generation = project.generation.wrapping_add(1);
+        project.selected = Some(RealTarget::Manifest);
+        project.warnings = manifest.warnings.clone();
+        project.status = if manifest.warnings.is_empty() {
+            "AndroidManifest.xml · decoded XML".into()
+        } else {
+            format!(
+                "AndroidManifest.xml · partial · {} warnings",
+                manifest.warnings.len()
+            )
+        };
+        project.editor = Some(cx.new(|cx| {
+            let mut editor = EditorState::new(window, cx)
+                .language("xml")
+                .default_value(manifest.xml)
+                .line_number(true)
+                .searchable(true)
+                .soft_wrap(false);
+            editor.set_readonly(true, cx);
+            editor
+        }));
+        cx.notify();
+    }
+
+    fn open_library(
+        &mut self,
+        project_id: ProjectId,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((bytes, archive, library, generation)) =
+            self.project_mut(project_id).and_then(|project| {
+                let library = project.resource.libraries.get(index).cloned()?;
+                let bytes = project.resource.bytes.clone();
+                let archive = project.resource.archive.clone();
+                project.selected = Some(RealTarget::Library(index));
+                project.warnings.clear();
+                project.generation = project.generation.wrapping_add(1);
+                project.status = format!("Reading {}…", library.path);
+                project.editor = None;
+                Some((bytes, archive, library, project.generation))
+            })
+        else {
+            return;
+        };
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    crate::backend::inspect_library(bytes, archive, library)
+                })
+                .await;
+            _ = this.update_in(cx, |view, window, cx| {
+                let Some(project) = view.project_mut(project_id) else {
+                    return;
+                };
+                if project.generation != generation {
+                    return;
+                }
+                match result {
+                    Ok(inspection) => {
+                        project.warnings = inspection.warnings;
+                        project.status = "Native library · ELF metadata".into();
+                        project.editor = Some(cx.new(|cx| {
+                            let mut editor = EditorState::new(window, cx)
+                                .language("text")
+                                .default_value(inspection.text)
+                                .line_number(true)
+                                .searchable(true)
+                                .soft_wrap(false);
+                            editor.set_readonly(true, cx);
+                            editor
+                        }));
+                    }
+                    Err(error) => {
+                        project.selected = None;
+                        project.status = format!("Cannot inspect library: {error}");
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn real_view(&self, project: &Project, cx: &mut Context<Self>) -> impl IntoElement {
+        let has_classes = !project.resource.classes.is_empty();
+        let archive = project.resource.is_archive;
+        let header_icon = match project.selected {
+            Some(RealTarget::Manifest) => AssetIconName::FileBraces,
+            Some(RealTarget::Library(_)) => AssetIconName::Binary,
+            _ if archive => AssetIconName::FileArchive,
+            _ => AssetIconName::FileCode,
+        };
+        let busy = project.status.ends_with('…');
+        v_flex()
             .flex_1()
             .min_h_0()
             .w_full()
             .child(
-                v_flex()
-                    .w(px(style::SIDEBAR_WIDTH))
-                    .h_full()
-                    .bg(cx.theme().sidebar)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_h_0()
-                            .child(project_tree::view(&self.tree)),
-                    ),
-            )
-            .child(
-                v_flex()
+                h_flex()
                     .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .child(div().p_2().child(self.real_status.clone()))
-                    .when_some(resource, |view, resource| {
-                        view.children(
-                            resource
-                                .issues
-                                .iter()
-                                .map(|issue| div().p_2().child(issue.clone())),
-                        )
-                    })
-                    .when_some(self.real_editor.as_ref(), |view, editor| {
-                        view.child(
-                            Editor::new(editor)
-                                .readonly(true)
-                                .bordered(false)
-                                .w_full()
-                                .h_full(),
-                        )
-                    }),
+                    .min_h_0()
+                    .w_full()
+                    .child(
+                        v_flex()
+                            .w(px(style::SIDEBAR_WIDTH))
+                            .h_full()
+                            .bg(cx.theme().sidebar)
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .gap_2()
+                                    .px_3()
+                                    .py_2()
+                                    .items_center()
+                                    .border_b_1()
+                                    .border_color(cx.theme().border)
+                                    .child(img("diana.png").size_6().rounded(px(6.)))
+                                    .child(
+                                        v_flex()
+                                            .min_w_0()
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .child("Diana"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child("APK / DEX"),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .child(project_tree::view(&self.sidebar_tree)),
+                            ),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .p_2()
+                                    .gap_2()
+                                    .items_center()
+                                    .border_b_1()
+                                    .border_color(cx.theme().border)
+                                    .child(
+                                        Icon::new(header_icon)
+                                            .small()
+                                            .text_color(cx.theme().muted_foreground),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .child(project.status.clone()),
+                                    )
+                                    .child(
+                                        Button::new("close-project")
+                                            .ghost()
+                                            .small()
+                                            .icon(IconName::Close)
+                                            .accessibility_label("Close current APK")
+                                            .on_click(cx.listener(|view, _, window, cx| {
+                                                if let Some(id) = view.active_project {
+                                                    view.close_project(id, window, cx);
+                                                }
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new("open-another")
+                                            .ghost()
+                                            .small()
+                                            .icon(IconName::FolderOpen)
+                                            .label("Open…")
+                                            .loading(self.opening)
+                                            .disabled(self.opening)
+                                            .on_click(cx.listener(|view, _, window, cx| {
+                                                view.open_dex(&OpenDex, window, cx)
+                                            })),
+                                    ),
+                            )
+                            .when(!project.resource.issues.is_empty(), |view| {
+                                view.child(div().p_2().child(Alert::warning(
+                                    "input-issues",
+                                    project.resource.issues.join("\n"),
+                                )))
+                            })
+                            .when_some(self.open_error.as_ref(), |view, error| {
+                                view.child(div().p_2().child(Alert::error(
+                                    "open-error",
+                                    error.clone(),
+                                )))
+                            })
+                            .when(!project.warnings.is_empty(), |view| {
+                                view.child(div().p_2().child(Alert::warning(
+                                    "selection-warnings",
+                                    project.warnings.join("\n"),
+                                )))
+                            })
+                            .when_some(project.editor.as_ref(), |view, editor| {
+                                view.child(
+                                    Editor::new(editor)
+                                        .readonly(true)
+                                        .bordered(false)
+                                        .w_full()
+                                        .h_full(),
+                                )
+                            })
+                            .when(project.editor.is_none(), |view| {
+                                let title = if busy {
+                                    "Loading…"
+                                } else if has_classes {
+                                    "Select a class"
+                                } else {
+                                    "No readable classes"
+                                };
+                                let description = if busy {
+                                    "Reading the selected APK entry."
+                                } else if has_classes {
+                                    "Choose Manifest, Native or a Java class in the project tree."
+                                } else {
+                                    "The file opened, but no class could be read. Review the details above."
+                                };
+                                view.child(
+                                    Empty::new().header(
+                                        EmptyHeader::new()
+                                            .title(EmptyTitle::new().child(title))
+                                            .description(
+                                                EmptyDescription::new().child(description),
+                                            ),
+                                    ),
+                                )
+                            }),
+                    ),
             )
     }
 
@@ -324,7 +775,7 @@ impl Workspace {
         }
         self.active = Some(id);
         if focus_editor {
-            project_tree::select(&self.tree, Some(id), cx);
+            project_tree::select(&self.demo_tree, Some(id), cx);
             self.focus_editor(window, cx);
         }
         cx.notify();
@@ -351,7 +802,7 @@ impl Workspace {
                 .get(index)
                 .or_else(|| self.documents.last())
                 .map(|d| d.id);
-            project_tree::select(&self.tree, self.active, cx);
+            project_tree::select(&self.demo_tree, self.active, cx);
         }
         if self.active.is_none() {
             window.close_sheet(cx);
@@ -498,19 +949,19 @@ impl Workspace {
     }
 
     fn reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.generation = self.generation.wrapping_add(1);
-        self.resource = None;
-        self.real_editor = None;
-        self.real_selected = None;
+        self.opening = false;
+        self.open_error = None;
+        self.projects.clear();
+        self.active_project = None;
         self.demo_open = true;
-        project_tree::reset(&self.tree, cx);
+        project_tree::reset(&self.demo_tree, cx);
         self.documents = vec![
             Document::new(ClassId::NotesRepository, window, cx),
             Document::new(ClassId::MainActivity, window, cx),
         ];
         self.active = Some(ClassId::NotesRepository);
         self.code_size = style::CODE_SIZE;
-        project_tree::select(&self.tree, self.active, cx);
+        project_tree::select(&self.demo_tree, self.active, cx);
         self.focus_editor(window, cx);
         cx.notify();
     }
@@ -569,6 +1020,7 @@ impl Workspace {
         TitleBar::new().bg(cx.theme().title_bar).child(
             h_flex()
                 .gap_1()
+                .child(img("diana.png").size_4().rounded(px(4.)))
                 .child(
                     Button::new("search")
                         .ghost()
@@ -653,7 +1105,7 @@ impl Workspace {
                 div()
                     .flex_1()
                     .min_h_0()
-                    .child(project_tree::view(&self.tree)),
+                    .child(project_tree::view(&self.demo_tree)),
             )
             .child(
                 div()
@@ -694,11 +1146,54 @@ impl Workspace {
             }))
     }
 
-    fn welcome(&self) -> impl IntoElement {
-        Empty::new().header(
-            EmptyHeader::new()
-                .description(EmptyDescription::new().child("Open a DEX file to get started.")),
-        )
+    fn welcome(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let has_error = !self.opening && self.open_error.is_some();
+        let shortcut = if cfg!(target_os = "macos") {
+            "Cmd-O"
+        } else {
+            "Ctrl-O"
+        };
+        let hint = format!("Drop a file anywhere in this window, or press {shortcut}.");
+        Empty::new()
+            .header(
+                EmptyHeader::new()
+                    .media(EmptyMedia::new().child(img("diana.png").size(px(88.)).rounded(px(20.))))
+                    .title(EmptyTitle::new().child("Diana"))
+                    .description(EmptyDescription::new().child(
+                        "Open an APK or DEX to inspect Manifest, Native libraries and Java classes. Two APK projects can stay open together.",
+                    )),
+            )
+            .child(
+                Button::new("open-file")
+                    .primary()
+                    .icon(IconName::FolderOpen)
+                    .label("Open APK or DEX…")
+                    .loading(self.opening)
+                    .disabled(self.opening)
+                    .on_click(
+                        cx.listener(|view, _, window, cx| view.open_dex(&OpenDex, window, cx)),
+                    ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(hint),
+            )
+            .when(self.opening, |welcome| {
+                welcome.child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format!("Opening {}…", self.opening_name)),
+                )
+            })
+            .when(has_error, |welcome| {
+                welcome.child(div().w_full().max_w(px(560.)).child(Alert::error(
+                    "open-error",
+                    self.open_error.clone().unwrap_or_default(),
+                )))
+            })
     }
 
     fn reader(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -800,6 +1295,14 @@ impl Render for Workspace {
                     view.reset(window, cx);
                 }
             }))
+            .on_drop(cx.listener(|view, paths: &ExternalPaths, window, cx| {
+                let Some(path) = paths.paths().first().cloned() else {
+                    view.open_error = Some("Drop an APK or DEX file.".into());
+                    cx.notify();
+                    return;
+                };
+                view.open_path(path, window, cx);
+            }))
             .when(!cfg!(target_os = "macos"), |root| {
                 if self.demo_open {
                     root.child(self.toolbar(cx))
@@ -808,16 +1311,11 @@ impl Render for Workspace {
                 }
             })
             .map(|root| {
-                if self.resource.is_some() {
-                    return root.child(self.real_view(cx));
+                if let Some(project) = self.active_project() {
+                    return root.child(self.real_view(project, cx));
                 }
                 if !self.demo_open {
-                    return root
-                        .child(self.welcome())
-                        .child(Button::new("open-dex").label("Open DEX…").on_click(
-                            cx.listener(|view, _, window, cx| view.open_dex(&OpenDex, window, cx)),
-                        ))
-                        .child(div().child(self.real_status.clone()));
+                    return root.child(self.welcome(cx));
                 }
                 root.child(
                     h_flex()
