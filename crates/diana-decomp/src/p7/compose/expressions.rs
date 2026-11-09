@@ -40,23 +40,12 @@ pub(super) fn construct(
     }
 
     let mut last: Vec<Option<OpId>> = filled(code.terminals.len(), None)?;
-    let mut next: Vec<Option<OpId>> = filled(code.operations.len(), None)?;
     let incoming = &adjacency.incoming;
     let sibling = &adjacency.sibling;
-    // A store may print a plain receiver before its value. Its existing pure
-    // producer can move there, but further nesting could move an effect across
-    // that receiver, so that composition is a boundary for earlier producers.
-    let mut nested = filled(code.operations.len(), true)?;
     for operation in &code.operations {
-        let previous = last
+        *last
             .get_mut(operation.original_block.0 as usize)
-            .ok_or(bug("operation names an unknown original block"))?;
-        if let Some(previous) = *previous {
-            *next
-                .get_mut(previous.0 as usize)
-                .ok_or(bug("operation lost its original successor"))? = Some(operation.source);
-        }
-        *previous = Some(operation.source);
+            .ok_or(bug("operation names an unknown original block"))? = Some(operation.source);
     }
     for node in 0..code.emission.blocks.len() {
         if let Some((group, use_id, control)) =
@@ -79,32 +68,9 @@ pub(super) fn construct(
             install(code, producer, use_id, Some(control), key)?;
         }
     }
-    // Select terminal uses first, then operation uses from the end of the
-    // original schedule. Effect boundaries may divide one original block into
-    // adjacent source portions; they do not insert another evaluation.
-    for node in (0..code.emission.blocks.len()).rev() {
-        if let Some((first, second, owner)) =
-            operation_successor(&Cover::new(code), node, adjacency)
-            && let Some((producer, use_id, allows_nested)) =
-                operation_use(&Cover::new(code), first, second, &next, access, &nested)
-        {
-            nested[producer.operation.0 as usize] = allows_nested;
-            install(code, producer, use_id, Some(owner), key)?;
-        }
-        let count = code.emission.blocks[node].actions.len();
-        for index in (0..count.saturating_sub(1)).rev() {
-            let first = code.emission.blocks[node].actions[index];
-            let second = code.emission.blocks[node].actions[index + 1];
-            let candidate = operation_use(&Cover::new(code), first, second, &next, access, &nested);
-            if let Some((producer, use_id, allows_nested)) = candidate {
-                *nested
-                    .get_mut(producer.operation.0 as usize)
-                    .ok_or(bug("composed operation lost its nesting boundary"))? = allows_nested;
-                install(code, producer, use_id, None, key)?;
-            }
-        }
-    }
-    Ok(())
+    // Terminal placement supplies roots; the same ordered cover then prepares
+    // all ordinary operands along established copy-free sibling portions.
+    ordinary_runs(code, key, adjacency, access)
 }
 
 fn construction_throw(
@@ -448,6 +414,14 @@ fn producer_with_nested(
     let StorageType::Family { family, .. } = declared.original.storage_type() else {
         return Err("producer_storage_family_unavailable");
     };
+    let Arguments::Known(inputs) = &statement_ref.inputs else {
+        return Err("producer_operands_unavailable");
+    };
+    if !inputs.iter().all(|&operand| {
+        leaf(code, operand) || (allow_nested_arguments && nested_argument(code, operand, operation))
+    }) {
+        return Err("producer_expression_or_nonleaf_operands");
+    }
     let boolean = match &expr.kind {
         ExprKind::Read { storage, view } if moving => {
             let origin = expr
@@ -472,16 +446,8 @@ fn producer_with_nested(
                     .get(storage.0 as usize)
                     .is_some_and(|source| boolean_type(code, source, family))
         }
-        ExprKind::Unary { value, .. }
-            if !moving && family != Family::Reference && leaf(code, *value) =>
-        {
-            false
-        }
-        ExprKind::Binary { left, right, .. }
-            if family != Family::Reference && leaf(code, *left) && leaf(code, *right) =>
-        {
-            false
-        }
+        ExprKind::Unary { .. } if !moving && family != Family::Reference => false,
+        ExprKind::Binary { .. } if family != Family::Reference => false,
         ExprKind::String(reference)
             if family == Family::Reference && matches!(result, EvaluationResult::Value) =>
         {
@@ -512,16 +478,8 @@ fn producer_with_nested(
         // A field read keeps its original receiver evaluation and, when it may
         // throw, its original exception position. The consumer checks below
         // decide whether that position is preserved.
-        ExprKind::Field { receiver, .. }
-            if receiver.is_none_or(|r| {
-                leaf(code, r) || (allow_nested_arguments && nested_argument(code, r, operation))
-            }) =>
-        {
-            false
-        }
-        ExprKind::InstanceOf { value, reference }
-            if family == Family::Integral && leaf(code, *value) =>
-        {
+        ExprKind::Field { .. } => false,
+        ExprKind::InstanceOf { reference, .. } if family == Family::Integral => {
             let reference = code
                 .references
                 .get(reference.0 as usize)
@@ -533,19 +491,7 @@ fn producer_with_nested(
             }
             true
         }
-        ExprKind::Call(call)
-            if !moving
-                && call.receiver.is_none_or(|receiver| leaf(code, receiver))
-                && matches!(
-                    &call.arguments,
-                    Arguments::Known(args)
-                        if args.iter().all(|&arg| {
-                            leaf(code, arg)
-                                || (allow_nested_arguments
-                                    && nested_argument(code, arg, operation))
-                        })
-                ) =>
-        {
+        ExprKind::Call(_) if !moving => {
             // Boolean shorthand still requires complete, nonempty `Z` sources;
             // an `I` call keeps its numeric comparison, and any other family
             // keeps its own interpretation. The ordered condition producer
@@ -619,170 +565,6 @@ fn nested_argument(code: &Cover<'_>, argument: ExprId, consumer: OpId) -> bool {
     })
 }
 
-/// Existing adjacent sibling blocks are the only cross-portion operation path.
-/// No traversal crosses a loop, try, synchronization or other control boundary.
-fn operation_successor(
-    code: &Cover<'_>,
-    node: usize,
-    adjacency: &super::adjacency::Adjacency,
-) -> Option<(BodyAction, BodyAction, ControlId)> {
-    let target = adjacency.next_node(node)?;
-    Some((
-        *code.emission.blocks.get(node)?.actions.last()?,
-        *code.emission.blocks.get(target)?.actions.first()?,
-        code.labels.get(node)?.owner,
-    ))
-}
-
-fn operation_use(
-    code: &Cover<'_>,
-    first: BodyAction,
-    second: BodyAction,
-    next: &[Option<OpId>],
-    access: &LocalAccess,
-    nested: &[bool],
-) -> Option<(Producer, ExprId, bool)> {
-    let BodyAction::Statement {
-        operation,
-        statement,
-    } = first
-    else {
-        return None;
-    };
-    let BodyAction::Statement {
-        operation: consumer,
-        statement: consumer_statement,
-    } = second
-    else {
-        return None;
-    };
-    if next.get(operation.0 as usize).copied().flatten()? != consumer
-        || (code.nested_operation(consumer) && !nested.get(consumer.0 as usize).copied()?)
-    {
-        return None;
-    }
-    let producer = producer(code, operation, statement, access, UsePolicy::SingleRead).ok()?;
-    if producer.boolean
-        || matches!(
-            code.expressions[producer.expression.0 as usize].kind,
-            ExprKind::Compare { .. }
-        )
-        || !code
-            .emission
-            .operations
-            .get(consumer.0 as usize)?
-            .before
-            .is_empty()
-    {
-        return None;
-    }
-    let consumer_statement = code.statements.get(consumer_statement.0 as usize)?;
-    let Arguments::Known(inputs) = &consumer_statement.inputs else {
-        return None;
-    };
-    if let StatementKind::Evaluate { expression } = consumer_statement.kind
-        && let ExprKind::Call(call) = &code.expressions.get(expression.0 as usize)?.kind
-        && let Some(ConcatOutcome::Inferred(plan)) = call.concatenation()
-    {
-        // Concat consumes already-captured operands. Only an original resolved
-        // String before the first printed join can retain the existing safe
-        // argument composition; calls, reads, casts and arithmetic stay put.
-        if !matches!(
-            code.expressions[producer.expression.0 as usize].kind,
-            ExprKind::String(_)
-        ) {
-            return None;
-        }
-        let operand = string_argument(code, producer, consumer, consumer_statement, inputs)?;
-        return plan
-            .permits_string_composition(operand)
-            .then_some((producer, operand, false));
-    }
-    // The producer preceded every original capture. It may occupy that same
-    // position only when the first delivered capture is also the first operand
-    // in the selected spelling. A store can print its plain receiver before its
-    // value; only the existing pure-producer path can cross that local read.
-    // A string resolution can follow earlier plain argument reads, but never
-    // another expression, store, check or call. No receiver/argument is repeated.
-    if matches!(
-        code.expressions[producer.expression.0 as usize].kind,
-        ExprKind::String(_)
-    ) && let Some(use_id) = string_argument(code, producer, consumer, consumer_statement, inputs)
-    {
-        return Some((producer, use_id, false));
-    }
-    let &use_id = inputs.first()?;
-    let store = match &consumer_statement.kind {
-        StatementKind::FieldStore {
-            receiver, value, ..
-        } => *value == use_id || *receiver == Some(use_id),
-        StatementKind::ArrayStore {
-            array,
-            index,
-            value,
-            ..
-        } => [*array, *index, *value].contains(&use_id),
-        _ => false,
-    };
-    if store {
-        let source = code.operations.get(operation.0 as usize)?;
-        if source.effects != Effects::default()
-            || source.exceptional.is_some()
-            || !code.statements.get(statement.0 as usize)?.sites.is_empty()
-        {
-            return None;
-        }
-    } else if first_operand(code, consumer_statement)? != use_id {
-        return None;
-    }
-    matches_use(
-        code,
-        producer,
-        use_id,
-        UseSite::Operation {
-            operation: consumer,
-            argument: 0,
-        },
-    )
-    .then_some((producer, use_id, !store))
-}
-
-fn string_argument(
-    code: &Cover<'_>,
-    producer: Producer,
-    consumer: OpId,
-    statement: &Statement,
-    inputs: &[ExprId],
-) -> Option<ExprId> {
-    let StatementKind::Evaluate { expression } = statement.kind else {
-        return None;
-    };
-    let ExprKind::Call(call) = &code.expressions.get(expression.0 as usize)?.kind else {
-        return None;
-    };
-    let Arguments::Known(arguments) = &call.arguments else {
-        return None;
-    };
-    for id in call.receiver.iter().chain(arguments) {
-        let expression = code.expressions.get(id.0 as usize)?;
-        if let Some(origin) = &expression.origin
-            && let UseSite::Operation {
-                operation,
-                argument,
-            } = origin.site
-            && operation == consumer
-            && inputs.get(argument as usize) == Some(id)
-            && matches_use(code, producer, *id, origin.site)
-        {
-            return Some(*id);
-        }
-        if !leaf(code, *id) {
-            return None;
-        }
-    }
-    None
-}
-
 fn long_leaf(code: &Cover<'_>, id: ExprId) -> bool {
     leaf(code, id)
         && matches!(
@@ -801,29 +583,6 @@ fn long_leaf(code: &Cover<'_>, id: ExprId) -> bool {
                 ..
             }
         )
-}
-
-fn first_operand(code: &Cover<'_>, statement: &Statement) -> Option<ExprId> {
-    match &statement.kind {
-        StatementKind::Move { expression, .. } => Some(*expression),
-        StatementKind::Evaluate { expression } => {
-            match &code.expressions.get(expression.0 as usize)?.kind {
-                ExprKind::Unary { value, .. }
-                | ExprKind::ArrayLength(value)
-                | ExprKind::InstanceOf { value, .. } => Some(*value),
-                ExprKind::Binary { left, .. } | ExprKind::Compare { left, .. } => Some(*left),
-                ExprKind::Field { receiver, .. } => *receiver,
-                ExprKind::Array { array, .. } => Some(*array),
-                ExprKind::NewArray { length, .. } => Some(*length),
-                ExprKind::Call(call) => call.receiver.or_else(|| match &call.arguments {
-                    Arguments::Known(args) => args.first().copied(),
-                    Arguments::Unavailable { .. } => None,
-                }),
-                _ => None,
-            }
-        }
-        _ => None,
-    }
 }
 
 fn terminal_use(
@@ -1355,10 +1114,10 @@ fn compose(
             let mut operands = Vec::new();
             match condition {
                 Condition::Pair { left, right, .. } => {
-                    push(&mut operands, (*left, 0u32))?;
-                    push(&mut operands, (*right, 1u32))?;
+                    push(&mut operands, *left)?;
+                    push(&mut operands, *right)?;
                 }
-                Condition::Zero { value, .. } => push(&mut operands, (*value, 0u32))?,
+                Condition::Zero { value, .. } => push(&mut operands, *value)?,
             }
             compose_condition_arguments(code, &nodes, access)?;
             let scheduled =
@@ -1587,254 +1346,336 @@ fn run_nodes(
     Ok(Some(out))
 }
 
-/// Composes each test run's producer chain before the condition pass matches
-/// its terminal. Producers stay in source order; every operation between the
-/// first composed producer and the consumer must also be a producer for that
-/// consumer or a display-only check-cast.
-fn compose_condition_arguments(
-    code: &mut Cover<'_>,
-    nodes: &[crate::p6::NodeId],
+/// One exact consumer view, with operand order already established by P7.
+enum CoverTarget {
+    Operation(OpId, StatementId),
+    Terminal(crate::p2::BlockId, bool),
+}
+struct Consumer<'a> {
+    target: CoverTarget,
+    operands: &'a [ExprId],
+}
+impl Consumer<'_> {
+    fn site(&self, argument: u32) -> UseSite {
+        match self.target {
+            CoverTarget::Operation(operation, _) => UseSite::Operation {
+                operation,
+                argument,
+            },
+            CoverTarget::Terminal(block, _) => UseSite::Terminal { block, argument },
+        }
+    }
+    fn required(&self) -> bool {
+        matches!(self.target, CoverTarget::Terminal(_, true))
+    }
+    fn store(&self, code: &Cover<'_>) -> bool {
+        matches!(self.target, CoverTarget::Operation(_, statement)
+            if matches!(code.statements[statement.0 as usize].kind,
+                StatementKind::FieldStore { .. } | StatementKind::ArrayStore { .. }))
+    }
+    fn permits(
+        &self,
+        code: &Cover<'_>,
+        producer: Producer,
+        operand: ExprId,
+        argument: u32,
+    ) -> bool {
+        if let CoverTarget::Terminal(block, _) = self.target {
+            return supported_role(code, block, producer, argument);
+        }
+        if producer.boolean
+            || matches!(
+                code.expressions[producer.expression.0 as usize].kind,
+                ExprKind::Compare { .. }
+            )
+        {
+            return false;
+        }
+        let string = matches!(
+            code.expressions[producer.expression.0 as usize].kind,
+            ExprKind::String(_)
+        );
+        let CoverTarget::Operation(_, statement) = self.target else {
+            return false;
+        };
+        let statement = &code.statements[statement.0 as usize];
+        if let StatementKind::Evaluate { expression } = statement.kind
+            && let ExprKind::Call(call) = &code.expressions[expression.0 as usize].kind
+            && let Some(ConcatOutcome::Inferred(plan)) = call.concatenation()
+        {
+            return string && plan.permits_string_composition(operand);
+        }
+        if self.store(code) {
+            let source = &code.operations[producer.operation.0 as usize];
+            return (string
+                || (source.effects == Effects::default()
+                    && source.exceptional.is_none()
+                    && code.statements[producer.statement.0 as usize]
+                        .sites
+                        .is_empty()))
+                && self
+                    .operands
+                    .iter()
+                    .take(argument as usize)
+                    .all(|&operand| leaf(code, operand));
+        }
+        true
+    }
+}
+
+/// Match one source suffix jointly. Roots keep their original order; a nested
+/// root already owns its earlier preparation. No unmatched effect is crossed.
+fn cover_suffix(
+    code: &Cover<'_>,
+    actions: &[(OpId, StatementId)],
+    consumer: Consumer<'_>,
     access: &LocalAccess,
-) -> Result<(), ExpressionError> {
-    let mut actions = Vec::new();
-    for &node in nodes {
-        let Some(block) = code.emission.blocks.get(node.0 as usize) else {
-            return Ok(());
-        };
-        for action in &block.actions {
-            let BodyAction::Statement {
-                operation,
-                statement,
-            } = *action
-            else {
-                return Ok(());
-            };
-            push(&mut actions, (operation, statement))?;
-        }
-    }
-    // A display-only check-cast is carried into the consuming read later. Its
-    // temporary read must not prevent the move that supplies that read from
-    // becoming part of the same condition operand.
-    let mut condition_access = access.copy()?;
-    for (_, statement) in &actions {
-        let Some(value) = code
-            .statements
-            .get(statement.0 as usize)
-            .and_then(|statement| match &statement.kind {
-                StatementKind::CheckCast { value, .. } => Some(*value),
-                _ => None,
-            })
-        else {
-            continue;
-        };
-        if let Some((value, _)) = super::access::read_of(code, value) {
-            condition_access.ignore_read(value);
-        }
-    }
-    for consumer_index in 1..actions.len() {
-        let (consumer, statement_id) = actions[consumer_index];
-        if code.nested_operation(consumer) {
+    ignore_checks: bool,
+) -> Result<Result<Vec<(Producer, ExprId)>, Unscheduled>, ExpressionError> {
+    let mut out = Vec::new();
+    let mut last = None;
+    for &(operation, statement) in actions.iter().rev() {
+        if code.nested_operation(operation)
+            || (ignore_checks
+                && matches!(
+                    code.statements[statement.0 as usize].kind,
+                    StatementKind::CheckCast { .. }
+                ))
+        {
             continue;
         }
-        let Some(consumer_statement) = code.statements.get(statement_id.0 as usize) else {
-            continue;
+        let policy = if consumer.required() {
+            UsePolicy::PreserveStore
+        } else {
+            UsePolicy::SingleRead
         };
-        if !matches!(
-            consumer_statement.kind,
-            StatementKind::Evaluate { .. } | StatementKind::Move { .. }
+        let mut why = "producer_not_exact_consumer_read";
+        let mut matched = None;
+        match producer_with_nested(
+            code,
+            operation,
+            statement,
+            access,
+            policy,
+            !consumer.store(code),
         ) {
-            continue;
+            Ok(producer) => {
+                for (argument, &operand) in consumer.operands.iter().enumerate() {
+                    let argument =
+                        u32::try_from(argument).map_err(|_| bug("consumer argument overflow"))?;
+                    if !matches_use(code, producer, operand, consumer.site(argument)) {
+                        continue;
+                    }
+                    if !consumer.permits(code, producer, operand, argument) {
+                        why = "producer_consumer_role";
+                        continue;
+                    }
+                    if matched.is_some() {
+                        return Ok(Err(Unscheduled {
+                            statement: Some(statement),
+                            why: "producer_matches_multiple_operands",
+                        }));
+                    }
+                    matched = Some((producer, operand, argument));
+                }
+            }
+            Err(reason) => why = reason,
         }
-        if !matches!(&consumer_statement.inputs, Arguments::Known(inputs) if !inputs.is_empty()) {
-            continue;
-        }
-        let mut candidates = Vec::new();
-        for (index, &(operation, statement)) in actions.iter().enumerate().take(consumer_index) {
-            if code.nested_operation(operation)
-                || matches!(
-                    code.statements.get(statement.0 as usize).map(|s| &s.kind),
-                    Some(StatementKind::CheckCast { .. })
-                )
+        let ordered =
+            matched.is_some_and(|(_, _, argument)| last.is_none_or(|previous| argument < previous));
+        if !ordered {
+            if consumer.required()
+                || (matched.is_some() && matches!(consumer.target, CoverTarget::Terminal(..)))
             {
-                continue;
+                return Ok(Err(Unscheduled {
+                    statement: Some(statement),
+                    why: if matched.is_some() {
+                        "producer_order_differs_from_operands"
+                    } else {
+                        why
+                    },
+                }));
             }
-            let producer = match producer_with_nested(
-                code,
-                operation,
-                statement,
-                &condition_access,
-                UsePolicy::SingleRead,
-                true,
-            ) {
-                Ok(producer) => producer,
-                Err(_) => continue,
-            };
-            if producer.boolean || !matches!(producer.result, EvaluationResult::Value) {
-                continue;
-            }
-            let Some((use_id, argument)) =
-                condition_argument_use(code, producer, consumer, consumer_statement)
-            else {
-                continue;
-            };
-            push(&mut candidates, (index, producer, use_id, argument))?;
+            break;
         }
-        let Some(&(first, ..)) = candidates.first() else {
+        let (producer, operand, argument) =
+            matched.ok_or(bug("ordered suffix lost its producer"))?;
+        last = Some(argument);
+        push(&mut out, (producer, operand))?;
+    }
+    Ok(Ok(out))
+}
+
+fn cover_operations(
+    code: &mut Cover<'_>,
+    actions: &[(OpId, StatementId)],
+    access: &LocalAccess,
+    ignore_checks: bool,
+) -> Result<(), ExpressionError> {
+    for index in 1..actions.len() {
+        let (operation, statement) = actions[index];
+        let source = &code.statements[statement.0 as usize];
+        if !matches!(
+            source.kind,
+            StatementKind::Move { .. }
+                | StatementKind::Evaluate { .. }
+                | StatementKind::FieldStore { .. }
+                | StatementKind::ArrayStore { .. }
+        ) || !code.emission.operations[operation.0 as usize]
+            .before
+            .is_empty()
+        {
+            continue;
+        }
+        let Arguments::Known(operands) = &source.inputs else {
             continue;
         };
-        if !candidates.windows(2).all(|pair| pair[0].3 < pair[1].3) {
-            continue;
-        }
-        let complete = (first..consumer_index).all(|index| {
-            candidates.iter().any(|(candidate, ..)| *candidate == index)
-                || matches!(
-                    code.statements
-                        .get(actions[index].1.0 as usize)
-                        .map(|s| &s.kind),
-                    Some(StatementKind::CheckCast { .. })
-                )
-        });
-        if !complete {
-            continue;
-        }
-        for (_, producer, use_id, _) in candidates {
-            code.propose(producer, use_id)?;
+        let consumer = Consumer {
+            target: CoverTarget::Operation(operation, statement),
+            operands,
+        };
+        if let Ok(work) = cover_suffix(code, &actions[..index], consumer, access, ignore_checks)? {
+            for (producer, operand) in work {
+                code.propose(producer, operand)?;
+            }
         }
     }
     Ok(())
 }
 
-fn condition_argument_use(
+fn run_actions(
     code: &Cover<'_>,
-    producer: Producer,
-    consumer: OpId,
-    statement: &Statement,
-) -> Option<(ExprId, u32)> {
-    let Arguments::Known(inputs) = &statement.inputs else {
-        return None;
-    };
-    for (argument, &id) in inputs.iter().enumerate() {
-        let argument = u32::try_from(argument).ok()?;
-        if matches_use(
-            code,
-            producer,
-            id,
-            UseSite::Operation {
-                operation: consumer,
-                argument,
-            },
-        ) {
-            return Some((id, argument));
+    nodes: &[crate::p6::NodeId],
+) -> Result<Option<Vec<(OpId, StatementId)>>, ExpressionError> {
+    let mut actions = Vec::new();
+    for &node in nodes {
+        for &action in &code.emission.blocks[node.0 as usize].actions {
+            let BodyAction::Statement {
+                operation,
+                statement,
+            } = action
+            else {
+                return Ok(None);
+            };
+            push(&mut actions, (operation, statement))?;
         }
     }
-    None
+    Ok(Some(actions))
 }
 
-/// Each producer names one distinct terminal operand and matched operand
-/// positions strictly increase. Later runs admit no unmatched prefix, even
-/// when a matched producer keeps its store.
-type Scheduled = Result<Vec<(Producer, ExprId)>, Unscheduled>;
+fn compose_condition_arguments(
+    code: &mut Cover<'_>,
+    nodes: &[crate::p6::NodeId],
+    access: &LocalAccess,
+) -> Result<(), ExpressionError> {
+    let Some(actions) = run_actions(code, nodes)? else {
+        return Ok(());
+    };
+    let mut access = access.copy()?;
+    for &(_, statement) in &actions {
+        if let StatementKind::CheckCast { value, .. } = code.statements[statement.0 as usize].kind
+            && let Some((value, _)) = super::access::read_of(code, value)
+        {
+            access.ignore_read(value);
+        }
+    }
+    cover_operations(code, &actions, &access, true)
+}
 
 fn scheduled(
     code: &Cover<'_>,
     nodes: &[crate::p6::NodeId],
     terminal: crate::p2::BlockId,
-    operands: &[(ExprId, u32)],
+    operands: &[ExprId],
     access: &LocalAccess,
     skipped: bool,
-) -> Result<Scheduled, ExpressionError> {
-    let refuse = |why, statement| Ok(Err(Unscheduled { statement, why }));
-    let mut actions = Vec::new();
-    for &node in nodes {
-        let Some(block) = code.emission.blocks.get(node.0 as usize) else {
-            return refuse("test_block_unavailable", None);
-        };
-        for action in &block.actions {
-            let BodyAction::Statement {
-                operation,
-                statement,
-            } = *action
-            else {
-                return refuse("test_run_has_nonstatement_action", None);
-            };
-            if code.nested_operation(operation)
-                || matches!(
-                    code.statements
-                        .get(statement.0 as usize)
-                        .map(|statement| &statement.kind),
-                    Some(StatementKind::CheckCast { .. })
-                )
-            {
-                continue;
-            }
-            push(&mut actions, (operation, statement))?;
+) -> Result<Result<Vec<(Producer, ExprId)>, Unscheduled>, ExpressionError> {
+    let Some(actions) = run_actions(code, nodes)? else {
+        return Ok(Err(Unscheduled {
+            statement: None,
+            why: "test_run_has_nonstatement_action",
+        }));
+    };
+    if !straight(code, nodes, skipped)? {
+        return Ok(Err(Unscheduled {
+            statement: None,
+            why: "test_run_not_straight_or_has_copy_bundle",
+        }));
+    }
+    cover_suffix(
+        code,
+        &actions,
+        Consumer {
+            target: CoverTarget::Terminal(terminal, skipped),
+            operands,
+        },
+        access,
+        true,
+    )
+}
+
+/// Only the already delivered copy-free sibling adjacency joins source portions.
+fn ordinary_runs(
+    code: &mut MethodCode,
+    key: crate::MethodKey,
+    adjacency: &super::adjacency::Adjacency,
+    access: &LocalAccess,
+) -> Result<(), ExpressionError> {
+    let mut starts = filled(code.blocks.len(), true)?;
+    for node in 0..code.blocks.len() {
+        if let Some(next) = adjacency.next_node(node) {
+            starts[next] = false;
         }
     }
-    if !straight(code, nodes, skipped)? {
-        return refuse("test_run_not_straight_or_has_copy_bundle", None);
-    }
-    let mut producers = Vec::new();
-    for &(operation, statement) in &actions {
-        let mut matched = None;
-        let mut why = "producer_not_exact_terminal_read";
-        let policy = if skipped {
-            UsePolicy::PreserveStore
-        } else {
-            UsePolicy::SingleRead
-        };
-        match producer_with_nested(code, operation, statement, access, policy, true) {
-            Ok(producer) => {
-                for &(operand, argument) in operands {
-                    if matches_use(
-                        code,
-                        producer,
-                        operand,
-                        UseSite::Terminal {
-                            block: terminal,
-                            argument,
-                        },
-                    ) {
-                        if !supported_role(code, terminal, producer, argument) {
-                            why = "producer_branch_role";
-                            continue;
-                        }
-                        if matched.is_some() {
-                            return refuse("producer_matches_multiple_operands", Some(statement));
-                        }
-                        matched = Some((producer, operand, argument));
-                    }
+    for (start, first) in starts.into_iter().enumerate() {
+        if !first {
+            continue;
+        }
+        let mut cover = Cover::new(code);
+        let mut actions = Vec::new();
+        let mut current = Some(start);
+        while let Some(node) = current {
+            for action in &code.emission.blocks[node].actions {
+                if let BodyAction::Statement {
+                    operation,
+                    statement,
+                } = *action
+                {
+                    push(&mut actions, (operation, statement))?;
+                } else {
+                    cover_operations(&mut cover, &actions, access, false)?;
+                    actions.clear();
                 }
             }
-            Err(reason) => why = reason,
+            current = adjacency.next_node(node);
         }
-        if skipped && matched.is_none() {
-            return refuse(why, Some(statement));
+        cover_operations(&mut cover, &actions, access, false)?;
+        let work = cover.work;
+        for (operand, mut evaluation) in work.iter().copied() {
+            let source = &code.operations[evaluation.operation.0 as usize];
+            let owner = code.labels[source.node.0 as usize].owner;
+            let carrier_node = code.expressions[operand.0 as usize]
+                .origin
+                .as_ref()
+                .and_then(|origin| match origin.site {
+                    UseSite::Operation { operation, .. } => {
+                        Some(code.operations[operation.0 as usize].node)
+                    }
+                    UseSite::Terminal { .. } => None,
+                });
+            if carrier_node != Some(source.node)
+                && !code.emission.deferred_control(owner)
+                && !work.iter().any(|(_, other)| {
+                    other.operation.0 > source.source.0
+                        && code.operations[other.operation.0 as usize].node == source.node
+                })
+            {
+                evaluation.source_control = Some(owner);
+            }
+            install_evaluation(code, operand, evaluation, key)?;
         }
-        // The first run keeps unmatched statements in its printed prefix.
-        push(&mut producers, matched)?;
     }
-    let mut start = 0;
-    for (at, producer) in producers.iter().enumerate() {
-        if producer.is_none() {
-            start = at + 1;
-        }
-    }
-    let mut last = None;
-    let mut out = Vec::new();
-    for producer in producers.iter().skip(start) {
-        let Some((producer, operand, argument)) = *producer else {
-            return Err(bug("condition suffix contains an unmatched producer"));
-        };
-        if last.is_some_and(|previous| argument <= previous) {
-            return refuse(
-                "producer_order_differs_from_operands",
-                Some(producer.statement),
-            );
-        }
-        last = Some(argument);
-        push(&mut out, (producer, operand))?;
-    }
-    Ok(Ok(out))
+    Ok(())
 }
 
 /// A test run is one straight fallthrough chain: every node except the last

@@ -242,6 +242,14 @@ return combine(b, a);
 // Selected cover: a = left(); return combine(right(), a);
 ~~~
 
+A source-ordered consumer pass builds each root's forest through an ordered
+suffix match. A nested root already owns its preparation, so later consumers
+reuse that structure without rescanning it as another statement. An unmatched
+effect is a suffix boundary. Operand reversal retains the necessary earlier
+materialization. The same matcher admits ordinary suffixes and requires complete
+coverage of a skipped short-circuit prelude; refusal of that prelude discards its
+uninstalled proposal list.
+
 The same cover constructor serves calls, return operands, conditions, stores and
 cast carriers. Each operation supplies its own admission conditions, such as
 check timing or receiver order. It does not supply a separate relocation engine.

@@ -621,8 +621,8 @@ Each selected-edge copy list executes only at its case or default entry.
 
 `p7/compose` consumes the lowered P7 operations, P5 materializations and the
 completed P6-derived emission layout. It does not decode input, rebuild SSA,
-identify regions or reschedule copies. Composition modifies the one final
-`EmissionPlan` before `MethodResult` is published. P9 prints that plan.
+identify regions or reschedule copies. Composition modifies the selected control and expression structure and its
+emission facts before `MethodResult` is published. P9 prints those products.
 
 Ordinary If, ordered Condition and Loop predicates share one producer,
 exact-use matcher, branch-role gate and composition installer. Generic layout
@@ -638,19 +638,21 @@ delivered direct value read with a compatible view. A reference source and use
 must each have an established initialized state; allocation carriers and other
 position-related initialization states remain separate.
 
-An adjacent operation use ordinarily must be both the first original capture and
-the first operand in its selected spelling, and have no before-operation copies.
-A resolved string definition with one compatible read can instead occupy a later
-call argument when all preceding printed operands are uncomposed local reads or
-literals. The argument must retain its exact original operation/use identity.
-The string resolution still precedes every observable consumer event; a receiver
-expression, earlier call or other non-leaf operand refuses this composition.
-String definitions retain their propagation-only exception site, original string
-reference and UTF-16 units; they are not treated as effect-free literals.
-Construction arguments use the separate P5-selected preparation facts, not this
-later-call-argument rule. Stores
-retain the existing pure-producer rule because their selected spelling can print
-the receiver before the value. A return or predicate use must be the next original
+Ordinary operations and ordered Condition tests share one ordered suffix cover.
+It matches exact consumer operands against source roots from the end, retaining
+strict operand order. Earlier preparation already owned by a root belongs to
+that same forest. An unmatched operation stops an ordinary suffix; a skipped
+Condition run requires its entire executable prelude. Source runs cross only the
+existing copy-free direct sibling adjacency in one original block. No
+before-operation copy is crossed. Arithmetic, receiver and call operands use
+one leaf-or-owned-evaluation admission rule.
+
+Resolved strings retain their original reference, UTF-16 units and
+propagation-only exception site. Concat admission still requires its delivered
+string-composition permission. Construction arguments consume P5-selected
+preparation. Stores admit only the existing pure producer or resolved-string
+case, require plain earlier operands, and forbid nested producer preparation
+because their selected spelling can print the receiver before the value. A return or predicate use must be the next original
 node in the same block, with one incoming fallthrough, no intervening work or
 terminal phases, and adjacent selected Sequence or Graph children. An effectful
 producer must have one original exception site that propagates without a snapshot.
@@ -781,11 +783,11 @@ bundle and executable-step count. These are decisions, not counts of removable
 gotos or independent semantic verification. An ordinary build emits no such
 diagnostics.
 
-The expression pass selects terminal uses before adjacent operations and visits
-operation pairs from the end. An earlier producer may compose into an already
-composed consumer when the same first-operand and original-order conditions hold.
-A producer composed into a store is a nesting boundary, because the store can
-print a receiver before its value. P9 renders composed expressions with a
+The expression pass selects terminal roots, then prepares ordinary consumers
+in source order within each established straight run. Each consumer matches one
+joint suffix from the end. Previously selected roots retain their owned
+preparation; the pass introduces no second expression-analysis route. A store
+remains a nesting boundary. P9 renders nested evaluations with a
 fallibly allocated work stack rather than host recursion. Original operations,
 PCs, statements, transfer records and gaps remain owned; composed operations map
 to the expression range, and a cross-node source control spans through its

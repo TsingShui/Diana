@@ -591,6 +591,15 @@ The new joint-expression-cover input has four passing ownership/origin checks;
 historical fixture adaptation and regression are deferred during the structural
 rewrite at the operator's request. These checks do not execute helper behavior.
 
+Ordinary expression consumers and short-circuit tests now share an ordered
+suffix-cover matcher. Several argument roots enter one forest, which retains
+nested preparation and exact value/state reads. An unmatched effect or reversed
+operand stops the suffix; skipped test runs require complete prelude coverage.
+The new tree/barrier challenges have five passing nextest cases, including
+scalar selected-plan results and every reachable modeled helper-fault prefix.
+This structural slice removes 159 production lines from the expression module;
+full historical regression remains deferred during the rewrite.
+
 P6 now publishes the common `ControlLayout` with named roles and original
 predicate/transfer coordinates. P7 consumes that structure directly and keeps
 one `Control` arena for selected execution, presentation and retained source

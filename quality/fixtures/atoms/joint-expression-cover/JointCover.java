@@ -28,6 +28,18 @@ public class JointCover {
         return pair(left, right);
     }
 
+    static int tree(int seed) {
+        int left = pair(take(seed), take(seed + 1));
+        int right = pair(take(seed + 2), take(seed + 3));
+        return pair(left, right);
+    }
+
+    static int barrier(int seed) {
+        int left = take(seed);
+        mark(left);
+        return pair(left, take(seed + 1));
+    }
+
     static CoverBox constructed(int seed) {
         return new CoverBox(take(seed), take(seed + 1));
     }

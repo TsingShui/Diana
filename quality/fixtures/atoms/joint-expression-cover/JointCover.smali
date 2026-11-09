@@ -82,3 +82,38 @@
     invoke-direct {v0, v1, v2}, Lfixture/CoverBox;-><init>(II)V
     return-object v0
 .end method
+
+.method static tree(I)I
+    .registers 5
+    invoke-static {p0}, Lfixture/JointCover;->take(I)I
+    move-result v0
+    add-int/lit8 v1, p0, 0x1
+    invoke-static {v1}, Lfixture/JointCover;->take(I)I
+    move-result v1
+    invoke-static {v0, v1}, Lfixture/JointCover;->pair(II)I
+    move-result v0
+    add-int/lit8 v1, p0, 0x2
+    invoke-static {v1}, Lfixture/JointCover;->take(I)I
+    move-result v1
+    add-int/lit8 v2, p0, 0x3
+    invoke-static {v2}, Lfixture/JointCover;->take(I)I
+    move-result v2
+    invoke-static {v1, v2}, Lfixture/JointCover;->pair(II)I
+    move-result v1
+    invoke-static {v0, v1}, Lfixture/JointCover;->pair(II)I
+    move-result v0
+    return v0
+.end method
+
+.method static barrier(I)I
+    .registers 4
+    invoke-static {p0}, Lfixture/JointCover;->take(I)I
+    move-result v0
+    invoke-static {v0}, Lfixture/JointCover;->mark(I)V
+    add-int/lit8 v1, p0, 0x1
+    invoke-static {v1}, Lfixture/JointCover;->take(I)I
+    move-result v1
+    invoke-static {v0, v1}, Lfixture/JointCover;->pair(II)I
+    move-result v2
+    return v2
+.end method

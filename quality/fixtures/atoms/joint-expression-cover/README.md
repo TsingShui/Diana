@@ -44,6 +44,16 @@ argument failure skips initialization/publication; constructor failure prevents
 publication. Object initialization is assumed normal except in an explicitly
 selected constructor-fault scenario. No VM fault was executed.
 
+The added `tree(I)I` challenge places two independent pair subtrees in an outer
+pair and reuses registers for successive result values. Its source effects are
+T(seed), T(seed+1), P(seed+10,seed+11), T(seed+2), T(seed+3),
+P(seed+12,seed+13), P(101*seed+1011,101*seed+1213); its result is
+10201*seed+102313, with wrapping arithmetic throughout. Each of its seven call
+faults stops at the corresponding exact effect prefix. `barrier(I)I` puts mark
+between the independent takes: T(seed), M(seed+10), T(seed+1),
+P(seed+10,seed+11), with the ordinary result. No cover can move the first take
+across mark. These expectations were recorded before inspecting the added DEX.
+
 ## Structural acceptance
 
 Every installed Evaluation owns one exact expression read occurrence and its
@@ -83,3 +93,11 @@ counts on this new input. Four targeted `cargo nextest run --locked -p diana-dec
 --test joint_expression_cover` cases pass. Engine Clippy (library, dbg_shell and
 that test, all features) and the dev dbg_shell build pass. No release duplicate,
 historical fixture suite or behavioral helper executor was run.
+
+The extended tree/barrier challenge uses the same assembler environment. Compare
+`c2e1ac5` with the containing shared-suffix refactor on that newly prepared input.
+Five nextest cases pass, including sixteen normal scalar-plan scenarios and
+sixty-eight reachable helper-fault scenarios with exact event-prefix checks.
+Original identities, eleven members and 533 source spans remain available;
+ordinary/tree return forests improve without a new recognition rule. No old
+fixture run, condition/constructor executor or VM run is claimed.
