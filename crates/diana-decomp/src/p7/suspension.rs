@@ -66,6 +66,295 @@ pub struct CoroutineCopy {
     pub source: StorageId,
     pub expression: ExprId,
 }
+#[derive(Debug, Serialize)]
+pub struct CoroutineFlow {
+    pub source: Vec<ControlId>,
+    pub abi: Vec<crate::p6::NodeId>,
+    pub abi_entries: Vec<crate::p6::NodeId>,
+    pub sites: Vec<CoroutineCall>,
+    pub anchors: Vec<ControlId>,
+}
+#[derive(Debug, Serialize)]
+pub struct CoroutineCall {
+    pub call: crate::p2::OpId,
+    pub statement: StatementId,
+    pub expression: ExprId,
+    pub target: ReferenceId,
+    pub continuation: ExprId,
+    pub continuation_argument: u32,
+    pub state: i32,
+    pub guard: crate::p6::NodeId,
+    pub predicate: crate::p2::BlockId,
+    pub normal: TransferId,
+    pub suspended: TransferId,
+}
+
+pub(super) fn construct_flow(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> {
+    let Some(plan) = c.planned.facts().coroutine_flow() else {
+        return Ok(());
+    };
+    let mut sites = Vec::new();
+    for original in plan.sites() {
+        let call = original.call();
+        let statement = c.code.operations[call.0 as usize]
+            .statement
+            .ok_or(bug("coroutine call lost statement"))?;
+        let StatementKind::Evaluate { expression } = c.code.statements[statement.0 as usize].kind
+        else {
+            return Err(bug("coroutine call lost expression"));
+        };
+        let ExprKind::Call(source) = &c.code.expressions[expression.0 as usize].kind else {
+            return Ok(());
+        };
+        let Arguments::Known(arguments) = &source.arguments else {
+            return Ok(());
+        };
+        let argument = original
+            .continuation_argument()
+            .checked_sub(u32::from(source.receiver.is_some()))
+            .ok_or(bug("continuation precedes receiver"))?;
+        let continuation = *arguments
+            .get(argument as usize)
+            .ok_or(bug("coroutine call lost continuation"))?;
+        push(
+            &mut sites,
+            CoroutineCall {
+                call,
+                statement,
+                expression,
+                target: source.target,
+                continuation,
+                continuation_argument: argument,
+                state: original.state(),
+                guard: original.guard(),
+                predicate: c.planned.facts().nodes()[original.guard().0 as usize].block(),
+                normal: TransferId(original.normal().0),
+                suspended: TransferId(original.suspended().0),
+            },
+        )?;
+    }
+    let mut source = Vec::new();
+    for &id in plan.source() {
+        push(&mut source, ControlId(id.0))?;
+    }
+    for &op in plan.protocol_operations() {
+        let node = c.op_nodes[op.0 as usize].ok_or(bug("protocol operation lost node"))?;
+        for action in &mut c.code.emission.blocks[node.0 as usize].actions {
+            if let BodyAction::Statement {
+                operation,
+                statement,
+            } = *action
+                && operation == op
+            {
+                *action = BodyAction::AbiOperation {
+                    operation,
+                    statement,
+                };
+            }
+        }
+    }
+    for site in &sites {
+        c.code.emission.blocks[site.guard.0 as usize].end =
+            BlockEnd::Transfers(vec_fallible(site.normal)?);
+    }
+    for guard in plan.guards() {
+        let mut children = Vec::new();
+        push(&mut children, ControlId(guard.header().0))?;
+        push(&mut children, ControlId(guard.normal().0))?;
+        let control = &mut c.code.emission.controls[guard.control().0 as usize];
+        control.layout = EmissionLayout::Sequence;
+        control.explicit_children = Some(children);
+        control.label_required = false;
+        control.continuation = None;
+    }
+    c.code.emission.coroutine_flow = Some(CoroutineFlow {
+        source,
+        abi: copy(plan.abi())?,
+        abi_entries: copy(plan.abi_entries())?,
+        sites,
+        anchors: Vec::new(),
+    });
+    Ok(())
+}
+fn vec_fallible<T>(value: T) -> Result<Vec<T>, ExpressionError> {
+    let mut result = Vec::new();
+    push(&mut result, value)?;
+    Ok(result)
+}
+
+pub(super) fn finish_flow(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> {
+    let Some(plan) = c.planned.facts().coroutine_flow() else {
+        return Ok(());
+    };
+    if c.code.emission.coroutine_flow.is_none() {
+        return Ok(());
+    }
+    let mut active = super::build::filled(c.code.controls.len(), false)?;
+    let mut work = Vec::new();
+    for &id in plan.source() {
+        push(&mut work, ControlId(id.0))?;
+    }
+    while let Some(id) = work.pop() {
+        if active[id.0 as usize] {
+            continue;
+        }
+        active[id.0 as usize] = true;
+        for &child in
+            c.code.emission.controls[id.0 as usize].children(&c.code.controls[id.0 as usize])
+        {
+            push(&mut work, child)?;
+        }
+    }
+    for &node in plan.abi() {
+        active[node.0 as usize] = true;
+        let original = &c.planned.facts().nodes()[node.0 as usize];
+        if original.has_terminal() {
+            c.code.emission.blocks[node.0 as usize].end = BlockEnd::Terminal(original.block());
+        }
+        c.code.emission.controls[node.0 as usize].continuation = None;
+        for &transfer in &c.code.blocks[node.0 as usize].transfers {
+            let original = &c.code.transfers[transfer.0 as usize];
+            c.code.emission.transfers[transfer.0 as usize].spelling =
+                if plan.abi_gotos().iter().any(|id| id.0 == transfer.0) {
+                    c.code.emission.blocks[original.destination.0 as usize].show_label = true;
+                    TransferSpelling::Goto(original.destination)
+                } else {
+                    TransferSpelling::Fallthrough
+                };
+        }
+    }
+    for &(id, target) in plan.completions() {
+        c.code.emission.controls[id.0 as usize].continuation =
+            target.map(|node| ControlCompletion::Goto(LabelId(node.0)));
+        if let Some(node) = target {
+            c.code.emission.blocks[node.0 as usize].show_label = true;
+        }
+    }
+    for &id in plan.retired_transfers() {
+        c.code.emission.transfers[id.0 as usize].spelling = if plan.gotos().contains(&id) {
+            TransferSpelling::Goto(c.code.transfers[id.0 as usize].destination)
+        } else {
+            TransferSpelling::Fallthrough
+        };
+    }
+    let mut anchors = Vec::new();
+    for (index, used) in active.into_iter().enumerate() {
+        if !used {
+            push(&mut anchors, ControlId(id(index)?))?;
+        }
+    }
+    for site in plan.sites() {
+        c.code.emission.controls[site.guard().0 as usize].continuation = None;
+        let id = site.normal();
+        c.code.emission.transfers[id.0 as usize].spelling = if plan.gotos().contains(&id) {
+            TransferSpelling::Goto(c.code.transfers[id.0 as usize].destination)
+        } else {
+            TransferSpelling::Fallthrough
+        };
+        for link in [site.normal(), site.suspended()] {
+            c.code.emission.blocks[c.code.transfers[link.0 as usize].destination.0 as usize]
+                .show_label = true;
+        }
+    }
+    for &link in plan.gotos() {
+        let transfer = &mut c.code.emission.transfers[link.0 as usize];
+        if matches!(
+            transfer.spelling,
+            TransferSpelling::Fallthrough | TransferSpelling::Goto(_)
+        ) {
+            transfer.spelling =
+                TransferSpelling::Goto(c.code.transfers[link.0 as usize].destination);
+            c.code.emission.blocks[c.code.transfers[link.0 as usize].destination.0 as usize]
+                .show_label = true;
+        }
+    }
+    // Suppressed ABI locals retain declarations in comments, never new values.
+    let mut visible = super::build::filled(c.code.locals.len(), false)?;
+    for &node in plan.source_nodes() {
+        for index in c.planned.facts().nodes()[node.0 as usize].operations() {
+            let op = crate::p2::OpId(index);
+            if plan.protocol_operations().contains(&op)
+                || c.code.operations[index as usize].statement.is_none()
+            {
+                continue;
+            }
+            if let Some(Ok(uses)) = c.planned.storage_facts().operation_uses(op) {
+                for (arg, u) in uses.iter().enumerate() {
+                    if plan
+                        .sites()
+                        .iter()
+                        .any(|p| p.call() == op && p.continuation_argument() as usize == arg)
+                    {
+                        continue;
+                    }
+                    if let Some(local) = u.read().ok().and_then(crate::p5::StorageRead::local) {
+                        visible[local.0 as usize] = true;
+                    }
+                }
+            }
+            if let Some(s) = c.code.operations[index as usize].statement {
+                for d in &c.code.statements[s.0 as usize].outputs {
+                    if let crate::p5::Materialization::Store(l) = d.materialization() {
+                        visible[l.0 as usize] = true;
+                    }
+                }
+            }
+        }
+    }
+    // Keep every local accessed by original executable copy/terminal products.
+    for &node in plan.source_nodes() {
+        let n = &c.planned.facts().nodes()[node.0 as usize];
+        if n.has_terminal()
+            && !plan.sites().iter().any(|p| p.guard() == node)
+            && let Some(uses) = c.planned.storage_facts().terminal_uses(n.block())
+        {
+            for u in uses {
+                if let Some(l) = u.read().ok().and_then(crate::p5::StorageRead::local) {
+                    visible[l.0 as usize] = true;
+                }
+            }
+        }
+        for &transfer in &c.code.blocks[node.0 as usize].transfers {
+            for &bundle in &c.code.emission.transfers[transfer.0 as usize].copies {
+                for step in &c.code.copies[bundle.0 as usize].steps {
+                    match *step {
+                        CopyStatement::Assign {
+                            destination,
+                            expression,
+                            ..
+                        } => {
+                            visible[destination.0 as usize] = true;
+                            if let ExprKind::Read { storage, .. } =
+                                c.code.expressions[expression.0 as usize].kind
+                            {
+                                visible[storage.0 as usize] = true;
+                            }
+                        }
+                        CopyStatement::Save {
+                            destination,
+                            source,
+                        } => {
+                            visible[destination.0 as usize] = true;
+                            visible[source.0 as usize] = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (index, used) in visible.into_iter().enumerate() {
+        if !used {
+            c.code.emission.hidden_locals[index] = true;
+        }
+    }
+    c.code
+        .emission
+        .coroutine_flow
+        .as_mut()
+        .ok_or(bug("source flow lost plan"))?
+        .anchors = anchors;
+    Ok(())
+}
 
 pub(super) fn construct_loop(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> {
     let Some(plan) = c.planned.facts().coroutine_loop() else {

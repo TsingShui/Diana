@@ -471,6 +471,15 @@ Forwarded loop-copy steps print their supplied source names only in executable
 code; their original source reads and copy identities retain anchors. P9 MUST
 NOT establish forwarding, hide another argument, or reinterpret another copy.
 
+An acyclic `CoroutineFlow` renders P6's existing source controls in supplied
+entry order. P9 does not choose branches or discover another body. Its guard
+comment states both original destinations, retains predicate/suspended-transfer
+origins, and precedes the original normal copy delivery. Target labels remain
+visible in source or ABI attachments. Source initializers use `var name: Type =
+value`; method declarations retain Java ABI types/parameters and inferred
+`suspend`. Header and initialized local types consume the same P8 facts, without
+new null checks or external declarations.
+
 ## Spans
 
 `TextOffset` is a byte coordinate in the final UTF-8 text. `SourceSpan` ranges are

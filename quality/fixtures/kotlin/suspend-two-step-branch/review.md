@@ -1,6 +1,25 @@
 # Multi-site branch semantic review
 
-## Current shared-suffix integration
+## Acyclic source-body iteration
+
+The new flow candidate compared with `6178bdd` keeps both calls and the existing
+negative-return control in one source order. Each original result merge uses
+its own normal/resume copy bundle; first is saved for the second reentry rather
+than recomputed. The first record remains before the negative branch and the
+second call, and the second record remains before addition/return. Immediate
+marker branches and private resume code remain ABI attachments with original
+targets. The call's one continuation occurrence is implicit; its binding and
+other arguments remain original. Source local declarations now use Kotlin var
+syntax, preserving nullable casts and Java-style ABI signature plus suspend.
+
+The source body's results/effect order match the independent README paths,
+including early negative return and failures at either load or record. Original
+control/copy/exception facts are retained; no region recomposition or register
+replay is used. The new three-step/shared-and-private-marker challenge extends
+this same mechanism and rejects normal-only effects. This is LLM semantic
+reading supported by structural tests, not executed helper/scheduler behavior.
+
+## Prior ABI shared-suffix integration
 
 State0 still checks failure, publishes label1 and calls load. Its marker branch
 reaches only the physical return; normal completion copies the result inside

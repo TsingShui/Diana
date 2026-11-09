@@ -17,7 +17,17 @@ impl Expressions<'_, '_> {
             self.out.put("\n")?;
         }
         let mut work = Vec::new();
-        if let Some(body) = self.code.emission().coroutine_loop() {
+        if let Some(flow) = self.code.emission().coroutine_flow() {
+            push(&mut work, Event::CoroutineFlowControls)?;
+            for &id in flow.source.iter().rev() {
+                push(&mut work, Event::Control(id))?;
+            }
+            push(&mut work, Event::AbiMode(false))?;
+            for &node in flow.abi.iter().rev() {
+                push(&mut work, Event::Control(crate::p7::ControlId(node.0)))?;
+            }
+            push(&mut work, Event::AbiMode(true))?;
+        } else if let Some(body) = self.code.emission().coroutine_loop() {
             push(&mut work, Event::CoroutineControls)?;
             for &node in body.tail.iter().rev() {
                 push(&mut work, Event::Control(crate::p7::ControlId(node.0)))?;
@@ -77,7 +87,7 @@ impl Expressions<'_, '_> {
                     self.out.line(if abi {
                         "// Diana: ABI entry/reentry, resume and invalid-state paths"
                     } else {
-                        "// Diana: inferred suspend loop body; original ABI facts retained above"
+                        "// Diana: inferred suspend body; original ABI facts retained above"
                     })?;
                     self.out.abi_comment = abi;
                 }
@@ -102,6 +112,24 @@ impl Expressions<'_, '_> {
                             super::super::Origin::Control {
                                 method: self.method,
                                 control: control.id,
+                            },
+                        )?;
+                    }
+                }
+                Event::CoroutineFlowControls => {
+                    let position = self.out.position();
+                    for &control in &self
+                        .code
+                        .emission()
+                        .coroutine_flow()
+                        .ok_or(RenderError::Invariant("flow anchors lost their plan"))?
+                        .anchors
+                    {
+                        self.out.span(
+                            position,
+                            super::super::Origin::Control {
+                                method: self.method,
+                                control,
                             },
                         )?;
                     }

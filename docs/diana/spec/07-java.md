@@ -753,8 +753,17 @@ bits and an integral view. Other bit-pattern literals keep their supplied views.
 
 ## Suspension surfaces
 
-P7 installs a suspension surface only from P6's closed `CoroutineBodyPlan` or
-`CoroutineLoopPlan`.
+P7 installs a suspension surface only from P6's closed `CoroutineBodyPlan`,
+`CoroutineLoopPlan` or `CoroutineFlowPlan`.
+
+`CoroutineFlow` consumes P6's existing source-control order, guard/call
+associations and ABI partition. A guard carries its original normal transfer:
+P9 comments the marker predicate at that source position, then executes the
+supplied copies. Shared and private marker returns remain original ABI nodes.
+Source/ABI controls use the ordinary traversal with disjoint control anchors.
+P7 MUST retain every projected call, continuation occurrence and state/spill
+barrier against generic expression or check relocation. It runs no register
+replay, region composition or upstream analysis.
 A local `SuspensionPlan` without that body product leaves the original header,
 call, marker branch and dispatch untouched. P7 MUST NOT discover a body from
 names, metadata or text, or walk a graph to find another tail.

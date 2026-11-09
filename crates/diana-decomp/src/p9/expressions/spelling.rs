@@ -1,10 +1,28 @@
 //! Existing local, type and reference spellings in Java-like and Kotlin views.
 
-use super::{ExpressionSource, Expressions};
+use super::{ExpressionSource, Expressions, machine_type};
 use crate::p7::*;
 use crate::p9::{Origin, RenderError};
 
 impl<S: ExpressionSource> Expressions<'_, '_, S> {
+    pub(in crate::p9) fn kotlin_local_type(
+        &mut self,
+        spelling: LocalSpelling,
+    ) -> Result<(), RenderError> {
+        match spelling {
+            LocalSpelling::Named(id) => self.kotlin_type(id),
+            LocalSpelling::Machine(crate::p5::StorageType::Family { family, .. }) => {
+                self.out.put(match family {
+                    crate::p4::Family::Integral => "kotlin.Int",
+                    crate::p4::Family::Long => "kotlin.Long",
+                    crate::p4::Family::Float => "kotlin.Float",
+                    crate::p4::Family::Double => "kotlin.Double",
+                    crate::p4::Family::Reference => "reference",
+                })
+            }
+            LocalSpelling::Machine(ty) => machine_type(self.out, ty),
+        }
+    }
     pub(in crate::p9) fn kotlin_notation(&self) -> bool {
         self.code.kotlin_notation() && !self.out.abi_comment
     }

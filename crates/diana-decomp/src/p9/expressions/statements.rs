@@ -236,6 +236,14 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
                 if let Some((statement, spelling)) = self.code.local_initializer(local)
                     && statement == s.id
                 {
+                    if self.kotlin_notation() {
+                        self.out.put("var ")?;
+                        self.local(local)?;
+                        self.out.put(": ")?;
+                        self.kotlin_local_type(spelling)?;
+                        first = false;
+                        continue;
+                    }
                     match spelling {
                         LocalSpelling::Named(ty) => self.ty(ty)?,
                         LocalSpelling::Machine(ty) => machine_type(self.out, ty)?,

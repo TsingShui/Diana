@@ -1802,6 +1802,13 @@ fn region_json(method: diana_decomp::p7::MethodInspection<'_, '_>, details: bool
             "normal_links":p.normal_links().iter().map(|l|l.0).collect::<Vec<_>>(),
             "spills":p.spills().iter().map(|(put,get)|[put.0,get.0]).collect::<Vec<_>>()
         })));
+        result["coroutine_flow"] = json!(f.coroutine_flow().map(|p|json!({
+            "source":p.source().iter().map(|r|r.0).collect::<Vec<_>>(),
+            "source_nodes":p.source_nodes().iter().map(|n|n.0).collect::<Vec<_>>(),
+            "abi":p.abi().iter().map(|n|n.0).collect::<Vec<_>>(),
+            "gotos":p.gotos().iter().map(|l|l.0).collect::<Vec<_>>(),
+            "sites":p.sites().iter().map(|s|json!({"state":s.state(),"call":s.call().0,"guard":s.guard().0,"normal":s.normal().0,"suspended":s.suspended().0,"resume":s.resume().iter().map(|n|n.0).collect::<Vec<_>>(),"spills":s.spills().iter().map(|(a,b)|[a.0,b.0]).collect::<Vec<_>>() })).collect::<Vec<_>>()
+        })));
         result["suspensions"] = json!(f.suspensions().iter().map(|s| json!({
             "dispatch":s.dispatch().0,"control":s.control().0,"state":s.state(),"call":s.call().0,
             "state_store":s.state_store().0,"result":s.result().0,"merged":s.merged().0,

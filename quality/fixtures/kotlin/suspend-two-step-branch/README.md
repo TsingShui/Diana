@@ -57,6 +57,17 @@ Engine baseline: `64aaa04`. Expectations above precede candidate-output inspecti
 
 ## Observed validation
 
+Current source-body iteration `281c889` over engine baseline `b214ec6` selects
+an acyclic suspend body for choose. It preserves both calls, record effects,
+the negative return and normal result/capture copies. Original ABI paths remain
+explicit attachments. The three-step/private-marker/sparse-state challenge
+extends this mechanism. Current validation passed 120 engine nextest tests and
+100 dev fixture comparisons without member loss or increased failures. Helper
+and scheduler behavior remains unexecuted; review is LLM/structural evidence.
+
+The earlier fixture-intake evidence below records engine `dd70d20` before that
+source-body iteration.
+
 Preparation used Smali 2.5.2, OpenJDK 21.0.12.1, API 24 and DEX 037; these are
 observed versions, not pins. The prepared input delivers both classes and all
 five original methods without stops or rendering issues. Baseline `64aaa04`

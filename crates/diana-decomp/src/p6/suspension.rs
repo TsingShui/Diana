@@ -17,7 +17,9 @@ use crate::p5::{
 use crate::raw::ReferenceSlot;
 
 mod body;
+mod facts;
 mod loop_body;
+mod multi_body;
 
 pub(super) fn construct(
     storage: &StorageMethod<'_>,
@@ -25,6 +27,10 @@ pub(super) fn construct(
     graph: &Graph,
     structure: &super::dominance::Structure,
 ) -> Result<(), RegionError> {
+    multi_body::construct(storage, f, graph, structure)?;
+    if f.coroutine_flow.is_some() {
+        return Ok(());
+    }
     loop_body::construct(storage, f, graph, structure)?;
     let flow = storage.execution();
     let d = flow.declaration();

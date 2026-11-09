@@ -330,6 +330,7 @@ pub struct EmissionPlan {
     pub(super) suspensions: Vec<Suspension>,
     pub(super) coroutine_body: Option<CoroutineBody>,
     pub(super) coroutine_loop: Option<CoroutineLoop>,
+    pub(super) coroutine_flow: Option<CoroutineFlow>,
     pub(super) local_types: Vec<LocalSpelling>,
     pub(super) boolean_uses: Vec<bool>,
     pub(super) boolean_locals: Vec<bool>,
@@ -431,13 +432,18 @@ impl EmissionPlan {
             .unwrap_or(false)
     }
     pub fn kotlin_continuation_view(&self) -> bool {
-        self.coroutine_body.is_some() || self.coroutine_loop.is_some()
+        self.coroutine_body.is_some()
+            || self.coroutine_loop.is_some()
+            || self.coroutine_flow.is_some()
     }
     pub fn coroutine_body(&self) -> Option<&CoroutineBody> {
         self.coroutine_body.as_ref()
     }
     pub fn coroutine_loop(&self) -> Option<&CoroutineLoop> {
         self.coroutine_loop.as_ref()
+    }
+    pub fn coroutine_flow(&self) -> Option<&CoroutineFlow> {
+        self.coroutine_flow.as_ref()
     }
     pub fn implicit_continuation(&self, expression: ExprId) -> Option<(u32, ExprId)> {
         self.suspension_call(expression)
@@ -446,6 +452,14 @@ impl EmissionPlan {
                 self.coroutine_loop
                     .as_ref()
                     .filter(|p| p.expression == expression)
+                    .map(|p| (p.continuation_argument, p.continuation))
+            })
+            .or_else(|| {
+                self.coroutine_flow
+                    .as_ref()?
+                    .sites
+                    .iter()
+                    .find(|p| p.expression == expression)
                     .map(|p| (p.continuation_argument, p.continuation))
             })
     }
@@ -463,6 +477,7 @@ impl EmissionPlan {
             suspensions: Vec::new(),
             coroutine_body: None,
             coroutine_loop: None,
+            coroutine_flow: None,
             local_types: Vec::new(),
             boolean_uses: Vec::new(),
             boolean_locals: Vec::new(),

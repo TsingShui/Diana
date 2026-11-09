@@ -211,7 +211,13 @@ entry/reentry, state publication and error paths remain explicit. The
 [captured-effect challenge](../../quality/fixtures/kotlin/suspend-loop-captured-effects/README.md)
 exercises another mutable value and effects around suspension. Mismatched spills,
 changed captures, and resumed-only effects retain their original explicit code.
-Multi-site and protected coroutine source-body recovery remains unestablished.
+Acyclic ordinary methods with matched multiple suspension sites now select a
+source body over existing P6 controls, including early returns and saved scalars.
+Original fetch and the
+[three-step challenge](../../quality/fixtures/kotlin/suspend-three-step-effects/README.md)
+exercise private/shared marker returns and distinct result/capture merges.
+Normal-only effects, missing spills, cyclic source bodies and protected coroutine
+source reconstruction remain explicit rather than using this view.
 The [multi-site branch](../../quality/fixtures/kotlin/suspend-two-step-branch/README.md),
 [two-site loop](../../quality/fixtures/kotlin/suspend-loop-two-sites/README.md), and
 [protected two-site](../../quality/fixtures/kotlin/suspend-finally-two-sites/README.md)

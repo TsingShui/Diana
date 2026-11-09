@@ -18,7 +18,9 @@ mod serialization;
 use serialization::{debug, metadata};
 mod suspension;
 mod syntax;
-pub use suspension::{CoroutineBody, CoroutineCopy, CoroutineLoop, Suspension};
+pub use suspension::{
+    CoroutineBody, CoroutineCall, CoroutineCopy, CoroutineFlow, CoroutineLoop, Suspension,
+};
 mod values;
 pub use build::ExpressionError;
 pub(crate) use build::{MethodBuild, build_declaration, build_method};

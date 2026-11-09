@@ -1069,6 +1069,111 @@ pub struct CoroutineLoopPlan {
     pub(super) normal_links: Vec<LinkId>,
     pub(super) spills: Vec<(OpId, OpId)>,
 }
+/// Source order selected from the existing hierarchy for a closed acyclic
+/// continuation protocol. Original controls and all ABI nodes remain owned.
+#[derive(Debug)]
+pub struct CoroutineFlowPlan {
+    pub(super) source: Vec<RegionId>,
+    pub(super) abi: Vec<NodeId>,
+    pub(super) source_nodes: Vec<NodeId>,
+    pub(super) sites: Vec<CoroutineSite>,
+    pub(super) protocol_operations: Vec<OpId>,
+    pub(super) gotos: Vec<LinkId>,
+    pub(super) abi_entries: Vec<NodeId>,
+    pub(super) guards: Vec<CoroutineGuardControl>,
+    pub(super) completions: Vec<(RegionId, Option<NodeId>)>,
+    pub(super) abi_gotos: Vec<LinkId>,
+    pub(super) retired_transfers: Vec<LinkId>,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct CoroutineGuardControl {
+    pub(super) control: RegionId,
+    pub(super) header: RegionId,
+    pub(super) normal: RegionId,
+}
+impl CoroutineGuardControl {
+    pub fn control(&self) -> RegionId {
+        self.control
+    }
+    pub fn header(&self) -> RegionId {
+        self.header
+    }
+    pub fn normal(&self) -> RegionId {
+        self.normal
+    }
+}
+#[derive(Clone, Debug)]
+pub struct CoroutineSite {
+    pub(super) state: i32,
+    pub(super) call: OpId,
+    pub(super) continuation_argument: u32,
+    pub(super) guard: NodeId,
+    pub(super) normal: LinkId,
+    pub(super) suspended: LinkId,
+    pub(super) resume: Vec<NodeId>,
+    pub(super) spills: Vec<(OpId, OpId)>,
+}
+impl CoroutineFlowPlan {
+    pub fn guards(&self) -> &[CoroutineGuardControl] {
+        &self.guards
+    }
+    pub fn completions(&self) -> &[(RegionId, Option<NodeId>)] {
+        &self.completions
+    }
+    pub fn abi_gotos(&self) -> &[LinkId] {
+        &self.abi_gotos
+    }
+    pub fn retired_transfers(&self) -> &[LinkId] {
+        &self.retired_transfers
+    }
+    pub fn source(&self) -> &[RegionId] {
+        &self.source
+    }
+    pub fn abi(&self) -> &[NodeId] {
+        &self.abi
+    }
+    pub fn source_nodes(&self) -> &[NodeId] {
+        &self.source_nodes
+    }
+    pub fn sites(&self) -> &[CoroutineSite] {
+        &self.sites
+    }
+    pub fn protocol_operations(&self) -> &[OpId] {
+        &self.protocol_operations
+    }
+    pub fn gotos(&self) -> &[LinkId] {
+        &self.gotos
+    }
+    pub fn abi_entries(&self) -> &[NodeId] {
+        &self.abi_entries
+    }
+}
+impl CoroutineSite {
+    pub fn state(&self) -> i32 {
+        self.state
+    }
+    pub fn call(&self) -> OpId {
+        self.call
+    }
+    pub fn continuation_argument(&self) -> u32 {
+        self.continuation_argument
+    }
+    pub fn guard(&self) -> NodeId {
+        self.guard
+    }
+    pub fn normal(&self) -> LinkId {
+        self.normal
+    }
+    pub fn suspended(&self) -> LinkId {
+        self.suspended
+    }
+    pub fn resume(&self) -> &[NodeId] {
+        &self.resume
+    }
+    pub fn spills(&self) -> &[(OpId, OpId)] {
+        &self.spills
+    }
+}
 impl CoroutineLoopPlan {
     pub fn initial(&self) -> &[NodeId] {
         &self.initial
@@ -1161,6 +1266,7 @@ pub struct RegionFacts {
     pub(super) suspensions: Vec<SuspensionPlan>,
     pub(super) coroutine_body: Option<CoroutineBodyPlan>,
     pub(super) coroutine_loop: Option<CoroutineLoopPlan>,
+    pub(super) coroutine_flow: Option<CoroutineFlowPlan>,
     pub(super) nodes: Vec<Node>,
     pub(super) blocks: Vec<BlockPlan>,
     pub(super) links: Vec<NormalLink>,
@@ -1192,6 +1298,9 @@ impl RegionFacts {
     pub fn coroutine_loop(&self) -> Option<&CoroutineLoopPlan> {
         self.coroutine_loop.as_ref()
     }
+    pub fn coroutine_flow(&self) -> Option<&CoroutineFlowPlan> {
+        self.coroutine_flow.as_ref()
+    }
     pub fn suspensions(&self) -> &[SuspensionPlan] {
         &self.suspensions
     }
@@ -1200,6 +1309,7 @@ impl RegionFacts {
             suspensions: Vec::new(),
             coroutine_body: None,
             coroutine_loop: None,
+            coroutine_flow: None,
             lock_entries: LockEntries::Unestablished,
             nodes: Vec::new(),
             blocks: Vec::new(),

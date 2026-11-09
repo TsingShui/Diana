@@ -4,6 +4,57 @@ use super::super::{Origin, RenderError};
 use crate::p7::{ControlId, Suspension};
 
 impl Expressions<'_, '_> {
+    pub(super) fn coroutine_guard(
+        &mut self,
+        site: &crate::p7::CoroutineCall,
+    ) -> Result<(), RenderError> {
+        let terminal = &self.code.terminals()[site.predicate.0 as usize];
+        let crate::p7::TerminalKind::If {
+            condition,
+            when_true,
+            when_false,
+        } = &terminal.kind
+        else {
+            return Err(RenderError::Invariant(
+                "protocol guard lost original predicate",
+            ));
+        };
+        let previous = std::mem::replace(&mut self.out.abi_comment, true);
+        let rendered = (|| {
+            self.out.indent()?;
+            let start = self.out.position();
+            self.out.put("if (")?;
+            let carrier = self
+                .check_carrier
+                .replace(crate::p7::CheckCarrier::Terminal(site.predicate));
+            let result = self.condition(condition, false);
+            self.check_carrier = carrier;
+            result?;
+            self.out.put(") goto ")?;
+            self.label_name(self.code.transfers()[when_true.0 as usize].destination)?;
+            self.out.put("; else goto ")?;
+            self.label_name(self.code.transfers()[when_false.0 as usize].destination)?;
+            self.out.put(";\n")?;
+            self.out.span(
+                start,
+                Origin::Terminal {
+                    method: self.method,
+                    block: site.predicate,
+                },
+            )?;
+            self.out.span(
+                start,
+                Origin::Transfer {
+                    method: self.method,
+                    transfer: site.suspended,
+                },
+            )?;
+            Ok::<_, RenderError>(())
+        })();
+        self.out.abi_comment = previous;
+        rendered?;
+        self.transfer(site.normal)
+    }
     pub(super) fn begin_abi(
         &mut self,
         section: &'static str,
