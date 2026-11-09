@@ -1,8 +1,29 @@
 # Fixture: algo-string
 
-## Current verdict — scalar-use disclosure
+## Current verdict — constructor arguments and scalar uses
 
-On the same prepared DEX, baseline df10b74 versus this change differs only at
+### Retained constructor review
+
+The constructor review compared the same prepared DEX on e95b6a4 and f233202.
+Only reverse's construction spelling changed in that comparison; other member
+output was exact. Allocation still precedes the first length call and then
+initialization. A null input or length failure prevents initialization and the
+loop. On success, the second length call remains separate to compute the
+descending index; charAt/append/update order and final toString remain exact.
+Capacity initialization and external StringBuilder effects keep their positions.
+
+That review established equal P1/P3/P4 publications. P5 retains allocation,
+arguments and normal publication with ordered protection; adjacent throw
+composition requires equal handler chain/spelling and no snapshots. Original
+sites and effects remain, including explicit chains when lexical catch delivery
+is unavailable. The [fresh constructor challenge](../../atoms/constructor-argument-effects/review.md)
+covers trees, faults and order/sharing/handler/save refusals. Its bounded LLM
+judgment is reused under the same helper/external-constructor assumptions;
+it is not a VM/device or Java execution result.
+
+### Scalar-use comparison
+
+In the isolated comparison on the same DEX, df10b74 versus 7347d50 differs only at
 reverse's character append. Its int carrier now states the supplied char view;
 the original charAt, append(C), decrement and exit order remain. Empty input
 performs no append; a reached access failure skips append/update. Under the

@@ -68,15 +68,7 @@ fn construct(
     let arguments = arguments::reads(typed, f, init)?;
     let prepared_arguments =
         arguments::prepare(typed, f, allocation, init, &preparations, &arguments)?;
-    snapshots::prepared_protection(
-        typed,
-        f,
-        allocation,
-        init,
-        &preparations,
-        &prepared_arguments,
-    )?;
-    let (snapshots, prelude) = snapshots::collect(typed, f, allocation, init, at)?;
+    let (snapshots, prelude) = snapshots::collect(typed, f, &members, at)?;
     let publications = snapshots::publications(typed, f, allocation, &members)?;
     Ok(ConstructionGroup {
         id: GroupId(id(f.groups.len())?),

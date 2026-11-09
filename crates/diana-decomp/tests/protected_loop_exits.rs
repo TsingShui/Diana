@@ -73,10 +73,20 @@ fn nested_private_throw_keeps_both_original_heads_inside_one_finally() {
                     ..
                 }
             )));
-            let guard = rendered
-                .text()
-                .find("throw illegalStateException;")
-                .unwrap();
+            let guard = code
+                .terminals()
+                .iter()
+                .find_map(|terminal| {
+                    if !matches!(terminal.kind, TerminalKind::Throw(_)) {
+                        return None;
+                    }
+                    rendered.spans().iter().find_map(|span| {
+                        matches!(span.origin, Origin::Terminal { block, .. }
+                        if block == terminal.block && span.start.0 < span.end.0)
+                        .then_some(span.start.0)
+                    })
+                })
+                .expect("one executable original guard throw");
             assert!(rendered.text().find("ProtectedExits.probe(").unwrap() < guard);
             assert!(guard < rendered.text().find("ProtectedExits.read(").unwrap());
             rethrows::assert_pending_rethrow(facts, rendered);

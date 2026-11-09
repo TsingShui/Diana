@@ -2,53 +2,15 @@
 
 use super::candidate::Admission;
 use super::*;
-pub(super) fn prepared_protection(
-    typed: &TypedMethod<'_>,
-    f: &StorageFacts,
-    allocation: crate::p2::OpId,
-    init: crate::p2::OpId,
-    preparations: &[crate::p2::OpId],
-    prepared_arguments: &[PreparedArgument],
-) -> Admission<()> {
-    let flow = typed.execution();
-    let mut protected = false;
-    if !prepared_arguments.is_empty() {
-        for op in [allocation, init] {
-            let operation = &flow.operations()[op.0 as usize];
-            let handlers = protection(typed, op)?;
-            protected |= !operation.effects().may_throw()
-                || operation.exceptional().is_none()
-                || !matches!(
-                    handlers.as_slice(),
-                    [Handler {
-                        catch: None,
-                        target: None,
-                        ..
-                    }]
-                );
-        }
-    }
-    if !prepared_arguments.is_empty()
-        && (protected || f.copies.iter().any(|plan| {
-            matches!(plan.location, CopyLocation::BeforeThrow(ThrowSite::Operation(op)) if op == allocation || op == init || preparations.contains(&op))
-                && (!plan.assignments.is_empty() || !plan.steps.is_empty())
-        }))
-    {
-        return Err(Separation::InterveningOperation(preparations[0]).into());
-    }
-    Ok(())
-}
-
 pub(super) fn collect(
     typed: &TypedMethod<'_>,
     f: &StorageFacts,
-    allocation: crate::p2::OpId,
-    init: crate::p2::OpId,
+    members: &[crate::p2::OpId],
     at: PointId,
 ) -> Admission<(Vec<PlanId>, Option<PlanId>)> {
     let mut snapshots = Vec::new();
     for plan in &f.copies {
-        if matches!(plan.location,CopyLocation::BeforeThrow(ThrowSite::Operation(op))if op==allocation||op==init)
+        if matches!(plan.location,CopyLocation::BeforeThrow(ThrowSite::Operation(op))if members.contains(&op))
         {
             if !plan.is_complete() {
                 return Err(Separation::SnapshotMismatch(plan.id).into());
@@ -78,7 +40,11 @@ pub(super) fn collect(
             }
         }
         // Every throwing stage must have the same selected save obligations.
-        for op in [allocation, init] {
+        for &op in members.iter().filter(|op| {
+            typed.execution().operations()[op.0 as usize]
+                .effects()
+                .may_throw()
+        }) {
             if !snapshots.iter().any(|p|matches!(f.copies[p.0 as usize].location,CopyLocation::BeforeThrow(ThrowSite::Operation(o))if o==op)){return Err(Separation::SnapshotMismatch(first).into());}
         }
     }

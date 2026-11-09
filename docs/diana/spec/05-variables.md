@@ -137,23 +137,35 @@ snapshot obligations. No new SSA value or alternate method chain is created.
 The planner consumes P4's position-related allocation binding and initialization.
 It requires a same-occurrence receiver before construction, an unshared linear
 normal corridor, and transparent object aliases or unmaterialized literal
-definitions inside that corridor. P5 may also select one preparation operation per
-constructor argument: a resolved string constant or an ordinary operation whose
-single defined value has exactly one initialized use at that constructor. A
-preparation MUST have no Phi or copy involvement, no read of the object under
-construction, one uncaught exception route and no snapshot, and its program order
-MUST match increasing argument order. Allocation, every preparation and
-initialization keep that same uncaught exception route. These conditions make the
-printed `new T(arg1, arg2)` evaluation order equal to the original corridor order:
-allocation, each prepared argument, initialization. The group identifies each
-selected operation, argument and local; P7 consumes these facts to evaluate the
-preparation's ordinary expression inside `new`, after allocation and before
-initialization. The preparation keeps its statement, operation, PC, result commit
-and site origins. Other intervening operations, including nested constructions and
-monitor, allocation, unresolved or cast-only operations, retain an explicit plan at
-their original positions. Branches, external entries, required intervening transfers
-and unavailable arguments also retain explicit plans. Other arguments use
-existing storage or P4-proven literal views.
+definitions inside that corridor. P5 selects complete ordered argument trees
+whose ordinary producers each define one value with exactly one later consuming
+use. A consuming use is a constructor argument or an operand of another selected
+producer. Each edge retains the original operation, local and UseSite. Reference
+uses require established initialization; numeric uses retain P4's numeric read
+and view without manufacturing a reference-initialization flag.
+
+P5 traverses constructor arguments and each producer's original operands in
+argument order, finishing a producer after its operands. That postorder MUST
+match the complete original corridor preparation sequence. This rejects reversed
+arguments, interleaved effects, shared results and detached work. Every external
+leaf MUST already be available at the allocation anchor. Producers MUST have no
+Phi or copy involvement and MUST NOT read the object under construction.
+
+Allocation, every throwing producer and initialization MUST retain the same
+ordered handler chain. All original before-throw snapshots across those members
+MUST be complete, equivalent and available at the allocation anchor. One common
+prelude preserves those saves. Different handler routes or changing snapshot
+sources retain explicit operations. The selected tree preserves allocation,
+argument evaluation and initialization order, with publication only on success.
+P7 lowers each selected ordinary expression once at its delivered consuming read;
+its PC, result commit, statement and throw site remain available.
+
+Other intervening operations, including nested constructions, monitors,
+allocations and unresolved or cast-only operations, retain an explicit plan at
+their original positions. Branches, external entries, required intervening
+transfers and unavailable arguments also retain explicit plans. No graph,
+storage or type analysis is retried. Other constructor arguments consume existing
+storage or P4-proven literal views.
 
 A private carrier can be deferred only when original uses cannot observe it
 without the constructor's normal transfer. The planner decides that per arrival: a

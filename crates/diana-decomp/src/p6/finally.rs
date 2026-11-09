@@ -16,7 +16,7 @@ use crate::p5::{
 struct Match {
     plan: FinallyPlan,
     preparation: Vec<NodeId>,
-    follow: NodeId,
+    follow: Option<NodeId>,
 }
 
 fn unhandled(f: &RegionFacts, site: ThrowSite) -> bool {
@@ -30,23 +30,47 @@ fn unhandled(f: &RegionFacts, site: ThrowSite) -> bool {
 
 fn operation_allowed(storage: &StorageMethod<'_>, f: &RegionFacts, op: OpId) -> bool {
     let operation = &storage.execution().operations()[op.0 as usize];
-    if !matches!(
+    let construction = match storage.facts().operation_emission(op) {
+        Some(crate::p5::OperationEmission::Ordinary) => false,
+        Some(crate::p5::OperationEmission::Construction { group, .. }) => {
+            if storage
+                .facts()
+                .construction_groups()
+                .get(group.0 as usize)
+                .is_none_or(|group| !group.members().contains(&op))
+            {
+                return false;
+            }
+            true
+        }
+        None => return false,
+    };
+    if !(matches!(
         operation.kind(),
         OpKind::Move { .. }
             | OpKind::Const { .. }
+            | OpKind::Unary { .. }
+            | OpKind::Binary { .. }
+            | OpKind::Compare { .. }
             | OpKind::ConstString { .. }
             | OpKind::Field { .. }
             | OpKind::Invoke {
                 kind: InvokeKind::Static | InvokeKind::Virtual | InvokeKind::Interface,
                 ..
             }
-    ) {
+    ) || construction
+        && matches!(
+            operation.kind(),
+            OpKind::NewInstance { .. }
+                | OpKind::Invoke {
+                    kind: InvokeKind::Direct,
+                    ..
+                }
+        ))
+    {
         return false;
     }
-    if !matches!(
-        storage.facts().operation_emission(op),
-        Some(crate::p5::OperationEmission::Ordinary)
-    ) || storage
+    if storage
         .facts()
         .operation_uses(op)
         .is_none_or(|u| u.is_err() || u.is_ok_and(|u| u.iter().any(|u| u.read().is_err())))
@@ -159,7 +183,8 @@ fn candidate(
         normal,
         operations: pairs,
         predicates,
-        rethrow,
+        rethrows,
+        terminals,
         follow: at,
     }) = matching::construct(storage, f, g, p, capture, def)?
     else {
@@ -167,7 +192,10 @@ fn candidate(
     };
     // An implicit pending rethrow cannot replace a site-specific outward
     // dispatch. Enclosing lexical delivery has not been established here.
-    if !unhandled(f, ThrowSite::Terminal(f.nodes[rethrow.0 as usize].block)) {
+    if rethrows
+        .iter()
+        .any(|rethrow| !unhandled(f, ThrowSite::Terminal(f.nodes[rethrow.0 as usize].block)))
+    {
         return Ok(None);
     }
     if copies_touch(storage, f, g, &p.handler_bodies[0]) {
@@ -180,7 +208,7 @@ fn candidate(
         Ok(read) => {
             read.local() == Some(local)
                 && !matches!(u.site(), crate::p3::UseSite::Terminal { block, .. }
-                if block == f.nodes[rethrow.0 as usize].block)
+                if rethrows.iter().any(|rethrow| block == f.nodes[rethrow.0 as usize].block))
         }
     }) {
         return Ok(None);
@@ -195,8 +223,7 @@ fn candidate(
         return Ok(None);
     }
     if normal.is_empty()
-        || p.members.contains(&at)
-        || normal.contains(&at)
+        || at.is_some_and(|at| p.members.contains(&at) || normal.contains(&at))
         || copies_touch(storage, f, g, &normal)
         || f.tries
             .iter()
@@ -230,7 +257,8 @@ fn candidate(
             operations: pairs,
             predicates,
             capture,
-            rethrow,
+            rethrows,
+            terminals,
         },
         follow: at,
     }))
@@ -255,12 +283,12 @@ pub(super) fn construct(
             push(&mut p.members, node)?;
         }
         p.members.sort_unstable();
-        p.follow = Some(matched.follow);
+        p.follow = matched.follow;
         #[cfg(feature = "trace-passes")]
         {
             let key = storage.execution().owner_facts().key();
             eprintln!(
-                "[finally] dex={} class={} method={} candidate={} matched_pairs={} predicates={} capture={} rethrow={}",
+                "[finally] dex={} class={} method={} candidate={} matched_pairs={} predicates={} capture={} rethrows={}",
                 key.dex.0,
                 key.class_def.0,
                 storage.execution().method_id().0,
@@ -268,7 +296,7 @@ pub(super) fn construct(
                 matched.plan.operations.len(),
                 matched.plan.predicates.len(),
                 matched.plan.capture.0,
-                matched.plan.rethrow.0
+                matched.plan.rethrows.len()
             );
         }
         p.finally = Some(matched.plan);

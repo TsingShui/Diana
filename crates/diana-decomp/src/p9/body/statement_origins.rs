@@ -188,7 +188,15 @@ impl Expressions<'_, '_> {
             },
         )?;
         if let StatementKind::Construction(g) = s.kind {
-            for &member in &self.code.constructions()[g.0 as usize].members {
+            let group = &self.code.constructions()[g.0 as usize];
+            for &member in &group.members {
+                if group
+                    .prepared_arguments
+                    .iter()
+                    .any(|prepared| prepared.operation == member)
+                {
+                    continue; // Its composed expression supplies the original operation anchor.
+                }
                 let source = &self.code.operations()[member.0 as usize];
                 if !matches!(source.emission, Emission::Construction(_)) {
                     continue;

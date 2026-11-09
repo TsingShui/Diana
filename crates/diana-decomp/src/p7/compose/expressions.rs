@@ -30,10 +30,11 @@ pub(super) fn construct(
             code.emission.composed_uses[argument.operand.0 as usize] = Some(ComposedExpression {
                 expression: argument.expression,
                 operation: argument.operation,
-                statement: argument.statement,
+                statement: statement.id,
                 pc: source.pc,
                 result_pc: source.result_pc,
-                site: statement.sites.first().copied(),
+                // The owning group retains and annotates every original site.
+                site: None,
                 predicate: ComposedPredicate::Value,
                 result: ComposedResult::Value,
                 source_control: None,
@@ -177,7 +178,9 @@ fn construction_throw(
     }
     for &site in &construction_statement.sites {
         let site = code.sites.get(site.0 as usize)?;
-        if !matches!(site.syntax, ExceptionSyntax::Propagate) || !site.source_snapshots.is_empty() {
+        if matches!(site.syntax, ExceptionSyntax::ImpossibleRelease)
+            || !site.source_snapshots.is_empty()
+        {
             return None;
         }
     }
@@ -291,7 +294,18 @@ fn construction_throw(
         return None;
     }
     let site = code.sites.get(target.site?.0 as usize)?;
-    if !matches!(site.syntax, ExceptionSyntax::Propagate) || !site.source_snapshots.is_empty() {
+    if matches!(site.syntax, ExceptionSyntax::ImpossibleRelease)
+        || !site.source_snapshots.is_empty()
+    {
+        return None;
+    }
+    if construction_statement.sites.iter().any(|id| {
+        let Some(member) = code.sites.get(id.0 as usize) else {
+            return true;
+        };
+        member.chain != site.chain
+            || std::mem::discriminant(&member.syntax) != std::mem::discriminant(&site.syntax)
+    }) {
         return None;
     }
     let expression = code.expressions.get(use_id.0 as usize)?;

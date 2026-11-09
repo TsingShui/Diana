@@ -334,11 +334,6 @@ pub(super) fn construct(typed: &TypedMethod<'_>, f: &mut StorageFacts) -> Result
                         ConstructionRole::Allocation
                     } else if op == group.initialization {
                         ConstructionRole::Initialization
-                    } else if matches!(
-                        typed.execution().operations()[op.0 as usize].kind(),
-                        OpKind::Const { .. }
-                    ) {
-                        ConstructionRole::Literal
                     } else if aliases_allocation(typed, group.allocation, op) {
                         ConstructionRole::Alias
                     } else if group
@@ -347,6 +342,11 @@ pub(super) fn construct(typed: &TypedMethod<'_>, f: &mut StorageFacts) -> Result
                         .any(|prepared| prepared.operation == op)
                     {
                         ConstructionRole::Argument
+                    } else if matches!(
+                        typed.execution().operations()[op.0 as usize].kind(),
+                        OpKind::Const { .. }
+                    ) {
+                        ConstructionRole::Literal
                     } else {
                         return Err(StorageError::InternalInvariant(
                             "construction retained an intervening operation",

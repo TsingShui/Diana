@@ -76,7 +76,10 @@ fn kind(c: &mut Context<'_, '_>, r: &p6::Region) -> Result<ControlKind, Expressi
                     .map(|p| -> Result<Finally, ExpressionError> {
                         Ok(Finally {
                             capture: p.capture(),
-                            rethrow: terminal(c, p.rethrow()),
+                            rethrows: ids(p.rethrows(), |node| terminal(c, node))?,
+                            terminals: ids(p.terminals(), |(a, b)| {
+                                (terminal(c, a), terminal(c, b))
+                            })?,
                             operations: ids(p.operations(), |pair| pair)?,
                             predicates: ids(p.predicates(), |(a, b)| {
                                 (terminal(c, a), terminal(c, b))

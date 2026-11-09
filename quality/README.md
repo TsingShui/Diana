@@ -132,6 +132,8 @@ Downloaded inputs and generated output remain outside version control.
 | `cast-instanceof` | `instanceof`, `check-cast`, array cast |
 | `expr-wide` | `long` shifts/arithmetic, `float`/`double`, NaN comparison, narrowing casts |
 | `scalar-use-views` | Range-proved char/byte/short use spelling, exact character literals and separate int uses of word carriers |
+| `constructor-argument-chains` | Two independent call/field chains after allocation and protected exception initialization |
+| `constructor-argument-effects` | Branching argument trees, faults and order/sharing/handler/snapshot guards |
 
 ### Branches
 
@@ -187,6 +189,7 @@ Downloaded inputs and generated output remain outside version control.
 | `short-circuit-shared-routes` | Ordered effectful disjunctions through empty selected routes; copy, effect, entry, cycle and explicit-prelude guards |
 | `concat-capture-recipes` | Inferred Custom concatenation, recipe constants, char/int views, captured effects, loop/catch and explicit unsupported guards |
 | `pure-tail-finally` | Whole-operation normal preparation, literal cleanup prefixes, scoped bypasses and late cleanup failure |
+| `abrupt-finally-completion` | Saved body returns, cleanup return/throw replacement, always-abrupt/void cleanup, multiple rethrows and unequal/foreign-entry guards |
 | `refined-carriers` | Adjacent cast/array carriers and checks that must precede calls and early returns |
 | `scalar-views-protected-joins` | Scalar-use challenge with producer Phis, loop/recovery/cleanup, snapshots, composition and unproved-view guards |
 | `handler-retry-rejoin` | Captureless ignored handlers sharing a retry update with normal arrivals; explicit-loop reproduction |

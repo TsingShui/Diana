@@ -1,6 +1,56 @@
 # Fixture: finally-overrides-exit
 
-## Current verdict — terminal guard follow-up
+## Current verdict — constructor argument and throw recovery
+
+Compared the same prepared DEX on `e95b6a4` and the containing repair. Read the
+original Java and prepared DEX behavior and complete before/after output for replaceExit(I)I.
+Only construction spelling changes; other member output is exact.
+
+### Semantics
+
+open remains before try. Bit1 now prints one constructed body ISE throw, still before read and under the original cleanup delivery. Close precedes the bit2 return and bit4 finally throw, replacing the pending body outcome when selected; close failure skips those overrides. No override preserves the original body/read error or return5. The native helper model and acquired handle are unchanged.
+
+Original P1/P3/P4 publications agree. P5 retains allocation, arguments and normal
+publication with the same ordered protection; P7 composes an adjacent throw only
+with equal handler chain/spelling and no snapshots. Original sites and effect
+order stay delivered, including explicit chains when lexical catch delivery is
+unavailable. The [fresh argument/effect challenge](../../atoms/constructor-argument-effects/review.md)
+covers trees, fault prefixes and order/sharing/handler/save refusals.
+
+LLM path review found no contradiction under the fixture's recorded helper and
+external-constructor assumptions. Unchanged paths reuse the earlier independent
+review below. This is renewed semantic reading plus current product regressions,
+not a full-method VM/device or Java execution result. Historical execution claims
+below are not rerun certifications.
+
+## Prior verdict — abrupt finally recovery
+
+Read original Java/Smali and both complete `replaceExit(I)I` texts on baseline
+`b214ec6` and this repair. Duplicated close/override paths now become one finally;
+body construction/read remain in their original order.
+
+### Semantics
+
+| Path | Source and recovered behavior |
+|---|---|
+| Acquisition | `open(0)` remains before try. An open failure never reaches close. With the native-helper model, handle7 is passed to read and close. |
+| Ordinary body | Bit1 clear reaches read once; ordinary cleanup closes once. With bits2/4 clear, return5 remains after cleanup. |
+| Body error | Bit1 constructs and throws ISE(`body`) before read. A read failure is reachable with bit1 clear. Both errors enter cleanup with the original acquired handle. |
+| Cleanup override | Close precedes both tests. Bit2 returns -7, including mode6; bit4 is reached only with bit2 clear and constructs/throws IAE(`finally`). Either replaces the pending return or exact captured error. |
+| Cleanup completion/error | With no override, a captured body/read error is implicitly rethrown with its identity. Close failure propagates outside its original protected range, skips both overrides and replaces the pending exit without suppression or retry. |
+
+P6 pairs explicit cleanup terminals and the selected P5 natural construction;
+P7 retains canonical exits and zero-width duplicate/capture/rethrow origins.
+Original body construction remains explicit because its own P5 group is unchanged.
+All original P1/P3/P4/P5 publications agree. The new
+[complexity challenge](../abrupt-finally-completion/review.md) covers saved body
+state, throwing close, void/all-abrupt cleanup, multiple rethrows and refusal
+boundaries. Review found no contradiction in the independently recorded scenarios.
+Native helpers use the README model; asynchronous exceptions and allocation or
+external constructor failure remain outside scenario execution. This is LLM
+semantic review plus product/origin tests, not a VM behavioral result.
+
+## Prior verdict — terminal guard follow-up
 
 Read complete replacement paths. Body bit1 throws before read. Each cleanup
 closes first, bit2 returns-7, otherwise bit4 throws the cleanup IAE, otherwise

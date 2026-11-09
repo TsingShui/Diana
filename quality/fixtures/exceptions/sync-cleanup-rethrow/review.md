@@ -1,6 +1,29 @@
 # Fixture: sync-cleanup-rethrow
 
-## Current verdict — terminal guard follow-up
+## Current verdict — constructor argument and throw recovery
+
+Compared the same prepared DEX on `e95b6a4` and the containing repair. Read the
+original Java and prepared DEX behavior and complete before/after output for guarded(Object,I)I.
+Only construction spelling changes; other member output is exact.
+
+### Semantics
+
+open remains before acquiring the monitor. The mode1 constructed body throw occurs while held after read, enters the original close/rethrow handler, and retains release ordering. Secondary close failure is still added to the primary via the same protected addSuppressed call; the release handler receives its original error. Normal completion releases before the outside close. Allocation/string/constructor errors use the same body protection and cannot move past release.
+
+Original P1/P3/P4 publications agree. P5 retains allocation, arguments and normal
+publication with the same ordered protection; P7 composes an adjacent throw only
+with equal handler chain/spelling and no snapshots. Original sites and effect
+order stay delivered, including explicit chains when lexical catch delivery is
+unavailable. The [fresh argument/effect challenge](../../atoms/constructor-argument-effects/review.md)
+covers trees, fault prefixes and order/sharing/handler/save refusals.
+
+LLM path review found no contradiction under the fixture's recorded helper and
+external-constructor assumptions. Unchanged paths reuse the earlier independent
+review below. This is renewed semantic reading plus current product regressions,
+not a full-method VM/device or Java execution result. Historical execution claims
+below are not rerun certifications.
+
+## Prior verdict — terminal guard follow-up
 
 Read the selected body throw while held: it keeps original construction/sites
 and enters the same exceptional capture/release. Only normal completion reaches

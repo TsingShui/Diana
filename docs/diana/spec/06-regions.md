@@ -846,8 +846,10 @@ recognizing cleanup syntax.
 
 The cleanup cursor first supplies its original first event after capture. P6 can
 complete the normal body's whole pure portions from its established sole outlet
-until one complete single-frontier entry names that first cleanup event. Every
-new portion has only body predecessors, no executable exceptional entrance, and
+until one complete single-frontier entry names that first cleanup event. The
+frontier requires matching original operands and initialization, not only the
+opcode kind. Pure body preparation with different reads remains before cleanup.
+Every new portion has only body predecessors, no executable exceptional entrance, and
 available ordinary scalar reads; it crosses no method entry, construction group
 or held monitor scope. Temporary multiple frontiers can close at a later common
 join. Checked counters and one fallible queue construct the closure; no graph or
@@ -861,22 +863,30 @@ Before composition, P6 can attach a `FinallyPlan` to a `TryPlan` whose selected
 original clause interval is one catch-all, even when its source chain has an
 inner typed prefix. Exceptional body transfers may stay in nested body handlers
 or enter this exact cleanup, but may not escape to another handler or uncaught
-completion. The full original chain is not substituted for the selected interval. Its handler is a finite acyclic cleanup graph ending at one
-throw that reads the exact capture storage state with a reference view.
-The hidden pending rethrow must also have an established unhandled original route.
+completion. The full original chain is not substituted for the selected interval.
+Its handler is a finite acyclic cleanup graph whose leaves are explicit cleanup
+returns/throws or pending rethrows of the exact capture storage state with a
+reference view. An always-abrupt cleanup needs no pending rethrow. Every hidden
+pending rethrow must have an established unhandled original route.
 A site-specific outside handler cannot be erased by assuming implicit lexical
 propagation; until natural enclosing delivery is established, this alternative
 stays explicit. The captured local has no other read or copy dependency. Moves, numeric/string
-constants, field accesses and static/virtual/interface calls can match; allocation
-and construction members remain explicit.
+constants, unary/binary arithmetic, comparisons, field accesses and
+static/virtual/interface calls can match. Allocation and direct construction
+calls match only as members of already selected P5 natural construction groups.
+Each group requires complete member/role correspondence to one equally complete
+peer group; preludes and snapshot members keep construction explicit.
 
 A paired cursor traverses handler and normal cleanup events. Block cuts and
 copy-free gotos are transparent. Conditions require the same operator and operand
 correspondence, with original true/false edges paired by role. Bidirectional
 event maps require consistent joins; an active pair revisit rejects a cycle.
-Completed pairs are reused, not expanded into every possible path. All matched
-normal paths must stop at the same original continuation, at a whole-node
-boundary. Final empty routing is included in the normal duplicate before choosing
+Completed pairs are reused, not expanded into every possible path. Explicit
+cleanup return pairs require identical widths and corresponding P5 reads; throw
+pairs require corresponding reads and established unhandled routes on both sides.
+Pending rethrows instead end at the same actual normal continuation, at a
+whole-node boundary. All-abrupt cleanup has no fabricated continuation.
+Final empty routing is included in the normal duplicate before choosing
 that continuation, so one arm's goto to a shared end does not become a different
 continuation. No unpaired instruction is swallowed to align block cuts. Scratch allocation is fallible and cursor arithmetic is checked.
 
@@ -901,8 +911,9 @@ nodes have no foreign normal or executable exceptional entrance. Body returns,
 bypass outlets, escaping protection, cross-handler shared tails and unmatched value
 joins reject this alternative.
 
-The plan pairs original normal and handler operations and predicates, retains the original
-capture/rethrow, and adds the normal duplicate as a separate source child.
+The plan pairs original normal and handler operations, predicates and explicit
+cleanup terminals, retains the original capture and all pending rethrows, and
+adds the normal duplicate as a separate source child.
 The protected body owns its original nodes plus the established pure normal
 preparation; normal completion enters the matched cleanup, then continues at its
 original next node. A body outlet targeting the normal duplicate is implicit only
@@ -911,7 +922,9 @@ Otherwise P6 supplies a Break of this selected Try, preserving the original targ
 and copies while executing finally once. Derived child completions obey that same
 rule; they do not print a goto to the hidden duplicate's label. Catch-all
 completion executes that same cleanup and implicitly rethrows the established
-capture unless cleanup itself throws. No store, binding or copy is manufactured
+capture unless cleanup itself returns or throws. An abrupt cleanup exit replaces
+the pending body exit; a normally completing cleanup preserves it.
+No store, binding or copy is manufactured
 or moved. Ordinary region admission still selects the whole interface; an
 unselected or refused alternative leaves its instructions explicit. Allocation
 and necessary construction failures retain the ordinary classified P6 stop.

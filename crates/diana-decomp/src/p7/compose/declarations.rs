@@ -256,14 +256,6 @@ fn operation_locations(
                 .map(|origin| origin.site);
         }
     }
-    for group in &code.constructions {
-        for prepared in &group.prepared_arguments {
-            moved[prepared.operation.0 as usize] = Some(UseSite::Operation {
-                operation: group.initialization,
-                argument: 0,
-            });
-        }
-    }
     let mut locations = Vec::new();
     for operation in &code.operations {
         push(

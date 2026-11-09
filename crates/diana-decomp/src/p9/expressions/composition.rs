@@ -54,6 +54,13 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
         )?;
         if let Some(group) = self.code.statement_construction(composed.statement) {
             for &operation in &group.members {
+                if group
+                    .prepared_arguments
+                    .iter()
+                    .any(|prepared| prepared.operation == operation)
+                {
+                    continue; // The operand expression already owns this operation anchor.
+                }
                 let pc = self
                     .code
                     .operation_pc(operation)
