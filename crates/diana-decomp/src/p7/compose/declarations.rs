@@ -338,7 +338,41 @@ fn access(
     }
 }
 
+/// Decide storage visibility once from selected materializations, not from the
+/// last producer that happened to compose into that storage.
+fn materializations(code: &mut MethodCode) -> Result<(), ExpressionError> {
+    let mut required: Vec<Option<bool>> = filled(code.locals.len(), None)?;
+    for statement in &code.statements {
+        for output in &statement.outputs {
+            // Grouped argument definitions have no standalone Block placement,
+            // but retain their exact original operation and composition choice.
+            let operation = code.emission.statement_operation(statement.id).or_else(|| {
+                code.emission
+                    .composed_operation(output.operation())
+                    .then_some(output.operation())
+            });
+            let Some(operation) = operation else { continue };
+            let materialized = code.emission.materializes_operation(operation);
+            if !materialized && !code.emission.composed_operation(operation) {
+                continue;
+            }
+            if let Materialization::Store(local) | Materialization::Deferred { local, .. } =
+                output.materialization()
+            {
+                *required[local.0 as usize].get_or_insert(false) |= materialized;
+            }
+        }
+    }
+    for (index, required) in required.into_iter().enumerate() {
+        if let Some(required) = required {
+            code.emission.hidden_locals[index] = !required;
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
+    materializations(code)?;
     let layout = Layout::construct(code)?;
     let operations = operation_locations(code, &layout)?;
     let mut statement_operations = filled(code.statements.len(), None)?;
@@ -410,6 +444,9 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
     for statement in &code.statements {
         let operation = statement_operations[statement.id.0 as usize]
             .or_else(|| code.emission.statement_operation(statement.id));
+        if operation.is_some_and(|operation| !code.emission.materializes_operation(operation)) {
+            continue;
+        }
         let point = operation.and_then(|operation| {
             if code.emission.composed_operation(operation) {
                 site_point(

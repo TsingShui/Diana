@@ -16,6 +16,7 @@ pub(super) fn construct(
     code: &mut MethodCode,
     key: crate::MethodKey,
     adjacency: &super::adjacency::Adjacency,
+    access: &LocalAccess,
 ) -> Result<(), ExpressionError> {
     for group in &code.constructions {
         for argument in &group.prepared_arguments {
@@ -39,17 +40,13 @@ pub(super) fn construct(
                 result: ComposedResult::Value,
                 source_control: None,
             });
-            code.emission.composed_operations[argument.operation.0 as usize] = true;
-            *code
-                .emission
-                .hidden_locals
-                .get_mut(argument.local.0 as usize)
-                .ok_or(bug("prepared construction argument lost its local"))? = true;
+            code.emission.composed_operations[argument.operation.0 as usize] =
+                Some(ComposedResult::Value);
         }
     }
-    let Some(access) = super::access::local_access(code)? else {
+    if !access.complete {
         return Ok(());
-    };
+    }
 
     let mut last: Vec<Option<OpId>> = filled(code.terminals.len(), None)?;
     let mut next: Vec<Option<OpId>> = filled(code.operations.len(), None)?;
@@ -72,11 +69,10 @@ pub(super) fn construct(
     }
     for node in 0..code.emission.blocks.len() {
         if let Some((group, use_id, control)) =
-            construction_throw(code, node, &last, incoming, sibling, &access)
+            construction_throw(code, node, &last, incoming, sibling, access)
         {
             let construction = &code.constructions[group.0 as usize];
             let source = &code.operations[construction.initialization.0 as usize];
-            let local = construction.publications[0].destination;
             code.emission.composed_uses[use_id.0 as usize] = Some(ComposedExpression {
                 expression: construction.expression,
                 operation: construction.initialization,
@@ -88,11 +84,11 @@ pub(super) fn construct(
                 result: ComposedResult::Value,
                 source_control: Some(control),
             });
-            code.emission.composed_operations[construction.initialization.0 as usize] = true;
-            code.emission.hidden_locals[local.0 as usize] = true;
+            code.emission.composed_operations[construction.initialization.0 as usize] =
+                Some(ComposedResult::Value);
             code.emission.deferred_controls[control.0 as usize] = true;
         }
-        let candidate = terminal_use(code, node, &last, incoming, sibling, &access);
+        let candidate = terminal_use(code, node, &last, incoming, sibling, access);
         if let Some((producer, use_id, control)) = candidate {
             install(code, producer, use_id, Some(control), key)?;
         }
@@ -103,7 +99,7 @@ pub(super) fn construct(
     for node in (0..code.emission.blocks.len()).rev() {
         if let Some((first, second, owner)) = operation_successor(code, node, adjacency)
             && let Some((producer, use_id, allows_nested)) =
-                operation_use(code, first, second, &next, &access, &nested)
+                operation_use(code, first, second, &next, access, &nested)
         {
             nested[producer.operation.0 as usize] = allows_nested;
             install(code, producer, use_id, Some(owner), key)?;
@@ -112,7 +108,7 @@ pub(super) fn construct(
         for index in (0..count.saturating_sub(1)).rev() {
             let first = code.emission.blocks[node].actions[index];
             let second = code.emission.blocks[node].actions[index + 1];
-            let candidate = operation_use(code, first, second, &next, &access, &nested);
+            let candidate = operation_use(code, first, second, &next, access, &nested);
             if let Some((producer, use_id, allows_nested)) = candidate {
                 *nested
                     .get_mut(producer.operation.0 as usize)
@@ -388,6 +384,12 @@ fn producer_with_nested(
         return Err("suspension_owns_its_result_and_route");
     }
     if code.emission.composed_operation(operation)
+        || matches!(
+            code.emission
+                .origin_only_operations
+                .get(operation.0 as usize),
+            Some(Some(super::super::emission::OriginOnly::Attachment))
+        )
         || !matches!(source.emission, Emission::Block { .. })
     {
         return Err("producer_not_a_separate_block_operation");
@@ -438,25 +440,23 @@ fn producer_with_nested(
     if declared.gap.is_some() {
         return Err("producer_local_has_gap");
     }
-    if declared.original.is_reused() {
-        return Err("producer_storage_has_multiple_values");
-    }
-    let result = match access.protection[local.0 as usize] {
+    let value = definition.value().ok_or("producer_value_unavailable")?;
+    let value_access = access
+        .value(value)
+        .ok_or("producer_value_uses_unavailable")?;
+    let result = match value_access.protection {
         LocalProtection::Pinned => return Err("producer_local_pinned"),
         LocalProtection::CopySource if matches!(policy, UsePolicy::PreserveStore) => {
             ComposedResult::Store(local)
         }
         LocalProtection::CopySource => return Err("producer_copy_source_requires_store"),
-        LocalProtection::None => match access.reads[local.0 as usize] {
-            // local_access saturates at two; retain every additional read.
+        LocalProtection::None => match value_access.reads {
             1 => ComposedResult::Value,
-            2 if matches!(policy, UsePolicy::PreserveStore) => ComposedResult::Store(local),
+            count if count > 1 && matches!(policy, UsePolicy::PreserveStore) => {
+                ComposedResult::Store(local)
+            }
             _ => return Err("producer_not_single_read"),
         },
-    };
-    let value = match declared.original.kind() {
-        LocalKind::Value(value) | LocalKind::ReferenceCarrier(value) => value,
-        _ => return Err("producer_local_not_value_or_reference_carrier"),
     };
     let StorageType::Family { family, .. } = declared.original.storage_type() else {
         return Err("producer_storage_family_unavailable");
@@ -1134,10 +1134,7 @@ fn install(
         }
         *deferred = true;
     }
-    code.emission.composed_operations[producer.operation.0 as usize] = true;
-    if matches!(producer.result, ComposedResult::Value) {
-        code.emission.hidden_locals[producer.local.0 as usize] = true;
-    }
+    code.emission.composed_operations[producer.operation.0 as usize] = Some(producer.result);
     let kind = match code.expressions[producer.expression.0 as usize].kind {
         ExprKind::String(_) => Some("string"),
         ExprKind::Compare {
@@ -1174,8 +1171,8 @@ fn leaf(code: &MethodCode, id: ExprId) -> bool {
 pub(super) fn conditions(
     code: &mut MethodCode,
     key: crate::MethodKey,
+    access: &LocalAccess,
 ) -> Result<(), ExpressionError> {
-    let access = super::access::local_access(code)?;
     let mut layouts = Vec::new();
     for index in 0..code.emission.controls.len() {
         if matches!(
@@ -1186,13 +1183,14 @@ pub(super) fn conditions(
         }
     }
     for index in layouts {
-        let choice = match &access {
-            Some(access) => compose(code, index, access, key)?,
-            None => ConditionChoice::Explicit {
+        let choice = if access.complete {
+            compose(code, index, access, key)?
+        } else {
+            ConditionChoice::Explicit {
                 test: None,
                 statement: None,
                 why: "copy_dependency_unavailable",
-            },
+            }
         };
         let control = code.controls[index].id;
         match choice {
@@ -1226,8 +1224,7 @@ enum ConditionChoice {
 
 struct ConditionComposition {
     uses: Vec<Option<ComposedExpression>>,
-    operations: Vec<bool>,
-    locals: Vec<bool>,
+    operations: Vec<Option<ComposedResult>>,
 }
 
 impl ConditionComposition {
@@ -1235,14 +1232,12 @@ impl ConditionComposition {
         Self {
             uses: code.emission.composed_uses.clone(),
             operations: code.emission.composed_operations.clone(),
-            locals: code.emission.hidden_locals.clone(),
         }
     }
 
     fn restore(self, code: &mut MethodCode) {
         code.emission.composed_uses = self.uses;
         code.emission.composed_operations = self.operations;
-        code.emission.hidden_locals = self.locals;
     }
 }
 
@@ -1607,10 +1602,7 @@ fn compose_condition_arguments(
     // A display-only check-cast is carried into the consuming read later. Its
     // temporary read must not prevent the move that supplies that read from
     // becoming part of the same condition operand.
-    let mut condition_access = LocalAccess {
-        reads: super::super::build::copy(&access.reads)?,
-        protection: super::super::build::copy(&access.protection)?,
-    };
+    let mut condition_access = access.copy()?;
     for (_, statement) in &actions {
         let Some(value) = code
             .statements
@@ -1622,22 +1614,8 @@ fn compose_condition_arguments(
         else {
             continue;
         };
-        let Some(storage) = code
-            .expressions
-            .get(value.0 as usize)
-            .and_then(|expression| match &expression.kind {
-                ExprKind::Read { storage, .. } => Some(*storage),
-                _ => None,
-            })
-        else {
-            continue;
-        };
-        let count = condition_access
-            .reads
-            .get_mut(storage.0 as usize)
-            .ok_or(bug("check-cast names an unknown local"))?;
-        if *count > 1 {
-            *count -= 1;
+        if let Some((value, _)) = super::access::read_of(code, value) {
+            condition_access.ignore_read(value);
         }
     }
     for consumer_index in 1..actions.len() {

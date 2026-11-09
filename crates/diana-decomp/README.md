@@ -548,6 +548,38 @@ classified outcomes and encountered opcode variants. `roundtrip-all` checks inde
 P1 evidence. These inspection commands do not run the test-only correspondence checks.
 No phase-specific debug binary is required.
 
+## Value identity and storage normalization
+
+P5 definitions deliver the original optional `ValueId` independently of their
+storage representative. P7 builds one private value-use index over delivered
+reads, definitions and copy obligations. Expression, array-payload and check
+composition match the original value and state of the exact consuming read, so a
+representative that stored several values no longer refuses composition.
+Composition records whether a result retains storage, and declaration placement
+selects storage visibility once from the final materializations, including
+grouped construction arguments and the reads of composed identity Moves.
+No second SSA, alias, dominance or availability analysis is added, and source
+only attachments remain distinct from conditional identity Moves.
+
+The [value fixture](../../quality/fixtures/atoms/value-occurrences/README.md) and
+[effect challenge](../../quality/fixtures/atoms/value-occurrence-effects/README.md)
+record independent expectations and LLM path reviews. The `value_occurrences`
+integration target passes all 11 checks; on f83f2fa the same file passes 5 and
+fails 6. That includes a test-only linear integer executor covering result and
+order effects for specified scenarios, plus an extra-effect negative example. It
+does not execute arrays, casts, catches, arbitrary callees or a JVM.
+
+On rustc 1.98.0 the default and all-feature package nextest runs each execute
+195 tests with 195 passing. Engine Clippy with all targets and features,
+formatting and the release engine-example and CLI builds pass.
+
+Before/after inspection covers 121 prepared fixtures, 189 classes and 917
+methods through ordinary Engine requests. Original P2–P4 products, original P6
+coordinates and copy/exception facts agree; the newly delivered P5 definition
+value field is an intentional addition. Two fixtures change text: the new value
+fixtures. Traversal reports no construction or rendering failures, which does not
+establish whole-method behavioral correctness.
+
 ## P5 observations
 
 The current authorized-input traversal covered 55 DEX files and delivered

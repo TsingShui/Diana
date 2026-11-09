@@ -10,8 +10,9 @@ use super::*;
 pub(super) fn array_literals(
     code: &mut MethodCode,
     adjacency: &super::adjacency::Adjacency,
+    access: &super::access::LocalAccess,
 ) -> Result<(), ExpressionError> {
-    let Some(access) = super::access::local_access(code)? else {
+    if !access.complete {
         return Ok(());
     };
     let mut literals: Vec<Option<ArrayLiteral>> = filled(code.statements.len(), None)?;
@@ -37,7 +38,7 @@ pub(super) fn array_literals(
             };
             let Some(literal) = array_literal(
                 code,
-                &access.protection,
+                access,
                 allocation_operation,
                 allocation,
                 fill_operation,
@@ -72,7 +73,7 @@ pub(super) fn array_literals(
 
 pub(super) fn array_literal(
     code: &MethodCode,
-    protected: &[super::access::LocalProtection],
+    access: &super::access::LocalAccess,
     allocation_operation: crate::p2::OpId,
     allocation: StatementId,
     fill_operation: crate::p2::OpId,
@@ -106,18 +107,12 @@ pub(super) fn array_literal(
     }
     let storage = StorageId(destination.0);
     let declared = code.locals.get(storage.0 as usize)?;
-    // One SSA value: a parameter, an uninitialized carrier, a saved snapshot or a
-    // copy temporary would make the local something other than this allocation.
-    // No copy or publication may observe it either, because such a step prints
-    // after the allocation and before the fill.
+    let value = definition.value()?;
+    // The fill consumes this exact allocation, independently of other values
+    // stored in the representative. Copies/publications of this value stay pinned.
     if declared.gap.is_some()
-        || declared.original.is_reused()
         || !matches!(
-            declared.original.kind(),
-            crate::p5::LocalKind::Value(_) | crate::p5::LocalKind::ReferenceCarrier(_)
-        )
-        || !matches!(
-            protected[storage.0 as usize],
+            access.value(value)?.protection,
             super::access::LocalProtection::None
         )
     {
@@ -151,7 +146,8 @@ pub(super) fn array_literal(
     if !matches!(
         code.expressions.get(array.0 as usize)?.kind,
         ExprKind::Read { storage: read, .. } if read == storage
-    ) || code.emission.composed_use(array).is_some()
+    ) || super::access::read_of(code, array) != Some((value, definition.state()))
+        || code.emission.composed_use(array).is_some()
     {
         return None;
     }

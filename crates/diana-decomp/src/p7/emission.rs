@@ -363,7 +363,7 @@ pub struct EmissionPlan {
     /// check names.
     pub(super) definition_check_uses: Vec<Vec<u32>>,
     pub(super) composed_uses: Vec<Option<ComposedExpression>>,
-    pub(super) composed_operations: Vec<bool>,
+    pub(super) composed_operations: Vec<Option<ComposedResult>>,
     /// By the statement whose allocation prints the payload.
     pub(super) array_literals: Vec<Option<ArrayLiteral>>,
     /// By the statement whose check prints nothing because P4 established it
@@ -393,8 +393,14 @@ pub struct EmissionPlan {
     pub(super) transfers: Vec<EmissionTransfer>,
     pub(super) initial: Vec<CopyPlanId>,
     pub(super) statement_operations: Vec<Option<OpId>>,
-    pub(super) origin_only_operations: Vec<bool>,
+    pub(super) origin_only_operations: Vec<Option<OriginOnly>>,
     pub(super) origin_only_terminals: Vec<bool>,
+}
+#[derive(Clone, Copy, Debug, Serialize)]
+pub(super) enum OriginOnly {
+    Attachment,
+    /// A self-move is silent only while its operand is still a plain read.
+    Identity(ExprId),
 }
 impl EmissionPlan {
     pub fn field_receiver_owner(&self, reference: ReferenceId) -> Option<TypeUseId> {
@@ -423,10 +429,18 @@ impl EmissionPlan {
             .unwrap_or(false)
     }
     pub fn origin_only_operation(&self, op: OpId) -> bool {
-        self.origin_only_operations
+        match self
+            .origin_only_operations
             .get(op.0 as usize)
             .copied()
-            .unwrap_or(false)
+            .flatten()
+        {
+            Some(OriginOnly::Attachment) => true,
+            Some(OriginOnly::Identity(read)) => {
+                !self.composed_operation(op) && self.composed_use(read).is_none()
+            }
+            None => false,
+        }
     }
     pub fn origin_only_terminal(&self, block: BlockId) -> bool {
         self.origin_only_terminals
@@ -596,8 +610,14 @@ impl EmissionPlan {
     pub fn composed_operation(&self, id: OpId) -> bool {
         self.composed_operations
             .get(id.0 as usize)
-            .copied()
-            .unwrap_or(false)
+            .is_some_and(Option::is_some)
+    }
+    pub(super) fn materializes_operation(&self, id: OpId) -> bool {
+        !self.origin_only_operation(id)
+            && !matches!(
+                self.composed_operations.get(id.0 as usize),
+                Some(Some(ComposedResult::Value))
+            )
     }
     pub fn array_literal(&self, id: StatementId) -> Option<ArrayLiteral> {
         self.array_literals.get(id.0 as usize).copied().flatten()

@@ -62,7 +62,11 @@ pub fn snapshot(code: &super::super::MethodCode) -> Snapshot {
         omitted_returns: count(&emission.omitted_returns),
         omitted_checks: emission.omitted_checks.iter().flatten().count(),
         inline_checks: emission.inline_checks.len(),
-        composed: count(&emission.composed_operations),
+        composed: emission
+            .composed_operations
+            .iter()
+            .filter(|value| value.is_some())
+            .count(),
         allocations: count(&emission.allocation_declarations),
         array_literals: emission.array_literals.iter().flatten().count(),
         site_annotations: count(&emission.site_annotations),

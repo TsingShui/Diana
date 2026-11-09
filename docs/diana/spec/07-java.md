@@ -48,18 +48,24 @@ promote it to a completed MethodResult. The production method chain has no paral
 
 P5 Local representatives select execution storage, not new source identities.
 P7 retains alias Local records and hides only their redundant declarations.
-Existing single-value expression and array composition refuse reused storage; a
-check carrier accepts the checked read or the read of a pure reference copy of it,
-whose own input read names exactly the checked `ValueId`/`StateId`. A reused
-representative therefore no longer blocks the carrier search: copying a reference
-does not change the object's type, so the copy publishes a state that still holds
-the checked value. P4-established redundant checks remain a separate omission
-decision.
+One private composition index records existing reads, definitions and copy
+obligations by original ValueId, separately from aggregate storage involvement.
+Expressions match the original output value/state against the exact consuming
+read. Reusing a representative does not by itself prevent composition.
+An exact array fill likewise names its allocation's value/state, not merely
+the reused local. The index also resolves a carrier's pure Move definition
+without scanning every statement for each check. It infers no new alias,
+availability or dominance relation. P4-established redundant checks remain a
+separate omission decision.
 
 A phase-free, site-free Move with a direct read and store to the same reused
-representative contributes origin-only text at its original position. Other
-moves and assignments remain executable text. P7 does not delete an effect or
-infer representative equivalence; it consumes P5's selection.
+representative contributes origin-only text while its operand remains a plain
+read and the Move is not itself composed. A composed producer in that operand
+requires executable evaluation; it MUST NOT disappear with the former self-move.
+A composed Move's remaining read executes at its selected use and participates
+in declaration placement there. Source-only attachments remain distinct from
+these conditional identity Moves. P7 consumes P5's representative selection;
+it does not reestablish storage equivalence.
 
 ## Unified operation lowering
 
@@ -542,6 +548,14 @@ original storage identities, copies or recovery gaps, and do not rebuild CFG,
 SSA or dominance. Plan scratch failures retain the existing P7 error classification
 and partial-product behavior.
 
+P7 selects storage visibility once after composition, in declaration placement.
+Composed results distinguish value-only evaluation from retained Store
+materialization. Removing one definition does not hide a shared local still
+needed by another retained write. Declaration scope checks consume these
+selected writes and the final locations of composed reads, rather than treating
+an eliminated original store as an executable assignment. Original definitions,
+commits, copies and state identities remain inspectable.
+
 `EmissionPlan` is P9's sole execution layout. It binds the supplied P5 copy
 locations to operation, terminal and selected-edge phases without rescheduling
 steps. It fixes child roles, condition polarity, method-local control names and
@@ -593,8 +607,9 @@ children continue to describe lexical ancestry, not printed succession.
 
 The expression pass composes a move, a resolved string, an integral/floating unary
 or binary definition, or a numeric/reference field or call definition only when its
-original result is a single available value or reference carrier, has one
-compatible use, and carries no copy/snapshot phase. A move's source must be a
+original output has one established value identity, has one compatible value
+use, and carries no copy/snapshot phase. The definition's P5 ValueId is
+independent of its Local's kind or number of stored values. A move's source must be a
 delivered direct value read with a compatible view. A reference source and use
 must each have an established initialized state; allocation carriers and other
 position-related initialization states remain separate.

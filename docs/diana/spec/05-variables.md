@@ -49,8 +49,12 @@ problems and storage dependency gaps. `original_source()` preserves the earlier
 source description for inspection; it does not override `read()` or a local gap.
 An unavailable input layout remains an error, not an empty argument list.
 
-`DefinitionPlan` records every encoded operation output, its original state/point,
-commit rule and commit PC. Materialization distinguishes stores, exact literals,
+`DefinitionPlan` records every encoded operation output, its original optional
+`ValueId`, state/point, commit rule and commit PC. The value is P3's established
+output identity, not the representative Local's first value. An unavailable
+output retains an absent value rather than borrowing another stored identity.
+P7 consumes this correspondence without reconstructing SSA.
+Materialization distinguishes stores, exact literals,
 allocation carriers, original exception captures and unavailable output states.
 Effects and unused producer operations remain in the original execution product.
 A missing materialization does not authorize deleting an operation or executing

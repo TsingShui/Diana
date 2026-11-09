@@ -170,6 +170,7 @@ pub enum Materialization {
 pub struct DefinitionPlan {
     pub(super) operation: OpId,
     pub(super) output: u32,
+    pub(super) value: Option<ValueId>,
     pub(super) state: StateId,
     pub(super) point: PointId,
     pub(super) commit: CommitRule,
@@ -182,6 +183,10 @@ impl DefinitionPlan {
     }
     pub fn output(&self) -> u32 {
         self.output
+    }
+    /// Original output identity, independent of its selected storage representative.
+    pub fn value(&self) -> Option<ValueId> {
+        self.value
     }
     pub fn state(&self) -> StateId {
         self.state

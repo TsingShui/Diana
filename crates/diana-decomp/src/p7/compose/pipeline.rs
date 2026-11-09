@@ -28,8 +28,9 @@ pub(in crate::p7) fn construct(
             value
         }};
     }
+    let access = super::access::local_access(code)?;
     // Select complete condition alternatives before generic layout and labels.
-    traced!("conditions", expressions::conditions(code, key));
+    traced!("conditions", expressions::conditions(code, key, &access));
     concatenations::construct(code, types);
     // Sequencing is fixed before labels are selected, so a collapsed jump no
     // longer keeps a display label alive.
@@ -70,17 +71,26 @@ pub(in crate::p7) fn construct(
     selection.select(code)?;
 
     let adjacency = super::adjacency::Adjacency::construct(code)?;
-    traced!("expressions", expressions::construct(code, key, &adjacency));
+    traced!(
+        "expressions",
+        expressions::construct(code, key, &adjacency, &access)
+    );
     traced!("loop_compact", loops::select_compact(code));
     traced!("natural_stores", stores::natural_stores(code));
     literals::omit_materialized_literals(code)?;
-    traced!("casts", casts::construct(code, types, key, &adjacency));
+    traced!(
+        "casts",
+        casts::construct(code, types, key, &adjacency, &access)
+    );
     traced!("branches", branches::construct(code));
     traced!(
         "omit_trailing_void_return",
         returns::omit_trailing_void_return(code)
     );
-    traced!("array_literals", arrays::array_literals(code, &adjacency));
+    traced!(
+        "array_literals",
+        arrays::array_literals(code, &adjacency, &access)
+    );
     traced!(
         "allocation_declarations",
         allocation::allocation_declarations(code)
@@ -89,7 +99,7 @@ pub(in crate::p7) fn construct(
         "transparent_scopes",
         scopes::transparent_labelled_scopes(code)
     );
-    booleans::construct(code, types)?;
+    booleans::construct(code, types, &access)?;
     references::call_owners(code)?;
     references::field_owners(code)?;
     declarations::construct(code)?;

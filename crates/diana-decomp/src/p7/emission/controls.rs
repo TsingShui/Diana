@@ -213,7 +213,8 @@ fn try_layout(
                 "finally lost its protected, cleanup or duplicate child",
             ));
         }
-        plan.origin_only_operations[finally.capture.0 as usize] = true;
+        plan.origin_only_operations[finally.capture.0 as usize] =
+            Some(super::OriginOnly::Attachment);
         if let Some(statement) = code.operations[finally.capture.0 as usize].statement {
             for d in &code.statements[statement.0 as usize].outputs {
                 if let crate::p5::Materialization::ExceptionCapture(local) = d.materialization() {
@@ -231,7 +232,7 @@ fn try_layout(
             plan.origin_only_terminals[normal.0 as usize] = true;
         }
         for &(normal, _) in &finally.operations {
-            plan.origin_only_operations[normal.0 as usize] = true;
+            plan.origin_only_operations[normal.0 as usize] = Some(super::OriginOnly::Attachment);
             if let Some(statement) = code.operations[normal.0 as usize].statement {
                 for d in &code.statements[statement.0 as usize].outputs {
                     if let crate::p5::Materialization::Store(local) = d.materialization() {
@@ -383,10 +384,12 @@ pub(super) fn surfaces(code: &MethodCode, plan: &mut EmissionPlan) -> Result<(),
                 let operation = plan
                     .statement_operation(outlet.release)
                     .ok_or(bug("implicit release lost its operation"))?;
-                plan.origin_only_operations[operation.0 as usize] = true;
+                plan.origin_only_operations[operation.0 as usize] =
+                    Some(super::OriginOnly::Attachment);
             }
             for &capture in &surface.captures {
-                plan.origin_only_operations[capture.0 as usize] = true;
+                plan.origin_only_operations[capture.0 as usize] =
+                    Some(super::OriginOnly::Attachment);
                 if let Some(statement) = code.operations[capture.0 as usize].statement {
                     for output in &code.statements[statement.0 as usize].outputs {
                         if let crate::p5::Materialization::ExceptionCapture(local) =

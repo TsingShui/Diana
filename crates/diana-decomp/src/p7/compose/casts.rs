@@ -23,6 +23,7 @@
 
 use super::super::build::{bug, copy, push};
 use super::super::*;
+use super::access::{LocalAccess, read_of};
 use crate::p2::{Effects, OpId};
 use crate::p4::CheckDisposition;
 use crate::p5::{CopyLocation, Materialization, TransferSite};
@@ -33,6 +34,7 @@ use crate::p5::{CopyLocation, Materialization, TransferSite};
 /// iteration, the "already claimed" bookkeeping and every written slot.
 struct Carrier<'a> {
     code: &'a MethodCode,
+    access: &'a LocalAccess,
     adjacency: &'a super::adjacency::Adjacency,
     protection: &'a [Option<ControlId>],
     found: &'a [(StatementId, InlineCheck)],
@@ -93,6 +95,7 @@ pub(super) fn construct(
     types: &crate::p4::TypeFacts,
     key: crate::MethodKey,
     adjacency: &super::adjacency::Adjacency,
+    access: &LocalAccess,
 ) -> Result<(), ExpressionError> {
     let omitted = redundant(code, types)?;
     let mut why_slots: Vec<Option<&'static str>> =
@@ -144,6 +147,7 @@ pub(super) fn construct(
             };
             let carrier = Carrier {
                 code,
+                access,
                 adjacency,
                 protection: &protection,
                 found: &found,
@@ -184,12 +188,7 @@ pub(super) fn construct(
         {
             continue;
         }
-        let copied = if code.locals[check.value.0 as usize].original.is_reused() {
-            checked_copy_states(code, statement, check.value)?
-        } else {
-            Vec::new()
-        };
-        if !carries_check(code, statement, check.value, check.occurrence, &copied) {
+        if !carries_check(code, access, statement, check.value, check.occurrence) {
             why_at(&mut why_slots, statement, "carrier_value_state_changed");
             continue;
         }
@@ -349,70 +348,17 @@ fn checked_read(
     };
     read_of(code, value)
 }
-fn read_of(
-    code: &MethodCode,
-    expression: ExprId,
-) -> Option<(crate::p3::ValueId, crate::p3::StateId)> {
-    match code
-        .expressions
-        .get(expression.0 as usize)?
-        .origin
-        .as_ref()?
-        .read
-        .ok()?
-    {
-        crate::p5::StorageRead::Value { value, state, .. } => Some((value, state)),
-        _ => None,
-    }
-}
-/// States in which the storage holds a pure copy of the checked value.
-///
-/// P5 can merge the copy of a checked local into that local, which then carries
-/// several value bindings and blocks the reused-storage carrier below. Copying a
-/// reference does not change the object's type, so the copy's own read keeps the
-/// check: it reads exactly the checked `(value, state)`, and the carrier read is
-/// the state that copy published. No other event sits between them, because the
-/// copy's input already names the checked read itself.
-fn checked_copy_states(
-    code: &MethodCode,
-    statement: StatementId,
-    storage: StorageId,
-) -> Result<Vec<crate::p3::StateId>, ExpressionError> {
-    let Some(source) = checked_read(code, statement) else {
-        return Ok(Vec::new());
-    };
-    let mut states = Vec::new();
-    for candidate in &code.statements {
-        if candidate.id == statement {
-            continue;
-        }
-        let StatementKind::Move { expression, .. } = candidate.kind else {
-            continue;
-        };
-        if read_of(code, expression) != Some(source) {
-            continue;
-        }
-        let [output] = candidate.outputs.as_slice() else {
-            continue;
-        };
-        if !matches!(output.materialization(), Materialization::Store(local) if StorageId(local.0) == storage)
-        {
-            continue;
-        }
-        push(&mut states, output.state())?;
-    }
-    Ok(states)
-}
 fn carries_check(
     code: &MethodCode,
+    access: &LocalAccess,
     statement: StatementId,
     storage: StorageId,
     occurrence: ExprId,
-    copied: &[crate::p3::StateId],
 ) -> bool {
     !code.locals[storage.0 as usize].original.is_reused()
         || same_checked_read(code, statement, occurrence)
-        || read_of(code, occurrence).is_some_and(|(_, state)| copied.contains(&state))
+        || checked_read(code, statement)
+            .is_some_and(|source| access.copied_read(code, source, occurrence, storage))
 }
 fn carried_check(
     code: &MethodCode,
@@ -715,11 +661,6 @@ fn distant_carrier(
     let Some((_, reference)) = eligible_check(code, operation, statement, None) else {
         return Ok(None);
     };
-    let copied = if code.locals[storage.0 as usize].original.is_reused() {
-        checked_copy_states(code, statement, storage)?
-    } else {
-        Vec::new()
-    };
     let mut why = None;
     for candidate in &code.statements {
         if candidate.id == statement {
@@ -757,7 +698,7 @@ fn distant_carrier(
         }
         // A merged local publishes several value bindings; its check still
         // carries to the read of a pure copy of the checked value.
-        if !carries_check(code, statement, storage, occurrence, &copied) {
+        if !carries_check(code, carrier.access, statement, storage, occurrence) {
             why = Some("distant_checked_value_changed");
             continue;
         }

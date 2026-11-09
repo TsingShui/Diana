@@ -15,7 +15,7 @@ pub(super) fn plan(code: &MethodCode) -> Result<EmissionPlan, ExpressionError> {
     plan.terminal_check_uses = filled(code.terminals.len(), Vec::new())?;
     plan.definition_check_uses = filled(code.statements.len(), Vec::new())?;
     plan.composed_uses = filled(code.expressions.len(), None)?;
-    plan.composed_operations = filled(code.operations.len(), false)?;
+    plan.composed_operations = filled(code.operations.len(), None)?;
     plan.array_literals = filled(code.statements.len(), None)?;
     plan.omitted_checks = filled(code.statements.len(), None)?;
     plan.omitted_literals = filled(code.statements.len(), false)?;
@@ -47,7 +47,7 @@ pub(super) fn plan(code: &MethodCode) -> Result<EmissionPlan, ExpressionError> {
     plan.ifs = filled(code.terminals.len(), IfDisplay::Both)?;
     plan.omitted_returns = filled(code.terminals.len(), false)?;
     plan.statement_operations = filled(code.statements.len(), None)?;
-    plan.origin_only_operations = filled(code.operations.len(), false)?;
+    plan.origin_only_operations = filled(code.operations.len(), None)?;
     plan.origin_only_terminals = filled(code.terminals.len(), false)?;
     Ok(plan)
 }

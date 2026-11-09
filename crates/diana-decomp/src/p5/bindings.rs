@@ -167,7 +167,8 @@ pub(super) fn construct(typed: &TypedMethod<'_>, f: &mut StorageFacts) -> Result
                     "storage operation lost its output layout",
                 ))?
         {
-            let materialization = match s.output_value(output) {
+            let value = s.output_value(output);
+            let materialization = match value {
                 Some(value) => match f.bindings[value.0 as usize] {
                     StorageBinding::Literal(bits) => Materialization::Literal(bits),
                     StorageBinding::Unavailable(gap) => Materialization::Unavailable(gap),
@@ -205,6 +206,7 @@ pub(super) fn construct(typed: &TypedMethod<'_>, f: &mut StorageFacts) -> Result
                 DefinitionPlan {
                     operation: output.operation(),
                     output: output.output(),
+                    value,
                     state: output.state(),
                     point: output.point(),
                     commit: site.commit_rule(),

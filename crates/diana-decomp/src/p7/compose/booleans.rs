@@ -1,7 +1,7 @@
 //! Boolean display consumes P4's range-proved declared views.
 use super::super::build::filled;
 use super::super::*;
-use super::access::{LocalProtection, local_access};
+use super::access::{LocalAccess, LocalProtection};
 use crate::p4::{Family, Interpretation, TypeFacts};
 use crate::p5::{LocalKind, Materialization};
 
@@ -11,7 +11,11 @@ fn boolean_type(code: &MethodCode, id: TypeUseId) -> bool {
         .is_some_and(|ty| ty.units == [u16::from(b'Z')])
 }
 
-pub(super) fn construct(code: &mut MethodCode, types: &TypeFacts) -> Result<(), ExpressionError> {
+pub(super) fn construct(
+    code: &mut MethodCode,
+    types: &TypeFacts,
+    access: &LocalAccess,
+) -> Result<(), ExpressionError> {
     let mut uses = filled(code.expressions.len(), false)?;
     let mut eligible = filled(code.locals.len(), true)?;
     let mut reads = filled(code.locals.len(), 0usize)?;
@@ -89,7 +93,7 @@ pub(super) fn construct(code: &mut MethodCode, types: &TypeFacts) -> Result<(), 
             code.emission.boolean_locals[index] = true;
         }
     }
-    let Some(access) = local_access(code)? else {
+    if !access.complete {
         return Ok(());
     };
     let mut definitions = filled(code.locals.len(), None)?;
