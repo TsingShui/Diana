@@ -16,7 +16,7 @@ pub(super) fn accept(
     g: &Graph,
     owners: &[RegionId],
     c: &Candidate,
-    interface: &super::completion::CompletionInterface,
+    interface: &super::super::interface::CompletionInterface,
 ) -> Result<Result<(), RecoveryReason>, RegionError> {
     let set = mask(f.nodes.len(), &c.members)?;
     if f.synchronized.iter().any(|scope| {

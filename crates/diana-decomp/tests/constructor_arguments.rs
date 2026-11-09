@@ -150,7 +150,17 @@ fn protected_exception_construction_composes_into_its_original_throw() {
                 let group = selected(code, rendered, count);
                 assert!(code.emission().composed_operation(group.initialization));
                 assert_eq!(rendered.text().matches("throw new ").count(), 1);
-                assert_eq!(rendered.text().matches(" [exn c0]").count(), 1);
+                let sites = &code.statements()[group.statement.0 as usize].sites;
+                let natural = sites.iter().all(|id| {
+                    matches!(code.sites()[id.0 as usize].syntax, ExceptionSyntax::Natural)
+                });
+                if natural {
+                    assert!(rendered.text().contains("catch (all"));
+                }
+                assert_eq!(
+                    rendered.text().matches(" [exn c0]").count(),
+                    usize::from(!natural)
+                );
             },
         );
     }

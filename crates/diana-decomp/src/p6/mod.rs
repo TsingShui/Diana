@@ -6,6 +6,7 @@ mod decision_layout;
 mod dominance;
 mod finally;
 mod graph;
+mod interface;
 mod locks;
 mod loops;
 mod ownership;

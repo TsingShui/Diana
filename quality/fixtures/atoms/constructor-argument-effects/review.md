@@ -1,6 +1,24 @@
 # Fixture: constructor-argument-effects
 
-## Current verdict — scoped catch capture
+## Current verdict — shared completion interface
+
+Compared identical bytes on ffdea3b and the interface repair. Only caughtError
+changes text. Allocation still precedes read0, message and initialization; any
+read/message/constructor failure skips all later work and binds the actual failure
+for note. Successful construction throws the same fresh IAE and note receives it.
+Natural catch ownership replaces the explicit marker without changing arguments,
+priority or failure prefixes. Note remains outside its own protected body and
+its failure escapes. All other subject texts are exact, including every existing
+order, sharing, distinct-handler and changing-snapshot refusal.
+
+Original P2–P5 and original-coordinate P6 facts remain exact. Construction/origin
+checks still require one throw, complete operand trees and original operations/
+commits/sites. The [fresh completion challenge](../../exceptions/exception-only-completion/review.md)
+adds nested typed/outer delivery and uncaught propagation. Both isolated suites
+pass 168 checks. This renewed LLM judgment does not execute callbacks, external
+constructors or method/catch control.
+
+## Prior verdict — scoped catch capture
 
 Compared the same prepared input on `c95c6dd` and this repair. Reviewed header
 bindings: `all v3`, `all v5`, `all v9`. The original captured object is bound once at exceptional

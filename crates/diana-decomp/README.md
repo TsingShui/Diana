@@ -139,7 +139,10 @@ latest established single-entry frontier, so an optional predecessor cannot eras
 an available inner catch. A genuine multi-entry core stays explicit. Ordered
 throw-site chains,
 original captures, P5 construction ownership and explicit monitor separation reasons
-survive failed natural composition. The [P6 chapter](../../docs/diana/spec/06-regions.md)
+survive failed natural composition. One private completion interface supplies
+normal and executable exceptional entrances/outlets, including uncaught exits,
+with original copy/snapshot references. A guarded core with only throw completion
+has no normal follow into its catch; independent normal outlets keep their roles. The [P6 chapter](../../docs/diana/spec/06-regions.md)
 defines the boundary and scope rules. A single unlocked catch-all cleanup can
 print as `finally` when its cleanup graph matches the normal exit. Matching covers
 conditional branches, arithmetic, field accesses and calls, including private
@@ -298,7 +301,10 @@ captureless retries, nested/latch/foreign arrivals,
 [dual cleanup outlets](../../quality/fixtures/exceptions/cleanup-outlet-frontiers/README.md)
 and [shared cleanup contexts](../../quality/fixtures/exceptions/shared-cleanup-contexts/README.md).
 P6 owns the recovery and retains snapshots, original catches and close/suppression
-order. These product checks do not execute fixture behavior.
+order. Four [exception-only completion checks](tests/exception_only_completion.rs)
+cover protected construction, typed/unmatched exits,
+[nested cleanup and a foreign entrance](../../quality/fixtures/exceptions/exception-only-completion/README.md).
+These product checks do not execute fixture behavior.
 Six structural checks cover
 [nested private loop exits](../../quality/fixtures/loops/nested-loop-exits/README.md).
 Four [resource-cleanup checks](../../quality/fixtures/exceptions/resource-cleanup/README.md)

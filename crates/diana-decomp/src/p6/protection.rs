@@ -6,7 +6,7 @@ use super::build::*;
 use super::dominance::Structure;
 use super::graph::Graph;
 use super::*;
-use crate::p2::{EdgeRole, EdgeTarget, OpKind};
+use crate::p2::{EdgeRole, EdgeTarget, OpKind, Terminal};
 use crate::p5::{CopyLocation, OperationEmission, StorageMethod, ThrowSite};
 
 fn add(
@@ -556,24 +556,37 @@ pub(super) fn plan(
         }) {
             continue;
         }
-        // A follow is after each guarded node, never the throwing seed itself.
-        // Abrupt handlers can leave just one normal completion constraint.
+        // The same original-transfer interface used by composition supplies
+        // the guarded core's actual normal and exceptional outlets. A protected
+        // throw has no normal completion into its catch, even when the other
+        // follow candidates consist only of that handler's entry.
+        let core = super::interface::CompletionInterface::collect(storage, f, g, &seeds)?;
+        let exception_only = core.outlets.is_empty()
+            && !core.exceptional_outlets.is_empty()
+            && !core.abrupt.is_empty()
+            && core.abrupt.iter().all(|node| {
+                matches!(
+                    storage.execution().blocks()[f.nodes[node.0 as usize].block.0 as usize]
+                        .terminal(),
+                    Some(Terminal::Throw { .. })
+                )
+            });
         let mut follows = Vec::new();
-        for &seed in &seeds {
-            for &link in &g.outgoing[seed.0 as usize] {
-                let next = f.links[link.0 as usize].to;
-                if !seeds.contains(&next) && !follows.contains(&next) {
-                    push(&mut follows, next)?;
-                }
+        for &link in &core.outlets {
+            let next = f.links[link.0 as usize].to;
+            if !follows.contains(&next) {
+                push(&mut follows, next)?;
             }
         }
         let normal_follow = s.common_follow(&follows);
         let handler_follows = outer
             .map(|scope| normal_follow_roots(f, g, scope, &targets))
             .transpose()?;
-        for &target in handler_follows.as_deref().unwrap_or(&targets) {
-            if !follows.contains(&target) {
-                push(&mut follows, target)?;
+        if !exception_only {
+            for &target in handler_follows.as_deref().unwrap_or(&targets) {
+                if !follows.contains(&target) {
+                    push(&mut follows, target)?;
+                }
             }
         }
         // A returning or throwing handler need not share the body's normal

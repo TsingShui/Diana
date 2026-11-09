@@ -197,6 +197,7 @@ Downloaded inputs and generated output remain outside version control.
 | `response-close-snapshots` | Acquisition-time null versus acquired-handle snapshots, natural protection, ordinary finally replacement and resource suppression |
 | `cleanup-outlet-frontiers` | Dual acquisition/close order, nested runtime recovery, partial commits and an unguarded-gap refusal |
 | `shared-cleanup-contexts` | Split pre/post captures, shared cleanup/rethrow frontiers, resource outlets and outside IO recovery |
+| `exception-only-completion` | Throw-only guarded cores, typed/uncaught exception outlets, outer cleanup and a genuine foreign normal entrance |
 
 ### Synchronization
 

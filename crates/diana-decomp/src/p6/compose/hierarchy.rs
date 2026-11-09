@@ -5,8 +5,8 @@
 use super::super::build::*;
 use super::super::dominance::Structure;
 use super::super::graph::Graph;
+use super::super::interface::CompletionInterface;
 use super::super::*;
-use super::completion::CompletionInterface;
 use super::parts::*;
 use crate::p5::StorageMethod;
 
@@ -48,7 +48,7 @@ pub(super) fn construct(
         match task {
             Work::Scope(part, excluded) => {
                 let interface = CompletionInterface::collect(storage, f, g, &part.nodes)?;
-                let mut boundary = interface.boundary(f)?;
+                let mut boundary = interface.normal_boundary(f)?;
                 if let Some(follow) = part.follow {
                     boundary[follow.0 as usize] = true;
                 }

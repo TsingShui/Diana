@@ -1,6 +1,25 @@
 # Fixture: constructor-argument-chains
 
-## Current verdict — scoped catch capture
+## Current verdict — shared completion interface
+
+Compared the same prepared DEX on ffdea3b and the interface repair. Only
+bodyError changes text: mode0 still returns before allocation, while the guarded
+allocation/string/initialization/throw now has a natural all-catch with no normal
+follow. Any failure in that sequence binds the original failure once before note;
+a note failure escapes. Success throws the fresh ISE once. Construction operand,
+commit and site anchors remain complete, and the composed throw is unchanged.
+Other subjects are text-identical, so their prior path reviews are reused.
+
+The old annotation-count assertion now checks the actual natural/explicit site
+presentation while retaining construction order and every original anchor. A new
+independent recovery check requires this natural scope. The
+[fresh completion challenge](../../exceptions/exception-only-completion/review.md)
+adds typed/unmatched exits, nested cleanup and a genuine foreign entrance. Both
+isolated configurations pass 168 checks, with exact P2–P5/original P6 facts across
+the corpus. This is LLM path reading and product evidence, not constructor/native
+or full-method execution.
+
+## Prior verdict — scoped catch capture
 
 Compared the same prepared input on `c95c6dd` and this repair. Reviewed header
 bindings: `all v7`. The original captured object is bound once at exceptional

@@ -1,6 +1,22 @@
 # Fixture: finally-return-capture
 
-## Current verdict — constructor argument and throw recovery
+## Current verdict — exception-only throw ownership
+
+Compared the same prepared bytes on ffdea3b and the interface repair. Only
+localReturn's original error branch changes: its allocation/initialization/throw
+now sits in a natural all-catch, then record3 precedes rethrow of that actual
+failure. Constructor failure is caught as that failure, not a fabricated ISE;
+record failure replaces the pending throwable. Normal local-return paths still
+capture1/2 before the update/record3 and return the capture. FieldReturn and its
+existing natural finally are text-identical, including saved10 before write99/
+record99. The repair does not replace those return operands or weaken cleanup.
+
+P2–P5 and original P6 coordinates agree. The [fresh completion challenge](../exception-only-completion/review.md)
+checks typed/unmatched exits, caught result commit, outer cleanup replacement and
+foreign normal-entry refusal. Both isolated suites pass 168 checks. These are
+renewed LLM path readings and product checks, not native/VM/device execution.
+
+## Prior verdict — constructor argument and throw recovery
 
 Compared the same prepared DEX on `e95b6a4` and the containing repair. Read the
 original Java and prepared DEX behavior and complete before/after output for fieldReturn(I)I and localReturn(I)I.

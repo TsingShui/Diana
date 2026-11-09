@@ -85,16 +85,22 @@ ownership, protection boundaries and P5 construction-group membership constrain
 composition. Crossing candidates remain explicit rather than duplicating their
 shared content. Empty branch arms contain no fabricated instruction.
 
-Private `CompletionInterface` records retain exact node coverage, original normal entrance
-and outlet LinkIds, executable exceptional entrance EdgeIds, and original abrupt
-terminal NodeIds. An outlet references its actual target and unchanged P5 copies;
-a terminal references its original operands, completion, phases and site through
-its node. Return/throw categories do not compare values or merge terminals.
+The P6-private `CompletionInterface` in `p6/interface.rs` is shared by protection
+nomination and region composition. It retains exact node coverage, original
+normal entrance/outlet LinkIds, executable exceptional entrance/outlet EdgeIds,
+and original abrupt terminal NodeIds. Exceptional outlets include original Exit
+targets such as uncaught propagation. ImpossibleRelease remains inspectable but
+supplies no executable outlet. LinkIds reference unchanged P5 edge copies;
+exception EdgeIds reference existing completion, clause order, before-throw
+snapshots and handler receives. No phase is copied or reconstructed. A terminal
+references its original operands, completion, phases and site through its node. Return/throw categories do not compare values or merge terminals.
 Storage availability is not a topology predicate: original accesses and CopyPlans
 retain their local gaps, and dependent P7 composition still requires availability.
 
 Private parts carry entry, continuation and membership constraints. Their common
-boundary consists of actual outlet targets plus their declared normal follow.
+normal boundary consists of actual normal outlet targets plus their declared
+lexical follow. Exceptional coverage does not create a normal follow; the
+execution-owner tree and per-site ordered protection remain distinct relations.
 If, Condition, Loop and Switch proposals use this boundary without classifying
 an outlet as break or continue. Parent paths supply only selected scope context
 when P6 later chooses transfers. All graph walks,
@@ -849,6 +855,25 @@ This changes plans, not original execution facts, and preserves independent regi
 P7 receives either natural ownership or the complete site-specific chain; it does
 not infer a handler relation from printing position. Catch-all is not automatically
 finally.
+
+### Exception-only guarded cores
+
+Protection derives guarded-core normal follow candidates from the same
+CompletionInterface used by composition. Successors within that core are not
+outlets. A core has exception-only completion when it has no normal outlet,
+has executable exceptional outlets and original abrupt terminals, and every
+such terminal is Throw. This is not a termination claim or a comparison of
+throwable values. An unmatched original exception outlet still propagates.
+
+For that core, P6 leaves the lexical follow absent. A selected catch entry cannot
+supply a normal continuation merely because handler roots are the only remaining
+follow candidates. Handler membership therefore starts at its actual entry
+rather than stopping there. Cores with normal outlets retain the established
+follow selection. Existing prefix, handler, construction, monitor and combined
+entrance admission still applies; a genuine foreign arrival can refuse the
+scope. One nomination enters admission. Refusal does not try a later guarded
+seed, another follow or a second method chain. Unavailable storage keeps its
+local products; allocation/invariant failures retain RegionError classification.
 
 ### Completed abrupt catch scopes over loops
 
