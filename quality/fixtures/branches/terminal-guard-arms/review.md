@@ -1,5 +1,12 @@
 # Fixture: terminal-guard-arms
 
+## Current verdict — terminal-follow conjunction, 2026-11-09
+
+`cleanup` now prints `if (p1 == 2 || p1 == 3) throw new
+IllegalArgumentException(); else return;`. The original mark, membership tests
+and throw/return order are unchanged; the rest of the fixture text is unchanged
+in the candidate comparison.
+
 ## Current verdict — constructor argument and throw recovery
 
 Compared the same prepared DEX on `e95b6a4` and the containing repair. Read the

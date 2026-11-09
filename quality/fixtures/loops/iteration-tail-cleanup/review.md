@@ -1,5 +1,12 @@
 # Fixture: iteration-tail-cleanup
 
+## Current verdict — terminal-follow conjunction, 2026-11-09
+
+`cleanup` now prints `p1 == 5 || p1 == 6` before its `IllegalArgumentException`;
+`read` prints `p1 == 4 || p1 == 6` before its `AssertionError`. The successful
+`p0 + 1` result and both throw/return paths are unchanged; the rest of the fixture
+text is unchanged in the candidate comparison.
+
 ## Current verdict — terminal guard follow-up
 
 Read the normal/typed negative-result return guard: cleanup still precedes it,

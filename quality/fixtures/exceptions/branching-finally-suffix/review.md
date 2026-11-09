@@ -1,5 +1,12 @@
 # Fixture: branching-finally-suffix
 
+## Current verdict — terminal-follow conjunction, 2026-11-09
+
+`finish` now prints the `p1 == 5 || p1 == 6` membership test before its
+`IllegalArgumentException("close")`; `read` prints `p1 == 4 || p1 == 6` before
+its `AssertionError`. The successful result and both throw/return paths are
+unchanged; the rest of the fixture text is unchanged in the candidate comparison.
+
 ## Current verdict — terminal guard follow-up
 
 Read the changed terminal alternatives and remaining body. The selected

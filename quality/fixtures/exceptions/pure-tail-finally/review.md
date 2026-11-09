@@ -1,5 +1,12 @@
 # Fixture: pure-tail-finally
 
+## Current verdict — terminal-follow conjunction, 2026-11-09
+
+`read` now prints `if (p1 == 4 || p1 == 6 || p1 == 8) throw new
+AssertionError("row"); else return (p0 + 1);`. The three membership outcomes and
+the successful result are unchanged; the rest of the fixture text is unchanged
+in the candidate comparison.
+
 ## Current verdict — terminal guard follow-up
 
 Only read helper guards change. Modes1/2/3 still throw their typed exceptions

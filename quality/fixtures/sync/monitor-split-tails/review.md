@@ -1,5 +1,12 @@
 # Fixture: monitor-split-tails
 
+## Current verdict — terminal-follow conjunction, 2026-11-09
+
+`cleanup` now prints `p1 == 5 || p1 == 6` before its `IllegalArgumentException`;
+`finish` prints `p1 == 4 || p1 == 6` before its `AssertionError`. The successful
+`return 5` result and both throw/return paths are unchanged; the rest of the
+fixture text is unchanged in the candidate comparison.
+
 ## Current verdict — terminal guard follow-up
 
 Read finish/read helpers. finish still marks before mode7 fault and otherwise

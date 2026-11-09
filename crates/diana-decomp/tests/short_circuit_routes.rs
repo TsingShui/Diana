@@ -232,3 +232,80 @@ fn an_empty_goto_cycle_keeps_its_original_backedge() {
         },
     );
 }
+
+#[test]
+fn a_failed_conjunction_that_is_the_common_follow_keeps_one_condition() {
+    inspect(
+        "branches/branch-if-inverted",
+        "Lfixture/Inverted;",
+        "nested",
+        "(II)I",
+        |facts, code, rendered| {
+            assert_eq!(facts.conditions().len(), 1);
+            assert_eq!(facts.conditions()[0].tests().len(), 2);
+            assert!(code.emission().controls().iter().any(|control| {
+                matches!(&control.layout, EmissionLayout::Condition { tests, .. } if tests.len() == 2)
+            }));
+            assert!(rendered.text().contains("p0 == 0 || p1 == 0"));
+            assert!(!rendered.text().contains("goto "));
+            original_edges(code, rendered);
+        },
+    );
+}
+
+#[test]
+fn equals_shaped_tests_reach_the_terminal_follow_as_one_condition() {
+    inspect(
+        "branches/terminal-follow-conjunction",
+        "Lfixture/TerminalFollow;",
+        "matches",
+        "(Ljava/lang/Object;)Z",
+        |facts, code, rendered| {
+            assert_eq!(facts.conditions().len(), 1);
+            assert_eq!(facts.conditions()[0].tests().len(), 4);
+            assert!(code.emission().controls().iter().any(|control| {
+                matches!(&control.layout, EmissionLayout::Condition { tests, .. } if tests.len() == 4)
+            }));
+            let text = rendered.text();
+            assert_eq!(text.matches(" || ").count(), 3);
+            assert!(!text.contains("goto "));
+            let left = text.find("p0.left").expect("left field test");
+            let middle = text.find("p0.middle").expect("middle field test");
+            let right = text.find("p0.right").expect("right field test");
+            assert!(left < middle && middle < right);
+            assert_eq!(text.matches("TerminalFollow.eq(").count(), 3);
+            assert!(text.contains("return false"));
+            assert!(text.contains("return true"));
+            original_edges(code, rendered);
+        },
+    );
+}
+
+#[test]
+fn effectful_conjunction_keeps_its_tests_and_result_effects_in_order() {
+    inspect(
+        "branches/terminal-follow-conjunction",
+        "Lfixture/TerminalFollow;",
+        "effectful",
+        "(Ljava/lang/Object;)Z",
+        |facts, _, rendered| {
+            assert_eq!(facts.conditions().len(), 1);
+            assert_eq!(facts.conditions()[0].tests().len(), 4);
+            let text = rendered.text();
+            let first = text.find("TerminalFollow.probe(1)").expect("first probe");
+            let equality = text
+                .find("TerminalFollow.eq(p0.left, this.left)")
+                .expect("field equality");
+            let second = text.find("TerminalFollow.probe(2)").expect("second probe");
+            let failure = text
+                .find("TerminalFollow.mark(20)")
+                .expect("failure effect");
+            let success = text
+                .find("TerminalFollow.mark(10)")
+                .expect("success effect");
+            assert!(first < equality && equality < second);
+            assert!(failure < success);
+            assert!(!text.contains("goto "));
+        },
+    );
+}

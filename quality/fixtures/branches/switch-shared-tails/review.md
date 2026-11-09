@@ -1,5 +1,12 @@
 # Switch shared-tail review
 
+## Current verdict — terminal-follow conjunction, 2026-11-09
+
+`cleanup` now prints `if (p0 == 3 || p0 == 4) throw new
+IllegalStateException("cleanup"); else return;`. The two membership outcomes and
+the original throw/return paths are unchanged; the rest of the fixture text is
+unchanged in the candidate comparison.
+
 ## Scope and verdict
 
 Compared the same prepared DEX on dd70d20 and this candidate through ordinary

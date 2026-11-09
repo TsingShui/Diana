@@ -1,5 +1,13 @@
 # Fixture: branch-if-inverted
 
+## Current verdict — terminal-follow conjunction, 2026-11-09
+
+The `nested` subject now uses one ordered condition: `p0 == 0 || p1 == 0` selects
+the shared `return 0` arm, while the other arm keeps `observe(p1); return 1;`.
+The previous nested-If shape is retained below as historical evidence. This
+focused reread covers the changed subject; the other member judgments are not
+replaced or promoted to new execution results.
+
 ## Current verdict — terminal guard follow-up
 
 Read guardedCall: zero returns before observe, nonzero keeps the same

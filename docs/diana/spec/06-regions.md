@@ -230,6 +230,13 @@ unrelated established follow. When the tests' other links only leave at the
 established follow, or at the last test's other original link, the region keeps
 that exit and owns the arm it reaches as before.
 
+The established follow can itself be the selected result when it begins one
+straight block run ending in an actual return or throw. In that case the
+condition owns that abrupt run as its shared arm and has no normal follow; the
+selected links, result terminal and original block positions remain unchanged.
+This covers conjunctions whose first false test jumps directly to a common
+`return false` or `throw` block.
+
 The region owns the test runs, the shared arm, the optional other arm and the
 optional routing child in that source-role order. The routing child owns every
 original path node and link once, including paths shared by several tests. The
@@ -308,11 +315,15 @@ classified errors, not a missing-plan success.
 P7 MUST consume the delivered plan: it composes each test's scheduled prelude
 only at its original evaluation position and prints one short-circuit condition,
 or keeps the established explicit if/goto schedule from the same region. When a
-prelude cannot keep operand evaluation order, copy facts or the established
-branch role, P7 MUST choose that complete explicit schedule for the conditions
-that depend on the missing prerequisite instead of publishing an optimistic
-compound layout. The explicit schedule restores each test's terminal at its
-delivered predicate portion, after all preceding portions, and keeps every
+prelude contains a source-ordered producer chain, P7 may compose those producers
+into the predicate's call arguments or receiver only when every intervening
+producer also stays in that operand order. A display-only check-cast remains
+owned by the existing cast carrier and does not count as a separate operand.
+When a prelude cannot keep operand evaluation order, copy facts or the
+established branch role, P7 MUST choose that complete explicit schedule for the
+conditions that depend on the missing prerequisite instead of publishing an
+optimistic compound layout. The explicit schedule restores each test's terminal
+at its delivered predicate portion, after all preceding portions, and keeps every
 original branch edge and label. P7 MUST NOT infer shared reachability, split
 owners, re-derive the tests or discover the explicit alternative's order by
 walking descendant controls. P7 lowers the selected order into `EmissionPlan`;

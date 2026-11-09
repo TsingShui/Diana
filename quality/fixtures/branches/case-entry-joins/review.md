@@ -1,5 +1,13 @@
 # Fixture: case-entry-joins
 
+## Current verdict — terminal-follow conjunction, 2026-11-09
+
+`cleanup` now prints `if (p1 == 5 || p1 == 6) throw new
+IllegalArgumentException("close"); else return;`. `read` prints the corresponding
+`p1 == 4 || p1 == 6` membership test before its `AssertionError`; the successful
+`p0 + 1` result is unchanged. Both methods preserve the original throw/return
+paths; the remaining member text is unchanged in the candidate comparison.
+
 ## Current verdict — external non-case failure tail
 
 Compared the same prepared DEX on dd70d20 and this candidate. nonCaseTail now

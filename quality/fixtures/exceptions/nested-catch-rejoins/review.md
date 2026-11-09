@@ -1,5 +1,12 @@
 # Fixture: nested-catch-rejoins
 
+## Current verdict — terminal-follow conjunction, 2026-11-09
+
+`cleanup` now prints `p1 == 5 || p1 == 6` before its `IllegalArgumentException`;
+`read` prints `p1 == 4 || p1 == 6` before its `AssertionError`. The successful
+`p0 + 1` result and both throw/return paths are unchanged; the rest of the fixture
+text is unchanged in the candidate comparison.
+
 ## Current verdict — terminal guard follow-up
 
 Read scan's negative return guard and helper branches.
