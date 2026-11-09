@@ -227,6 +227,8 @@ pub enum EmissionLayout {
         yes: ControlId,
         no: ConditionElse,
         fall: TransferId,
+        /// P6-owned empty goto controls retain origins without printed routing.
+        routing: Option<ControlId>,
     },
     /// A P6-owned alternative over the original pure integer tests.
     When {

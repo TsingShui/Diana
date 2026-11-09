@@ -1804,6 +1804,7 @@ fn region_json(method: diana_decomp::p7::MethodInspection<'_, '_>, details: bool
             "id": p.id().0,
             "tests": p.tests().iter().map(|t| json!({"predicate":t.predicate().0,"select":t.select().0,"other":t.other().0})).collect::<Vec<_>>(),
             "shared": p.shared().0,
+            "routing": p.routing().iter().map(|link|link.0).collect::<Vec<_>>(),
             "else_arm": p.else_arm(),
             "other_exit": p.other_exit(),
             "explicit": p.explicit().map(|s| json!({

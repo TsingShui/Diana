@@ -3,7 +3,8 @@
 //!
 //! Both original arms are compared inside the enclosing completion boundary.
 //! One is a proper subset of the other, every later test selects the same shared
-//! head, and intervening operations stay in their original block runs. The arm
+//! head directly or through owned empty goto blocks, and intervening operations
+//! stay in their original block runs. The arm
 //! the tests' selected links reach is owned by the region; the arm their other
 //! links reach is the region's normal exit, either the established follow or,
 //! when those links merge inside the shared arm, that merge. Original abrupt
@@ -122,6 +123,49 @@ fn conditional(f: &RegionFacts, g: &Graph, node: NodeId) -> Option<[LinkId; 2]> 
 
 fn target(f: &RegionFacts, link: LinkId) -> NodeId {
     f.links[link.0 as usize].to()
+}
+
+/// A selected edge may reach the shared arm through original empty goto blocks.
+/// Keep every link for the owning routing child; no operation, copy, boundary,
+/// cycle or foreign entry is made transparent. Entrance checks run on the whole
+/// collected child after all tests have supplied their selected edges.
+fn selection_route(
+    storage: &StorageMethod<'_>,
+    f: &RegionFacts,
+    g: &Graph,
+    start: NodeId,
+    shared: NodeId,
+    boundary: &[bool],
+) -> Result<Option<Vec<LinkId>>, RegionError> {
+    let mut links = Vec::new();
+    let mut node = start;
+    while node != shared {
+        if boundary[node.0 as usize]
+            || links
+                .iter()
+                .any(|&link: &LinkId| f.links[link.0 as usize].from == node)
+        {
+            return Ok(None);
+        }
+        let source = &f.nodes[node.0 as usize];
+        let block = &storage.execution().blocks()[source.block.0 as usize];
+        if !source.operations.is_empty()
+            || !source.terminal
+            || f.blocks[source.block.0 as usize].parts.as_slice() != [node]
+            || !matches!(block.terminal(), Some(crate::p2::Terminal::Goto { .. }))
+        {
+            return Ok(None);
+        }
+        let [link] = g.outgoing[node.0 as usize].as_slice() else {
+            return Ok(None);
+        };
+        if !f.link_plans[link.0 as usize].copies.is_empty() {
+            return Ok(None);
+        }
+        push(&mut links, *link)?;
+        node = target(f, *link);
+    }
+    Ok(Some(links))
 }
 
 /// The unique member of `set` that no other member links into.
@@ -354,6 +398,7 @@ pub(super) fn candidate(
         },
     )?;
     let mut tests = Vec::new();
+    let mut routing = Vec::new();
     push(
         &mut tests,
         ConditionTest {
@@ -381,19 +426,25 @@ pub(super) fn candidate(
         let Some([a, b]) = conditional(f, g, test) else {
             break;
         };
-        let (selected, continued) =
-            match (target(f, a) == shared_entry, target(f, b) == shared_entry) {
-                (true, false) => (a, b),
-                (false, true) => (b, a),
-                _ => return Ok(None),
-            };
+        let a_route = selection_route(storage, f, g, target(f, a), shared_entry, boundary)?;
+        let b_route = selection_route(storage, f, g, target(f, b), shared_entry, boundary)?;
+        let (selected, continued, route) = match (a_route, b_route) {
+            (Some(route), None) => (a, b, route),
+            (None, Some(route)) => (b, a, route),
+            _ => return Ok(None),
+        };
         if shared[target(f, continued).0 as usize] {
             return Ok(None);
         }
         let next = target(f, continued);
         let run_set = mask(f.nodes.len(), &nodes)?;
-        if !enters_at(f, &run_set, cursor) || !exits_to(f, &run_set, &[shared_entry, next]) {
+        if !enters_at(f, &run_set, cursor) || !exits_to(f, &run_set, &[target(f, selected), next]) {
             return Ok(None);
+        }
+        for link in route {
+            if !routing.contains(&link) {
+                push(&mut routing, link)?;
+            }
         }
         push(
             &mut tests,
@@ -426,18 +477,33 @@ pub(super) fn candidate(
     }
     // The shared arm is printed last but owned by the same proposal; every other
     // member of the larger side must be one test run or the remaining arm.
+    let mut route_set = filled(f.nodes.len(), false)?;
+    for &link in &routing {
+        let node = f.links[link.0 as usize].from;
+        if members[node.0 as usize] || shared[node.0 as usize] {
+            return Ok(None);
+        }
+        route_set[node.0 as usize] = true;
+    }
     let mut remaining = Vec::new();
     for (n, &inside) in rest.iter().enumerate() {
-        if inside && !members[n] && !shared[n] {
+        if inside && !members[n] && !shared[n] && !route_set[n] {
             push(&mut remaining, NodeId(id(n)?))?;
         }
     }
     // The shared result arm is one closed interface: only the tests' selected
-    // original links enter it, and it leaves only at the common follow. In
+    // original links or their supplied empty routes enter it, and it leaves only
+    // at the common follow. In
     // particular, the other result arm cannot jump into a natural shared body.
     let mut selects = Vec::new();
     for test in &tests {
         push(&mut selects, test.select)?;
+    }
+    if !entered_by(f, &route_set, &selects) || !exits_to(f, &route_set, &[shared_entry]) {
+        return Ok(None);
+    }
+    for &link in &routing {
+        push(&mut selects, link)?;
     }
     if !entered_by(f, shared, &selects) || !completion_exits(f, shared, follow, boundary) {
         return Ok(None);
@@ -489,6 +555,21 @@ pub(super) fn candidate(
             },
         )?;
     }
+    if !routing.is_empty() {
+        let nodes = list(&route_set)?;
+        for &node in &nodes {
+            members[node.0 as usize] = true;
+        }
+        push(
+            &mut parts,
+            Part {
+                completion: PartCompletion::Ordinary,
+                entry: nodes.first().copied(),
+                nodes,
+                follow: Some(shared_entry),
+            },
+        )?;
+    }
     if !exceptional_interfaces(storage, f, g, &parts, &members, start)? {
         return Ok(None);
     }
@@ -526,6 +607,7 @@ pub(super) fn candidate(
         ConditionPlan {
             id,
             tests,
+            routing,
             shared: shared_entry,
             else_arm: Some(cursor) != follow && !boundary[cursor.0 as usize],
             other_exit: Some(cursor) != follow && boundary[cursor.0 as usize],

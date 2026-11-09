@@ -170,7 +170,10 @@ and restores that terminal's check carrier for ordinary If, Loop and ordered
 Condition tests, including on rendering failure. The final `else` route keeps the
 selected `other` link. Later test runs print no text, so P7 delivers those run controls
 and P9 anchors their controls, block labels, transfers and empty copy bundles as
-zero-length spans, without recovering control from the graph. A terminal whose
+zero-length spans, without recovering control from the graph. A P6-owned selected
+route that prints no text likewise retains the supplied routing
+child's Control, Label, Transfer and Terminal origins. P9 does not traverse a
+different graph or infer that a route is empty. A terminal whose
 route prints no words keeps both its Transfer and Terminal anchors, including
 zero-step copy bundles, and leaves no indentation in the text.
 

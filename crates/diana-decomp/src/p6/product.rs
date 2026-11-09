@@ -415,7 +415,8 @@ pub enum RecoveryReason {
     Unstructured,
 }
 /// One original predicate of a condition region. `select` is the delivered link
-/// that reaches the shared result arm; `other` leaves the test. The zone between
+/// that reaches the shared result arm directly or through supplied empty-goto
+/// routing; `other` leaves the test. The zone between
 /// the previous test and this predicate stays in the region as its own part.
 #[derive(Clone, Copy, Debug)]
 pub struct ConditionTest {
@@ -434,13 +435,16 @@ impl ConditionTest {
         self.other
     }
 }
-/// Ordered short-circuit tests. The shared arm is entered by every `select` link;
+/// Ordered short-circuit tests. Every `select` reaches the shared arm directly
+/// or through original links in the optional final routing child;
 /// the last `other` link reaches the other result arm, common follow or an
 /// enclosing completion boundary. A no-body boundary remains a real outlet.
 #[derive(Debug)]
 pub struct ConditionPlan {
     pub(super) id: ConditionId,
     pub(super) tests: Vec<ConditionTest>,
+    /// Original empty-goto links owned by the optional final routing child.
+    pub(super) routing: Vec<LinkId>,
     pub(super) shared: NodeId,
     pub(super) else_arm: bool,
     /// The final other edge leaves at a context boundary, not the common follow.
@@ -492,6 +496,9 @@ impl ConditionPlan {
     }
     pub fn shared(&self) -> NodeId {
         self.shared
+    }
+    pub fn routing(&self) -> &[LinkId] {
+        &self.routing
     }
     /// Present for every selected Condition region; rejected proposals have no
     /// layout. Entry, follow and exact predicate portions retain their source IDs.

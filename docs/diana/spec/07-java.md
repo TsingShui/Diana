@@ -635,7 +635,14 @@ continuation comes from the selected P6 alternative.
 The ordinary display pass can omit a goto to the next printed target, as for
 other completed layouts; that does not reconstruct a condition schedule.
 The tests' selected edges and all intermediate other edges require no copy
-bundles. The final other edge can retain copies at an explicit else position:
+bundles. P7 also consumes P6's supplied empty-goto routing links and child. Only
+after every test admits compaction does P7 give those links silent spelling and
+clear the routing child's and original block owners' printed continuations.
+Original destinations, terminal identities and lexical owners remain intact.
+The routing child retains zero-width origins in the compact layout; the explicit
+alternative retains its original links and complete child schedule. P7 MUST NOT
+discover routing paths from the graph or make a copied or effectful path silent.
+The final other edge can retain copies at an explicit else position:
 every bundle must retain original emission, name that same original normal edge,
 and have no unavailable assignment. With no other-arm body, P7 selects
 `ConditionElse::Copies` only when those bundles have executable steps or an

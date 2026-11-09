@@ -1252,6 +1252,22 @@ fn compose(
     }
     // Install only after every test admits its whole schedule. A refused later
     // run must not leave a hidden local or relocated store in the explicit form.
+    let ControlKind::Condition { routing, .. } = &code.controls[index].kind else {
+        return Err(bug("condition composition lost its routing product"));
+    };
+    for &link in routing {
+        code.emission.transfers[link.0 as usize].spelling = TransferSpelling::Fallthrough;
+        let node = code.transfers[link.0 as usize].from;
+        let owner = code.labels[node.0 as usize].owner;
+        code.emission.controls[owner.0 as usize].continuation = None;
+    }
+    if let EmissionLayout::Condition {
+        routing: Some(control),
+        ..
+    } = code.emission.controls[index].layout
+    {
+        code.emission.controls[control.0 as usize].continuation = None;
+    }
     let mut values = 0;
     let mut stores = 0;
     for (producer, operand) in work {

@@ -172,6 +172,10 @@ A complete linear return/throw arm can print as a guard; either original edge
 keeps its exact condition polarity. The other edge's copies/body follow once,
 in their enclosing declaration scope. Recovering or opaque scopes do not supply
 that exit fact, and a guard plus later work is not mistaken for one else-if.
+Ordered conditions also retain P6-owned empty selected goto routes. Copy-free,
+effect-free paths can print as one short-circuit condition; copied, cyclic or
+foreign-entry paths remain explicit. A noncomposable test prelude retains the
+delivered complete explicit schedule and original routing origins.
 Metadata and
 bootstrap declarations travel from their owning producers; P7 does not reopen
 input. See the [P7 chapter](../../docs/diana/spec/07-java.md).
@@ -270,6 +274,10 @@ Nine [terminal-guard checks](../../quality/fixtures/branches/terminal-guard-arms
 cover original predicate direction, actual other-edge Phi assignments after the
 guard, parent declaration scope, recovering-Try refusal, cleanup, construction
 and early void return. Missing natural protection still retains explicit code.
+Eight [selected-route checks](../../quality/fixtures/branches/short-circuit-shared-routes/README.md)
+cover boolean disjunctions, ordered effectful tests, original route anchors,
+executable copies, effect barriers, foreign entries, cycles and complete explicit
+preludes, including floating NaN comparisons.
 These checks cover ownership,
 transfer spelling and source anchors, not independent execution of the final plan.
 The retained independent verifier code is not enabled on ordinary requests. Real-input corpus runs have not encountered custom/polymorphic
