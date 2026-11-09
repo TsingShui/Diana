@@ -1,8 +1,7 @@
-use std::{cell::Cell, path::PathBuf};
+use std::{cell::Cell, path::PathBuf, rc::Rc};
 
-use gpui_kit::assets::IconName as AssetIconName;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable, TitleBar, WindowExt,
+    ActiveTheme, Disableable, IconName, IndexPath, Sizable, TitleBar, WindowExt,
     alert::Alert,
     button::{Button, ButtonVariants},
     description_list::DescriptionList,
@@ -11,6 +10,7 @@ use gpui_kit::component::{
     input::{Editor, EditorState, Position, TabSize},
     list::{List, ListEvent, ListState},
     menu::{DropdownMenu, PopupMenuItem},
+    scroll::{Scrollbar, ScrollbarMode},
     tab::{Tab, TabBar},
     tree::TreeState,
     v_flex,
@@ -54,14 +54,15 @@ struct Document {
 impl Document {
     fn new(id: ClassId, window: &mut Window, cx: &mut Context<Workspace>) -> Self {
         let editors = ViewMode::ALL.map(|mode| {
-            cx.new(|cx| {
+            let source = id.source(mode);
+            let editor = cx.new(|cx| {
                 let mut state = EditorState::new(window, cx)
                     .language(if mode == ViewMode::Java {
                         "java"
                     } else {
                         "text"
                     })
-                    .default_value(id.source(mode))
+                    .default_value(source)
                     .line_number(true)
                     .searchable(true)
                     .soft_wrap(false)
@@ -71,7 +72,9 @@ impl Document {
                     });
                 state.set_readonly(true, cx);
                 state
-            })
+            });
+            install_editor_scrollbar(&editor, cx);
+            editor
         });
         Self {
             id,
@@ -107,14 +110,129 @@ enum RealTarget {
 #[derive(Clone, Copy, Eq, PartialEq)]
 struct ProjectId(u64);
 
+struct RealDocument {
+    target: RealTarget,
+    title: String,
+    editor: Option<Entity<EditorState>>,
+    status: String,
+    warnings: Vec<String>,
+    generation: u64,
+}
+
+#[derive(Clone)]
+struct TabDrag {
+    project_id: ProjectId,
+    target: RealTarget,
+    title: SharedString,
+}
+
+struct TabDragPreview {
+    title: SharedString,
+}
+
+impl Render for TabDragPreview {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .px_3()
+            .py_1()
+            .rounded(px(4.))
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().popover)
+            .text_sm()
+            .child(self.title.clone())
+    }
+}
+
+const SCROLLBAR_COLUMN: f32 = 10.;
+
+fn install_editor_scrollbar(editor: &Entity<EditorState>, cx: &mut Context<Workspace>) {
+    editor.update(cx, |state, _| {
+        state.set_scrollbar_renderer(Some(Rc::new(|context, _, cx| {
+            div()
+                .absolute()
+                .right_0()
+                .top_0()
+                .h_full()
+                .w(px(SCROLLBAR_COLUMN))
+                .child(
+                    div().w_full().h_full().child(
+                        Scrollbar::vertical(&context)
+                            .mode(ScrollbarMode::Always)
+                            .styles(|styles| {
+                                styles
+                                    .track(|track| {
+                                        track
+                                            .width(px(SCROLLBAR_COLUMN))
+                                            .bg(cx.theme().transparent)
+                                            .border_color(cx.theme().transparent)
+                                    })
+                                    .track_hover(|track| {
+                                        track
+                                            .width(px(SCROLLBAR_COLUMN))
+                                            .bg(cx.theme().transparent)
+                                            .border_color(cx.theme().transparent)
+                                    })
+                                    .track_active(|track| {
+                                        track
+                                            .width(px(SCROLLBAR_COLUMN))
+                                            .bg(cx.theme().transparent)
+                                            .border_color(cx.theme().transparent)
+                                    })
+                                    .thumb(|thumb| {
+                                        thumb
+                                            .width(px(8.))
+                                            .inset(px(1.))
+                                            .radius(px(2.))
+                                            .bg(cx.theme().foreground.opacity(0.24))
+                                    })
+                                    .thumb_hover(|thumb| {
+                                        thumb
+                                            .width(px(8.))
+                                            .inset(px(1.))
+                                            .radius(px(2.))
+                                            .bg(cx.theme().foreground.opacity(0.34))
+                                    })
+                                    .thumb_active(|thumb| {
+                                        thumb
+                                            .width(px(8.))
+                                            .inset(px(1.))
+                                            .radius(px(2.))
+                                            .bg(cx.theme().foreground.opacity(0.42))
+                                    })
+                            }),
+                    ),
+                )
+                .into_any_element()
+        })));
+    });
+}
+
 struct Project {
     id: ProjectId,
     resource: crate::backend::Resource,
-    editor: Option<Entity<EditorState>>,
-    status: String,
-    selected: Option<RealTarget>,
-    warnings: Vec<String>,
-    generation: u64,
+    documents: Vec<RealDocument>,
+    active_document: Option<RealTarget>,
+    next_generation: u64,
+}
+
+impl Project {
+    fn document(&self, target: RealTarget) -> Option<&RealDocument> {
+        self.documents
+            .iter()
+            .find(|document| document.target == target)
+    }
+
+    fn document_mut(&mut self, target: RealTarget) -> Option<&mut RealDocument> {
+        self.documents
+            .iter_mut()
+            .find(|document| document.target == target)
+    }
+
+    fn active_document(&self) -> Option<&RealDocument> {
+        self.active_document
+            .and_then(|target| self.document(target))
+    }
 }
 
 pub struct Workspace {
@@ -173,29 +291,15 @@ impl Workspace {
                 view.activate_project(project_id, window, cx);
                 return;
             };
-            let target = match &selection {
-                project_tree::ResourceSelection::Class(class) => RealTarget::Class {
-                    image: class.image,
-                    header: class.header,
-                    id: class.id,
-                },
-                project_tree::ResourceSelection::Manifest => RealTarget::Manifest,
-                project_tree::ResourceSelection::Library(index) => RealTarget::Library(*index),
-            };
-            if view
-                .project(project_id)
-                .is_none_or(|project| project.selected != Some(target))
-            {
-                match selection {
-                    project_tree::ResourceSelection::Class(class) => {
-                        view.open_real_class(project_id, class, window, cx);
-                    }
-                    project_tree::ResourceSelection::Manifest => {
-                        view.open_manifest(project_id, window, cx);
-                    }
-                    project_tree::ResourceSelection::Library(index) => {
-                        view.open_library(project_id, index, window, cx);
-                    }
+            match selection {
+                project_tree::ResourceSelection::Class(class) => {
+                    view.open_real_class(project_id, class, window, cx);
+                }
+                project_tree::ResourceSelection::Manifest => {
+                    view.open_manifest(project_id, window, cx);
+                }
+                project_tree::ResourceSelection::Library(index) => {
+                    view.open_library(project_id, index, window, cx);
                 }
             }
         });
@@ -273,19 +377,7 @@ impl Workspace {
     }
 
     fn update_window_title(&self, window: &mut Window) {
-        if let Some(project) = self.active_project() {
-            let suffix = if self.projects.len() > 1 {
-                format!(" · {} open", self.projects.len())
-            } else {
-                String::new()
-            };
-            window.set_window_title(&format!(
-                "Diana — {}{suffix}",
-                project.resource.display_name()
-            ));
-        } else {
-            window.set_window_title("Diana");
-        }
+        window.set_window_title("Diana");
     }
 
     pub fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
@@ -372,19 +464,12 @@ impl Workspace {
     ) -> ProjectId {
         let id = ProjectId(self.next_project_id);
         self.next_project_id = self.next_project_id.wrapping_add(1);
-        let status = if resource.classes.is_empty() {
-            format!("{} · no readable classes", resource.summary())
-        } else {
-            resource.summary()
-        };
         self.projects.push(Project {
             id,
             resource,
-            editor: None,
-            status,
-            selected: None,
-            warnings: Vec::new(),
-            generation: 0,
+            documents: Vec::new(),
+            active_document: None,
+            next_generation: 0,
         });
         self.refresh_sidebar_tree(cx);
         id
@@ -430,27 +515,44 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let key = RealTarget::Class {
+        let target = RealTarget::Class {
             image: class.image,
             header: class.header,
             id: class.id,
         };
+        let descriptor = class
+            .label
+            .strip_prefix('L')
+            .and_then(|value| value.strip_suffix(';'))
+            .unwrap_or(&class.label);
+        let title = descriptor
+            .rsplit_once('/')
+            .map_or(descriptor, |(_, name)| name)
+            .to_owned();
         let Some((bytes, archive, image, generation)) =
             self.project_mut(project_id).and_then(|project| {
-                if project.selected == Some(key) {
+                if project.document(target).is_some() {
+                    project.active_document = Some(target);
                     return None;
                 }
                 let image = project.resource.images.get(class.image).cloned()?;
                 let bytes = project.resource.bytes.clone();
                 let archive = project.resource.archive.clone();
-                project.selected = Some(key);
-                project.warnings.clear();
-                project.generation = project.generation.wrapping_add(1);
-                project.status = format!("Decompiling {}…", class.label);
-                project.editor = None;
-                Some((bytes, archive, image, project.generation))
+                project.next_generation = project.next_generation.wrapping_add(1);
+                let generation = project.next_generation;
+                project.documents.push(RealDocument {
+                    target,
+                    title,
+                    editor: None,
+                    status: "Decompiling…".into(),
+                    warnings: Vec::new(),
+                    generation,
+                });
+                project.active_document = Some(target);
+                Some((bytes, archive, image, generation))
             })
         else {
+            cx.notify();
             return;
         };
         cx.notify();
@@ -464,27 +566,30 @@ impl Workspace {
                 let Some(project) = view.project_mut(project_id) else {
                     return;
                 };
-                if project.generation != generation {
+                let Some(document) = project.document_mut(target) else {
+                    return;
+                };
+                if document.generation != generation {
                     return;
                 }
                 match result {
                     Ok(text) => {
-                        project.editor = Some(cx.new(|cx| {
+                        let editor = cx.new(|cx| {
                             let mut editor = EditorState::new(window, cx)
                                 .language("java")
-                                .default_value(text)
+                                .default_value(text.clone())
                                 .line_number(true)
                                 .searchable(true)
                                 .soft_wrap(false);
                             editor.set_readonly(true, cx);
                             editor
-                        }));
-                        project.status = "Diana Engine · Java-like".into();
+                        });
+                        install_editor_scrollbar(&editor, cx);
+                        document.editor = Some(editor);
+                        document.status = "Diana Engine · Java-like".into();
                     }
                     Err(error) => {
-                        project.selected = None;
-                        project.warnings.clear();
-                        project.status = format!("Decompilation failed: {error}");
+                        document.status = format!("Decompilation failed: {error}");
                     }
                 }
                 cx.notify();
@@ -499,18 +604,24 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let target = RealTarget::Manifest;
+        let Some(manifest) = self
+            .project(project_id)
+            .and_then(|project| project.resource.manifest.as_ref().cloned())
+        else {
+            return;
+        };
         let Some(project) = self.project_mut(project_id) else {
             return;
         };
-        let Some(manifest) = project.resource.manifest.as_ref().cloned() else {
-            project.status = "AndroidManifest.xml is unavailable.".into();
+        if project.document(target).is_some() {
+            project.active_document = Some(target);
             cx.notify();
             return;
-        };
-        project.generation = project.generation.wrapping_add(1);
-        project.selected = Some(RealTarget::Manifest);
-        project.warnings = manifest.warnings.clone();
-        project.status = if manifest.warnings.is_empty() {
+        }
+        project.next_generation = project.next_generation.wrapping_add(1);
+        let generation = project.next_generation;
+        let status = if manifest.warnings.is_empty() {
             "AndroidManifest.xml · decoded XML".into()
         } else {
             format!(
@@ -518,16 +629,26 @@ impl Workspace {
                 manifest.warnings.len()
             )
         };
-        project.editor = Some(cx.new(|cx| {
+        let editor = cx.new(|cx| {
             let mut editor = EditorState::new(window, cx)
                 .language("xml")
-                .default_value(manifest.xml)
+                .default_value(manifest.xml.clone())
                 .line_number(true)
                 .searchable(true)
                 .soft_wrap(false);
             editor.set_readonly(true, cx);
             editor
-        }));
+        });
+        install_editor_scrollbar(&editor, cx);
+        project.documents.push(RealDocument {
+            target,
+            title: "AndroidManifest.xml".into(),
+            editor: Some(editor),
+            status,
+            warnings: manifest.warnings,
+            generation,
+        });
+        project.active_document = Some(target);
         cx.notify();
     }
 
@@ -538,19 +659,31 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let target = RealTarget::Library(index);
         let Some((bytes, archive, library, generation)) =
             self.project_mut(project_id).and_then(|project| {
+                if project.document(target).is_some() {
+                    project.active_document = Some(target);
+                    return None;
+                }
                 let library = project.resource.libraries.get(index).cloned()?;
                 let bytes = project.resource.bytes.clone();
                 let archive = project.resource.archive.clone();
-                project.selected = Some(RealTarget::Library(index));
-                project.warnings.clear();
-                project.generation = project.generation.wrapping_add(1);
-                project.status = format!("Reading {}…", library.path);
-                project.editor = None;
-                Some((bytes, archive, library, project.generation))
+                project.next_generation = project.next_generation.wrapping_add(1);
+                let generation = project.next_generation;
+                project.documents.push(RealDocument {
+                    target,
+                    title: library.name.clone(),
+                    editor: None,
+                    status: "Reading ELF metadata…".into(),
+                    warnings: Vec::new(),
+                    generation,
+                });
+                project.active_document = Some(target);
+                Some((bytes, archive, library, generation))
             })
         else {
+            cx.notify();
             return;
         };
         cx.notify();
@@ -564,27 +697,32 @@ impl Workspace {
                 let Some(project) = view.project_mut(project_id) else {
                     return;
                 };
-                if project.generation != generation {
+                let Some(document) = project.document_mut(target) else {
+                    return;
+                };
+                if document.generation != generation {
                     return;
                 }
                 match result {
                     Ok(inspection) => {
-                        project.warnings = inspection.warnings;
-                        project.status = "Native library · ELF metadata".into();
-                        project.editor = Some(cx.new(|cx| {
+                        let text = inspection.text;
+                        document.warnings = inspection.warnings;
+                        document.status = "Native library · ELF metadata".into();
+                        let editor = cx.new(|cx| {
                             let mut editor = EditorState::new(window, cx)
                                 .language("text")
-                                .default_value(inspection.text)
+                                .default_value(text.clone())
                                 .line_number(true)
                                 .searchable(true)
                                 .soft_wrap(false);
                             editor.set_readonly(true, cx);
                             editor
-                        }));
+                        });
+                        install_editor_scrollbar(&editor, cx);
+                        document.editor = Some(editor);
                     }
                     Err(error) => {
-                        project.selected = None;
-                        project.status = format!("Cannot inspect library: {error}");
+                        document.status = format!("Cannot inspect library: {error}");
                     }
                 }
                 cx.notify();
@@ -593,16 +731,108 @@ impl Workspace {
         .detach();
     }
 
+    fn activate_real_document(
+        &mut self,
+        project_id: ProjectId,
+        target: RealTarget,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(project) = self.project_mut(project_id) else {
+            return;
+        };
+        if project.document(target).is_some() {
+            project.active_document = Some(target);
+            cx.notify();
+        }
+    }
+
+    fn close_real_document(
+        &mut self,
+        project_id: ProjectId,
+        target: RealTarget,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(project) = self.project_mut(project_id) else {
+            return;
+        };
+        let Some(index) = project
+            .documents
+            .iter()
+            .position(|document| document.target == target)
+        else {
+            return;
+        };
+        project.documents.remove(index);
+        if project.active_document == Some(target) {
+            project.active_document = project
+                .documents
+                .get(index)
+                .or_else(|| project.documents.last())
+                .map(|document| document.target);
+        }
+        cx.notify();
+    }
+
+    fn cycle_real_document(&mut self, project_id: ProjectId, delta: isize, cx: &mut Context<Self>) {
+        let Some(project) = self.project_mut(project_id) else {
+            return;
+        };
+        if project.documents.len() < 2 {
+            return;
+        }
+        let current = project
+            .active_document
+            .and_then(|target| {
+                project
+                    .documents
+                    .iter()
+                    .position(|document| document.target == target)
+            })
+            .unwrap_or(0);
+        let next = (current as isize + delta).rem_euclid(project.documents.len() as isize) as usize;
+        project.active_document = Some(project.documents[next].target);
+        cx.notify();
+    }
+
+    fn move_real_document(
+        &mut self,
+        project_id: ProjectId,
+        source: RealTarget,
+        target: RealTarget,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(project) = self.project_mut(project_id) else {
+            return;
+        };
+        let Some(source_index) = project
+            .documents
+            .iter()
+            .position(|document| document.target == source)
+        else {
+            return;
+        };
+        let Some(target_index) = project
+            .documents
+            .iter()
+            .position(|document| document.target == target)
+        else {
+            return;
+        };
+        if source_index == target_index {
+            return;
+        }
+        let document = project.documents.remove(source_index);
+        project.documents.insert(target_index, document);
+        project.active_document = Some(source);
+        cx.notify();
+    }
+
     fn real_view(&self, project: &Project, cx: &mut Context<Self>) -> impl IntoElement {
         let has_classes = !project.resource.classes.is_empty();
-        let archive = project.resource.is_archive;
-        let header_icon = match project.selected {
-            Some(RealTarget::Manifest) => AssetIconName::FileBraces,
-            Some(RealTarget::Library(_)) => AssetIconName::Binary,
-            _ if archive => AssetIconName::FileArchive,
-            _ => AssetIconName::FileCode,
-        };
-        let busy = project.status.ends_with('…');
+        let active = project.active_document();
+        let busy = active.is_some_and(|document| document.status.ends_with('…'));
+        let project_id = project.id;
+        let workspace = cx.entity().downgrade();
         v_flex()
             .flex_1()
             .min_h_0()
@@ -628,27 +858,29 @@ impl Workspace {
                                     .border_color(cx.theme().border)
                                     .child(img("diana.png").size_6().rounded(px(6.)))
                                     .child(
-                                        v_flex()
+                                        div()
                                             .min_w_0()
-                                            .child(
-                                                div()
-                                                    .text_sm()
-                                                    .font_weight(FontWeight::SEMIBOLD)
-                                                    .child("Diana"),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(cx.theme().muted_foreground)
-                                                    .child("APK / DEX"),
-                                            ),
+                                            .text_size(px(19.5))
+                                            .font_family(style::BRAND_FONT)
+                                            .child("Diana"),
                                     ),
                             )
                             .child(
                                 div()
                                     .flex_1()
                                     .min_h_0()
-                                    .child(project_tree::view(&self.sidebar_tree)),
+                                    .child(project_tree::view_with_close(
+                                        &self.sidebar_tree,
+                                        move |project, window, cx| {
+                                            _ = workspace.update(cx, |view, cx| {
+                                                view.close_project(
+                                                    ProjectId(project),
+                                                    window,
+                                                    cx,
+                                                );
+                                            });
+                                        },
+                                    )),
                             ),
                     )
                     .child(
@@ -656,51 +888,127 @@ impl Workspace {
                             .flex_1()
                             .min_w_0()
                             .h_full()
-                            .child(
-                                h_flex()
-                                    .w_full()
-                                    .p_2()
-                                    .gap_2()
-                                    .items_center()
-                                    .border_b_1()
-                                    .border_color(cx.theme().border)
-                                    .child(
-                                        Icon::new(header_icon)
-                                            .small()
-                                            .text_color(cx.theme().muted_foreground),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .truncate()
-                                            .child(project.status.clone()),
-                                    )
-                                    .child(
-                                        Button::new("close-project")
-                                            .ghost()
-                                            .small()
-                                            .icon(IconName::Close)
-                                            .accessibility_label("Close current APK")
-                                            .on_click(cx.listener(|view, _, window, cx| {
-                                                if let Some(id) = view.active_project {
-                                                    view.close_project(id, window, cx);
+                            .when(!project.documents.is_empty(), |view| {
+                                view.child(
+                                    TabBar::new(("real-document-tabs", project.id.0))
+                                        .menu(false)
+                                        .max_width(px(220.))
+                                        .prefix(
+                                            h_flex()
+                                                .gap_1()
+                                                .px_1()
+                                                .child(
+                                                    Button::new("previous-real-tab")
+                                                        .ghost()
+                                                        .xsmall()
+                                                        .icon(IconName::ChevronLeft)
+                                                        .disabled(project.documents.len() < 2)
+                                                        .accessibility_label(
+                                                            "Previous file tab",
+                                                        )
+                                                        .on_click(cx.listener(
+                                                            move |view, _, _, cx| {
+                                                                view.cycle_real_document(
+                                                                    project_id,
+                                                                    -1,
+                                                                    cx,
+                                                                );
+                                                            },
+                                                        )),
+                                                )
+                                                .child(
+                                                    Button::new("next-real-tab")
+                                                        .ghost()
+                                                        .xsmall()
+                                                        .icon(IconName::ChevronRight)
+                                                        .disabled(project.documents.len() < 2)
+                                                        .accessibility_label("Next file tab")
+                                                        .on_click(cx.listener(
+                                                            move |view, _, _, cx| {
+                                                                view.cycle_real_document(
+                                                                    project_id,
+                                                                    1,
+                                                                    cx,
+                                                                );
+                                                            },
+                                                        )),
+                                                ),
+                                        )
+                                        .when_some(
+                                            project.documents.iter().position(|document| {
+                                                Some(document.target) == project.active_document
+                                            }),
+                                            |bar, index| bar.selected_index(index),
+                                        )
+                                        .children(project.documents.iter().enumerate().map(|(index, document)| {
+                                            let target = document.target;
+                                            let drag = TabDrag {
+                                                project_id,
+                                                target,
+                                                title: document.title.clone().into(),
+                                            };
+                                            Tab::new()
+                                                .label(document.title.clone())
+                                                .on_drag(drag, |drag, _, _, cx| {
+                                                    cx.new(|_| TabDragPreview {
+                                                        title: drag.title.clone(),
+                                                    })
+                                                })
+                                                .drag_over::<TabDrag>(|this, _, _, cx| {
+                                                    this.bg(cx.theme().muted.opacity(0.6))
+                                                })
+                                                .on_drop(cx.listener(
+                                                    move |view, drag: &TabDrag, _, cx| {
+                                                        if drag.project_id == project_id {
+                                                            view.move_real_document(
+                                                                project_id,
+                                                                drag.target,
+                                                                target,
+                                                                cx,
+                                                            );
+                                                        }
+                                                    },
+                                                ))
+                                                .suffix(
+                                                Button::new(("close-real-document", index))
+                                                    .ghost()
+                                                    .xsmall()
+                                                    .icon(IconName::Close)
+                                                    .accessibility_label(format!(
+                                                        "Close {}",
+                                                        document.title
+                                                    ))
+                                                    .on_click(cx.listener(
+                                                        move |view, _, _, cx| {
+                                                            cx.stop_propagation();
+                                                            view.close_real_document(
+                                                                project_id,
+                                                                target,
+                                                                cx,
+                                                            );
+                                                        },
+                                                    )),
+                                                )
+                                        }))
+                                        .on_click(cx.listener(
+                                            move |view, index: &usize, _, cx| {
+                                                if let Some(target) = view
+                                                    .project(project_id)
+                                                    .and_then(|project| {
+                                                        project.documents.get(*index)
+                                                    })
+                                                    .map(|document| document.target)
+                                                {
+                                                    view.activate_real_document(
+                                                        project_id,
+                                                        target,
+                                                        cx,
+                                                    );
                                                 }
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new("open-another")
-                                            .ghost()
-                                            .small()
-                                            .icon(IconName::FolderOpen)
-                                            .label("Open…")
-                                            .loading(self.opening)
-                                            .disabled(self.opening)
-                                            .on_click(cx.listener(|view, _, window, cx| {
-                                                view.open_dex(&OpenDex, window, cx)
-                                            })),
-                                    ),
-                            )
+                                            },
+                                        )),
+                                )
+                            })
                             .when(!project.resource.issues.is_empty(), |view| {
                                 view.child(div().p_2().child(Alert::warning(
                                     "input-issues",
@@ -713,35 +1021,44 @@ impl Workspace {
                                     error.clone(),
                                 )))
                             })
-                            .when(!project.warnings.is_empty(), |view| {
+                            .when(active.is_some_and(|document| !document.warnings.is_empty()), |view| {
                                 view.child(div().p_2().child(Alert::warning(
                                     "selection-warnings",
-                                    project.warnings.join("\n"),
+                                    active
+                                        .map(|document| document.warnings.join("\n"))
+                                        .unwrap_or_default(),
                                 )))
                             })
-                            .when_some(project.editor.as_ref(), |view, editor| {
+                            .when_some(
+                                active.and_then(|document| document.editor.as_ref()),
+                                |view, editor| {
                                 view.child(
                                     Editor::new(editor)
                                         .readonly(true)
                                         .bordered(false)
                                         .w_full()
-                                        .h_full(),
+                                        .h_full()
                                 )
-                            })
-                            .when(project.editor.is_none(), |view| {
+                            },
+                            )
+                            .when(active.and_then(|document| document.editor.as_ref()).is_none(), |view| {
                                 let title = if busy {
                                     "Loading…"
+                                } else if active.is_some() {
+                                    "Unavailable"
                                 } else if has_classes {
-                                    "Select a class"
+                                    "No open files"
                                 } else {
-                                    "No readable classes"
+                                    "No readable resources"
                                 };
                                 let description = if busy {
-                                    "Reading the selected APK entry."
+                                    "Reading the selected APK entry.".to_owned()
+                                } else if let Some(document) = active {
+                                    document.status.clone()
                                 } else if has_classes {
-                                    "Choose Manifest, Native or a Java class in the project tree."
+                                    "Open Manifest, Native or Java from the project tree.".to_owned()
                                 } else {
-                                    "The file opened, but no class could be read. Review the details above."
+                                    "The file opened, but no class could be read. Review the details above.".to_owned()
                                 };
                                 view.child(
                                     Empty::new().header(

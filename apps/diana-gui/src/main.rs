@@ -12,6 +12,9 @@ use workspace::Workspace;
 
 actions!(diana, [Quit]);
 
+#[cfg(debug_assertions)]
+actions!(diana, [ToggleInspector]);
+
 fn main() {
     let startup_paths = std::env::args_os()
         .skip(1)
@@ -31,6 +34,21 @@ fn main() {
             };
             cx.bind_keys([KeyBinding::new(quit_key, Quit, None)]);
             cx.on_action(|_: &Quit, cx| cx.quit());
+
+            #[cfg(debug_assertions)]
+            {
+                let inspector_key = if cfg!(target_os = "macos") {
+                    "cmd-alt-i"
+                } else {
+                    "ctrl-shift-i"
+                };
+                cx.bind_keys([KeyBinding::new(inspector_key, ToggleInspector, None)]);
+                cx.on_action(|_: &ToggleInspector, cx| {
+                    if let Some(window) = cx.active_window() {
+                        _ = window.update(cx, |_, window, cx| window.toggle_inspector(cx));
+                    }
+                });
+            }
             cx.set_menus([Menu::new("Diana").items([MenuItem::action("Quit Diana", Quit)])]);
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
