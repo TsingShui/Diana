@@ -651,6 +651,25 @@ Normal requests run no independent output verifier or repeated SCC/dominance pas
 
 ## Transfers, labels and P5 obligations
 
+### Acyclic multi-site continuation body
+
+`CoroutineFlowPlan` consumes the same P5 accesses, original P6 graph, shared SCC
+facts and selected region hierarchy. Its site records associate each positive
+dispatch state with one original call/marker pair, private resume corridor and
+the original normal/resume copy merge. The owning P6 construction MUST establish
+that saved fields carry the same available values as normal completion and that
+private protocol values do not escape. Narrow field conversions and missing copy
+facts keep their dependents explicit.
+
+The plan selects existing source controls and prunes only established protocol
+guards. It does not invoke composition, rebuild SSA or run dominance again.
+Source control order, original targets and transfer copies remain delivered
+facts. P7 lowers protocol terminal comments and the normal selected transfer at
+the original guard position; P9 consumes that schedule without analysis.
+Unmatched fields/effects, cyclic source content, executable handlers or incomplete
+control ownership retain the original readable layout. These alternatives are
+not whole-method output qualification or independent runtime verification.
+
 Every original edge has an `EdgePlan`. Each normal `LinkPlan` chooses a concrete
 `Goto`, `Next`, arm, loop predicate, `Break`, `Continue` or synchronized-boundary
 action. Return and throw retain their original terminal identity; P6 does not

@@ -253,6 +253,7 @@ failed deterministic check; repair acceptance still follows
 | `suspend-loop-two-sites` | two resume entries inside a loop, between-site effects, early loop exit, and repeated captures |
 | `suspend-finally-two-sites` | two suspend sites, resumed failures, physical marker returns, and normal/exceptional cleanup |
 | `suspend-default-shared-capture` | effectful dispatch default and a live seed captured across both suspend sites |
+| `suspend-three-step-effects` | three suspension sites, simultaneous captures, two early returns, shared/private marker returns, and normal-only effect boundary |
 | `kotlin-range-loops` | `until`, `downTo`, `step`, `repeat`, `forEach`, labelled `break@` |
 
 Each fixture's `review.md` records its qualitative LLM verdict and evidence.

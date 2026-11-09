@@ -109,6 +109,11 @@ pub(super) fn construct(
         }
     }
     let mut suspended: Vec<bool> = super::super::build::filled(code.statements.len(), false)?;
+    if let Some(flow) = code.emission.coroutine_flow() {
+        for site in &flow.sites {
+            suspended[site.statement.0 as usize] = true;
+        }
+    }
     if let Some(plan) = code.emission.coroutine_loop() {
         suspended[plan.statement.0 as usize] = true;
     }

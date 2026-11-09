@@ -157,6 +157,18 @@ impl Expressions<'_, '_> {
     }
 
     pub(super) fn block(&mut self, node: crate::p6::NodeId) -> Result<(), RenderError> {
+        if !self.out.abi_comment
+            && self
+                .code
+                .emission()
+                .coroutine_flow()
+                .is_some_and(|f| f.abi_entries.contains(&node))
+        {
+            self.out.indent()?;
+            self.out.put("// Diana: original ABI target ")?;
+            self.label_name(LabelId(node.0))?;
+            self.out.put("\n")?;
+        }
         self.label(LabelId(node.0))?;
         let b = &self.code.emission().blocks()[node.0 as usize];
         for action in &b.actions {
@@ -182,6 +194,14 @@ impl Expressions<'_, '_> {
                     }
                 }
             }
+        }
+        if let Some(site) = self
+            .code
+            .emission()
+            .coroutine_flow()
+            .and_then(|f| f.sites.iter().find(|p| p.guard == node))
+        {
+            return self.coroutine_guard(site);
         }
         match &b.end {
             BlockEnd::None => Ok(()),

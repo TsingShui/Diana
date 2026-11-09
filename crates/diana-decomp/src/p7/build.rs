@@ -139,6 +139,7 @@ fn construct(
     super::emission::construct(c.code)?;
     super::suspension::construct(&mut c)?;
     super::suspension::construct_loop(&mut c)?;
+    super::suspension::construct_flow(&mut c)?;
     let key = partial
         .header
         .as_ref()
@@ -146,6 +147,7 @@ fn construct(
         .key;
     super::compose::construct(c.code, planned.type_facts(), key)?;
     super::suspension::finish_loop(&mut c)?;
+    super::suspension::finish_flow(&mut c)?;
     super::local_names::construct(
         c.code,
         planned.storage_facts().definitions(),

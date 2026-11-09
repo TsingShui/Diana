@@ -353,6 +353,10 @@ fn producer(
     if code.emission.suspension(operation).is_some()
         || code
             .emission
+            .coroutine_flow()
+            .is_some_and(|p| p.sites.iter().any(|p| p.call == operation))
+        || code
+            .emission
             .coroutine_loop()
             .is_some_and(|p| p.call == operation)
     {

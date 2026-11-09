@@ -1,6 +1,26 @@
 # Fixture: kotlin-suspend-state
 
-## Current fetch review — shared result suffix outside its cases
+## Acyclic fetch source-body iteration
+
+Compared with `6178bdd`, fetch selects a source view for its two matched sites.
+The private original load binding is retained, including the original id and
+first + 1 arguments; only the frame argument is implicit. The negative first
+branch returns before a second call. State one restores id/result and state two
+restores captured first/result before their original shared tails. The original
+I$0/I$1 reads, state stores, distinct marker returns and invalid-state exception
+remain in ABI attachments. Number conversion and boxing remain original effects.
+
+For ordinary small nonnegative ids, load returns id * 2 and the second load
+returns (first + 1) * 2 before addition. A negative original id throws before
+any source branch; a positive multiplication overflow can make first negative
+and selects -1. A second argument overflow retains load's original negative
+failure. Nullable casts do not add a not-null check. The source/ABI schedule
+agrees with the input on these paths; guarded stays explicit and total retains
+its previous loop. The three-step private-marker challenge exercises the same
+selected-guard ownership without new analysis or numeric quality ratings.
+No actual helper/scheduler or final-plan behavior executor was run.
+
+## Prior ABI fetch review — shared result suffix outside its cases
 
 Compared the same prepared DEX on dd70d20 and this candidate. fetch's ABI switch
 now has private case bodies. Default retains its original invalid-state throw.

@@ -48,6 +48,21 @@ impl Expressions<'_, '_> {
     }
 
     fn statement_notes(&mut self, op: OpId, s: &Statement) -> Result<(), RenderError> {
+        if let Some(site) = self
+            .code
+            .emission()
+            .coroutine_flow()
+            .and_then(|f| f.sites.iter().find(|p| p.call == op))
+        {
+            self.out.fmt(format_args!(
+                " // Diana: inferred suspension, resume state={}; ABI ",
+                site.state
+            ))?;
+            let previous = std::mem::replace(&mut self.out.abi_comment, true);
+            let rendered = self.member(site.target, None, true);
+            self.out.abi_comment = previous;
+            rendered?;
+        }
         if let Some(plan) = self
             .code
             .emission()

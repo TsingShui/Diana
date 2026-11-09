@@ -20,21 +20,7 @@ impl Expressions<'_, '_> {
                 self.out.put("var ")?;
                 self.local(l.id)?;
                 self.out.put(": ")?;
-                match self.code.emission().local_types()[l.id.0 as usize] {
-                    LocalSpelling::Named(t) => self.kotlin_type(t)?,
-                    LocalSpelling::Machine(crate::p5::StorageType::Family { family, .. }) => {
-                        self.out.put(match family {
-                            crate::p4::Family::Integral => "kotlin.Int",
-                            crate::p4::Family::Long => "kotlin.Long",
-                            crate::p4::Family::Float => "kotlin.Float",
-                            crate::p4::Family::Double => "kotlin.Double",
-                            crate::p4::Family::Reference => "reference",
-                        })?
-                    }
-                    LocalSpelling::Machine(t) => {
-                        super::super::expressions::machine_type(self.out, t)?
-                    }
-                }
+                self.kotlin_local_type(self.code.emission().local_types()[l.id.0 as usize])?;
             } else {
                 match self.code.emission().local_types()[l.id.0 as usize] {
                     LocalSpelling::Named(t) => self.ty(t)?,

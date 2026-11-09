@@ -8,6 +8,7 @@ pub(super) enum Event {
     AbiMode(bool),
     CoroutineLoopHead(PredicateEmission),
     CoroutineControls,
+    CoroutineFlowControls,
     CoroutineEntry(crate::p6::NodeId),
     OriginOnly(bool),
     Finally,
