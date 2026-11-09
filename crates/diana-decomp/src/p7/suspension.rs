@@ -224,6 +224,112 @@ pub(super) fn construct_flow(c: &mut Context<'_, '_>) -> Result<(), ExpressionEr
     });
     Ok(())
 }
+/// Source/ABI visibility consumes owned P7 reads, never another P5-use scan.
+/// Selected copies and construction operands keep their original storage facts.
+fn visible_storage(
+    code: &MethodCode,
+    nodes: impl Iterator<Item = crate::p6::NodeId>,
+    transfers: impl Iterator<Item = TransferId>,
+    protocol: &[crate::p2::OpId],
+) -> Result<Vec<bool>, ExpressionError> {
+    let mut visible = super::build::filled(code.locals.len(), false)?;
+    let mut mark = |source: Option<crate::p5::LocalId>| {
+        if let Some(local) = source {
+            visible[local.0 as usize] = true;
+        }
+    };
+    for node in nodes {
+        let block = &code.blocks[node.0 as usize];
+        for index in block.original_operations.clone() {
+            let source = &code.operations[index as usize];
+            if protocol.contains(&source.source) {
+                continue;
+            }
+            let Some(id) = source.statement else { continue };
+            let statement = code.require_statement(id)?;
+            let implicit = match statement.kind {
+                StatementKind::Evaluate { expression } => code
+                    .emission
+                    .implicit_continuation(expression)
+                    .map(|(_, id)| id),
+                _ => None,
+            };
+            if let Arguments::Known(inputs) = &statement.inputs {
+                for &expression in inputs {
+                    if implicit != Some(expression)
+                        && let Some(Ok(source)) = code.expressions[expression.0 as usize]
+                            .origin
+                            .as_ref()
+                            .map(|origin| origin.read)
+                    {
+                        mark(source.local());
+                    }
+                }
+            }
+            if let StatementKind::Construction(group) = statement.kind {
+                for &source in &code.constructions[group.0 as usize].arguments {
+                    mark(source.local());
+                }
+            }
+            for output in &statement.outputs {
+                if let crate::p5::Materialization::Store(local) = output.materialization() {
+                    mark(Some(local));
+                }
+            }
+        }
+        if !matches!(block.completion, BlockCompletion::None)
+            && !code
+                .emission
+                .coroutine_flow
+                .as_ref()
+                .is_some_and(|flow| flow.sites.iter().any(|site| site.guard == node))
+        {
+            for &expression in &code.terminals[block.original_block.0 as usize].inputs {
+                if let Some(Ok(source)) = code.expressions[expression.0 as usize]
+                    .origin
+                    .as_ref()
+                    .map(|origin| origin.read)
+                {
+                    mark(source.local());
+                }
+            }
+        }
+    }
+    for transfer in transfers {
+        for &bundle in &code.emission.transfers[transfer.0 as usize].copies {
+            for step in &code.copies[bundle.0 as usize].steps {
+                match *step {
+                    CopyStatement::Assign {
+                        destination,
+                        original,
+                        ..
+                    } => {
+                        visible[destination.0 as usize] = true;
+                        if let Some(source) = original.local() {
+                            visible[source.0 as usize] = true;
+                        }
+                    }
+                    CopyStatement::Save {
+                        destination,
+                        source,
+                    } => {
+                        visible[destination.0 as usize] = true;
+                        visible[source.0 as usize] = true;
+                    }
+                }
+            }
+        }
+    }
+    Ok(visible)
+}
+fn hide_unobserved(code: &mut MethodCode, visible: Vec<bool>) {
+    for (index, used) in visible.into_iter().enumerate() {
+        if !used {
+            code.emission.hidden_locals[index] = true;
+        }
+    }
+}
+
 fn vec_fallible<T>(value: T) -> Result<Vec<T>, ExpressionError> {
     let mut result = Vec::new();
     push(&mut result, value)?;
@@ -328,85 +434,15 @@ pub(super) fn finish_flow(c: &mut Context<'_, '_>) -> Result<(), ExpressionError
                 .show_label = true;
         }
     }
-    // Suppressed ABI locals retain declarations in comments, never new values.
-    let mut visible = super::build::filled(c.code.locals.len(), false)?;
-    for &node in plan.source_nodes() {
-        for index in c.planned.facts().nodes()[node.0 as usize].operations() {
-            let op = crate::p2::OpId(index);
-            if plan.protocol_operations().contains(&op)
-                || c.code.operations[index as usize].statement.is_none()
-            {
-                continue;
-            }
-            if let Some(Ok(uses)) = c.planned.storage_facts().operation_uses(op) {
-                for (arg, u) in uses.iter().enumerate() {
-                    if plan
-                        .sites()
-                        .iter()
-                        .any(|p| p.call() == op && p.continuation_argument() as usize == arg)
-                    {
-                        continue;
-                    }
-                    if let Some(local) = u.read().ok().and_then(crate::p5::StorageRead::local) {
-                        visible[local.0 as usize] = true;
-                    }
-                }
-            }
-            if let Some(s) = c.code.operations[index as usize].statement {
-                for d in &c.code.require_statement(s)?.outputs {
-                    if let crate::p5::Materialization::Store(l) = d.materialization() {
-                        visible[l.0 as usize] = true;
-                    }
-                }
-            }
-        }
-    }
-    // Keep every local accessed by original executable copy/terminal products.
-    for &node in plan.source_nodes() {
-        let n = &c.planned.facts().nodes()[node.0 as usize];
-        if n.has_terminal()
-            && !plan.sites().iter().any(|p| p.guard() == node)
-            && let Some(uses) = c.planned.storage_facts().terminal_uses(n.block())
-        {
-            for u in uses {
-                if let Some(l) = u.read().ok().and_then(crate::p5::StorageRead::local) {
-                    visible[l.0 as usize] = true;
-                }
-            }
-        }
-        for &transfer in &c.code.blocks[node.0 as usize].transfers {
-            for &bundle in &c.code.emission.transfers[transfer.0 as usize].copies {
-                for step in &c.code.copies[bundle.0 as usize].steps {
-                    match *step {
-                        CopyStatement::Assign {
-                            destination,
-                            expression,
-                            ..
-                        } => {
-                            visible[destination.0 as usize] = true;
-                            if let ExprKind::Read { storage, .. } =
-                                c.code.expressions[expression.0 as usize].kind
-                            {
-                                visible[storage.0 as usize] = true;
-                            }
-                        }
-                        CopyStatement::Save {
-                            destination,
-                            source,
-                        } => {
-                            visible[destination.0 as usize] = true;
-                            visible[source.0 as usize] = true;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    for (index, used) in visible.into_iter().enumerate() {
-        if !used {
-            c.code.emission.hidden_locals[index] = true;
-        }
-    }
+    let visible = visible_storage(
+        c.code,
+        plan.source_nodes().iter().copied(),
+        plan.source_nodes()
+            .iter()
+            .flat_map(|node| c.code.blocks[node.0 as usize].transfers.iter().copied()),
+        plan.protocol_operations(),
+    )?;
+    hide_unobserved(c.code, visible);
     c.code
         .emission
         .coroutine_flow
@@ -531,86 +567,21 @@ pub(super) fn finish_loop(c: &mut Context<'_, '_>) -> Result<(), ExpressionError
     for &node in plan.initial().iter().chain(plan.body()).chain(plan.tail()) {
         c.code.emission.blocks[node.0 as usize].show_label = false;
     }
-    // A declaration remains visible whenever executable code uses that storage.
-    // ABI attachments still own their original definitions and reads.
-    let mut visible = super::build::filled(c.code.locals.len(), false)?;
-    for &node in plan.initial().iter().chain(plan.body()).chain(plan.tail()) {
-        let original = &c.planned.facts().nodes()[node.0 as usize];
-        for index in original.operations() {
-            let op = crate::p2::OpId(index);
-            if plan.protocol_operations().contains(&op) {
-                continue;
-            }
-            let source = &c.code.operations[index as usize];
-            if source.statement.is_none() {
-                continue;
-            }
-            if let Some(id) = source.statement {
-                for output in &c.code.require_statement(id)?.outputs {
-                    if let crate::p5::Materialization::Store(local) = output.materialization() {
-                        visible[local.0 as usize] = true;
-                    }
-                }
-            }
-            if let Some(Ok(uses)) = c.planned.storage_facts().operation_uses(op) {
-                for (argument, use_) in uses.iter().enumerate() {
-                    if op == plan.call() && argument == plan.continuation_argument() as usize {
-                        continue;
-                    }
-                    if let Some(local) = use_.read().ok().and_then(crate::p5::StorageRead::local) {
-                        visible[local.0 as usize] = true;
-                    }
-                }
-            }
-        }
-        if original.has_terminal()
-            && let Some(uses) = c.planned.storage_facts().terminal_uses(original.block())
-        {
-            for use_ in uses {
-                if let Some(local) = use_.read().ok().and_then(crate::p5::StorageRead::local) {
-                    visible[local.0 as usize] = true;
-                }
-            }
-        }
-    }
     let condition = plan.condition();
     c.code.emission.blocks[condition.node().0 as usize].end = BlockEnd::None;
     c.code.emission.blocks[condition.node().0 as usize].show_label = false;
-    if let Some(uses) = c
-        .planned
-        .storage_facts()
-        .terminal_uses(c.planned.facts().nodes()[condition.node().0 as usize].block())
-    {
-        for use_ in uses {
-            if let Some(local) = use_.read().ok().and_then(crate::p5::StorageRead::local) {
-                visible[local.0 as usize] = true;
-            }
-        }
-    }
-    for &link in plan.normal_links() {
-        for &bundle in &c.code.emission.transfers[link.0 as usize].copies {
-            for step in &c.code.copies[bundle.0 as usize].steps {
-                if let CopyStatement::Assign {
-                    destination,
-                    expression,
-                    ..
-                } = *step
-                {
-                    visible[destination.0 as usize] = true;
-                    if let ExprKind::Read { storage, .. } =
-                        c.code.expressions[expression.0 as usize].kind
-                    {
-                        visible[storage.0 as usize] = true;
-                    }
-                }
-            }
-        }
-    }
-    for (index, used) in visible.into_iter().enumerate() {
-        if !used {
-            c.code.emission.hidden_locals[index] = true;
-        }
-    }
+    let visible = visible_storage(
+        c.code,
+        plan.initial()
+            .iter()
+            .chain(plan.body())
+            .chain(plan.tail())
+            .copied()
+            .chain(std::iter::once(condition.node())),
+        plan.normal_links().iter().map(|link| TransferId(link.0)),
+        plan.protocol_operations(),
+    )?;
+    hide_unobserved(c.code, visible);
     let mut forwarded = Vec::new();
     for &link in plan.normal_links() {
         if !plan

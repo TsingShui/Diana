@@ -593,15 +593,40 @@ structure from the remaining replacement; the complete design is not accepted.
 | Operation ownership | Operation records own body data; original coordinates replace the statement arena and reverse map. Nested `Evaluation`/`nested_at` identify one execution owner. Selected operation phases replace copied body phase lists. | Declaration/copy check attachments, protocol variants and other placement bookkeeping remain to be consolidated where their semantics permit. |
 | Expression covers | Ordinary and condition consumers share ordered suffix forests. Required checks use the same producer and installer. Statement, terminal and later-read check searches share one bounded cursor. | Dependency-driven reconsideration and broader cross-context cover obligations are incomplete. |
 | Local fixed points | Selected roots leave the active suffix; rejected condition proposals leave the product unchanged. | The P6 and P7 pipelines still run ordered passes. Neither stage has the complete dependency-driven local convergence specified by the design. |
-| Finalization | P9 consumes selected layouts and nested operations. Existing declaration and label passes remain. | Protocol traversal and a single final declaration/label derivation still need replacement. |
+| Finalization | P9 consumes selected layouts and nested operations. Existing declaration and label passes remain. Loop/flow visibility shares one P7-owned observer query. | Protocol traversal, copy forwarding and a single final declaration/label derivation still need replacement. |
 
-Against `f6e7893`, the current engine production tree has 68,087 physical Rust
-source lines, compared with 68,495 at the baseline: 408 fewer lines. This count
+Against `f6e7893`, the current engine production tree has 68,062 physical Rust
+source lines, compared with 68,495 at the baseline: 433 fewer lines. This count
 includes every `*.rs` file under `crates/diana-decomp/src/`, including shared
 helpers, comments and blank lines; tests and documentation are excluded. The
 small reduction does not establish the design's substantial size objective or
 comparable recovery capability. Full replacement acceptance and a comparative
 recovery evaluation remain unrun.
+
+## Owned protocol reads and redundant-root normalization
+
+Loop and multi-site source visibility consume one query over owned P7 bodies,
+original read origins, construction arguments, terminals and edge copies. The
+separate upstream-use scans are removed. Assign and Save retain their actual
+storage observers. This does not yet replace protocol forwarding or executable
+layout variants.
+
+The [protocol challenge](../../quality/fixtures/kotlin/protocol-owned-reads/README.md)
+adds construction and observed fields after normal/resumed results. It exposed
+an omitted-consumer defect: an already redundant check could own an alias Move,
+then omit its execution and origin. Redundant roots now leave the suffix before
+consumer nomination. The
+[construction/alias challenge](../../quality/fixtures/atoms/redundant-consumer-cover/README.md)
+shows the baseline returning an unwritten alias and retains allocation,
+constructor, intervening-effect and fault order after the repair.
+
+Thirty-five scoped nextest checks pass, including six modeled alias scenarios
+and the two protocol challenges. Restoring the old consumer rule fails both
+normal alias paths with MissingValue. The model distinguishes that correspondence
+failure from unsupported semantics. The source was restored; a negative run is
+not a passing gate. Coroutine/VM execution and full design acceptance remain
+unrun. This slice removes 25 production lines against `f859adf`; substantial
+source-size and comparative recovery objectives remain unmet.
 
 ## Shared original membership
 

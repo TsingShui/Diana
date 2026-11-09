@@ -1644,6 +1644,10 @@ fn cover_operations(
 ) -> Result<(), ExpressionError> {
     let mut roots = Vec::new();
     for &(operation, statement) in actions {
+        // A normalized-away root cannot own a producer's execution.
+        if code.emission.omitted_check(statement).is_some() {
+            continue;
+        }
         let source = &code.require_statement(statement)?;
         if matches!(
             source.kind,
@@ -1667,11 +1671,11 @@ fn cover_operations(
                 }
             }
         }
-        // Every acting check is an ordinary root. Only a producer-owned
-        // evaluation or an established redundant check leaves the suffix.
-        while roots.last().is_some_and(|&(operation, statement)| {
-            code.nested_operation(operation) || code.emission.omitted_check(statement).is_some()
-        }) {
+        // Every remaining check acts. Producer-owned evaluations leave the suffix.
+        while roots
+            .last()
+            .is_some_and(|&(operation, _)| code.nested_operation(operation))
+        {
             roots.pop();
         }
         if !code.nested_operation(operation) {

@@ -86,7 +86,11 @@ Scratch allocation remains fallible; these indexes supply no new analysis facts.
 
 P7 derives site annotations and established redundant-check records before
 constructing its use index and condition covers. Redundant-check reads do not
-become executable value observers. Required casts are ordinary readonly
+become executable value observers. A redundant check leaves the ordinary root
+sequence before it can consume any producer. Its zero-width source anchor cannot
+own an evaluation or replace the alias/result commit needed by a later consumer.
+Remaining producers retain their original suffix positions until a real consumer
+admits their joint cover. Required casts are ordinary readonly
 producers: their returned operand keeps the original value/state, and their
 operation still performs its original check without writing a register. The
 common cover requires an available reference binding, established initialization,
@@ -634,13 +638,24 @@ original storage identities, copies or recovery gaps, and do not rebuild CFG,
 SSA or dominance. Plan scratch failures retain the existing P7 error classification
 and partial-product behavior.
 
-P7 selects storage visibility once after composition, in declaration placement.
+Ordinary declaration placement selects materialized storage visibility after composition.
 Composed results distinguish value-only evaluation from retained Store
 materialization. Removing one definition does not hide a shared local still
 needed by another retained write. Declaration scope checks consume these
 selected writes and the final locations of composed reads, rather than treating
 an eliminated original store as an executable assignment. Original definitions,
 commits, copies and state identities remain inspectable.
+
+Closed loop and multi-site protocol finalization share one source/ABI storage
+observer query over the owned P7 product. It consumes original operation ranges,
+body input read origins and Store definitions, construction argument reads,
+non-guard terminal inputs and selected edge-copy steps. The matched continuation
+occurrence alone is implicit. Literal/unavailable reads establish no invented
+local, and an unavailable item does not erase independent observers. The query
+does not reopen P5 uses, infer aliases or move an operation. It handles Assign
+and Save from their delivered source/destination facts. Existing protocol-copy
+forwarding still determines selected storage spelling separately; original read
+origins retain their original ValueId/StateId/storage correspondence.
 
 `EmissionPlan` is P9's sole execution layout. It binds the supplied P5 copy
 locations to operation, terminal and selected-edge phases without rescheduling

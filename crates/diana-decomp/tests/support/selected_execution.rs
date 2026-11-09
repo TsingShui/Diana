@@ -40,6 +40,9 @@ impl Value {
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Fault {
+    /// A selected read has no executed definition; this is a correspondence
+    /// failure, distinct from an unimplemented operation in the test model.
+    MissingValue(StorageId),
     #[allow(dead_code)]
     Runtime,
     #[allow(dead_code)]
@@ -116,7 +119,7 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
         }
         match &expression.kind {
             ExprKind::Read { storage, .. } | ExprKind::Snapshot { storage } => {
-                self.locals[storage.0 as usize].ok_or(Fault::Unsupported("unbound local"))
+                self.locals[storage.0 as usize].ok_or(Fault::MissingValue(*storage))
             }
             ExprKind::Literal { bits, .. } if bits.width == diana_decomp::SlotWidth::One => {
                 Ok(Value::Int((bits.value as u32) as i32))
