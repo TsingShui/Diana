@@ -212,6 +212,13 @@ The shared P7 index answers only these categories:
 | Where does this operation execute? | P6 roles/targets plus P7 selected placement | Admit the actual cover without inventing another execution context. |
 | Who still observes its result or phase? | Reads, copies, snapshots, initialization and protocol facts | Retain necessary stores and original completion behavior. |
 
+One P7-private walk supplies ordered expression entry, completion and nested
+ownership events. Carrier queries stop at another operation's owned evaluation;
+selected-read collection follows that established edge. Statement and terminal
+roots share the same operand order, and multiplicity uses the same child grammar.
+A plain parameter or literal before the checked read does not create an effect
+boundary; an acting expression, unavailable input or foreign carrier does.
+
 These queries replace carrier-specific scans. They do not create another source
 variable allocator, register interpreter, SSA solver or whole-method flow analyzer.
 Exact identity does not prove that relocating a producer is safe.

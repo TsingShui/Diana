@@ -23,6 +23,7 @@ pub use suspension::{
     Suspension,
 };
 mod values;
+mod walk;
 pub use build::ExpressionError;
 pub(crate) use build::{MethodBuild, build_declaration, build_method};
 pub use control::*;

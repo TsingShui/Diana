@@ -2,9 +2,8 @@
 //! Inputs and independent scenarios: atoms/joint-expression-cover/README.md.
 
 use diana_decomp::p7::{
-    Arguments, BlockEnd, BodyAction, ControlId, EmissionLayout, EvaluationResult, ExprId, ExprKind,
-    MemberDeclaration, MethodCode, ReferenceDeclaration, StatementKind, TerminalKind,
-    TransferSpelling,
+    CheckCarrier, ExprId, ExprKind, MemberDeclaration, MethodCode, ReferenceDeclaration,
+    StatementKind,
 };
 use diana_decomp::p9::{Origin, Rendered};
 
@@ -138,10 +137,15 @@ fn refusing_the_condition_keeps_the_whole_effect_schedule() {
             let StatementKind::Evaluate { expression } = statement.kind else {
                 unreachable!()
             };
-            let mut replay = Replay::new(code, 0, None);
-            assert_eq!(replay.value(expression).unwrap(), 1112);
+            let (result, events) = replay(
+                code,
+                0,
+                None,
+                Some((expression, CheckCarrier::Statement(statement.id))),
+            );
+            assert_eq!(result, Ok(1112));
             assert_eq!(
-                replay.events,
+                events,
                 vec![Event::Take(1), Event::Take(2), Event::Pair(11, 12)]
             );
             assert_eq!(text.matches("JointCover.take(").count(), 2);
@@ -208,178 +212,47 @@ fn call_name(code: &MethodCode, expression: ExprId) -> Option<String> {
     Some(String::from_utf16(&name.units).unwrap())
 }
 
-// Executes only these fixtures' delivered scalar expressions and straight
-// Sequence/Block schedule. Unknown forms fail; no upstream graph is replayed.
-struct Replay<'a> {
-    code: &'a MethodCode,
-    locals: Vec<Option<i32>>,
-    events: Vec<Event>,
+#[path = "support/selected_execution.rs"]
+mod selected_execution;
+use selected_execution::{Executor, Fault, Value};
+
+fn replay(
+    code: &MethodCode,
+    seed: i32,
     fault: Option<usize>,
-}
-impl<'a> Replay<'a> {
-    fn new(code: &'a MethodCode, seed: i32, fault: Option<usize>) -> Self {
-        let mut locals = vec![None; code.locals().len()];
-        for local in code.locals() {
-            if matches!(
-                local.original.kind(),
-                diana_decomp::p5::LocalKind::Parameter {
-                    role: diana_decomp::p3::EntryRole::Parameter(0),
-                    ..
-                }
-            ) {
-                locals[local.original.representative().0 as usize] = Some(seed);
-            }
-        }
-        Self {
-            code,
-            locals,
-            events: Vec::new(),
-            fault,
-        }
-    }
-    fn value(&mut self, id: ExprId) -> Result<i32, usize> {
-        Ok(self.expression(id)?.expect("void is not a scalar operand"))
-    }
-    fn expression(&mut self, id: ExprId) -> Result<Option<i32>, usize> {
-        let expression = &self.code.expressions()[id.0 as usize];
-        if let Some(evaluation) = expression.evaluation {
-            let value = self.value(evaluation.expression)?;
-            if let EvaluationResult::Store(local) = evaluation.result {
-                self.locals[local.0 as usize] = Some(value);
-            }
-            return Ok(Some(value));
-        }
-        let value = match &expression.kind {
-            ExprKind::Read { storage, .. } => {
-                self.locals[storage.0 as usize].expect("uncaptured local")
-            }
-            ExprKind::Literal { bits, .. } => {
-                assert_eq!(bits.width, diana_decomp::SlotWidth::One);
-                (bits.value as u32) as i32
-            }
-            ExprKind::Binary {
-                op: diana_decomp::p2::BinaryOp::AddInt,
-                left,
-                right,
-            } => {
-                let left = self.value(*left)?;
-                left.wrapping_add(self.value(*right)?)
-            }
-            ExprKind::Call(call) => {
-                assert!(call.receiver.is_none());
-                let Arguments::Known(inputs) = &call.arguments else {
-                    panic!("unknown call operands")
-                };
-                let arguments = inputs
-                    .iter()
-                    .map(|&input| self.value(input))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let (event, result) =
-                    match (call_name(self.code, id).as_deref(), arguments.as_slice()) {
-                        (Some("take"), &[x]) => (Event::Take(x), Some(x.wrapping_add(10))),
-                        (Some("pair"), &[left, right]) => (
-                            Event::Pair(left, right),
-                            Some(left.wrapping_mul(100).wrapping_add(right)),
-                        ),
-                        (Some("mark"), &[x]) => (Event::Mark(x), None),
-                        _ => panic!("unmodeled helper"),
-                    };
-                let index = self.events.len();
-                self.events.push(event);
-                if self.fault == Some(index) {
-                    return Err(index);
-                }
-                return Ok(result);
-            }
-            _ => panic!("unsupported scalar expression"),
+    expression: Option<(ExprId, CheckCarrier)>,
+) -> (Result<i32, usize>, Vec<Event>) {
+    let mut events = Vec::new();
+    let mut run = Executor::new(code, &[Value::Int(seed)], |name, arguments| {
+        let (event, value) = match (name, arguments) {
+            ("take", &[Value::Int(x)]) => (Event::Take(x), Value::Int(x.wrapping_add(10))),
+            ("pair", &[Value::Int(left), Value::Int(right)]) => (
+                Event::Pair(left, right),
+                Value::Int(left.wrapping_mul(100).wrapping_add(right)),
+            ),
+            ("mark", &[Value::Int(x)]) => (Event::Mark(x), Value::Unit),
+            _ => return Err(Fault::Unsupported("joint helper")),
         };
-        Ok(Some(value))
-    }
-    fn control(&mut self, id: ControlId) -> Result<Option<i32>, usize> {
-        let control = &self.code.controls()[id.0 as usize];
-        if self.code.control_omitted(id) {
-            return Ok(None);
+        let index = events.len();
+        events.push(event);
+        if fault == Some(index) {
+            Err(Fault::Helper(index))
+        } else {
+            Ok(value)
         }
-        match &control.layout {
-            EmissionLayout::Sequence => {
-                for &child in control.children() {
-                    if let Some(value) = self.control(child)? {
-                        return Ok(Some(value));
-                    }
-                }
-                Ok(None)
-            }
-            EmissionLayout::Block(node) => {
-                let block = &self.code.emission().blocks()[node.0 as usize];
-                for action in &block.actions {
-                    let BodyAction::Statement {
-                        operation,
-                        statement,
-                    } = *action
-                    else {
-                        panic!("unsupported body event")
-                    };
-                    if self.code.nested_operation(operation)
-                        || self.code.origin_only_operation(operation)
-                    {
-                        continue;
-                    }
-                    let phases = &self.code.emission().operations()[operation.0 as usize];
-                    assert!(
-                        phases.before.is_empty()
-                            && phases.snapshots.is_empty()
-                            && phases.after.is_empty()
-                    );
-                    let statement = &self.code.statements()[statement.0 as usize];
-                    let expression = match statement.kind {
-                        StatementKind::Move { expression, .. }
-                        | StatementKind::Evaluate { expression } => expression,
-                        _ => panic!("unsupported statement"),
-                    };
-                    let value = self.expression(expression)?;
-                    for output in &statement.outputs {
-                        let diana_decomp::p5::Materialization::Store(local) =
-                            output.materialization()
-                        else {
-                            panic!("unsupported output")
-                        };
-                        self.locals[local.0 as usize] = Some(value.expect("value store"));
-                    }
-                }
-                match &block.end {
-                    BlockEnd::Terminal(block) => {
-                        let TerminalKind::Return(Some(value)) =
-                            self.code.terminals()[block.0 as usize].kind
-                        else {
-                            panic!("unsupported terminal")
-                        };
-                        assert!(
-                            self.code.emission().terminals()[block.0 as usize]
-                                .before
-                                .is_empty()
-                        );
-                        Ok(Some(self.value(value)?))
-                    }
-                    BlockEnd::Transfers(transfers) => {
-                        for transfer in transfers {
-                            let transfer = &self.code.emission().transfers()[transfer.0 as usize];
-                            assert!(matches!(transfer.spelling, TransferSpelling::Fallthrough));
-                            assert!(transfer.copies.is_empty());
-                        }
-                        Ok(None)
-                    }
-                    BlockEnd::None => Ok(None),
-                }
-            }
-            _ => panic!("unsupported control layout"),
-        }
-    }
-    fn run(&mut self) -> Result<i32, usize> {
-        assert!(self.code.emission().initial().is_empty());
-        Ok(self
-            .control(self.code.root().unwrap())?
-            .expect("delivered return"))
-    }
+    });
+    let result = match expression {
+        Some((expression, carrier)) => run.expression(expression, carrier),
+        None => run.run(),
+    };
+    drop(run);
+    (
+        result.map(Value::int).map_err(|fault| match fault {
+            Fault::Helper(index) => index,
+            _ => panic!("unmodeled joint execution {fault:?}"),
+        }),
+        events,
+    )
 }
 
 #[test]
@@ -441,13 +314,13 @@ fn joint_forests_preserve_results_effects_and_every_reachable_call_fault() {
                         }
                         _ => unreachable!(),
                     };
-                    let mut replay = Replay::new(code, seed, None);
-                    assert_eq!(replay.run(), Ok(result), "{name}({seed})");
-                    assert_eq!(replay.events, events);
+                    let (actual, trace) = replay(code, seed, None, None);
+                    assert_eq!(actual, Ok(result), "{name}({seed})");
+                    assert_eq!(trace, events);
                     for fault in 0..events.len() {
-                        let mut replay = Replay::new(code, seed, Some(fault));
-                        assert_eq!(replay.run(), Err(fault), "{name}({seed}) fault {fault}");
-                        assert_eq!(replay.events, events[..=fault]);
+                        let (actual, trace) = replay(code, seed, Some(fault), None);
+                        assert_eq!(actual, Err(fault), "{name}({seed}) fault {fault}");
+                        assert_eq!(trace, events[..=fault]);
                     }
                 }
                 if name == "ordinary" || name == "tree" {

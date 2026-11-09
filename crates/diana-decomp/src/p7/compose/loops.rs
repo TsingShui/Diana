@@ -21,6 +21,7 @@
 //! cannot be established, the copies stay on their original edge.
 
 use super::super::build::{bug, filled};
+use super::super::walk::{Event, Roots, Scope, Walk};
 use super::super::*;
 use crate::p3::UseSite;
 
@@ -225,34 +226,14 @@ fn collect_reads(
     expression: ExprId,
     out: &mut Vec<StorageId>,
 ) -> Result<(), ExpressionError> {
-    let Some(expression) = code.expressions.get(expression.0 as usize) else {
-        return Ok(());
-    };
-    if let Some(composed) = code.evaluation(expression.id) {
-        return collect_reads(code, composed.expression, out);
-    }
-    let mut nested = [None; 2];
-    match &expression.kind {
-        ExprKind::Read { storage, .. } | ExprKind::Snapshot { storage } => {
-            crate::substrate::owned::push(out, *storage)?;
+    let mut walk = Walk::new(Roots::one(expression), Scope::Selected)?;
+    while let Some(event) = walk.next(code)? {
+        if let Event::Enter(id) = event
+            && let ExprKind::Read { storage, .. } | ExprKind::Snapshot { storage } =
+                code.expressions[id.0 as usize].kind
+        {
+            crate::substrate::owned::push(out, storage)?;
         }
-        ExprKind::Unary { value, .. } | ExprKind::ArrayLength(value) => nested[0] = Some(*value),
-        ExprKind::Binary { left, right, .. }
-        | ExprKind::Compare { left, right, .. }
-        | ExprKind::Array {
-            array: left,
-            index: right,
-            ..
-        } => {
-            nested[0] = Some(*left);
-            nested[1] = Some(*right);
-        }
-        ExprKind::InstanceOf { value, .. } => nested[0] = Some(*value),
-        ExprKind::NewArray { length, .. } => nested[0] = Some(*length),
-        _ => {}
-    }
-    for value in nested.into_iter().flatten() {
-        collect_reads(code, value, out)?;
     }
     Ok(())
 }

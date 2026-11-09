@@ -582,6 +582,15 @@ establish whole-method behavioral correctness.
 
 ## Shared control delivery
 
+P7 cast queries and loop-read collection now share one private expression walk.
+The safe-read query and occurrence count consume the same syntax grammar and
+preserve nested carrier boundaries. New cast-carrier-order/contexts inputs recover
+the right comparison operand, a later call argument and a first short-circuit
+test without moving checks past selections, helper effects or catch boundaries.
+Six new cases execute 41 reference scenarios; the joint-expression checks reuse
+the same independent test executor. The scoped eleven-test run and engine Clippy
+pass. Historical fixtures remain deferred during the structural rewrite.
+
 P7 stores selected nested Evaluation edges in the expression arena and each
 original operation names its unique nested_at occurrence. P9 obtains statement,
 PC and result-commit origins from that original operation. The separate composed

@@ -58,6 +58,16 @@ operation identity and selects each portion's last member for its closing anchor
 That installation order does not change the selected expression's evaluation order.
 Scratch allocation remains fallible; these indexes supply no new analysis facts.
 
+P7's private expression walk consumes owned syntax children and selected
+Evaluation edges. It publishes entry, completion and nested-carrier events to
+P7 consumers, not a new analysis product or upstream fact view. Carrier queries
+stop at nested ownership; selected-read queries follow the already selected
+producer. Checked child references and fallible work storage retain owning-stage
+construction failures. Cast placement consumes the actual statement/terminal
+operand order and selects a matching available read before any preceding
+observable evaluation. Ordinary local reads and literals add no such event.
+Allocation, unresolved expressions and nested carrier boundaries remain barriers.
+
 The single `Control` arena contains each control's selected `ControlLayout`,
 execution children, continuation and presentation, alongside its retained source
 facts. P7 consumes the common P6 grammar directly rather than translating another
