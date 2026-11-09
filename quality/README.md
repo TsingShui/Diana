@@ -165,6 +165,7 @@ failed deterministic check; repair acceptance still follows
 | `mutable-iteration-step` | Body-mutated update operands, cleanup and distinct no-body nonlocal condition completions |
 | `quiet-condition-copies` | Origin-only condition edges beside actual call-result and parameter Phi assignments |
 | `terminal-guard-arms` | Return/throw guards with exact other-edge copies, parent scope, recovering-catch refusal and cleanup |
+| `short-circuit-shared-routes` | Ordered effectful disjunctions through empty selected routes; copy, effect, entry, cycle and explicit-prelude guards |
 | `pure-tail-finally` | Whole-operation normal preparation, literal cleanup prefixes, scoped bypasses and late cleanup failure |
 | `refined-carriers` | Adjacent cast/array carriers and checks that must precede calls and early returns |
 

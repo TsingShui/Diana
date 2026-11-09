@@ -1,6 +1,6 @@
 # Fixture: kotlin-suspend-state
 
-## Current verdict — explicit raw selector destination
+## Current fetch review — explicit raw selector destination
 
 Compared the same prepared DEX on7354242 and this candidate. Only fetch's raw
 default gains an explicit goto to its original invalid-state throw label.
@@ -16,6 +16,53 @@ selector targets; P7 preserves supplied gotos instead of treating the owning
 Block's next statement as the next case. Original P2/P3/P4/P5 facts agree.
 The bounded review covers this changed route and reuses prior reading elsewhere;
 no behavioral executor, Java recompilation or device run occurred.
+
+## Current total loop review
+
+This LLM review compares `Case.kt::total`, its prepared DEX, and the suspend-loop
+candidate against baseline `73542421d671be2fc169b72c7233aa0b5b955fd5`.
+The reviewed engine candidate is `4c6a3d1`; the integration recheck uses `8785d2f`.
+The signature retains Object, the original int parameter, and
+Continuation<? super Integer>, and adds `suspend`. The body has initial sum/index,
+a head-tested while, one load call, the original Number conversion and additions,
+and the boxed return. The old whole loop/reentry graph becomes ABI attachments
+plus the source order, rather than disappearing with its original facts.
+
+For a nonpositive limit, the initial predicate returns boxed zero without load.
+For each nonnegative index below limit, load's original helper rejects negative
+arguments only, then returns boxed index * 2. The returned int contributes to sum
+before index increases. For limit 4 the loads receive 0, 1, 2, 3 and the result is
+12; limit 1 returns 0. Integer overflow keeps the original DEX integer operations.
+
+The resume corridor restores I$0 (limit), I$2 (index), and I$3 (captured sum), then
+checks failure before the Number cast or arithmetic. I$1 is also read, as in the
+input, although that read does not supply the eventual sum update. Both result
+routes reach the same original sum/index update. The three forwarded copies
+read the call result, old sum and old index before their sources change; no
+update or call is duplicated. The original state stores precede load. A marker
+result returns before the tail, and a resumed failure skips all tail work.
+Frame selection, high-bit label adjustment, invalid-state throw/message and ABI
+targets remain visible, with original source mappings. The view infers suspension
+from the input protocol; the supplied load helper itself completes immediately.
+
+No contradiction was found in these reviewed paths. The
+[captured-effect challenge](../suspend-loop-captured-effects/review.md) adds another
+mutable value, a captured expression, helper effects, and mismatching boundaries.
+Other original fixture members had unchanged output in that suspend-loop
+comparison. The concurrent protected-exit change additionally preserves fetch's
+explicit raw default as reviewed above; it does not alter total's source-body
+alternative. Not run: a final-plan behavioral executor or actual coroutine
+scheduling.
+
+## Combined integration evidence
+
+The isolated integration combines protected-exit commit f285a13 with main64aaa04,
+retaining both current reviews above. Default and all-feature engine nextest each
+pass99 checks. The 93-fixture comparison against main64aaa04 preserves original
+P2/P3/P4/P5 facts and has no stopped members or rendering failures. total's complete
+source-body publication is identical to main64aaa04; fetch retains the explicit
+original default reviewed above. The two concurrent challenge outputs are also
+unchanged. This is product/source preservation, not executed coroutine behavior.
 
 ## Prior verdict — terminal guard follow-up
 

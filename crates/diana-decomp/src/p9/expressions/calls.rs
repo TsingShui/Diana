@@ -21,16 +21,20 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
         }
 
         push_event(work, ExprEvent::Text(")"))?;
-        if let Some(plan) = self.code.suspension_call(id) {
+        if !self.out.abi_comment
+            && let Some((argument, continuation)) = self.code.implicit_continuation(id)
+        {
             let Arguments::Known(arguments) = &call.arguments else {
                 return Err(RenderError::Invariant(
                     "suspension lost its known arguments",
                 ));
             };
-            let visible = arguments.get(..plan.continuation_argument as usize).ok_or(
-                RenderError::Invariant("suspension lost its argument projection"),
-            )?;
-            push_event(work, ExprEvent::Anchor(plan.continuation))?;
+            let visible = arguments
+                .get(..argument as usize)
+                .ok_or(RenderError::Invariant(
+                    "suspension lost its argument projection",
+                ))?;
+            push_event(work, ExprEvent::Anchor(continuation))?;
             self.known_argument_events(work, visible)?;
         } else {
             self.argument_events(work, id, &call.arguments)?;

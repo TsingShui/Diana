@@ -211,10 +211,11 @@ pub enum ControlKind {
         when_false: TransferId,
     },
     /// Ordered short-circuit tests delivered by one P6 condition region. The
-    /// children are the test runs, then the shared arm, then the optional other
-    /// arm; each test keeps its original terminal, links and evaluation order.
+    /// children are the test runs, shared arm, optional other arm and optional
+    /// routing child; each test keeps its terminal, links and evaluation order.
     Condition {
         tests: Vec<ConditionTest>,
+        routing: Vec<TransferId>,
         else_arm: bool,
         other_exit: bool,
         explicit: ConditionSchedule,

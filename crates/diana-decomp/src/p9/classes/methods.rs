@@ -154,7 +154,7 @@ fn complete_method(
     )?;
     let suspending = result
         .code()
-        .is_some_and(|code| code.emission().coroutine_body().is_some());
+        .is_some_and(|code| code.emission().kotlin_continuation_view());
     if suspending {
         out.line("// Diana: ABI-derived suspend body; original entry/reentry and error code retained below")?;
     }

@@ -532,7 +532,7 @@ pub(super) fn plan(
         // continuation. Membership and entrance checks below still prove the
         // entire candidate around this boundary.
         let mut follow = s.common_follow(&follows).or(normal_follow);
-        let abrupt_handlers = targets.iter().all(|root| abrupt[root.0 as usize]);
+        let mut abrupt_handlers = targets.iter().all(|root| abrupt[root.0 as usize]);
         let mut excluded = filled(f.nodes.len(), false)?;
         if let Some(scope) = outer {
             for (i, slot) in excluded.iter_mut().enumerate() {
@@ -625,8 +625,26 @@ pub(super) fn plan(
                 let mut arm = filled(f.nodes.len(), false)?;
                 for node in nodes {
                     arm[node.0 as usize] = true;
+                    let n = &f.nodes[node.0 as usize];
+                    if g.outgoing[node.0 as usize].is_empty()
+                        && !(n.terminal
+                            && matches!(
+                                storage.execution().blocks()[n.block.0 as usize].terminal(),
+                                Some(
+                                    crate::p2::Terminal::Return { .. }
+                                        | crate::p2::Terminal::Throw { .. }
+                                )
+                            ))
+                    {
+                        abrupt_handlers = false;
+                    }
                 }
                 for l in &f.links {
+                    // Include private nested exceptional paths in the published
+                    // proof, not only paths dominated by the capture root.
+                    if arm[l.from.0 as usize] && !arm[l.to.0 as usize] {
+                        abrupt_handlers = false;
+                    }
                     if arm[l.to.0 as usize] && (l.to == target || !arm[l.from.0 as usize]) {
                         valid = false;
                         break;
@@ -653,7 +671,10 @@ pub(super) fn plan(
                 }
             }
         }
-        if !valid || !closed_entry(storage, f, g, &members, entry) {
+        if !valid
+            || (loop_entry.is_some() && !abrupt_handlers)
+            || !closed_entry(storage, f, g, &members, entry)
+        {
             continue;
         }
         let plan = TryPlan {

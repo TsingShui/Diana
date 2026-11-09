@@ -137,6 +137,7 @@ fn condition(
     }
     Ok(ControlKind::Condition {
         tests,
+        routing: ids(plan.routing(), |l| TransferId(l.0))?,
         else_arm: plan.else_arm(),
         other_exit: plan.other_exit(),
         explicit: ConditionSchedule {

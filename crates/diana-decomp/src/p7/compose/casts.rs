@@ -109,6 +109,9 @@ pub(super) fn construct(
         }
     }
     let mut suspended: Vec<bool> = super::super::build::filled(code.statements.len(), false)?;
+    if let Some(plan) = code.emission.coroutine_loop() {
+        suspended[plan.statement.0 as usize] = true;
+    }
     for surface in code.emission.suspensions() {
         suspended[surface.statement.0 as usize] = true;
     }

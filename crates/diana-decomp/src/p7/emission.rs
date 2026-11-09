@@ -227,6 +227,8 @@ pub enum EmissionLayout {
         yes: ControlId,
         no: ConditionElse,
         fall: TransferId,
+        /// P6-owned empty goto controls retain origins without printed routing.
+        routing: Option<ControlId>,
     },
     /// A P6-owned alternative over the original pure integer tests.
     When {
@@ -327,6 +329,7 @@ pub enum LocalSpelling {
 pub struct EmissionPlan {
     pub(super) suspensions: Vec<Suspension>,
     pub(super) coroutine_body: Option<CoroutineBody>,
+    pub(super) coroutine_loop: Option<CoroutineLoop>,
     pub(super) local_types: Vec<LocalSpelling>,
     pub(super) boolean_uses: Vec<bool>,
     pub(super) boolean_locals: Vec<bool>,
@@ -428,10 +431,23 @@ impl EmissionPlan {
             .unwrap_or(false)
     }
     pub fn kotlin_continuation_view(&self) -> bool {
-        self.coroutine_body.is_some()
+        self.coroutine_body.is_some() || self.coroutine_loop.is_some()
     }
     pub fn coroutine_body(&self) -> Option<&CoroutineBody> {
         self.coroutine_body.as_ref()
+    }
+    pub fn coroutine_loop(&self) -> Option<&CoroutineLoop> {
+        self.coroutine_loop.as_ref()
+    }
+    pub fn implicit_continuation(&self, expression: ExprId) -> Option<(u32, ExprId)> {
+        self.suspension_call(expression)
+            .map(|p| (p.continuation_argument, p.continuation))
+            .or_else(|| {
+                self.coroutine_loop
+                    .as_ref()
+                    .filter(|p| p.expression == expression)
+                    .map(|p| (p.continuation_argument, p.continuation))
+            })
     }
     pub fn suspensions(&self) -> &[Suspension] {
         &self.suspensions
@@ -446,6 +462,7 @@ impl EmissionPlan {
         Self {
             suspensions: Vec::new(),
             coroutine_body: None,
+            coroutine_loop: None,
             local_types: Vec::new(),
             boolean_uses: Vec::new(),
             boolean_locals: Vec::new(),

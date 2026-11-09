@@ -89,15 +89,16 @@ impl Expressions<'_, '_> {
         control: ControlId,
         chained: bool,
     ) -> Result<(), RenderError> {
-        let (count, yes, no, fall) =
+        let (count, yes, no, fall, routing) =
             match &self.code.emission().controls()[control.0 as usize].layout {
                 EmissionLayout::Condition {
                     tests,
                     yes,
                     no,
                     fall,
+                    routing,
                     ..
-                } => (tests.len(), *yes, *no, *fall),
+                } => (tests.len(), *yes, *no, *fall, *routing),
                 _ => {
                     return Err(RenderError::Invariant(
                         "condition control lost its delivered layout",
@@ -148,6 +149,9 @@ impl Expressions<'_, '_> {
         self.out.put(")")?;
         self.out.open()?;
         push(work, Event::Close)?;
+        if let Some(routing) = routing {
+            push(work, Event::EmptyArmAnchors(routing))?;
+        }
         // Later test runs print no words of their own. Their
         // delivered controls, labels, routes and copies keep
         // zero-width anchors at the shared arm.

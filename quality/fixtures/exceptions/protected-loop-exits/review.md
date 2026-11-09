@@ -108,3 +108,14 @@ P2/P3/P4/P5 facts, operation/terminal coverage, original edges, chains, locks,
 handler receives and copy obligations. Changed current text receives renewed
 review; unchanged products reuse their recorded review. These checks and source
 readings do not independently execute the final emission plan.
+
+The integration with concurrent condition/suspend-loop work retains both sides.
+Its handler producer also checks normal outlets/leaves of the complete private
+handler arms, including nested executable exceptional paths, before publishing
+the closed-abrupt fact; it does not rely only on the capture's dominated paths.
+A failed completed-loop nomination does not retry a boundary. Default/all-feature
+nextest each pass99 checks on the combined candidate. The 93-fixture/145-class/
+710-method comparison against main64aaa04 preserves original P2/P3/P4/P5 facts
+and has no stopped/render-failed/issue results. All this fixture's complete text
+is identical to the reviewed isolated feature snapshot; both concurrent challenge
+texts are unchanged from main. No behavioral execution is implied.

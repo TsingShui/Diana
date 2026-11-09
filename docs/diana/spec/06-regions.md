@@ -211,9 +211,14 @@ A conditional terminal can own one `Condition` region when its two original
 arms, within their common completion boundary, are nested rather than disjoint:
 one arm is a proper subset of the other, and that shared subgraph has a single
 entry `S` reached by one original link of the first predicate. P6 MUST retain
-both original links of every test and MUST require each later test to select the
-same `S` with one of its own original links; the other link continues into the
-next test's original block run or reaches the remaining result arm.
+both original links of every test. Each later selected link reaches the same
+`S` directly or through a P6-owned path of original empty goto blocks; the other
+link continues into the next test's original block run or reaches the remaining
+result arm. P6 MUST require each routing block to contain no operations and one
+goto terminal, with one original outgoing link and no edge-copy bundle. P6 MUST
+refuse a cycle, an enclosing boundary on that path, or a normal entrance other
+than the condition's selected edges and internal routing links. Executable
+exceptional arrivals remain subject to the child-interface check below.
 
 Those ordered tests select between two result arms. The arm their selected
 original links reach is the shared arm the region owns. The arm a link from the
@@ -225,8 +230,11 @@ unrelated established follow. When the tests' other links only leave at the
 established follow, or at the last test's other original link, the region keeps
 that exit and owns the arm it reaches as before.
 
-The region owns the test runs, the shared arm and the optional other arm in that
-order. A test run is the original block's parts from the run entry to its
+The region owns the test runs, the shared arm, the optional other arm and the
+optional routing child in that source-role order. The routing child owns every
+original path node and link once, including paths shared by several tests. The
+shared result retains one entry; routing does not merge or replace original
+links. A test run is the original block's parts from the run entry to its
 terminal predicate; P6 MUST NOT move an operation out of its block or reorder
 tests. A run that does not end in another conditional starts the other arm. When
 the last other link leaves the region directly, the region owns no other arm and
@@ -250,7 +258,7 @@ and the narrow proved-private-exit/continue-boundary latch rule from
 partial ownership of the continue target reject the composition. P6 MUST require each result
 arm to be a closed interface: the shared arm is reachable only from its entry
 inside the shared set and every link entering it is one of the tests' selected
-original normal links, every normal link leaving it reaches the common follow or an enclosing actual outlet,
+original normal links or a supplied routing-path link, every normal link leaving it reaches the common follow or an enclosing actual outlet,
 the other arm is entered normally only by the last test's other original link
 and leaves normally only at that same completion boundary, and no test run is entered in its
 middle. P6 MUST also inspect executable exceptional arrivals for each child,
@@ -270,7 +278,8 @@ copy placements and source origins are delivered unchanged.
 After establishing region ownership and transfer plans, P6 finalizes an explicit
 alternative for every accepted Condition in the same construction chain.
 `ConditionSchedule` references the selected test-run children in order, then the
-optional other arm, then the shared arm. Each child retains its entry, internal
+optional other arm, the optional routing child and the shared arm. It retains
+every selected-path link as an explicit goto in that alternative. Each child retains its entry, internal
 placement, operations, terminal phases, copies and abrupt-exit scopes. P6 supplies
 one `ConditionCompletion` for every child. A source `Parent` completion denotes
 the source parent's follow, not the next printed sibling: a nonfinal child gets
@@ -589,6 +598,40 @@ still refers to its precise continuation operand and original callee binding.
 A missing prerequisite leaves the complete original layout and local facts
 available. Resource and construction errors retain the ordinary classified stop.
 
+### Ordinary-method suspend loop alternative
+
+P6 publishes `CoroutineLoopPlan` for an ordinary Object-returning method whose
+last declared parameter is Continuation and whose original dispatch has state
+zero, one positive resume state, and a closed invalid-state exception arm.
+The existing SCC product nominates the first cyclic node reached by the initial
+corridor. P6 MUST establish a head predicate, one closed normal-run cycle, its
+straight exit, and one private resume corridor entering the original result
+merge. Other branches, multiple suspension sites, executable handlers, unknown
+locks, unavailable operands, and additional entrances retain the original layout.
+
+P6 MUST match the original call binding, continuation storage, state publication,
+reference-identity marker comparison, and private marker return. Private direct
+calls are eligible under the same Object/Continuation binding contract as other
+ordinary invocations. Prefix allocation/cast/constructor references must identify
+the continuation owner. The marker, entry result, and continuation storage cannot
+be reassigned to another value. Prefix and invalid-state effects remain original
+ABI attachments; they are not declared pure.
+
+The owning correspondence requires each resumed merge copy to carry the same
+available value/state as the normal route, or an unchanged local saved in the
+same original field. Move normalization follows existing P5 definition/use facts;
+it reconstructs no register state or SSA. Every normal merge assignment needs
+its resumed counterpart. Changed captures, foreign fields, resumed-only effects,
+copy gaps, and unmatched result delivery reject this alternative locally.
+
+The plan partitions every original node into initial work, repeated work, exit
+work, the head predicate, or ABI attachments. It delivers original normal links,
+protocol operations, spill pairs, and ABI targets within the source body.
+P7 consumes this order without planning another loop; P9 renders it without
+analysis. The existing node/link/control arenas remain source evidence. Resource
+and construction failures retain the owning P6 stop and its partial facts.
+Normal requests run no independent output verifier or repeated SCC/dominance pass.
+
 ## Transfers, labels and P5 obligations
 
 Every original edge has an `EdgePlan`. Each normal `LinkPlan` chooses a concrete
@@ -741,7 +784,11 @@ do not acquire initialization before its already proved header entrance. A later
 admission rejection does not search another loop or boundary. Bounded monitor
 contexts do not widen.
 
-The TryPlan retains the private closed-abrupt handler fact for lexical-loop
+Ordinary handler construction also checks the complete private arms, including
+nested executable exceptional paths: normal outlets must remain inside each
+arm, and normal leaves must be original return/throw terminals. A recovery via
+such a nested path invalidates a completed-loop nomination without retrying a
+boundary. The TryPlan retains this private closed-abrupt handler fact for lexical-loop
 corridor construction. Only a whole enclosing body can license a protected
 private exit; consumers do not rediscover abrupt handlers or infer an owner from
 printed nesting. Original core, links, copies and priority stay unchanged.

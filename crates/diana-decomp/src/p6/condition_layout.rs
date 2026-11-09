@@ -14,7 +14,9 @@ pub(super) fn construct(f: &mut RegionFacts, g: &Graph) -> Result<(), RegionErro
         let plan = &f.conditions[id.0 as usize];
         let source = &f.regions[region];
         let runs = plan.tests.len();
-        if source.children.len() != runs + 1 + usize::from(plan.else_arm) {
+        if source.children.len()
+            != runs + 1 + usize::from(plan.else_arm) + usize::from(!plan.routing.is_empty())
+        {
             return Err(bug("condition lost its source child roles"));
         }
         let mut children = Vec::new();
@@ -23,6 +25,12 @@ pub(super) fn construct(f: &mut RegionFacts, g: &Graph) -> Result<(), RegionErro
         }
         if plan.else_arm {
             push(&mut children, source.children[runs + 1])?;
+        }
+        if !plan.routing.is_empty() {
+            push(
+                &mut children,
+                source.children[runs + 1 + usize::from(plan.else_arm)],
+            )?;
         }
         push(&mut children, source.children[runs])?;
 
@@ -68,6 +76,9 @@ pub(super) fn construct(f: &mut RegionFacts, g: &Graph) -> Result<(), RegionErro
         for test in &plan.tests {
             push(&mut gotos, test.select)?;
             push(&mut gotos, test.other)?;
+        }
+        for &link in &plan.routing {
+            push(&mut gotos, link)?;
         }
         for completion in &completions {
             let child = completion.child;

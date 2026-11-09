@@ -640,7 +640,14 @@ continuation comes from the selected P6 alternative.
 The ordinary display pass can omit a goto to the next printed target, as for
 other completed layouts; that does not reconstruct a condition schedule.
 The tests' selected edges and all intermediate other edges require no copy
-bundles. The final other edge can retain copies at an explicit else position:
+bundles. P7 also consumes P6's supplied empty-goto routing links and child. Only
+after every test admits compaction does P7 give those links silent spelling and
+clear the routing child's and original block owners' printed continuations.
+Original destinations, terminal identities and lexical owners remain intact.
+The routing child retains zero-width origins in the compact layout; the explicit
+alternative retains its original links and complete child schedule. P7 MUST NOT
+discover routing paths from the graph or make a copied or effectful path silent.
+The final other edge can retain copies at an explicit else position:
 every bundle must retain original emission, name that same original normal edge,
 and have no unavailable assignment. With no other-arm body, P7 selects
 `ConditionElse::Copies` only when those bundles have executable steps or an
@@ -703,7 +710,8 @@ bits and an integral view. Other bit-pattern literals keep their supplied views.
 
 ## Suspension surfaces
 
-P7 installs a suspension surface only from P6's closed `CoroutineBodyPlan`.
+P7 installs a suspension surface only from P6's closed `CoroutineBodyPlan` or
+`CoroutineLoopPlan`.
 A local `SuspensionPlan` without that body product leaves the original header,
 call, marker branch and dispatch untouched. P7 MUST NOT discover a body from
 names, metadata or text, or walk a graph to find another tail.
@@ -737,6 +745,25 @@ remain Unknown. P9 consumes this distinction without solving operand types.
 The suspension's marker predicate/return use `EmissionLayout::Suspension`; its
 children are not also printed as executable code and are not transparent jump
 entries. The original transfers, copies, terminals and scopes remain available.
+
+`CoroutineLoop` owns P6's initial/body/exit and ABI node orders and the supplied
+head predicate polarity. Original block controls still open and close through
+the ordinary emission traversal, including deferred expression-control origins.
+P7 MUST retain original operation and terminal phases and may select fallthrough
+only for P6's delivered normal-run links. ABI branches retain their explicit
+destinations. P7 delivers the original ABI targets inside the source order so
+P9 can show their correspondence without inventing labels or transfers.
+
+P7 can forward a loop-local normal copy to its original source storage when
+every executable destination read follows that copy and precedes any source
+write in the same iteration. Reads outside the repeated body, other destination
+writes, parallel saves, copy-carried checks, and alias cycles reject forwarding.
+This per-copy spelling proof consumes original P5 accesses and the selected
+order; it is not a method register tracker or execution replay. `CoroutineCopy`
+retains the copy step, source occurrence, and original storage identities.
+P9 omits only that store and uses the supplied source spelling on executable
+reads. ABI attachments retain the original copies and names. Original check
+carriers and effectful argument preparation remain at their existing positions.
 `kotlin_continuation_view` selects Kotlin body grammar only for this closed
 alternative. Its declaration keeps the existing signature format with an added
 `suspend` modifier, not a new signature style. It is not a claim that the original source lambda declaration or

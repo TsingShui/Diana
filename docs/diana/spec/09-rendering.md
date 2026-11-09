@@ -170,7 +170,10 @@ and restores that terminal's check carrier for ordinary If, Loop and ordered
 Condition tests, including on rendering failure. The final `else` route keeps the
 selected `other` link. Later test runs print no text, so P7 delivers those run controls
 and P9 anchors their controls, block labels, transfers and empty copy bundles as
-zero-length spans, without recovering control from the graph. A terminal whose
+zero-length spans, without recovering control from the graph. A P6-owned selected
+route that prints no text likewise retains the supplied routing
+child's Control, Label, Transfer and Terminal origins. P9 does not traverse a
+different graph or infer that a route is empty. A terminal whose
 route prints no words keeps both its Transfer and Terminal anchors, including
 zero-step copy bundles, and leaves no indentation in the text.
 
@@ -446,6 +449,17 @@ retain anchors. Resume checks/copies and invalid-state exceptions carry their
 ordinary origins in the ABI attachments. These products preserve original
 identities and uncertainty; they do not establish recovery of the whole original
 Kotlin class.
+
+A delivered `CoroutineLoop` prints its original initial nodes, one `while` with
+the supplied predicate, repeated nodes, and original exit nodes. P9 uses the
+ordinary block-control events, not a graph walk or another renderer. Its ABI node
+attachments retain original dispatch/resume/error statements and branch targets;
+short comments mark targets inside the source body. All original operations,
+controls, labels, expressions, copies, and transfers retain source mappings.
+The declaration adds `suspend` while retaining Java return/parameter syntax.
+Forwarded loop-copy steps print their supplied source names only in executable
+code; their original source reads and copy identities retain anchors. P9 MUST
+NOT establish forwarding, hide another argument, or reinterpret another copy.
 
 ## Spans
 

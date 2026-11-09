@@ -415,7 +415,8 @@ pub enum RecoveryReason {
     Unstructured,
 }
 /// One original predicate of a condition region. `select` is the delivered link
-/// that reaches the shared result arm; `other` leaves the test. The zone between
+/// that reaches the shared result arm directly or through supplied empty-goto
+/// routing; `other` leaves the test. The zone between
 /// the previous test and this predicate stays in the region as its own part.
 #[derive(Clone, Copy, Debug)]
 pub struct ConditionTest {
@@ -434,13 +435,16 @@ impl ConditionTest {
         self.other
     }
 }
-/// Ordered short-circuit tests. The shared arm is entered by every `select` link;
+/// Ordered short-circuit tests. Every `select` reaches the shared arm directly
+/// or through original links in the optional final routing child;
 /// the last `other` link reaches the other result arm, common follow or an
 /// enclosing completion boundary. A no-body boundary remains a real outlet.
 #[derive(Debug)]
 pub struct ConditionPlan {
     pub(super) id: ConditionId,
     pub(super) tests: Vec<ConditionTest>,
+    /// Original empty-goto links owned by the optional final routing child.
+    pub(super) routing: Vec<LinkId>,
     pub(super) shared: NodeId,
     pub(super) else_arm: bool,
     /// The final other edge leaves at a context boundary, not the common follow.
@@ -492,6 +496,9 @@ impl ConditionPlan {
     }
     pub fn shared(&self) -> NodeId {
         self.shared
+    }
+    pub fn routing(&self) -> &[LinkId] {
+        &self.routing
     }
     /// Present for every selected Condition region; rejected proposals have no
     /// layout. Entry, follow and exact predicate portions retain their source IDs.
@@ -1045,6 +1052,61 @@ pub struct CoroutineBodyPlan {
     pub(super) operations: Vec<CoroutineOperation>,
     pub(super) implicit_locals: Vec<crate::p5::LocalId>,
 }
+/// A closed normal-run loop with one continuation reentry. The original node
+/// partition remains intact; this is a selected presentation over those nodes.
+#[derive(Debug)]
+pub struct CoroutineLoopPlan {
+    pub(super) initial: Vec<NodeId>,
+    pub(super) body: Vec<NodeId>,
+    pub(super) tail: Vec<NodeId>,
+    pub(super) abi: Vec<NodeId>,
+    pub(super) abi_entries: Vec<NodeId>,
+    pub(super) condition: LoopCondition,
+    pub(super) call: OpId,
+    pub(super) continuation_argument: u32,
+    pub(super) state: i32,
+    pub(super) protocol_operations: Vec<OpId>,
+    pub(super) normal_links: Vec<LinkId>,
+    pub(super) spills: Vec<(OpId, OpId)>,
+}
+impl CoroutineLoopPlan {
+    pub fn initial(&self) -> &[NodeId] {
+        &self.initial
+    }
+    pub fn body(&self) -> &[NodeId] {
+        &self.body
+    }
+    pub fn tail(&self) -> &[NodeId] {
+        &self.tail
+    }
+    pub fn abi(&self) -> &[NodeId] {
+        &self.abi
+    }
+    pub fn abi_entries(&self) -> &[NodeId] {
+        &self.abi_entries
+    }
+    pub fn condition(&self) -> LoopCondition {
+        self.condition
+    }
+    pub fn call(&self) -> OpId {
+        self.call
+    }
+    pub fn continuation_argument(&self) -> u32 {
+        self.continuation_argument
+    }
+    pub fn state(&self) -> i32 {
+        self.state
+    }
+    pub fn protocol_operations(&self) -> &[OpId] {
+        &self.protocol_operations
+    }
+    pub fn normal_links(&self) -> &[LinkId] {
+        &self.normal_links
+    }
+    pub fn spills(&self) -> &[(OpId, OpId)] {
+        &self.spills
+    }
+}
 impl CoroutineBodyPlan {
     pub fn root(&self) -> RegionId {
         self.root
@@ -1098,6 +1160,7 @@ pub struct RegionFacts {
     pub(super) lock_entries: LockEntries,
     pub(super) suspensions: Vec<SuspensionPlan>,
     pub(super) coroutine_body: Option<CoroutineBodyPlan>,
+    pub(super) coroutine_loop: Option<CoroutineLoopPlan>,
     pub(super) nodes: Vec<Node>,
     pub(super) blocks: Vec<BlockPlan>,
     pub(super) links: Vec<NormalLink>,
@@ -1126,6 +1189,9 @@ impl RegionFacts {
     pub fn coroutine_body(&self) -> Option<&CoroutineBodyPlan> {
         self.coroutine_body.as_ref()
     }
+    pub fn coroutine_loop(&self) -> Option<&CoroutineLoopPlan> {
+        self.coroutine_loop.as_ref()
+    }
     pub fn suspensions(&self) -> &[SuspensionPlan] {
         &self.suspensions
     }
@@ -1133,6 +1199,7 @@ impl RegionFacts {
         Self {
             suspensions: Vec::new(),
             coroutine_body: None,
+            coroutine_loop: None,
             lock_entries: LockEntries::Unestablished,
             nodes: Vec::new(),
             blocks: Vec::new(),

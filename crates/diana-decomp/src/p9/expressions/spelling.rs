@@ -37,6 +37,11 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
     }
 
     pub fn local(&mut self, id: StorageId) -> Result<(), RenderError> {
+        let id = if self.out.abi_comment {
+            id
+        } else {
+            self.code.forwarded_storage(id)
+        };
         let l = self
             .code
             .locals()

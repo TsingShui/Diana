@@ -17,12 +17,15 @@ use crate::p5::{
 use crate::raw::ReferenceSlot;
 
 mod body;
+mod loop_body;
 
 pub(super) fn construct(
     storage: &StorageMethod<'_>,
     f: &mut RegionFacts,
     graph: &Graph,
+    structure: &super::dominance::Structure,
 ) -> Result<(), RegionError> {
+    loop_body::construct(storage, f, graph, structure)?;
     let flow = storage.execution();
     let d = flow.declaration();
     if !units(d.name_units(), b"invokeSuspend")
@@ -676,7 +679,10 @@ fn suspending_signature(
     if !matches!(
         op.kind(),
         OpKind::Invoke {
-            kind: InvokeKind::Static | InvokeKind::Virtual | InvokeKind::Interface,
+            kind: InvokeKind::Static
+                | InvokeKind::Virtual
+                | InvokeKind::Interface
+                | InvokeKind::Direct,
             result: Some(crate::SlotWidth::One),
             ..
         }

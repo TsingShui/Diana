@@ -1,20 +1,38 @@
 # Fixture: expr-wide
 
-## Current verdict — whole-operation follow-up
+## Current verdict — selected-route recovery, 2026-11-09
 
-Compared the same prepared DEX with completed-eleven-repair bda9a49. Only
-derived label/control coordinates change. Development-only correspondence found
-identical printed words, original L/H program points and identical printed
-lexical-scope bindings across every method publication; declaration-only members
-are exact. Original P2/P3/P4/P5 facts agree. The unchanged semantic path review
-below is reused, not replaced by a naming score or a claim of behavioral
-execution.
+The current LLM review compares the same prepared DEX on committed `29f1b82`
+and the uncommitted selected-route candidate. Only `nanComparison` has changed
+text. All other method texts are identical, so their prior judgments below are
+reused. No behavioral executor, device run or Java recompilation ran.
+The same changed paths were reread after integration with main `7354242` in
+dev: comparison operators/order, third-branch polarity, original copies and
+explicit routing agree, and P1/P3/P4/P5 products remain exact against that main.
 
-The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
-[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
-producer/consumer repairs and blocked drafts. This is bounded current source
-reading; historical execution claims below were not rerun and do not certify
-this output. No behavioral executor, device run or Java recompilation ran.
+### Semantics
+
+| method | semantics |
+|---|---|
+| `nanComparison` | ~ The original three comparisons and their short-circuit result paths remain explicit and equivalent under the reasoning below. |
+| `shifts`, `arithmetic`, `floating`, `single`, `narrowing`, `roundTrip` | ~ Unchanged input and exact unchanged output; the prior method judgments below are reused. |
+
+For NaN, `CmplDouble(value, value)` produces -1 and the first nonzero branch
+selects true, skipping the other comparisons. For a non-NaN negative value,
+the second `CmpgDouble(value, 0)` result is negative and selects true. Otherwise
+the third `CmplDouble(value, 1)` selects true only above 1. Values in [0, 1],
+including both signed zeros, select false. Negative and positive infinity take
+the negative and above-1 paths respectively. The candidate inverts only the
+third branch spelling: its `> 0` edge reaches the retained empty goto and true
+result, while its other edge sets false. The baseline `<= 0` branch reached
+that same false result. Comparison order, floating operators and 1/0 result
+copies are unchanged.
+
+P7 keeps its complete explicit condition alternative because the floating
+comparison preludes are not admitted as compact operands. This method therefore
+checks routing preservation on the noncompact path; it is not a claim that NaN
+comparisons were converted to ordinary Java relations. The extra explicit label
+is a readability limitation, not a different destination.
 
 
 wide and floating-point arithmetic, comparisons and casts. The Java source is the reference; the DEX is generated from it with
@@ -52,3 +70,4 @@ Improve cmpl/cmpg and expression presentation while preserving NaN behavior and 
 ## Rounds
 
 - R1 2026-11-08: nanComparison exposes `compare<CmplDouble>(p0, p0)` / `compare<CmpgDouble>(...)`; the comparison choice agrees, but the notation is decompiler-specific. Recorded forms: `compare<CmpgDouble>(…)`.
+- R2 2026-11-09: Reread the changed third-branch spelling and retained routed explicit alternative; other method texts remain exact.

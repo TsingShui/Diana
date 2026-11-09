@@ -82,10 +82,11 @@ fn layout(
         ControlKind::Sequence => EmissionLayout::Sequence,
         ControlKind::Condition {
             tests,
+            routing,
             else_arm,
             other_exit,
             ..
-        } => condition_layout(code, c, tests, *else_arm, *other_exit)?,
+        } => condition_layout(code, c, tests, *else_arm, *other_exit, !routing.is_empty())?,
         ControlKind::If { terminal, .. } => EmissionLayout::If {
             header: child(c, 0)?,
             yes: child(c, 1)?,
@@ -140,6 +141,7 @@ fn condition_layout(
     tests: &[ConditionTest],
     else_arm: bool,
     other_exit: bool,
+    routing: bool,
 ) -> Result<EmissionLayout, ExpressionError> {
     let runs = tests.len();
     let mut emitted = Vec::new();
@@ -160,6 +162,9 @@ fn condition_layout(
             ConditionElse::None
         },
         fall: last.ok_or(bug("condition control has no test"))?,
+        routing: routing
+            .then(|| child(c, runs + 1 + usize::from(else_arm)))
+            .transpose()?,
     })
 }
 

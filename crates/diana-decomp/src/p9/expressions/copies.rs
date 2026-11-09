@@ -8,10 +8,25 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
     pub fn copy(&mut self, id: CopyPlanId) -> Result<(), RenderError> {
         let bundle = &self.code.copies()[id.0 as usize];
         let start = self.out.position();
+        let mut printed = false;
         for (index, step) in bundle.steps.iter().enumerate() {
-            if index > 0 {
+            if !self.out.abi_comment
+                && let Some(expression) = self.code.forwarded_copy(id, index)
+            {
+                let position = self.out.position();
+                self.out.span(
+                    position,
+                    Origin::Expression {
+                        method: self.method,
+                        expression,
+                    },
+                )?;
+                continue;
+            }
+            if printed {
                 self.out.put(" ")?;
             }
+            printed = true;
             match step {
                 CopyStatement::Assign {
                     destination,

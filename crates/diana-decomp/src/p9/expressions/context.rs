@@ -28,7 +28,13 @@ pub(in crate::p9) trait ExpressionSource {
         None
     }
     /// A suspension surface makes one continuation occurrence implicit.
-    fn suspension_call(&self, _id: ExprId) -> Option<&Suspension> {
+    fn implicit_continuation(&self, _id: ExprId) -> Option<(u32, ExprId)> {
+        None
+    }
+    fn forwarded_storage(&self, id: StorageId) -> StorageId {
+        id
+    }
+    fn forwarded_copy(&self, _bundle: CopyPlanId, _step: usize) -> Option<ExprId> {
         None
     }
     fn composed_use(&self, _id: ExprId) -> Option<ComposedExpression> {
@@ -84,8 +90,22 @@ impl ExpressionSource for MethodCode {
             self.emission().local_types()[local.0 as usize],
         ))
     }
-    fn suspension_call(&self, id: ExprId) -> Option<&Suspension> {
-        self.emission().suspension_call(id)
+    fn implicit_continuation(&self, id: ExprId) -> Option<(u32, ExprId)> {
+        self.emission().implicit_continuation(id)
+    }
+    fn forwarded_storage(&self, id: StorageId) -> StorageId {
+        self.emission()
+            .coroutine_loop()
+            .and_then(|p| p.forwarded_copies.iter().find(|p| p.destination == id))
+            .map_or(id, |p| p.source)
+    }
+    fn forwarded_copy(&self, bundle: CopyPlanId, step: usize) -> Option<ExprId> {
+        self.emission()
+            .coroutine_loop()?
+            .forwarded_copies
+            .iter()
+            .find(|p| p.bundle == bundle && p.step as usize == step)
+            .map(|p| p.expression)
     }
     fn kotlin_notation(&self) -> bool {
         self.emission().kotlin_continuation_view()

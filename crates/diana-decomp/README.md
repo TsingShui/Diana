@@ -175,6 +175,10 @@ A complete linear return/throw arm can print as a guard; either original edge
 keeps its exact condition polarity. The other edge's copies/body follow once,
 in their enclosing declaration scope. Recovering or opaque scopes do not supply
 that exit fact, and a guard plus later work is not mistaken for one else-if.
+Ordered conditions also retain P6-owned empty selected goto routes. Copy-free,
+effect-free paths can print as one short-circuit condition; copied, cyclic or
+foreign-entry paths remain explicit. A noncomposable test prelude retains the
+delivered complete explicit schedule and original routing origins.
 Metadata and
 bootstrap declarations travel from their owning producers; P7 does not reopen
 input. See the [P7 chapter](../../docs/diana/spec/07-java.md).
@@ -188,6 +192,16 @@ callee binding and continuation identity stay explicit, and suspension is marked
 as an inference. ABI parameters and wrapper members remain; original source-lambda
 signatures, multi-suspension spills and source exception recovery are not established
 by this view. Missing prerequisites retain the original method layout.
+
+Ordinary suspend methods with one closed head-tested loop and one resume state
+also have a Kotlin-style body view. It restores `while`, suppresses the matched
+continuation argument at the call, and forwards proven loop-local copies. The
+Java-style signature gains `suspend`; boxing, casts, original names, ABI
+entry/reentry, state publication and error paths remain explicit. The
+[captured-effect challenge](../../quality/fixtures/kotlin/suspend-loop-captured-effects/README.md)
+exercises another mutable value and effects around suspension. Mismatched spills,
+changed captures, and resumed-only effects retain their original explicit code.
+Multi-site and protected coroutine source-body recovery remains unestablished.
 
 P8 produces owned `ClassResult`/`TypeNamePlan` from the original directory and
 joined method deliveries. Success, no-code and stopped members remain distinct.
@@ -278,6 +292,10 @@ cover nested protected throw corridors, real returns that skip cleanup, foreign
 normal entrances, recovering handlers and explicit raw-selector destinations.
 A raw selector's next statement is not its next case label; its supplied gotos
 survive display simplification.
+Eight [selected-route checks](../../quality/fixtures/branches/short-circuit-shared-routes/README.md)
+cover boolean disjunctions, ordered effectful tests, original route anchors,
+executable copies, effect barriers, foreign entries, cycles and complete explicit
+preludes, including floating NaN comparisons.
 These checks cover ownership,
 transfer spelling and source anchors, not independent execution of the final plan.
 The retained independent verifier code is not enabled on ordinary requests. Real-input corpus runs have not encountered custom/polymorphic
