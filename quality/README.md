@@ -240,6 +240,11 @@ failed deterministic check; repair acceptance still follows
 | `kotlin-object-singleton` | `object` with `INSTANCE`, companion object, synthetic accessors |
 | `kotlin-property-delegate` | `by lazy`, custom `ReadWriteProperty`, custom setter, `lateinit` |
 | `kotlin-suspend-state` | suspend functions, continuation state machine, suspend inside try/loop |
+| `suspend-loop-captured-effects` | one suspend loop with captured arithmetic, mutable checksum, effects, and divergent reentry boundaries |
+| `suspend-two-step-branch` | two suspend sites, a conditional second call, early return, and distinct resume values |
+| `suspend-loop-two-sites` | two resume entries inside a loop, between-site effects, early loop exit, and repeated captures |
+| `suspend-finally-two-sites` | two suspend sites, resumed failures, physical marker returns, and normal/exceptional cleanup |
+| `suspend-default-shared-capture` | effectful dispatch default and a live seed captured across both suspend sites |
 | `kotlin-range-loops` | `until`, `downTo`, `step`, `repeat`, `forEach`, labelled `break@` |
 
 Each fixture's `review.md` records its qualitative LLM verdict and evidence.

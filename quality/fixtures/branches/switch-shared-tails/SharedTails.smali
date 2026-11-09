@@ -134,6 +134,40 @@
     .end packed-switch
 .end method
 
+.method public static conditional(IIII)I
+    .locals 3
+    move v0, p2
+    move v1, p3
+    packed-switch p0, :conditional_data
+    const/16 v0, -9
+    return v0
+  :conditional_one
+    add-int/lit8 v0, p2, 1
+    add-int/lit8 v1, p3, 2
+    goto :conditional_a
+  :conditional_two
+    add-int/lit8 v0, p2, 7
+    add-int/lit8 v1, p3, 8
+    goto :conditional_b
+  :conditional_zero
+    if-eqz p1, :conditional_b
+  :conditional_a
+    const/16 v2, 60
+    invoke-static {v2}, Lfixture/SharedTails;->mark(I)V
+    add-int/2addr v0, v1
+  :conditional_b
+    const/16 v2, 61
+    invoke-static {v2}, Lfixture/SharedTails;->mark(I)V
+    sub-int/2addr v0, v1
+    return v0
+  :conditional_data
+    .packed-switch 0
+        :conditional_zero
+        :conditional_one
+        :conditional_two
+    .end packed-switch
+.end method
+
 .method public static foreign(II)I
     .locals 4
     const/4 v0, 0

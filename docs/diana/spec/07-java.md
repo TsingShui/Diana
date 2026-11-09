@@ -298,7 +298,10 @@ work instead of its original destination.
 
 P7 MUST omit an `else` emptied by this collapse only when its false-edge copies
 are empty and its control is an empty Block or a label-free Sequence of empty
-children. Each such control has no required label, continuation or deferred
+children. An empty owned child alone does not establish NoElse: every late
+display decision also requires its selected-edge copies to print nothing. A
+printing assignment stays inside its else phase, never between the if predicate
+and opening brace. Each such control has no required label, continuation or deferred
 control; each block prints no text and has no displayed label, which means every
 action is an origin-only `nop` and its end prints nothing. An empty block end is
 None, a list of Fallthrough transfers whose copy bundles have no executable steps

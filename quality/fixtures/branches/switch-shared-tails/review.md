@@ -68,9 +68,9 @@ their original explicit layouts under the regression checks.
 
 ## Evidence limits and test maintenance
 
-Five ordinary-Engine checks inspect parent/child ownership, original continuations,
+Six ordinary-Engine checks inspect parent/child ownership, original continuations,
 actual selected assignments, source anchors and refusals. Baseline source with
-the same prepared DEX/new tests passes one refusal and fails four recovery checks.
+the same prepared DEX/new tests passes one refusal and fails five recovery/display checks.
 This is product sensitivity only. A test initially referenced EmissionControl.id;
 that type is indexed rather than carrying an ID, so the test was corrected to
 use its arena index before passing. No scenario expectation changed.
@@ -82,3 +82,29 @@ The genuine raw cyclic selector still requires explicit gotos. Former raw
 ComplexSwitchNested and fetch checks move to positive ownership/exit coverage;
 they are not exempted from original transfer/copy/marker checks. These source
 readings and structural checks do not independently execute the final plan.
+
+## Integration copy-phase correction
+
+The concurrent multi-site inputs exposed a real candidate-induced display
+regression: an owned If's empty false child overrode the earlier copy-aware
+classification and selected NoElse despite executable false-edge assignments.
+Those assignments appeared between the predicate and opening brace, leaving its
+planned marker-return jump unconditional. That draft was rejected; clean counts
+or updated raw-dispatch assertions were not acceptance.
+
+P7 now requires the same quiet-copy fact for this late owned-child decision.
+P9 remains unchanged and consumes Both, so each edge's assignments execute
+inside its chosen arm. The additional conditional challenge was authored after
+this correction, before its first inspection. It has two copied values and two
+external suffix entries: case0/flag0 executes only B and returns5 for7,2;
+flag1 executes A/B and returns7. Case1 returns8, case2 returns4, and default
+returns-9 with no marks. MAX_VALUE plus1 wraps before subtracting1, preserving
+MAX_VALUE. All selected copy anchors remain once and false copies follow the
+else brace. The exact same final test/DEX fails on draft835d78a with NoElse,
+then passes with Both; this is product sensitivity, not behavioral execution.
+
+The concurrent dispatch tests now accept either explicit original gotos or a
+producer-supplied case whose entry/follow equals the original target, never raw
+fallthrough. They retain call counts, captures, snapshots, marker/cleanup routes
+and refusal of multi-site source-body projection. Existing helper/scenario
+expectations were not changed to absorb a mismatch.

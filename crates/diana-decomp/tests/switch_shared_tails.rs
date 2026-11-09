@@ -180,6 +180,51 @@ fn direct_tail_entry_copies_execute_once_and_other_cases_bypass_them() {
 }
 
 #[test]
+fn an_empty_false_child_with_executable_copies_keeps_its_else_phase() {
+    inspect(
+        "branches/switch-shared-tails",
+        "Lfixture/SharedTails;",
+        "conditional",
+        "(IIII)I",
+        |facts, code, rendered| {
+            let (_, _, _) = groups(code);
+            let (no, test) = code
+                .emission()
+                .controls()
+                .iter()
+                .find_map(|c| match c.layout {
+                    EmissionLayout::If { no, test, .. } => Some((no, test)),
+                    _ => None,
+                })
+                .unwrap();
+            assert!(facts.regions()[no.0 as usize].nodes().is_empty());
+            assert_eq!(
+                code.emission().if_display(test.terminal),
+                diana_decomp::p7::IfDisplay::Both
+            );
+            let at = rendered.text().find("else {").unwrap();
+            let mut assignments = 0;
+            for copy in &code.emission().transfers()[test.when_false.0 as usize].copies {
+                if code.copies()[copy.0 as usize].steps.is_empty() {
+                    continue;
+                }
+                let spans: Vec<_> = rendered
+                    .spans()
+                    .iter()
+                    .filter(|s| matches!(s.origin, Origin::Copy { copy: id, .. } if id == *copy))
+                    .collect();
+                assert_eq!(spans.len(), 1);
+                assert!(spans[0].start.0 > at && spans[0].start.0 < spans[0].end.0);
+                assignments += 1;
+            }
+            assert!(assignments > 0);
+            assert_eq!(rendered.text().matches(".mark(60)").count(), 1);
+            assert_eq!(rendered.text().matches(".mark(61)").count(), 1);
+        },
+    );
+}
+
+#[test]
 fn a_foreign_case_entrance_stays_explicit_without_copying_calls_or_tails() {
     inspect(
         "branches/switch-shared-tails",

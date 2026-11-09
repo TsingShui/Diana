@@ -205,6 +205,14 @@ entry/reentry, state publication and error paths remain explicit. The
 exercises another mutable value and effects around suspension. Mismatched spills,
 changed captures, and resumed-only effects retain their original explicit code.
 Multi-site and protected coroutine source-body recovery remains unestablished.
+The [multi-site branch](../../quality/fixtures/kotlin/suspend-two-step-branch/README.md),
+[two-site loop](../../quality/fixtures/kotlin/suspend-loop-two-sites/README.md), and
+[protected two-site](../../quality/fixtures/kotlin/suspend-finally-two-sites/README.md)
+inputs retain explicit state dispatch and original resume/protection facts.
+An [effectful-default challenge](../../quality/fixtures/kotlin/suspend-default-shared-capture/README.md)
+also preserves a shared seed across both sites. Their ordinary Engine checks
+cover available members, original call/capture origins and dispatch spelling;
+native helper effects and scheduling remain modeled, not executed.
 
 P8 produces owned `ClassResult`/`TypeNamePlan` from the original directory and
 joined method deliveries. Success, no-code and stopped members remain distinct.
@@ -290,9 +298,11 @@ Nine [terminal-guard checks](../../quality/fixtures/branches/terminal-guard-arms
 cover original predicate direction, actual other-edge Phi assignments after the
 guard, parent declaration scope, recovering-Try refusal, cleanup, construction
 and early void return. Missing natural protection still retains explicit code.
-Five [shared-tail checks](../../quality/fixtures/branches/switch-shared-tails/README.md)
+Six [shared-tail checks](../../quality/fixtures/branches/switch-shared-tails/README.md)
 cover nested case loops/recovery, two-level suffix bypasses, actual selector
 assignments, foreign case arrivals and original ABI marker/default exits.
+An empty conditional child with executable edge copies retains its else phase;
+child emptiness alone cannot qualify a copy-only branch as silent.
 Five [protected-loop checks](../../quality/fixtures/exceptions/protected-loop-exits/README.md)
 cover nested protected throw corridors, real returns that skip cleanup, foreign
 normal entrances, recovering handlers and explicit raw-selector destinations.

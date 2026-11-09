@@ -49,6 +49,20 @@ public final class SharedTails {
         } finally { cleanup(mode); }
         return sum;
     }
+    public static int conditional(int key, int flag, int a, int b) {
+        int first = a, second = b;
+        switch (key) {
+            case 0:
+                if (flag == 0) { mark(61); return first - second; }
+                break;
+            case 1: first = a + 1; second = b + 2; break;
+            case 2: first = a + 7; second = b + 8; mark(61); return first - second;
+            default: return -9;
+        }
+        // Smali has one shared A and one shared B, not duplicated mark calls.
+        mark(60); first += second;
+        mark(61); return first - second;
+    }
     public static int foreign(int key, int flag) {
         // Smali jumps from the pre-selector branch to the ONE original case0
         // block; normalizing the pure selector here explains equivalent paths.

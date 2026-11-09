@@ -63,14 +63,44 @@ private to the switch.
 | foreign(2,0) | return10 | 30 |
 | foreign(3,0) | return-1 | none |
 
+## Copy-only conditional follow-up
+
+Added conditional(IIII)I after the owning P7 correction and before this subject's
+first inspection. Concurrent multi-site ABI fixtures exposed an empty child
+with executable false-edge assignments: the late empty-child display decision
+must not select NoElse or print those assignments between if and its brace.
+This adds two copied values, both external suffix destinations and wrapping.
+
+The initial pair is a,b. Case0 chooses B directly when flag0 and A otherwise.
+Case1 changes it to a+1,b+2 then reaches A; case2 changes it to a+7,b+8 and
+reaches B; default returns-9. A marks60/adds the second value into the first;
+B marks61 then returns first-second. Branch assignments must execute only on
+the selected edge; neither target may become an unconditional jump.
+
+| Arguments | Expected result | Ordered mark arguments |
+|---|---|---|
+| conditional(0,0,7,2) | return5 | 61 |
+| conditional(0,1,7,2) | return7 | 60,61 |
+| conditional(1,0,7,2) | return8 | 60,61 |
+| conditional(2,0,7,2) | return4 | 61 |
+| conditional(3,0,7,2) | return-9 | none |
+| conditional(0,1,2147483647,1) | return2147483647 after wrapping addition/subtraction | 60,61 |
+
+Reassemble and use that same final DEX on baseline, rejected copy-display draft
+and candidate. This is a new same-mechanism challenge, not a scenario inferred
+from candidate output.
+
 ## Preparation
 
 Assemble using Smali2.5.2/API24 in the ignored fixture cache, then publish the
 successful classes.dex beside these sources. Compare that same prepared DEX
 through ordinary dbg_shell on baseline dd70d20 and the candidate. Preparation,
 inspection and checks use that same DEX. Prepared with Smali2.5.2, API24 and
-OpenJDK21.0.12.1. Five ordinary-Engine checks pass. The same new tests/DEX on
-baseline source pass the foreign-entry refusal and fail four recovery checks;
-this is structural sensitivity, not a behavioral mismatch claim. See
+OpenJDK21.0.12.1. Six ordinary-Engine checks cover this input and the discovery/ABI cases. The
+same final tests/DEX on baseline source pass the foreign-entry refusal and fail
+five recovery/display checks;
+this is structural sensitivity, not a behavioral mismatch claim. The copy-only
+conditional check separately fails on the rejected shared-tail draft835d78a with
+NoElse rather than Both, directly exposing its missing copy-phase guard. See
 [review](review.md) for the bounded semantic judgement. No Java/device/scenario
 execution is claimed.

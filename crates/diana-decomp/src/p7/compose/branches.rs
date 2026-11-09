@@ -239,7 +239,9 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
         let phases = &code.emission.terminals[terminal];
         let moves_nothing =
             phases.before.is_empty() && phases.snapshots.is_empty() && phases.after.is_empty();
-        if empty[no.0 as usize] {
+        if empty[no.0 as usize] && arm_prints_nothing(code, test.when_false, true) {
+            // An empty child does not make its selected-edge assignments
+            // silent. NoElse permits only origin-only copies at the header.
             false_silent[terminal] = true;
         } else if moves_nothing
             && empty[yes.0 as usize]
