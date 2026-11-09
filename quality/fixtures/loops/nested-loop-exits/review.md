@@ -1,6 +1,16 @@
 # Fixture: nested-loop-exits
 
-## Current verdict — scoped catch capture
+## Natural catch display
+
+Only `local_handler_keeps_exit_protection` changes. Its natural `RuntimeException`
+catch around `mark(v6)` prints without a repeated chain line, inline marker or
+`H14`; the enclosing loops, `goto L12` and early `return -1` are unchanged.
+Genuine shared/nested exits keep their prior text. P2–P6 source products are exact. Text/JSON publication changes together; the original sites, chains,
+completions, snapshots and receives remain in the owned product. This is a
+renewed LLM reading of the exact before/after text plus product equality, not
+executed behavior.
+
+## Prior verdict — scoped catch capture
 
 Compared the same prepared input on `c95c6dd` and this repair. Reviewed header
 bindings: `RuntimeException v7`. The original captured object is bound once at exceptional

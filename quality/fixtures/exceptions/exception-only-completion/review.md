@@ -1,5 +1,16 @@
 # Exception-only completion review
 
+## Natural catch display
+
+The `typed` subject now also omits its repeated chain line, inline markers and
+`H2` label: its visible `try/catch(java.lang.IllegalStateException)` plus the
+method-level uncaught propagation already state the same two ordered routes.
+`touch`, `throw p1`, the capture binding and the `consume` call keep their order
+and operands; the uncaught route still propagates. `nested` still prints the
+explicit `[exn c0]` on its matched outer `finally` interval, because that shape
+is not covered by this first narrow rule. Original sites, chains, completions,
+snapshots and receives remain in the owned product; text and JSON agree.
+
 ## Verdict and scope
 
 Compared identical prepared bytes on ffdea3b9a98f6cdcc93a07da7df8487581de0779

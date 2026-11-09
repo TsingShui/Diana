@@ -1,6 +1,16 @@
 # Fixture: concat-capture-recipes
 
-## Current verdict — scoped catch capture
+## Natural catch display
+
+Only `loop` changes. The natural `IllegalStateException` catch around the loop
+now prints without a duplicate chain line, inline markers or `H7`. Inferred
+concat recipe/call-site disclosure, loop update, capture-failure text and the
+`"caught"` recovery are unchanged. P2–P6 source products are exact. Text/JSON publication changes together; the original sites, chains,
+completions, snapshots and receives remain in the owned product. This is a
+renewed LLM reading of the exact before/after text plus product equality, not
+executed behavior.
+
+## Prior verdict — scoped catch capture
 
 Compared the same prepared input on `c95c6dd` and this repair. Reviewed header
 bindings: `IllegalStateException v6`. The original captured object is bound once at exceptional

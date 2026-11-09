@@ -1,6 +1,16 @@
 # Fixture: obf-exceptions-proguard
 
-## Current verdict — scoped catch capture
+## Natural catch display
+
+Only obfuscated `a(String)` changes in the same way as its reviewed source
+counterpart: the natural `NumberFormatException` catch prints without a repeated
+chain line, marker or `H3`. `trim`, `parseInt`, catch-body mutation and the
+constructed exception order are text-identical. P2–P6 source products are exact. Text/JSON publication changes together; the original sites, chains,
+completions, snapshots and receives remain in the owned product. This is a
+renewed LLM reading of the exact before/after text plus product equality, not
+executed behavior.
+
+## Prior verdict — scoped catch capture
 
 Compared the same prepared input on `c95c6dd` and this repair. Reviewed header
 bindings: `all v8`, `NumberFormatException v8`, `NullPointerException v7`, `RuntimeException v6`, `NumberFormatException v4`, `all v6`, `all v7`. The original captured object is bound once at exceptional

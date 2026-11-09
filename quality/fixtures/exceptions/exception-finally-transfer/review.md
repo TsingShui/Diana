@@ -1,6 +1,16 @@
 # Fixture: exception-finally-transfer
 
-## Current verdict — scoped catch capture
+## Natural catch display
+
+Only `tryInsideCatch` changes. Both natural `NumberFormatException` scopes print
+as nested `try/catch` without duplicated chain lines, markers or `H2`/`H6` labels.
+The inner catch still runs inside the outer catch body, so neither rethrows into
+the outer clause; `state=6` and `return -2` order is unchanged. P2–P6 exact. Text/JSON publication changes together; the original sites, chains,
+completions, snapshots and receives remain in the owned product. This is a
+renewed LLM reading of the exact before/after text plus product equality, not
+executed behavior.
+
+## Prior verdict — scoped catch capture
 
 Compared the same prepared input on `c95c6dd` and this repair. Reviewed header
 bindings: `all v6`, `all v7`, `NumberFormatException v2`, `NumberFormatException v5`. The original captured object is bound once at exceptional

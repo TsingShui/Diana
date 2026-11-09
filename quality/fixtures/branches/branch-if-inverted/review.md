@@ -1,6 +1,16 @@
 # Fixture: branch-if-inverted
 
-## Current verdict — scoped catch capture
+## Natural catch display
+
+Only `guardedCall` changes. Its observed `RuntimeException` catch plus method-level
+uncaught propagation now print as the same `try/catch` without a repeated chain
+line, inline marker or handler label. The call, early return and `-1`/`1` results
+are unchanged. Original P2–P5 products and P6 exceptions sites/edges are exact. Text/JSON publication changes together; the original sites, chains,
+completions, snapshots and receives remain in the owned product. This is a
+renewed LLM reading of the exact before/after text plus product equality, not
+executed behavior.
+
+## Prior verdict — scoped catch capture
 
 Compared the same prepared input on `c95c6dd` and this repair. Reviewed header
 bindings: `RuntimeException v1`. The original captured object is bound once at exceptional

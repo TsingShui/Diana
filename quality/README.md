@@ -198,6 +198,7 @@ Downloaded inputs and generated output remain outside version control.
 | `cleanup-outlet-frontiers` | Dual acquisition/close order, nested runtime recovery, partial commits and an unguarded-gap refusal |
 | `shared-cleanup-contexts` | Split pre/post captures, shared cleanup/rethrow frontiers, resource outlets and outside IO recovery |
 | `exception-only-completion` | Throw-only guarded cores, typed/uncaught exception outlets, outer cleanup and a genuine foreign normal entrance |
+| `natural-typed-catch-display` | Typed-catch display coverage inside loops/rethrows beside explicit shared-handler and multi-handler guards |
 
 ### Synchronization
 

@@ -1,6 +1,17 @@
 # Captureless retry review
 
-## Current verdict — P6 captureless recovery
+## Natural catch display
+
+Only the outer `IllegalArgumentException` catch around `fast(p0)` changes: its
+chain line, inline marker and `H2` are omitted because the printed try/catch plus
+method-level propagation already state both routes. Fast success still returns
+before fallback; the fallback while, `reset`, `attempt`, shared increment and the
+still-explicit inner `IllegalStateException` chain are text-identical. Original
+P2–P6 source products, sites and receives are exact. Text and JSON change together; the owned sites, chains, completions,
+snapshots and receives remain. This is a renewed LLM reading plus product
+equality, not executed behavior.
+
+## Prior verdict — P6 captureless recovery
 
 The same prepared bytes now recover one while against baseline 73fc879.
 Direct reading of the source/model scenarios and complete output retains fast

@@ -881,7 +881,14 @@ execution schedule.
 
 Exception site annotations consume the selected surface. A naturally delivered
 site can omit its repeated chain marker when all original clauses are represented
-by enclosing visible catches/finally or the delivered implicit monitor cleanup.
-Other explicit or unplaced routes keep their markers. Original ordered chains
-and targets remain in the owned product; P9 does not point readers at a hidden
-compiler handler through a redundant chain line.
+by enclosing visible catches/finally, the delivered implicit monitor cleanup, or
+one plain typed catch whose remaining original route is the method-level uncaught
+completion. The plain case requires Natural syntax, one available typed clause,
+an uncaught final clause and two original routes; P7 MUST also establish that the
+selected catch control encloses the site and that its emission layout prints that
+handler. The uncaught route then follows ordinary lexical propagation, so the
+marker and an unused chain line would repeat the same two routes. Delivered typed
+specialization in a multi-clause chain, explicit protection, use issues and
+unplaced routes keep their existing markers. Original ordered chains and targets
+remain in the owned product; P9 does not point readers at a hidden compiler
+handler through a redundant chain line.

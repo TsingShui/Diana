@@ -1,6 +1,17 @@
 # Fixture: exception-one-catch
 
-## Current verdict — scoped catch capture
+## Natural catch display
+
+The three single typed-catch subjects now print only their `try/catch`; duplicate
+chain lines, inline markers and `H` labels are omitted. Division, field reads and
+writes, the rethrow of the original `v2`, and `-1`/state results are unchanged.
+Explicit protection and any nonmatching propagation keep their previous spelling.
+P2–P6 source products are exact. Text/JSON publication changes together; the original sites, chains,
+completions, snapshots and receives remain in the owned product. This is a
+renewed LLM reading of the exact before/after text plus product equality, not
+executed behavior.
+
+## Prior verdict — scoped catch capture
 
 Compared the same prepared input on `c95c6dd` and this repair. Reviewed header
 bindings: `ArithmeticException v2`, `ArithmeticException v2`, `RuntimeException v4`. The original captured object is bound once at exceptional

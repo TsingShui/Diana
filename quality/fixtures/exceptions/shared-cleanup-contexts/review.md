@@ -1,5 +1,16 @@
 # Shared cleanup context review
 
+## Natural catch display
+
+Only `resource` changes. Its outer `IOException` catch already prints both routes,
+so the chain line, the inline markers on acquisition, both normal closes,
+`addSuppressed` and `throw`, and the `H18` label are omitted. Normal close outlets,
+the nested all-catch, distinct primary/secondary reads and suppression order are
+text-identical. `split` keeps its explicit chains because its crossing contexts
+remain explicit. Original P2–P6 source products are exact, and text/JSON publish
+together. This is a renewed LLM reading of the exact before/after text plus product
+equality, not executed behavior.
+
 ## Verdict
 
 The challenge was authored after the shared-frontier refinement and before its

@@ -1,6 +1,17 @@
 # Fixture: terminal-guard-arms
 
-## Current verdict — scoped catch capture
+## Natural catch display
+
+Only `recover`'s inner natural `IllegalStateException` catch changes: its chain
+line, inline marker and `H5` handler label are no longer repeated, because the
+printed try/catch and method-level propagation already state both routes. The
+probe guard, `mark(60)`, `goto L11`, read operand and `MultipleEntry` graph on the
+other arm are text-identical. P2–P6 source products are unchanged. Text/JSON publication changes together; the original sites, chains,
+completions, snapshots and receives remain in the owned product. This is a
+renewed LLM reading of the exact before/after text plus product equality, not
+executed behavior.
+
+## Prior verdict — scoped catch capture
 
 Compared the same prepared input on `c95c6dd` and this repair. Reviewed header
 bindings: `IllegalStateException v4`. The original captured object is bound once at exceptional

@@ -139,7 +139,10 @@ latest established single-entry frontier, so an optional predecessor cannot eras
 an available inner catch. A genuine multi-entry core stays explicit. Ordered
 throw-site chains,
 original captures, P5 construction ownership and explicit monitor separation reasons
-survive failed natural composition. One private completion interface supplies
+survive failed natural composition. A plain typed catch also covers its remaining
+uncaught route for display, so an outer try/catch no longer repeats that shape as
+a chain line and inline markers. Multi-clause typed chains, use issues and
+unplaced routes keep their markers. One private completion interface supplies
 normal and executable exceptional entrances/outlets, including uncaught exits,
 with original copy/snapshot references. A guarded core with only throw completion
 has no normal follow into its catch; independent normal outlets keep their roles. The [P6 chapter](../../docs/diana/spec/06-regions.md)
@@ -304,6 +307,9 @@ P6 owns the recovery and retains snapshots, original catches and close/suppressi
 order. Four [exception-only completion checks](tests/exception_only_completion.rs)
 cover protected construction, typed/unmatched exits,
 [nested cleanup and a foreign entrance](../../quality/fixtures/exceptions/exception-only-completion/README.md).
+Five [natural catch display checks](tests/natural_exception_display.rs) cover
+[loop/rethrow/foreign/multi shapes](../../quality/fixtures/exceptions/natural-typed-catch-display/README.md):
+redundant markers disappear while sites, chains and explicit protection remain.
 These product checks do not execute fixture behavior.
 Six structural checks cover
 [nested private loop exits](../../quality/fixtures/loops/nested-loop-exits/README.md).

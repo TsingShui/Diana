@@ -1,6 +1,16 @@
 # Fixture: complex-exceptions
 
-## Current verdict — scoped catch capture
+## Natural catch display
+
+Only `parseOrThrow` changes. Its natural `NumberFormatException` catch already
+prints both routes, so the separate chain line, inline markers and `H3` label are
+omitted. `trim`, `parseInt`, catch-body list/log mutation, constructed exception
+and throw order are text-identical. P2–P6 source products are exact. Text/JSON publication changes together; the original sites, chains,
+completions, snapshots and receives remain in the owned product. This is a
+renewed LLM reading of the exact before/after text plus product equality, not
+executed behavior.
+
+## Prior verdict — scoped catch capture
 
 Compared the same prepared input on `c95c6dd` and this repair. Reviewed header
 bindings: `NumberFormatException v9`, `NullPointerException v8`, `RuntimeException v7`, `all v9`, `NumberFormatException v4`, `all v6`, `all v7`. The original captured object is bound once at exceptional
