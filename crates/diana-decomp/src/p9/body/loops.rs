@@ -9,7 +9,7 @@ impl Expressions<'_, '_> {
     pub(super) fn loop_layout(
         &mut self,
         work: &mut Vec<Event>,
-        p: &EmissionControl,
+        p: &Control,
         body: ControlId,
         placement: &LoopPlacement,
     ) -> Result<(), RenderError> {

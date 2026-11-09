@@ -147,29 +147,6 @@ pub struct EmissionBlock {
     pub actions: Vec<BodyAction>,
     pub end: BlockEnd,
 }
-#[derive(Clone, Copy, Debug, Serialize)]
-pub struct PredicateEmission {
-    pub terminal: BlockId,
-    /// Copies belong to selection of these original edges, never to a common
-    /// loop continuation. A break does not execute the predicate-exit copies.
-    pub when_true: TransferId,
-    pub when_false: TransferId,
-    pub negate: bool,
-}
-#[derive(Debug, Serialize)]
-pub enum LoopPlacement {
-    Infinite,
-    While {
-        predicate: ControlId,
-        test: PredicateEmission,
-        compact: bool,
-    },
-    DoWhile {
-        predicate: ControlId,
-        test: PredicateEmission,
-        compact: bool,
-    },
-}
 /// The single printed form of one original branch terminal. The variants are
 /// mutually exclusive, so no two display decisions can contradict each other.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -183,93 +160,13 @@ pub enum IfDisplay {
     /// Nothing prints; both arms keep zero-length anchors.
     Omitted,
 }
-#[derive(Clone, Copy, Debug, Serialize)]
-pub enum IfShape {
-    IfElse,
-    /// One arm ends in an established return/throw. The other edge's copies
-    /// and complete body follow the guard in the enclosing lexical scope.
-    Guard {
-        inverted: bool,
-    },
-    ElseIf,
-    /// The false edge and its original body become the sole printed arm. Any
-    /// true-edge copy bundles have no steps or diagnostics, only source anchors.
-    Inverted,
-    /// Only the header remains; evaluating the predicate has no displayed work.
-    Empty,
-}
-/// The last condition test's original other edge either reaches the common
-/// follow, executes its boundary transfer, or enters its delivered body.
-#[derive(Clone, Copy, Debug, Serialize)]
-pub enum ConditionElse {
-    None,
-    Copies,
-    /// Execute the original final other edge's copies and boundary completion.
-    Transfer,
-    Body(ControlId),
-}
-#[derive(Debug, Serialize)]
-pub enum EmissionLayout {
-    Block(crate::p6::NodeId),
-    Sequence,
-    If {
-        header: ControlId,
-        yes: ControlId,
-        no: ControlId,
-        test: PredicateEmission,
-        shape: IfShape,
-    },
-    /// Several original predicates print as one short-circuit condition. The
-    /// shared arm prints on `select`; the optional other arm prints otherwise.
-    Condition {
-        header: ControlId,
-        tests: Vec<PredicateEmission>,
-        yes: ControlId,
-        no: ConditionElse,
-        fall: TransferId,
-        /// P6-owned empty goto controls retain origins without printed routing.
-        routing: Option<ControlId>,
-    },
-    /// A P6-owned alternative over the original pure integer tests.
-    When {
-        bodies: Vec<ControlId>,
-    },
-    /// The call statement owns the marker/normal-result protocol. The original
-    /// dispatch and resume bodies remain in their existing scopes.
-    Suspension {
-        plan: u32,
-    },
-    Loop {
-        body: ControlId,
-        placement: LoopPlacement,
-    },
-    Switch {
-        header: ControlId,
-        bodies: Vec<ControlId>,
-        cases: Option<Vec<Vec<TransferId>>>,
-        terminal: BlockId,
-    },
-    Labelled,
-    Try {
-        body: ControlId,
-        catches: Vec<ControlId>,
-        finally: Option<FinallyEmission>,
-    },
-    /// Explicit planned exits prevent implicit second releases, including when
-    /// an unlocked routing terminal remains within its original nested catch.
-    Synchronized {
-        implicit: bool,
-        entry: ControlId,
-        body: ControlId,
-        acquire: OpId,
-    },
-    Graph,
-}
-#[derive(Clone, Copy, Debug, Serialize)]
-pub struct FinallyEmission {
-    pub cleanup: ControlId,
-    pub duplicate: ControlId,
-}
+pub use crate::recovery::IfShape;
+pub type PredicateEmission = crate::recovery::Predicate;
+pub type LoopPlacement = crate::recovery::LoopPlacement;
+pub type ConditionElse = crate::recovery::ConditionElse;
+pub type EmissionLayout = crate::recovery::ControlLayout;
+pub type FinallyEmission = crate::recovery::Finally;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub enum ControlCompletion {
     Goto(LabelId),
@@ -279,32 +176,6 @@ pub enum ControlCompletion {
     ContinueHere(ControlId),
 }
 
-#[derive(Debug, Serialize)]
-pub struct EmissionControl {
-    pub label: String,
-    /// Retain a labeled scope only when another emitted transfer names it.
-    pub label_required: bool,
-    /// Display-only omission; the original control remains in the product.
-    pub omitted: bool,
-    /// A labelled scope whose own braces print nothing but one unnamed printed
-    /// child. P9 prints that child directly; the control, its labels and its
-    /// transfers stay in the product.
-    pub transparent: bool,
-    pub continuation: Option<ControlCompletion>,
-    /// Selected P6 explicit order; the retained control still owns its original
-    /// tests/shared/other roles. Other layouts use the source child list.
-    pub explicit_children: Option<Vec<ControlId>>,
-    /// Original controls retained only as source attachments, not execution children.
-    pub source_only: Vec<ControlId>,
-    pub layout: EmissionLayout,
-}
-impl EmissionControl {
-    pub fn children<'a>(&'a self, source: &'a Control) -> &'a [ControlId] {
-        self.explicit_children
-            .as_deref()
-            .unwrap_or(&source.children)
-    }
-}
 #[derive(Clone, Copy, Debug, Serialize)]
 pub enum TransferSpelling {
     Goto(LabelId),
@@ -339,7 +210,6 @@ pub struct EmissionPlan {
     pub(super) boolean_locals: Vec<bool>,
     /// A declaration attached to its existing assignment; absence keeps the header form.
     pub(super) local_initializers: Vec<Option<StatementId>>,
-    pub(super) controls: Vec<EmissionControl>,
     pub(super) blocks: Vec<EmissionBlock>,
     pub(super) show_chains: Vec<bool>,
     /// Whether a route annotation still adds information beyond the printed
@@ -499,7 +369,6 @@ impl EmissionPlan {
             boolean_uses: Vec::new(),
             boolean_locals: Vec::new(),
             local_initializers: Vec::new(),
-            controls: Vec::new(),
             blocks: Vec::new(),
             show_chains: Vec::new(),
             site_annotations: Vec::new(),
@@ -540,14 +409,6 @@ impl EmissionPlan {
     }
     pub fn local_types(&self) -> &[LocalSpelling] {
         &self.local_types
-    }
-    pub fn controls(&self) -> &[EmissionControl] {
-        &self.controls
-    }
-    pub fn omitted(&self, id: ControlId) -> bool {
-        self.controls
-            .get(id.0 as usize)
-            .is_some_and(|control| control.omitted)
     }
     pub fn blocks(&self) -> &[EmissionBlock] {
         &self.blocks

@@ -57,9 +57,9 @@ impl Expressions<'_, '_> {
                     push(work, Event::Close)?;
                     // A false arm that prints nothing keeps only its
                     // origins; the `else` block would state no work.
-                    let silent_false = self.code.emission().omitted(no)
+                    let silent_false = self.code.control_omitted(no)
                         || self.code.emission().if_display(test.terminal) == IfDisplay::NoElse;
-                    if !self.code.emission().omitted(no) {
+                    if !self.code.control_omitted(no) {
                         if silent_false {
                             push(work, Event::EmptyArmAnchors(no))?;
                         } else {
@@ -74,7 +74,7 @@ impl Expressions<'_, '_> {
                     Event::If {
                         test,
                         chained,
-                        other_at_header: self.code.emission().omitted(no)
+                        other_at_header: self.code.control_omitted(no)
                             || self.code.emission().if_display(test.terminal) == IfDisplay::NoElse,
                     },
                 )?;
@@ -89,22 +89,22 @@ impl Expressions<'_, '_> {
         control: ControlId,
         chained: bool,
     ) -> Result<(), RenderError> {
-        let (count, yes, no, fall, routing) =
-            match &self.code.emission().controls()[control.0 as usize].layout {
-                EmissionLayout::Condition {
-                    tests,
-                    yes,
-                    no,
-                    fall,
-                    routing,
-                    ..
-                } => (tests.len(), *yes, *no, *fall, *routing),
-                _ => {
-                    return Err(RenderError::Invariant(
-                        "condition control lost its delivered layout",
-                    ));
-                }
-            };
+        let (count, yes, no, fall, routing) = match &self.code.controls()[control.0 as usize].layout
+        {
+            EmissionLayout::Condition {
+                tests,
+                yes,
+                no,
+                fall,
+                routing,
+                ..
+            } => (tests.len(), *yes, *no, *fall, *routing),
+            _ => {
+                return Err(RenderError::Invariant(
+                    "condition control lost its delivered layout",
+                ));
+            }
+        };
         if !chained {
             self.out.indent()?;
         }
@@ -114,7 +114,7 @@ impl Expressions<'_, '_> {
             if i > 0 {
                 self.out.put(" || ")?;
             }
-            let test = match &self.code.emission().controls()[control.0 as usize].layout {
+            let test = match &self.code.controls()[control.0 as usize].layout {
                 EmissionLayout::Condition { tests, .. } => tests[i],
                 _ => {
                     return Err(RenderError::Invariant(
@@ -155,9 +155,13 @@ impl Expressions<'_, '_> {
         // Later test runs print no words of their own. Their
         // delivered controls, labels, routes and copies keep
         // zero-width anchors at the shared arm.
-        let run_count = count.min(self.code.controls()[control.0 as usize].children.len());
+        let run_count = count.min(
+            self.code.controls()[control.0 as usize]
+                .source_children
+                .len(),
+        );
         for i in (1..run_count).rev() {
-            let run = self.code.controls()[control.0 as usize].children[i];
+            let run = self.code.controls()[control.0 as usize].source_children[i];
             push(work, Event::Anchors(run))?;
         }
         match no {

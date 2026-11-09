@@ -123,10 +123,10 @@ structural and actually executed behavioral evidence.
 The following sections define supplementary, test-owned behavioral checking.
 They do not replace the primary complexity-challenge and LLM-review loop.
 
-The subject is the owned `MethodCode` and its final
-[`EmissionPlan`](../../crates/diana-decomp/src/p7/emission.rs), obtained through
-the shared ordinary Engine entry. This is the schedule consumed by P9, not an
-earlier CFG that still contains decisions the final output has omitted.
+The subject is the owned `MethodCode`, its selected control arena and its
+[operation/transfer emission facts](../../crates/diana-decomp/src/p7/emission.rs),
+obtained through the shared ordinary Engine entry. These are consumed by P9,
+not an earlier CFG that still contains decisions the final output has omitted.
 
 The independent expectation is a fixture scenario: inputs, initial state,
 explicit environment assumptions, expected result and ordered observable effects.

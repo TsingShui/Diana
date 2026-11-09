@@ -29,13 +29,8 @@ fn operation_portions(facts: &RegionFacts, code: &MethodCode) {
 }
 
 fn post_cleanup_condition(code: &MethodCode) {
-    assert!(
-        code.emission()
-            .controls()
-            .iter()
-            .any(|c| matches!(&c.layout,
-        EmissionLayout::Condition { tests, .. } if tests.len() == 2))
-    );
+    assert!(code.controls().iter().any(|c| matches!(&c.layout,
+        EmissionLayout::Condition { tests, .. } if tests.len() == 2)));
 }
 
 #[test]
@@ -56,15 +51,14 @@ fn a_completed_body_keeps_the_original_body_update_and_both_condition_exits() {
             );
             assert!(!rendered.text().contains("for ("));
             assert_eq!(
-                code.emission()
-                    .controls()
+                code.controls()
                     .iter()
                     .filter(|c| matches!(c.layout, EmissionLayout::Condition { .. }))
                     .count(),
                 1
             );
             assert_eq!(rendered.text().matches("break;").count(), 2);
-            assert!(code.emission().controls().iter().any(|c| matches!(
+            assert!(code.controls().iter().any(|c| matches!(
                 c.layout,
                 EmissionLayout::Condition {
                     no: ConditionElse::None,

@@ -169,15 +169,15 @@ pub(super) fn construct_flow(c: &mut Context<'_, '_>) -> Result<(), ExpressionEr
     for &node in plan.explicit_predicates() {
         c.code.emission.blocks[node.0 as usize].end =
             BlockEnd::Terminal(c.planned.facts().nodes()[node.0 as usize].block());
-        c.code.emission.controls[node.0 as usize].continuation = None;
+        c.code.controls[node.0 as usize].continuation = None;
     }
     for guard in plan.guards() {
         let mut children = Vec::new();
         push(&mut children, ControlId(guard.header().0))?;
         push(&mut children, ControlId(guard.normal().0))?;
-        let control = &mut c.code.emission.controls[guard.control().0 as usize];
+        let control = &mut c.code.controls[guard.control().0 as usize];
         control.layout = EmissionLayout::Sequence;
-        control.explicit_children = Some(children);
+        control.children = children.into();
         control.label_required = false;
         control.continuation = None;
     }
@@ -247,16 +247,14 @@ pub(super) fn finish_flow(c: &mut Context<'_, '_>) -> Result<(), ExpressionError
             continue;
         }
         active[id.0 as usize] = true;
-        for &child in
-            c.code.emission.controls[id.0 as usize].children(&c.code.controls[id.0 as usize])
-        {
+        for &child in c.code.controls[id.0 as usize].children() {
             push(&mut work, child)?;
         }
     }
     if let Some(cycle) = plan.cycle() {
         active[cycle.header().0 as usize] = true;
         c.code.emission.blocks[cycle.header().0 as usize].end = BlockEnd::None;
-        c.code.emission.controls[cycle.header().0 as usize].continuation = None;
+        c.code.controls[cycle.header().0 as usize].continuation = None;
         c.code.emission.transfers[cycle.implicit_latch().0 as usize].spelling =
             TransferSpelling::Fallthrough;
         c.code.emission.transfers[cycle.initial_header().0 as usize].spelling =
@@ -269,7 +267,7 @@ pub(super) fn finish_flow(c: &mut Context<'_, '_>) -> Result<(), ExpressionError
         if original.has_terminal() {
             c.code.emission.blocks[node.0 as usize].end = BlockEnd::Terminal(original.block());
         }
-        c.code.emission.controls[node.0 as usize].continuation = None;
+        c.code.controls[node.0 as usize].continuation = None;
         for &transfer in &c.code.blocks[node.0 as usize].transfers {
             let original = &c.code.transfers[transfer.0 as usize];
             c.code.emission.transfers[transfer.0 as usize].spelling =
@@ -282,7 +280,7 @@ pub(super) fn finish_flow(c: &mut Context<'_, '_>) -> Result<(), ExpressionError
         }
     }
     for &(id, target) in plan.completions() {
-        c.code.emission.controls[id.0 as usize].continuation =
+        c.code.controls[id.0 as usize].continuation =
             target.map(|node| ControlCompletion::Goto(LabelId(node.0)));
         if let Some(node) = target {
             c.code.emission.blocks[node.0 as usize].show_label = true;
@@ -306,7 +304,7 @@ pub(super) fn finish_flow(c: &mut Context<'_, '_>) -> Result<(), ExpressionError
         }
     }
     for site in plan.sites() {
-        c.code.emission.controls[site.guard().0 as usize].continuation = None;
+        c.code.controls[site.guard().0 as usize].continuation = None;
         let id = site.normal();
         c.code.emission.transfers[id.0 as usize].spelling = if plan.gotos().contains(&id) {
             TransferSpelling::Goto(c.code.transfers[id.0 as usize].destination)
@@ -517,11 +515,11 @@ pub(super) fn finish_loop(c: &mut Context<'_, '_>) -> Result<(), ExpressionError
         .chain(plan.body())
         .chain(plan.tail())
     {
-        if !matches!(c.code.emission.controls[node.0 as usize].layout, EmissionLayout::Block(n) if n == node)
+        if !matches!(c.code.controls[node.0 as usize].layout, EmissionLayout::Block(n) if n == node)
         {
             return Err(bug("suspend loop lost its original node control"));
         }
-        c.code.emission.controls[node.0 as usize].continuation = None;
+        c.code.controls[node.0 as usize].continuation = None;
     }
     for &link in plan.normal_links() {
         if !plan
@@ -897,9 +895,8 @@ pub(super) fn construct(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> 
     let index = id(c.code.emission.suspensions.len())?;
     push(&mut c.code.emission.suspensions, suspension)?;
     *action = implicit;
-    c.code.emission.controls[control.0 as usize].layout =
-        EmissionLayout::Suspension { plan: index };
-    c.code.emission.controls[owned.root.0 as usize].explicit_children = Some(sequence);
+    c.code.controls[control.0 as usize].layout = EmissionLayout::Suspension { plan: index };
+    c.code.controls[owned.root.0 as usize].children = sequence.into();
     for &local in body.implicit_locals() {
         c.code.emission.hidden_locals[local.0 as usize] = true;
     }

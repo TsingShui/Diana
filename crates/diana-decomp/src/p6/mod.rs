@@ -12,6 +12,7 @@ mod loops;
 mod ownership;
 mod product;
 mod protection;
+mod recovery;
 mod scopes;
 mod surface;
 mod suspension;

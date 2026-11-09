@@ -6,18 +6,13 @@ use super::{Event, push};
 use crate::p7::*;
 
 impl Expressions<'_, '_> {
-    fn scope_layout(
-        &mut self,
-        work: &mut Vec<Event>,
-        c: &Control,
-        p: &EmissionControl,
-    ) -> Result<(), RenderError> {
-        let graph = matches!(p.layout, EmissionLayout::Graph);
+    fn scope_layout(&mut self, work: &mut Vec<Event>, c: &Control) -> Result<(), RenderError> {
+        let graph = matches!(c.layout, EmissionLayout::Graph);
         self.out.indent()?;
         // A control name is printed only when a transfer still
         // names it; Sequence reaches here only when required.
-        if p.label_required {
-            self.out.put(&p.label)?;
+        if c.label_required {
+            self.out.put(&c.label)?;
             // The graph header continues on this line; a plain
             // block opens immediately after the colon.
             self.out.put(if graph { ": " } else { ":" })?;
@@ -44,7 +39,7 @@ impl Expressions<'_, '_> {
                 self.out.put(" no_implicit_entry")?;
             }
         }
-        if graph || p.label_required {
+        if graph || c.label_required {
             self.out.open()?;
         } else {
             // A bare break still names the innermost printed
@@ -52,7 +47,7 @@ impl Expressions<'_, '_> {
             self.out.open_plain()?;
         }
         push(work, Event::Close)?;
-        for &child in p.children(c).iter().rev() {
+        for &child in c.children().iter().rev() {
             push(work, Event::Control(child))?;
         }
         Ok(())
@@ -66,25 +61,24 @@ impl Expressions<'_, '_> {
         id: ControlId,
         chained: bool,
     ) -> Result<(), RenderError> {
-        if self.code.emission().omitted(id) {
+        if self.code.control_omitted(id) {
             return Ok(());
         }
         let c = &self.code.controls()[id.0 as usize];
-        let p = &self.code.emission().controls()[id.0 as usize];
         let start = self.out.position();
         push(work, Event::End(id, start))?;
-        if !p.source_only.is_empty() {
+        if !c.source_only.is_empty() {
             push(work, Event::OriginOnly(self.out.origin_only))?;
-            for &source in p.source_only.iter().rev() {
+            for &source in c.source_only.iter().rev() {
                 push(work, Event::Control(source))?;
             }
             push(work, Event::OriginOnly(true))?;
         }
-        match &p.layout {
+        match &c.layout {
             EmissionLayout::Block(node) => self.block(*node)?,
             EmissionLayout::Suspension { plan } => self.suspension_tail(*plan)?,
-            EmissionLayout::Sequence if !p.label_required => {
-                for &child in p.children(c).iter().rev() {
+            EmissionLayout::Sequence if !c.label_required => {
+                for &child in c.children().iter().rev() {
                     push(
                         work,
                         if chained {
@@ -95,13 +89,13 @@ impl Expressions<'_, '_> {
                     )?;
                 }
             }
-            EmissionLayout::Labelled if p.transparent => {
-                for &child in p.children(c).iter().rev() {
+            EmissionLayout::Labelled if c.transparent => {
+                for &child in c.children().iter().rev() {
                     push(work, Event::Control(child))?;
                 }
             }
             EmissionLayout::Sequence | EmissionLayout::Labelled | EmissionLayout::Graph => {
-                self.scope_layout(work, c, p)?;
+                self.scope_layout(work, c)?;
             }
             EmissionLayout::If {
                 header,
@@ -110,9 +104,9 @@ impl Expressions<'_, '_> {
                 test,
                 shape,
             } => {
-                if p.label_required {
+                if c.label_required {
                     self.out.indent()?;
-                    self.out.put(&p.label)?;
+                    self.out.put(&c.label)?;
                     self.out.put(":")?;
                     self.out.open()?;
                     push(work, Event::Close)?;
@@ -131,7 +125,7 @@ impl Expressions<'_, '_> {
                 push(work, Event::Control(*header))?;
             }
             EmissionLayout::Loop { body, placement } => {
-                self.loop_layout(work, p, *body, placement)?;
+                self.loop_layout(work, c, *body, placement)?;
             }
             EmissionLayout::When { .. } => self.decision(id, work)?,
             EmissionLayout::Switch {
@@ -140,7 +134,14 @@ impl Expressions<'_, '_> {
                 cases,
                 terminal,
             } => {
-                self.switch_layout(work, id, *header, bodies, cases.as_deref(), *terminal)?;
+                self.switch_layout(
+                    work,
+                    id,
+                    *header,
+                    bodies,
+                    cases.as_ref().map(|groups| groups.as_slice()),
+                    *terminal,
+                )?;
             }
             EmissionLayout::Try {
                 body,

@@ -29,7 +29,7 @@ fn transfer_exit(code: &MethodCode, id: TransferId) -> Option<TailExit> {
 pub(super) fn drop_completed_continuations(code: &mut MethodCode) -> Result<(), ExpressionError> {
     let mut parent: Vec<Option<ControlId>> = filled(code.controls.len(), None)?;
     for control in &code.controls {
-        for &child in &control.children {
+        for &child in &control.source_children {
             *parent
                 .get_mut(child.0 as usize)
                 .ok_or(bug("control names an unknown child"))? = Some(control.id);
@@ -45,8 +45,8 @@ pub(super) fn drop_completed_continuations(code: &mut MethodCode) -> Result<(), 
     for (node, block) in code.emission.blocks.iter().enumerate() {
         jumps[node] = block_exit(code, block);
     }
-    for control in 0..code.emission.controls.len() {
-        if code.emission.controls[control].continuation.is_none() {
+    for control in 0..code.controls.len() {
+        if code.controls[control].continuation.is_none() {
             continue;
         }
         for (node, jump) in jumps.iter().enumerate() {
@@ -66,22 +66,19 @@ pub(super) fn drop_completed_continuations(code: &mut MethodCode) -> Result<(), 
                 let Some(up) = parent.get(current.0 as usize).copied().flatten() else {
                     break;
                 };
-                let Some(parent_control) = code.controls.get(up.0 as usize) else {
+                let Some(emitted) = code.controls.get(up.0 as usize) else {
                     break;
                 };
-                let emitted = &code.emission.controls[up.0 as usize];
-                if code.emission.controls[current.0 as usize]
-                    .continuation
-                    .is_some()
+                if code.controls[current.0 as usize].continuation.is_some()
                     || !matches!(emitted.layout, EmissionLayout::Sequence)
-                    || emitted.children(parent_control).last() != Some(&current)
+                    || emitted.children().last() != Some(&current)
                 {
                     break;
                 }
                 current = up;
             }
             if last {
-                code.emission.controls[control].continuation = None;
+                code.controls[control].continuation = None;
                 break;
             }
         }
@@ -119,13 +116,13 @@ pub(super) fn ends_in_terminal_exit(
     push(&mut work, root)?;
     let mut previous = None;
     while let Some(id) = work.pop() {
-        let c = &code.emission.controls[id.0 as usize];
+        let c = &code.controls[id.0 as usize];
         if c.omitted || c.label_required || c.continuation.is_some() {
             return Ok(false);
         }
         match c.layout {
             EmissionLayout::Sequence => {
-                for &child in c.children(&code.controls[id.0 as usize]).iter().rev() {
+                for &child in c.children().iter().rev() {
                     push(&mut work, child)?;
                 }
             }
@@ -183,15 +180,14 @@ pub(super) fn collapse_planned_continuations(code: &mut MethodCode) -> Result<()
     let mut parent = filled(code.controls.len(), None)?;
     let mut buffer = filled(code.controls.len().max(3), ControlId(0))?;
     for control in &code.controls {
-        for &child in &control.children {
+        for &child in &control.source_children {
             *parent
                 .get_mut(child.0 as usize)
                 .ok_or(bug("control names an unknown child"))? = Some(control.id);
         }
     }
-    for index in 0..code.emission.controls.len() {
-        let Some(ControlCompletion::Goto(label)) = code.emission.controls[index].continuation
-        else {
+    for index in 0..code.controls.len() {
+        let Some(ControlCompletion::Goto(label)) = code.controls[index].continuation else {
             continue;
         };
         let control = ControlId(super::build::id(index)?);
@@ -200,7 +196,7 @@ pub(super) fn collapse_planned_continuations(code: &mut MethodCode) -> Result<()
             continue;
         };
         if super::sequence::printed_entry_is(code, next, label) {
-            code.emission.controls[index].continuation = None;
+            code.controls[index].continuation = None;
         }
     }
     Ok(())

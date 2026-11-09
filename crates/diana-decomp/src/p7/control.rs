@@ -133,21 +133,6 @@ pub enum HandlerCapture {
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum LoopSyntax {
-    Infinite,
-    While {
-        terminal: crate::p2::BlockId,
-        repeat: TransferId,
-        exit: TransferId,
-    },
-    DoWhile {
-        terminal: crate::p2::BlockId,
-        repeat: TransferId,
-        exit: TransferId,
-    },
-}
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
 pub enum Resume {
     Follow(LabelId),
     Break {
@@ -205,11 +190,7 @@ pub enum ControlKind {
         node: p6::NodeId,
     },
     Sequence,
-    If {
-        terminal: crate::p2::BlockId,
-        when_true: TransferId,
-        when_false: TransferId,
-    },
+    If,
     /// Ordered short-circuit tests delivered by one P6 condition region. The
     /// children are the test runs, shared arm, optional other arm and optional
     /// routing child; each test keeps its terminal, links and evaluation order.
@@ -221,13 +202,10 @@ pub enum ControlKind {
         explicit: ConditionSchedule,
     },
     Loop {
-        syntax: LoopSyntax,
         continue_target: LabelId,
     },
     Switch {
-        terminal: crate::p2::BlockId,
         arms: Vec<TransferId>,
-        cases: Option<Vec<Vec<TransferId>>>,
     },
     LabelledBlock {
         target: LabelId,
@@ -265,6 +243,16 @@ pub enum Continuation {
     Goto(LabelId),
     Break(ControlId),
     Continue(ControlId),
+}
+impl Continuation {
+    pub(super) fn completion(&self) -> Option<ControlCompletion> {
+        match *self {
+            Self::Goto(label) => Some(ControlCompletion::Goto(label)),
+            Self::Break(scope) => Some(ControlCompletion::Break(scope)),
+            Self::Continue(scope) => Some(ControlCompletion::Continue(scope)),
+            Self::None | Self::Parent | Self::Next(_) => None,
+        }
+    }
 }
 /// One delivered predicate of a short-circuit condition. `select` is the
 /// original edge to the shared arm, so it also fixes the printed polarity.
@@ -318,10 +306,25 @@ pub struct Control {
     pub decision: Option<Decision>,
     pub id: ControlId,
     pub kind: ControlKind,
-    pub children: Vec<ControlId>,
+    /// Original P6 topology for provenance and existing scope facts.
+    pub source_children: crate::recovery::SharedList<ControlId>,
     pub entry: Option<LabelId>,
     pub follow: Option<LabelId>,
-    pub continuation: Continuation,
+    pub source_continuation: Continuation,
+    pub label: String,
+    pub label_required: bool,
+    pub omitted: bool,
+    pub transparent: bool,
+    pub continuation: Option<ControlCompletion>,
+    /// Sole selected execution order, independent of retained source topology.
+    pub children: crate::recovery::SharedList<ControlId>,
+    pub source_only: Vec<ControlId>,
+    pub layout: EmissionLayout,
+}
+impl Control {
+    pub fn children(&self) -> &[ControlId] {
+        &self.children
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]

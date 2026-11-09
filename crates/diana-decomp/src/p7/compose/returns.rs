@@ -28,9 +28,8 @@ pub(super) fn trailing_void_return(code: &MethodCode) -> Result<Option<BlockId>,
         return Ok(None);
     };
     let mut current = root;
-    for _ in 0..=code.emission.controls.len() {
+    for _ in 0..=code.controls.len() {
         let control = code
-            .emission
             .controls
             .get(current.0 as usize)
             .ok_or(bug("trailing return names an unknown control"))?;
@@ -41,15 +40,11 @@ pub(super) fn trailing_void_return(code: &MethodCode) -> Result<Option<BlockId>,
         let block = match &control.layout {
             // An unlabeled Sequence prints nothing around its children.
             EmissionLayout::Sequence if !control.label_required => {
-                let source = code
-                    .controls
-                    .get(current.0 as usize)
-                    .ok_or(bug("trailing return names an unknown control"))?;
-                let children = control.children(source);
+                let children = control.children();
                 let Some(last) = children
                     .iter()
                     .rev()
-                    .find(|&&child| !code.emission.omitted(child))
+                    .find(|&&child| !code.control_omitted(child))
                 else {
                     return Ok(None);
                 };

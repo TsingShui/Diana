@@ -8,7 +8,7 @@ use super::*;
 pub(super) fn drop_trailing_continues(code: &mut MethodCode) -> Result<(), ExpressionError> {
     let mut parent: Vec<Option<ControlId>> = filled(code.controls.len(), None)?;
     for control in &code.controls {
-        for &child in &control.children {
+        for &child in &control.source_children {
             *parent
                 .get_mut(child.0 as usize)
                 .ok_or(bug("control names an unknown child"))? = Some(control.id);
@@ -23,7 +23,7 @@ pub(super) fn drop_trailing_continues(code: &mut MethodCode) -> Result<(), Expre
     let mut bodies: Vec<Option<ControlId>> = filled(code.controls.len(), None)?;
     for control in &code.controls {
         if let ControlKind::Loop { .. } = control.kind {
-            bodies[control.id.0 as usize] = control.children.first().copied();
+            bodies[control.id.0 as usize] = control.source_children.first().copied();
         }
     }
     for transfer in 0..code.transfers.len() {
@@ -48,15 +48,12 @@ pub(super) fn drop_trailing_continues(code: &mut MethodCode) -> Result<(), Expre
             let Some(up) = parent.get(current.0 as usize).copied().flatten() else {
                 break;
             };
-            let Some(control) = code.controls.get(up.0 as usize) else {
+            let Some(emitted) = code.controls.get(up.0 as usize) else {
                 break;
             };
-            let emitted = &code.emission.controls[up.0 as usize];
-            if code.emission.controls[current.0 as usize]
-                .continuation
-                .is_some()
+            if code.controls[current.0 as usize].continuation.is_some()
                 || !matches!(emitted.layout, EmissionLayout::Sequence)
-                || emitted.children(control).last() != Some(&current)
+                || emitted.children().last() != Some(&current)
             {
                 break;
             }

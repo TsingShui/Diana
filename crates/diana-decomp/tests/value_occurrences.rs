@@ -124,7 +124,7 @@ impl Execute<'_> {
         }
     }
     fn control(&mut self, id: ControlId) -> Result<Option<i32>, Fault> {
-        let emission = &self.code.emission().controls()[id.0 as usize];
+        let emission = &self.code.controls()[id.0 as usize];
         if emission.omitted {
             return Ok(None);
         }
@@ -133,7 +133,7 @@ impl Execute<'_> {
         }
         match emission.layout {
             EmissionLayout::Sequence => {
-                for &child in emission.children(&self.code.controls()[id.0 as usize]) {
+                for &child in emission.children() {
                     if let Some(value) = self.control(child)? {
                         return Ok(Some(value));
                     }

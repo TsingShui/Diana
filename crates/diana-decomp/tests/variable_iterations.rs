@@ -15,7 +15,7 @@ use loops::updates_once;
 
 fn boundary_completions(code: &MethodCode) -> Vec<ControlCompletion> {
     let mut out = Vec::new();
-    for c in code.emission().controls() {
+    for c in code.controls() {
         if let Some(completion) = c.continuation {
             out.push(match completion {
                 ControlCompletion::BreakHere(target) => ControlCompletion::Break(target),

@@ -188,6 +188,11 @@ impl MethodCode {
     pub fn controls(&self) -> &[Control] {
         &self.controls
     }
+    pub fn control_omitted(&self, id: ControlId) -> bool {
+        self.controls
+            .get(id.0 as usize)
+            .is_some_and(|control| control.omitted)
+    }
     pub fn root(&self) -> Option<ControlId> {
         self.root
     }

@@ -174,9 +174,9 @@ fn complete_method(
         let body_start = out.position();
         let mut pending = Vec::new();
         pending
-            .try_reserve_exact(code.emission().controls().len())
+            .try_reserve_exact(code.controls().len())
             .map_err(RenderError::MethodScratch)?;
-        pending.resize(code.emission().controls().len(), None);
+        pending.resize(code.controls().len(), None);
         let mut context = Expressions {
             out,
             method,

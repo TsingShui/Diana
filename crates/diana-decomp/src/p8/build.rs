@@ -142,7 +142,7 @@ fn code_prints_nothing(code: &MethodCode) -> Result<bool, RequestError> {
     let mut work = Vec::new();
     push(&mut work, root)?;
     while let Some(id) = work.pop() {
-        let Some(control) = emission.controls().get(id.0 as usize) else {
+        let Some(control) = code.controls().get(id.0 as usize) else {
             return Ok(false);
         };
         if control.omitted {
@@ -174,14 +174,7 @@ fn code_prints_nothing(code: &MethodCode) -> Result<bool, RequestError> {
                 }
             }
             EmissionLayout::Sequence => {
-                let Some(children) = code
-                    .controls()
-                    .get(id.0 as usize)
-                    .map(|control| control.children.as_slice())
-                else {
-                    return Ok(false);
-                };
-                for &child in children {
+                for &child in control.children() {
                     push(&mut work, child)?;
                 }
             }

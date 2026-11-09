@@ -119,7 +119,7 @@ fn a_tail_test_keeps_the_first_body_for_nonpositive_limits() {
             };
             assert!(matches!(plan.form(), LoopForm::DoWhile(_)));
             assert_eq!(updates_once(facts, code, rendered).len(), 1);
-            assert!(code.emission().controls().iter().any(|c| matches!(
+            assert!(code.controls().iter().any(|c| matches!(
                 c.layout,
                 EmissionLayout::Loop {
                     placement: LoopPlacement::DoWhile { .. },

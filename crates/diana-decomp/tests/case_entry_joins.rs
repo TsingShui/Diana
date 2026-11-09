@@ -10,17 +10,14 @@ mod rethrows;
 use inspection::inspect;
 
 fn groups(code: &MethodCode) -> Option<(&[ControlId], &[Vec<TransferId>])> {
-    code.emission()
-        .controls()
-        .iter()
-        .find_map(|c| match &c.layout {
-            EmissionLayout::Switch {
-                bodies,
-                cases: Some(groups),
-                ..
-            } => Some((bodies.as_slice(), groups.as_slice())),
-            _ => None,
-        })
+    code.controls().iter().find_map(|c| match &c.layout {
+        EmissionLayout::Switch {
+            bodies,
+            cases: Some(groups),
+            ..
+        } => Some((bodies.as_slice(), groups.as_slice())),
+        _ => None,
+    })
 }
 fn group(code: &MethodCode, key: i64) -> usize {
     groups(code)

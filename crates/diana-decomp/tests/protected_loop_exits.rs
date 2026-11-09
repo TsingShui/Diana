@@ -66,7 +66,7 @@ fn nested_private_throw_keeps_both_original_heads_inside_one_finally() {
             );
             assert!(!rendered.text().contains("goto "));
             assert!(!rendered.text().contains("exception_chain"));
-            assert!(code.emission().controls().iter().any(|c| matches!(
+            assert!(code.controls().iter().any(|c| matches!(
                 c.layout,
                 EmissionLayout::If {
                     shape: IfShape::Guard { .. },

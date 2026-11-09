@@ -27,8 +27,7 @@ fn original_events(code: &MethodCode, rendered: &Rendered) {
     }
 }
 fn implicit_count(code: &MethodCode) -> usize {
-    code.emission()
-        .controls()
+    code.controls()
         .iter()
         .filter(|control| {
             matches!(

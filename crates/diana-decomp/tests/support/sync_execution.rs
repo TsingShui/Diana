@@ -380,14 +380,14 @@ impl Model {
     }
     fn control(&mut self, code: &MethodCode, id: ControlId) -> Result<Outcome, Failure> {
         let source = &code.controls()[id.0 as usize];
-        let emitted = &code.emission().controls()[id.0 as usize];
+        let emitted = &code.controls()[id.0 as usize];
         if emitted.omitted {
             return Ok(Outcome::Next);
         }
         let result = match &emitted.layout {
             EmissionLayout::Sequence => {
                 let mut outcome = Outcome::Next;
-                for &child in emitted.children(source) {
+                for &child in emitted.children() {
                     outcome = self.control(code, child)?;
                     if !matches!(outcome, Outcome::Next) {
                         break;

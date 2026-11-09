@@ -257,7 +257,7 @@ fn construction_throw(
         return None;
     }
     let owner = code.labels.get(node)?.owner;
-    let control = code.emission.controls.get(owner.0 as usize)?;
+    let control = code.controls.get(owner.0 as usize)?;
     if !matches!(control.layout, EmissionLayout::Block(n) if n.0 as usize == node)
         || control.continuation.is_some()
         || code
@@ -269,7 +269,7 @@ fn construction_throw(
         return None;
     }
     let following = sibling.get(owner.0 as usize).copied().flatten()?;
-    let following_control = code.emission.controls.get(following.0 as usize)?;
+    let following_control = code.controls.get(following.0 as usize)?;
     if !matches!(following_control.layout, EmissionLayout::Block(target) if target.0 as usize == next_node)
         || following_control.continuation.is_some()
     {
@@ -892,20 +892,20 @@ fn terminal_use(
         return None;
     }
     let owner = code.labels.get(node)?.owner;
-    let source_control = code.emission.controls.get(owner.0 as usize)?;
+    let source_control = code.controls.get(owner.0 as usize)?;
     if !matches!(source_control.layout, EmissionLayout::Block(n) if n.0 as usize == node)
         || source_control.continuation.is_some()
     {
         return None;
     }
     let following = sibling.get(owner.0 as usize).copied().flatten()?;
-    let following_control = code.emission.controls.get(following.0 as usize)?;
+    let following_control = code.controls.get(following.0 as usize)?;
     // The producer's only normal delivery reaches this empty, single-entry
     // header in the same original block. The selected layout must print that
     // header immediately after its source; no operation or copy moves across it.
     let terminal = match following_control.layout {
         EmissionLayout::If { header, test, .. } => {
-            let header = code.emission.controls.get(header.0 as usize)?;
+            let header = code.controls.get(header.0 as usize)?;
             if !matches!(header.layout, EmissionLayout::Block(target) if target.0 as usize == next_node)
                 || header.continuation.is_some()
                 || !matches!(next.end, BlockEnd::None)
@@ -925,7 +925,7 @@ fn terminal_use(
                     owner: TerminalEmission::Loop(control),
                 } => {
                     let EmissionLayout::Loop { placement, .. } =
-                        &code.emission.controls.get(control.0 as usize)?.layout
+                        &code.controls.get(control.0 as usize)?.layout
                     else {
                         return None;
                     };
@@ -1174,9 +1174,9 @@ pub(super) fn conditions(
     access: &LocalAccess,
 ) -> Result<(), ExpressionError> {
     let mut layouts = Vec::new();
-    for index in 0..code.emission.controls.len() {
+    for index in 0..code.controls.len() {
         if matches!(
-            code.emission.controls[index].layout,
+            code.controls[index].layout,
             EmissionLayout::Condition { .. }
         ) {
             push(&mut layouts, index)?;
@@ -1256,7 +1256,7 @@ fn compose(
     access: &LocalAccess,
     key: crate::MethodKey,
 ) -> Result<ConditionChoice, ExpressionError> {
-    let count = match &code.emission.controls[index].layout {
+    let count = match &code.controls[index].layout {
         EmissionLayout::Condition { tests, .. } => tests.len(),
         _ => return Err(bug("condition composition lost its layout")),
     };
@@ -1275,13 +1275,12 @@ fn compose(
                 ))
             };
             let test = {
-                let EmissionLayout::Condition { tests, .. } = &code.emission.controls[index].layout
-                else {
+                let EmissionLayout::Condition { tests, .. } = &code.controls[index].layout else {
                     return Err(bug("condition composition changed its layout"));
                 };
                 tests[position]
             };
-            let Some(&control) = code.controls[index].children.get(position) else {
+            let Some(&control) = code.controls[index].source_children.get(position) else {
                 return refuse("test_control_unavailable", None);
             };
             let Some(nodes) = run_nodes(code, control)? else {
@@ -1376,18 +1375,19 @@ fn compose(
     let ControlKind::Condition { routing, .. } = &code.controls[index].kind else {
         return Err(bug("condition composition lost its routing product"));
     };
-    for &link in routing {
+    let routing = super::super::build::copy(routing)?;
+    for link in routing {
         code.emission.transfers[link.0 as usize].spelling = TransferSpelling::Fallthrough;
         let node = code.transfers[link.0 as usize].from;
         let owner = code.labels[node.0 as usize].owner;
-        code.emission.controls[owner.0 as usize].continuation = None;
+        code.controls[owner.0 as usize].continuation = None;
     }
     if let EmissionLayout::Condition {
         routing: Some(control),
         ..
-    } = code.emission.controls[index].layout
+    } = code.controls[index].layout
     {
-        code.emission.controls[control.0 as usize].continuation = None;
+        code.controls[control.0 as usize].continuation = None;
     }
     let mut values = 0;
     let mut stores = 0;
@@ -1408,7 +1408,7 @@ fn compose(
             }
         }
     }
-    let copy_else = match &code.emission.controls[index].layout {
+    let copy_else = match &code.controls[index].layout {
         EmissionLayout::Condition {
             no: ConditionElse::None,
             fall,
@@ -1416,12 +1416,13 @@ fn compose(
         } => !super::branches::copies_print_nothing(code, *fall),
         _ => false,
     };
+    let control_id = code.controls[index].id;
     if let EmissionLayout::Condition {
         tests, no, fall, ..
-    } = &mut code.emission.controls[index].layout
+    } = &mut code.controls[index].layout
     {
         let other_spelling = code.emission.transfers[fall.0 as usize].spelling;
-        for test in tests {
+        for test in tests.iter() {
             code.emission.transfers[test.when_true.0 as usize].spelling =
                 TransferSpelling::Fallthrough;
             code.emission.transfers[test.when_false.0 as usize].spelling =
@@ -1443,7 +1444,7 @@ fn compose(
             for &copy in &code.emission.transfers[fall.0 as usize].copies {
                 super::trace::condition_copy_else(
                     key,
-                    code.controls[index].id,
+                    control_id,
                     *fall,
                     copy,
                     code.copies[copy.0 as usize].steps.len(),
@@ -1542,7 +1543,7 @@ fn run_nodes(
     code: &MethodCode,
     control: ControlId,
 ) -> Result<Option<Vec<crate::p6::NodeId>>, ExpressionError> {
-    let Some(plan) = code.emission.controls.get(control.0 as usize) else {
+    let Some(plan) = code.controls.get(control.0 as usize) else {
         return Ok(None);
     };
     if plan.continuation.is_some() {
@@ -1552,11 +1553,8 @@ fn run_nodes(
     match plan.layout {
         EmissionLayout::Block(node) => push(&mut out, node)?,
         EmissionLayout::Sequence => {
-            let Some(control) = code.controls.get(control.0 as usize) else {
-                return Ok(None);
-            };
-            for &child in plan.children(control) {
-                let Some(child) = code.emission.controls.get(child.0 as usize) else {
+            for &child in plan.children() {
+                let Some(child) = code.controls.get(child.0 as usize) else {
                     return Ok(None);
                 };
                 let EmissionLayout::Block(node) = child.layout else {
@@ -1887,17 +1885,18 @@ fn explicit(code: &mut MethodCode, index: usize) -> Result<(), ExpressionError> 
         code.emission.transfers[link.0 as usize].spelling =
             TransferSpelling::Goto(transfer.destination);
     }
-    for completion in &explicit.completions {
-        code.emission.controls[completion.child.0 as usize].continuation =
-            match &completion.continuation {
-                Continuation::Goto(label) => Some(ControlCompletion::Goto(*label)),
-                Continuation::Break(scope) => Some(ControlCompletion::Break(*scope)),
-                Continuation::Continue(scope) => Some(ControlCompletion::Continue(*scope)),
-                Continuation::None | Continuation::Parent | Continuation::Next(_) => None,
-            };
-    }
     let children = super::super::build::copy(&explicit.children)?;
-    code.emission.controls[index].explicit_children = Some(children);
-    code.emission.controls[index].layout = EmissionLayout::Sequence;
+    let mut completions = Vec::new();
+    for completion in &explicit.completions {
+        push(
+            &mut completions,
+            (completion.child, completion.continuation.completion()),
+        )?;
+    }
+    for (child, completion) in completions {
+        code.controls[child.0 as usize].continuation = completion;
+    }
+    code.controls[index].children = children.into();
+    code.controls[index].layout = EmissionLayout::Sequence;
     Ok(())
 }

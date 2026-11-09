@@ -17,6 +17,13 @@ and `execution()` provide the established facts needed by P7. Borrowed
 an owned predecessor or exposing another analysis entry. P6 MUST NOT use the
 retained SSA inspection view to reconstruct missing storage facts.
 
+`RegionFacts::controls()` delivers the common `ControlLayout` grammar with named
+child roles, original predicate edges and loop placement. P6 constructs it after
+its region and protocol planning. RegionId and LinkId remain the same structural
+coordinates in P7; no second ID domain or downstream role reconstruction is
+required. Shared immutable lists own their data and retain no predecessor lease.
+Original region records remain planning/source facts, not a second P9 layout.
+
 The P5 execution graph has known operation boundaries, terminals and targets.
 Local storage gaps do not invalidate that graph. P6 records affected accesses and
 continues planning independent regions. A `Graph` region denotes known explicit

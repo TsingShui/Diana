@@ -20,7 +20,6 @@ fn dispatch_delivery(facts: &RegionFacts, code: &MethodCode, rendered: &Rendered
                 TransferSpelling::Goto(target) => assert_eq!(target, transfer.destination),
                 TransferSpelling::Fallthrough => {
                     let body = code
-                        .emission()
                         .controls()
                         .iter()
                         .find_map(|c| match &c.layout {

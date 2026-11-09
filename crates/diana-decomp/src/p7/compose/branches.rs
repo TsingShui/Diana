@@ -20,26 +20,22 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
     while let Some((id, visited)) = work.pop() {
         if !visited {
             push(&mut work, (id, true))?;
-            for &child in
-                code.emission.controls[id.0 as usize].children(&code.controls[id.0 as usize])
-            {
+            for &child in code.controls[id.0 as usize].children() {
                 push(&mut work, (child, false))?;
             }
             continue;
         }
         // Inner display choices must be complete before the containing arm is
         // classified: an empty If can itself empty a surrounding Sequence.
-        if let EmissionLayout::If { yes, no, test, .. } =
-            code.emission.controls[id.0 as usize].layout
-        {
+        if let EmissionLayout::If { yes, no, test, .. } = code.controls[id.0 as usize].layout {
             let yes_empty = empty[yes.0 as usize] && copies_print_nothing(code, test.when_true);
             let no_empty = empty[no.0 as usize] && arm_prints_nothing(code, test.when_false, true);
             if no_empty {
-                code.emission.controls[no.0 as usize].omitted = true;
+                code.controls[no.0 as usize].omitted = true;
             }
             let both_empty =
                 yes_empty && empty[no.0 as usize] && copies_print_nothing(code, test.when_false);
-            let control = &code.emission.controls[id.0 as usize];
+            let control = &code.controls[id.0 as usize];
             let guard = if !control.label_required && !test.negate {
                 if !no_empty && super::continuations::ends_in_terminal_exit(code, yes)? {
                     Some(false)
@@ -73,7 +69,7 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
                 shape: selected,
                 test,
                 ..
-            } = &mut code.emission.controls[id.0 as usize].layout
+            } = &mut code.controls[id.0 as usize].layout
             {
                 *selected = shape;
                 if matches!(shape, IfShape::Inverted | IfShape::Guard { inverted: true }) {
@@ -81,7 +77,7 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
                 }
             }
         }
-        let control = &code.emission.controls[id.0 as usize];
+        let control = &code.controls[id.0 as usize];
         if control.label_required
             || control.continuation.is_some()
             || code.emission.deferred_control(id)
@@ -133,9 +129,7 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
             }
             EmissionLayout::Sequence => {
                 empty[id.0 as usize] = true;
-                for &child in
-                    code.emission.controls[id.0 as usize].children(&code.controls[id.0 as usize])
-                {
+                for &child in code.controls[id.0 as usize].children() {
                     if empty[child.0 as usize] {
                         continue;
                     }
@@ -181,7 +175,7 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
     // transfer spellings. An empty true arm and a printing false arm invert the
     // same way, and the predicate still evaluates once at the same position.
     let mut owned = filled(code.terminals.len(), false)?;
-    for control in &code.emission.controls {
+    for control in &code.controls {
         if let EmissionLayout::If { test, .. } = &control.layout {
             owned[test.terminal.0 as usize] = true;
         }
@@ -221,7 +215,7 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
     // An arm that prints nothing is a selected control, not a fallthrough edge,
     // so the empty-else decision above cannot see it. The control tree can: its
     // printed body is exactly the child control's text.
-    for control in &code.emission.controls {
+    for control in &code.controls {
         let EmissionLayout::If {
             test,
             yes,

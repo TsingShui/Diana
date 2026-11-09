@@ -14,7 +14,7 @@ impl Expressions<'_, '_> {
         release: Option<ControlId>,
     ) -> Result<(), RenderError> {
         if let Some(scope) = release {
-            let control = &self.code.emission().controls()[scope.0 as usize];
+            let control = &self.code.controls()[scope.0 as usize];
             self.out.put("release synchronized ")?;
             // A release names its control only when that control prints the
             // label; otherwise the enclosing synchronized header identifies it.

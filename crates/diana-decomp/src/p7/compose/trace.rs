@@ -47,12 +47,12 @@ pub fn snapshot(code: &super::super::MethodCode) -> Snapshot {
             .iter()
             .filter(|block| block.show_label)
             .count()
-            + emission
+            + code
                 .controls
                 .iter()
                 .filter(|control| control.label_required)
                 .count(),
-        transparent: emission
+        transparent: code
             .controls
             .iter()
             .filter(|control| control.transparent)

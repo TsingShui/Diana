@@ -117,8 +117,7 @@ impl Expressions<'_, '_> {
                     } else {
                         "continue "
                     })?;
-                self.out
-                    .put(&self.code.emission().controls()[c.0 as usize].label)?;
+                self.out.put(&self.code.controls()[c.0 as usize].label)?;
                 self.out.put(";")?;
             }
             TransferSpelling::BreakHere(_) | TransferSpelling::ContinueHere(_) => {}

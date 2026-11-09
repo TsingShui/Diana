@@ -74,11 +74,10 @@ impl Layout {
                 Event::Control(id, scope, declarations) => (id, scope, declarations),
             };
             let control = &code.controls[id.0 as usize];
-            let emission = &code.emission.controls[id.0 as usize];
-            if emission.omitted {
+            if control.omitted {
                 continue;
             }
-            match &emission.layout {
+            match &control.layout {
                 EmissionLayout::Block(node) => {
                     layout.node(*node, scope, declarations, &mut order)?
                 }
@@ -90,18 +89,18 @@ impl Layout {
                     // its call statement keeps its own ordinary block action.
                 }
                 EmissionLayout::Sequence | EmissionLayout::Labelled => {
-                    let nested = emission.label_required
-                        || matches!(emission.layout, EmissionLayout::Labelled)
-                            && !emission.transparent;
+                    let nested = control.label_required
+                        || matches!(control.layout, EmissionLayout::Labelled)
+                            && !control.transparent;
                     if nested {
                         let nested_scope = ScopeId(layout.scopes.len());
                         push(&mut layout.scopes, Scope { end: 0 })?;
                         push(&mut work, Event::End(nested_scope))?;
-                        for &child in emission.children(control).iter().rev() {
+                        for &child in control.children().iter().rev() {
                             push(&mut work, Event::Control(child, nested_scope, declarations))?;
                         }
                     } else {
-                        for &child in emission.children(control).iter().rev() {
+                        for &child in control.children().iter().rev() {
                             push(&mut work, Event::Control(child, scope, declarations))?;
                         }
                     }

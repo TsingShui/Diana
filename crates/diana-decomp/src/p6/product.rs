@@ -1,6 +1,9 @@
 use crate::p2::{BlockId, EdgeId, ExceptionCompletion, ExitId, OpId};
 use crate::p5::{CopyLocation, GroupId, PlanId, StorageGap, StorageRead, ThrowSite};
 
+/// Closed control roles shared with P7; original operations remain P6 leaves.
+pub type ControlLayout = crate::recovery::ControlLayout;
+
 macro_rules! ids { ($($n:ident),*) => {$(#[derive(Clone,Copy,Debug,Eq,Hash,Ord,PartialEq,PartialOrd,serde::Serialize)] #[serde(transparent)] pub struct $n(pub u32);)*}; }
 ids!(
     NodeId,
@@ -1336,6 +1339,7 @@ impl LockEntries {
     }
 }
 pub struct RegionFacts {
+    pub(super) controls: Vec<ControlLayout>,
     pub(super) lock_entries: LockEntries,
     pub(super) suspensions: Vec<SuspensionPlan>,
     pub(super) coroutine_body: Option<CoroutineBodyPlan>,
@@ -1366,6 +1370,9 @@ pub struct RegionFacts {
     pub(super) terminal_owners: Vec<TerminalOwner>,
 }
 impl RegionFacts {
+    pub fn controls(&self) -> &[ControlLayout] {
+        &self.controls
+    }
     pub fn coroutine_body(&self) -> Option<&CoroutineBodyPlan> {
         self.coroutine_body.as_ref()
     }
@@ -1380,6 +1387,7 @@ impl RegionFacts {
     }
     pub(super) fn empty() -> Self {
         Self {
+            controls: Vec::new(),
             suspensions: Vec::new(),
             coroutine_body: None,
             coroutine_loop: None,

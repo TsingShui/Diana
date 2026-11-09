@@ -5,6 +5,9 @@ use crate::p4::{Bits, Initialization, Interpretation};
 use crate::p5::{DefinitionPlan, StorageGap, StorageRead};
 use serde::Serialize;
 
+// These are the same delivered structural coordinates, not newly assigned IDs.
+pub use crate::p6::{LinkId as TransferId, RegionId as ControlId};
+
 macro_rules! ids {($($id:ident),*$(,)?)=>{$(#[derive(Clone,Copy,Debug,Eq,Hash,Ord,PartialEq,PartialOrd,Serialize)]#[serde(transparent)]pub struct $id(pub u32);)*};}
 ids!(
     ExprId,
@@ -14,8 +17,6 @@ ids!(
     StorageId,
     CopyPlanId,
     LabelId,
-    TransferId,
-    ControlId,
     ConstructionId,
     PayloadId,
     SiteId

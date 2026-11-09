@@ -27,13 +27,10 @@ fn case_breaks_keep_their_original_transfer_but_no_second_action() {
                 // unconditional exit, not only an old Goto-shaped plan.
                 let mut tail = control;
                 while matches!(
-                    code.emission().controls()[tail.id.0 as usize].layout,
+                    code.controls()[tail.id.0 as usize].layout,
                     EmissionLayout::Sequence
                 ) {
-                    let Some(child) = code.emission().controls()[tail.id.0 as usize]
-                        .children(tail)
-                        .last()
-                    else {
+                    let Some(child) = code.controls()[tail.id.0 as usize].children().last() else {
                         break;
                     };
                     tail = &code.controls()[child.0 as usize];
@@ -57,7 +54,7 @@ fn case_breaks_keep_their_original_transfer_but_no_second_action() {
                         | TransferSpelling::Goto(_)
                 ) {
                     assert!(
-                        code.emission().controls()[control.id.0 as usize]
+                        code.controls()[control.id.0 as usize]
                             .continuation
                             .is_none()
                     );
@@ -159,7 +156,7 @@ fn a_release_without_an_emitted_jump_keeps_its_planned_continuation() {
                     })
                     .expect("original release block");
                 assert!(
-                    matches!(code.emission().controls()[control.id.0 as usize].continuation,
+                    matches!(code.controls()[control.id.0 as usize].continuation,
                     Some(ControlCompletion::Goto(label)) if label.0 == target.0)
                 );
                 retained += 1;

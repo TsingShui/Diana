@@ -12,8 +12,7 @@ mod inspection;
 use inspection::inspect;
 
 fn guards(code: &MethodCode) -> Vec<(ControlId, PredicateEmission, ControlId, ControlId, bool)> {
-    code.emission()
-        .controls()
+    code.controls()
         .iter()
         .enumerate()
         .filter_map(|(index, control)| {
@@ -36,14 +35,9 @@ fn guards(code: &MethodCode) -> Vec<(ControlId, PredicateEmission, ControlId, Co
 
 fn terminal_of(code: &MethodCode, mut id: ControlId) -> BlockId {
     loop {
-        let emission = &code.emission().controls()[id.0 as usize];
+        let emission = &code.controls()[id.0 as usize];
         match emission.layout {
-            EmissionLayout::Sequence => {
-                id = *emission
-                    .children(&code.controls()[id.0 as usize])
-                    .last()
-                    .unwrap()
-            }
+            EmissionLayout::Sequence => id = *emission.children().last().unwrap(),
             EmissionLayout::Block(node) => {
                 let BlockEnd::Terminal(terminal) = code.emission().blocks()[node.0 as usize].end
                 else {
@@ -148,8 +142,7 @@ fn a_guard_and_later_false_work_are_not_misclassified_as_one_else_if() {
         |_, code, rendered| {
             assert_eq!(guards(code).len(), 1);
             assert_eq!(
-                code.emission()
-                    .controls()
+                code.controls()
                     .iter()
                     .filter(|c| matches!(
                         c.layout,
@@ -161,7 +154,7 @@ fn a_guard_and_later_false_work_are_not_misclassified_as_one_else_if() {
                     .count(),
                 1
             );
-            assert!(!code.emission().controls().iter().any(|c| matches!(
+            assert!(!code.controls().iter().any(|c| matches!(
                 c.layout,
                 EmissionLayout::If {
                     shape: IfShape::ElseIf,
@@ -187,8 +180,7 @@ fn an_internal_recovering_try_cannot_supply_the_guard_proof() {
         |_, code, rendered| {
             assert!(guards(code).is_empty());
             assert!(
-                code.emission()
-                    .controls()
+                code.controls()
                     .iter()
                     .any(|c| matches!(c.layout, EmissionLayout::Try { .. }))
             );

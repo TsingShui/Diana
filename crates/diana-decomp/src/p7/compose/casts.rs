@@ -1097,7 +1097,7 @@ fn protected_contexts(code: &MethodCode) -> Result<Vec<Option<ControlId>>, Expre
         if let ControlKind::Block { node } = control.kind {
             nodes[node.0 as usize] = context;
         }
-        for (index, &child) in control.children.iter().enumerate() {
+        for (index, &child) in control.source_children.iter().enumerate() {
             // A Try protects its body, not its own catch clauses. Nested Try
             // identities retain the rest of their enclosing scope ancestry.
             let child_context = if matches!(control.kind, ControlKind::Try { .. }) && index == 0 {

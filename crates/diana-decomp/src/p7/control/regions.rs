@@ -9,51 +9,17 @@ fn kind(c: &mut Context<'_, '_>, r: &p6::Region) -> Result<ControlKind, Expressi
     Ok(match r.kind() {
         RegionKind::Block(n) => ControlKind::Block { node: *n },
         RegionKind::Sequence => ControlKind::Sequence,
-        RegionKind::If {
-            true_link,
-            false_link,
-        } => ControlKind::If {
-            terminal: terminal(c, r.entry().ok_or(bug("if has no predicate node"))?),
-            when_true: TransferId(true_link.0),
-            when_false: TransferId(false_link.0),
-        },
+        RegionKind::If { .. } => ControlKind::If,
         RegionKind::Condition(id) => condition(c, &f.conditions()[id.0 as usize])?,
         RegionKind::Loop(id) => {
             let p = &f.loops()[id.0 as usize];
-            let syntax = match p.form() {
-                p6::LoopForm::Infinite => LoopSyntax::Infinite,
-                p6::LoopForm::While(test) => LoopSyntax::While {
-                    terminal: terminal(c, test.node()),
-                    repeat: TransferId(test.repeat().0),
-                    exit: TransferId(test.exit().0),
-                },
-                p6::LoopForm::DoWhile(test) => LoopSyntax::DoWhile {
-                    terminal: terminal(c, test.node()),
-                    repeat: TransferId(test.repeat().0),
-                    exit: TransferId(test.exit().0),
-                },
-            };
             ControlKind::Loop {
-                syntax,
                 continue_target: label(c, p.continue_target())?,
             }
         }
-        RegionKind::Switch { arms, cases } => {
-            let cases = if let Some(cases) = cases {
-                let mut groups = Vec::new();
-                for group in cases {
-                    push(&mut groups, ids(group, |a| TransferId(a.0))?)?;
-                }
-                Some(groups)
-            } else {
-                None
-            };
-            ControlKind::Switch {
-                cases,
-                terminal: terminal(c, r.entry().ok_or(bug("switch has no selector node"))?),
-                arms: ids(arms, |a| TransferId(a.0))?,
-            }
-        }
+        RegionKind::Switch { arms, .. } => ControlKind::Switch {
+            arms: ids(arms, |a| TransferId(a.0))?,
+        },
         RegionKind::LabelledBlock { target } => ControlKind::LabelledBlock {
             target: label(c, *target)?,
         },
@@ -234,7 +200,14 @@ pub(super) fn construct(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> 
     for r in f.regions() {
         let kind = kind(c, r)?;
         let decision = decision(c, r.decision())?;
-        let continuation = continuation(c, r.continuation())?;
+        let source_continuation = continuation(c, r.continuation())?;
+        let continuation = source_continuation.completion();
+        let children: crate::recovery::SharedList<_> = ids(r.children(), |r| r)?.into();
+        let layout = f
+            .controls()
+            .get(r.id().0 as usize)
+            .ok_or(bug("control lost its P6 recovery structure"))?
+            .clone();
         let entry = r.entry().map(|n| label(c, n)).transpose()?;
         let follow = r.follow().map(|n| label(c, n)).transpose()?;
         push(
@@ -243,7 +216,15 @@ pub(super) fn construct(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> 
                 decision,
                 id: ControlId(r.id().0),
                 kind,
-                children: ids(r.children(), |r| ControlId(r.0))?,
+                source_children: children.clone(),
+                children,
+                source_continuation,
+                label: crate::p7::references::text(format_args!("R{}", r.id().0))?,
+                label_required: true,
+                omitted: false,
+                transparent: false,
+                source_only: Vec::new(),
+                layout,
                 entry,
                 follow,
                 continuation,

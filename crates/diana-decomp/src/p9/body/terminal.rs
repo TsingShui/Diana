@@ -377,14 +377,10 @@ impl Expressions<'_, '_> {
         push(&mut stack, control)?;
         while let Some(id) = stack.pop() {
             push(&mut controls, id)?;
-            match self.code.emission().controls()[id.0 as usize].layout {
+            match self.code.controls()[id.0 as usize].layout {
                 EmissionLayout::Block(node) => self.block(node)?,
                 EmissionLayout::Sequence => {
-                    for &child in self.code.emission().controls()[id.0 as usize]
-                        .children(&self.code.controls()[id.0 as usize])
-                        .iter()
-                        .rev()
-                    {
+                    for &child in self.code.controls()[id.0 as usize].children().iter().rev() {
                         push(&mut stack, child)?;
                     }
                 }

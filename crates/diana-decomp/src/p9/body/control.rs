@@ -11,7 +11,7 @@ impl Expressions<'_, '_> {
         id: ControlId,
         start: super::super::TextOffset,
     ) -> Result<(), RenderError> {
-        if let Some(completion) = self.code.emission().controls()[id.0 as usize].continuation {
+        if let Some(completion) = self.code.controls()[id.0 as usize].continuation {
             self.out.indent()?;
             match completion {
                 ControlCompletion::Goto(label) => {
@@ -27,7 +27,7 @@ impl Expressions<'_, '_> {
                             "continue "
                         })?;
                     self.out
-                        .put(&self.code.emission().controls()[scope.0 as usize].label)?;
+                        .put(&self.code.controls()[scope.0 as usize].label)?;
                     self.out.put(";\n")?;
                 }
                 ControlCompletion::BreakHere(_) => self.out.put("break;\n")?,
@@ -69,7 +69,7 @@ impl Expressions<'_, '_> {
                 control,
             },
         )?;
-        let node = match self.code.emission().controls()[control.0 as usize].layout {
+        let node = match self.code.controls()[control.0 as usize].layout {
             EmissionLayout::Block(node) => Some(node),
             _ => None,
         };
@@ -140,8 +140,7 @@ impl Expressions<'_, '_> {
                 )?;
             }
         } else {
-            let children = self.code.emission().controls()[control.0 as usize]
-                .children(&self.code.controls()[control.0 as usize]);
+            let children = self.code.controls()[control.0 as usize].children();
             for &child in children.iter().rev() {
                 push(
                     work,

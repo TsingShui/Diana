@@ -84,7 +84,7 @@ impl Selection {
                 }
             }
         }
-        for control in &code.emission.controls {
+        for control in &code.controls {
             match control.continuation {
                 Some(ControlCompletion::Goto(label)) => mark_label(&mut self.labels, label)?,
                 Some(ControlCompletion::Break(scope) | ControlCompletion::Continue(scope)) => {
@@ -105,7 +105,7 @@ impl Selection {
         for (index, block) in code.emission.blocks.iter_mut().enumerate() {
             block.show_label = *self.labels.get(index).ok_or(bug("block lost its label"))?;
         }
-        for (index, control) in code.emission.controls.iter_mut().enumerate() {
+        for (index, control) in code.controls.iter_mut().enumerate() {
             control.label_required = self.controls[index];
         }
         Ok(())

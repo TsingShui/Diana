@@ -1,324 +1,93 @@
-//! Lowers delivered P6 control roles and continuation ownership into layouts.
+//! Maps the delivered common control structure and retains P7-owned effect
+//! presentation. P6 owns named child roles and original predicate polarity.
 
-use super::{
-    BlockEnd, ConditionElse, ControlCompletion, EmissionControl, EmissionLayout, EmissionPlan,
-    FinallyEmission, IfShape, LoopPlacement, PredicateEmission, TransferSpelling,
-};
-use crate::p2::BlockId;
+use super::{BlockEnd, EmissionLayout, EmissionPlan, LoopPlacement, TransferSpelling};
 use crate::p7::build::{bug, copy, filled, push};
-use crate::p7::{
-    ConditionTest, Continuation, Control, ControlId, ControlKind, ExpressionError, Finally,
-    LoopSyntax, MethodCode, TerminalKind, TransferId,
-};
+use crate::p7::{ControlKind, ExpressionError, Finally, MethodCode};
 
-fn child(c: &Control, n: usize) -> Result<ControlId, ExpressionError> {
-    c.children
-        .get(n)
-        .copied()
-        .ok_or(bug("syntax role has no selected child"))
-}
-
-/// A test prints the condition that selects the shared arm. `select` is an
-/// original conditional edge, so negation only inverts the delivered role.
-fn chained_predicate(
-    code: &MethodCode,
-    test: &ConditionTest,
-) -> Result<PredicateEmission, ExpressionError> {
-    let block = code
-        .blocks
-        .get(test.predicate.0 as usize)
-        .ok_or(bug("condition test lost its block"))?
-        .original_block;
-    let TerminalKind::If {
-        when_true,
-        when_false,
-        ..
-    } = code.terminals[block.0 as usize].kind
-    else {
-        return Err(bug("condition test lost its original branch"));
-    };
-    if test.select != when_true && test.select != when_false {
-        return Err(bug("condition select is not an original branch edge"));
-    }
-    Ok(PredicateEmission {
-        terminal: block,
-        when_true,
-        when_false,
-        negate: test.select == when_false,
-    })
-}
-
-fn predicate(
-    code: &MethodCode,
-    terminal: BlockId,
-    repeat: Option<TransferId>,
-) -> Result<PredicateEmission, ExpressionError> {
-    let TerminalKind::If {
-        when_true,
-        when_false,
-        ..
-    } = code.terminals[terminal.0 as usize].kind
-    else {
-        return Err(bug("selected condition lost its original branch"));
-    };
-    if repeat.is_some_and(|e| e != when_true && e != when_false) {
-        return Err(bug("loop repeat is not an original condition edge"));
-    }
-    Ok(PredicateEmission {
-        terminal,
-        when_true,
-        when_false,
-        negate: repeat == Some(when_false),
-    })
-}
-
-fn layout(
+fn retain_cleanup_effects(
     code: &MethodCode,
     plan: &mut EmissionPlan,
-    c: &Control,
-) -> Result<EmissionLayout, ExpressionError> {
-    Ok(match &c.kind {
-        ControlKind::Block { node } => EmissionLayout::Block(*node),
-        ControlKind::Sequence => EmissionLayout::Sequence,
-        ControlKind::Condition {
-            tests,
-            routing,
-            else_arm,
-            other_exit,
-            ..
-        } => condition_layout(code, c, tests, *else_arm, *other_exit, !routing.is_empty())?,
-        ControlKind::If { terminal, .. } => EmissionLayout::If {
-            header: child(c, 0)?,
-            yes: child(c, 1)?,
-            no: child(c, 2)?,
-            test: predicate(code, *terminal, None)?,
-            shape: IfShape::IfElse,
-        },
-        ControlKind::Loop { syntax, .. } => {
-            let placement = match syntax {
-                LoopSyntax::Infinite => LoopPlacement::Infinite,
-                LoopSyntax::While {
-                    terminal, repeat, ..
-                } => LoopPlacement::While {
-                    predicate: child(c, 1)?,
-                    test: predicate(code, *terminal, Some(*repeat))?,
-                    compact: false,
-                },
-                LoopSyntax::DoWhile {
-                    terminal, repeat, ..
-                } => LoopPlacement::DoWhile {
-                    predicate: child(c, 1)?,
-                    test: predicate(code, *terminal, Some(*repeat))?,
-                    compact: false,
-                },
-            };
-            EmissionLayout::Loop {
-                body: child(c, 0)?,
-                placement,
+    finally: &Finally,
+) -> Result<(), ExpressionError> {
+    plan.origin_only_operations[finally.capture.0 as usize] = Some(super::OriginOnly::Attachment);
+    if let Some(statement) = code.operations[finally.capture.0 as usize].statement {
+        for d in &code.statements[statement.0 as usize].outputs {
+            if let crate::p5::Materialization::ExceptionCapture(local) = d.materialization() {
+                plan.hidden_locals[local.0 as usize] = true;
             }
         }
-        ControlKind::Switch {
-            terminal,
-            arms,
-            cases,
-        } => switch_layout(plan, c, *terminal, arms, cases.as_deref())?,
-        ControlKind::LabelledBlock { .. } => EmissionLayout::Labelled,
-        ControlKind::Try { finally, .. } => try_layout(code, plan, c, finally.as_ref())?,
-        ControlKind::Synchronized {
-            acquire, implicit, ..
-        } => EmissionLayout::Synchronized {
-            implicit: implicit.is_some(),
-            entry: child(c, 0)?,
-            body: child(c, 1)?,
-            acquire: plan
-                .statement_operation(*acquire)
-                .ok_or(bug("synchronized acquire lost its original operation"))?,
-        },
-        ControlKind::Graph { .. } => EmissionLayout::Graph,
-    })
-}
-
-fn condition_layout(
-    code: &MethodCode,
-    c: &Control,
-    tests: &[ConditionTest],
-    else_arm: bool,
-    other_exit: bool,
-    routing: bool,
-) -> Result<EmissionLayout, ExpressionError> {
-    let runs = tests.len();
-    let mut emitted = Vec::new();
-    let mut last = None;
-    for test in tests {
-        last = Some(test.other);
-        push(&mut emitted, chained_predicate(code, test)?)?;
     }
-    Ok(EmissionLayout::Condition {
-        header: child(c, 0)?,
-        tests: emitted,
-        yes: child(c, runs)?,
-        no: if else_arm {
-            ConditionElse::Body(child(c, runs + 1)?)
-        } else if other_exit {
-            ConditionElse::Transfer
-        } else {
-            ConditionElse::None
-        },
-        fall: last.ok_or(bug("condition control has no test"))?,
-        routing: routing
-            .then(|| child(c, runs + 1 + usize::from(else_arm)))
-            .transpose()?,
-    })
-}
-
-fn switch_layout(
-    plan: &mut EmissionPlan,
-    c: &Control,
-    terminal: BlockId,
-    arms: &[TransferId],
-    cases: Option<&[Vec<TransferId>]>,
-) -> Result<EmissionLayout, ExpressionError> {
-    let cases = if let Some(cases) = cases {
-        if c.children.len() != cases.len() + 1 {
-            return Err(bug("switch lost its case-group children"));
-        }
-        for &arm in arms {
-            plan.transfers[arm.0 as usize].spelling = TransferSpelling::Fallthrough;
-        }
-        let mut groups = Vec::new();
-        for group in cases {
-            push(&mut groups, copy(group)?)?;
-        }
-        Some(groups)
-    } else {
-        None
-    };
-    Ok(EmissionLayout::Switch {
-        header: child(c, 0)?,
-        bodies: copy(c.children.get(1..).ok_or(bug("switch lost its body"))?)?,
-        cases,
-        terminal,
-    })
-}
-
-fn try_layout(
-    code: &MethodCode,
-    plan: &mut EmissionPlan,
-    c: &Control,
-    finally: Option<&Finally>,
-) -> Result<EmissionLayout, ExpressionError> {
-    if let Some(finally) = finally {
-        if c.children.len() != 3 {
-            return Err(bug(
-                "finally lost its protected, cleanup or duplicate child",
-            ));
-        }
-        plan.origin_only_operations[finally.capture.0 as usize] =
-            Some(super::OriginOnly::Attachment);
-        if let Some(statement) = code.operations[finally.capture.0 as usize].statement {
+    for rethrow in &finally.rethrows {
+        plan.origin_only_terminals[rethrow.0 as usize] = true;
+    }
+    for &(normal, _) in &finally.terminals {
+        plan.origin_only_terminals[normal.0 as usize] = true;
+    }
+    for &(normal, _) in &finally.predicates {
+        plan.origin_only_terminals[normal.0 as usize] = true;
+    }
+    for &(normal, _) in &finally.operations {
+        plan.origin_only_operations[normal.0 as usize] = Some(super::OriginOnly::Attachment);
+        if let Some(statement) = code.operations[normal.0 as usize].statement {
             for d in &code.statements[statement.0 as usize].outputs {
-                if let crate::p5::Materialization::ExceptionCapture(local) = d.materialization() {
+                if let crate::p5::Materialization::Store(local) = d.materialization() {
                     plan.hidden_locals[local.0 as usize] = true;
                 }
             }
         }
-        for rethrow in &finally.rethrows {
-            plan.origin_only_terminals[rethrow.0 as usize] = true;
-        }
-        for &(normal, _) in &finally.terminals {
-            plan.origin_only_terminals[normal.0 as usize] = true;
-        }
-        for &(normal, _) in &finally.predicates {
-            plan.origin_only_terminals[normal.0 as usize] = true;
-        }
-        for &(normal, _) in &finally.operations {
-            plan.origin_only_operations[normal.0 as usize] = Some(super::OriginOnly::Attachment);
-            if let Some(statement) = code.operations[normal.0 as usize].statement {
-                for d in &code.statements[statement.0 as usize].outputs {
-                    if let crate::p5::Materialization::Store(local) = d.materialization() {
-                        plan.hidden_locals[local.0 as usize] = true;
-                    }
-                }
-            }
-        }
-        for group in &code.constructions {
-            if finally
-                .operations
-                .iter()
-                .any(|&(normal, _)| normal == group.initialization)
-            {
-                for publication in &group.publications {
-                    plan.hidden_locals[publication.destination.0 as usize] = true;
-                }
-            }
-        }
-        Ok(EmissionLayout::Try {
-            body: child(c, 0)?,
-            catches: copy(&c.children[1..2])?,
-            finally: Some(FinallyEmission {
-                cleanup: child(c, 1)?,
-                duplicate: child(c, 2)?,
-            }),
-        })
-    } else {
-        Ok(EmissionLayout::Try {
-            body: child(c, 0)?,
-            catches: copy(
-                c.children
-                    .get(1..)
-                    .ok_or(bug("try lost handler children"))?,
-            )?,
-            finally: None,
-        })
     }
-}
-
-pub(super) fn construct(code: &MethodCode, plan: &mut EmissionPlan) -> Result<(), ExpressionError> {
-    for c in &code.controls {
-        let layout = layout(code, plan, c)?;
-        let layout = if let Some(decision) = &c.decision {
-            let mut bodies = Vec::new();
-            for arm in &decision.arms {
-                push(&mut bodies, arm.body)?;
+    for group in &code.constructions {
+        if finally
+            .operations
+            .iter()
+            .any(|&(normal, _)| normal == group.initialization)
+        {
+            for publication in &group.publications {
+                plan.hidden_locals[publication.destination.0 as usize] = true;
             }
-            push(&mut bodies, decision.default)?;
-            EmissionLayout::When { bodies }
-        } else {
-            layout
-        };
-        push(
-            &mut plan.controls,
-            EmissionControl {
-                label: crate::p7::references::text(format_args!("R{}", c.id.0))?,
-                label_required: true,
-                omitted: false,
-                transparent: false,
-                explicit_children: None,
-                source_only: Vec::new(),
-                continuation: match c.continuation {
-                    Continuation::Goto(label) => Some(ControlCompletion::Goto(label)),
-                    Continuation::Break(scope) => Some(ControlCompletion::Break(scope)),
-                    Continuation::Continue(scope) => Some(ControlCompletion::Continue(scope)),
-                    _ => None,
-                },
-                layout,
-            },
-        )?;
+        }
     }
     Ok(())
 }
 
-pub(super) fn complete(code: &MethodCode, plan: &mut EmissionPlan) -> Result<(), ExpressionError> {
-    for c in &code.controls {
+pub(super) fn construct(code: &MethodCode, plan: &mut EmissionPlan) -> Result<(), ExpressionError> {
+    for control in &code.controls {
+        if let ControlKind::Try {
+            finally: Some(finally),
+            ..
+        } = &control.kind
+        {
+            retain_cleanup_effects(code, plan, finally)?;
+        }
+        if let ControlKind::Switch { arms } = &control.kind
+            && matches!(
+                control.layout,
+                EmissionLayout::Switch { cases: Some(_), .. }
+            )
+        {
+            for &arm in arms {
+                plan.transfers[arm.0 as usize].spelling = TransferSpelling::Fallthrough;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn complete(
+    code: &mut MethodCode,
+    plan: &mut EmissionPlan,
+) -> Result<(), ExpressionError> {
+    for c in &mut code.controls {
         if let ControlKind::Try {
             finally: Some(_), ..
         } = c.kind
         {
-            plan.controls[c.id.0 as usize].explicit_children = Some(copy(&c.children[..2])?);
+            c.children = copy(&c.source_children[..2])?.into();
         }
     }
-    let mut headers = filled(plan.controls.len(), false)?;
-    for c in &plan.controls {
+    let mut headers = filled(code.controls.len(), false)?;
+    for c in &code.controls {
         let header = match c.layout {
             EmissionLayout::If { header, .. } | EmissionLayout::Switch { header, .. } => {
                 Some(header)
@@ -335,7 +104,7 @@ pub(super) fn complete(code: &MethodCode, plan: &mut EmissionPlan) -> Result<(),
             headers[header.0 as usize] = true;
         }
     }
-    for (i, c) in plan.controls.iter_mut().enumerate() {
+    for (i, c) in code.controls.iter_mut().enumerate() {
         let deferred = match c.layout {
             EmissionLayout::Block(n) => match &plan.blocks[n.0 as usize].end {
                 BlockEnd::None => true,
@@ -353,7 +122,11 @@ pub(super) fn complete(code: &MethodCode, plan: &mut EmissionPlan) -> Result<(),
 
 /// Apply only the surface roles delivered by P6. Source-only cleanup children
 /// retain their arenas and origins, while the boundary owns implicit release.
-pub(super) fn surfaces(code: &MethodCode, plan: &mut EmissionPlan) -> Result<(), ExpressionError> {
+pub(super) fn surfaces(
+    code: &mut MethodCode,
+    plan: &mut EmissionPlan,
+) -> Result<(), ExpressionError> {
+    let mut cleanups = Vec::new();
     for control in &code.controls {
         if let ControlKind::Synchronized {
             implicit: Some(surface),
@@ -361,24 +134,8 @@ pub(super) fn surfaces(code: &MethodCode, plan: &mut EmissionPlan) -> Result<(),
             ..
         } = &control.kind
         {
-            for &(cleanup, index) in &surface.cleanups {
-                let source = &code.controls[cleanup.0 as usize];
-                let index =
-                    usize::try_from(index).map_err(|_| crate::RequestError::PlatformCapacity)?;
-                if source.children.len().checked_sub(2) != Some(index) {
-                    return Err(bug("implicit monitor cleanup lost its last catch"));
-                }
-                let p = &mut plan.controls[cleanup.0 as usize];
-                if index == 0 {
-                    p.layout = EmissionLayout::Sequence;
-                } else {
-                    let EmissionLayout::Try { catches, .. } = &mut p.layout else {
-                        return Err(bug("implicit cleanup lost its catch layout"));
-                    };
-                    catches.truncate(index);
-                }
-                p.explicit_children = Some(copy(&source.children[..index + 1])?);
-                push(&mut p.source_only, source.children[index + 1])?;
+            for &cleanup in &surface.cleanups {
+                push(&mut cleanups, cleanup)?;
             }
             for outlet in outlets {
                 let operation = plan
@@ -405,6 +162,23 @@ pub(super) fn surfaces(code: &MethodCode, plan: &mut EmissionPlan) -> Result<(),
             }
         }
     }
+    for (cleanup, index) in cleanups {
+        let control = &mut code.controls[cleanup.0 as usize];
+        let index = usize::try_from(index).map_err(|_| crate::RequestError::PlatformCapacity)?;
+        if control.source_children.len().checked_sub(2) != Some(index) {
+            return Err(bug("implicit monitor cleanup lost its last catch"));
+        }
+        if index == 0 {
+            control.layout = EmissionLayout::Sequence;
+        } else {
+            let EmissionLayout::Try { catches, .. } = &mut control.layout else {
+                return Err(bug("implicit cleanup lost its catch layout"));
+            };
+            catches.truncate(index)?;
+        }
+        control.children = copy(&control.source_children[..index + 1])?.into();
+        push(&mut control.source_only, control.source_children[index + 1])?;
+    }
     for control in &code.controls {
         let ControlKind::Try {
             bindings,
@@ -415,12 +189,12 @@ pub(super) fn surfaces(code: &MethodCode, plan: &mut EmissionPlan) -> Result<(),
             continue;
         };
         if !matches!(
-            plan.controls[control.id.0 as usize].layout,
+            code.controls[control.id.0 as usize].layout,
             EmissionLayout::Try { .. }
         ) {
             continue;
         }
-        let EmissionLayout::Try { catches, .. } = &plan.controls[control.id.0 as usize].layout
+        let EmissionLayout::Try { catches, .. } = &code.controls[control.id.0 as usize].layout
         else {
             continue;
         };

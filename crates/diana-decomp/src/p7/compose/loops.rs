@@ -25,14 +25,6 @@ use super::super::*;
 use crate::p3::UseSite;
 
 pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
-    let mut parent = vec_of(code.controls.len(), None)?;
-    for control in &code.controls {
-        for &child in &control.children {
-            *parent
-                .get_mut(child.0 as usize)
-                .ok_or(bug("control names an unknown child"))? = Some(control.id);
-        }
-    }
     let mut owner = vec_of(code.labels.len(), None)?;
     for label in &code.labels {
         *owner
@@ -51,40 +43,25 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
     }
 
     for loop_id in 0..code.controls.len() {
-        let ControlKind::Loop {
-            syntax:
-                LoopSyntax::DoWhile {
-                    terminal,
-                    repeat,
-                    exit,
-                },
-            ..
-        } = &code.controls[loop_id].kind
+        let EmissionLayout::Loop {
+            body,
+            placement: LoopPlacement::DoWhile {
+                predicate, test, ..
+            },
+        } = code.controls[loop_id].layout
         else {
             continue;
         };
-        let (terminal, repeat, exit) = (*terminal, *repeat, *exit);
+        let terminal = test.terminal;
+        let (repeat, exit) = if test.negate {
+            (test.when_false, test.when_true)
+        } else {
+            (test.when_true, test.when_false)
+        };
         if code.emission.transfers[repeat.0 as usize].copies.is_empty() {
             continue;
         }
-        // 1. Tail-test placement.
-        if !matches!(
-            code.emission.controls[loop_id].layout,
-            EmissionLayout::Loop {
-                placement: LoopPlacement::DoWhile { .. },
-                ..
-            }
-        ) {
-            continue;
-        }
-        let (Some(&body), Some(&predicate)) = (
-            code.controls[loop_id].children.first(),
-            code.controls[loop_id].children.get(1),
-        ) else {
-            continue;
-        };
-        let EmissionLayout::Block(predicate_node) =
-            code.emission.controls[predicate.0 as usize].layout
+        let EmissionLayout::Block(predicate_node) = code.controls[predicate.0 as usize].layout
         else {
             continue;
         };
@@ -166,7 +143,7 @@ fn in_subtree(code: &MethodCode, root: ControlId, candidate: Option<ControlId>) 
         let Some(control) = code.controls.get(id.0 as usize) else {
             return false;
         };
-        for &child in &control.children {
+        for &child in &control.source_children {
             if crate::substrate::owned::push(&mut stack, child).is_err() {
                 return false;
             }
@@ -368,7 +345,7 @@ fn observed_outside(
 /// its syntax-owned terminal; all other prelude work keeps explicit test phases.
 pub(super) fn select_compact(code: &mut MethodCode) -> Result<(), ExpressionError> {
     let mut compact = filled(code.controls.len(), false)?;
-    for (index, control) in code.emission.controls.iter().enumerate() {
+    for (index, control) in code.controls.iter().enumerate() {
         let (predicate, test) = match control.layout {
             EmissionLayout::Loop {
                 placement:
@@ -390,14 +367,14 @@ pub(super) fn select_compact(code: &mut MethodCode) -> Result<(), ExpressionErro
         super::super::build::push(&mut stack, predicate)?;
         let mut empty = true;
         while let Some(id) = stack.pop() {
-            let control = &code.emission.controls[id.0 as usize];
+            let control = &code.controls[id.0 as usize];
             if control.label_required || control.continuation.is_some() {
                 empty = false;
                 break;
             }
             match &control.layout {
                 EmissionLayout::Sequence => {
-                    for &child in control.children(&code.controls[id.0 as usize]) {
+                    for &child in control.children() {
                         super::super::build::push(&mut stack, child)?;
                     }
                 }
@@ -434,7 +411,7 @@ pub(super) fn select_compact(code: &mut MethodCode) -> Result<(), ExpressionErro
         }
         compact[index] = empty;
     }
-    for (index, control) in code.emission.controls.iter_mut().enumerate() {
+    for (index, control) in code.controls.iter_mut().enumerate() {
         if let EmissionLayout::Loop {
             placement:
                 LoopPlacement::While {

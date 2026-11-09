@@ -58,7 +58,7 @@ pub(super) fn field_qualifications(code: &MethodCode) -> Result<Vec<bool>, Expre
 pub(super) fn site_annotations(code: &MethodCode) -> Result<Vec<bool>, ExpressionError> {
     let mut parent: Vec<Option<ControlId>> = filled(code.controls.len(), None)?;
     for control in &code.controls {
-        for &child in &control.children {
+        for &child in &control.source_children {
             let slot = parent
                 .get_mut(child.0 as usize)
                 .ok_or(bug("control names an unknown child"))?;
@@ -139,7 +139,7 @@ pub(super) fn site_annotations(code: &MethodCode) -> Result<Vec<bool>, Expressio
                 represented = false;
                 break;
             };
-            let printed = matches!(&code.emission.controls[target.0 as usize].layout,
+            let printed = matches!(&code.controls[target.0 as usize].layout,
                     EmissionLayout::Try { catches, finally, .. } if finally.is_some() || index < catches.len())
                 || code.controls.iter().any(|control| {
                     matches!(&control.kind,

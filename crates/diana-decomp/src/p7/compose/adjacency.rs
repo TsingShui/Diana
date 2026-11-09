@@ -40,12 +40,11 @@ impl Adjacency {
             *count = count.saturating_add(1).min(2);
         }
         for control in &code.controls {
-            let emitted = &code.emission.controls[control.id.0 as usize];
             if matches!(
-                emitted.layout,
+                control.layout,
                 EmissionLayout::Sequence | EmissionLayout::Graph
             ) {
-                for pair in emitted.children(control).windows(2) {
+                for pair in control.children().windows(2) {
                     let slot = result
                         .sibling
                         .get_mut(pair[0].0 as usize)
@@ -91,14 +90,14 @@ impl Adjacency {
             return None;
         }
         let owner = code.labels.get(node)?.owner;
-        let source = code.emission.controls.get(owner.0 as usize)?;
+        let source = code.controls.get(owner.0 as usize)?;
         if !matches!(source.layout, EmissionLayout::Block(n) if n.0 as usize == node)
             || source.continuation.is_some()
         {
             return None;
         }
         let next = self.sibling.get(owner.0 as usize).copied().flatten()?;
-        let next = code.emission.controls.get(next.0 as usize)?;
+        let next = code.controls.get(next.0 as usize)?;
         if !matches!(next.layout, EmissionLayout::Block(n) if n.0 as usize == target)
             || next.continuation.is_some()
         {

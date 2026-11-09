@@ -10,7 +10,7 @@ pub(super) fn collapse_fallthrough_gotos(code: &mut MethodCode) -> Result<(), Ex
     let mut parent: Vec<Option<ControlId>> = filled(code.controls.len(), None)?;
     let mut buffer = filled(code.controls.len().max(3), ControlId(0))?;
     for control in &code.controls {
-        for &child in &control.children {
+        for &child in &control.source_children {
             let slot = parent
                 .get_mut(child.0 as usize)
                 .ok_or(bug("control names an unknown child"))?;

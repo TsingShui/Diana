@@ -31,7 +31,7 @@ fn compact_routes(facts: &RegionFacts, code: &MethodCode, rendered: &Rendered, t
         .collect();
     assert_eq!(plans.len(), 1, "one shared result owns the selected routes");
     assert_eq!(plans[0].tests().len(), tests);
-    assert!(code.emission().controls().iter().any(|control| {
+    assert!(code.controls().iter().any(|control| {
         matches!(&control.layout, EmissionLayout::Condition { tests: predicates, routing: Some(_), .. } if predicates.len() == tests)
     }));
     assert!(!rendered.text().contains("goto "));
@@ -128,9 +128,12 @@ fn an_uncomposable_later_prelude_uses_the_complete_explicit_route() {
             let control = code.controls().iter().find(|control| {
                 matches!(&control.kind, ControlKind::Condition { routing, .. } if !routing.is_empty())
             }).expect("P6 admits the empty selected route");
-            let emitted = &code.emission().controls()[control.id.0 as usize];
+            let emitted = &code.controls()[control.id.0 as usize];
             assert!(matches!(emitted.layout, EmissionLayout::Sequence));
-            assert!(emitted.explicit_children.is_some());
+            let ControlKind::Condition { explicit, .. } = &control.kind else {
+                unreachable!("selected condition source")
+            };
+            assert_eq!(emitted.children(), explicit.children.as_slice());
             assert!(!rendered.text().contains(" || "));
             assert_eq!(rendered.text().matches("OrRoutes.mark(25)").count(), 1);
             original_edges(code, rendered);
@@ -150,7 +153,7 @@ fn floating_nan_comparisons_keep_their_ordered_explicit_semantics() {
                 matches!(&control.kind, ControlKind::Condition { tests, routing, .. } if tests.len() == 3 && !routing.is_empty())
             }).expect("three original floating predicates own the selected route");
             assert!(matches!(
-                code.emission().controls()[control.id.0 as usize].layout,
+                code.controls()[control.id.0 as usize].layout,
                 EmissionLayout::Sequence
             ));
             assert_eq!(rendered.text().matches("compare<CmplDouble>").count(), 2);
@@ -243,7 +246,7 @@ fn a_failed_conjunction_that_is_the_common_follow_keeps_one_condition() {
         |facts, code, rendered| {
             assert_eq!(facts.conditions().len(), 1);
             assert_eq!(facts.conditions()[0].tests().len(), 2);
-            assert!(code.emission().controls().iter().any(|control| {
+            assert!(code.controls().iter().any(|control| {
                 matches!(&control.layout, EmissionLayout::Condition { tests, .. } if tests.len() == 2)
             }));
             assert!(rendered.text().contains("p0 == 0 || p1 == 0"));
@@ -263,7 +266,7 @@ fn equals_shaped_tests_reach_the_terminal_follow_as_one_condition() {
         |facts, code, rendered| {
             assert_eq!(facts.conditions().len(), 1);
             assert_eq!(facts.conditions()[0].tests().len(), 4);
-            assert!(code.emission().controls().iter().any(|control| {
+            assert!(code.controls().iter().any(|control| {
                 matches!(&control.layout, EmissionLayout::Condition { tests, .. } if tests.len() == 4)
             }));
             let text = rendered.text();

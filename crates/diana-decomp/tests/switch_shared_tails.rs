@@ -15,8 +15,7 @@ mod rethrows;
 use inspection::inspect;
 
 fn groups(code: &MethodCode) -> (ControlId, &[ControlId], &[Vec<TransferId>]) {
-    code.emission()
-        .controls()
+    code.controls()
         .iter()
         .enumerate()
         .find_map(|(index, c)| match &c.layout {
@@ -192,7 +191,6 @@ fn an_empty_false_child_with_executable_copies_keeps_its_else_phase() {
         |facts, code, rendered| {
             let (_, _, _) = groups(code);
             let (no, test) = code
-                .emission()
                 .controls()
                 .iter()
                 .find_map(|c| match c.layout {
@@ -237,7 +235,6 @@ fn a_foreign_case_entrance_stays_explicit_without_copying_calls_or_tails() {
         |facts, code, rendered| {
             assert!(
                 !code
-                    .emission()
                     .controls()
                     .iter()
                     .any(|c| matches!(c.layout, EmissionLayout::Switch { cases: Some(_), .. }))

@@ -39,8 +39,7 @@ fn both_nested_updates_remain_in_their_own_loop_bodies() {
         |facts, code, rendered| {
             assert_eq!(facts.loops().len(), 2);
             assert_eq!(
-                code.emission()
-                    .controls()
+                code.controls()
                     .iter()
                     .filter(|c| matches!(
                         c.layout,

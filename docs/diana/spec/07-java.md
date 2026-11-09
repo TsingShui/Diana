@@ -37,6 +37,16 @@ are typed provenance coordinates, not permission to query a live predecessor.
 Type uses retain descriptors and original sources; P8 owns class-wide display
 names and imports.
 
+The single `Control` arena contains each control's selected `ControlLayout`,
+execution children, continuation and presentation, alongside its retained source
+facts. P7 consumes the common P6 grammar directly rather than translating another
+loop/branch/switch layout. ControlId and TransferId reuse P6's original structural
+coordinates. Immutable role lists can be shared with the P6 delivery; modifying
+a selected list preserves the predecessor and uses fallible element allocation.
+`source_children` retains original topology for scope facts and origins;
+`children()` is the selected execution order. P9 MUST NOT use source topology as
+an alternative execution schedule. There is no separate EmissionControl arena.
+
 `ExpressedMethod` pairs the result with privately retained P6 analysis for the
 existing inspection consumers. `inspection()` lends restricted read-only facts
 from that same execution. It exposes no owned predecessor or solver.
@@ -886,7 +896,7 @@ execution. Corpus completion is not an arbitrary VM, heap/callee or lock proof.
 
 ## Source-only control attachments
 
-EmissionControl's `source_only` list retains original controls that have no
+Control's `source_only` list retains original controls that have no
 executable placement in the selected surface. The execution child list excludes
 those controls. P9 visits their existing products with zero-width origins; it
 performs no reconstruction or semantic retry. An implicit monitor's qualified

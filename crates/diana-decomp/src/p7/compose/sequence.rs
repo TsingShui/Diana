@@ -10,7 +10,7 @@ pub(super) fn printed_entry_is(code: &MethodCode, mut current: ControlId, target
         let Some(control) = code.controls.get(current.0 as usize) else {
             return false;
         };
-        let Some(emission) = code.emission.controls.get(current.0 as usize) else {
+        let Some(emission) = code.controls.get(current.0 as usize) else {
             return false;
         };
         if let EmissionLayout::Block(node) = emission.layout {
@@ -21,7 +21,7 @@ pub(super) fn printed_entry_is(code: &MethodCode, mut current: ControlId, target
         }
         current = match &emission.layout {
             EmissionLayout::Sequence => {
-                let Some(&first) = emission.children(control).first() else {
+                let Some(&first) = emission.children().first() else {
                     return false;
                 };
                 first
@@ -49,17 +49,16 @@ pub(super) fn printed_parts<'a>(
     control: ControlId,
     buffer: &'a mut [ControlId],
 ) -> &'a [ControlId] {
-    let parts: &[ControlId] = match &code.emission.controls[control.0 as usize].layout {
+    let parts: &[ControlId] = match &code.controls[control.0 as usize].layout {
         EmissionLayout::Block(_) | EmissionLayout::Suspension { .. } => return &[],
         EmissionLayout::Sequence | EmissionLayout::Labelled | EmissionLayout::Graph => {
-            return code.emission.controls[control.0 as usize]
-                .children(&code.controls[control.0 as usize]);
+            return code.controls[control.0 as usize].children();
         }
         EmissionLayout::If {
             header, yes, no, ..
         } => {
             buffer[..3].copy_from_slice(&[*header, *yes, *no]);
-            return &buffer[..if code.emission.omitted(*no) { 2 } else { 3 }];
+            return &buffer[..if code.control_omitted(*no) { 2 } else { 3 }];
         }
         EmissionLayout::Condition {
             header, yes, no, ..
@@ -98,7 +97,7 @@ pub(super) fn printed_successor(
     let mut current = start;
     for _ in 0..=code.controls.len() {
         let up = parent.get(current.0 as usize).copied().flatten()?;
-        let layout = &code.emission.controls.get(up.0 as usize)?.layout;
+        let layout = &code.controls.get(up.0 as usize)?.layout;
         if !matches!(
             layout,
             EmissionLayout::Sequence
@@ -119,7 +118,7 @@ pub(super) fn printed_successor(
                 Some(parts[index + 1])
             };
         }
-        if code.emission.controls[up.0 as usize].continuation.is_some() {
+        if code.controls[up.0 as usize].continuation.is_some() {
             return None;
         }
         current = up;

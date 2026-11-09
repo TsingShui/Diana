@@ -12,11 +12,17 @@ assembly. P9 consumes `ClassResult`, standalone `MethodDisplay`, or a classified
 P8 shares these immutable results through Arc. Neither P9's input nor its output
 borrows DEX, Engine or method-analysis scratch.
 
-P9 MUST consume P7's final `EmissionPlan` and P8's chosen type spellings. It MUST
+P9 MUST consume P7's selected `MethodCode::controls()`, operation/transfer emission
+facts and P8's chosen type spellings. It MUST
 NOT decode instructions, reconstruct a graph, choose a handler, solve types,
 resolve overloads, plan imports or retry an earlier stage. Indexing existing
 `TypeSource` mappings does not choose another spelling. Explicit graph syntax
 uses the same statements and copies as structured syntax.
+
+Control traversal reads each node's selected layout and `children()` directly.
+The retained `source_children` is origin/scope evidence, not the body traversal.
+The renderer does not reconcile a source-control arena with a second emission
+control arena.
 
 `Rendered` owns UTF-8 text, source spans, concrete rendering issues and the same
 immutable source product. `write_text` writes that text; `write_json` serializes

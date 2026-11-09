@@ -580,6 +580,25 @@ value field is an intentional addition. Two fixtures change text: the new value
 fixtures. Traversal reports no construction or rendering failures, which does not
 establish whole-method behavioral correctness.
 
+## Shared control delivery
+
+P6 now publishes the common `ControlLayout` with named roles and original
+predicate/transfer coordinates. P7 consumes that structure directly and keeps
+one `Control` arena for selected execution, presentation and retained source
+facts. P8/P9 traverse `MethodCode::controls()`; the separate `EmissionControl`
+arena and P7 loop/layout reconstruction are removed. Immutable role lists share
+owned storage, with fallible element allocation when a selected list changes.
+The `dbg_shell` detailed P6 response exposes these delivered controls.
+
+The default and all-feature engine nextest runs each pass 188 tests. Engine
+Clippy with all targets/features and the release `dbg_shell` build pass. A fresh
+ordinary-Engine comparison against `f6e7893` covers 119 prepared fixtures,
+187 classes and 907 methods, retaining text, reported issues and output counts
+without construction or rendering failures. This establishes compatibility of
+the control-representation change, not new recovery coverage or whole-method
+semantic equivalence. General fragment reduction and joint expression coverage
+remain subsequent work in the unified recovery design.
+
 ## P5 observations
 
 The current authorized-input traversal covered 55 DEX files and delivered

@@ -48,9 +48,8 @@ impl Expressions<'_, '_> {
         self.out.indent()?;
         self.copies(&self.code.emission().terminals()[terminal.0 as usize].before)?;
         let a = self.out.position();
-        if self.code.emission().controls()[id.0 as usize].label_required {
-            self.out
-                .put(&self.code.emission().controls()[id.0 as usize].label)?;
+        if self.code.controls()[id.0 as usize].label_required {
+            self.out.put(&self.code.controls()[id.0 as usize].label)?;
             self.out.put(": ")?;
         }
         self.out.mark_outline("switch");
@@ -70,7 +69,7 @@ impl Expressions<'_, '_> {
         )?;
         self.out.open()?;
         if !matches!(
-            self.code.emission().controls()[id.0 as usize].layout,
+            self.code.controls()[id.0 as usize].layout,
             EmissionLayout::Switch { cases: Some(_), .. }
         ) {
             self.switch_arms(arms)?;
@@ -121,7 +120,7 @@ impl Expressions<'_, '_> {
         let header_start = self.out.position();
         self.block(first.predicate)?;
         self.out.indent()?;
-        let emission = &self.code.emission().controls()[control.0 as usize];
+        let emission = &self.code.controls()[control.0 as usize];
         if emission.label_required {
             self.out.put(&emission.label)?;
             self.out.put(": ")?;

@@ -8,7 +8,7 @@ use super::*;
 pub(super) fn unlabel_inner_scopes(code: &mut MethodCode) -> Result<(), ExpressionError> {
     let mut parent: Vec<Option<ControlId>> = filled(code.controls.len(), None)?;
     for control in &code.controls {
-        for &child in &control.children {
+        for &child in &control.source_children {
             *parent
                 .get_mut(child.0 as usize)
                 .ok_or(bug("control names an unknown child"))? = Some(control.id);
@@ -36,8 +36,8 @@ pub(super) fn unlabel_inner_scopes(code: &mut MethodCode) -> Result<(), Expressi
             code.emission.transfers[transfer].spelling = spelling;
         }
     }
-    for index in 0..code.emission.controls.len() {
-        let (target, looping, spelling) = match code.emission.controls[index].continuation {
+    for index in 0..code.controls.len() {
+        let (target, looping, spelling) = match code.controls[index].continuation {
             Some(ControlCompletion::Break(target)) => {
                 (target, false, ControlCompletion::BreakHere(target))
             }
@@ -51,7 +51,7 @@ pub(super) fn unlabel_inner_scopes(code: &mut MethodCode) -> Result<(), Expressi
             continue;
         };
         if innermost_scope(code, &parent, start, target, looping) {
-            code.emission.controls[index].continuation = Some(spelling);
+            code.controls[index].continuation = Some(spelling);
         }
     }
     Ok(())

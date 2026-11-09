@@ -54,7 +54,8 @@ fn construct(
     super::protection::plan(storage, f, &graph, &structure)?;
     super::finally::construct(storage, f, &graph)?;
     super::compose::loop_members(storage, f, &graph)?;
-    super::compose::construct(storage, f, &graph, &structure)
+    super::compose::construct(storage, f, &graph, &structure)?;
+    super::recovery::construct(storage, f, &graph)
 }
 pub(super) fn push<T>(v: &mut Vec<T>, x: T) -> Result<(), RegionError> {
     owned::push(v, x).map_err(Into::into)

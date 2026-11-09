@@ -50,7 +50,6 @@ fn a_quiet_loop_continuation_needs_origins_but_no_empty_else() {
         "(III)I",
         |_, code, rendered| {
             let quiet: Vec<_> = code
-                .emission()
                 .controls()
                 .iter()
                 .filter_map(|c| match c.layout {
@@ -87,7 +86,6 @@ fn consecutive_conditions_distinguish_identity_requirements_from_real_phi_assign
         "(IIII)I",
         |_, code, rendered| {
             let arms: Vec<_> = code
-                .emission()
                 .controls()
                 .iter()
                 .filter_map(|c| match c.layout {
@@ -119,7 +117,6 @@ fn call_result_join_and_parameter_join_keep_both_executable_false_arms() {
         "(IIII)I",
         |_, code, rendered| {
             let arms: Vec<_> = code
-                .emission()
                 .controls()
                 .iter()
                 .filter_map(|c| match c.layout {

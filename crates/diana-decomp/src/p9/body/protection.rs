@@ -16,7 +16,7 @@ impl Expressions<'_, '_> {
         catches: &[ControlId],
         finally: Option<&FinallyEmission>,
     ) -> Result<(), RenderError> {
-        let p = &self.code.emission().controls()[id.0 as usize];
+        let p = &self.code.controls()[id.0 as usize];
         self.out.indent()?;
         if p.label_required {
             self.out.put(&p.label)?;
@@ -110,7 +110,7 @@ impl Expressions<'_, '_> {
             return Err(RenderError::Invariant("acquire lost its scope"));
         };
         let phase = &self.code.emission().operations()[operation.0 as usize];
-        let control = &self.code.emission().controls()[id.0 as usize];
+        let control = &self.code.controls()[id.0 as usize];
         self.out.indent()?;
         self.copies(&phase.before)?;
         let a = self.out.position();

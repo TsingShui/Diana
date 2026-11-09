@@ -92,8 +92,7 @@ fn inspect(name: &str, prototype: &str, check: impl FnOnce(&MethodCode, &Rendere
 }
 
 fn cases(code: &MethodCode) -> Option<(&[ControlId], &[Vec<TransferId>])> {
-    code.emission()
-        .controls()
+    code.controls()
         .iter()
         .find_map(|control| match &control.layout {
             EmissionLayout::Switch {
@@ -211,7 +210,6 @@ fn conditional_break_is_not_an_empty_arm_fallthrough() {
     inspect("conditional", "(II)I", |code, rendered| {
         natural(code, rendered);
         let (yes, no) = code
-            .emission()
             .controls()
             .iter()
             .find_map(|control| match control.layout {
@@ -223,7 +221,7 @@ fn conditional_break_is_not_an_empty_arm_fallthrough() {
             })
             .expect("original predicate still selects different outcomes");
         assert!([yes, no].iter().any(|id| matches!(
-            code.emission().controls()[id.0 as usize].continuation,
+            code.controls()[id.0 as usize].continuation,
             Some(ControlCompletion::Break(_) | ControlCompletion::BreakHere(_))
         )));
         assert!(rendered.text().contains("if (p1"));
