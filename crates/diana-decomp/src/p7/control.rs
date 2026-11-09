@@ -306,7 +306,8 @@ pub struct DecisionArm {
 #[derive(Debug, Serialize)]
 pub struct Finally {
     pub capture: OpId,
-    pub rethrow: crate::p2::BlockId,
+    pub rethrows: Vec<crate::p2::BlockId>,
+    pub terminals: Vec<(crate::p2::BlockId, crate::p2::BlockId)>,
     pub operations: Vec<(OpId, OpId)>,
     pub predicates: Vec<(crate::p2::BlockId, crate::p2::BlockId)>,
 }

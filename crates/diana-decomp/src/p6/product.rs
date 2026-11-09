@@ -645,7 +645,9 @@ pub struct FinallyPlan {
     pub(super) operations: Vec<(OpId, OpId)>,
     pub(super) predicates: Vec<(NodeId, NodeId)>,
     pub(super) capture: OpId,
-    pub(super) rethrow: NodeId,
+    pub(super) rethrows: Vec<NodeId>,
+    /// Explicit cleanup exits, distinct from the implicit pending rethrows.
+    pub(super) terminals: Vec<(NodeId, NodeId)>,
 }
 impl FinallyPlan {
     pub fn normal(&self) -> &[NodeId] {
@@ -660,8 +662,11 @@ impl FinallyPlan {
     pub fn capture(&self) -> OpId {
         self.capture
     }
-    pub fn rethrow(&self) -> NodeId {
-        self.rethrow
+    pub fn rethrows(&self) -> &[NodeId] {
+        &self.rethrows
+    }
+    pub fn terminals(&self) -> &[(NodeId, NodeId)] {
+        &self.terminals
     }
 }
 #[derive(Debug)]

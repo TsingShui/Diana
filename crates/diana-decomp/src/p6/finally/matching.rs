@@ -33,6 +33,7 @@ enum Event {
     Operation(OpId),
     Branch(BranchOp, [NodeId; 2]),
     Throw,
+    Return(Option<crate::SlotWidth>),
 }
 struct Cursor<'a> {
     allowed: &'a [bool],
@@ -102,6 +103,9 @@ fn event(
         if n.terminal {
             match storage.execution().blocks()[n.block.0 as usize].terminal() {
                 Some(Terminal::Throw { .. }) => return Ok(Some((at, Event::Throw))),
+                Some(Terminal::Return { width, .. }) => {
+                    return Ok(Some((at, Event::Return(*width))));
+                }
                 Some(Terminal::Branch { op, .. }) => {
                     return Ok(
                         branch(f, g, storage, at.node).map(|arms| (at, Event::Branch(*op, arms)))
@@ -249,6 +253,23 @@ fn same_operation(
     {
         return Ok(false);
     }
+    let same_emission = match (
+        storage.facts().operation_emission(normal),
+        storage.facts().operation_emission(canonical),
+    ) {
+        (
+            Some(crate::p5::OperationEmission::Ordinary),
+            Some(crate::p5::OperationEmission::Ordinary),
+        ) => true,
+        (
+            Some(crate::p5::OperationEmission::Construction { role: a, .. }),
+            Some(crate::p5::OperationEmission::Construction { role: b, .. }),
+        ) => a == b,
+        _ => false,
+    };
+    if !same_emission {
+        return Ok(false);
+    }
     match (a.exceptional(), b.exceptional()) {
         (Some(a), Some(b))
             if a.frame() == b.frame() && a.heap() == b.heap() && a.lock() == b.lock() => {}
@@ -275,7 +296,12 @@ fn same_operation(
     }
     for (a, b) in a.iter().zip(b) {
         match (a.materialization(), b.materialization()) {
-            (Materialization::Store(al), Materialization::Store(bl)) => {
+            (Materialization::Store(al), Materialization::Store(bl))
+            | (Materialization::AllocationCarrier(al), Materialization::AllocationCarrier(bl))
+            | (
+                Materialization::Deferred { local: al, .. },
+                Materialization::Deferred { local: bl, .. },
+            ) => {
                 if storage.facts().locals()[al.0 as usize].storage_type()
                     != storage.facts().locals()[bl.0 as usize].storage_type()
                 {
@@ -359,8 +385,9 @@ pub(super) struct Matched {
     pub normal: Vec<NodeId>,
     pub operations: Vec<(OpId, OpId)>,
     pub predicates: Vec<(NodeId, NodeId)>,
-    pub rethrow: NodeId,
-    pub follow: NodeId,
+    pub rethrows: Vec<NodeId>,
+    pub terminals: Vec<(NodeId, NodeId)>,
+    pub follow: Option<NodeId>,
 }
 pub(super) fn construct(
     storage: &StorageMethod<'_>,
@@ -410,13 +437,31 @@ pub(super) fn construct(
         let n = &f.nodes[node.0 as usize];
         match first_event {
             Event::Operation(operation) if !n.operations.is_empty() => {
-                storage.execution().operations()[n.operations.start as usize].kind()
+                let normal = OpId(n.operations.start);
+                storage.execution().operations()[normal.0 as usize].kind()
                     == storage.execution().operations()[operation.0 as usize].kind()
+                    && matches!((storage.facts().operation_uses(normal), storage.facts().operation_uses(operation)),
+                        (Some(Ok(a)), Some(Ok(b))) if same_uses(a, b, &[]))
             }
-            Event::Branch(op, _) if n.operations.is_empty() && n.terminal => matches!(
-                storage.execution().blocks()[n.block.0 as usize].terminal(),
-                Some(Terminal::Branch { op: normal, .. }) if *normal == op
-            ),
+            Event::Branch(op, _) if n.operations.is_empty() && n.terminal => {
+                matches!(storage.execution().blocks()[n.block.0 as usize].terminal(),
+                    Some(Terminal::Branch { op: normal, .. }) if *normal == op)
+                    && matches!((storage.facts().terminal_uses(n.block), storage.facts().terminal_uses(f.nodes[first.node.0 as usize].block)),
+                        (Some(a), Some(b)) if !a.is_empty() && same_uses(a, b, &[]))
+            }
+            Event::Return(width) if n.operations.is_empty() && n.terminal => {
+                matches!(storage.execution().blocks()[n.block.0 as usize].terminal(),
+                    Some(Terminal::Return { width: normal, .. }) if *normal == width)
+                    && matches!((storage.facts().terminal_uses(n.block), storage.facts().terminal_uses(f.nodes[first.node.0 as usize].block)),
+                        (Some(a), Some(b)) if same_uses(a, b, &[]))
+            }
+            Event::Throw if n.operations.is_empty() && n.terminal => {
+                matches!(
+                    storage.execution().blocks()[n.block.0 as usize].terminal(),
+                    Some(Terminal::Throw { .. })
+                ) && matches!((storage.facts().terminal_uses(n.block), storage.facts().terminal_uses(f.nodes[first.node.0 as usize].block)),
+                        (Some(a), Some(b)) if same_uses(a, b, &[]))
+            }
             _ => false,
         }
     })?
@@ -438,7 +483,9 @@ pub(super) fn construct(
     let mut operations = Vec::new();
     let mut predicates = Vec::new();
     let mut definitions = Vec::new();
-    let mut end = None;
+    let mut follow = None;
+    let mut rethrows = Vec::new();
+    let mut terminals = Vec::new();
     push(
         &mut work,
         Work::Pair(first, Position::entry(f, normal_entry)),
@@ -455,26 +502,30 @@ pub(super) fn construct(
         let Some((a, ae)) = event(storage, f, g, &mut canonical, a, Some(capture))? else {
             return Ok(None);
         };
-        if matches!(ae, Event::Throw) {
+        let pending_rethrow = if matches!(ae, Event::Throw) {
             let n = &f.nodes[a.node.0 as usize];
             let Some([u]) = storage.facts().terminal_uses(n.block) else {
                 return Ok(None);
             };
-            if !matches!(u.read(), Ok(StorageRead::Value { local: l, state,
+            matches!(u.read(), Ok(StorageRead::Value { local: l, state,
                 view: crate::p4::Interpretation::Direct(crate::p4::Family::Reference), .. })
                 if l == local && state == definition.state())
-            {
-                return Ok(None);
-            }
+        } else {
+            false
+        };
+        if pending_rethrow {
             // No unpaired instruction is swallowed to align block cuts.
             let Some(continuation) = normal_continuation(storage, f, g, &mut normal, b)? else {
                 return Ok(None);
             };
             b = continuation;
-            if end.is_some_and(|old| old != (a.node, b.node)) {
+            if follow.is_some_and(|old| old != b.node) {
                 return Ok(None);
             }
-            end = Some((a.node, b.node));
+            follow = Some(b.node);
+            if !rethrows.contains(&a.node) {
+                push(&mut rethrows, a.node)?;
+            }
             continue;
         }
         let Some((b, be)) = event(storage, f, g, &mut normal, b, None)? else {
@@ -522,20 +573,86 @@ pub(super) fn construct(
                     )?;
                 }
             }
+            (Event::Return(a_width), Event::Return(b_width)) if a_width == b_width => {
+                if !matches!((storage.facts().terminal_uses(f.nodes[b.node.0 as usize].block),
+                    storage.facts().terminal_uses(f.nodes[a.node.0 as usize].block)),
+                    (Some(b), Some(a)) if same_uses(b, a, &definitions))
+                {
+                    return Ok(None);
+                }
+                push(&mut terminals, (b.node, a.node))?;
+            }
+            (Event::Throw, Event::Throw) => {
+                if !unhandled(f, ThrowSite::Terminal(f.nodes[a.node.0 as usize].block))
+                    || !unhandled(f, ThrowSite::Terminal(f.nodes[b.node.0 as usize].block))
+                    || !matches!((storage.facts().terminal_uses(f.nodes[b.node.0 as usize].block),
+                        storage.facts().terminal_uses(f.nodes[a.node.0 as usize].block)),
+                        (Some(b), Some(a)) if !a.is_empty() && same_uses(b, a, &definitions))
+                {
+                    return Ok(None);
+                }
+                push(&mut terminals, (b.node, a.node))?;
+            }
             _ => return Ok(None),
         }
     }
-    let Some((rethrow, follow)) = end else {
-        return Ok(None);
-    };
-    if operations.is_empty()
-        || normal.visited[follow.0 as usize]
-        || plan.members.contains(&follow)
+    if (operations.is_empty() && terminals.is_empty())
+        || follow.is_some_and(|follow| {
+            normal.visited[follow.0 as usize] || plan.members.contains(&follow)
+        })
         || plan.handler_bodies[0]
             .iter()
             .any(|n| !canonical.visited[n.0 as usize])
     {
         return Ok(None);
+    }
+    // A natural construction keeps one whole owner and one paired group. A
+    // partial group or changed role cannot become an implicit cleanup duplicate.
+    for group in storage.facts().construction_groups() {
+        for (normal_side, inside) in [(true, &normal.visited), (false, &canonical.visited)] {
+            let count = group
+                .members()
+                .iter()
+                .filter(|op| inside[g.op_node[op.0 as usize].0 as usize])
+                .count();
+            if count == 0 {
+                continue;
+            }
+            if count != group.members().len()
+                || group.prelude().is_some()
+                || !group.snapshot_members().is_empty()
+            {
+                return Ok(None);
+            }
+            let mut peer = None;
+            for member in group.members() {
+                let Some(&(n, c)) = operations.iter().find(|(n, c)| {
+                    if normal_side {
+                        n == member
+                    } else {
+                        c == member
+                    }
+                }) else {
+                    return Ok(None);
+                };
+                let other = if normal_side { c } else { n };
+                let Some(crate::p5::OperationEmission::Construction { group: other, .. }) =
+                    storage.facts().operation_emission(other)
+                else {
+                    return Ok(None);
+                };
+                if peer.is_some_and(|old| old != other) {
+                    return Ok(None);
+                }
+                peer = Some(other);
+            }
+            if peer
+                .and_then(|id| storage.facts().construction_groups().get(id.0 as usize))
+                .is_none_or(|other| other.members().len() != group.members().len())
+            {
+                return Ok(None);
+            }
+        }
     }
     if !private_definitions(
         storage,
@@ -552,7 +669,8 @@ pub(super) fn construct(
         normal: normal.order,
         operations,
         predicates,
-        rethrow,
+        rethrows,
+        terminals,
         follow,
     }))
 }

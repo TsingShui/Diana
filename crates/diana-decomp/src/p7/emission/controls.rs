@@ -218,7 +218,12 @@ fn try_layout(
                 }
             }
         }
-        plan.origin_only_terminals[finally.rethrow.0 as usize] = true;
+        for rethrow in &finally.rethrows {
+            plan.origin_only_terminals[rethrow.0 as usize] = true;
+        }
+        for &(normal, _) in &finally.terminals {
+            plan.origin_only_terminals[normal.0 as usize] = true;
+        }
         for &(normal, _) in &finally.predicates {
             plan.origin_only_terminals[normal.0 as usize] = true;
         }
@@ -229,6 +234,17 @@ fn try_layout(
                     if let crate::p5::Materialization::Store(local) = d.materialization() {
                         plan.hidden_locals[local.0 as usize] = true;
                     }
+                }
+            }
+        }
+        for group in &code.constructions {
+            if finally
+                .operations
+                .iter()
+                .any(|&(normal, _)| normal == group.initialization)
+            {
+                for publication in &group.publications {
+                    plan.hidden_locals[publication.destination.0 as usize] = true;
                 }
             }
         }

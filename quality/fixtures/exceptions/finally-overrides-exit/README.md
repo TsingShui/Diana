@@ -56,9 +56,9 @@ checks, the body throw, the read and the return operand; it excludes the normal
 close, the return/throw overrides and the handler's own close. A close failure
 therefore leaves the protected range and replaces the pending exit. A return in
 the finally is checked before its throw. The prepared DEX is assembled from
-`FinallyOverridesExit.smali`; p6 reports no natural try item and two chains
-(one handler chain plus the uncaught chain) for this method, so the protection is
-explicit rather than a natural `finally`.
+`FinallyOverridesExit.smali`. The historical baseline retained explicit cleanup;
+the current abrupt-cleanup repair selects one natural finally from the existing
+P5 construction and P6 protection facts.
 
 ## Preparation and inspection
 
@@ -81,7 +81,9 @@ confirmation used repository HEAD `6d663d9`; engine sources are unchanged from
 
 ## Review status
 
-The review is a manual source/output reading judgment. No automated behavioral
-executor, Java recompilation or fixture test was run. The helper failures are
+The current review is primary LLM source/output path reading. Six grouped
+ordinary-Engine abrupt-finally tests cover this original case and its fresh
+[complexity challenge](../abrupt-finally-completion/README.md); all passed.
+No complete-method behavioral executor or Java recompilation was run. The helper failures are
 scenario inputs; the constructed exception identities come from the input's
 `new-instance` and constructor calls.

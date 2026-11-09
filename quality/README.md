@@ -186,6 +186,7 @@ Downloaded inputs and generated output remain outside version control.
 | `short-circuit-shared-routes` | Ordered effectful disjunctions through empty selected routes; copy, effect, entry, cycle and explicit-prelude guards |
 | `concat-capture-recipes` | Inferred Custom concatenation, recipe constants, char/int views, captured effects, loop/catch and explicit unsupported guards |
 | `pure-tail-finally` | Whole-operation normal preparation, literal cleanup prefixes, scoped bypasses and late cleanup failure |
+| `abrupt-finally-completion` | Saved body returns, cleanup return/throw replacement, always-abrupt/void cleanup, multiple rethrows and unequal/foreign-entry guards |
 | `refined-carriers` | Adjacent cast/array carriers and checks that must precede calls and early returns |
 
 ### Synchronization

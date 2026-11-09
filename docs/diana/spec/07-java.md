@@ -468,10 +468,13 @@ A selected P6 `FinallyPlan` lowers to the existing Try control with a delivered
 finally layout. Its source children retain the protected body, handler cleanup
 and original normal duplicate. The executable child order contains the body and
 one cleanup spelling; the duplicate is an origin-only attachment. The original
-capture and rethrow likewise contribute origins without text, and their private
-capture local needs no declaration. Original operation and predicate pairs remain
-in the owned control product. Normal duplicate predicates retain origin-only
-terminal placement; private duplicate result locals need no declaration. P7 does not infer equal values or establish cleanup correspondence.
+capture and all pending rethrows likewise contribute origins without text, and
+their private capture local needs no declaration. Original operation, predicate
+and explicit cleanup-terminal pairs remain in the owned control product. Normal
+duplicate predicates and cleanup terminals retain origin-only placement; the
+canonical cleanup returns/throws remain executable. Private duplicate result
+locals and natural construction publication destinations need no declaration.
+P7 does not infer equal values or establish cleanup correspondence.
 
 Origin-only occurrences cannot carry a composed check-cast or invalidate an
 otherwise scoped local declaration merely because they have no executable

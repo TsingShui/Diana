@@ -1,6 +1,29 @@
 # Fixture: exception-finally-transfer
 
-## Current verdict — terminal guard follow-up
+## Current verdict — return replacement in finally
+
+Compared the same prepared DEX on `b214ec6` and this repair. Only
+`Lfixture/ExceptionFinallyTransfer;->returnInFinally(I)I` changes. Read its Java
+and original P1 facts against both complete method texts.
+
+### Semantics
+
+| Path | Source and recovered behavior |
+|---|---|
+| Ordinary input | State1 remains in try, then state2 executes in finally. A nonnegative parameter returns the original parameter after cleanup. |
+| Negative input | State2 precedes `p0 < 0`; that branch returns -1 and replaces the pending parameter return. |
+| Original exceptional body completion | The original caught error enters state2 cleanup. Negative input replaces it with -1; otherwise normal cleanup implicitly rethrows that same capture. A failure of the cleanup store remains outside its own protection and replaces the pending outcome. |
+
+The original field target, operand states, effect order and unhandled cleanup
+routes are unchanged. The inverse predicate reflects removing the implicit
+pending rethrow, not dropping an executable branch. Other methods are byte-exact
+in P9 and reuse the prior loop/nested-catch reviews below. P1/P3/P4/P5 agree.
+The [new challenge](../abrupt-finally-completion/review.md) adds saved-state,
+throwing-close and all-abrupt interactions. No contradiction was found under
+sequential DEX completion semantics. No behavioral executor/device/Java run is
+claimed; historical execution statements below were not rerun.
+
+## Prior verdict — terminal guard follow-up
 
 Read cleanup overrides and nested catches. Negative finally reads retain their
 explicit jump past the update; rethrow/return guards preserve the chosen pending

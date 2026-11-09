@@ -1,6 +1,33 @@
 # Fixture: complex-flow
 
-## Current verdict — protected private exit completion
+## Current verdict — arithmetic cleanup in finally
+
+Compared the same prepared DEX on `b214ec6` and this repair. Only
+`Lfixture/ComplexFlow;->run([I)I` changes. Read the Java helper `advance`, the original P1
+facts and both complete method texts. The obfuscated fixture's tracked mapping
+is review context only; the engine still uses the DEX's original identities.
+
+### Semantics
+
+| Path | Source and recovered behavior |
+|---|---|
+| Exhaustion | The original length test and visible index update remain. Each completed advance is followed by its applied-count increment; exhaustion then executes one `steps += v7` and returns that count. |
+| Sentinel/terminal state | MIN_VALUE skips advance/count and still reaches the index update. DONE breaks before advance/count/index update. Both eventual exits run the same cleanup once. |
+| Body error | An array/advance error reaches cleanup with the count of completed advances. Advance's prior state/history/steps mutations remain in their original helper and occur before the count increment. Cleanup adds that saved count and implicitly rethrows the exact captured error. |
+| Cleanup error | Original field read/add/store order remains. A cleanup failure keeps its established uncaught route and replaces the pending result or body error, without retry or suppression. |
+
+P6 now admits ordinary arithmetic alongside the already matched field operations.
+The body, helper and other members are exact in P9; P1/P3/P4/P5 are identical.
+The single cleanup reads the same receiver field and saved count as both previous
+copies. This is a reviewed readability improvement, not correction of a claimed
+baseline behavior defect. The [new challenge](../../exceptions/abrupt-finally-completion/review.md)
+checks arithmetic with different body/cleanup operands and abrupt replacement.
+No contradiction was found in these paths; sequential execution is assumed and
+unvisited external/runtime failures are not claimed as executed. No behavioral
+executor, device run or Java recompilation was run. Prior unchanged-path reviews
+below are reused.
+
+## Prior verdict — protected private exit completion
 
 Compared the same prepared DEX on7354242 and this candidate. In run([I)I,
 MIN_VALUE still skips only advance/count and reaches the original index update.
