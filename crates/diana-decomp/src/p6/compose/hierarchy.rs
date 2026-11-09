@@ -47,12 +47,12 @@ pub(super) fn construct(
     while let Some(task) = work.pop() {
         match task {
             Work::Scope(part, excluded) => {
-                let interface = CompletionInterface::collect(storage, f, g, &part.nodes)?;
+                let set = mask(f.nodes.len(), &part.nodes)?;
+                let interface = CompletionInterface::from_membership(storage, f, g, &set)?;
                 let mut boundary = interface.normal_boundary(f)?;
                 if let Some(follow) = part.follow {
                     boundary[follow.0 as usize] = true;
                 }
-                let set = mask(f.nodes.len(), &interface.nodes)?;
                 let mut proposals =
                     super::candidates::candidates(storage, f, g, s, &part, &boundary)?;
                 // Larger enclosing interfaces are selected first. Equal-size
@@ -111,8 +111,9 @@ pub(super) fn construct(
                             *cases = Some(parts.cases);
                         }
                     }
+                    let candidate_set = mask(f.nodes.len(), &candidate.members)?;
                     let completion =
-                        CompletionInterface::collect(storage, f, g, &candidate.members)?;
+                        CompletionInterface::from_membership(storage, f, g, &candidate_set)?;
                     let accepted = match super::accept::accept(
                         storage,
                         f,
@@ -120,8 +121,9 @@ pub(super) fn construct(
                         owners,
                         &candidate,
                         &completion,
+                        &candidate_set,
                     )? {
-                        Ok(()) => super::accept::match_branch_loops(f, &candidate)?,
+                        Ok(()) => super::accept::match_branch_loops(f, &candidate, &candidate_set)?,
                         Err(reason) => Err(reason),
                     };
                     if let Err(reason) = accepted {
@@ -141,7 +143,7 @@ pub(super) fn construct(
                         )?;
                         continue;
                     }
-                    for &node in &completion.nodes {
+                    for &node in &candidate.members {
                         occupied[node.0 as usize] = true;
                     }
                     push(&mut selected, candidate)?;

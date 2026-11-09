@@ -17,8 +17,8 @@ pub(super) fn accept(
     owners: &[RegionId],
     c: &Candidate,
     interface: &super::super::interface::CompletionInterface,
+    set: &[bool],
 ) -> Result<Result<(), RecoveryReason>, RegionError> {
-    let set = mask(f.nodes.len(), &c.members)?;
     if f.synchronized.iter().any(|scope| {
         scope.separation.is_none()
             && scope.body.contains(&c.entry)
@@ -26,7 +26,7 @@ pub(super) fn accept(
     }) {
         return Ok(Err(RecoveryReason::LockBoundary));
     }
-    if (set[0] && c.entry != NodeId(0))
+    if (interface.method_entry && c.entry != NodeId(0))
         || interface
             .entrances
             .iter()
@@ -126,11 +126,11 @@ pub(super) fn accept(
 pub(super) fn match_branch_loops(
     f: &RegionFacts,
     c: &Candidate,
+    set: &[bool],
 ) -> Result<Result<(), RecoveryReason>, RegionError> {
     if !matches!(c.kind, RegionKind::If { .. } | RegionKind::Condition(_)) {
         return Ok(Ok(()));
     }
-    let set = mask(f.nodes.len(), &c.members)?;
     for plan in &f.loops {
         let inside = plan
             .lexical_members
@@ -152,7 +152,7 @@ pub(super) fn match_branch_loops(
                 || (!owns_private_exit
                     && plan.latches.iter().any(|&latch| {
                         let source = f.links[latch.0 as usize].from;
-                        set[source.0 as usize] && !owns_nested_exit_latch(f, c, &set, plan, source)
+                        set[source.0 as usize] && !owns_nested_exit_latch(f, c, set, plan, source)
                     })))
         {
             return Ok(Err(RecoveryReason::Overlap));

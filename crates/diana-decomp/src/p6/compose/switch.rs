@@ -126,7 +126,7 @@ pub(super) fn private_switch_parts(
         super::completion::include_try_handlers(f, &frontier, c.follow, &mut arm);
         case.nodes = list(&arm)?;
         let interface =
-            super::super::interface::CompletionInterface::collect(storage, f, g, &case.nodes)?;
+            super::super::interface::CompletionInterface::from_membership(storage, f, g, &arm)?;
         if !interface.exceptional_entrances.is_empty() {
             return Ok(None);
         }

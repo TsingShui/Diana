@@ -8,7 +8,7 @@ use crate::p2::Terminal;
 use crate::p5::StorageMethod;
 
 pub(super) struct CompletionInterface {
-    pub nodes: Vec<NodeId>,
+    pub method_entry: bool,
     pub entrances: Vec<LinkId>,
     pub exceptional_entrances: Vec<crate::p2::EdgeId>,
     pub outlets: Vec<LinkId>,
@@ -28,11 +28,22 @@ impl CompletionInterface {
         for node in nodes {
             set[node.0 as usize] = true;
         }
-        let mut coverage = Vec::new();
-        crate::substrate::owned::reserve(&mut coverage, nodes.len())?;
-        coverage.extend_from_slice(nodes);
+        Self::from_membership(storage, f, g, &set)
+    }
+
+    /// Reuses the owning candidate's membership instead of allocating another
+    /// mask and copying the same original-node list for each boundary consumer.
+    pub fn from_membership(
+        storage: &StorageMethod<'_>,
+        f: &RegionFacts,
+        g: &Graph,
+        set: &[bool],
+    ) -> Result<Self, RegionError> {
+        if set.len() != f.nodes.len() {
+            return Err(bug("completion membership has the wrong extent"));
+        }
         let mut result = Self {
-            nodes: coverage,
+            method_entry: set.first().copied().unwrap_or(false),
             entrances: Vec::new(),
             exceptional_entrances: Vec::new(),
             outlets: Vec::new(),
@@ -60,18 +71,47 @@ impl CompletionInterface {
                 }
             }
         }
-        for &node in nodes {
-            let source = &f.nodes[node.0 as usize];
-            if source.terminal
+        for (index, source) in f.nodes.iter().enumerate() {
+            if set[index]
+                && source.terminal
                 && matches!(
                     storage.execution().blocks()[source.block.0 as usize].terminal(),
                     Some(Terminal::Return { .. } | Terminal::Throw { .. })
                 )
             {
-                push(&mut result.abrupt, node)?;
+                push(&mut result.abrupt, source.id)?;
             }
         }
         Ok(result)
+    }
+
+    pub fn entry_nodes(
+        &self,
+        storage: &StorageMethod<'_>,
+        f: &RegionFacts,
+        entry: Option<NodeId>,
+    ) -> Result<Vec<NodeId>, RegionError> {
+        let mut entries = Vec::new();
+        if let Some(entry) = entry {
+            push(&mut entries, entry)?;
+        }
+        if self.method_entry && !entries.contains(&NodeId(0)) {
+            push(&mut entries, NodeId(0))?;
+        }
+        for &link in &self.entrances {
+            let target = f.links[link.0 as usize].to;
+            if !entries.contains(&target) {
+                push(&mut entries, target)?;
+            }
+        }
+        for &edge in &self.exceptional_entrances {
+            if let Some(target) = Graph::exception_target(f, storage, edge)
+                && !entries.contains(&target)
+            {
+                push(&mut entries, target)?;
+            }
+        }
+        Ok(entries)
     }
 
     /// Only normal outlet targets constrain a normal child walk. Exceptional

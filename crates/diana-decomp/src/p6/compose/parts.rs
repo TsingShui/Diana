@@ -86,40 +86,6 @@ pub(super) fn add(
     )?;
     Ok(region)
 }
-pub(super) fn entries(
-    storage: &StorageMethod<'_>,
-    f: &RegionFacts,
-    g: &Graph,
-    set: &[bool],
-    entry: Option<NodeId>,
-) -> Result<Vec<NodeId>, RegionError> {
-    let mut out = Vec::new();
-    if let Some(p) = entry {
-        push(&mut out, p)?;
-    }
-    if set[0] && !out.contains(&NodeId(0)) {
-        push(&mut out, NodeId(0))?;
-    }
-    for l in &f.links {
-        if set[l.to.0 as usize] && !set[l.from.0 as usize] && !out.contains(&l.to) {
-            push(&mut out, l.to)?;
-        }
-    }
-    for (from, row) in g.exceptions.iter().enumerate() {
-        if set[from] {
-            continue;
-        }
-        for &e in row {
-            if let Some(to) = Graph::exception_target(f, storage, e)
-                && set[to.0 as usize]
-                && !out.contains(&to)
-            {
-                push(&mut out, to)?;
-            }
-        }
-    }
-    Ok(out)
-}
 pub(in crate::p6) fn graph_kind(
     storage: &StorageMethod<'_>,
     f: &RegionFacts,
@@ -128,17 +94,11 @@ pub(in crate::p6) fn graph_kind(
     entry: Option<NodeId>,
     reason: RecoveryReason,
 ) -> Result<RegionKind, RegionError> {
-    let set = mask(f.nodes.len(), members)?;
-    let entries = entries(storage, f, g, &set, entry)?;
-    let mut exits = Vec::new();
-    for l in &f.links {
-        if set[l.from.0 as usize] && !set[l.to.0 as usize] {
-            push(&mut exits, l.id)?;
-        }
-    }
+    let interface = super::super::interface::CompletionInterface::collect(storage, f, g, members)?;
+    let entries = interface.entry_nodes(storage, f, entry)?;
     Ok(RegionKind::Graph {
         reason,
         entries,
-        exits,
+        exits: interface.outlets,
     })
 }

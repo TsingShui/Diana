@@ -93,7 +93,8 @@ composition. Crossing candidates remain explicit rather than duplicating their
 shared content. Empty branch arms contain no fabricated instruction.
 
 The P6-private `CompletionInterface` in `p6/interface.rs` is shared by protection
-nomination and region composition. It retains exact node coverage, original
+nomination and region composition. It consumes the owning candidate's exact
+membership and retains method-entry participation, original
 normal entrance/outlet LinkIds, executable exceptional entrance/outlet EdgeIds,
 and original abrupt terminal NodeIds. Exceptional outlets include original Exit
 targets such as uncaught propagation. ImpossibleRelease remains inspectable but
@@ -104,7 +105,10 @@ references its original operands, completion, phases and site through its node. 
 Storage availability is not a topology predicate: original accesses and CopyPlans
 retain their local gaps, and dependent P7 composition still requires availability.
 
-Private parts carry entry, continuation and membership constraints. Their common
+Private parts carry entry, continuation and membership constraints. Candidate
+admission and completion collection share that membership. Graph entry nodes
+come from the same normal and exceptional entrance records. Sibling composition
+orders one contraction DAG; linear chains use that same ordering. Private parts' common
 normal boundary consists of actual normal outlet targets plus their declared
 lexical follow. Exceptional coverage does not create a normal follow; the
 execution-owner tree and per-site ordered protection remain distinct relations.
