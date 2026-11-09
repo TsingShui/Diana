@@ -99,7 +99,6 @@ pub struct Resource {
     pub roots: Vec<usize>,
     class_index: HashMap<(usize, ByteOffset, ClassDefId), usize>,
     pub issues: Vec<String>,
-    pub is_archive: bool,
 }
 
 impl Resource {
@@ -107,36 +106,6 @@ impl Resource {
         self.classes
             .get(*self.class_index.get(&(image, header, id))?)
             .cloned()
-    }
-
-    pub fn summary(&self) -> String {
-        let class_word = if self.classes.len() == 1 {
-            "class"
-        } else {
-            "classes"
-        };
-        let image_word = if self.images.len() == 1 {
-            "DEX"
-        } else {
-            "DEX images"
-        };
-        let kind = if self.is_archive { "APK" } else { "DEX" };
-        let mut summary = format!(
-            "{kind} · {} {image_word} · {} {class_word}",
-            self.images.len(),
-            self.classes.len()
-        );
-        if !self.libraries.is_empty() {
-            summary.push_str(&format!(" · {} native libraries", self.libraries.len()));
-        }
-        summary
-    }
-
-    pub fn display_name(&self) -> String {
-        std::path::Path::new(&self.name)
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| self.name.clone())
     }
 }
 
@@ -407,7 +376,6 @@ pub fn open(path: PathBuf) -> Result<Resource, String> {
         roots,
         class_index,
         issues,
-        is_archive,
     })
 }
 

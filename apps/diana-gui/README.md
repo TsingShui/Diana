@@ -52,9 +52,13 @@ start collapsed; selecting a class opens its Engine result.
 Up to two APK projects can be open at once. Each APK is a collapsed top-level
 tree node. Expanding it reveals its fixed Manifest, Native and Java sections.
 Those sections also start collapsed.
-Selecting an APK or one of its entries activates that project and preserves its
-selected entry and delivered editor result. Close the current APK from its header
-before opening a third.
+Selecting an APK activates that project. Selecting Manifest, a native library or
+a Java class creates or activates the corresponding editor file tab. Each APK
+retains its own open file tabs and delivered editor results. Right-click an APK
+root and choose Close APK before opening a third.
+
+The file-tab strip has previous and next arrow buttons on its left. Drag a file
+tab onto another tab to reorder the strip.
 
 While a file opens, the welcome view and the file header expose the loading
 state. A failed open keeps an already loaded file available and shows the

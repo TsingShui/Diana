@@ -2,6 +2,7 @@
 use gpui_kit::component::{
     ActiveTheme, Icon, Sizable, h_flex,
     list::ListItem,
+    menu::PopupMenuItem,
     tree::{Tree, TreeItem, TreeState, tree},
 };
 use gpui_kit::{assets::IconName, prelude::*, *};
@@ -204,6 +205,13 @@ fn parse_resource_selection(node: &str, resource: &Resource) -> Option<ResourceS
 }
 
 pub fn view(state: &Entity<TreeState>) -> Tree {
+    view_with_close(state, |_, _, _| {})
+}
+
+pub fn view_with_close(
+    state: &Entity<TreeState>,
+    on_close_project: impl Fn(u64, &mut Window, &mut App) + Clone + 'static,
+) -> Tree {
     let focus = state.downgrade();
     tree(state, move |index, entry, _, _, cx| {
         let item = entry.item();
@@ -259,6 +267,22 @@ pub fn view(state: &Entity<TreeState>) -> Tree {
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                 _ = focus.update(cx, |tree, cx| tree.focus(window, cx));
             })
+    })
+    .context_menu(move |_, entry, menu, _, _| {
+        let Some(project) = entry
+            .item()
+            .id
+            .strip_prefix("apk:")
+            .and_then(|value| value.parse::<u64>().ok())
+        else {
+            return menu;
+        };
+        let close = on_close_project.clone();
+        menu.item(
+            PopupMenuItem::new("Close APK")
+                .icon(IconName::Close)
+                .on_click(move |_, window, cx| close(project, window, cx)),
+        )
     })
 }
 

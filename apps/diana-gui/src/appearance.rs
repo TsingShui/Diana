@@ -18,6 +18,10 @@ pub const CODE_SIZE: f32 = 16.;
 pub const CODE_LEADING: f32 = 24.;
 pub const TREE_ROW: f32 = 26.;
 pub const TREE_INDENT: f32 = 12.;
+#[cfg(target_os = "macos")]
+pub const BRAND_FONT: &str = "Snell Roundhand";
+#[cfg(not(target_os = "macos"))]
+pub const BRAND_FONT: &str = "Baskerville";
 
 pub const THEME_NOTICE: &str = r#"Ayu Dark palette, adapted to GPUI Kit theme roles.
 Source: zed-industries/zed, assets/themes/ayu, revision
