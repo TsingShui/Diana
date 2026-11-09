@@ -359,6 +359,82 @@ fn producer_with_nested(
         .statements
         .get(statement.0 as usize)
         .ok_or("producer_statement_unavailable")?;
+    if let StatementKind::CheckCast {
+        value: expression,
+        reference,
+    } = statement_ref.kind
+    {
+        if code.emission.omitted_check(statement).is_some()
+            || !statement_ref.outputs.is_empty()
+            || !matches!(
+                code.references
+                    .get(reference.0 as usize)
+                    .map(|reference| &reference.declaration),
+                Some(Ok(ReferenceDeclaration::Type { .. }))
+            )
+        {
+            return Err("check_has_no_required_value_evaluation");
+        }
+        let expr = code
+            .expressions
+            .get(expression.0 as usize)
+            .ok_or("check_value_unavailable")?;
+        let ExprKind::Read {
+            storage: local,
+            view,
+        } = expr.kind
+        else {
+            return Err("check_value_not_a_read");
+        };
+        let origin = expr
+            .origin
+            .as_ref()
+            .ok_or("check_read_origin_unavailable")?;
+        let Ok(StorageRead::Value {
+            local: destination,
+            value,
+            state,
+            view: read_view,
+        }) = origin.read
+        else {
+            return Err("check_value_binding_unavailable");
+        };
+        if local.0 != destination.0
+            || !compatible(view, Family::Reference)
+            || view != read_view
+            || !initialized(origin.initialization, Family::Reference)
+            || origin.site
+                != (UseSite::Operation {
+                    operation,
+                    argument: 0,
+                })
+        {
+            return Err("check_value_state_or_initialization");
+        }
+        let [site] = statement_ref.sites.as_slice() else {
+            return Err("check_exception_site_unavailable");
+        };
+        let exception = &code.sites[site.0 as usize];
+        if source.exceptional.is_none()
+            || code.emission.site_annotation(*site)
+            || !exception.source_snapshots.is_empty()
+        {
+            return Err("check_has_exception_or_snapshot_obligations");
+        }
+        return Ok(Producer {
+            operation,
+            statement,
+            expression,
+            local,
+            destination,
+            value,
+            state,
+            family: Family::Reference,
+            boolean: false,
+            site: Some(*site),
+            result: EvaluationResult::Value,
+        });
+    }
     let (expression, moving) = match statement_ref.kind {
         StatementKind::Evaluate { expression } => (expression, false),
         StatementKind::Move { expression, .. } => (expression, true),
@@ -1442,21 +1518,17 @@ fn cover_suffix(
     actions: &[(OpId, StatementId)],
     consumer: Consumer<'_>,
     access: &LocalAccess,
-    ignore_checks: bool,
 ) -> Result<Result<Vec<(Producer, ExprId)>, Unscheduled>, ExpressionError> {
     let mut out = Vec::new();
     let mut last = None;
     for &(operation, statement) in actions.iter().rev() {
-        if code.nested_operation(operation)
-            || (ignore_checks
-                && matches!(
-                    code.statements[statement.0 as usize].kind,
-                    StatementKind::CheckCast { .. }
-                ))
-        {
+        if code.nested_operation(operation) || code.emission.omitted_check(statement).is_some() {
             continue;
         }
-        let policy = if consumer.required() {
+        let policy = if consumer.required()
+            || matches!(consumer.target,
+            CoverTarget::Operation(_, statement) if matches!(code.statements[statement.0 as usize].kind, StatementKind::CheckCast { .. }))
+        {
             UsePolicy::PreserveStore
         } else {
             UsePolicy::SingleRead
@@ -1522,7 +1594,6 @@ fn cover_operations(
     code: &mut Cover<'_>,
     actions: &[(OpId, StatementId)],
     access: &LocalAccess,
-    ignore_checks: bool,
 ) -> Result<(), ExpressionError> {
     let mut roots = Vec::new();
     for &(operation, statement) in actions {
@@ -1533,6 +1604,7 @@ fn cover_operations(
                 | StatementKind::Evaluate { .. }
                 | StatementKind::FieldStore { .. }
                 | StatementKind::ArrayStore { .. }
+                | StatementKind::CheckCast { .. }
         ) && code.emission.operations[operation.0 as usize]
             .before
             .is_empty()
@@ -1542,21 +1614,16 @@ fn cover_operations(
                 target: CoverTarget::Operation(operation, statement),
                 operands,
             };
-            if let Ok(work) = cover_suffix(code, &roots, consumer, access, ignore_checks)? {
+            if let Ok(work) = cover_suffix(code, &roots, consumer, access)? {
                 for (producer, operand) in work {
                     code.propose(producer, operand)?;
                 }
             }
         }
-        // Owned roots leave the active suffix once. A condition's check-cast
-        // remains an original action, but its temporary read is not a root.
+        // Every acting check is an ordinary root. Only a producer-owned
+        // evaluation or an established redundant check leaves the suffix.
         while roots.last().is_some_and(|&(operation, statement)| {
-            code.nested_operation(operation)
-                || (ignore_checks
-                    && matches!(
-                        code.statements[statement.0 as usize].kind,
-                        StatementKind::CheckCast { .. }
-                    ))
+            code.nested_operation(operation) || code.emission.omitted_check(statement).is_some()
         }) {
             roots.pop();
         }
@@ -1595,15 +1662,7 @@ fn compose_condition_arguments(
     let Some(actions) = run_actions(code, nodes)? else {
         return Ok(());
     };
-    let mut access = access.copy()?;
-    for &(_, statement) in &actions {
-        if let StatementKind::CheckCast { value, .. } = code.statements[statement.0 as usize].kind
-            && let Some((value, _)) = super::access::read_of(code, value)
-        {
-            access.ignore_read(value);
-        }
-    }
-    cover_operations(code, &actions, &access, true)
+    cover_operations(code, &actions, access)
 }
 
 fn scheduled(
@@ -1634,7 +1693,6 @@ fn scheduled(
             operands,
         },
         access,
-        true,
     )
 }
 
@@ -1667,13 +1725,13 @@ fn ordinary_runs(
                 {
                     push(&mut actions, (operation, statement))?;
                 } else {
-                    cover_operations(&mut cover, &actions, access, false)?;
+                    cover_operations(&mut cover, &actions, access)?;
                     actions.clear();
                 }
             }
             current = adjacency.next_node(node);
         }
-        cover_operations(&mut cover, &actions, access, false)?;
+        cover_operations(&mut cover, &actions, access)?;
         let mut work = cover.work;
         // Installation order is not execution order. The last original member
         // of each source portion owns its deferred control's closing anchor.

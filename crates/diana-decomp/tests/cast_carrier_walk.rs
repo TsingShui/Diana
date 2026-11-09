@@ -72,6 +72,42 @@ fn origins(code: &MethodCode, rendered: &Rendered) {
         assert_eq!(rendered.spans().iter().filter(|span| matches!(span.origin, Origin::Site { site: actual, .. } if actual == site)).count(), 1);
     }
 }
+fn owner(code: &MethodCode) -> Option<CheckCarrier> {
+    let operation = code
+        .operations()
+        .iter()
+        .find(|operation| matches!(operation.original, diana_decomp::p2::OpKind::Cast { .. }))
+        .unwrap();
+    let inline = code
+        .emission()
+        .inline_checks()
+        .iter()
+        .filter(|check| check.operation == operation.source)
+        .collect::<Vec<_>>();
+    if let Some(operand) = operation.nested_at {
+        assert!(inline.is_empty(), "one check execution owner");
+        assert_eq!(
+            code.expressions()[operand.0 as usize]
+                .evaluation
+                .unwrap()
+                .operation,
+            operation.source
+        );
+        let origin = code.expressions()[operand.0 as usize]
+            .origin
+            .as_ref()
+            .unwrap();
+        return Some(match origin.site {
+            diana_decomp::p3::UseSite::Terminal { block, .. } => CheckCarrier::Terminal(block),
+            diana_decomp::p3::UseSite::Operation { operation, .. } => {
+                CheckCarrier::Statement(code.operations()[operation.0 as usize].statement.unwrap())
+            }
+        });
+    }
+    assert!(inline.len() <= 1);
+    inline.first().map(|check| check.carrier)
+}
+
 fn order(name: &str, prototype: &str, check: impl FnOnce(&MethodCode, &Rendered)) {
     inspection::inspect(
         "atoms/cast-carrier-order",
@@ -103,11 +139,8 @@ fn the_second_comparison_operand_carries_one_original_check() {
         "right",
         "(Ljava/lang/Object;Ljava/lang/Object;)I",
         |code, rendered| {
-            assert_eq!(code.emission().inline_checks().len(), 1);
-            assert!(matches!(
-                code.emission().inline_checks()[0].carrier,
-                CheckCarrier::Terminal(_)
-            ));
+            assert!(owner(code).is_some());
+            assert!(matches!(owner(code).unwrap(), CheckCarrier::Terminal(_)));
             assert!(!rendered.text().contains("check-cast, value not reassigned"));
             for (left, right, expected) in [
                 (A, A, Ok(Value::Int(1))),
@@ -124,11 +157,8 @@ fn the_second_comparison_operand_carries_one_original_check() {
 #[test]
 fn literals_before_a_checked_argument_do_not_create_an_effect_boundary() {
     order("argument", "(Ljava/lang/Object;)V", |code, rendered| {
-        assert_eq!(code.emission().inline_checks().len(), 1);
-        assert!(matches!(
-            code.emission().inline_checks()[0].carrier,
-            CheckCarrier::Statement(_)
-        ));
+        assert!(owner(code).is_some());
+        assert!(matches!(owner(code).unwrap(), CheckCarrier::Statement(_)));
         assert!(rendered.text().contains("sink(0, ((int[]) p0))"));
         for reference in [A, NULL] {
             assert_eq!(
@@ -155,7 +185,7 @@ fn a_check_remains_before_an_early_exit_or_helper_effect() {
         "guarded",
         "(Ljava/lang/Object;Ljava/lang/Object;I)I",
         |code, rendered| {
-            assert!(code.emission().inline_checks().is_empty());
+            assert!(owner(code).is_none());
             assert!(
                 rendered.text().find("((int[]) p1)").unwrap()
                     < rendered.text().find("if (").unwrap()
@@ -177,7 +207,7 @@ fn a_check_remains_before_an_early_exit_or_helper_effect() {
         "afterEffect",
         "(Ljava/lang/Object;)Ljava/lang/Object;",
         |code, _| {
-            assert!(code.emission().inline_checks().is_empty());
+            assert!(owner(code).is_none());
             for reference in [A, NULL] {
                 assert_eq!(
                     execute(code, &[reference], B, false),
@@ -201,7 +231,7 @@ fn earlier_carriers_keep_cast_and_null_failure_order() {
         "left",
         "(Ljava/lang/Object;Ljava/lang/Object;)I",
         |code, _| {
-            assert_eq!(code.emission().inline_checks().len(), 1);
+            assert!(owner(code).is_some());
             for (left, right, expected) in [
                 (A, A, Ok(Value::Int(1))),
                 (NULL, NULL, Ok(Value::Int(1))),
@@ -212,7 +242,7 @@ fn earlier_carriers_keep_cast_and_null_failure_order() {
         },
     );
     order("arrayLength", "(Ljava/lang/Object;)I", |code, _| {
-        assert_eq!(code.emission().inline_checks().len(), 1);
+        assert!(owner(code).is_some());
         for (reference, expected) in [
             (A, Ok(Value::Int(3))),
             (B, Ok(Value::Int(5))),
@@ -229,7 +259,7 @@ fn short_circuit_contexts_evaluate_the_check_on_the_first_test_only() {
         "triplet",
         "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)I",
         |code, rendered| {
-            assert_eq!(code.emission().inline_checks().len(), 1);
+            assert!(owner(code).is_some());
             assert_eq!(rendered.text().matches("((int[]) p1)").count(), 1);
             for (a, b, c, expected) in [
                 (A, A, A, Ok(Value::Int(1))),
@@ -250,7 +280,7 @@ fn catch_membership_and_nested_call_carriers_remain_boundaries() {
         "caught",
         "(Ljava/lang/Object;Ljava/lang/Object;)I",
         |code, _| {
-            assert!(code.emission().inline_checks().is_empty());
+            assert!(owner(code).is_none());
             for (left, right, expected) in [
                 (A, A, Value::Int(1)),
                 (NULL, NULL, Value::Int(1)),
@@ -265,7 +295,7 @@ fn catch_membership_and_nested_call_carriers_remain_boundaries() {
         },
     );
     context("acting", "(Ljava/lang/Object;)I", |code, rendered| {
-        assert!(code.emission().inline_checks().is_empty());
+        assert!(owner(code).is_none());
         assert!(
             rendered.text().find("((int[]) p0)").unwrap() < rendered.text().find("make()").unwrap()
         );

@@ -9,6 +9,7 @@ pub(super) enum ExprEvent {
     Anchor(ExprId),
     Text(&'static str),
     Reference(ReferenceId),
+    KotlinCastReference(ReferenceId),
     Member(ReferenceId, Option<ExprId>, bool),
     /// `invoke-super` names its target through `super`, so the receiver is the
     /// implicit `this` and is not printed again; its read keeps an anchor.

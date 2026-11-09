@@ -42,6 +42,9 @@ impl Value {
 pub enum Fault {
     Cast,
     NullArray,
+    // Only the virtual-call preparation fixture constructs this modeled fault.
+    #[allow(dead_code)]
+    NullReceiver,
     Helper(usize),
     Unsupported(&'static str),
 }
@@ -50,6 +53,7 @@ pub struct Executor<'a, F> {
     code: &'a MethodCode,
     locals: Vec<Option<Value>>,
     calls: F,
+    jump: Option<LabelId>,
 }
 impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
     pub fn new(code: &'a MethodCode, parameters: &[Value], calls: F) -> Self {
@@ -68,6 +72,7 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
             code,
             locals,
             calls,
+            jump: None,
         }
     }
     fn cast(&self, value: Value, reference: ReferenceId) -> Result<Value, Fault> {
@@ -101,6 +106,10 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
                 .ok_or(Fault::Unsupported("nested statement"))?;
             let value =
                 self.expression(evaluation.expression, CheckCarrier::Statement(statement))?;
+            let value = match self.code.statements()[statement.0 as usize].kind {
+                StatementKind::CheckCast { reference, .. } => self.cast(value, reference)?,
+                _ => value,
+            };
             if let EvaluationResult::Store(local) = evaluation.result {
                 self.locals[local.0 as usize] = Some(value);
             }
@@ -128,17 +137,33 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
                 Value::Reference(Reference::Null) => Err(Fault::NullArray),
                 _ => Err(Fault::Unsupported("array length operand")),
             },
+            ExprKind::String(reference) => {
+                let Ok(ReferenceDeclaration::String { units }) =
+                    &self.code.references()[reference.0 as usize].declaration
+                else {
+                    return Err(Fault::Unsupported("string input"));
+                };
+                (self.calls)(
+                    "$string",
+                    &units
+                        .iter()
+                        .map(|&unit| Value::Int(i32::from(unit)))
+                        .collect::<Vec<_>>(),
+                )
+            }
             ExprKind::Call(call) => {
-                if call.receiver.is_some() {
-                    return Err(Fault::Unsupported("instance helper"));
-                }
                 let Arguments::Known(arguments) = &call.arguments else {
                     return Err(Fault::Unsupported("helper arguments"));
                 };
-                let values = arguments
+                let mut values = Vec::new();
+                if let Some(receiver) = call.receiver {
+                    values.push(self.expression(receiver, carrier)?);
+                }
+                let explicit = arguments
                     .iter()
                     .map(|&argument| self.expression(argument, carrier))
                     .collect::<Result<Vec<_>, _>>()?;
+                values.extend(explicit);
                 let Ok(ReferenceDeclaration::Member(MemberDeclaration::Method { name, .. })) =
                     &self.code.references()[call.target.0 as usize].declaration
                 else {
@@ -237,19 +262,65 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
         }
         Ok(())
     }
+    fn contains(&self, root: ControlId, target: ControlId) -> bool {
+        root == target
+            || self.code.controls()[root.0 as usize]
+                .children()
+                .iter()
+                .any(|&child| self.contains(child, target))
+    }
+    fn transfer(&mut self, id: TransferId) -> Result<Option<Value>, Fault> {
+        let transfer = &self.code.emission().transfers()[id.0 as usize];
+        if !transfer.copies.is_empty() {
+            return Err(Fault::Unsupported("transfer copies"));
+        }
+        match transfer.spelling {
+            TransferSpelling::Fallthrough => {}
+            TransferSpelling::Goto(label) => self.jump = Some(label),
+            _ => return Err(Fault::Unsupported("transfer")),
+        }
+        Ok(None)
+    }
     fn control(&mut self, id: ControlId) -> Result<Option<Value>, Fault> {
         let control = &self.code.controls()[id.0 as usize];
         if self.code.control_omitted(id) {
             return Ok(None);
         }
-        if control.continuation.is_some() {
-            return Err(Fault::Unsupported("control completion"));
+        if let Some(label) = self.jump {
+            let target = self.code.labels()[label.0 as usize].owner;
+            if id == target {
+                self.jump = None;
+            } else if !self.contains(id, target) {
+                return Ok(None);
+            } else if !matches!(
+                control.layout,
+                EmissionLayout::Sequence | EmissionLayout::Labelled | EmissionLayout::Graph
+            ) {
+                return Err(Fault::Unsupported("jump into conditional scope"));
+            }
         }
-        match &control.layout {
-            EmissionLayout::Sequence | EmissionLayout::Labelled => {
-                for &child in control.children() {
-                    if let Some(value) = self.control(child)? {
+        let result = match &control.layout {
+            EmissionLayout::Sequence | EmissionLayout::Labelled | EmissionLayout::Graph => {
+                let children = control.children();
+                let mut index = 0;
+                while index < children.len() {
+                    if let Some(value) = self.control(children[index])? {
                         return Ok(Some(value));
+                    }
+                    if let Some(label) = self.jump {
+                        let target = self.code.labels()[label.0 as usize].owner;
+                        let Some(next) = children
+                            .iter()
+                            .position(|&child| self.contains(child, target))
+                        else {
+                            return Ok(None);
+                        };
+                        if next <= index {
+                            return Err(Fault::Unsupported("nonforward test jump"));
+                        }
+                        index = next;
+                    } else {
+                        index += 1;
                     }
                 }
                 Ok(None)
@@ -282,20 +353,45 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
                                 self.expression(value, CheckCarrier::Terminal(*block))?,
                             )),
                             TerminalKind::Return(None) => Ok(Some(Value::Unit)),
+                            TerminalKind::Goto(transfer) => self.transfer(transfer),
+                            TerminalKind::If {
+                                when_true,
+                                when_false,
+                                ..
+                            } => {
+                                if self.code.emission().if_display(*block) == IfDisplay::Omitted {
+                                    return Ok(None);
+                                }
+                                let test = PredicateEmission {
+                                    terminal: *block,
+                                    when_true,
+                                    when_false,
+                                    negate: false,
+                                };
+                                let transfer = if self.predicate(test)? {
+                                    when_true
+                                } else {
+                                    when_false
+                                };
+                                self.transfer(transfer)
+                            }
                             _ => Err(Fault::Unsupported("terminal")),
                         }
                     }
                     BlockEnd::Transfers(transfers) => {
-                        if transfers.iter().any(|transfer| {
-                            !self.code.emission().transfers()[transfer.0 as usize]
-                                .copies
-                                .is_empty()
-                                || !matches!(
-                                    self.code.emission().transfers()[transfer.0 as usize].spelling,
-                                    TransferSpelling::Fallthrough
-                                )
-                        }) {
-                            return Err(Fault::Unsupported("transfer"));
+                        for transfer in transfers {
+                            let transfer = &self.code.emission().transfers()[transfer.0 as usize];
+                            if !transfer.copies.is_empty() {
+                                return Err(Fault::Unsupported("transfer copies"));
+                            }
+                            match transfer.spelling {
+                                TransferSpelling::Fallthrough => {}
+                                TransferSpelling::Goto(label) => {
+                                    self.jump = Some(label);
+                                    break;
+                                }
+                                _ => return Err(Fault::Unsupported("transfer")),
+                            }
                         }
                         Ok(None)
                     }
@@ -385,7 +481,15 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
                 result => result,
             },
             _ => Err(Fault::Unsupported("control")),
+        };
+        if matches!(result, Ok(None)) && self.jump.is_none() {
+            match control.continuation {
+                None => {}
+                Some(ControlCompletion::Goto(label)) => self.jump = Some(label),
+                _ => return Err(Fault::Unsupported("control completion")),
+            }
         }
+        result
     }
     pub fn run(&mut self) -> Result<Value, Fault> {
         if !self.code.emission().initial().is_empty() {

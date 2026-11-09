@@ -89,6 +89,16 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
                 .ok_or(RenderError::Invariant(
                     "nested evaluation lost its statement",
                 ))?;
+            let kind = self
+                .code
+                .statement_kind(statement)
+                .ok_or(RenderError::Invariant(
+                    "evaluation lost its operation semantics",
+                ))?;
+            let check = match kind {
+                StatementKind::CheckCast { reference, .. } => Some(*reference),
+                _ => None,
+            };
             // Inline checks belong to the producer statement. Restore
             // each enclosing carrier after its nested expression prints.
             let previous_carrier = self
@@ -109,6 +119,19 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
                 self.local(destination)?;
                 self.out.put(" = ")?;
                 push_event(work, ExprEvent::Text(")"))?;
+            }
+            if let Some(reference) = check {
+                if self.kotlin_notation() {
+                    self.out.put("(")?;
+                    push_event(work, ExprEvent::Text(")"))?;
+                    push_event(work, ExprEvent::KotlinCastReference(reference))?;
+                    push_event(work, ExprEvent::Text(" as "))?;
+                } else {
+                    self.out.put("((")?;
+                    self.reference(reference)?;
+                    self.out.put(") ")?;
+                    push_event(work, ExprEvent::Text(")"))?;
+                }
             }
             push_event(work, ExprEvent::Expression(composed.expression, false))?;
         } else if self.code.boolean_use(id) && !self.code.boolean_local(storage) {

@@ -28,6 +28,9 @@ pub(in crate::p7) fn construct(
             value
         }};
     }
+    code.emission.site_annotations =
+        traced!("site_annotations", references::site_annotations(code));
+    traced!("redundant_checks", casts::prepare(code, types));
     let access = super::access::local_access(code)?;
     // Select complete condition alternatives before generic layout and labels.
     traced!("conditions", expressions::conditions(code, key, &access));
@@ -60,8 +63,6 @@ pub(in crate::p7) fn construct(
     // A catch clause prints as its `try` clause, so a chain line is only needed
     // when a printed site names it. A chain nothing points at would be a second,
     // unreferenced statement of the same routes.
-    code.emission.site_annotations =
-        traced!("site_annotations", references::site_annotations(code));
     selection.exception_routes(code, &mut chains)?;
     code.emission.show_chains = chains;
     code.emission.field_qualifications = traced!(
@@ -78,10 +79,7 @@ pub(in crate::p7) fn construct(
     traced!("loop_compact", loops::select_compact(code));
     traced!("natural_stores", stores::natural_stores(code));
     literals::omit_materialized_literals(code)?;
-    traced!(
-        "casts",
-        casts::construct(code, types, key, &adjacency, &access)
-    );
+    traced!("casts", casts::construct(code, key, &adjacency, &access));
     traced!("branches", branches::construct(code));
     traced!(
         "omit_trailing_void_return",

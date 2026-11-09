@@ -582,6 +582,14 @@ establish whole-method behavioral correctness.
 
 ## Shared control delivery
 
+P7 now normalizes established redundant checks before covering expressions.
+Required casts participate as readonly operation roots in the common cover and
+retain their value/state and original exception site. They are no longer skipped
+as transparent condition preparation. The cast-preparation-order input detects
+an earlier exception-order error and checks both source orders plus a produced
+reference. Two new cases execute 29 paths; the scoped thirteen-test run and
+engine Clippy pass. Full historical regression remains deferred.
+
 P7 cast queries and loop-read collection now share one private expression walk.
 The safe-read query and occurrence count consume the same syntax grammar and
 preserve nested carrier boundaries. New cast-carrier-order/contexts inputs recover

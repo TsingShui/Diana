@@ -84,6 +84,9 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
                 }
                 ExprEvent::Text(value) => self.out.put(value)?,
                 ExprEvent::Reference(reference) => self.reference(reference)?,
+                ExprEvent::KotlinCastReference(reference) => {
+                    self.kotlin_cast_reference(reference)?
+                }
                 ExprEvent::Member(reference, receiver, signature) => {
                     self.member_event(&mut work, reference, receiver, signature)?
                 }

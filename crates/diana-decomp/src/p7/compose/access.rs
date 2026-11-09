@@ -36,24 +36,6 @@ impl LocalAccess {
             .then(|| self.values.get(&value).copied())
             .flatten()
     }
-    pub fn copy(&self) -> Result<Self, ExpressionError> {
-        let mut values = HashMap::new();
-        values
-            .try_reserve(self.values.len())
-            .map_err(crate::RequestError::Allocation)?;
-        values.extend(self.values.iter().map(|(&id, &access)| (id, access)));
-        Ok(Self {
-            reads: super::super::build::copy(&self.reads)?,
-            protection: super::super::build::copy(&self.protection)?,
-            complete: self.complete,
-            values,
-        })
-    }
-    pub fn ignore_read(&mut self, value: ValueId) {
-        if let Some(access) = self.values.get_mut(&value) {
-            access.reads = access.reads.saturating_sub(1);
-        }
-    }
     fn at(&mut self, value: ValueId) -> Result<&mut ValueAccess, ExpressionError> {
         if !self.values.contains_key(&value) {
             self.values
@@ -120,6 +102,12 @@ pub(super) fn local_access(code: &MethodCode) -> Result<LocalAccess, ExpressionE
         values: HashMap::new(),
     };
     for expression in &code.expressions {
+        if expression.origin.as_ref().is_some_and(|origin| matches!(origin.site,
+            crate::p3::UseSite::Operation { operation, .. }
+                if code.operations[operation.0 as usize].statement.is_some_and(|statement| code.emission.omitted_check(statement).is_some()))) {
+            continue;
+        }
+
         let storage = match expression.kind {
             ExprKind::Read { storage, .. } | ExprKind::Snapshot { storage } => Some(storage),
             _ => None,

@@ -274,6 +274,14 @@ is not required, and no persistent graph of all possible covers is built.
 
 ### 4.3 Execution obligations
 
+Required readonly checks participate as operation roots even though they write
+no register. Treating them as transparent preparation can invert their exception
+order with another producer. Established redundant checks normalize before
+coverage; required checks consume the exact operand value/state through the
+same ordered cover. A source forest that cannot state all its operation order
+retains the original preparation and explicit control. A forest with compatible
+operand order still composes its checks and other producers together.
+
 An operation retains the order:
 
 ~~~text

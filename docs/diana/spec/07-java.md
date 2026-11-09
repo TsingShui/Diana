@@ -58,6 +58,19 @@ operation identity and selects each portion's last member for its closing anchor
 That installation order does not change the selected expression's evaluation order.
 Scratch allocation remains fallible; these indexes supply no new analysis facts.
 
+P7 derives site annotations and established redundant-check records before
+constructing its use index and condition covers. Redundant-check reads do not
+become executable value observers. Required casts are ordinary readonly
+producers: their returned operand keeps the original value/state, and their
+operation still performs its original check without writing a register. The
+common cover requires an available reference binding, established initialization,
+empty phases and the original unannotated exception site without snapshots.
+It preserves the check's position among all other operation roots. A check is
+transparent only when the owning normalization record establishes its omission.
+Later carrier placement MUST NOT claim an operation already owned by a nested
+Evaluation. A value producer feeding a check retains its original store when
+the existing observer facts require it.
+
 P7's private expression walk consumes owned syntax children and selected
 Evaluation edges. It publishes entry, completion and nested-carrier events to
 P7 consumers, not a new analysis product or upstream fact view. Carrier queries
@@ -740,7 +753,7 @@ the store-preserving Condition form described above; value substitution retains
 the single-read requirement.
 
 A delivered ordered condition composes a test's prelude only as an ordered
-suffix of that test run's statements. Each composed definition must name a
+suffix of that test run's statements. Each composed operation must name a
 distinct terminal operand and the matched operand positions must strictly
 increase, so P9's left-to-right operand evaluation reproduces the original field
 read, call, exception and commit order. Earlier statements stay printed in the

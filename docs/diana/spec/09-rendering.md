@@ -43,6 +43,10 @@ producer's statement, operation, site, result-commit and control spans. A delive
 `EvaluationResult::Store` prints `(local = expression)`: the original local is
 assigned only after the expression completes normally, before its value is used
 by the surrounding predicate. P9 does not infer store retention from read counts.
+A nested readonly cast formats its original CheckCast statement around the
+selected operand, using the same Java-like or Kotlin cast notation. Its input
+is evaluated before the check, and its original operation/site spans remain
+attached to that nested evaluation. P9 does not infer or retry cast placement.
 A delivered `EvaluationPredicate::LongComparison` prints the original left and
 right operands with P7's selected relation. Predicate negation complements that
 relation; P9 does not infer a comparison from numeric syntax or fold floating

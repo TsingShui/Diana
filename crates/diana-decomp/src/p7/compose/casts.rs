@@ -91,14 +91,21 @@ fn why_at(slots: &mut [Option<&'static str>], statement: StatementId, why: &'sta
     }
 }
 
-pub(super) fn construct(
+pub(super) fn prepare(
     code: &mut MethodCode,
     types: &crate::p4::TypeFacts,
+) -> Result<(), ExpressionError> {
+    code.emission.omitted_checks = redundant(code, types)?;
+    Ok(())
+}
+
+pub(super) fn construct(
+    code: &mut MethodCode,
     key: crate::MethodKey,
     adjacency: &super::adjacency::Adjacency,
     access: &LocalAccess,
 ) -> Result<(), ExpressionError> {
-    let omitted = redundant(code, types)?;
+    let omitted = &code.emission.omitted_checks;
     let mut why_slots: Vec<Option<&'static str>> =
         super::super::build::filled(code.statements.len(), None)?;
     let mut found: Vec<(StatementId, InlineCheck)> = Vec::new();
@@ -141,6 +148,9 @@ pub(super) fn construct(
                     .get(statement.0 as usize)
                     .is_some_and(Option::is_some)
             {
+                continue;
+            }
+            if code.nested_operation(operation) {
                 continue;
             }
             let Some((storage, _)) = eligible_check(code, operation, statement, None) else {
@@ -243,7 +253,6 @@ pub(super) fn construct(
             super::trace::cast_refused(key, statement, why);
         }
     }
-    code.emission.omitted_checks = omitted;
     Ok(())
 }
 
