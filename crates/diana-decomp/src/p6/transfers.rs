@@ -36,12 +36,7 @@ pub(super) fn transfers(f: &mut RegionFacts, g: &Graph) -> Result<(), RegionErro
                 }
                 RegionKind::Loop(loop_id) => {
                     let p = &f.loops[loop_id.0 as usize];
-                    if p.evaluation.windows(2).any(|pair| pair == [l.from, l.to])
-                        || p.iteration.as_ref().is_some_and(|step| {
-                            step.repeat == l.id
-                                || step.nodes.windows(2).any(|pair| pair == [l.from, l.to])
-                        })
-                    {
+                    if p.evaluation.windows(2).any(|pair| pair == [l.from, l.to]) {
                         action = TransferAction::Next(l.to);
                         handled = true;
                         break;
@@ -206,10 +201,7 @@ pub(super) fn transfers(f: &mut RegionFacts, g: &Graph) -> Result<(), RegionErro
                     continuation = Continuation::Parent
                 }
                 RegionKind::Loop(loop_id)
-                    if f.loops[loop_id.0 as usize].continue_target() == follow
-                        || (f.loops[loop_id.0 as usize].iteration.is_some()
-                            && f.loops[loop_id.0 as usize].header == follow
-                            && p.children.get(2) == Some(&r.id)) =>
+                    if f.loops[loop_id.0 as usize].continue_target() == follow =>
                 {
                     continuation = Continuation::Parent
                 }

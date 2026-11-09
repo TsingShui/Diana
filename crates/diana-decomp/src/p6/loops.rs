@@ -1,13 +1,4 @@
 mod entries;
-mod iteration;
-
-pub(super) fn iterations(
-    storage: &crate::p5::StorageMethod<'_>,
-    f: &mut RegionFacts,
-    g: &Graph,
-) -> Result<(), RegionError> {
-    iteration::construct(storage, f, g)
-}
 
 use super::build::*;
 use super::dominance::Structure;
@@ -199,9 +190,9 @@ pub(super) fn construct(
             LoopPlan {
                 id: loop_id,
                 header,
-                iteration: None,
                 lexical_members: Vec::new(),
                 private_exits: Vec::new(),
+                private_exit_corridors: Vec::new(),
                 members,
                 evaluation,
                 latches,

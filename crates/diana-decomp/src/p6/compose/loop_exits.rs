@@ -16,6 +16,7 @@ pub(super) fn construct(
         let plan = &f.loops[index];
         let mut members = copy(&plan.members)?;
         let mut private_exits = Vec::new();
+        let mut private_exit_corridors = Vec::new();
         for scope in &f.synchronized {
             if scope.separation.is_none()
                 && plan.members.contains(&g.op_node[scope.enter.0 as usize])
@@ -38,11 +39,12 @@ pub(super) fn construct(
                 }
                 if let Some(corridor) = corridor(storage, f, g, index, exit)? {
                     push(&mut private_exits, exit)?;
-                    for node in corridor {
+                    for &node in &corridor.nodes {
                         if !members.contains(&node) {
                             push(&mut members, node)?;
                         }
                     }
+                    push(&mut private_exit_corridors, corridor)?;
                 }
             }
         }
@@ -54,6 +56,7 @@ pub(super) fn construct(
         super::completion::include_try_handlers(f, &boundary, plan.follow, &mut reached);
         f.loops[index].lexical_members = super::parts::list(&reached)?;
         f.loops[index].private_exits = private_exits;
+        f.loops[index].private_exit_corridors = private_exit_corridors;
     }
     Ok(())
 }
@@ -64,7 +67,7 @@ fn corridor(
     g: &Graph,
     index: usize,
     exit: LinkId,
-) -> Result<Option<Vec<NodeId>>, RegionError> {
+) -> Result<Option<super::super::product::PrivateLoopExit>, RegionError> {
     let plan = &f.loops[index];
     let mut enclosing = Vec::new();
     for other in &f.loops {
@@ -79,6 +82,7 @@ fn corridor(
     // mask rather than a scan of `nodes` at every step.
     let mut walked = mask(f.nodes.len(), &[])?;
     let mut at = f.links[exit.0 as usize].to;
+    let follow;
     loop {
         // An inner exit can finish its private work inside an enclosing core,
         // or leave through that loop's original break/continue destination.
@@ -90,6 +94,7 @@ fn corridor(
                 outer.follow == Some(at) || outer.continue_target() == at
             })
         {
+            follow = Some(at);
             break;
         }
         if plan.members.contains(&at)
@@ -128,6 +133,7 @@ fn corridor(
                     Some(Terminal::Return { .. } | Terminal::Throw { .. })
                 ) =>
             {
+                follow = None;
                 break;
             }
             [link] => at = f.links[link.0 as usize].to,
@@ -167,5 +173,9 @@ fn corridor(
             return Ok(None);
         }
     }
-    Ok(Some(nodes))
+    Ok(Some(super::super::product::PrivateLoopExit {
+        exit,
+        nodes,
+        follow,
+    }))
 }

@@ -93,35 +93,12 @@ impl Expressions<'_, '_> {
         }
     }
 
-    pub(super) fn loop_update_statement(&mut self, op: OpId) -> Result<(), RenderError> {
-        if self.code.emission().loop_header_operation(op).is_none() {
-            return Err(RenderError::Invariant(
-                "iteration update lost its header owner",
-            ));
-        }
-        let original = &self.code.operations()[op.0 as usize];
-        let id = original
-            .statement
-            .ok_or(RenderError::Invariant("loop update has no statement"))?;
-        let statement = &self.code.statements()[id.0 as usize];
-        let phases = &self.code.emission().operations()[op.0 as usize];
-        self.copies(&phases.before)?;
-        let start = self.out.position();
-        self.statement_content(op, statement, None)?;
-        self.phases(&phases.snapshots, "after_operands_before_effect")?;
-        self.sites(&statement.sites, start)?;
-        self.statement_origins(op, original, statement, start)?;
-        self.copies(&phases.after)
-    }
-
     pub(super) fn statement(
         &mut self,
         op: OpId,
         release: Option<ControlId>,
     ) -> Result<(), RenderError> {
-        if self.code.emission().composed_operation(op)
-            || self.code.emission().loop_header_operation(op).is_some()
-        {
+        if self.code.emission().composed_operation(op) {
             return Ok(());
         }
         let original = &self.code.operations()[op.0 as usize];

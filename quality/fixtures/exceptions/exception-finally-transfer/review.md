@@ -1,6 +1,24 @@
 # Fixture: exception-finally-transfer
 
-## Current verdict — whole-operation follow-up
+## Current verdict — while/do-while architecture correction
+
+Read explicit cleanup overrides. breakInFinally's negative read reaches state3
+outside the loop without the index update; nonnegative cleanup writes state4
+then updates. A failing finally read replaces the pending fault.
+continueInFinally writes state5 before its body update. Return and throw
+overrides remain explicit.
+
+Compared the same prepared DEX on 8ac6d95 and this commit. Dedicated for recovery
+contradicted the approved architecture and is removed, not retained behind a
+switch. Updates stay in ordinary body positions with original targets/copies;
+explicit gotos can be necessary instead of update-skipping while continues.
+The [fresh challenge](../../loops/while-tail-continuations/review.md) covers
+three-level private continuations, real shared entrances, cleanup and do-while.
+This is bounded LLM source/path reading, not behavioral execution. Historical
+execution claims below were not rerun and do not certify this output.
+
+
+## Prior verdict — whole-operation follow-up
 
 Read Java and complete final methods. breakInFinally's original goto still
 bypasses the for update and reaches state3; normal nonnegative cleanup selects

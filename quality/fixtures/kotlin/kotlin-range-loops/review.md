@@ -1,6 +1,23 @@
 # Fixture: kotlin-range-loops
 
-## Current verdict — whole-operation follow-up
+## Current verdict — while/do-while architecture correction
+
+Read nested negative/zero exits and progression endpoints. Negative breaks the
+outer while without either update; zero breaks only the inner loop then runs the
+original outer update. Last-element equality breaks before another step; no
+progression library fact is invented.
+
+Compared the same prepared DEX on 8ac6d95 and this commit. Dedicated for recovery
+contradicted the approved architecture and is removed, not retained behind a
+switch. Updates stay in ordinary body positions with original targets/copies;
+explicit gotos can be necessary instead of update-skipping while continues.
+The [fresh challenge](../../loops/while-tail-continuations/review.md) covers
+three-level private continuations, real shared entrances, cleanup and do-while.
+This is bounded LLM source/path reading, not behavioral execution. Historical
+execution claims below were not rerun and do not certify this output.
+
+
+## Prior verdict — whole-operation follow-up
 
 Read the changed lowered range loop. Actual comparisons, body effects and scalar
 tail retain their original order, including entry/exit values. No Kotlin

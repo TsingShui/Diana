@@ -1,6 +1,26 @@
 # Fixture: nested-loop-exits
 
-## Current verdict — whole-operation follow-up
+## Current verdict — while/do-while architecture correction
+
+Read Java/Smali and final
+nestedBreak/outerBreak/outerContinue/protectedExit/sharedExit/siblingLoop.
+Private outerContinue now owns its mark/add/row-update tail inside the If with
+exact outer Continue. The protected and two-entrance tails remain explicit and
+their normal paths jump around them to the visible outer update.
+RuntimeException returns -1 before update. The sibling-loop entry reaches its
+test before its first update, while no-hit completion skips it.
+
+Compared the same prepared DEX on 8ac6d95 and this commit. Dedicated for recovery
+contradicted the approved architecture and is removed, not retained behind a
+switch. Updates stay in ordinary body positions with original targets/copies;
+explicit gotos can be necessary instead of update-skipping while continues.
+The [fresh challenge](../../loops/while-tail-continuations/review.md) covers
+three-level private continuations, real shared entrances, cleanup and do-while.
+This is bounded LLM source/path reading, not behavioral execution. Historical
+execution claims below were not rerun and do not certify this output.
+
+
+## Prior verdict — whole-operation follow-up
 
 Reread Java, Smali and all final methods. Inner/outer Break roles remain
 distinct; outerContinue keeps its two explicit row updates rather than inventing
@@ -17,7 +37,7 @@ reading; historical execution claims below were not rerun and do not certify
 this output. No behavioral executor, device run or Java recompilation ran.
 
 
-## Current iteration-tail review
+## Prior iteration-tail review
 
 Direct LLM comparison of the Java explanation, actual Smali, mark helper model
 and final ordinary Engine output. The subject owner is `Lfixture/LoopExits;`.

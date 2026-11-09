@@ -1,7 +1,7 @@
 //! Selected loop context refines release roles without moving lock effects.
 
 use diana_decomp::p2::OpKind;
-use diana_decomp::p6::{RegionFacts, RegionKind, SyncExitKind, SyncLoopTransfer};
+use diana_decomp::p6::{RegionFacts, RegionKind, SyncExitKind};
 use diana_decomp::p7::{MethodCode, TransferKind, TransferSpelling};
 use diana_decomp::p9::Rendered;
 
@@ -12,21 +12,14 @@ use inspection::inspect;
 mod locks;
 use locks::lock_anchors;
 
+#[path = "support/loops.rs"]
+mod loops;
+use loops::updates_once;
+
 fn loop_update(facts: &RegionFacts, code: &MethodCode, rendered: &Rendered) {
-    let [plan] = facts.loops() else {
-        panic!("one source loop")
-    };
-    let update = plan.iteration().expect("delivered source iteration");
-    assert_eq!(
-        facts.links()[update.repeat().0 as usize].to(),
-        plan.header()
-    );
-    assert!(
-        code.emission()
-            .loop_header_operation(update.operation())
-            .is_some()
-    );
-    assert!(rendered.text().contains("for (;"));
+    assert_eq!(facts.loops().len(), 1);
+    assert_eq!(updates_once(facts, code, rendered).len(), 1);
+    assert!(rendered.text().contains("while ("));
     lock_anchors(code, rendered);
 }
 
@@ -39,7 +32,7 @@ fn a_direct_release_outlet_uses_its_control_continuation_once() {
         "(Ljava/lang/Object;II)I",
         |facts, code, rendered| {
             assert_eq!(facts.loops().len(), 2);
-            assert!(facts.loops().iter().all(|p| p.iteration().is_some()));
+            assert_eq!(updates_once(facts, code, rendered).len(), 2);
             lock_anchors(code, rendered);
             let mut outlets = 0;
             for transfer in code.transfers() {
@@ -52,10 +45,8 @@ fn a_direct_release_outlet_uses_its_control_continuation_once() {
                 }
             }
             assert_eq!(outlets, 2);
-            assert!(
-                !rendered.text().contains("goto "),
-                "no goto to a header-owned update"
-            );
+            // A shared update may have a visible goto; it is never hidden in
+            // a header. Original operations and release completion stay once.
         },
     );
 }
@@ -70,7 +61,8 @@ fn held_cleanup_releases_then_enters_the_original_update() {
         |facts, code, rendered| {
             loop_update(facts, code, rendered);
             let plan = &facts.loops()[0];
-            let update = plan.iteration().unwrap();
+            let updates = updates_once(facts, code, rendered);
+            let update = code.operations()[updates[0].0 as usize].node;
             assert_eq!(
                 facts
                     .regions()
@@ -90,13 +82,9 @@ fn held_cleanup_releases_then_enters_the_original_update() {
                     exit.target()
                 );
                 match exit.kind() {
-                    SyncExitKind::Loop {
-                        loop_id,
-                        kind: SyncLoopTransfer::Continue,
-                        target,
-                    } => {
-                        assert_eq!(loop_id, plan.id());
-                        assert_eq!(target, update.entry());
+                    SyncExitKind::Follow(target) => {
+                        assert_ne!(target, plan.continue_target());
+                        assert_eq!(target, update);
                         continues += 1;
                     }
                     SyncExitKind::Rethrow { .. } => rethrows += 1,
@@ -104,7 +92,6 @@ fn held_cleanup_releases_then_enters_the_original_update() {
                 }
             }
             assert_eq!((continues, rethrows), (2, 1));
-            assert!(!rendered.text().contains("goto "));
         },
     );
 }
@@ -143,7 +130,6 @@ fn a_released_header_backedge_still_skips_the_step() {
                 panic!("one source loop")
             };
             assert_eq!(plan.latches().len(), 2);
-            assert!(plan.iteration().is_none());
             assert_eq!(plan.continue_target(), plan.header());
             assert!(!rendered.text().contains("for (;"));
             assert!(rendered.text().contains("while ("));

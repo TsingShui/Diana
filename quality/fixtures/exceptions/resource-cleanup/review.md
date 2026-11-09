@@ -1,6 +1,23 @@
 # Fixture: resource-cleanup
 
-## Current LLM semantic judgement
+## Current verdict — while/do-while architecture correction
+
+Read loop/shared-handler paths: original reads/additions and normal close
+precede the visible counter update. Acquisition/read/close failures retain their
+earlier propagation/suppression and skip later updates. Shared capture stays
+outside the loop and still covers the post-loop read.
+
+Compared the same prepared DEX on 8ac6d95 and this commit. Dedicated for recovery
+contradicted the approved architecture and is removed, not retained behind a
+switch. Updates stay in ordinary body positions with original targets/copies;
+explicit gotos can be necessary instead of update-skipping while continues.
+The [fresh challenge](../../loops/while-tail-continuations/review.md) covers
+three-level private continuations, real shared entrances, cleanup and do-while.
+This is bounded LLM source/path reading, not behavioral execution. Historical
+execution claims below were not rerun and do not certify this output.
+
+
+## Prior LLM semantic judgement
 
 Read the authored Java/Smali model, independent README expectations and complete
 ordinary Engine output on the same prepared DEX, bda9a49 versus candidate.

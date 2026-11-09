@@ -1,6 +1,22 @@
 # Fixture: complex-flow
 
-## Current verdict — whole-operation follow-up
+## Current verdict — while/do-while architecture correction
+
+Read the protected array loop and its outward planned goto: ordinary completion
+advances once, while the original abrupt route bypasses that update and reaches
+its outside target. Predicate array-length evaluation remains before each test.
+
+Compared the same prepared DEX on 8ac6d95 and this commit. Dedicated for recovery
+contradicted the approved architecture and is removed, not retained behind a
+switch. Updates stay in ordinary body positions with original targets/copies;
+explicit gotos can be necessary instead of update-skipping while continues.
+The [fresh challenge](../../loops/while-tail-continuations/review.md) covers
+three-level private continuations, real shared entrances, cleanup and do-while.
+This is bounded LLM source/path reading, not behavioral execution. Historical
+execution claims below were not rerun and do not certify this output.
+
+
+## Prior verdict — whole-operation follow-up
 
 Compared the same prepared DEX with completed-eleven-repair bda9a49. Only
 derived label/control coordinates change. Development-only correspondence found

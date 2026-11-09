@@ -20,33 +20,6 @@ impl Expressions<'_, '_> {
             self.out.put(": ")?;
         }
         match placement {
-            LoopPlacement::For {
-                predicate,
-                test,
-                compact,
-                operation,
-                update,
-            } => {
-                self.out.put("for (; ")?;
-                if *compact {
-                    self.compact_predicate(*predicate, *test)?;
-                }
-                self.out.put("; ")?;
-                self.loop_update_statement(*operation)?;
-                self.out.put(")")?;
-                self.out.open()?;
-                push(work, Event::Close)?;
-                // The update has one header spelling. Its original control,
-                // routing, empty copies and labels retain origin-only anchors.
-                push(work, Event::OriginOnly(self.out.origin_only))?;
-                push(work, Event::Control(*update))?;
-                push(work, Event::OriginOnly(true))?;
-                push(work, Event::Control(body))?;
-                if !compact {
-                    push(work, Event::LoopHead(*test))?;
-                    push(work, Event::Control(*predicate))?;
-                }
-            }
             LoopPlacement::DoWhile {
                 predicate,
                 test,

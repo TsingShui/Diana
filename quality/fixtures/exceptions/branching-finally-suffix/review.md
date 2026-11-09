@@ -1,6 +1,23 @@
 # Fixture: branching-finally-suffix
 
-## Current verdict — whole-operation follow-up
+## Current verdict — while/do-while architecture correction
+
+Read the changed catch-loop tail: original read/recovery and sum precede row++,
+and normal loop completion reaches the same conditional finally. Pending
+rethrow/unhandled and outside-handler result300 guards remain; no cleanup effect
+or argument moves.
+
+Compared the same prepared DEX on 8ac6d95 and this commit. Dedicated for recovery
+contradicted the approved architecture and is removed, not retained behind a
+switch. Updates stay in ordinary body positions with original targets/copies;
+explicit gotos can be necessary instead of update-skipping while continues.
+The [fresh challenge](../../loops/while-tail-continuations/review.md) covers
+three-level private continuations, real shared entrances, cleanup and do-while.
+This is bounded LLM source/path reading, not behavioral execution. Historical
+execution claims below were not rerun and do not certify this output.
+
+
+## Prior verdict — whole-operation follow-up
 
 Read the changed protected scalar placement and conditional cleanup. Pure
 preparation keeps its original position before cleanup; cleanup branches,
@@ -15,7 +32,7 @@ reading; historical execution claims below were not rerun and do not certify
 this output. No behavioral executor, device run or Java recompilation ran.
 
 
-## Current LLM verdict
+## Prior LLM verdict
 
 Direct reading of Java, actual Smali, helper bodies, P6/P7 delivery and final
 ordinary Engine text. Expectations precede candidate inspection. Baseline is

@@ -35,7 +35,6 @@ fn kind(c: &mut Context<'_, '_>, r: &p6::Region) -> Result<ControlKind, Expressi
             };
             ControlKind::Loop {
                 syntax,
-                iteration: p.iteration().map(|step| step.operation()),
                 continue_target: label(c, p.continue_target())?,
             }
         }

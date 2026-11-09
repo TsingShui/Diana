@@ -4,10 +4,10 @@
 
 Authored Java/Smali, no third-party input. Discovery:
 `../../exceptions/typed-catch-loop-exits/`. The initial repair recovers that
-method's original pure row update as a for iteration, instead of treating its
-update-skipping value-2 branch as an ordinary while continue. This challenge
-adds nested loops, local continuations, typed shared handlers, per-iteration
-finally, early return/break, and two deliberate update-admission barriers.
+method's shared row update and paths that skip only addition, not update.
+Current recovery uses only while/do-while, retaining that update as an ordinary
+body statement. This challenge adds nested loops, local continuations, typed
+shared handlers, finally, early return/break and distinct original backedges.
 
 Owner: `Lfixture/IterationTail;`. Subjects:
 `nested(III)I`, `skipUpdate(II)I`, `locked(Ljava/lang/Object;I)I`.
@@ -40,11 +40,10 @@ nested must preserve both original update points. The pure inner update is owned
 inside the enclosing loop but not by a sibling or nested private-exit corridor.
 A return, break or failed cleanup must not accidentally execute an update.
 
-skipUpdate has two original backedges, only one of which performs row++. A for
-that automatically increments on its direct header continuation would change the
-second mark from 50 to 51. locked has specialized release-to-step routing; until
-that producer supplies a compatible source continuation, its update stays visible
-in the ordinary while rather than hiding a still-targeted label in a header.
+skipUpdate has two original backedges, only one of which performs row++.
+Adding an update to its direct-header continuation would change the second mark
+from 50 to 51. locked retains release-to-step routing and its visible body
+update. A Follow(update) is not changed into a while Continue that skips it.
 
 These expectations were written before candidate inspection. No scenario executor
 or Java-recompilation result is claimed.
@@ -52,10 +51,9 @@ or Java-recompilation result is claimed.
 ## Nonconstant update discovery
 
 Added stride(II)I independently before inspecting its first output. The shared
-pure row update reads the original step parameter, not a literal. A source for
-schedule may retain that exact read at the iteration point; it must not assume
-step is positive, constant or loop-invariant in general. No pre-test assignment
-moves into the header. Scenarios: (0,0) returns0/no events; (7,2) returns12 with
+pure row update reads the original step parameter, not a literal. Its ordinary
+body statement retains that exact read; recovery must not assume step is positive,
+constant or loop-invariant. No pre-test assignment moves into a header. Scenarios: (0,0) returns0/no events; (7,2) returns12 with
 marks0,2,4,6; (5,3) returns3 with marks0,3; (1,2147483647) returns0 with mark0.
 Zero/negative-step nontermination for positive limits is not a termination claim.
 The unchanged mark helper's wrapping trace arithmetic applies. The same prepared
@@ -78,7 +76,7 @@ cargo run -p diana-decomp --example dbg_shell --locked -- \
 ```
 
 Prepared with Smali 2.5.2, API 24 and OpenJDK 21.0.12.1. Baseline: recorded
-working tree on `ebbc003` after the first three repairs and before iteration-tail
-recovery. Both comparisons consume the same prepared DEX. The initial challenge
-recovered only the outer update; corrected ancestor ownership now retains both.
+working tree on `ebbc003` after the first three repairs. Current comparison uses
+8ac6d95 and the commit containing this update, with the same prepared DEX.
+Both original updates are ordinary body operations under while-only recovery.
 See review.md for the direct semantic judgment and unrun execution boundary.

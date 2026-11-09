@@ -150,44 +150,24 @@ pub(super) fn protect(
         }
     }
 }
-// Finalize source continuation roles only against selected enclosing loops.
-// Earlier lock construction retains the exact target/routing/copy schedule;
-// an iteration update may establish its source continue target only later.
+// Original loop exits require their selected enclosing loop. Ordinary Follow
+// targets remain unchanged, including shared updates after release.
 fn contextual_exit(
     f: &RegionFacts,
     region: usize,
     original: SyncExitKind,
 ) -> Result<SyncExitKind, LockSeparation> {
-    if !matches!(
-        original,
-        SyncExitKind::Follow(_) | SyncExitKind::Loop { .. }
-    ) {
+    let SyncExitKind::Loop { loop_id, .. } = original else {
         return Ok(original);
-    }
+    };
     let mut at = f.parents[region];
     while let Some(parent) = at {
-        if let RegionKind::Loop(id) = f.regions[parent.0 as usize].kind {
-            let plan = &f.loops[id.0 as usize];
-            match original {
-                SyncExitKind::Follow(target)
-                    if plan.iteration().is_some() && plan.continue_target() == target =>
-                {
-                    return Ok(SyncExitKind::Loop {
-                        loop_id: id,
-                        kind: SyncLoopTransfer::Continue,
-                        target,
-                    });
-                }
-                SyncExitKind::Loop { loop_id, .. } if loop_id == id => return Ok(original),
-                _ => {}
-            }
+        if matches!(f.regions[parent.0 as usize].kind, RegionKind::Loop(id) if id == loop_id) {
+            return Ok(original);
         }
         at = f.parents[parent.0 as usize];
     }
-    match original {
-        SyncExitKind::Loop { loop_id, .. } => Err(LockSeparation::LoopContext(loop_id)),
-        _ => Ok(original),
-    }
+    Err(LockSeparation::LoopContext(loop_id))
 }
 
 pub(super) fn scope_contexts(

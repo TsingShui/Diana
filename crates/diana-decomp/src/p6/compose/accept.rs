@@ -150,15 +150,41 @@ pub(super) fn match_branch_loops(
         if !owns_loop
             && (set[plan.continue_target().0 as usize]
                 || (!owns_private_exit
-                    && plan
-                        .latches
-                        .iter()
-                        .any(|l| set[f.links[l.0 as usize].from.0 as usize])))
+                    && plan.latches.iter().any(|&latch| {
+                        let source = f.links[latch.0 as usize].from;
+                        set[source.0 as usize] && !owns_nested_exit_latch(f, c, &set, plan, source)
+                    })))
         {
             return Ok(Err(RecoveryReason::Overlap));
         }
     }
     Ok(Ok(()))
+}
+// A nested loop can already own a private corridor that continues an enclosing
+// loop. Retain that producer's exact proof: the branch follows the INNER source
+// continuation, owns the entire corridor and its entrance, and the particular
+// enclosing latch lies there. Existence of some unrelated private exit cannot
+// license another latch or acquiring either loop's continuation target.
+fn owns_nested_exit_latch(
+    f: &RegionFacts,
+    c: &Candidate,
+    set: &[bool],
+    enclosing: &LoopPlan,
+    source: NodeId,
+) -> bool {
+    f.loops.iter().any(|inner| {
+        c.follow == Some(inner.continue_target())
+            && inner.members.len() < enclosing.members.len()
+            && inner.members.iter().all(|n| enclosing.members.contains(n))
+            && inner.private_exit_corridors.iter().any(|corridor| {
+                let entrance = f.links[corridor.exit.0 as usize];
+                corridor.follow == Some(enclosing.continue_target())
+                    && corridor.nodes.contains(&source)
+                    && set[entrance.from.0 as usize]
+                    && set[entrance.to.0 as usize]
+                    && corridor.nodes.iter().all(|n| set[n.0 as usize])
+            })
+    })
 }
 pub(super) fn successor_arm_acyclic(
     f: &RegionFacts,

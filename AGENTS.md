@@ -34,6 +34,11 @@ package-local `AGENTS.md` before working in either package.
   `#[allow(unsafe_code)]`; the engine keeps `unsafe_code = "forbid"`. The
   application owns files and ZIPs; the engine borrows input bytes and declaration
   facts.
+- Loop recovery MUST use `while` and `do-while`; unbounded loops use
+  `while (true)`. Reconstructing `for` or enhanced-for syntax is not a goal.
+  Do not extract initializer/update roles or change continuation targets merely
+  for that syntax. Preserve original updates, copies, effects and destinations;
+  retain explicit transfers when natural loop syntax cannot state them safely.
 - Use one shared ordinary-method analysis chain. Migrate only to the approved
   target below; rendering consumes existing products and original facts without
   starting analysis or retrying reconstruction.

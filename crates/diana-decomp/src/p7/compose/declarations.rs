@@ -139,13 +139,6 @@ impl Layout {
                 }
                 EmissionLayout::Loop { body, placement } => match placement {
                     LoopPlacement::Infinite => push(&mut work, Event::Nested(*body, declarations))?,
-                    LoopPlacement::For {
-                        predicate, update, ..
-                    } => {
-                        push(&mut work, Event::Nested(*update, false))?;
-                        push(&mut work, Event::Nested(*body, declarations))?;
-                        push(&mut work, Event::Nested(*predicate, false))?;
-                    }
                     LoopPlacement::While { predicate, .. } => {
                         push(&mut work, Event::Nested(*body, declarations))?;
                         push(&mut work, Event::Nested(*predicate, false))?;

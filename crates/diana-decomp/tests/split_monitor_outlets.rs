@@ -140,7 +140,6 @@ fn mixed_loop_release_intents_need_no_fabricated_shared_follow() {
             assert!(scope.follow().is_none());
             assert!(scope.separation().is_none());
             let plan = &facts.loops()[0];
-            let update = plan.iteration().expect("original common update");
             let mut kinds = [0; 4];
             for exit in scope.exits() {
                 match exit.kind() {
@@ -150,7 +149,7 @@ fn mixed_loop_release_intents_need_no_fabricated_shared_follow() {
                         target,
                     } => {
                         assert_eq!(loop_id, plan.id());
-                        assert_eq!(target, update.entry());
+                        assert_eq!(target, plan.continue_target());
                         kinds[0] += 1;
                     }
                     SyncExitKind::Loop {
@@ -166,7 +165,7 @@ fn mixed_loop_release_intents_need_no_fabricated_shared_follow() {
                     other => panic!("unexpected {other:?}"),
                 }
             }
-            assert_eq!(kinds, [2, 1, 1, 1]);
+            assert_eq!(kinds, [0, 1, 3, 1]);
             lock_anchors(code, rendered);
             copy_anchors(facts, rendered);
         },
@@ -182,7 +181,6 @@ fn a_released_direct_header_continuation_does_not_acquire_an_update() {
         "(Ljava/lang/Object;II)I",
         |facts, code, rendered| {
             let plan = &facts.loops()[0];
-            assert!(plan.iteration().is_none());
             assert_eq!(plan.latches().len(), 2);
             assert!(facts.synchronized().iter().flat_map(|s| s.exits()).any(|e| matches!(e.kind(),
                 SyncExitKind::Loop { kind: SyncLoopTransfer::Continue, target, .. } if target == plan.header())));

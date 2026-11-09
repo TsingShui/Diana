@@ -116,7 +116,9 @@ are reachable through enclosing completions.
 ## Ordinary branch boundaries
 
 An ordinary branch first proposes its normal postdominator follow when it lies
-in the enclosing part, otherwise that part's established follow. Both original
+in the enclosing part, otherwise its unique first shared original target within
+that part, otherwise the part's established follow. A local shared body tail is
+ordinary join topology, not a source-level update role. Both original
 arm reach sets stop at the same enclosing completion boundary. Before comparing
 ordinary branch arms, P6 closes each set over established `TryPlan` membership:
 when the whole protected body is inside an arm and no member is its follow or
@@ -166,9 +168,17 @@ Before committing either a primary or successor-boundary branch candidate U,
 P6 MUST require laminar membership with every established LoopPlan's lexical
 candidate membership: the branch is disjoint, wholly contained, or contains that
 membership in full. P6 MUST reject a partial branch that owns the loop's continue
-target. A contained branch can own a latch source only when it owns a proved private
-exit corridor and its boundary is the original continue target. Its arms then complete
-that loop-body execution rather than taking ownership of the evaluation entry.
+target. A contained branch can own that loop's latch source when it owns a proved
+private exit corridor and its boundary is the loop's original continue target.
+It can also own an enclosing loop's particular latch source when a proper nested
+loop supplies the complete private corridor containing that source: the candidate
+owns its original entrance and every corridor node, follows the nested loop's
+source continuation, and the corridor ends at the enclosing loop's actual
+continue target. P6 retains this corridor membership/target from its single
+lexical-exit construction as private ownership evidence; no public upstream view
+or graph reconstruction supplies it later. Every included enclosing latch needs
+that exact evidence; an unrelated private exit licenses nothing. Its arms then
+complete the selected loop-body execution without acquiring an evaluation entry.
 Other partial latch ownership is rejected. These constraints apply before Loop region selection, alongside unchanged
 entrance, arm-reachability, whole-owner and construction checks. Rejection retains
 explicit control without reopening an accepted owner.
@@ -398,40 +408,26 @@ SCC cannot substitute for its contained loops. A shared handler receiving an
 exception before the loop remains explicit when that arrival bypasses the
 header. Ordinary normal-dominance loops retain their existing construction.
 
-### Ordinary iteration continuations
+### Loop forms and original continuations
 
-After protection/finally and lexical loop membership are established, the loop
-producer may attach a `LoopUpdate` to a head-tested core. It retains the original
-header, predicate evaluation, core/lexical members, latches and exits. The update
-is one original pure unary/binary Store reading that same storage, optionally
-with literals or other available P5 Value reads, followed by its unique original
-goto backedge in the same block. Those other locals need not be invariant: each
-read stays at the original update point after body completion and its copies.
-An unavailable read or snapshot of other storage does not gain admission. This
-establishes a source-compatible for schedule, not an assertion about the original
-source keyword, monotonicity or termination.
+P6 supplies only head-tested, tail-tested and unbounded loops, displayed as
+`while`, `do-while` and `while (true)`. The
+[approved loop contract](../PIPELINE_DESIGN.md#563-loop-expression-while-and-do-while)
+excludes traditional/enhanced for reconstruction. No initializer/update product,
+extra update child or header-owned assignment is constructed.
 
-All loop-owned arrivals at the original header must use that backedge. There is
-no exceptional entrance into the update. An enclosing loop/try/synchronized scope
-may own the whole loop; partial or sibling ownership, including an inner private
-exit corridor owning an outer update, declines this schedule. Construction groups
-cannot be split. No executable or unavailable copy phase may be anchored in the
-update/backedge; complete zero-step plans keep their origins. Incoming body edge
-copies stay on their original source outlets. An already classified monitor
-Continue whose original target differs from the proposed update declines this
-schedule. For a selected natural synchronized scope, context finalization can
-complete a Follow(update) as Continue of its actual enclosing selected for loop.
-Original release/link/target, routing and before/after copies remain unchanged;
-an unselected scope retains explicit monitors rather than acquiring another
-construction route.
+Original updates remain ordinary body operations, with their original reads,
+effects, copies and protection. A head-tested continue targets the established
+head; a do-while continue targets its actual tail predicate. A transfer into a
+shared body update is not such a continue: it keeps its original destination and
+can remain an explicit goto. Break, return and throw skip exactly the original
+work; no update is duplicated to manufacture a natural spelling.
 
-The body part excludes both predicate evaluation and update. Its continuation is
-the update entry; the separate update child completes implicitly at the original
-header. Original update sequencing and repeat links retain those exact targets
-as syntax-owned Next delivery. P7 receives this selected schedule and does not
-find an updater. If its expression is unavailable or ownership cannot be proved,
-the ordinary loop and explicit update remain available. This does not change the
-primary/successor branch policy above or reopen a rejected boundary.
+Release outlets retain their original Follow/Loop roles and targets. Selection
+checks that an original loop exit has its actual selected enclosing loop; it
+does not turn a Follow(update) into a new loop Continue. Original release/link,
+routing and before/after copies remain unchanged. P7/P9 consume those products
+without identifying an updater or hiding a body operation in a header.
 
 A conditional loop's normal continuation is the actual destination of its exiting
 predicate link. It is not a common postdominator beyond exit-side work. Other loop

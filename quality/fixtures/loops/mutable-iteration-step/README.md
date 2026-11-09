@@ -39,8 +39,9 @@ succeed. A cleanup failure must not run the update, next read or normal suffix.
 No loop-invariance or progress fact may be invented for an update operand.
 walk must read the current step at its original point after cleanup and before
 retesting. row0's continue reaches step2; row3's break and flag2's row2 return
-skip the update. The original read/capture/effect ordering and values must remain available. divide deliberately has an original shared throwing update;
-its availability is not a reason to weaken the pure-update guard.
+skip the update. Original read/capture/effect ordering and values remain.
+divide's shared throwing update also remains an ordinary body operation;
+there is no pure-update classifier or header-placement permission.
 
 ## Nested boundary challenge
 
@@ -66,7 +67,9 @@ with the recorded pre-repair binary and candidate through ordinary dbg_shell.
 Prepared with Smali2.5.2, API24 and OpenJDK21.0.12.1. Baseline is the recorded
 working tree based on ebbc003 after protected-prefix completion and before
 nonconstant update admission. Both comparisons use this same prepared DEX.
-walk/nested gain the original for schedules; their final no-body condition exits
-retain the delivered break/continue. divide stays an ordinary while. See review.md
+Current comparison uses 8ac6d95 and the commit containing this update on the
+same DEX. All loops use while/do-while and visible body updates. Nested break
+retains its outer scope; the update-reaching exit keeps a goto to the outer
+update instead of a Continue that skips it. divide stays an ordinary while. See review.md
 for the initial blocked regression, final LLM reading and check evidence.
 No behavioral executor or Java recompilation is claimed.

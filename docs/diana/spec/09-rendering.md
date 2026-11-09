@@ -164,17 +164,11 @@ zero-length spans, without recovering control from the graph. A terminal whose
 route prints no words keeps both its Transfer and Terminal anchors, including
 zero-step copy bundles, and leaves no indentation in the text.
 
-A delivered for placement prints `for (; condition; update)` without moving an
-initializer into the header. The update is the supplied original assignment,
-printed once with its operation/statement/expression origins. Its source subtree
-is traversed only for the remaining control, label, routing and zero-step-copy
-anchors. P9 does not discover a counter or choose a continue target.
-
-When P7 supplies a noncompact predicate, the spelling is `for (; ; update)` and
-the original predicate evaluation plus exiting test stays at the body start.
-A successful body continuation reaches the update before retesting; break,
-return and throw skip it. These placements describe the original schedule, not
-a Java compilability check or a claim about the original source loop keyword.
+Loop placement prints only the delivered `while`, `do-while` or
+`while (true)`. Updates remain ordinary body statements with their original
+operation/statement/expression origins. P9 has no for header, update owner or
+origin-only update subtree. It prints the supplied original goto or scoped
+completion without discovering an update or changing the continue target.
 Nonprinting selected-edge copy bundles keep their anchors without adding a blank
 line at an If/Else arm header.
 

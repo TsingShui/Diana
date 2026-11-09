@@ -81,12 +81,11 @@ pub(super) fn branch_proposal(
     }))
 }
 /// The continuation a branch candidate may name. The postdominator and the
-/// enclosing scope's follow are structural facts. When neither exists, the
-/// arms still frequently rejoin at one first shared original target after
-/// their own abrupt exits, and naming that target keeps the shared node outside
-/// both arms instead of swallowing it into one. A branch whose arms share no
-/// such target keeps an absent follow, so an all-abrupt arm pair still prints as
-/// one branch rather than an invented continuation.
+/// enclosing scope's follow are structural facts. Before using the latter,
+/// the arms may rejoin at one first shared original target after their own
+/// abrupt exits. Naming that local target keeps shared work outside both arms.
+/// A branch with neither a local join nor an enclosing follow retains an absent
+/// follow, so all-abrupt arms do not acquire an invented continuation.
 fn branch_follow(
     f: &RegionFacts,
     g: &Graph,
@@ -99,10 +98,12 @@ fn branch_follow(
     if let Some(follow) = s.follow(entry).filter(|node| scope.nodes.contains(node)) {
         return Ok(Some(follow));
     }
-    if let Some(follow) = scope.follow {
-        return Ok(Some(follow));
-    }
-    super::completion::shared_target(f, g, starts, boundary)
+    // A concrete local join precedes the enclosing repetition/exit interface.
+    // This is ordinary branch topology, not a special update role: a shared
+    // body tail stays outside both arms without hiding it in a loop header.
+    let shared = super::completion::shared_target(f, g, starts, boundary)?
+        .filter(|node| scope.nodes.contains(node));
+    Ok(shared.or(scope.follow))
 }
 
 pub(super) fn candidates(
@@ -132,11 +133,7 @@ pub(super) fn candidates(
         let mut parts = Vec::new();
         let mut body = Vec::new();
         for &node in &members {
-            if !l.evaluation.contains(&node)
-                && l.iteration
-                    .as_ref()
-                    .is_none_or(|step| !step.nodes.contains(&node))
-            {
+            if !l.evaluation.contains(&node) {
                 push(&mut body, node)?;
             }
         }
@@ -168,17 +165,6 @@ pub(super) fn candidates(
                     nodes: copy(&l.evaluation)?,
                     entry: l.evaluation.first().copied(),
                     follow: None,
-                },
-            )?;
-        }
-        if let Some(step) = &l.iteration {
-            push(
-                &mut parts,
-                Part {
-                    completion: PartCompletion::Ordinary,
-                    nodes: copy(&step.nodes)?,
-                    entry: Some(step.entry),
-                    follow: Some(l.header),
                 },
             )?;
         }

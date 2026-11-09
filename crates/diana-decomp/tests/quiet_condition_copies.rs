@@ -69,13 +69,11 @@ fn a_quiet_loop_continuation_needs_origins_but_no_empty_else() {
                 .collect();
             assert_eq!(quiet.len(), 1);
             anchors(code, rendered, quiet[0], false);
-            assert!(code.emission().controls().iter().any(|c| matches!(
-                c.layout,
-                EmissionLayout::Condition {
-                    no: ConditionElse::Transfer,
-                    ..
-                }
-            )));
+            assert_eq!(
+                rendered.text().matches("break;").count(),
+                2,
+                "both original loop exits remain even when nested Ifs replace a compact condition"
+            );
         },
     );
 }

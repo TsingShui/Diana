@@ -221,7 +221,6 @@ pub enum ControlKind {
     },
     Loop {
         syntax: LoopSyntax,
-        iteration: Option<OpId>,
         continue_target: LabelId,
     },
     Switch {

@@ -1,6 +1,25 @@
 # Fixture: monitor-iteration-exits
 
-## Current verdict — whole-operation follow-up
+## Current verdict — while/do-while architecture correction
+
+Read heldCleanup/walk/bypass completely. Original releases precede ordinary body
+updates. A Follow(update) now keeps a goto to the visible outside update where
+needed to skip exceptional handler text; it is not a Continue to the head.
+Normal/typed additions, break/return, cleanup replacement, rethrow and
+null-acquisition ordering remain. The deliberate header backedge still skips the
+update.
+
+Compared the same prepared DEX on 8ac6d95 and this commit. Dedicated for recovery
+contradicted the approved architecture and is removed, not retained behind a
+switch. Updates stay in ordinary body positions with original targets/copies;
+explicit gotos can be necessary instead of update-skipping while continues.
+The [fresh challenge](../../loops/while-tail-continuations/review.md) covers
+three-level private continuations, real shared entrances, cleanup and do-while.
+This is bounded LLM source/path reading, not behavioral execution. Historical
+execution claims below were not rerun and do not certify this output.
+
+
+## Prior verdict — whole-operation follow-up
 
 Read changed pure update placement with retained synchronized outlets. Held
 cleanup/release occurs before the selected update; update-skipping exits still

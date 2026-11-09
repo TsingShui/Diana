@@ -114,15 +114,15 @@ shared follow. Executable path-specific post-release copies still retain explici
 monitors rather than moving assignments under the lock. Normal LT dominators,
 finite-exit postdominator candidates and iterative SCC analysis drive composition.
 Private handler rejoins can establish a closed loop entry without replacing
-normal dominance with an exceptional-edge relation. An original shared pure update with a unique backedge can supply a
-for continuation: body skips still execute the update, while abrupt exits do not.
-The original update can read other available locals, including a body-mutated
-step; no invariant-stride or progress claim is made.
-Multiple or update-skipping backedges, partial ownership, executable copy phases
-and incompatible established monitor continuations retain the ordinary loop.
-Selected monitor releases can consume that same supplied update continuation;
-their original targets, routing and copy phases do not move. Predicate work
-stays at its original point even when it cannot fit a compact header.
+normal dominance with an exceptional-edge relation. Loop recovery uses only
+while, do-while and while(true), as required by the
+[approved contract](../../docs/diana/PIPELINE_DESIGN.md#563-loop-expression-while-and-do-while).
+There is no for/enhanced-for reconstruction or dedicated update product.
+Initialization and updates remain at their original body positions. A shared
+update is an ordinary target, not a new continue destination: copies, cleanup
+and release precede it only on the original paths, and update-skipping exits
+remain distinct. Predicate work stays at its original position even when it
+cannot fit a compact header.
 Labels and selected edge copies remain concrete. Original switch links can share
 one case body, with acyclic private case-entry joins ordered once. Several
 predecessors can share one case entry: only the adjacent one falls through;
@@ -258,6 +258,10 @@ switch bypass completion, literal cleanup prefixes and reachable second-cleanup
 faults. Four [carrier checks](../../quality/fixtures/atoms/refined-carriers/README.md)
 retain exact check provenance and prevent delaying a check past a call or fusing
 an array fill across another reference check.
+Four [while-continuation checks](../../quality/fixtures/loops/while-tail-continuations/README.md)
+cover three-level private outer exits, actual shared entrances, cleanup before
+visible updates and do-while first-body placement. Dedicated for/update products
+are absent; existing cases now inspect original body positions and targets.
 These checks cover ownership,
 transfer spelling and source anchors, not independent execution of the final plan.
 The retained independent verifier code is not enabled on ordinary requests. Real-input corpus runs have not encountered custom/polymorphic

@@ -1,6 +1,23 @@
 # Fixture: loop-for
 
-## Current verdict — whole-operation follow-up
+## Current verdict — while/do-while architecture correction
+
+Read threshold/filtered-sum paths. Threshold success stores the original index
+and breaks before its update; other paths advance once. Filtering skips addition
+only, not the body counter tail. Initial tests and failed accesses retain their
+order.
+
+Compared the same prepared DEX on 8ac6d95 and this commit. Dedicated for recovery
+contradicted the approved architecture and is removed, not retained behind a
+switch. Updates stay in ordinary body positions with original targets/copies;
+explicit gotos can be necessary instead of update-skipping while continues.
+The [fresh challenge](../../loops/while-tail-continuations/review.md) covers
+three-level private continuations, real shared entrances, cleanup and do-while.
+This is bounded LLM source/path reading, not behavioral execution. Historical
+execution claims below were not rerun and do not certify this output.
+
+
+## Prior verdict — whole-operation follow-up
 
 Read changed headers, initializers and body tails. Every for update is the
 supplied original scalar self-store at its original repetition point; pre-test

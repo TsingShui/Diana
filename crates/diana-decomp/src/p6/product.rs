@@ -181,43 +181,26 @@ impl LoopCondition {
 pub struct LoopPlan {
     pub(super) id: LoopId,
     pub(super) header: NodeId,
-    pub(super) iteration: Option<LoopUpdate>,
     pub(super) members: Vec<NodeId>,
     pub(super) evaluation: Vec<NodeId>,
     pub(super) lexical_members: Vec<NodeId>,
     pub(super) private_exits: Vec<LinkId>,
+    pub(super) private_exit_corridors: Vec<PrivateLoopExit>,
     pub(super) latches: Vec<LinkId>,
     pub(super) exits: Vec<LinkId>,
     pub(super) follow: Option<NodeId>,
     pub(super) form: LoopForm,
 }
-/// One original phase-free pure self-update followed by its original backedge.
-/// It executes after the body and before the next head predicate.
+/// P6-private ownership evidence from the single lexical-exit construction.
+/// The public exit index remains unchanged; branch admission needs the complete
+/// corridor and its original stopping target, not just that index's existence.
 #[derive(Debug)]
-pub struct LoopUpdate {
-    pub(super) entry: NodeId,
-    pub(super) operation: OpId,
-    pub(super) repeat: LinkId,
+pub(super) struct PrivateLoopExit {
+    pub(super) exit: LinkId,
     pub(super) nodes: Vec<NodeId>,
-}
-impl LoopUpdate {
-    pub fn entry(&self) -> NodeId {
-        self.entry
-    }
-    pub fn operation(&self) -> OpId {
-        self.operation
-    }
-    pub fn repeat(&self) -> LinkId {
-        self.repeat
-    }
-    pub fn nodes(&self) -> &[NodeId] {
-        &self.nodes
-    }
+    pub(super) follow: Option<NodeId>,
 }
 impl LoopPlan {
-    pub fn iteration(&self) -> Option<&LoopUpdate> {
-        self.iteration.as_ref()
-    }
     pub fn id(&self) -> LoopId {
         self.id
     }
@@ -256,12 +239,9 @@ impl LoopPlan {
             LoopForm::Infinite => None,
         }
     }
-    /// Source continuation: the supplied iteration update, a tail predicate,
-    /// or the original head. This does not retarget an original link.
+    /// Original tail predicate or head. Other targets, including shared
+    /// body updates, remain explicit; no source form retargets a link.
     pub fn continue_target(&self) -> NodeId {
-        if let Some(iteration) = &self.iteration {
-            return iteration.entry;
-        }
         match self.form {
             LoopForm::DoWhile(c) => c.node,
             _ => self.header,

@@ -5,6 +5,9 @@ changing an engine capability.
 
 - The native library borrows DEX bytes and caller-supplied declaration facts. It
   does not own filesystem, ZIP, CLI, network, process or MCP operations.
+- Loop presentation follows the root policy: only `while`, `do-while` and
+  `while (true)`. Do not reconstruct for/enhanced-for or hide original updates
+  in headers. Preserve original continuation targets and explicit transfers.
 - Keep sealed products and one shared ordinary-method chain. Migrate stage
   ownership only to the approved target in the root AGENTS.md; do not widen input
   access, exports or construction authority beyond its product contracts. Preserve

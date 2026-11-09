@@ -37,7 +37,7 @@ pub(super) fn transfers(
             TransferKind::LeaveSync { .. } => TransferSpelling::Goto(t.destination),
             // P6's release-block continuation carries this exact outlet. An
             // ordinary goto would execute first and bypass its Continue/Break
-            // delivery (including an iteration target with no printed label).
+            // delivery, including original ordinary body work after release.
             // Copies and any original routing nodes retain their own phases.
             TransferKind::ReleasedSync { .. } => TransferSpelling::Fallthrough,
             TransferKind::SwitchArm(_) => TransferSpelling::Goto(t.destination),

@@ -93,53 +93,23 @@ fn layout(
             test: predicate(code, *terminal, None)?,
             shape: IfShape::IfElse,
         },
-        ControlKind::Loop {
-            syntax, iteration, ..
-        } => {
-            let placement = match (syntax, iteration) {
-                (
-                    LoopSyntax::While {
-                        terminal, repeat, ..
-                    },
-                    Some(operation),
-                ) => {
-                    let owner = plan
-                        .loop_header_operations
-                        .get_mut(operation.0 as usize)
-                        .ok_or(bug("loop update has no original operation"))?;
-                    if owner.replace(c.id).is_some() {
-                        return Err(bug("loop update has two header owners"));
-                    }
-                    LoopPlacement::For {
-                        predicate: child(c, 1)?,
-                        test: predicate(code, *terminal, Some(*repeat))?,
-                        compact: false,
-                        operation: *operation,
-                        update: child(c, 2)?,
-                    }
-                }
-                (LoopSyntax::Infinite, None) => LoopPlacement::Infinite,
-                (
-                    LoopSyntax::While {
-                        terminal, repeat, ..
-                    },
-                    None,
-                ) => LoopPlacement::While {
+        ControlKind::Loop { syntax, .. } => {
+            let placement = match syntax {
+                LoopSyntax::Infinite => LoopPlacement::Infinite,
+                LoopSyntax::While {
+                    terminal, repeat, ..
+                } => LoopPlacement::While {
                     predicate: child(c, 1)?,
                     test: predicate(code, *terminal, Some(*repeat))?,
                     compact: false,
                 },
-                (
-                    LoopSyntax::DoWhile {
-                        terminal, repeat, ..
-                    },
-                    None,
-                ) => LoopPlacement::DoWhile {
+                LoopSyntax::DoWhile {
+                    terminal, repeat, ..
+                } => LoopPlacement::DoWhile {
                     predicate: child(c, 1)?,
                     test: predicate(code, *terminal, Some(*repeat))?,
                     compact: false,
                 },
-                _ => return Err(bug("iteration update has no head predicate")),
             };
             EmissionLayout::Loop {
                 body: child(c, 0)?,
@@ -314,15 +284,6 @@ pub(super) fn construct(code: &MethodCode, plan: &mut EmissionPlan) -> Result<()
 
 pub(super) fn complete(code: &MethodCode, plan: &mut EmissionPlan) -> Result<(), ExpressionError> {
     for c in &code.controls {
-        if matches!(
-            c.kind,
-            ControlKind::Loop {
-                iteration: Some(_),
-                ..
-            }
-        ) {
-            plan.controls[c.id.0 as usize].explicit_children = Some(copy(&c.children[..2])?);
-        }
         if let ControlKind::Try {
             finally: Some(_), ..
         } = c.kind
@@ -338,9 +299,7 @@ pub(super) fn complete(code: &MethodCode, plan: &mut EmissionPlan) -> Result<(),
             }
             EmissionLayout::Loop {
                 placement:
-                    LoopPlacement::For { predicate, .. }
-                    | LoopPlacement::While { predicate, .. }
-                    | LoopPlacement::DoWhile { predicate, .. },
+                    LoopPlacement::While { predicate, .. } | LoopPlacement::DoWhile { predicate, .. },
                 ..
             } => Some(predicate),
             EmissionLayout::Synchronized { entry, .. } => Some(entry),

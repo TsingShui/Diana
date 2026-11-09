@@ -39,28 +39,35 @@ fn post_cleanup_condition(code: &MethodCode) {
 }
 
 #[test]
-fn a_completed_body_keeps_the_original_for_update_and_both_condition_exits() {
+fn a_completed_body_keeps_the_original_body_update_and_both_condition_exits() {
     inspect(
         "loops/mutable-iteration-step",
         "Lfixture/MutableStep;",
         "walk",
         "(III)I",
-        |facts, code, _| {
+        |facts, code, rendered| {
             operation_portions(facts, code);
             cleanup(facts);
-            assert!(facts.loops().iter().all(|p| p.iteration().is_some()));
+            assert!(
+                facts
+                    .loops()
+                    .iter()
+                    .all(|p| p.continue_target() == p.header())
+            );
+            assert!(!rendered.text().contains("for ("));
             assert_eq!(
                 code.emission()
                     .controls()
                     .iter()
                     .filter(|c| matches!(c.layout, EmissionLayout::Condition { .. }))
                     .count(),
-                2
+                1
             );
+            assert_eq!(rendered.text().matches("break;").count(), 2);
             assert!(code.emission().controls().iter().any(|c| matches!(
                 c.layout,
                 EmissionLayout::Condition {
-                    no: ConditionElse::Transfer,
+                    no: ConditionElse::None,
                     ..
                 }
             )));

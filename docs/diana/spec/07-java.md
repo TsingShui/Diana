@@ -427,8 +427,9 @@ A ReleasedSync transfer consumes P6's supplied release-block continuation rather
 than initializing an additional ordinary goto. Its emission spelling is
 Fallthrough; the source control completion delivers the original next, break,
 continue or goto once. Original copies and routing nodes still execute in their
-original phases. In particular, a direct release-to-update link must not print a
-goto to an update that is owned by a for header, nor bypass its delivered Continue.
+original phases. A direct release-to-body-update link keeps that original
+ordinary target; its supplied completion must not be replaced by a continue
+that skips the update.
 LeaveSync still names the original release entrance; it is not another release.
 A scope without a shared follow consumes its separately supplied original outlet
 completions. P7 MUST NOT fabricate a common destination, execute another release
@@ -471,23 +472,16 @@ without inventing another edge copy. Syntax-owned header/predicate continuations
 their owner, so a header cannot jump past its own test or monitor acquisition.
 Loop-condition edge copies stay inside that test's selected-edge clauses; they
 are not appended after a loop. `LoopPlacement` distinguishes infinite, head-test,
-tail-test and delivered for-update forms, and records when an empty predicate can
-use a compact form.
+tail-test forms, and records when an empty predicate can use a compact form.
+P7 MUST NOT select for/enhanced-for syntax or a header-owned update. Original
+initialization and updates remain ordinary statements. A body-update target
+retains its explicit transfer when it is not the actual while head or do-while
+predicate; no compatibility schedule or duplicated update replaces it.
 
-A P6 `LoopUpdate` supplies the original operation and third update child; P7 does
-not infer an induction variable, move an initializer, identify a tail or create
-another store. The for header owns that operation's one printed assignment.
-Its original update subtree remains available for control/routing/zero-step-copy
-origins, but normal block placement does not print the operation again. Declaration
-planning accounts for the update's reads without declaring a body-only local in
-the header. The update child completes at the original head; body continuation
-enters the original update. A break, return or throw leaves before the update.
-
-Compactness consumes the same predicate subtree as a while. A noncompact for
-retains its evaluation and explicit exiting test at the body's start, with an
-empty header condition. In particular, an assignment preceding the original test
-still runs before its first test; it is not moved into the iteration expression.
-The original repetition/exiting copy roles and source anchors remain unchanged.
+A noncompact head test retains its original evaluation and explicit exiting
+test at the body's start under `while (true)`. An assignment before the first
+test still runs there. Tail tests stay after the first body, including when
+copies or effects require an explicit predicate phase.
 
 Matched releases print at their original nodes. Their after-release copies and
 routing terminals also stay at their original nodes and therefore keep original

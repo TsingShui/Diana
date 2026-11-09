@@ -1,6 +1,25 @@
 # Fixture: algo-dp
 
-## Current verdict — whole-operation follow-up
+## Current verdict — while/do-while architecture correction
+
+Read every changed loop's entry test, ordinary body and original backedge. The
+same body work precedes the now-visible update; an exiting test or abrupt effect
+skips exactly the original remaining work. Initial values, loop nesting,
+call/access/argument order and selected results remain. Some body-only
+temporaries can now be declared at their existing assignments because no header
+reads them. This changes no original value or effect.
+
+Compared the same prepared DEX on 8ac6d95 and this commit. Dedicated for recovery
+contradicted the approved architecture and is removed, not retained behind a
+switch. Updates stay in ordinary body positions with original targets/copies;
+explicit gotos can be necessary instead of update-skipping while continues.
+The [fresh challenge](../../loops/while-tail-continuations/review.md) covers
+three-level private continuations, real shared entrances, cleanup and do-while.
+This is bounded LLM source/path reading, not behavioral execution. Historical
+execution claims below were not rerun and do not certify this output.
+
+
+## Prior verdict — whole-operation follow-up
 
 Read the changed dynamic-programming loops: initial state/table work remains
 before the first test; cell dependencies and array accesses retain their order.

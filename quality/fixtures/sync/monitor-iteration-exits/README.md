@@ -47,17 +47,17 @@ Notation: L=acquire, U=release, R(i)=mark(10+i), C(i)=mark(30+i).
 
 heldCleanup is the fresh same-mechanism challenge: all normal releases share
 the same original step, including value2's continue, while recovery and finally
-work remain held. Its available natural scope must retain the loop's supplied
-continue role rather than a goto to a hidden header update. It adds the helper
+work remain held. Its available natural scope retains the original Follow to
+the visible body update, not a Continue to the while head. It adds the helper
 and cleanup interactions absent from the initial locked seed. These expectations
 for this additional subject precede its first candidate inspection.
 
 bypass has two original backedges. Only the normal advance path increments row;
 the flagged continuation releases then retests without increment. Completing
-its release role must not invent a common for update. Returning seen=2 also
+its release role must not invent or execute a common update. Returning seen=2 also
 releases before return, with no pending update.
 
-The release Kind may gain a selected-loop source role, but its original target,
+The release Kind retains its original Follow/Loop role and target;
 routing and before/after copy phases must remain the same. A natural closing
 brace does not add another implicit release. These expectations were recorded
 before candidate inspection. No behavioral execution is claimed.
@@ -80,8 +80,9 @@ cargo run -p diana-decomp --example dbg_shell --locked -- \
 Prepared with Smali 2.5.2, API 24 and OpenJDK 21.0.12.1. Baseline is the recorded
 working tree on `ebbc003` after ordinary iteration-tail recovery and before
 selected monitor continuation completion. Comparisons use the same prepared DEX.
-The new heldCleanup case retains its natural scope and supplied for continuation.
-walk deliberately keeps raw monitors where early source selection has incompatible
-value-return/step follows; bypass retains while. An initial prior-fixture dangling
+Current comparison uses 8ac6d95 and the commit containing this update with the
+same prepared DEX. heldCleanup/walk keep their closed natural scopes, original
+release outlets and visible body updates; bypass keeps its update-skipping
+header continuation. No for schedule or update-role refinement remains. An initial prior-fixture dangling
 goto regression was found and repaired in the shared P7 consumer before the final
 reading judgment. See review.md for scope and unrun behavioral execution.

@@ -1,6 +1,24 @@
 # Fixture: pure-tail-finally
 
-## Current LLM semantic judgement
+## Current verdict — while/do-while architecture correction
+
+Read the changed cleanup helper: modes5/6 reach the one throw, modes7/8 do so
+only for code3, all other paths return. The local shared-join nomination groups
+the OR without moving mark or fault. Literal7 still remains first cleanup
+preparation; both cleanup calls and reachable late-fault expectations remain
+unchanged.
+
+Compared the same prepared DEX on 8ac6d95 and this commit. Dedicated for recovery
+contradicted the approved architecture and is removed, not retained behind a
+switch. Updates stay in ordinary body positions with original targets/copies;
+explicit gotos can be necessary instead of update-skipping while continues.
+The [fresh challenge](../../loops/while-tail-continuations/review.md) covers
+three-level private continuations, real shared entrances, cleanup and do-while.
+This is bounded LLM source/path reading, not behavioral execution. Historical
+execution claims below were not rerun and do not certify this output.
+
+
+## Prior LLM semantic judgement
 
 Compared authored Java/Smali, concrete helpers and ordinary Engine output on the
 same prepared DEX: completed-eleven-repair baseline bda9a49 versus candidate.

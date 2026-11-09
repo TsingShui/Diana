@@ -854,9 +854,9 @@ fn terminal_use(
                         return None;
                     };
                     let test = match placement {
-                        LoopPlacement::For { test, .. }
-                        | LoopPlacement::While { test, .. }
-                        | LoopPlacement::DoWhile { test, .. } => test,
+                        LoopPlacement::While { test, .. } | LoopPlacement::DoWhile { test, .. } => {
+                            test
+                        }
                         LoopPlacement::Infinite => return None,
                     };
                     if test.terminal != terminal

@@ -1,6 +1,26 @@
 # Fixture: mutable-iteration-step
 
-## Current verdict — whole-operation follow-up
+## Current verdict — while/do-while architecture correction
+
+Read complete walk/nested. walk's quiet first OR remains; both row3 and
+flag2/row2 breaks are present, so no row3 read occurs for flag2. Its
+current-step assignment precedes finally, while the update reads that step only
+after successful cleanup. Nested's break keeps its outer scope; the
+update-reaching path uses a visible outer-update goto, skipping inner increment
+and marks90/91, not a while Continue that skips the update. Throwing divide
+remains ordinary body work.
+
+Compared the same prepared DEX on 8ac6d95 and this commit. Dedicated for recovery
+contradicted the approved architecture and is removed, not retained behind a
+switch. Updates stay in ordinary body positions with original targets/copies;
+explicit gotos can be necessary instead of update-skipping while continues.
+The [fresh challenge](../../loops/while-tail-continuations/review.md) covers
+three-level private continuations, real shared entrances, cleanup and do-while.
+This is bounded LLM source/path reading, not behavioral execution. Historical
+execution claims below were not rerun and do not certify this output.
+
+
+## Prior verdict — whole-operation follow-up
 
 Reread complete walk/nested output. The two normal step assignments are now
 inside the outer try before natural finally; the header reads that current step

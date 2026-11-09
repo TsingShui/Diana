@@ -16,7 +16,6 @@ pub(super) fn plan(code: &MethodCode) -> Result<EmissionPlan, ExpressionError> {
     plan.definition_check_uses = filled(code.statements.len(), Vec::new())?;
     plan.composed_uses = filled(code.expressions.len(), None)?;
     plan.composed_operations = filled(code.operations.len(), false)?;
-    plan.loop_header_operations = filled(code.operations.len(), None)?;
     plan.array_literals = filled(code.statements.len(), None)?;
     plan.omitted_checks = filled(code.statements.len(), None)?;
     plan.omitted_literals = filled(code.statements.len(), false)?;
