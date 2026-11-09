@@ -192,8 +192,11 @@ Downloaded inputs and generated output remain outside version control.
 | `abrupt-finally-completion` | Saved body returns, cleanup return/throw replacement, always-abrupt/void cleanup, multiple rethrows and unequal/foreign-entry guards |
 | `refined-carriers` | Adjacent cast/array carriers and checks that must precede calls and early returns |
 | `scalar-views-protected-joins` | Scalar-use challenge with producer Phis, loop/recovery/cleanup, snapshots, composition and unproved-view guards |
-| `handler-retry-rejoin` | Captureless ignored handlers sharing a retry update with normal arrivals; explicit-loop reproduction |
-| `response-close-snapshots` | Acquisition-time null versus acquired-handle snapshots, ordinary finally replacement and resource suppression |
+| `handler-retry-rejoin` | Captureless ignored handlers sharing a natural retry update with normal arrivals |
+| `captureless-retry-nesting` | Nested retries, effectful update preludes, retreating handler latches and a genuine pre-loop arrival |
+| `response-close-snapshots` | Acquisition-time null versus acquired-handle snapshots, natural protection, ordinary finally replacement and resource suppression |
+| `cleanup-outlet-frontiers` | Dual acquisition/close order, nested runtime recovery, partial commits and an unguarded-gap refusal |
+| `shared-cleanup-contexts` | Split pre/post captures, shared cleanup/rethrow frontiers, resource outlets and outside IO recovery |
 
 ### Synchronization
 

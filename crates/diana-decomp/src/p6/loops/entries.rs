@@ -41,17 +41,23 @@ fn close(
     if header != NodeId(0) && members[0] {
         return Ok(None);
     }
-    let mut added_handler = false;
+    let mut handler_root = false;
     for &root in &g.roots {
         if !members[root.0 as usize] || root == header {
             continue;
         }
-        if !f.handlers.iter().any(|h| h.node == root) || !g.incoming[root.0 as usize].is_empty() {
+        let Some(handler) = f.handlers.iter().find(|h| h.node == root) else {
+            return Ok(None);
+        };
+        // An ignored exception can enter the same original update/goto as an
+        // ordinary path. A capture still needs exceptional-only arrival. The
+        // complete real-entrance checks below close every captureless arrival.
+        if handler.capture.is_some() && !g.incoming[root.0 as usize].is_empty() {
             return Ok(None);
         }
-        added_handler |= !seeds[root.0 as usize];
+        handler_root = true;
     }
-    if !added_handler {
+    if !handler_root {
         return Ok(None);
     }
     // All genuine normal/exceptional arrivals must cross the original header or

@@ -721,6 +721,8 @@ impl TryPlan {
     pub fn members(&self) -> &[NodeId] {
         &self.members
     }
+    /// Lexical completion at an actual original target. A guarded footprint
+    /// can have other explicit outlets; this does not assert postdomination.
     pub fn follow(&self) -> Option<NodeId> {
         self.follow
     }

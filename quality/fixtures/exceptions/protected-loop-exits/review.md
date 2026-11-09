@@ -1,6 +1,27 @@
 # Protected loop abrupt exits review
 
-## Current verdict — constructor argument and throw recovery
+## Current verdict — complete outer protection
+
+The guarded-frontier repair was compared with 73fc879 on the same prepared DEX.
+Only foreign changes text. Its whole original outer body can now own a natural
+catch-all while the shared construction/throw stays outside the loop's lexical
+membership. The pre-loop branch and probe branch retain two arrivals at that
+one target; no private loop corridor or finally is inferred. At foreign!=0, probe/
+read are still skipped even for zero rows. Normal exhaustion still runs the
+normal cleanup7/8; a guard/error takes the handler's cleanup7/8 and rethrows.
+Failure of cleanup7 skips8; failure of8 replaces the pending throwable. The
+constructor and its argument run once before the throw. Nested, early, recover
+and switchExit text is unchanged, so their earlier path reviews are reused.
+
+The former empty-TryPlan assertion was replaced by ownership of the whole loop
+and shared throw under the selected outer scope. It still forbids a private loop
+exit and requires both original entrances, one construction and all four original
+cleanup calls. Genuine pre-loop exception and unguarded-gap refusals are covered
+by the new exception-rejoin checks. Full isolated configurations pass 155 checks;
+P2–P5 and original P6 coordinates are exact across the corpus. This is renewed
+LLM path review with product evidence, not fixture or constructor execution.
+
+## Constructor argument and throw observation
 
 Compared the same prepared DEX on `e95b6a4` and the containing repair. Read the
 original Java and prepared DEX behavior and complete before/after output for nested(IIII)I, foreign(IIII)I and recover(III)I.

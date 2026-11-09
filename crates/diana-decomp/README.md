@@ -285,8 +285,13 @@ Integration checks live in `tests/` and consume prepared inputs from
 [protected joins/composition](../../quality/fixtures/exceptions/scalar-views-protected-joins/README.md),
 [captureless retry](../../quality/fixtures/exceptions/handler-retry-rejoin/README.md)
 and [response/resource cleanup](../../quality/fixtures/exceptions/response-close-snapshots/README.md).
-The last two preserve original facts while their natural-recovery limitations
-remain independent investigations; none of these checks executes fixture behavior.
+Those preservation checks are complemented by nine
+[exception-rejoin checks](tests/exception_rejoins.rs). They cover natural
+captureless retries, nested/latch/foreign arrivals,
+[dual cleanup outlets](../../quality/fixtures/exceptions/cleanup-outlet-frontiers/README.md)
+and [shared cleanup contexts](../../quality/fixtures/exceptions/shared-cleanup-contexts/README.md).
+P6 owns the recovery and retains snapshots, original catches and close/suppression
+order. These product checks do not execute fixture behavior.
 Six structural checks cover
 [nested private loop exits](../../quality/fixtures/loops/nested-loop-exits/README.md).
 Four [resource-cleanup checks](../../quality/fixtures/exceptions/resource-cleanup/README.md)

@@ -138,7 +138,7 @@ fn a_real_body_return_does_not_acquire_the_post_loop_cleanup() {
 }
 
 #[test]
-fn a_foreign_normal_entrance_keeps_one_shared_construction_and_explicit_protection() {
+fn a_foreign_loop_exit_stays_shared_inside_its_actual_enclosing_protection() {
     inspect(
         "exceptions/protected-loop-exits",
         "Lfixture/ProtectedExits;",
@@ -148,7 +148,6 @@ fn a_foreign_normal_entrance_keeps_one_shared_construction_and_explicit_protecti
             let [plan] = facts.loops() else {
                 panic!("one original loop")
             };
-            assert!(facts.tries().is_empty());
             assert!(plan.private_exits().is_empty());
             assert_eq!(plan.members(), plan.lexical_members());
             let exit = plan
@@ -161,8 +160,22 @@ fn a_foreign_normal_entrance_keeps_one_shared_construction_and_explicit_protecti
                 facts.links().iter().filter(|l| l.to() == exit.to()).count(),
                 2
             );
+            assert!(!plan.lexical_members().contains(&exit.to()));
+            let enclosing = facts
+                .tries()
+                .iter()
+                .find(|scope| {
+                    scope.body().contains(&exit.to())
+                        && plan
+                            .members()
+                            .iter()
+                            .all(|node| scope.body().contains(node))
+                })
+                .expect("the whole original outer protection, not a private loop corridor");
+            assert!(facts.regions().iter().any(|region|
+                matches!(region.kind(), diana_decomp::p6::RegionKind::Try(id) if *id == enclosing.id())));
+            assert!(enclosing.finally().is_none());
             assert_eq!(rendered.text().matches("new ").count(), 1);
-            assert!(rendered.text().contains("[exn c0]"));
             assert!(rendered.text().contains("goto L"));
             assert_eq!(
                 rendered.text().matches("ProtectedExits.cleanup(").count(),

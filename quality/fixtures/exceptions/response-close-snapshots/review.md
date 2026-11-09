@@ -1,12 +1,31 @@
 # Response and resource cleanup review
 
-## Current verdict
+## Current verdict — P6 protection ownership
+
+Against fixed baseline 73fc879, response now exposes two natural catch scopes
+without acquiring its unguarded normal/IO close suffixes. Read the same source,
+Smali, independent scenario table and complete before/after output. Acquire
+failure still receives null; later sites receive the committed handle. Typed
+interruption remains before IOException. IO logging can replace the original
+failure before canonical cleanup; a throwing close replaces the pending result/
+throwable without retry or suppression. Null-skipping branches keep their actual
+later return targets rather than falling into another close. The resource method
+is byte-identical in text and retains its original primary/suppressed behavior.
+
+P2–P5 and original P6 nodes, links, clauses, completions, copies and locks remain
+exact. The original preservation checks and new natural-scope/outlet check pass.
+Fresh [dual outlets](../cleanup-outlet-frontiers/review.md) and
+[shared contexts](../shared-cleanup-contexts/review.md) cover broader interactions.
+Both isolated configurations pass 155 checks. These are LLM reasoning and product
+checks; no native model, DEX VM or decompiled Java is executed.
+
+## Scalar-use baseline observation
 
 The reduction reproduces R2's explicit response `ProtectionBoundary` graph and
 before-throw response snapshots on baseline df10b744985e3407f902442b8252fab100700aec.
 The resource method retains explicit body/close/suppression catches. The scalar
-repair leaves both texts and all P2–P8 products unchanged; a natural resource or
-finally scope is not claimed.
+repair left both texts and all P2–P8 products unchanged; natural protection is
+provided by the separate P6 repair above.
 
 ### Semantics
 
@@ -44,4 +63,4 @@ native models or prove arbitrary cleanup equivalence.
 ## Rounds
 
 - Reduced ordinary-finally and resource-suppression paths with retained snapshot
-  phases; natural cleanup recovery remains separate from C1's scalar repair.
+  phases; the separate P6 ownership repair now recovers response's natural scopes.

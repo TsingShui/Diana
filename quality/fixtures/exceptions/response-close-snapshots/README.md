@@ -76,4 +76,18 @@ are unchanged. The two preservation checks in
 `crates/diana-decomp/tests/scalar_use_views.rs` pass on both revisions.
 [review.md](review.md) records primary/secondary identity and fault-path reading.
 This reproduces the readability limitation without inventing a behavioral
-failure. No natural-cleanup repair or executed behavioral PASS is claimed.
+failure. That scalar repair did not recover natural protection.
+
+## P6 recovery
+
+Compared the same DEX on 73fc8793a91d766d021d117aa83ddfd644f7ac82 and the P6
+repair. Response now has natural enclosing all/typed catches without the
+ProtectionBoundary graph. Its normal and IO close suffixes remain outside the
+protected body; canonical cleanup remains in the original all-handler. Resource
+text is unchanged, including distinct primary/secondary reads and suppression.
+P2–P5 and original P6 coordinates remain exact. Existing preservation checks and
+the new scope/outlet check pass. Fresh [dual cleanup](../cleanup-outlet-frontiers/README.md)
+and [shared contexts](../shared-cleanup-contexts/README.md) challenge identity,
+normal outlets, terminal rethrows and outside recovery. Full isolated default/
+all-feature runs pass 155 checks. This is not executed fixture behavior or an
+unproved rewrite of ordinary finally into resource suppression.

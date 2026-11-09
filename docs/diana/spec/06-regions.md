@@ -401,8 +401,12 @@ A normal analysis root at a catch can make an interior rejoin appear external to
 a loop, including a nested loop. For each original normal-DFS retreating header
 not already proved by normal dominance, P6 closes original latch predecessors
 backward while leaving that header boundary open. It rejects a pulled-in method
-entry, an added non-handler analysis root, and a handler root with a normal
-entrance. Every interior normal or executable exceptional arrival must originate
+entry, a non-handler analysis root, and a captured handler with a normal
+entrance. At least one interior root must be an original handler, including a
+root already in the latch seeds. A captureless entry can share an original
+update or retreating goto with normal arrivals. Its exceptional receive copies
+remain exception-only; no capture or normal-edge receive is invented.
+Every interior normal or executable exceptional arrival must originate
 inside the candidate, and every member must be reachable from the header using
 original normal or exceptional transfers. Dead, disconnected and foreign catch
 corridors are not private. These are owning-stage membership guarantees, not an
@@ -871,6 +875,45 @@ This preserves one catch owner while exposing the real normal loop completion
 instead of an intermediate iteration join. It does not by itself claim finally:
 that requires the owning-stage cleanup correspondence below, not a renderer
 recognizing cleanup syntax.
+
+### Guarded completion frontiers
+
+An unbounded single catch-all can lack a complete common normal boundary.
+Several unguarded close/return suffixes need not share a postdominator. A guarded
+join between distinct handlers carrying the same P5-established capture local
+also requires its complete exception context. In particular, a terminal rethrow
+supplies no normal successor to the ordinary follow calculation. P6 identifies
+these shared contexts from existing handler frontiers and P5 exception-capture
+materializations. Distinct primary/secondary locals do not establish that relation;
+the original captures, reads and entry identities remain separate.
+
+After any established completed-loop nomination, P6 nominates one guarded
+footprint for this case, before admission. It discovers original normal and
+executable-exceptional reach from every guarded seed, excluding selected/outer
+captures. Its outward boundary cuts complete normal suffixes of unguarded
+effects and of the selected handler's shared continuations. Cutting the entire
+suffix keeps a null-skipping path from reacquiring a return after close. An
+existing loop header or continue target reached by recovery is a reentry, not a
+cleanup outlet, when that loop contains a guarded seed. The handler walk still
+stops at that original reentry; no loop or continuation is reconstructed.
+
+A cut that reaches a guarded seed refuses the nomination. P6 materializes reach
+with that fixed boundary once, so exception fragments supported only by excluded
+effects do not become body content. Every guarded seed remains present. One
+actual outward target, in original node order, supplies the lexical follow;
+other outlets retain their original targets, copies and explicit transfers.
+This follow is not a claim of a new runtime join or common postdominator.
+Optional prefixes and the existing guarded-site, real-entry, construction,
+monitor and whole-owner checks still decide admission. Refusal does not search
+a later seed, another completion boundary or an alternative method chain.
+
+An already established observed outer suffix supplies its private body boundary
+to inner body and handler walks. An inner typed catch cannot acquire normal
+cleanup outside that enclosing body. Missing context leaves the original local
+protection explicit. Scratch construction remains fallible under RegionError;
+P7/P9 consume the existing TryPlan and transfer products without new analysis,
+receiver-alias inference, copy motion or generated dispatch. This protection
+ownership does not imply finally or resource suppression equivalence.
 
 ### Matched unlocked cleanup
 

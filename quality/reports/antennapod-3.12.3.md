@@ -8,12 +8,13 @@ A source-first review of 13 methods found a concrete text-fidelity problem:
 character argument views survive in P7 but disappear from natural-looking calls
 in P9. The retained call binding is correct; the text can suggest a different
 overload. This is not an executed behavioral failure or a Java-compilation gate.
-The fixture-backed follow-up below addresses C1; the original review table and
-observations remain scoped to that recorded baseline.
+The fixture-backed follow-ups below address C1 and the reproduced P6 ownership
+limitations R1/R2. The original review table and observations remain scoped to
+that recorded baseline.
 
 The reviewed control, retry and cleanup paths have no identified contradiction
-under the source models below, apart from that unresolved character-use spelling.
-Some protection and retry structures remain explicit. Their notation is a
+under the source models below, apart from the baseline character-use spelling.
+Some baseline protection and retry structures remain explicit. Their notation is a
 readability limitation, not evidence that code or effects disappeared.
 
 ## Input and source correspondence
@@ -222,6 +223,63 @@ review. Direct reading retains allocation before argument calls, each argument
 call once, initialization after arguments and the original outer-wrapper order.
 The [scalar fixture record](../fixtures/atoms/scalar-use-views/README.md#combined-integration-observation)
 records combined tests and corpus checks with their execution limits.
+
+### P6 retry and cleanup ownership follow-up
+
+The P6 exception-rejoin repair was developed against 73fc8793a91d766d021d117aa83ddfd644f7ac82.
+It retains the scalar repair and supplies the missing owning-stage facts:
+
+- R1: captureless handlers may share original normal updates or retreating gotos,
+  subject to complete entrance and reach closure. Captured handlers still reject
+  normal arrivals. No normal dominance, capture, edge or result is fabricated.
+- R2: one guarded footprint separates protected work from its actual unguarded
+  completion suffixes and shared handler continuations. Original P5 capture
+  locals identify shared exception contexts, not value aliases. Loop recovery
+  reentries retain their existing role; inner scopes consume an established
+  outer body boundary. Original snapshots and outlet transfers remain supplied.
+
+Fresh [nested retry](../fixtures/exceptions/captureless-retry-nesting/review.md),
+[dual cleanup](../fixtures/exceptions/cleanup-outlet-frontiers/review.md) and
+[shared context](../fixtures/exceptions/shared-cleanup-contexts/review.md) challenges
+were authored after the respective drafts, with expectations before inspection.
+Nine ordinary-Engine checks give two passes/seven failures on the fixed baseline,
+then nine passes on the candidate. Both full isolated configurations pass 155
+checks. All 111 prepared fixtures deliver 179 classes/853 methods with no retrieval/
+render failures; complete P2–P5 and original-coordinate P6 facts remain exact.
+A terminal-only draft that weakened existing cleanup nesting/recovery layout was
+rejected. Its narrower same-local context proof and loop-reentry distinction were
+checked against the original regression obligations, not accepted by weakening them.
+
+The same APK still delivers 12,076 classes/70,403 declarations, with 66,345 expressed
+bodies and 4,058 no-code declarations. Failure and upstream issue counters remain
+zero on all three images. The13 selected methods retain P2–P5 and original P6
+coordinates; only DateUtils and ChapterUtils change class text. Direct reading
+covers the three changed subjects:
+
+- DateUtils.parse now has a natural 30-pattern retry while, without the former
+  Irreducible handler graph. Reset/applyPattern remain before the protected parse;
+  null/partial results and selected exceptions advance once. Full consumption
+  exits to the original committed Date without that increment. Exhaustion still
+  recurses after weekday removal or logs/returns null.
+- Media loading now groups each read/empty-test/log body and its original
+  primary/secondary cleanup in natural nested catches. Empty results close before
+  the next fresh stream; success closes before returning its captured list.
+  Normal close failure goes to the original outside handlers, not another close.
+  Body failure keeps its primary and suppression; interruption still precedes
+  general IO recovery and stops later attempts.
+- The private URL loader no longer has a ProtectionBoundary graph. Its enclosing
+  all-catch and acquisition typed catches own the complete available context.
+  Pre-acquisition failures retain null; later failures/logging use the acquired
+  response. Distinct post captures and the shared cleanup remain explicit where
+  their crossing contexts do not establish another lexical owner. Shared cleanup
+  stays outside both body/catch adapters; each selected route closes once.
+  Its failure replaces the pending return/throwable, never adding suppression.
+
+The other four selected class texts are unchanged. Ordinary CLI get-method text
+and JSON agree exactly for all three changed subjects, with no rendering issues.
+These are bounded source/model/DEX/product readings and executed product tests,
+not execution of AntennaPod, native fixture models or decompiled Java. Natural
+catch ownership does not assert a general finally or try-with-resources rewrite.
 
 ## Reproduction
 

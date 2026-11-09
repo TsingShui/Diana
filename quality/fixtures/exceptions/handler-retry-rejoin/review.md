@@ -1,6 +1,20 @@
 # Captureless retry review
 
-## Current verdict
+## Current verdict — P6 captureless recovery
+
+The same prepared bytes now recover one while against baseline 73fc879.
+Direct reading of the source/model scenarios and complete output retains fast
+success, fallback-only row initialization, reset before attempt and one shared
+increment. Normal failure and the ignored exception reach that increment once;
+only a normally committed matching result reaches the outside success return.
+Exhaustion returns-1 and unmatched/reset failures still propagate. Original
+captureless entries remain captureless, with no result fabricated on failure.
+P2–P5 and original P6 coordinates agree. The new recovery check passes alongside
+the preservation check; the [fresh challenge](../captureless-retry-nesting/review.md)
+adds nesting, effects, latch entry and genuine foreign refusal. This is bounded
+LLM reading plus product regression evidence, not executed behavior.
+
+## Scalar-use baseline observation
 
 The prepared reduction reproduces R1's explicit `graph<Irreducible>` loop on
 baseline df10b744985e3407f902442b8252fab100700aec. Both ignored handlers lack
@@ -9,7 +23,7 @@ entered by normal failed attempts. A preliminary captureful draft recovered a
 while and was rejected as a reproduction of R1.
 
 The scalar-use rendering repair leaves this text and every P2–P8 product
-unchanged. Natural loop recovery is still an independent P6 investigation.
+unchanged. The separate P6 repair above supplies natural loop ownership.
 The check preserves original captureless/shared-entry facts without requiring
 this inferior shape forever.
 
@@ -29,8 +43,8 @@ With limit0, fallback returns-1 without reset/attempt. A nonmatching fast Error
 propagates before fallback, and a reset failure propagates before the attempt.
 
 This is LLM semantic reading under explicit models, supported by original handler
-and normal-link checks. No fixture/native execution or natural-loop repair PASS
-is claimed.
+and normal-link checks. This baseline observation did not establish natural
+recovery. No fixture/native execution is claimed.
 
 ## Rounds
 

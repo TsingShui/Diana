@@ -1,3 +1,4 @@
+mod frontiers;
 mod loop_scope;
 mod prefix;
 
@@ -351,22 +352,68 @@ fn handler_frontiers(
     }
     Ok(frontiers)
 }
+// A common handler continuation can carry one original capture local from
+// distinct exception contexts. Its guarded sites need the complete context,
+// not a follow derived only from the other seeds' normal successors. Distinct
+// live primary/secondary locals are NOT this relationship; no captures merge.
+fn shared_capture_contexts(
+    storage: &StorageMethod<'_>,
+    f: &RegionFacts,
+    frontiers: &[Vec<NodeId>],
+) -> Result<Vec<bool>, RegionError> {
+    let mut locals = lists(f.nodes.len())?;
+    let mut shared = filled(f.nodes.len(), false)?;
+    for handler in &f.handlers {
+        let Some(capture) = handler.capture else {
+            continue;
+        };
+        let Some(local) = storage.facts().definitions().iter().find_map(|definition| {
+            if definition.operation() != capture {
+                return None;
+            }
+            match definition.materialization() {
+                crate::p5::Materialization::ExceptionCapture(local) => Some(local),
+                _ => None,
+            }
+        }) else {
+            continue;
+        };
+        for &node in &frontiers[handler.node.0 as usize] {
+            let seen = &mut locals[node.0 as usize];
+            if seen.contains(&local) {
+                shared[node.0 as usize] = true;
+            } else {
+                push(seen, local)?;
+            }
+        }
+    }
+    Ok(shared)
+}
+fn guarded_site(
+    f: &RegionFacts,
+    site: &ThrowPlan,
+    wanted: &[HandlerClause],
+    inside: impl Fn(NodeId) -> bool,
+) -> bool {
+    site.edges.iter().all(|edge| {
+        matches!(
+            f.edges[edge.0 as usize].route,
+            EdgeRoute::Exception {
+                delivery: ExceptionDelivery::ImpossibleRelease(_),
+                ..
+            }
+        )
+    }) || matching_clauses(handlers(&f.chains[site.chain.0 as usize]), wanted).is_some()
+        || f.chains[site.chain.0 as usize]
+            .clauses
+            .iter()
+            .all(|clause| matches!(clause.target, CatchTarget::Handler(node) if inside(node)))
+}
 fn guarded(f: &RegionFacts, wanted: &[HandlerClause], inside: impl Fn(NodeId) -> bool) -> bool {
-    f.throws.iter().filter(|t| inside(t.node)).all(|t| {
-        t.edges.iter().all(|e| {
-            matches!(
-                f.edges[e.0 as usize].route,
-                EdgeRoute::Exception {
-                    delivery: ExceptionDelivery::ImpossibleRelease(_),
-                    ..
-                }
-            )
-        }) || matching_clauses(handlers(&f.chains[t.chain.0 as usize]), wanted).is_some()
-            || f.chains[t.chain.0 as usize]
-                .clauses
-                .iter()
-                .all(|c| matches!(c.target, CatchTarget::Handler(n) if inside(n)))
-    })
+    f.throws
+        .iter()
+        .filter(|site| inside(site.node))
+        .all(|site| guarded_site(f, site, wanted, &inside))
 }
 
 struct Pattern {
@@ -382,6 +429,7 @@ pub(super) fn plan(
     s: &Structure,
 ) -> Result<(), RegionError> {
     let handler_frontiers = handler_frontiers(storage, f, g)?;
+    let shared_contexts = shared_capture_contexts(storage, f, &handler_frontiers)?;
     let mut abrupt = filled(f.nodes.len(), false)?;
     for handler in &f.handlers {
         abrupt[handler.node.0 as usize] = loop_scope::abrupt(storage, f, g, s, handler.node);
@@ -546,6 +594,30 @@ pub(super) fn plan(
                 excluded[target.0 as usize] = true;
             }
         }
+        // An observed, already established outer suffix supplies the private
+        // boundary for both this body and its handlers. Never acquire its
+        // unguarded completion suffix through a handler's normal reach.
+        let enclosing = f
+            .tries
+            .iter()
+            .filter(|plan| {
+                plan.outer_sync == outer
+                    && seeds.iter().all(|node| plan.body.contains(node))
+                    && targets.iter().all(|node| plan.body.contains(node))
+                    && matching_clauses(
+                        &f.chains[chain.0 as usize].clauses[end..],
+                        &f.chains[plan.chain.0 as usize].clauses
+                            [plan.clause_range.start as usize..plan.clause_range.end as usize],
+                    )
+                    .is_some()
+            })
+            .min_by_key(|plan| plan.body.len())
+            .map(|plan| plan.body.as_slice());
+        if let Some(body) = enclosing {
+            for (index, slot) in excluded.iter_mut().enumerate() {
+                *slot |= !body.contains(&NodeId(id(index)?));
+            }
+        }
         let completion = if outer.is_none() && abrupt_handlers {
             loop_scope::complete(storage, f, g, &seeds, wanted, &excluded, follow)?
         } else {
@@ -556,10 +628,34 @@ pub(super) fn plan(
                 follow = Some(completion.follow);
                 (completion.body, Some(completion.entry))
             }
-            None => (
-                reachable(storage, f, g, &seeds, follow, &excluded, true)?,
-                None,
-            ),
+            None => {
+                if outer.is_none()
+                    && wanted.len() == 1
+                    && wanted[0].catch.is_none()
+                    && (follow.is_none()
+                        || seeds.iter().any(|node| shared_contexts[node.0 as usize]))
+                {
+                    let Some(frontier) = frontiers::complete(
+                        storage,
+                        f,
+                        g,
+                        &seeds,
+                        wanted,
+                        &excluded,
+                        &handler_frontiers[targets[0].0 as usize],
+                    )?
+                    else {
+                        continue;
+                    };
+                    follow = frontier.follow;
+                    (frontier.body, None)
+                } else {
+                    (
+                        reachable(storage, f, g, &seeds, follow, &excluded, true)?,
+                        None,
+                    )
+                }
+            }
         };
         // A completed loop already has its proved header entrance. Optional
         // prefixes must not acquire initialization preceding that whole scope.
@@ -583,6 +679,11 @@ pub(super) fn plan(
                     *slot = !f.synchronized[scope.0 as usize]
                         .body
                         .contains(&NodeId(id(i)?));
+                }
+            }
+            if let Some(body) = enclosing {
+                for (index, slot) in exclude.iter_mut().enumerate() {
+                    *slot |= !body.contains(&NodeId(id(index)?));
                 }
             }
             for (i, &inside) in members.iter().enumerate() {

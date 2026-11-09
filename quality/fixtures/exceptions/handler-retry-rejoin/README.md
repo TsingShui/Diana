@@ -17,9 +17,8 @@ captures preserves the explanation's behavior.
 
 A preliminary reduction with unused captures recovered a while on the baseline;
 it did not reproduce R1. The captureless/shared-entry revision was recorded
-before its first inspection and reproduces the explicit-loop refusal. A future
-natural loop would require its own owning-stage repair/review, not a changed
-source expectation.
+before its first inspection and reproduces the explicit-loop refusal. The P6
+recovery below preserves these source expectations rather than changing them.
 
 Native helper model: fast records `(fast,mode)` and returns70 for mode0, otherwise
 throws IllegalArgumentException F. reset records `(reset,row)` and returns.
@@ -70,4 +69,16 @@ cargo run -p diana-decomp --example dbg_shell --locked -- \
 The captureless/shared-normal-entry preservation check in
 `crates/diana-decomp/tests/scalar_use_views.rs` passes on both revisions; it does
 not require the graph shape forever. [review.md](review.md) records source/model
-reasoning. No natural-loop repair or executed behavioral PASS is claimed.
+reasoning. Those scalar-repair observations did not claim natural recovery.
+
+## P6 recovery
+
+Against73fc8793a91d766d021d117aa83ddfd644f7ac82 on the same prepared bytes,
+P6 now accepts the original captureless shared update inside one while. Fast
+success still returns before fallback; reset remains outside the attempt chain.
+No throwable capture, result or second increment is invented. Complete P2–P5
+and original-coordinate P6 facts are unchanged. The new ordinary-Engine recovery
+check and existing preservation check pass. Fresh
+[nested/latch/foreign cases](../captureless-retry-nesting/README.md) challenge
+the admission. Both full isolated configurations pass 155 checks, without
+executing fixture/native behavior.
