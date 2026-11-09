@@ -225,6 +225,15 @@ Package Clippy with all targets/features
 and `-D warnings`, workspace formatting and relative report-link checks passed.
 These checks cover the repository's existing tests, not execution of AntennaPod.
 
+Integration recheck at `f426292da4610cbd483b48766c18b590cd1dcf87` retained the
+concurrent coroutine changes through `899624e7785fa1b507fabf089bb347013db7d9e2`.
+Its production sources equal that main revision; this review changes only two
+quality documents. Both nextest configurations passed 120/120, with zero skipped;
+formatting, package Clippy and release builds passed. Repeating the complete APK
+survey gave the same coverage and zero failure counters. All six selected class
+texts were byte-identical to the reviewed baseline, so the findings above remain
+applicable and their manual review is reused on that basis.
+
 Not run: application/source execution, device tests, Java recompilation of Diana
 text or a final-plan behavioral executor. This review is a discovery record,
 not a completed repair iteration under
