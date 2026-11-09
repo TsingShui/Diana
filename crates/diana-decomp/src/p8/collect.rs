@@ -833,7 +833,7 @@ pub(super) fn collect<'a>(
             && let Some(code) = delivery.expressions()
         {
             let delegation = code.complete.filter(|method| {
-                method.statements().iter().any(|statement| {
+                method.statements().any(|statement| {
                     matches!(
                         statement.kind,
                         crate::p7::StatementKind::Initialize {

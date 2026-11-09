@@ -29,7 +29,7 @@ modifier. P9's [declaration spelling](09-rendering.md#declarations-metadata-and-
 uses `synchronized` for either bit without changing P7's execution plan or raw
 flags.
 
-`MethodCode` contains flat expression, statement, reference, type-use, local,
+`MethodCode` contains flat expression, operation, reference, type-use, local,
 block, transfer and control arenas. It also owns original coverage, operation
 provenance, copy schedules, construction publications, exception chains/sites,
 handlers, array payloads/component gaps and upstream issues. Original stage IDs
@@ -37,9 +37,26 @@ are typed provenance coordinates, not permission to query a live predecessor.
 Type uses retain descriptors and original sources; P8 owns class-wide display
 names and imports.
 
-Each block retains its original P6 operation range. P7 builds the statement lookup
-once and constructs block actions from that range, without per-node operation
-vectors. The range indexes only this method's owned operation arena; it grants
+Each operation record owns its optional statement body. StatementId identifies
+that body's original operation coordinate, not a second arena position.
+Construction initialization references the body held by its original allocation;
+prepared arguments retain their own bodies. The delivered construction record
+names the sole execution operation. Body lookup and execution lookup consume
+these established coordinates without an index or a method scan. P7 constructs
+original operation records before lowering bodies; unpublished partial records
+remain partial, and a missing required body is a local construction failure.
+Original operation/member/commit identities and execution order are unchanged.
+P9 consumes the owned body and its original execution reference; it does not
+infer placement from the body-owning coordinate.
+Selected operation phases are the sole executable before/snapshot/after lists.
+Original copy bundles retain their source locations and states. Body records do
+not copy those lists. P7's construction scratch supplies pre-publication phase
+needs, including synchronized outlets; the owning phase constructor installs a
+construction prelude once. Neither representation suppresses source obligations.
+
+Each block retains its original P6 operation range. P7 constructs block actions
+from that range and reads body data by original operation coordinate, without
+per-node operation vectors. The range indexes only this method's owned operation arena; it grants
 no access to a predecessor. P9 consumes it separately for source-only origins.
 Rematerialized literal operations contribute zero-width operation/statement
 anchors at their original portion without another execution or storage commit.
@@ -486,8 +503,13 @@ prevent a scoped declaration or inflate its use count. P5 retains an explicit
 plan for other intervening operations. The group retains
 allocation and initialization operations, member/edge provenance, arguments,
 normal publication point and all throwing sites. Its selected common snapshot
-prelude executes once. Alias publications occur only after successful
-initialization; failed construction does not invent external assignment or undo
+prelude executes once, before the entire New evaluation on its initializing
+execution owner. It does not remain on the source-only allocation portion or
+run after constructor arguments. P5 establishes the saved sources at the
+allocation anchor and the closed preparation corridor; P7 consumes that proof
+without relocating unrelated copies or re-identifying construction. Original
+snapshot bundle identities and source locations remain facts. Alias publications
+occur only after successful initialization; failed construction does not invent external assignment or undo
 callee effects. Unselected construction relations retain separate allocation and
 initialization statements. `this`/`super` syntax requires the existing pending
 initialization fact and an original first operation without preceding copy/save

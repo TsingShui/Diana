@@ -590,18 +590,40 @@ structure from the remaining replacement; the complete design is not accepted.
 |---|---|---|
 | Common control grammar | P6 delivers named `ControlLayout` roles; P7 keeps one selected `Control` arena; P9 consumes it. | Planning `RegionKind` and protocol-specific executable forms remain. Common leaf/reference mapping and protocol consolidation are incomplete. |
 | Fragment composition | One installer updates parents/current owners after reservation. Sequence ordering and successor-arm admission share one kernel; accepted interfaces reach commitment without another outlet scan. Nested scopes share active ancestor exclusions. | Per-family candidate walks and descendant node lists remain. General interface-based contraction and affected-neighbor scheduling are incomplete. |
-| Operation ownership | Nested `Evaluation` and the original operation's `nested_at` identify one execution owner. Sparse proposals replace whole-arena rollback. | Declaration/copy check attachments and other placement bookkeeping remain to be consolidated where their semantics permit. |
+| Operation ownership | Operation records own body data; original coordinates replace the statement arena and reverse map. Nested `Evaluation`/`nested_at` identify one execution owner. Selected operation phases replace copied body phase lists. | Declaration/copy check attachments, protocol variants and other placement bookkeeping remain to be consolidated where their semantics permit. |
 | Expression covers | Ordinary and condition consumers share ordered suffix forests. Required checks use the same producer and installer. Statement, terminal and later-read check searches share one bounded cursor. | Dependency-driven reconsideration and broader cross-context cover obligations are incomplete. |
 | Local fixed points | Selected roots leave the active suffix; rejected condition proposals leave the product unchanged. | The P6 and P7 pipelines still run ordered passes. Neither stage has the complete dependency-driven local convergence specified by the design. |
 | Finalization | P9 consumes selected layouts and nested operations. Existing declaration and label passes remain. | Protocol traversal and a single final declaration/label derivation still need replacement. |
 
-Against `f6e7893`, the current engine production tree has 67,977 physical Rust
-source lines, compared with 68,495 at the baseline: 518 fewer lines. This count
+Against `f6e7893`, the current engine production tree has 67,982 physical Rust
+source lines, compared with 68,495 at the baseline: 513 fewer lines. This count
 includes every `*.rs` file under `crates/diana-decomp/src/`, including shared
 helpers, comments and blank lines; tests and documentation are excluded. The
 small reduction does not establish the design's substantial size objective or
 comparable recovery capability. Full replacement acceptance and a comparative
 recovery evaluation remain unrun.
+
+## Operation-owned body data
+
+The separate statement arena, reverse operation map, per-block statement lists
+and copied body before/snapshot/after lists are removed. Body identity uses its
+original operation coordinate. Construction initialization consumes the body
+owned by allocation through the existing group relation; body ownership never
+implies execution at that coordinate. The same selected operation phase lists
+serve body execution and nested composition. Literal normalization checks its
+own operation directly instead of rescanning the method for every body.
+
+The [new challenge](../../quality/fixtures/composite/operation-records/README.md)
+exposed an existing misplaced construction snapshot prelude. It now executes
+before the entire New evaluation on the initializing owner, preserving the
+delivered allocation-anchor guarantee and original copy facts. Twenty scoped
+nextest checks pass; eleven new modeled constructor/lock scenarios cover helper
+faults, saved values, allocation failure and release. Restoring the old phase
+owner fails with 0 instead of 10 after later's fault. Real VM/device execution and
+general final-plan acceptance remain unrun; historical adaptation remains deferred.
+This slice changes 35-plus source/consumer files but adds five production lines
+against `76f19c8` after formatting and the phase fix. Removed representations and
+a semantic repair do not establish the final code-size or capability objective.
 
 ## Shared fragment construction
 

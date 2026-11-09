@@ -21,7 +21,7 @@ fn ownership(code: &MethodCode, rendered: &Rendered) {
             "retain the original exact read"
         );
         let statement = operation.statement.expect("original producer statement");
-        let source_expression = match code.statements()[statement.0 as usize].kind {
+        let source_expression = match code.statement(statement).unwrap().kind {
             StatementKind::Move { expression, .. } | StatementKind::Evaluate { expression } => {
                 expression
             }
@@ -127,7 +127,6 @@ fn refusing_the_condition_keeps_the_whole_effect_schedule() {
             assert!(first < second && second < mark && pair < mark);
             let statement = code
                 .statements()
-                .iter()
                 .find(|statement| {
                     matches!(statement.kind, StatementKind::Evaluate { expression }
                     if call_name(code, expression).as_deref() == Some("pair"))

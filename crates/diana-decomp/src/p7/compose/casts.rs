@@ -91,10 +91,10 @@ pub(super) fn construct(
     access: &LocalAccess,
 ) -> Result<(), ExpressionError> {
     let mut why_slots: Vec<Option<&'static str>> =
-        super::super::build::filled(code.statements.len(), None)?;
+        super::super::build::filled(code.operations.len(), None)?;
     let mut found: Vec<(StatementId, InlineCheck)> = Vec::new();
     let protection = protected_contexts(code)?;
-    let mut suspended: Vec<bool> = super::super::build::filled(code.statements.len(), false)?;
+    let mut suspended: Vec<bool> = super::super::build::filled(code.operations.len(), false)?;
     if let Some(flow) = code.emission.coroutine_flow() {
         for site in &flow.sites {
             suspended[site.statement.0 as usize] = true;
@@ -106,7 +106,7 @@ pub(super) fn construct(
     for surface in code.emission.suspensions() {
         suspended[surface.statement.0 as usize] = true;
     }
-    let mut claimed: Vec<bool> = super::super::build::filled(code.statements.len(), false)?;
+    let mut claimed: Vec<bool> = super::super::build::filled(code.operations.len(), false)?;
     // Each check consumes one owning declaration/copy location or one ordered
     // operand query; normal reads use the shared operation cover.
     for node in 0..code.emission.blocks.len() {
@@ -234,8 +234,7 @@ pub(super) fn construct(
             if found.iter().any(|(check, _)| *check == statement)
                 || code.emission.omitted_check(statement).is_some()
                 || code.nested_operation(
-                    code.emission
-                        .statement_operation(statement)
+                    code.statement_operation(statement)
                         .unwrap_or(OpId(u32::MAX)),
                 )
             {
@@ -256,7 +255,7 @@ fn redundant(
     types: &crate::p4::TypeFacts,
 ) -> Result<Vec<Option<OmittedCheck>>, ExpressionError> {
     let mut omitted: Vec<Option<OmittedCheck>> =
-        super::super::build::filled(code.statements.len(), None)?;
+        super::super::build::filled(code.operations.len(), None)?;
     for check in types.checks() {
         let CheckDisposition::Redundant(evidence) = check.disposition() else {
             continue;
@@ -301,7 +300,7 @@ fn eligible_check(
             why_at(slots, statement, why);
         }
     };
-    let s = code.statements.get(statement.0 as usize)?;
+    let s = code.statement(statement)?;
     // Only a real check-cast can be refused; every other statement simply has no
     // carrier question, so it is silent.
     let StatementKind::CheckCast { value, reference } = s.kind else {
@@ -344,7 +343,7 @@ fn checked_read(
     code: &MethodCode,
     statement: StatementId,
 ) -> Option<(crate::p3::ValueId, crate::p3::StateId)> {
-    let StatementKind::CheckCast { value, .. } = code.statements[statement.0 as usize].kind else {
+    let StatementKind::CheckCast { value, .. } = code.statement(statement)?.kind else {
         return None;
     };
     read_of(code, value)
@@ -444,7 +443,7 @@ fn definition_carrier(
     let Some((_, reference)) = eligible_check(code, operation, statement, None) else {
         return Ok(None);
     };
-    let mut stores = code.statements.iter().filter(|s| {
+    let mut stores = code.statements().filter(|s| {
         s.outputs.iter().any(|output| {
             matches!(
                 output.materialization(),
@@ -456,7 +455,8 @@ fn definition_carrier(
     if !unique {
         return Err(Stop::Refuse("definition_is_not_the_only_store"));
     }
-    let defined = code.statements[definition.0 as usize]
+    let defined = code
+        .require_statement(definition)?
         .outputs
         .iter()
         .find(|output| {
@@ -500,7 +500,7 @@ fn definition_carrier(
         .get(operation.0 as usize)
         .ok_or(bug("check-cast lost its operation"))?
         .pc;
-    let occurrence = match code.statements[statement.0 as usize].kind {
+    let occurrence = match code.require_statement(statement)?.kind {
         StatementKind::CheckCast { value, .. } => value,
         _ => return Err(Stop::Error(bug("definition carrier lost its check"))),
     };
@@ -867,7 +867,6 @@ fn rendered_once(
     occurrence: ExprId,
 ) -> Result<bool, ExpressionError> {
     if code
-        .emission
         .statement_operation(statement)
         .is_some_and(|op| code.origin_only_operation(op))
     {

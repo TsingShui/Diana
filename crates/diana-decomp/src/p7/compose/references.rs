@@ -280,7 +280,7 @@ pub(super) fn field_owners(code: &mut MethodCode) -> Result<(), ExpressionError>
             select(reference, receiver);
         }
     }
-    for statement in &code.statements {
+    for statement in code.statements() {
         if let StatementKind::FieldStore {
             reference,
             receiver: Some(receiver),

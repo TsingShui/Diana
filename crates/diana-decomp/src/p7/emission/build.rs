@@ -25,7 +25,9 @@ fn identity_moves(code: &MethodCode, plan: &mut EmissionPlan) {
         let Some(statement) = op.statement else {
             continue;
         };
-        let s = &code.statements[statement.0 as usize];
+        let Some(s) = code.statement(statement) else {
+            continue;
+        };
         let StatementKind::Move { expression, .. } = s.kind else {
             continue;
         };

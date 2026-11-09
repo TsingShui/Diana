@@ -12,7 +12,7 @@ fn retain_cleanup_effects(
 ) -> Result<(), ExpressionError> {
     plan.origin_only_operations[finally.capture.0 as usize] = Some(super::OriginOnly::Attachment);
     if let Some(statement) = code.operations[finally.capture.0 as usize].statement {
-        for d in &code.statements[statement.0 as usize].outputs {
+        for d in &code.require_statement(statement)?.outputs {
             if let crate::p5::Materialization::ExceptionCapture(local) = d.materialization() {
                 plan.hidden_locals[local.0 as usize] = true;
             }
@@ -30,7 +30,7 @@ fn retain_cleanup_effects(
     for &(normal, _) in &finally.operations {
         plan.origin_only_operations[normal.0 as usize] = Some(super::OriginOnly::Attachment);
         if let Some(statement) = code.operations[normal.0 as usize].statement {
-            for d in &code.statements[statement.0 as usize].outputs {
+            for d in &code.require_statement(statement)?.outputs {
                 if let crate::p5::Materialization::Store(local) = d.materialization() {
                     plan.hidden_locals[local.0 as usize] = true;
                 }
@@ -138,7 +138,7 @@ pub(super) fn surfaces(
                 push(&mut cleanups, cleanup)?;
             }
             for outlet in outlets {
-                let operation = plan
+                let operation = code
                     .statement_operation(outlet.release)
                     .ok_or(bug("implicit release lost its operation"))?;
                 plan.origin_only_operations[operation.0 as usize] =
@@ -148,7 +148,7 @@ pub(super) fn surfaces(
                 plan.origin_only_operations[capture.0 as usize] =
                     Some(super::OriginOnly::Attachment);
                 if let Some(statement) = code.operations[capture.0 as usize].statement {
-                    for output in &code.statements[statement.0 as usize].outputs {
+                    for output in &code.require_statement(statement)?.outputs {
                         if let crate::p5::Materialization::ExceptionCapture(local) =
                             output.materialization()
                         {

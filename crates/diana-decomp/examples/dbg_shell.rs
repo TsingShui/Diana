@@ -1977,7 +1977,7 @@ fn expression_counts(counts: &mut BTreeMap<String, u64>, result: &diana_decomp::
     for (name, n) in [
         ("operations", code.operations().len()),
         ("expressions", code.expressions().len()),
-        ("statements", code.statements().len()),
+        ("statements", code.statements().count()),
         ("locals", code.locals().len()),
         ("references", code.references().len()),
         ("types", code.types().len()),
@@ -1993,7 +1993,6 @@ fn expression_counts(counts: &mut BTreeMap<String, u64>, result: &diana_decomp::
         (
             "omitted_checks",
             code.statements()
-                .iter()
                 .filter(|s| code.emission().omitted_check(s.id).is_some())
                 .count(),
         ),
@@ -2286,7 +2285,7 @@ fn expression_all(
     Ok(out)
 }
 fn expression_stop_json(stop: &diana_decomp::p7::ExpressionStop<'_>) -> Value {
-    json!({"stage":"p7","stopped":true,"kind":format!("{:?}",stop.error().kind()),"error":format!("{}",stop.error()),"partial":{"expressions":stop.partial().expressions().len(),"statements":stop.partial().statements().len(),"operations":stop.partial().operations().len()}})
+    json!({"stage":"p7","stopped":true,"kind":format!("{:?}",stop.error().kind()),"error":format!("{}",stop.error()),"partial":{"expressions":stop.partial().expressions().len(),"statements":stop.partial().statements().count(),"operations":stop.partial().operations().len()}})
 }
 fn inspection_stop(outcome: &MethodOutcome<'_>) -> Option<Value> {
     match outcome {
@@ -2315,7 +2314,7 @@ fn inspection_stop(outcome: &MethodOutcome<'_>) -> Option<Value> {
             json!({"stage":"p3","stopped":true,"kind":format!("{:?}",stop.error().kind()),"error":format!("{}",stop.error())}),
         ),
         MethodOutcome::ExpressionStopped(stop) => Some(
-            json!({"stage":"p7","stopped":true,"kind":format!("{:?}",stop.error().kind()),"error":format!("{}",stop.error()),"partial":{"expressions":stop.partial().expressions().len(),"statements":stop.partial().statements().len(),"operations":stop.partial().operations().len()}}),
+            json!({"stage":"p7","stopped":true,"kind":format!("{:?}",stop.error().kind()),"error":format!("{}",stop.error()),"partial":{"expressions":stop.partial().expressions().len(),"statements":stop.partial().statements().count(),"operations":stop.partial().operations().len()}}),
         ),
         MethodOutcome::Expressed(_) => None,
     }

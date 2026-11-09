@@ -88,7 +88,7 @@ pub(super) fn construct(
 ) -> Result<ControlKind, ExpressionError> {
     let f = c.planned.facts();
     let acquire = statement(c, p.enter())?;
-    let StatementKind::Monitor { enter: true, lock } = c.code.statements[acquire.0 as usize].kind
+    let StatementKind::Monitor { enter: true, lock } = c.code.require_statement(acquire)?.kind
     else {
         return Err(bug("synchronized acquire lost its monitor expression"));
     };
@@ -138,7 +138,7 @@ pub(super) fn construct(
         // operand read stays between before-operation and snapshot saves.
         let completion = outlet_completion(c, exit)?;
         let entry = label(c, c.code.operations[exit.release().0 as usize].node)?;
-        let s = &mut c.code.statements[release.0 as usize];
+        let s = &mut c.operations[exit.release().0 as usize];
         let before_operand = std::mem::take(&mut s.before);
         let snapshots = std::mem::take(&mut s.snapshots);
         s.after.clear();

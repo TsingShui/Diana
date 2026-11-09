@@ -218,7 +218,6 @@ pub struct EmissionPlan {
     pub(super) omitted_returns: Vec<bool>,
     pub(super) transfers: Vec<EmissionTransfer>,
     pub(super) initial: Vec<CopyPlanId>,
-    pub(super) statement_operations: Vec<Option<OpId>>,
     pub(super) origin_only_operations: Vec<Option<OriginOnly>>,
     pub(super) origin_only_terminals: Vec<bool>,
 }
@@ -334,7 +333,6 @@ impl EmissionPlan {
             omitted_returns: Vec::new(),
             transfers: Vec::new(),
             initial: Vec::new(),
-            statement_operations: Vec::new(),
             origin_only_operations: Vec::new(),
             origin_only_terminals: Vec::new(),
         }
@@ -467,11 +465,5 @@ impl EmissionPlan {
     }
     pub fn initial(&self) -> &[CopyPlanId] {
         &self.initial
-    }
-    pub fn statement_operation(&self, id: StatementId) -> Option<OpId> {
-        self.statement_operations
-            .get(id.0 as usize)
-            .copied()
-            .flatten()
     }
 }

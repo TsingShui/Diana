@@ -11,9 +11,9 @@ use super::super::*;
 /// expression or an unavailable operand — keeps the explicit store form.
 pub(super) fn natural_stores(code: &mut MethodCode) -> Result<(), ExpressionError> {
     let mut natural = Vec::new();
-    crate::substrate::owned::reserve(&mut natural, code.statements.len())?;
-    natural.resize(code.statements.len(), false);
-    for statement in &code.statements {
+    crate::substrate::owned::reserve(&mut natural, code.operations.len())?;
+    natural.resize(code.operations.len(), false);
+    for statement in code.statements() {
         let plain = |operand: ExprId| {
             code.evaluation(operand).is_none()
                 && matches!(

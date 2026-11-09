@@ -32,7 +32,7 @@ fn kind(c: &mut Context<'_, '_>, r: &p6::Region) -> Result<ControlKind, Expressi
                         let binding = if let Some(operation) = capture {
                             let statement = statement(c, operation)?;
                             let [definition] =
-                                c.code.statements[statement.0 as usize].outputs.as_slice()
+                                c.code.require_statement(statement)?.outputs.as_slice()
                             else {
                                 return Err(bug("catch binding lost its definition"));
                             };

@@ -51,7 +51,6 @@ pub struct Block {
     pub node: crate::p6::NodeId,
     pub original_block: crate::p2::BlockId,
     pub original_operations: std::ops::Range<u32>,
-    pub statements: Vec<StatementId>,
     pub completion: BlockCompletion,
     pub transfers: Vec<TransferId>,
     pub reachable: bool,
@@ -98,7 +97,6 @@ pub struct MethodCode {
     pub(super) references: Vec<Reference>,
     pub(super) locals: Vec<LocalDeclaration>,
     pub(super) expressions: Vec<Expression>,
-    pub(super) statements: Vec<Statement>,
     pub(super) operations: Vec<Operation>,
     pub(super) terminals: Vec<Terminal>,
     pub(super) blocks: Vec<Block>,
@@ -125,7 +123,6 @@ impl MethodCode {
             references: Vec::new(),
             locals: Vec::new(),
             expressions: Vec::new(),
-            statements: Vec::new(),
             operations: Vec::new(),
             terminals: Vec::new(),
             blocks: Vec::new(),
@@ -214,8 +211,35 @@ impl MethodCode {
     pub fn expressions(&self) -> &[Expression] {
         &self.expressions
     }
-    pub fn statements(&self) -> &[Statement] {
-        &self.statements
+    pub fn statements(&self) -> impl Iterator<Item = &Statement> {
+        self.operations
+            .iter()
+            .filter_map(|operation| operation.body.as_ref())
+    }
+    pub fn statement(&self, id: StatementId) -> Option<&Statement> {
+        self.operations.get(id.0 as usize)?.body.as_ref()
+    }
+    pub(super) fn require_statement(&self, id: StatementId) -> Result<&Statement, ExpressionError> {
+        self.statement(id)
+            .ok_or(build::bug("operation lost its owned statement body"))
+    }
+    pub(super) fn statement_mut(
+        &mut self,
+        id: StatementId,
+    ) -> Result<&mut Statement, ExpressionError> {
+        self.operations
+            .get_mut(id.0 as usize)
+            .and_then(|operation| operation.body.as_mut())
+            .ok_or(build::bug("operation lost its owned statement body"))
+    }
+    pub fn statement_operation(&self, id: StatementId) -> Option<crate::p2::OpId> {
+        let body = self.statement(id)?;
+        Some(match body.kind {
+            StatementKind::Construction(group) => {
+                self.constructions.get(group.0 as usize)?.initialization
+            }
+            _ => crate::p2::OpId(id.0),
+        })
     }
     pub fn operations(&self) -> &[Operation] {
         &self.operations
@@ -378,7 +402,7 @@ impl ExpressionPartial {
     pub fn fragments(&self) -> impl Iterator<Item = (&Operation, &Statement)> {
         self.code.operations.iter().filter_map(|op| {
             op.statement
-                .map(|id| (op, &self.code.statements[id.0 as usize]))
+                .and_then(|id| self.code.statement(id).map(|body| (op, body)))
         })
     }
     pub fn payloads(&self) -> &[ArrayPayload] {
@@ -405,8 +429,8 @@ impl ExpressionPartial {
     pub fn expressions(&self) -> &[Expression] {
         &self.code.expressions
     }
-    pub fn statements(&self) -> &[Statement] {
-        &self.code.statements
+    pub fn statements(&self) -> impl Iterator<Item = &Statement> {
+        self.code.statements()
     }
     pub fn operations(&self) -> &[Operation] {
         &self.code.operations

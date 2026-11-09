@@ -96,7 +96,7 @@ pub(super) fn construct(
     };
     let mut definitions = filled(code.locals.len(), None)?;
     let mut multiple = filled(code.locals.len(), false)?;
-    for statement in &code.statements {
+    for statement in code.statements() {
         for output in &statement.outputs {
             if let Materialization::Store(local) = output.materialization() {
                 let index = local.0 as usize;
@@ -137,7 +137,7 @@ pub(super) fn construct(
         let Some(statement) = definitions[index] else {
             continue;
         };
-        let statement = &code.statements[statement.0 as usize];
+        let statement = &code.require_statement(statement)?;
         if multiple[index]
             || statement.outputs.len() != 1
             || identities[index] != Some((value, statement.outputs[0].state()))

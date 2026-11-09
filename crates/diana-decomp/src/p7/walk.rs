@@ -63,8 +63,7 @@ impl<'a> Roots<'a> {
         statement: StatementId,
     ) -> Result<Option<Self>, ExpressionError> {
         let source = code
-            .statements
-            .get(statement.0 as usize)
+            .statement(statement)
             .ok_or(bug("expression roots lost their statement"))?;
         let mut roots = Self {
             head: [None; 3],

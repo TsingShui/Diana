@@ -40,11 +40,18 @@ impl Value {
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Fault {
+    #[allow(dead_code)]
+    Runtime,
+    #[allow(dead_code)]
+    Allocation,
+    #[allow(dead_code)]
+    NullLock,
     Cast,
     NullArray,
     // Only the virtual-call preparation fixture constructs this modeled fault.
     #[allow(dead_code)]
     NullReceiver,
+    #[allow(dead_code)]
     Helper(usize),
     Unsupported(&'static str),
 }
@@ -98,7 +105,7 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
                 .statement
                 .ok_or(Fault::Unsupported("nested statement"))?;
             let value = self.expression(evaluation.expression)?;
-            let value = match self.code.statements()[statement.0 as usize].kind {
+            let value = match self.code.statement(statement).unwrap().kind {
                 StatementKind::CheckCast { reference, .. } => self.cast(value, reference)?,
                 _ => value,
             };
@@ -108,7 +115,7 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
             return Ok(value);
         }
         match &expression.kind {
-            ExprKind::Read { storage, .. } => {
+            ExprKind::Read { storage, .. } | ExprKind::Snapshot { storage } => {
                 self.locals[storage.0 as usize].ok_or(Fault::Unsupported("unbound local"))
             }
             ExprKind::Literal { bits, .. } if bits.width == diana_decomp::SlotWidth::One => {
@@ -163,6 +170,27 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
                 };
                 (self.calls)(&String::from_utf16(&name.units).unwrap(), &values)
             }
+            ExprKind::New {
+                constructor,
+                arguments,
+                ..
+            } => {
+                let Ok(ReferenceDeclaration::Member(MemberDeclaration::Method { name, .. })) =
+                    &self.code.references()[constructor.0 as usize].declaration
+                else {
+                    return Err(Fault::Unsupported("constructor declaration"));
+                };
+                if name.units != "<init>".encode_utf16().collect::<Vec<_>>() {
+                    return Err(Fault::Unsupported("constructor name"));
+                }
+                let allocated = (self.calls)("$allocate", &[])?;
+                let values = arguments
+                    .iter()
+                    .map(|&argument| self.expression(argument))
+                    .collect::<Result<Vec<_>, _>>()?;
+                (self.calls)("$construct", &values)?;
+                Ok(allocated)
+            }
             _ => Err(Fault::Unsupported("expression")),
         }
     }
@@ -200,6 +228,8 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
         let result = match op {
             BranchOp::Eq | BranchOp::Eqz => equal,
             BranchOp::Ne | BranchOp::Nez => !equal,
+            BranchOp::Lt | BranchOp::Ltz => left.int() < right.int(),
+            BranchOp::Ge | BranchOp::Gez => left.int() >= right.int(),
             _ => return Err(Fault::Unsupported("comparison operator")),
         };
         Ok(result != test.negate)
@@ -218,10 +248,37 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
             return Ok(());
         }
         let phases = &self.code.emission().operations()[operation.0 as usize];
-        if !phases.before.is_empty() || !phases.snapshots.is_empty() || !phases.after.is_empty() {
-            return Err(Fault::Unsupported("statement phases"));
+        let statement = &self.code.statement(id).unwrap();
+        self.copies(&phases.before)?;
+        // This subset admits snapshots only before calls with plain operands.
+        // Acting operands require capture/continuation support not modeled here.
+        if !phases.snapshots.is_empty() {
+            let StatementKind::Evaluate { expression } = statement.kind else {
+                return Err(Fault::Unsupported("snapshot statement"));
+            };
+            let ExprKind::Call(call) = &self.code.expressions()[expression.0 as usize].kind else {
+                return Err(Fault::Unsupported("snapshot effect"));
+            };
+            let Arguments::Known(arguments) = &call.arguments else {
+                return Err(Fault::Unsupported("snapshot arguments"));
+            };
+            if call
+                .receiver
+                .into_iter()
+                .chain(arguments.iter().copied())
+                .any(|id| {
+                    let expression = &self.code.expressions()[id.0 as usize];
+                    expression.evaluation.is_some()
+                        || !matches!(
+                            expression.kind,
+                            ExprKind::Read { .. } | ExprKind::Literal { .. }
+                        )
+                })
+            {
+                return Err(Fault::Unsupported("acting snapshot operand"));
+            }
+            self.copies(&phases.snapshots)?;
         }
-        let statement = &self.code.statements()[id.0 as usize];
         let value = match statement.kind {
             StatementKind::Move { expression, .. } | StatementKind::Evaluate { expression } => {
                 let value = self.expression(expression)?;
@@ -237,14 +294,55 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
                 Value::Unit
             }
             StatementKind::CaptureException => Value::Reference(Reference::Object(u32::MAX)),
+            StatementKind::Construction(group) => {
+                let construction = &self.code.constructions()[group.0 as usize];
+                let value = self.expression(construction.expression)?;
+                for publication in &construction.publications {
+                    self.locals[publication.destination.0 as usize] = Some(value);
+                }
+                value
+            }
             _ => return Err(Fault::Unsupported("statement")),
         };
         for output in &statement.outputs {
             match output.materialization() {
-                Materialization::Store(local) | Materialization::ExceptionCapture(local) => {
+                Materialization::Store(local)
+                | Materialization::ExceptionCapture(local)
+                | Materialization::Deferred { local, .. } => {
                     self.locals[local.0 as usize] = Some(value)
                 }
                 _ => return Err(Fault::Unsupported("materialization")),
+            }
+        }
+        self.copies(&phases.after)?;
+        Ok(())
+    }
+    fn copies(&mut self, ids: &[CopyPlanId]) -> Result<(), Fault> {
+        for &id in ids {
+            let copy = &self.code.copies()[id.0 as usize];
+            if copy
+                .assignments
+                .iter()
+                .any(|assignment| assignment.issue().is_some())
+            {
+                return Err(Fault::Unsupported("unavailable copy"));
+            }
+            for step in &copy.steps {
+                let (destination, value) = match *step {
+                    CopyStatement::Save {
+                        destination,
+                        source,
+                    } => (
+                        destination,
+                        self.locals[source.0 as usize].ok_or(Fault::Unsupported("copy source"))?,
+                    ),
+                    CopyStatement::Assign {
+                        destination,
+                        expression,
+                        ..
+                    } => (destination, self.expression(expression)?),
+                };
+                self.locals[destination.0 as usize] = Some(value);
             }
         }
         Ok(())
@@ -258,9 +356,7 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
     }
     fn transfer(&mut self, id: TransferId) -> Result<Option<Value>, Fault> {
         let transfer = &self.code.emission().transfers()[id.0 as usize];
-        if !transfer.copies.is_empty() {
-            return Err(Fault::Unsupported("transfer copies"));
-        }
+        self.copies(&transfer.copies)?;
         match transfer.spelling {
             TransferSpelling::Fallthrough => {}
             TransferSpelling::Goto(label) => self.jump = Some(label),
@@ -320,8 +416,11 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
                             operation,
                             statement,
                         } => self.statement(operation, statement)?,
-                        BodyAction::Receive { handler }
-                            if self.code.handlers()[handler as usize].receives.is_empty() => {}
+                        BodyAction::Receive { handler } => {
+                            self.copies(&self.code.handlers()[handler as usize].receives)?
+                        }
+                        BodyAction::Release { operation, .. }
+                            if self.code.origin_only_operation(operation) => {}
                         _ => return Err(Fault::Unsupported("body event")),
                     }
                 }
@@ -366,9 +465,7 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
                     BlockEnd::Transfers(transfers) => {
                         for transfer in transfers {
                             let transfer = &self.code.emission().transfers()[transfer.0 as usize];
-                            if !transfer.copies.is_empty() {
-                                return Err(Fault::Unsupported("transfer copies"));
-                            }
+                            self.copies(&transfer.copies)?;
                             match transfer.spelling {
                                 TransferSpelling::Fallthrough => {}
                                 TransferSpelling::Goto(label) => {
@@ -430,7 +527,7 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
                 catches,
                 finally: None,
             } => match self.control(*body) {
-                Err(Fault::Cast) => {
+                Err(fault @ (Fault::Cast | Fault::Runtime)) => {
                     let ControlKind::Try {
                         bindings,
                         chain,
@@ -450,10 +547,13 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
                         .as_ref()
                         .and_then(|ty| ty.descriptor.as_ref().ok())
                         .ok_or(Fault::Unsupported("catch type"))?;
+                    let expected = if fault == Fault::Cast {
+                        "Ljava/lang/ClassCastException;"
+                    } else {
+                        "Ljava/lang/RuntimeException;"
+                    };
                     if self.code.types()[ty.0 as usize].units
-                        != "Ljava/lang/ClassCastException;"
-                            .encode_utf16()
-                            .collect::<Vec<_>>()
+                        != expected.encode_utf16().collect::<Vec<_>>()
                     {
                         return Err(Fault::Unsupported("catch model"));
                     }
@@ -465,6 +565,30 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
                 }
                 result => result,
             },
+            EmissionLayout::Synchronized {
+                implicit: true,
+                body,
+                acquire,
+                ..
+            } => {
+                let operation = &self.code.operations()[acquire.0 as usize];
+                let statement = self
+                    .code
+                    .statement(
+                        operation
+                            .statement
+                            .ok_or(Fault::Unsupported("acquire body"))?,
+                    )
+                    .unwrap();
+                let StatementKind::Monitor { enter: true, lock } = statement.kind else {
+                    return Err(Fault::Unsupported("acquire semantics"));
+                };
+                let value = self.expression(lock)?;
+                (self.calls)("$acquire", &[value])?;
+                let result = self.control(*body);
+                (self.calls)("$release", &[value])?;
+                result
+            }
             _ => Err(Fault::Unsupported("control")),
         };
         if matches!(result, Ok(None)) && self.jump.is_none() {

@@ -130,7 +130,9 @@ impl Expressions<'_, '_> {
         let id = original.statement.ok_or(RenderError::Invariant(
             "emission operation has no statement",
         ))?;
-        let s = &self.code.statements()[id.0 as usize];
+        let s = self.code.statement(id).ok_or(RenderError::Invariant(
+            "operation lost its owned statement body",
+        ))?;
         let phases = &self.code.emission().operations()[op.0 as usize];
         if release.is_none() && self.code.emission().omitted_literal(id) {
             return self.literal_origins(op, original, s);
@@ -145,6 +147,9 @@ impl Expressions<'_, '_> {
         }
         self.out.indent()?;
         self.copies(&phases.before)?;
+        if !phases.before.is_empty() {
+            self.out.put(" ")?;
+        }
         let start = self.out.position();
         if matches!(s.kind, StatementKind::Construction(_)) {
             self.copies(&phases.snapshots)?;

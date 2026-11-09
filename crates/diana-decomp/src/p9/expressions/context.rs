@@ -138,9 +138,7 @@ impl ExpressionSource for MethodCode {
         self.copies()
     }
     fn statement_kind(&self, id: StatementId) -> Option<&StatementKind> {
-        self.statements()
-            .get(id.0 as usize)
-            .map(|statement| &statement.kind)
+        self.statement(id).map(|statement| &statement.kind)
     }
     fn operation(&self, id: crate::p2::OpId) -> Option<&Operation> {
         self.operations().get(id.0 as usize)
@@ -166,13 +164,11 @@ impl ExpressionSource for MethodCode {
         self.emission().definition_check(statement)
     }
     fn statement_sites(&self, statement: StatementId) -> &[SiteId] {
-        self.statements()
-            .get(statement.0 as usize)
+        self.statement(statement)
             .map_or(&[], |statement| statement.sites.as_slice())
     }
     fn statement_construction(&self, statement: StatementId) -> Option<&Construction> {
-        let StatementKind::Construction(id) = self.statements().get(statement.0 as usize)?.kind
-        else {
+        let StatementKind::Construction(id) = self.statement(statement)?.kind else {
             return None;
         };
         self.constructions().get(id.0 as usize)

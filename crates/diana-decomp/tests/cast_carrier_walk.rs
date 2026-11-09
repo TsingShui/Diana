@@ -69,7 +69,7 @@ fn origins(code: &MethodCode, rendered: &Rendered) {
     let statement = operation.statement.unwrap();
     assert_eq!(rendered.spans().iter().filter(|span| matches!(span.origin, Origin::Operation { operation: actual, pc, .. } if actual == operation.source && pc == operation.pc)).count(), 1);
     assert_eq!(rendered.spans().iter().filter(|span| matches!(span.origin, Origin::Statement { statement: actual, .. } if actual == statement)).count(), 1);
-    for &site in &code.statements()[statement.0 as usize].sites {
+    for &site in &code.statement(statement).unwrap().sites {
         assert_eq!(rendered.spans().iter().filter(|span| matches!(span.origin, Origin::Site { site: actual, .. } if actual == site)).count(), 1);
     }
 }

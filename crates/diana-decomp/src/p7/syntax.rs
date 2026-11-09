@@ -247,9 +247,6 @@ pub struct Statement {
     #[serde(serialize_with = "super::debug")]
     pub outputs: Vec<DefinitionPlan>,
     pub inputs: Arguments,
-    pub before: Vec<CopyPlanId>,
-    pub snapshots: Vec<CopyPlanId>,
-    pub after: Vec<CopyPlanId>,
     pub sites: Vec<SiteId>,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -283,6 +280,7 @@ pub struct Operation {
     #[serde(serialize_with = "super::debug")]
     pub writes: Vec<crate::RegisterSlot>,
     pub statement: Option<StatementId>,
+    pub(super) body: Option<Statement>,
     pub emission: Emission,
     /// Sole selected nested execution owner; absence retains body placement.
     pub nested_at: Option<ExprId>,

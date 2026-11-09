@@ -105,10 +105,12 @@ pub(super) fn copies(
     }
     for g in &code.constructions {
         if let Some(prelude) = g.prelude {
-            push(
-                &mut plan.operations[g.allocation.0 as usize].snapshots,
-                prelude,
-            )?;
+            // P5 establishes this save at the allocation anchor, before every
+            // grouped effect. New's execution starts on the initializing owner;
+            // its operands include allocation and argument preparation.
+            let before = &mut plan.operations[g.initialization.0 as usize].before;
+            crate::substrate::owned::reserve(before, 1)?;
+            before.insert(0, prelude);
         }
     }
     Ok(())

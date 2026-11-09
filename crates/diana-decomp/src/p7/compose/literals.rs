@@ -9,14 +9,17 @@ use super::super::*;
 /// Its statement, operation, PC, result commit and expression keep zero-length
 /// anchors at the original position; nothing moves and nothing is deleted.
 pub(super) fn omit_materialized_literals(code: &mut MethodCode) -> Result<(), ExpressionError> {
-    for statement in &code.statements {
+    for operation in &code.operations {
+        let Some(statement) = operation.body.as_ref() else {
+            continue;
+        };
         let expression = match statement.kind {
             StatementKind::Move { expression, .. } | StatementKind::Evaluate { expression } => {
                 expression
             }
             _ => continue,
         };
-        if !statement.sites.is_empty() || !statement.snapshots.is_empty() {
+        if !statement.sites.is_empty() {
             continue;
         }
         if !matches!(
@@ -35,18 +38,8 @@ pub(super) fn omit_materialized_literals(code: &mut MethodCode) -> Result<(), Ex
         }) {
             continue;
         }
-        let mut phased = false;
-        for operation in &code.operations {
-            if operation.statement != Some(statement.id) {
-                continue;
-            }
-            let phases = &code.emission.operations[operation.source.0 as usize];
-            if !phases.before.is_empty() || !phases.snapshots.is_empty() || !phases.after.is_empty()
-            {
-                phased = true;
-            }
-        }
-        if !phased {
+        let phases = &code.emission.operations[operation.source.0 as usize];
+        if phases.before.is_empty() && phases.snapshots.is_empty() && phases.after.is_empty() {
             code.emission.omitted_literals[statement.id.0 as usize] = true;
         }
     }

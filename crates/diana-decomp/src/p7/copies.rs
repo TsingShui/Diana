@@ -195,8 +195,7 @@ pub(super) fn construct(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> 
                     .ok_or(bug(
                         "prepared construction argument lost its consuming operation",
                     ))?;
-                let Arguments::Known(inputs) =
-                    &c.code.statements[target_statement.0 as usize].inputs
+                let Arguments::Known(inputs) = &c.code.require_statement(*target_statement)?.inputs
                 else {
                     return Err(bug("prepared construction target lost its inputs"));
                 };
@@ -239,7 +238,7 @@ pub(super) fn construct(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> 
             Arguments::Known(Vec::new()),
         )?;
         let sites = std::mem::take(&mut c.group_sites[group.id().0 as usize]);
-        c.code.statements[statement.0 as usize].sites = sites;
+        c.code.statement_mut(statement)?.sites = sites;
         let mut publications = Vec::new();
         for p in group.publications() {
             push(
@@ -255,14 +254,8 @@ pub(super) fn construct(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> 
             push(&mut snapshot_members, CopyPlanId(p.0))?;
         }
         let prelude = group.prelude().map(|p| CopyPlanId(p.0));
-        // P5 chose one common prelude; individual member snapshots are source
-        // obligations, not repeated executable saves inside this expression.
-        if let Some(prelude) = prelude {
-            push(
-                &mut c.code.statements[statement.0 as usize].snapshots,
-                prelude,
-            )?;
-        }
+        // Original bundles retain source snapshots; the selected prelude is
+        // installed once by the phase constructor, not another body phase list.
         push(
             &mut c.code.constructions,
             Construction {

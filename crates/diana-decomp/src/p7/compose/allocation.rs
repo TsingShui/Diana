@@ -9,8 +9,10 @@ use super::*;
 /// its own statement and position. Only a directly published allocation
 /// qualifies, so a discarded or aliased allocation keeps its expression form.
 pub(super) fn allocation_declarations(code: &mut MethodCode) -> Result<(), ExpressionError> {
-    for index in 0..code.statements.len() {
-        let statement = &code.statements[index];
+    for operation in &code.operations {
+        let Some(statement) = operation.body.as_ref() else {
+            continue;
+        };
         let StatementKind::Evaluate { expression } = statement.kind else {
             continue;
         };
@@ -31,7 +33,7 @@ pub(super) fn allocation_declarations(code: &mut MethodCode) -> Result<(), Expre
         *code
             .emission
             .allocation_declarations
-            .get_mut(index)
+            .get_mut(statement.id.0 as usize)
             .ok_or(bug("allocation names an unknown statement"))? = true;
         *code
             .emission

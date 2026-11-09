@@ -69,7 +69,9 @@ impl LocalAccess {
         if published != state {
             return false;
         }
-        let statement = &code.statements[statement.0 as usize];
+        let Some(statement) = code.statement(statement) else {
+            return false;
+        };
         let StatementKind::Move { expression, .. } = statement.kind else {
             return false;
         };
@@ -127,7 +129,7 @@ pub(super) fn local_access(code: &MethodCode) -> Result<LocalAccess, ExpressionE
             value.reads += 1;
         }
     }
-    for statement in &code.statements {
+    for statement in code.statements() {
         for output in &statement.outputs {
             if let Some(value) = output.value() {
                 let definition = access.at(value)?;

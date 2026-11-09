@@ -336,11 +336,11 @@ fn access(
 /// last producer that happened to compose into that storage.
 fn materializations(code: &mut MethodCode) -> Result<(), ExpressionError> {
     let mut required: Vec<Option<bool>> = filled(code.locals.len(), None)?;
-    for statement in &code.statements {
+    for statement in code.statements() {
         for output in &statement.outputs {
             // Grouped argument definitions have no standalone Block placement,
             // but retain their exact original operation and composition choice.
-            let operation = code.emission.statement_operation(statement.id).or_else(|| {
+            let operation = code.statement_operation(statement.id).or_else(|| {
                 code.nested_operation(output.operation())
                     .then_some(output.operation())
             });
@@ -368,7 +368,7 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
     materializations(code)?;
     let layout = Layout::construct(code)?;
     let operations = operation_locations(code, &layout)?;
-    let mut statement_operations = filled(code.statements.len(), None)?;
+    let mut statement_operations = filled(code.operations.len(), None)?;
     for block in &code.emission.blocks {
         for action in &block.actions {
             if let BodyAction::Statement {
@@ -385,7 +385,7 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
     }
     let mut candidates: Vec<Option<Candidate>> = filled(code.locals.len(), None)?;
     let mut eligible = filled(code.locals.len(), true)?;
-    for statement in &code.statements {
+    for statement in code.statements() {
         let [output] = statement.outputs.as_slice() else {
             continue;
         };
@@ -434,9 +434,9 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
     }
     // Later writes must see the declaration too. An earlier or out-of-scope
     // write prevents moving the declaration to a candidate assignment.
-    for statement in &code.statements {
+    for statement in code.statements() {
         let operation = statement_operations[statement.id.0 as usize]
-            .or_else(|| code.emission.statement_operation(statement.id));
+            .or_else(|| code.statement_operation(statement.id));
         if operation.is_some_and(|operation| !code.materializes_operation(operation)) {
             continue;
         }

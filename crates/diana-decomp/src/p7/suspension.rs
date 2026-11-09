@@ -108,7 +108,7 @@ pub(super) fn construct_flow(c: &mut Context<'_, '_>) -> Result<(), ExpressionEr
         let statement = c.code.operations[call.0 as usize]
             .statement
             .ok_or(bug("coroutine call lost statement"))?;
-        let StatementKind::Evaluate { expression } = c.code.statements[statement.0 as usize].kind
+        let StatementKind::Evaluate { expression } = c.code.require_statement(statement)?.kind
         else {
             return Err(bug("coroutine call lost expression"));
         };
@@ -353,7 +353,7 @@ pub(super) fn finish_flow(c: &mut Context<'_, '_>) -> Result<(), ExpressionError
                 }
             }
             if let Some(s) = c.code.operations[index as usize].statement {
-                for d in &c.code.statements[s.0 as usize].outputs {
+                for d in &c.code.require_statement(s)?.outputs {
                     if let crate::p5::Materialization::Store(l) = d.materialization() {
                         visible[l.0 as usize] = true;
                     }
@@ -424,8 +424,7 @@ pub(super) fn construct_loop(c: &mut Context<'_, '_>) -> Result<(), ExpressionEr
     let statement = c.code.operations[call.0 as usize]
         .statement
         .ok_or(bug("suspend loop call lost its statement"))?;
-    let StatementKind::Evaluate { expression } = c.code.statements[statement.0 as usize].kind
-    else {
+    let StatementKind::Evaluate { expression } = c.code.require_statement(statement)?.kind else {
         return Err(bug("suspend loop call lost its expression"));
     };
     let ExprKind::Call(source) = &c.code.expressions[expression.0 as usize].kind else {
@@ -547,7 +546,7 @@ pub(super) fn finish_loop(c: &mut Context<'_, '_>) -> Result<(), ExpressionError
                 continue;
             }
             if let Some(id) = source.statement {
-                for output in &c.code.statements[id.0 as usize].outputs {
+                for output in &c.code.require_statement(id)?.outputs {
                     if let crate::p5::Materialization::Store(local) = output.materialization() {
                         visible[local.0 as usize] = true;
                     }
@@ -813,8 +812,7 @@ pub(super) fn construct(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> 
     let statement = c.code.operations[call.0 as usize]
         .statement
         .ok_or(bug("suspension call lost its statement"))?;
-    let StatementKind::Evaluate { expression } = c.code.statements[statement.0 as usize].kind
-    else {
+    let StatementKind::Evaluate { expression } = c.code.require_statement(statement)?.kind else {
         return Err(bug("suspension call lost its evaluate expression"));
     };
     let ExprKind::Call(source) = &c.code.expressions[expression.0 as usize].kind else {

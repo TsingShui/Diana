@@ -132,6 +132,7 @@ fn construct(
     )?);
     let mut c = super::values::Context::new(planned, &mut partial.code)?;
     super::values::prepare(&mut c)?;
+    super::lower::original_operations(&mut c)?;
     super::copies::construct(&mut c)?;
     super::lower::operations(&mut c)?;
     super::lower::terminals(&mut c)?;

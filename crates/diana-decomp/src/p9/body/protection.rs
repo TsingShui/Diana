@@ -87,7 +87,12 @@ impl Expressions<'_, '_> {
             let start = self.out.position();
             self.local(binding.local)?;
             let source = &self.code.operations()[binding.operation.0 as usize];
-            let statement = &self.code.statements()[binding.statement.0 as usize];
+            let statement =
+                self.code
+                    .statement(binding.statement)
+                    .ok_or(RenderError::Invariant(
+                        "catch lost its owned statement body",
+                    ))?;
             self.statement_origins(binding.operation, source, statement, start)?;
         }
         self.out.put(")")?;
@@ -123,7 +128,16 @@ impl Expressions<'_, '_> {
         self.operand(*lock)?;
         self.out.put(")")?;
         self.phases(&phase.snapshots, "after_operands_before_effect")?;
-        self.sites(&self.code.statements()[statement.0 as usize].sites, a)?;
+        self.sites(
+            &self
+                .code
+                .statement(statement)
+                .ok_or(RenderError::Invariant(
+                    "synchronized entry lost its owned statement body",
+                ))?
+                .sites,
+            a,
+        )?;
         self.out.span(
             a,
             Origin::Operation {

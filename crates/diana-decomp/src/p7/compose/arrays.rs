@@ -15,8 +15,8 @@ pub(super) fn array_literals(
     if !access.complete {
         return Ok(());
     };
-    let mut literals: Vec<Option<ArrayLiteral>> = filled(code.statements.len(), None)?;
-    let mut folded = filled(code.statements.len(), false)?;
+    let mut literals: Vec<Option<ArrayLiteral>> = filled(code.operations.len(), None)?;
+    let mut folded = filled(code.operations.len(), false)?;
     for node in 0..code.emission.blocks.len() {
         let actions = &code.emission.blocks[node].actions;
         for (index, &action) in actions.iter().enumerate() {
@@ -85,7 +85,7 @@ pub(super) fn array_literal(
     {
         return None;
     }
-    let allocation = code.statements.get(allocation.0 as usize)?;
+    let allocation = code.statement(allocation)?;
     let StatementKind::Evaluate { expression } = allocation.kind else {
         return None;
     };
@@ -121,7 +121,7 @@ pub(super) fn array_literal(
     // The fill writes only that array and prints nothing else: no definition, no
     // printed exception marker and no copy phase of its own. A site that prints no
     // text states a route already visible in the enclosing chains and catches.
-    let fill_statement = code.statements.get(fill.0 as usize)?;
+    let fill_statement = code.statement(fill)?;
     let StatementKind::FillArray {
         array,
         payload: payload_id,

@@ -372,6 +372,7 @@ pub(super) fn semantic(
                     .code
                     .operations
                     .iter()
+                    .take(at.0 as usize)
                     .all(|operation| matches!(operation.emission, Emission::Literal))
                     && c.operations[at.0 as usize].before.is_empty()
                     && c.operations[at.0 as usize].snapshots.is_empty();
@@ -421,6 +422,39 @@ pub(super) fn semantic(
         expression: c.expression(expr, None)?,
     })
 }
+pub(super) fn original_operations(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> {
+    let flow = c.planned.execution();
+    for op in flow.operations() {
+        let reads = match flow.reads(op) {
+            Ok(reads) => Ok(copy(reads)?),
+            Err(e) => Err(super::references::failure(e.kind(), format_args!("{e}"))?),
+        };
+        let node =
+            c.op_nodes[op.id().0 as usize].ok_or(bug("operation lost its P6 execution portion"))?;
+        push(
+            &mut c.code.operations,
+            Operation {
+                node,
+                original_block: op.block(),
+                source: op.id(),
+                pc: op.pc(),
+                result_pc: op.result_pc(),
+                original: op.kind().clone(),
+                effects: op.effects(),
+                normal: op.normal(),
+                exceptional: op.exceptional(),
+                reads,
+                writes: copy(flow.writes(op))?,
+                statement: None,
+                body: None,
+                emission: Emission::Block { node },
+                nested_at: None,
+            },
+        )?;
+    }
+    Ok(())
+}
+
 pub(super) fn operations(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> {
     let f = c.planned.facts();
     for op in c.planned.execution().operations() {
@@ -452,7 +486,8 @@ pub(super) fn operations(c: &mut Context<'_, '_>) -> Result<(), ExpressionError>
             let emission = match owner {
                 OperationOwner::Ordinary { node, .. } => {
                     if matches!(op.kind(), OpKind::Const { .. })
-                        && c.code.statements[statement.0 as usize]
+                        && c.code
+                            .require_statement(statement)?
                             .outputs
                             .iter()
                             .all(|d| {
@@ -461,9 +496,9 @@ pub(super) fn operations(c: &mut Context<'_, '_>) -> Result<(), ExpressionError>
                                     crate::p5::Materialization::Literal(_)
                                 )
                             })
-                        && c.code.statements[statement.0 as usize].before.is_empty()
-                        && c.code.statements[statement.0 as usize].snapshots.is_empty()
-                        && c.code.statements[statement.0 as usize].after.is_empty()
+                        && c.operations[op.id().0 as usize].before.is_empty()
+                        && c.operations[op.id().0 as usize].snapshots.is_empty()
+                        && c.operations[op.id().0 as usize].after.is_empty()
                     {
                         Emission::Literal
                     } else {
@@ -496,32 +531,9 @@ pub(super) fn operations(c: &mut Context<'_, '_>) -> Result<(), ExpressionError>
             };
             (Some(statement), emission)
         };
-        let flow = c.planned.execution();
-        let reads = match flow.reads(op) {
-            Ok(reads) => Ok(copy(reads)?),
-            Err(e) => Err(super::references::failure(e.kind(), format_args!("{e}"))?),
-        };
-        push(
-            &mut c.code.operations,
-            Operation {
-                node: c.op_nodes[op.id().0 as usize]
-                    .ok_or(bug("operation lost its P6 execution portion"))?,
-
-                original_block: op.block(),
-                source: op.id(),
-                pc: op.pc(),
-                result_pc: op.result_pc(),
-                original: op.kind().clone(),
-                effects: op.effects(),
-                normal: op.normal(),
-                exceptional: op.exceptional(),
-                reads,
-                writes: copy(flow.writes(op))?,
-                statement,
-                emission,
-                nested_at: None,
-            },
-        )?;
+        let original = &mut c.code.operations[op.id().0 as usize];
+        original.statement = statement;
+        original.emission = emission;
     }
     Ok(())
 }
@@ -729,26 +741,6 @@ pub(super) fn terminals(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> 
         )?;
     }
     for n in f.nodes() {
-        let mut statements = Vec::new();
-        for op in n.operations() {
-            let m = &c.code.operations[op as usize];
-            match m.emission {
-                Emission::Block { node } if node == n.id() => push(
-                    &mut statements,
-                    m.statement
-                        .ok_or(bug("ordinary operation has no statement"))?,
-                )?,
-                Emission::Construction(group)
-                    if c.code.constructions[group.0 as usize].allocation == OpId(op) =>
-                {
-                    push(
-                        &mut statements,
-                        c.code.constructions[group.0 as usize].statement,
-                    )?
-                }
-                _ => {}
-            }
-        }
         let completion = if n.has_terminal() {
             let terminal = n.block();
             let owner = c.code.terminals[terminal.0 as usize].emission;
@@ -761,7 +753,6 @@ pub(super) fn terminals(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> 
             BlockCompletion::None
         };
         let block = &mut c.code.blocks[n.id().0 as usize];
-        block.statements = statements;
         block.completion = completion;
     }
     Ok(())

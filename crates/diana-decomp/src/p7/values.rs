@@ -40,7 +40,6 @@ impl<'f, 'a> Context<'f, 'a> {
                     node: node.id(),
                     original_block: node.block(),
                     original_operations: node.operations(),
-                    statements: Vec::new(),
                     completion: BlockCompletion::None,
                     transfers: Vec::new(),
                     reachable: node.reachable(),
@@ -350,25 +349,26 @@ impl<'f, 'a> Context<'f, 'a> {
                 .operation_definitions(op)
                 .ok_or(bug("operation lost its storage output record"))?,
         )?;
-        let phases = std::mem::take(&mut self.operations[op.0 as usize]);
         let mut sites = Vec::new();
         if let Some(site) = self.op_sites[op.0 as usize] {
             push(&mut sites, site)?;
         }
-        let at = StatementId(id(self.code.statements.len())?);
-        push(
-            &mut self.code.statements,
-            Statement {
-                id: at,
-                kind,
-                outputs,
-                inputs,
-                before: phases.before,
-                snapshots: phases.snapshots,
-                after: phases.after,
-                sites,
-            },
-        )?;
+        let at = StatementId(op.0);
+        let operation = self
+            .code
+            .operations
+            .get_mut(op.0 as usize)
+            .ok_or(bug("statement lost its original operation"))?;
+        if operation.body.is_some() {
+            return Err(bug("operation has multiple statement bodies"));
+        }
+        operation.body = Some(Statement {
+            id: at,
+            kind,
+            outputs,
+            inputs,
+            sites,
+        });
         Ok(at)
     }
 }

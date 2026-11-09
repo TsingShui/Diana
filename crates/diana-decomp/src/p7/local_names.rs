@@ -141,8 +141,7 @@ fn candidate(
         let Some(statement) = operation.statement else {
             return Ok(None);
         };
-        let StatementKind::Evaluate { expression } = code.statements[statement.0 as usize].kind
-        else {
+        let StatementKind::Evaluate { expression } = code.require_statement(statement)?.kind else {
             return Ok(None);
         };
         expression

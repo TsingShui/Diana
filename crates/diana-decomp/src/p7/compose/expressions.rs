@@ -89,7 +89,7 @@ fn construction_throw(
     else {
         return None;
     };
-    let StatementKind::Construction(id) = code.statements.get(statement.0 as usize)?.kind else {
+    let StatementKind::Construction(id) = code.statement(statement)?.kind else {
         return None;
     };
     let group = code.constructions.get(id.0 as usize)?;
@@ -111,7 +111,7 @@ fn construction_throw(
     if !phases.before.is_empty() || !phases.snapshots.is_empty() || !phases.after.is_empty() {
         return None;
     }
-    let construction_statement = code.statements.get(statement.0 as usize)?;
+    let construction_statement = code.statement(statement)?;
     for &member in &group.members {
         let operation = code.operations.get(member.0 as usize)?;
         if operation.effects.may_throw()
@@ -356,8 +356,7 @@ fn producer_with_nested(
         return Err("producer_has_copy_or_snapshot_phase");
     }
     let statement_ref = code
-        .statements
-        .get(statement.0 as usize)
+        .statement(statement)
         .ok_or("producer_statement_unavailable")?;
     if let StatementKind::CheckCast {
         value: expression,
@@ -1504,8 +1503,8 @@ impl Consumer<'_> {
     }
     fn store(&self, code: &Cover<'_>) -> bool {
         matches!(self.target, CoverTarget::Operation(_, statement)
-            if matches!(code.statements[statement.0 as usize].kind,
-                StatementKind::FieldStore { .. } | StatementKind::ArrayStore { .. }))
+            if code.statement(statement).is_some_and(|body| matches!(body.kind,
+                StatementKind::FieldStore { .. } | StatementKind::ArrayStore { .. })))
     }
     fn permits(
         &self,
@@ -1532,7 +1531,9 @@ impl Consumer<'_> {
         let CoverTarget::Operation(_, statement) = self.target else {
             return false;
         };
-        let statement = &code.statements[statement.0 as usize];
+        let Some(statement) = code.statement(statement) else {
+            return false;
+        };
         if let StatementKind::Evaluate { expression } = statement.kind
             && let ExprKind::Call(call) = &code.expressions[expression.0 as usize].kind
             && let Some(ConcatOutcome::Inferred(plan)) = call.concatenation()
@@ -1544,9 +1545,9 @@ impl Consumer<'_> {
             return (string
                 || (source.effects == Effects::default()
                     && source.exceptional.is_none()
-                    && code.statements[producer.statement.0 as usize]
-                        .sites
-                        .is_empty()))
+                    && code
+                        .statement(producer.statement)
+                        .is_some_and(|body| body.sites.is_empty())))
                 && self
                     .operands
                     .iter()
@@ -1573,7 +1574,7 @@ fn cover_suffix(
         }
         let policy = if consumer.required()
             || matches!(consumer.target,
-            CoverTarget::Operation(_, statement) if matches!(code.statements[statement.0 as usize].kind, StatementKind::CheckCast { .. }))
+            CoverTarget::Operation(_, statement) if matches!(code.require_statement(statement)?.kind, StatementKind::CheckCast { .. }))
         {
             UsePolicy::PreserveStore
         } else {
@@ -1643,7 +1644,7 @@ fn cover_operations(
 ) -> Result<(), ExpressionError> {
     let mut roots = Vec::new();
     for &(operation, statement) in actions {
-        let source = &code.statements[statement.0 as usize];
+        let source = &code.require_statement(statement)?;
         if matches!(
             source.kind,
             StatementKind::Move { .. }
