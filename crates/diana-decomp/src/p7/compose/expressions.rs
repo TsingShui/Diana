@@ -844,6 +844,52 @@ fn terminal_use(
     .then_some((producer, use_id, owner))
 }
 
+/// Late read placement consumes the same required-check producer and installer.
+/// Only the original binding or an established pure copy can carry its value.
+/// The caller establishes the phase/effect/protection-safe supplied run.
+pub(super) fn place_check(
+    code: &mut MethodCode,
+    operation: OpId,
+    occurrence: ExprId,
+    access: &LocalAccess,
+    key: crate::MethodKey,
+) -> Result<bool, ExpressionError> {
+    let Some(statement) = code
+        .operations
+        .get(operation.0 as usize)
+        .and_then(|operation| operation.statement)
+    else {
+        return Ok(false);
+    };
+    let view = Cover::new(code);
+    let Ok(producer) = producer(&view, operation, statement, access, UsePolicy::SingleRead) else {
+        return Ok(false);
+    };
+    let Some(expression) = code.expressions.get(occurrence.0 as usize) else {
+        return Ok(false);
+    };
+    let Some(origin) = expression.origin.as_ref() else {
+        return Ok(false);
+    };
+    if !matches_use(&view, producer, occurrence, origin.site)
+        && !(matches!(expression.kind, ExprKind::Read { storage, view } if storage == producer.local && compatible(view, Family::Reference))
+            && initialized(origin.initialization, Family::Reference)
+            && access.copied_read(
+                code,
+                (producer.value, producer.state),
+                occurrence,
+                producer.local,
+            ))
+    {
+        return Ok(false);
+    }
+    if code.evaluation(occurrence).is_some() {
+        return Ok(false);
+    }
+    install(code, producer, occurrence, None, key)?;
+    Ok(true)
+}
+
 fn boolean_type(code: &Cover<'_>, local: &LocalDeclaration, family: Family) -> bool {
     family == Family::Integral
         && !local.type_source_unknown

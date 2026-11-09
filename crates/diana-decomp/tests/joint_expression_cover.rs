@@ -2,8 +2,7 @@
 //! Inputs and independent scenarios: atoms/joint-expression-cover/README.md.
 
 use diana_decomp::p7::{
-    CheckCarrier, ExprId, ExprKind, MemberDeclaration, MethodCode, ReferenceDeclaration,
-    StatementKind,
+    ExprId, ExprKind, MemberDeclaration, MethodCode, ReferenceDeclaration, StatementKind,
 };
 use diana_decomp::p9::{Origin, Rendered};
 
@@ -137,12 +136,7 @@ fn refusing_the_condition_keeps_the_whole_effect_schedule() {
             let StatementKind::Evaluate { expression } = statement.kind else {
                 unreachable!()
             };
-            let (result, events) = replay(
-                code,
-                0,
-                None,
-                Some((expression, CheckCarrier::Statement(statement.id))),
-            );
+            let (result, events) = replay(code, 0, None, Some(expression));
             assert_eq!(result, Ok(1112));
             assert_eq!(
                 events,
@@ -220,7 +214,7 @@ fn replay(
     code: &MethodCode,
     seed: i32,
     fault: Option<usize>,
-    expression: Option<(ExprId, CheckCarrier)>,
+    expression: Option<ExprId>,
 ) -> (Result<i32, usize>, Vec<Event>) {
     let mut events = Vec::new();
     let mut run = Executor::new(code, &[Value::Int(seed)], |name, arguments| {
@@ -242,7 +236,7 @@ fn replay(
         }
     });
     let result = match expression {
-        Some((expression, carrier)) => run.expression(expression, carrier),
+        Some(expression) => run.expression(expression),
         None => run.run(),
     };
     drop(run);

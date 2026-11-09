@@ -99,11 +99,8 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
                 StatementKind::CheckCast { reference, .. } => Some(*reference),
                 _ => None,
             };
-            // Inline checks belong to the producer statement. Restore
-            // each enclosing carrier after its nested expression prints.
-            let previous_carrier = self
-                .check_carrier
-                .replace(CheckCarrier::Statement(statement));
+            // A nested operation does not execute its enclosing copy step.
+            let previous_carrier = self.check_carrier.take();
             let previous_statement = self.statement.replace(statement);
             push_event(
                 work,

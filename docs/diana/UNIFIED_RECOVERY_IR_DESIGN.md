@@ -1,8 +1,10 @@
 # A small recovery core for P6-P9
 
-Status: design proposal against `f6e7893`. This document specifies a replacement,
-not implemented capability. [PIPELINE_DESIGN](PIPELINE_DESIGN.md) remains the
-active authority for stage ownership, input safety and local results.
+Replacement design against `f6e7893`, with partial implementation recorded in
+the [engine README](../../crates/diana-decomp/README.md#unified-recovery-implementation).
+This document specifies the complete target; partial delivery does not establish
+its size or recovery objectives. [PIPELINE_DESIGN](PIPELINE_DESIGN.md) remains
+the active authority for stage ownership, input safety and local results.
 
 ## 1. Decision and size objective
 
@@ -436,9 +438,10 @@ cases must detect duplicated/reordered effects, wrong edge copies, missing store
 and incorrect exceptional commits. Unsupported semantics are unchecked, not
 passing. Renderer fidelity is checked separately from plan behavior.
 
-Not run: implementation, complexity challenges, net production-size comparison
-or behavioral acceptance for this design. Preserved contracts and a small schema
-are not proof of recovery quality; the complete replacement must supply evidence.
+Implementation status, measured source size and scoped check observations belong
+in the [engine README](../../crates/diana-decomp/README.md#unified-recovery-implementation).
+The complete replacement must supply the complexity and behavioral evidence
+above; preserved contracts and a small schema are not proof of recovery quality.
 
 ## 9. Optional optimization policy
 

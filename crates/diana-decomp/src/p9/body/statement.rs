@@ -28,10 +28,6 @@ impl Expressions<'_, '_> {
             self.operand(lock)?;
             self.out.put(")")?;
         } else {
-            // Only the statement's own operands may carry an inlined check: the
-            // copies printed before it and any snapshot value after it are not
-            // the check's first use.
-            let previous = self.check_carrier.replace(CheckCarrier::Statement(s.id));
             let statement = self.statement.replace(s.id);
             let rendered = if let Some(plan) = self.code.emission().suspension(op) {
                 self.suspension_assignment(plan)
@@ -40,7 +36,6 @@ impl Expressions<'_, '_> {
             } else {
                 self.assignment(s).and_then(|()| self.semantic(s))
             };
-            self.check_carrier = previous;
             self.statement = statement;
             rendered?;
         }

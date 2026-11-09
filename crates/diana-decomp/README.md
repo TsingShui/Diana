@@ -580,7 +580,49 @@ value field is an intentional addition. Two fixtures change text: the new value
 fixtures. Traversal reports no construction or rendering failures, which does not
 establish whole-method behavioral correctness.
 
+## Unified recovery implementation
+
+The [recovery design](../../docs/diana/UNIFIED_RECOVERY_IR_DESIGN.md) is partially
+implemented in the ordinary Engine chain. The following table separates delivered
+structure from the remaining replacement; the complete design is not accepted.
+
+| Design area | Delivered | Remaining |
+|---|---|---|
+| Common control grammar | P6 delivers named `ControlLayout` roles; P7 keeps one selected `Control` arena; P9 consumes it. | Planning `RegionKind` and protocol-specific executable forms remain. Common leaf/reference mapping and protocol consolidation are incomplete. |
+| Fragment composition | `CompletionInterface` supplies shared boundaries; Sequence and Graph use one contraction/order operation. | Per-family candidate walks and descendant node lists remain. General interface-based contraction and affected-neighbor scheduling are incomplete. |
+| Operation ownership | Nested `Evaluation` and the original operation's `nested_at` identify one execution owner. Sparse proposals replace whole-arena rollback. | Declaration/copy check attachments and other placement bookkeeping remain to be consolidated where their semantics permit. |
+| Expression covers | Ordinary and condition consumers share ordered suffix forests. Required checks use the same producer and installer. Statement, terminal and later-read check searches share one bounded cursor. | Dependency-driven reconsideration and broader cross-context cover obligations are incomplete. |
+| Local fixed points | Selected roots leave the active suffix; rejected condition proposals leave the product unchanged. | The P6 and P7 pipelines still run ordered passes. Neither stage has the complete dependency-driven local convergence specified by the design. |
+| Finalization | P9 consumes selected layouts and nested operations. Existing declaration and label passes remain. | Protocol traversal and a single final declaration/label derivation still need replacement. |
+
+Against `f6e7893`, the current engine production tree has 67,899 physical Rust
+source lines, compared with 68,495 at the baseline: 596 fewer lines. This count
+includes every `*.rs` file under `crates/diana-decomp/src/`, including shared
+helpers, comments and blank lines; tests and documentation are excluded. The
+small reduction does not establish the design's substantial size objective or
+comparable recovery capability. Full replacement acceptance and a comparative
+recovery evaluation remain unrun.
+
 ## Shared control delivery
+
+Standalone casts now retain only declaration and original-copy location handlers.
+Statement, terminal and later reads use one bounded forward query and the common
+operation-cover installer. The separate following-statement, terminal and remote
+searches are removed. The cursor consumes supplied order and stops at effects,
+phases, selections or protection changes; it does not search a second method graph.
+Statement/terminal InlineCheck indexes and their P9 carrier contexts are removed;
+only original-copy and declaration attachments remain. This slice has 292 fewer
+production Rust lines than `1005be3`, including its shared installer.
+
+The focused nextest run passes 13 tests in `cast_carrier_walk`,
+`cast_preparation_order` and `joint_expression_cover`. Strict all-feature Clippy
+passes for the engine library, `dbg_shell` and those three targets. Engine
+all-target Clippy fails because historical tests still reference removed
+composition APIs; adaptation and full historical regression remain deferred at
+the operator's request. The scoped tests retain independent helper-fault and
+result expectations; they do not establish whole-method or VM equivalence.
+The debug `dbg_shell` build and current cast-carrier-contexts inspection pass:
+three expressed methods, one no-code method and no method/rendering failures.
 
 P7 now normalizes established redundant checks before covering expressions.
 Required casts participate as readonly operation roots in the common cover and
@@ -632,8 +674,7 @@ ordinary-Engine comparison against `f6e7893` covers 119 prepared fixtures,
 187 classes and 907 methods, retaining text, reported issues and output counts
 without construction or rendering failures. This establishes compatibility of
 the control-representation change, not new recovery coverage or whole-method
-semantic equivalence. General fragment reduction and joint expression coverage
-remain subsequent work in the unified recovery design.
+semantic equivalence. The table above records the current replacement boundaries.
 
 ## P5 observations
 

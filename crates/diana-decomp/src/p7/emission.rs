@@ -51,15 +51,10 @@ pub enum BlockEnd {
 /// checked value can carry it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub enum CheckCarrier {
-    /// A statement scope; `InlineCheck::occurrence` names its exact read.
-    Statement(StatementId),
     /// One step of one original copy bundle. Only this step's right-hand side
     /// reads the value; the bundle's other steps and gap reports keep their own
     /// text at their own positions.
     Copy { bundle: CopyPlanId, step: u32 },
-    /// An original terminal's operand: a return or throw value, a branch operand
-    /// or a switch selector. `InlineCheck::occurrence` names its exact read.
-    Terminal(BlockId),
     /// The store that produced the checked value. The declaration names the
     /// check's type and its initializer prints the cast, so no read repeats it.
     Definition(StatementId),
@@ -75,9 +70,8 @@ pub struct InlineCheck {
     pub reference: ReferenceId,
     pub carrier: CheckCarrier,
     /// The one printed expression occurrence that reads `value` for this
-    /// carrier: the statement's first evaluated read, or the copy step's
-    /// right-hand side. P9 matches it exactly, so another read of the same
-    /// storage never prints the check again.
+    /// carrier: the definition's checked read or the copy step's right-hand side.
+    /// P9 matches it exactly; another read of the same storage stays plain.
     pub occurrence: ExprId,
 }
 /// A `check-cast` whose own display action cannot add behavior: P4 established
@@ -191,12 +185,8 @@ pub struct EmissionPlan {
     /// operands to Java's left-to-right order cannot be observed.
     pub(super) natural_stores: Vec<bool>,
     pub(super) inline_checks: Vec<InlineCheck>,
-    /// Indices into `inline_checks`, by the statement that carries the check.
-    pub(super) check_uses: Vec<Vec<u32>>,
     /// Indices into `inline_checks`, by the copy bundle that carries the check.
     pub(super) copy_check_uses: Vec<Vec<u32>>,
-    /// Indices into `inline_checks`, by the terminal that carries the check.
-    pub(super) terminal_check_uses: Vec<Vec<u32>>,
     /// Indices into `inline_checks`, by the statement whose stored value the
     /// check names.
     pub(super) definition_check_uses: Vec<Vec<u32>>,
@@ -328,9 +318,7 @@ impl EmissionPlan {
             field_receiver_owners: Vec::new(),
             natural_stores: Vec::new(),
             inline_checks: Vec::new(),
-            check_uses: Vec::new(),
             copy_check_uses: Vec::new(),
-            terminal_check_uses: Vec::new(),
             definition_check_uses: Vec::new(),
             array_literals: Vec::new(),
             omitted_checks: Vec::new(),
@@ -371,8 +359,7 @@ impl EmissionPlan {
         &self.inline_checks
     }
     /// The check-cast carried by this exact printed occurrence for a read of
-    /// `value`. A statement carrier also requires the expression occurrence P7
-    /// selected, so another read of the same storage never prints the check.
+    /// `value`. Another read of the same storage never prints the check.
     pub fn inline_check(
         &self,
         carrier: CheckCarrier,
@@ -380,11 +367,7 @@ impl EmissionPlan {
         value: StorageId,
     ) -> Option<InlineCheck> {
         let uses = match carrier {
-            CheckCarrier::Statement(statement) => self.check_uses.get(statement.0 as usize)?,
             CheckCarrier::Copy { bundle, .. } => self.copy_check_uses.get(bundle.0 as usize)?,
-            CheckCarrier::Terminal(terminal) => {
-                self.terminal_check_uses.get(terminal.0 as usize)?
-            }
             CheckCarrier::Definition(statement) => {
                 self.definition_check_uses.get(statement.0 as usize)?
             }

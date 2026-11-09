@@ -1,7 +1,8 @@
 //! Cast ordering, source identities and local carrier boundaries.
 //! Inputs/scenarios live in cast-carrier-order and cast-carrier-contexts.
 
-use diana_decomp::p7::{CheckCarrier, MethodCode};
+use diana_decomp::p3::UseSite;
+use diana_decomp::p7::MethodCode;
 use diana_decomp::p9::{Origin, Rendered};
 #[path = "support/inspection.rs"]
 mod inspection;
@@ -72,7 +73,11 @@ fn origins(code: &MethodCode, rendered: &Rendered) {
         assert_eq!(rendered.spans().iter().filter(|span| matches!(span.origin, Origin::Site { site: actual, .. } if actual == site)).count(), 1);
     }
 }
-fn owner(code: &MethodCode) -> Option<CheckCarrier> {
+enum Owner {
+    Operand(UseSite),
+    Located,
+}
+fn owner(code: &MethodCode) -> Option<Owner> {
     let operation = code
         .operations()
         .iter()
@@ -97,15 +102,10 @@ fn owner(code: &MethodCode) -> Option<CheckCarrier> {
             .origin
             .as_ref()
             .unwrap();
-        return Some(match origin.site {
-            diana_decomp::p3::UseSite::Terminal { block, .. } => CheckCarrier::Terminal(block),
-            diana_decomp::p3::UseSite::Operation { operation, .. } => {
-                CheckCarrier::Statement(code.operations()[operation.0 as usize].statement.unwrap())
-            }
-        });
+        return Some(Owner::Operand(origin.site));
     }
     assert!(inline.len() <= 1);
-    inline.first().map(|check| check.carrier)
+    inline.first().map(|_| Owner::Located)
 }
 
 fn order(name: &str, prototype: &str, check: impl FnOnce(&MethodCode, &Rendered)) {
@@ -140,7 +140,10 @@ fn the_second_comparison_operand_carries_one_original_check() {
         "(Ljava/lang/Object;Ljava/lang/Object;)I",
         |code, rendered| {
             assert!(owner(code).is_some());
-            assert!(matches!(owner(code).unwrap(), CheckCarrier::Terminal(_)));
+            assert!(matches!(
+                owner(code),
+                Some(Owner::Operand(UseSite::Terminal { .. }))
+            ));
             assert!(!rendered.text().contains("check-cast, value not reassigned"));
             for (left, right, expected) in [
                 (A, A, Ok(Value::Int(1))),
@@ -158,7 +161,10 @@ fn the_second_comparison_operand_carries_one_original_check() {
 fn literals_before_a_checked_argument_do_not_create_an_effect_boundary() {
     order("argument", "(Ljava/lang/Object;)V", |code, rendered| {
         assert!(owner(code).is_some());
-        assert!(matches!(owner(code).unwrap(), CheckCarrier::Statement(_)));
+        assert!(matches!(
+            owner(code),
+            Some(Owner::Operand(UseSite::Operation { .. }))
+        ));
         assert!(rendered.text().contains("sink(0, ((int[]) p0))"));
         for reference in [A, NULL] {
             assert_eq!(

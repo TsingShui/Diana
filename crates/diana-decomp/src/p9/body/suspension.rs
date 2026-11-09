@@ -24,12 +24,7 @@ impl Expressions<'_, '_> {
             self.out.indent()?;
             let start = self.out.position();
             self.out.put("if (")?;
-            let carrier = self
-                .check_carrier
-                .replace(crate::p7::CheckCarrier::Terminal(site.predicate));
-            let result = self.condition(condition, false);
-            self.check_carrier = carrier;
-            result?;
+            self.condition(condition, false)?;
             self.out.put(") goto ")?;
             self.label_name(self.code.transfers()[when_true.0 as usize].destination)?;
             self.out.put("; else goto ")?;
@@ -125,12 +120,7 @@ impl Expressions<'_, '_> {
                 .ok_or(RenderError::Invariant("ABI test lost its original entry"))?;
             self.label_name(entry)?;
             self.out.put(": if (")?;
-            let previous = self
-                .check_carrier
-                .replace(crate::p7::CheckCarrier::Terminal(test.terminal));
-            let rendered = self.condition(condition, false);
-            self.check_carrier = previous;
-            rendered?;
+            self.condition(condition, false)?;
             self.out.put(") goto ")?;
             self.label_name(self.code.transfers()[when_true.0 as usize].destination)?;
             self.out.put("; else goto ")?;

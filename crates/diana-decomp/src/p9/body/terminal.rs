@@ -119,7 +119,7 @@ impl Expressions<'_, '_> {
                 self.out.put("return")?;
                 if let Some(v) = v {
                     self.out.put(" ")?;
-                    self.carried(id, |render| render.operand(*v))?;
+                    self.operand(*v)?;
                 }
                 self.phases(&p.snapshots, "after_operands_before_effect")?;
                 if let Some(s) = t.site {
@@ -129,7 +129,7 @@ impl Expressions<'_, '_> {
             }
             TerminalKind::Throw(v) => {
                 self.out.put("throw ")?;
-                self.carried(id, |render| render.operand(*v))?;
+                self.operand(*v)?;
                 self.phases(&p.snapshots, "after_operands_before_effect")?;
                 if let Some(s) = t.site {
                     self.sites(&[s], start)?;
@@ -141,20 +141,14 @@ impl Expressions<'_, '_> {
                 when_true,
                 when_false,
             } => {
-                // The predicate evaluates its operands before selection, so the
-                // terminal's own carrier wraps only that evaluation.
                 // `if (c) { } else { X }` prints as `if (!c) { X }`: the
                 // predicate and both routes keep their original facts, and the
                 // empty arm's copies keep their anchors.
                 let display = self.code.emission().if_display(id);
                 let inverted = display == IfDisplay::Inverted;
-                let previous = self.check_carrier.replace(CheckCarrier::Terminal(id));
                 self.out.put("if (")?;
-                let rendered = self.condition(condition, inverted);
-                let rendered = rendered
-                    .and_then(|()| self.phases(&p.snapshots, "after_operands_before_effect"));
-                self.check_carrier = previous;
-                rendered?;
+                self.condition(condition, inverted)?;
+                self.phases(&p.snapshots, "after_operands_before_effect")?;
                 self.out.put(")")?;
                 self.out.open()?;
                 if inverted {
@@ -265,21 +259,6 @@ impl Expressions<'_, '_> {
     }
 
     pub(super) fn predicate_expression(
-        &mut self,
-        test: PredicateEmission,
-        loop_edges: bool,
-    ) -> Result<(), RenderError> {
-        // Every predicate layout uses its original terminal occurrence, including
-        // an individual test inside a short-circuit Condition.
-        let previous = self
-            .check_carrier
-            .replace(CheckCarrier::Terminal(test.terminal));
-        let rendered = self.predicate_value(test, loop_edges);
-        self.check_carrier = previous;
-        rendered
-    }
-
-    fn predicate_value(
         &mut self,
         test: PredicateEmission,
         loop_edges: bool,
@@ -455,19 +434,5 @@ impl Expressions<'_, '_> {
             }
         }
         Ok(())
-    }
-
-    /// Renders one terminal operand under this terminal's check carrier, so a
-    /// check-cast prints at its exact read and the previous carrier is restored
-    /// even when rendering fails.
-    pub(super) fn carried(
-        &mut self,
-        terminal: BlockId,
-        render: impl FnOnce(&mut Self) -> Result<(), RenderError>,
-    ) -> Result<(), RenderError> {
-        let previous = self.check_carrier.replace(CheckCarrier::Terminal(terminal));
-        let rendered = render(self);
-        self.check_carrier = previous;
-        rendered
     }
 }

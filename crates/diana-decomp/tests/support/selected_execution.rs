@@ -90,22 +90,14 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
             _ => Err(Fault::Unsupported("cast operand")),
         }
     }
-    pub fn expression(&mut self, id: ExprId, carrier: CheckCarrier) -> Result<Value, Fault> {
+    pub fn expression(&mut self, id: ExprId) -> Result<Value, Fault> {
         let expression = &self.code.expressions()[id.0 as usize];
-        if let ExprKind::Read { storage, .. } = expression.kind
-            && let Some(check) = self.code.emission().inline_check(carrier, id, storage)
-        {
-            let value = self.locals[storage.0 as usize]
-                .ok_or(Fault::Unsupported("unbound checked local"))?;
-            return self.cast(value, check.reference);
-        }
         if let Some(evaluation) = expression.evaluation {
             let source = &self.code.operations()[evaluation.operation.0 as usize];
             let statement = source
                 .statement
                 .ok_or(Fault::Unsupported("nested statement"))?;
-            let value =
-                self.expression(evaluation.expression, CheckCarrier::Statement(statement))?;
+            let value = self.expression(evaluation.expression)?;
             let value = match self.code.statements()[statement.0 as usize].kind {
                 StatementKind::CheckCast { reference, .. } => self.cast(value, reference)?,
                 _ => value,
@@ -127,12 +119,12 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
                 left,
                 right,
             } => {
-                let left = self.expression(*left, carrier)?.int();
+                let left = self.expression(*left)?.int();
                 Ok(Value::Int(
-                    left.wrapping_add(self.expression(*right, carrier)?.int()),
+                    left.wrapping_add(self.expression(*right)?.int()),
                 ))
             }
-            ExprKind::ArrayLength(array) => match self.expression(*array, carrier)? {
+            ExprKind::ArrayLength(array) => match self.expression(*array)? {
                 Value::Reference(Reference::Array { length, .. }) => Ok(Value::Int(length)),
                 Value::Reference(Reference::Null) => Err(Fault::NullArray),
                 _ => Err(Fault::Unsupported("array length operand")),
@@ -157,11 +149,11 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
                 };
                 let mut values = Vec::new();
                 if let Some(receiver) = call.receiver {
-                    values.push(self.expression(receiver, carrier)?);
+                    values.push(self.expression(receiver)?);
                 }
                 let explicit = arguments
                     .iter()
-                    .map(|&argument| self.expression(argument, carrier))
+                    .map(|&argument| self.expression(argument))
                     .collect::<Result<Vec<_>, _>>()?;
                 values.extend(explicit);
                 let Ok(ReferenceDeclaration::Member(MemberDeclaration::Method { name, .. })) =
@@ -184,17 +176,12 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
         else {
             return Err(Fault::Unsupported("predicate"));
         };
-        let carrier = CheckCarrier::Terminal(test.terminal);
         let (op, left, right) = match condition {
             Condition::Pair {
                 op, left, right, ..
-            } => (
-                *op,
-                self.expression(*left, carrier)?,
-                self.expression(*right, carrier)?,
-            ),
+            } => (*op, self.expression(*left)?, self.expression(*right)?),
             Condition::Zero { op, value, .. } => {
-                let left = self.expression(*value, carrier)?;
+                let left = self.expression(*value)?;
                 let right = match left {
                     Value::Int(_) => Value::Int(0),
                     Value::Reference(_) => Value::Reference(Reference::Null),
@@ -237,7 +224,7 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
         let statement = &self.code.statements()[id.0 as usize];
         let value = match statement.kind {
             StatementKind::Move { expression, .. } | StatementKind::Evaluate { expression } => {
-                let value = self.expression(expression, CheckCarrier::Statement(id))?;
+                let value = self.expression(expression)?;
                 if let Some(check) = self.code.emission().definition_check(id) {
                     self.cast(value, check.reference)?
                 } else {
@@ -245,7 +232,7 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
                 }
             }
             StatementKind::CheckCast { value, reference } => {
-                let value = self.expression(value, CheckCarrier::Statement(id))?;
+                let value = self.expression(value)?;
                 self.cast(value, reference)?;
                 Value::Unit
             }
@@ -349,9 +336,7 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
                             return Err(Fault::Unsupported("terminal phases"));
                         }
                         match terminal.kind {
-                            TerminalKind::Return(Some(value)) => Ok(Some(
-                                self.expression(value, CheckCarrier::Terminal(*block))?,
-                            )),
+                            TerminalKind::Return(Some(value)) => Ok(Some(self.expression(value)?)),
                             TerminalKind::Return(None) => Ok(Some(Value::Unit)),
                             TerminalKind::Goto(transfer) => self.transfer(transfer),
                             TerminalKind::If {

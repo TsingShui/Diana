@@ -47,6 +47,9 @@ A nested readonly cast formats its original CheckCast statement around the
 selected operand, using the same Java-like or Kotlin cast notation. Its input
 is evaluated before the check, and its original operation/site spans remain
 attached to that nested evaluation. P9 does not infer or retry cast placement.
+Statement and terminal operands carry checks through their owned Evaluation.
+InlineCheck records apply only to original copy steps or adjacent declarations;
+P9 has no statement/terminal carrier indexes or temporary contexts to reconcile.
 A delivered `EvaluationPredicate::LongComparison` prints the original left and
 right operands with P7's selected relation. Predicate negation complements that
 relation; P9 does not infer a comparison from numeric syntax or fold floating

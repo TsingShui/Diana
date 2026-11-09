@@ -23,9 +23,7 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
                 "comparison evaluation lost its statement",
             ))?;
         let start = self.out.position();
-        let previous_carrier = self
-            .check_carrier
-            .replace(CheckCarrier::Statement(statement));
+        let previous_carrier = self.check_carrier.take();
         let previous_statement = self.statement.replace(statement);
         let rendered = (|| {
             self.operand(left)?;

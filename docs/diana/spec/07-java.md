@@ -152,18 +152,19 @@ continuation. It crosses no protected, loop or synchronized container. Each call
 still enforces its operand, phase and effect requirements; this is not another
 control or storage analysis.
 
-P7 composes a check-cast's display into the first printed read of its checked
-local only when that read is the first evaluated value of the following statement
-or the first executed step of this block's single unconditional transfer copy set.
-Carriers are tried in one fixed priority order: the declaration that produced the
-value, the following statement, this block's transfer copy step, the terminal
-operand, then a later read. The first carrier that answers owns the check, so one
-check-cast prints at most one cast; a carrier that refuses leaves the check to the
-next one and keeps its first refusal for the trace. A later carrier requires a
-continuous supplied linear run with no intervening effect, copy phase, selection
-or protection change. Searching the method for the same value is not an ordering
-guarantee. Target before-operation/terminal phases and suspension-owned operands
-remain barriers.
+Required checks first participate in the ordinary ordered expression cover.
+A remaining standalone check may use its adjacent declaration or the first
+executed step of its original unconditional transfer copy bundle. Other checks
+consume one forward query over the supplied run: statement and terminal reads
+share operand ordering, occurrence counting and exact binding admission. The
+query stops at an effect, copy phase, selection or protection change. Plain reads
+and literals before the checked read are transparent. Traversed portions and
+actions bound the cursor; a cycle is an owning-stage construction error.
+An admitted operand uses the common check producer and Evaluation installer.
+Declaration/copy locations retain their InlineCheck records; one check MUST NOT
+have both execution owners. Target before-operation/terminal phases and
+suspension-owned operands remain barriers. Searching the method for the same
+value is not an ordering guarantee.
 The carrier names that exact statement and read-expression occurrence, so a second
 read of the same storage in the printed form never carries the check. A carrier
 read whose state a pure reference copy of the checked value published also carries

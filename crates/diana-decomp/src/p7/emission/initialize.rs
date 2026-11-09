@@ -10,9 +10,7 @@ pub(super) fn plan(code: &MethodCode) -> Result<EmissionPlan, ExpressionError> {
     plan.site_annotations = filled(code.sites.len(), true)?;
     plan.field_qualifications = filled(code.references.len(), true)?;
     plan.natural_stores = filled(code.statements.len(), false)?;
-    plan.check_uses = filled(code.statements.len(), Vec::new())?;
     plan.copy_check_uses = filled(code.copies.len(), Vec::new())?;
-    plan.terminal_check_uses = filled(code.terminals.len(), Vec::new())?;
     plan.definition_check_uses = filled(code.statements.len(), Vec::new())?;
     plan.array_literals = filled(code.statements.len(), None)?;
     plan.omitted_checks = filled(code.statements.len(), None)?;
