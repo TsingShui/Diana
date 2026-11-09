@@ -1,8 +1,8 @@
 # Multi-site branch semantic review
 
 This LLM review compares the Java/Kotlin explanation, assembled Smali, and
-ordinary Engine output. Engine baseline is `64aaa04`; the candidate adds the
-P7 dispatch-spelling repair. Structural tests support this written judgement;
+ordinary Engine output. Discovery baseline is `64aaa04`; integrated engine
+`dd70d20` supplies the shared P6/P7 raw-selector repair. Structural tests support this written judgement;
 they do not execute native helpers or coroutine scheduling.
 
 The baseline's default row printed no transfer before the case-zero label.

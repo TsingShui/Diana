@@ -1,7 +1,7 @@
 # Effectful default complexity review
 
 This challenge was authored after the P7 dispatch repair. The same prepared DEX
-is inspected on `64aaa04` and the candidate. The baseline prints an empty default
+is inspected on `64aaa04` and integrated engine `dd70d20`. The baseline prints an empty default
 row before case zero; the candidate prints the original default goto and its
 label. This LLM review compares both outputs with the authored sources, without
 claiming helper/runtime execution.

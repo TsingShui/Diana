@@ -55,3 +55,19 @@ cargo run -p diana-decomp --example dbg_shell --locked -- \
 
 Engine baseline is `64aaa04`. Compare this same prepared DEX with the dispatch
 repair candidate and record the review and executed checks separately.
+
+## Observed validation
+
+Preparation used Smali 2.5.2, OpenJDK 21.0.12.1, API 24 and DEX 037; none is an
+admission pin. The same DEX demonstrates the missing default transfer on
+`64aaa04` and the correct default effect/throw destination on `dd70d20`.
+Both classes and all five methods are delivered without stops/rendering issues.
+The integration consumes the existing mainline P6/P7 raw-selector repair;
+fixture revision `69d3b74` adds no parallel recovery implementation.
+
+The four new fixture checks and all 103 engine nextest tests passed. All 97
+fixture texts/issue lists and member coverage were identical to engine baseline
+`dd70d20` in the dev comparison. Workspace format, all-target/all-feature Clippy
+and dev build passed. The challenge remains explicit source evidence for future
+multi-site recovery, with LLM reasoning in `review.md`. No release or
+helper/scheduler/final-plan behavioral execution was performed.

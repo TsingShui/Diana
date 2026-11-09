@@ -3,7 +3,7 @@
 This LLM review follows the authored Smali protection intervals and the final
 explicit Engine output. The Java/Kotlin explanation describes logical finally;
 the Smali input distinguishes physical suspended returns. Baseline `64aaa04`
-lost the default transfer; the candidate retains its original invalid-state
+lost the default transfer; integrated engine `dd70d20` retains its original invalid-state
 target outside cleanup intervals.
 
 Initial id is assigned before the first protected check/load. Both resumes

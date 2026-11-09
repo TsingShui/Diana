@@ -2,8 +2,8 @@
 
 This LLM review compares authored Java/Kotlin, Smali, and Engine output using
 the README model. The explicit loop graph remains a recovery boundary rather
-than being counted as a recovered source loop. The dispatch-spelling candidate
-does not change this fixture's text or issue list relative to `64aaa04`.
+than being counted as a recovered source loop. The shared dispatch repair does
+not change its text/issue list relative to `64aaa04`; integration uses `dd70d20`.
 
 The initial route sets sum/index to zero. The head exits to the boxed current sum
 for nonpositive limits or a completed loop. First-site publication saves limit,

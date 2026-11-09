@@ -51,3 +51,16 @@ cargo run -p diana-decomp --example dbg_shell --locked -- \
 ```
 
 Engine baseline: `64aaa04`. Expectations precede candidate-output inspection.
+
+## Observed validation
+
+Preparation used Smali 2.5.2, OpenJDK 21.0.12.1, API 24 and DEX 037, without an
+admission pin. Integrated engine `dd70d20` delivers both classes and all five
+methods without stops/rendering issues. The original two-site loop remains an
+explicit graph with both resume entries, record and early exit retained.
+Fixture revision `69d3b74` adds no production route. The four new fixture checks
+and complete 103-test engine nextest run passed. The 97-fixture dev comparison
+against `dd70d20` preserves every text/issue list and member. Workspace format,
+all-target/all-feature Clippy and dev build passed. The review is LLM path
+reading under the helper model. No release or helper/scheduler/final-plan
+behavioral execution was run.
