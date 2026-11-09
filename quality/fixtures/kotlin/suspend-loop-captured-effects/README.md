@@ -24,6 +24,9 @@ that same result. An injected helper failure throws `IllegalStateException` at
 the selected call. A resumed failure passes through `ResultKt.throwOnFailure`
 before executing the shared tail. There is no implemented helper/runtime executor
 for these scenarios; the model supports LLM semantic review.
+Resumption in this model stores the result in the same frame, sets its label
+high bit, and calls the selected original method again. The minimal Frame input
+supplies storage and construction; it is not an executed coroutine scheduler.
 
 | Inputs and route | Independent result and ordered effects |
 |---|---|
@@ -59,6 +62,18 @@ cargo run -p diana-decomp --example dbg_shell --locked -- \
   --exec '{"cmd":"classes"}'
 ```
 
-The observed assembler, selectors, baseline/candidate comparison, and actual
-checks are recorded after preparation. Independent expectations above precede
-inspection of candidate output. Baseline revision: `73542421d671be2fc169b72c7233aa0b5b955fd5`.
+Preparation used Smali 2.5.2, OpenJDK 21.0.12.1, and API 24; these are observed
+versions, not admission pins. The prepared input has class definition 1 for
+SuspendLoop, and MethodId 6 for total. The original descriptors above remain the
+portable selectors. Initial baseline was `7354242`; integration baseline was
+`8785d2f`. Candidate engine revision was `4c6a3d1`.
+
+The same prepared DEX changes from the baseline's explicit multi-entry graph to
+the candidate's while body for total. All three divergent methods remain
+explicit. Three new fixture tests and the full 94-test engine nextest run passed.
+The 92-fixture dev comparison changed only the discovery fixture and this
+challenge, with no increased stops, missing members, or rendering issues. All
+other fixture texts/issue lists were identical to integration baseline.
+Workspace format, all-target/all-feature Clippy, and dev build passed. The CLI
+text and JSON publications agreed for the discovery method. No release run or
+final-plan behavioral execution was performed.

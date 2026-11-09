@@ -36,3 +36,10 @@ structural tests are supporting evidence. No implemented final-plan behavioral
 executor or coroutine scheduling execution is claimed. The existing DEX was
 reused without reassembly; this iteration did not reestablish its old compiler
 environment.
+
+Integration comparison used baseline `8785d2f` and engine candidate `4c6a3d1`.
+All 94 engine nextest tests passed. The 92-fixture dev comparison changed only
+this discovery and its captured-effect challenge, without increased stops or
+lost members. Workspace format, all-target/all-feature Clippy, and dev build
+passed. The CLI's text and JSON publications agreed on total. Release checks
+were omitted at the operator's request.

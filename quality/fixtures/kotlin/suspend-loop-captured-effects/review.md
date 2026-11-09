@@ -3,7 +3,8 @@
 This LLM semantic review compares `Case.java`, the four prepared Smali methods,
 and output from the ordinary Engine entry. Baseline is
 `73542421d671be2fc169b72c7233aa0b5b955fd5`; candidate is the reviewed suspend-loop
-change. This is a readability repair. No final-plan behavioral executor is
+change at `4c6a3d1`, also compared with integration baseline `8785d2f`.
+This is a readability repair. No final-plan behavioral executor is
 implemented or claimed as passing.
 
 ## Positive normal and resumed paths

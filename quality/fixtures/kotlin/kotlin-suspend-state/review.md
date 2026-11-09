@@ -4,6 +4,7 @@
 
 This LLM review compares `Case.kt::total`, its prepared DEX, and the suspend-loop
 candidate against baseline `73542421d671be2fc169b72c7233aa0b5b955fd5`.
+The reviewed engine candidate is `4c6a3d1`; the integration recheck uses `8785d2f`.
 The signature retains Object, the original int parameter, and
 Continuation<? super Integer>, and adds `suspend`. The body has initial sum/index,
 a head-tested while, one load call, the original Number conversion and additions,
