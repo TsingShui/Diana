@@ -246,20 +246,11 @@ fn operation_locations(
     code: &MethodCode,
     layout: &Layout,
 ) -> Result<Vec<Resolution>, ExpressionError> {
-    let mut moved = filled(code.operations.len(), None)?;
-    for (index, composed) in code.emission.composed_uses.iter().enumerate() {
-        if let Some(composed) = composed {
-            moved[composed.operation.0 as usize] = code.expressions[index]
-                .origin
-                .as_ref()
-                .map(|origin| origin.site);
-        }
-    }
     let mut locations = Vec::new();
     for operation in &code.operations {
         push(
             &mut locations,
-            if code.emission.composed_operation(operation.source) {
+            if code.nested_operation(operation.source) {
                 Resolution::Pending
             } else {
                 Resolution::Done(layout.operation(code, operation.source, false))
@@ -278,7 +269,11 @@ fn operation_locations(
                 Resolution::Pending => {
                     locations[current] = Resolution::Active;
                     push(&mut path, current)?;
-                    match moved[current] {
+                    match code.operations[current]
+                        .nested_at
+                        .and_then(|operand| code.expressions[operand.0 as usize].origin.as_ref())
+                        .map(|origin| origin.site)
+                    {
                         Some(UseSite::Operation { operation, .. }) => {
                             current = operation.0 as usize
                         }
@@ -346,13 +341,12 @@ fn materializations(code: &mut MethodCode) -> Result<(), ExpressionError> {
             // Grouped argument definitions have no standalone Block placement,
             // but retain their exact original operation and composition choice.
             let operation = code.emission.statement_operation(statement.id).or_else(|| {
-                code.emission
-                    .composed_operation(output.operation())
+                code.nested_operation(output.operation())
                     .then_some(output.operation())
             });
             let Some(operation) = operation else { continue };
-            let materialized = code.emission.materializes_operation(operation);
-            if !materialized && !code.emission.composed_operation(operation) {
+            let materialized = code.materializes_operation(operation);
+            if !materialized && !code.nested_operation(operation) {
                 continue;
             }
             if let Materialization::Store(local) | Materialization::Deferred { local, .. } =
@@ -381,8 +375,8 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
                 operation,
                 statement,
             } = *action
-                && !code.emission.composed_operation(operation)
-                && !code.emission.origin_only_operation(operation)
+                && !code.nested_operation(operation)
+                && !code.origin_only_operation(operation)
                 && !code.emission.omitted_literal(statement)
             {
                 statement_operations[statement.0 as usize] = Some(operation);
@@ -443,11 +437,11 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
     for statement in &code.statements {
         let operation = statement_operations[statement.id.0 as usize]
             .or_else(|| code.emission.statement_operation(statement.id));
-        if operation.is_some_and(|operation| !code.emission.materializes_operation(operation)) {
+        if operation.is_some_and(|operation| !code.materializes_operation(operation)) {
             continue;
         }
         let point = operation.and_then(|operation| {
-            if code.emission.composed_operation(operation) {
+            if code.nested_operation(operation) {
                 site_point(
                     UseSite::Operation {
                         operation,
@@ -564,7 +558,7 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
         {
             for &argument in arguments {
                 handled[argument.0 as usize] = true;
-                if code.emission.composed_use(argument).is_none()
+                if code.evaluation(argument).is_none()
                     && let ExprKind::Read { storage, .. } | ExprKind::Snapshot { storage } =
                         code.expressions[argument.0 as usize].kind
                 {
@@ -581,17 +575,14 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
         }
     }
     for expression in &code.expressions {
-        if handled[expression.id.0 as usize] || code.emission.composed_use(expression.id).is_some()
-        {
+        if handled[expression.id.0 as usize] || code.evaluation(expression.id).is_some() {
             continue;
         }
         if expression
             .origin
             .as_ref()
             .is_some_and(|origin| match origin.site {
-                UseSite::Operation { operation, .. } => {
-                    code.emission.origin_only_operation(operation)
-                }
+                UseSite::Operation { operation, .. } => code.origin_only_operation(operation),
                 UseSite::Terminal { block, .. } => code.emission.origin_only_terminal(block),
             })
         {

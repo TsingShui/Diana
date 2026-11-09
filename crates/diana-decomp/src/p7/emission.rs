@@ -108,38 +108,6 @@ pub struct ArrayLiteral {
 }
 /// Whether the composed producer replaces its only read or still commits its
 /// original local before the surrounding expression consumes that value.
-#[derive(Clone, Copy, Debug, Serialize)]
-pub enum ComposedResult {
-    Value,
-    Store(StorageId),
-}
-/// The predicate spelling selected by P7, not inferred by the renderer.
-#[derive(Clone, Copy, Debug, Serialize)]
-pub enum ComposedPredicate {
-    Value,
-    Boolean,
-    LongComparison {
-        #[serde(serialize_with = "super::debug")]
-        op: crate::p2::BranchOp,
-        left: ExprId,
-        right: ExprId,
-    },
-}
-/// One original producer evaluated at a selected adjacent read occurrence.
-/// Store retention preserves its other reads and its original materialization.
-#[derive(Clone, Copy, Debug, Serialize)]
-pub struct ComposedExpression {
-    pub expression: ExprId,
-    pub operation: OpId,
-    pub statement: StatementId,
-    pub pc: crate::CodeUnitOffset,
-    pub result_pc: Option<crate::CodeUnitOffset>,
-    pub site: Option<SiteId>,
-    pub predicate: ComposedPredicate,
-    pub result: ComposedResult,
-    /// A cross-node composition closes the source control at this use.
-    pub source_control: Option<ControlId>,
-}
 #[derive(Debug, Serialize)]
 pub struct EmissionBlock {
     /// An unreferenced entry remains a zero-length source anchor.
@@ -232,8 +200,6 @@ pub struct EmissionPlan {
     /// Indices into `inline_checks`, by the statement whose stored value the
     /// check names.
     pub(super) definition_check_uses: Vec<Vec<u32>>,
-    pub(super) composed_uses: Vec<Option<ComposedExpression>>,
-    pub(super) composed_operations: Vec<Option<ComposedResult>>,
     /// By the statement whose allocation prints the payload.
     pub(super) array_literals: Vec<Option<ArrayLiteral>>,
     /// By the statement whose check prints nothing because P4 established it
@@ -297,20 +263,6 @@ impl EmissionPlan {
             .get(local.0 as usize)
             .copied()
             .unwrap_or(false)
-    }
-    pub fn origin_only_operation(&self, op: OpId) -> bool {
-        match self
-            .origin_only_operations
-            .get(op.0 as usize)
-            .copied()
-            .flatten()
-        {
-            Some(OriginOnly::Attachment) => true,
-            Some(OriginOnly::Identity(read)) => {
-                !self.composed_operation(op) && self.composed_use(read).is_none()
-            }
-            None => false,
-        }
     }
     pub fn origin_only_terminal(&self, block: BlockId) -> bool {
         self.origin_only_terminals
@@ -380,8 +332,6 @@ impl EmissionPlan {
             copy_check_uses: Vec::new(),
             terminal_check_uses: Vec::new(),
             definition_check_uses: Vec::new(),
-            composed_uses: Vec::new(),
-            composed_operations: Vec::new(),
             array_literals: Vec::new(),
             omitted_checks: Vec::new(),
             omitted_literals: Vec::new(),
@@ -464,21 +414,6 @@ impl EmissionPlan {
             .get(id.0 as usize)
             .copied()
             .unwrap_or(true)
-    }
-    pub fn composed_use(&self, id: ExprId) -> Option<ComposedExpression> {
-        self.composed_uses.get(id.0 as usize).copied().flatten()
-    }
-    pub fn composed_operation(&self, id: OpId) -> bool {
-        self.composed_operations
-            .get(id.0 as usize)
-            .is_some_and(Option::is_some)
-    }
-    pub(super) fn materializes_operation(&self, id: OpId) -> bool {
-        !self.origin_only_operation(id)
-            && !matches!(
-                self.composed_operations.get(id.0 as usize),
-                Some(Some(ComposedResult::Value))
-            )
     }
     pub fn array_literal(&self, id: StatementId) -> Option<ArrayLiteral> {
         self.array_literals.get(id.0 as usize).copied().flatten()

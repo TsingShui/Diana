@@ -81,13 +81,20 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
                     },
                 )?;
             }
-        } else if let Some(composed) = self.code.composed_use(id) {
+        } else if let Some(composed) = self.code.evaluation(id) {
+            let statement = self
+                .code
+                .operation(composed.operation)
+                .and_then(|operation| operation.statement)
+                .ok_or(RenderError::Invariant(
+                    "nested evaluation lost its statement",
+                ))?;
             // Inline checks belong to the producer statement. Restore
             // each enclosing carrier after its nested expression prints.
             let previous_carrier = self
                 .check_carrier
-                .replace(CheckCarrier::Statement(composed.statement));
-            let previous_statement = self.statement.replace(composed.statement);
+                .replace(CheckCarrier::Statement(statement));
+            let previous_statement = self.statement.replace(statement);
             push_event(
                 work,
                 ExprEvent::CompositionEnd {
@@ -97,7 +104,7 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
                     previous_statement,
                 },
             )?;
-            if let ComposedResult::Store(destination) = composed.result {
+            if let EvaluationResult::Store(destination) = composed.result {
                 self.out.put("(")?;
                 self.local(destination)?;
                 self.out.put(" = ")?;

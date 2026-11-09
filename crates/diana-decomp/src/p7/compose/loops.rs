@@ -228,7 +228,7 @@ fn collect_reads(
     let Some(expression) = code.expressions.get(expression.0 as usize) else {
         return Ok(());
     };
-    if let Some(composed) = code.emission.composed_use(expression.id) {
+    if let Some(composed) = code.evaluation(expression.id) {
         return collect_reads(code, composed.expression, out);
     }
     let mut nested = [None; 2];
@@ -383,7 +383,7 @@ pub(super) fn select_compact(code: &mut MethodCode) -> Result<(), ExpressionErro
                     if block.show_label
                         || block.actions.iter().any(|action| {
                             !matches!(action, BodyAction::Statement { operation, .. }
-                            if code.emission.composed_operation(*operation))
+                            if code.nested_operation(*operation))
                         })
                     {
                         empty = false;

@@ -81,7 +81,7 @@ pub(super) fn array_literal(
 ) -> Option<ArrayLiteral> {
     let operation = code.operations.get(allocation_operation.0 as usize)?;
     if !matches!(operation.emission, Emission::Block { .. })
-        || code.emission.composed_operation(allocation_operation)
+        || code.nested_operation(allocation_operation)
     {
         return None;
     }
@@ -147,7 +147,7 @@ pub(super) fn array_literal(
         code.expressions.get(array.0 as usize)?.kind,
         ExprKind::Read { storage: read, .. } if read == storage
     ) || super::access::read_of(code, array) != Some((value, definition.state()))
-        || code.emission.composed_use(array).is_some()
+        || code.evaluation(array).is_some()
     {
         return None;
     }

@@ -29,11 +29,9 @@ pub(super) fn construct(
             matches!(view,
             Interpretation::IntegralView { declared } if boolean_type(code, TypeUseId(declared.0)))
         });
-        if code
-            .emission
-            .composed_use(expression.id)
-            .is_some_and(|composition| !matches!(composition.predicate, ComposedPredicate::Boolean))
-        {
+        if code.evaluation(expression.id).is_some_and(|composition| {
+            !matches!(composition.predicate, EvaluationPredicate::Boolean)
+        }) {
             uses[expression.id.0 as usize] = false;
         }
         match expression.kind {

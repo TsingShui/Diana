@@ -118,7 +118,7 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
                         statement,
                     } => {
                         code.emission.omitted_nop(*statement)
-                            || code.emission.origin_only_operation(*operation)
+                            || code.origin_only_operation(*operation)
                     }
                     BodyAction::Release { .. }
                     | BodyAction::Receive { .. }
@@ -273,8 +273,7 @@ fn displayed_predicate_site(code: &MethodCode, test: PredicateEmission) -> bool 
         return true;
     }
     let displayed_operand_site = |operand| {
-        code.emission
-            .composed_use(operand)
+        code.evaluation(operand)
             .and_then(|value| value.site)
             .is_some_and(|site| code.emission.site_annotation(site))
     };
@@ -306,14 +305,11 @@ fn discardable_predicate(code: &MethodCode, test: PredicateEmission) -> bool {
         TerminalKind::If {
             condition: Condition::Pair { left, right, .. },
             ..
-        } => {
-            code.emission.composed_use(left).is_none()
-                && code.emission.composed_use(right).is_none()
-        }
+        } => code.evaluation(left).is_none() && code.evaluation(right).is_none(),
         TerminalKind::If {
             condition: Condition::Zero { value, .. },
             ..
-        } => code.emission.composed_use(value).is_none(),
+        } => code.evaluation(value).is_none(),
         _ => false,
     }
 }

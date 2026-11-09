@@ -437,7 +437,11 @@ pub(super) fn operations(c: &mut Context<'_, '_>) -> Result<(), ExpressionError>
                 if role == crate::p5::ConstructionRole::Initialization {
                     Some(group.statement)
                 } else {
-                    None
+                    group
+                        .prepared_arguments
+                        .iter()
+                        .find(|argument| argument.operation == op.id())
+                        .map(|argument| argument.statement)
                 },
                 Emission::Construction(group.id),
             )
@@ -515,6 +519,7 @@ pub(super) fn operations(c: &mut Context<'_, '_>) -> Result<(), ExpressionError>
                 writes: copy(flow.writes(op))?,
                 statement,
                 emission,
+                nested_at: None,
             },
         )?;
     }

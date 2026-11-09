@@ -15,7 +15,7 @@ pub(super) fn natural_stores(code: &mut MethodCode) -> Result<(), ExpressionErro
     natural.resize(code.statements.len(), false);
     for statement in &code.statements {
         let plain = |operand: ExprId| {
-            code.emission.composed_use(operand).is_none()
+            code.evaluation(operand).is_none()
                 && matches!(
                     code.expressions.get(operand.0 as usize).map(|e| &e.kind),
                     Some(

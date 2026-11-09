@@ -37,6 +37,20 @@ are typed provenance coordinates, not permission to query a live predecessor.
 Type uses retain descriptors and original sources; P8 owns class-wide display
 names and imports.
 
+A selected expression owns its nested `Evaluation`, which references the same
+original operation used by standalone statements. The operation's `nested_at`
+names that exact expression occurrence. Its PC, statement, result commit and
+exception sites remain in the original operation and statement records. The
+expression's original read and value/state remain evidence. P7 MUST establish
+both ownership references together and reject a second execution owner. P9 reads
+this structure; there are no separate composed-use or composed-result tables.
+
+Condition cover preparation uses a private list of proposed evaluations over
+the immutable current product. Subsequent proposals read established and proposed
+ownership through the same view. P7 installs the complete list only after every
+test admits its schedule. A refusal discards that list without mutating or
+copying the method's expression and operation arenas.
+
 The single `Control` arena contains each control's selected `ControlLayout`,
 execution children, continuation and presentation, alongside its retained source
 facts. P7 consumes the common P6 grammar directly rather than translating another
@@ -659,7 +673,7 @@ own their operation/result anchors; the construction owns the complete set of
 throw-site anchors, without duplicating either.
 
 For later test runs of an ordered Condition, P7 also supports a store-preserving
-composition when the result has additional reads. `ComposedResult::Store` names
+composition when the result has additional reads. `EvaluationResult::Store` names
 the original local; P9 prints `(local = expression)` at the exact matched
 terminal read, and the local's declaration and other reads remain visible.
 The original value/state/use identity, initialization, commit, exception and
@@ -672,7 +686,7 @@ in its printed prefix; ordinary operation, If and Loop composition still require
 one read. P7 MUST NOT substitute a second evaluation for the retained store.
 
 A single-use `cmp-long` can compose with an integral-zero branch when both source
-operands have established long views. P7 delivers `ComposedPredicate::LongComparison`
+operands have established long views. P7 delivers `EvaluationPredicate::LongComparison`
 with those original operands and the branch operator; P9 prints that relation,
 not a subtraction that could overflow. The comparison's original operation,
 expression and consumed read retain origins at the predicate. Pair comparisons,

@@ -174,7 +174,7 @@ impl Expressions<'_, '_> {
             match *action {
                 BodyAction::Statement { operation, .. } => {
                     let previous = self.out.origin_only;
-                    self.out.origin_only |= self.code.emission().origin_only_operation(operation);
+                    self.out.origin_only |= self.code.origin_only_operation(operation);
                     let result = self.statement(operation, None);
                     self.out.origin_only = previous;
                     result?;
@@ -184,7 +184,7 @@ impl Expressions<'_, '_> {
                     operation, scope, ..
                 } => {
                     let previous = self.out.origin_only;
-                    self.out.origin_only |= self.code.emission().origin_only_operation(operation);
+                    self.out.origin_only |= self.code.origin_only_operation(operation);
                     let result = self.statement(operation, Some(scope));
                     self.out.origin_only = previous;
                     result?;

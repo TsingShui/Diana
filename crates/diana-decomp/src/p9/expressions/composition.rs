@@ -10,16 +10,23 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
     pub(in crate::p9) fn comparison_predicate(
         &mut self,
         carrier: ExprId,
-        composed: ComposedExpression,
+        composed: Evaluation,
         left: ExprId,
         right: ExprId,
         operator: &'static str,
     ) -> Result<(), RenderError> {
+        let statement = self
+            .code
+            .operation(composed.operation)
+            .and_then(|operation| operation.statement)
+            .ok_or(RenderError::Invariant(
+                "comparison evaluation lost its statement",
+            ))?;
         let start = self.out.position();
         let previous_carrier = self
             .check_carrier
-            .replace(CheckCarrier::Statement(composed.statement));
-        let previous_statement = self.statement.replace(composed.statement);
+            .replace(CheckCarrier::Statement(statement));
+        let previous_statement = self.statement.replace(statement);
         let rendered = (|| {
             self.operand(left)?;
             self.out.put(operator)?;
@@ -42,17 +49,28 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
 
     pub(super) fn composition_end(
         &mut self,
-        composed: ComposedExpression,
+        composed: Evaluation,
         start: crate::p9::TextOffset,
     ) -> Result<(), RenderError> {
+        let source = self
+            .code
+            .operation(composed.operation)
+            .ok_or(RenderError::Invariant(
+                "nested evaluation lost its operation",
+            ))?;
+        let statement = source.statement.ok_or(RenderError::Invariant(
+            "nested evaluation lost its statement",
+        ))?;
+        let pc = source.pc;
+        let result_pc = source.result_pc;
         self.out.span(
             start,
             Origin::Statement {
                 method: self.method,
-                statement: composed.statement,
+                statement,
             },
         )?;
-        if let Some(group) = self.code.statement_construction(composed.statement) {
+        if let Some(group) = self.code.statement_construction(statement) {
             for &operation in &group.members {
                 if group
                     .prepared_arguments
@@ -76,7 +94,7 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
                     },
                 )?;
             }
-            for &site in self.code.statement_sites(composed.statement) {
+            for &site in self.code.statement_sites(statement) {
                 self.out.span(
                     start,
                     Origin::Site {
@@ -91,7 +109,7 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
                 Origin::Operation {
                     method: self.method,
                     operation: composed.operation,
-                    pc: composed.pc,
+                    pc,
                 },
             )?;
         }
@@ -120,7 +138,7 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
                 },
             )?;
         }
-        if let Some(pc) = composed.result_pc {
+        if let Some(pc) = result_pc {
             self.out.span(
                 start,
                 Origin::ResultCommit {

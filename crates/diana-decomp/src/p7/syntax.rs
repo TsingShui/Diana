@@ -1,5 +1,5 @@
 use super::references::SourceFailure;
-use crate::p2::{BinaryOp, BranchOp, CompareOp, InvokeKind, UnaryOp, ValueKind};
+use crate::p2::{BinaryOp, BranchOp, CompareOp, InvokeKind, OpId, UnaryOp, ValueKind};
 use crate::p3::{PointId, StateId, UseSite};
 use crate::p4::{Bits, Initialization, Interpretation};
 use crate::p5::{DefinitionPlan, StorageGap, StorageRead};
@@ -41,6 +41,38 @@ pub struct Expression {
     pub id: ExprId,
     pub kind: ExprKind,
     pub origin: Option<ReadOrigin>,
+    /// Selected execution edge; `kind` and `origin` retain the consumed read.
+    pub evaluation: Option<Evaluation>,
+}
+#[derive(Clone, Copy, Debug, Serialize)]
+pub enum EvaluationResult {
+    Value,
+    Store(StorageId),
+}
+/// The predicate spelling selected by P7, not inferred by the renderer.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub enum EvaluationPredicate {
+    Value,
+    Boolean,
+    LongComparison {
+        #[serde(serialize_with = "super::debug")]
+        op: crate::p2::BranchOp,
+        left: ExprId,
+        right: ExprId,
+    },
+}
+/// One original producer evaluated at a selected adjacent read occurrence.
+/// Store retention preserves its other reads and its original materialization.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct Evaluation {
+    pub expression: ExprId,
+    pub operation: OpId,
+    pub predicate: EvaluationPredicate,
+    pub result: EvaluationResult,
+    /// Site whose anchor follows this nested evaluation; groups own their sites.
+    pub site: Option<SiteId>,
+    /// A cross-node composition closes the source control at this use.
+    pub source_control: Option<ControlId>,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -252,6 +284,8 @@ pub struct Operation {
     pub writes: Vec<crate::RegisterSlot>,
     pub statement: Option<StatementId>,
     pub emission: Emission,
+    /// Sole selected nested execution owner; absence retains body placement.
+    pub nested_at: Option<ExprId>,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]

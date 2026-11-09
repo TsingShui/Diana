@@ -194,7 +194,7 @@ pub(super) fn call_owners(code: &mut MethodCode) -> Result<(), ExpressionError> 
             _ => continue,
         };
         let disclose = call.receiver.is_some_and(|receiver| {
-            if code.emission.composed_use(receiver).is_some()
+            if code.evaluation(receiver).is_some()
                 || code.emission.inline_checks.iter().any(|check| check.occurrence == receiver)
             {
                 return true;
@@ -230,7 +230,7 @@ pub(super) fn call_owners(code: &mut MethodCode) -> Result<(), ExpressionError> 
 }
 
 fn object_receiver(code: &MethodCode, expression: ExprId) -> bool {
-    if code.emission.composed_use(expression).is_some()
+    if code.evaluation(expression).is_some()
         || code
             .emission
             .inline_checks

@@ -18,30 +18,21 @@ pub(super) fn construct(
     adjacency: &super::adjacency::Adjacency,
     access: &LocalAccess,
 ) -> Result<(), ExpressionError> {
-    for group in &code.constructions {
-        for argument in &group.prepared_arguments {
-            let source = code
-                .operations
-                .get(argument.operation.0 as usize)
-                .ok_or(bug("prepared construction argument lost its operation"))?;
-            let statement = code
-                .statements
-                .get(argument.statement.0 as usize)
-                .ok_or(bug("prepared construction argument lost its statement"))?;
-            code.emission.composed_uses[argument.operand.0 as usize] = Some(ComposedExpression {
+    for group_index in 0..code.constructions.len() {
+        let count = code.constructions[group_index].prepared_arguments.len();
+        for argument_index in 0..count {
+            let group = &code.constructions[group_index];
+            let argument = &group.prepared_arguments[argument_index];
+            let operand = argument.operand;
+            let evaluation = Evaluation {
                 expression: argument.expression,
                 operation: argument.operation,
-                statement: statement.id,
-                pc: source.pc,
-                result_pc: source.result_pc,
-                // The owning group retains and annotates every original site.
+                predicate: EvaluationPredicate::Value,
+                result: EvaluationResult::Value,
                 site: None,
-                predicate: ComposedPredicate::Value,
-                result: ComposedResult::Value,
                 source_control: None,
-            });
-            code.emission.composed_operations[argument.operation.0 as usize] =
-                Some(ComposedResult::Value);
+            };
+            code.place_evaluation(operand, evaluation)?;
         }
     }
     if !access.complete {
@@ -69,26 +60,21 @@ pub(super) fn construct(
     }
     for node in 0..code.emission.blocks.len() {
         if let Some((group, use_id, control)) =
-            construction_throw(code, node, &last, incoming, sibling, access)
+            construction_throw(&Cover::new(code), node, &last, incoming, sibling, access)
         {
             let construction = &code.constructions[group.0 as usize];
-            let source = &code.operations[construction.initialization.0 as usize];
-            code.emission.composed_uses[use_id.0 as usize] = Some(ComposedExpression {
+            let evaluation = Evaluation {
                 expression: construction.expression,
                 operation: construction.initialization,
-                statement: construction.statement,
-                pc: source.pc,
-                result_pc: source.result_pc,
+                predicate: EvaluationPredicate::Value,
+                result: EvaluationResult::Value,
                 site: None,
-                predicate: ComposedPredicate::Value,
-                result: ComposedResult::Value,
                 source_control: Some(control),
-            });
-            code.emission.composed_operations[construction.initialization.0 as usize] =
-                Some(ComposedResult::Value);
+            };
+            code.place_evaluation(use_id, evaluation)?;
             code.emission.deferred_controls[control.0 as usize] = true;
         }
-        let candidate = terminal_use(code, node, &last, incoming, sibling, access);
+        let candidate = terminal_use(&Cover::new(code), node, &last, incoming, sibling, access);
         if let Some((producer, use_id, control)) = candidate {
             install(code, producer, use_id, Some(control), key)?;
         }
@@ -97,9 +83,10 @@ pub(super) fn construct(
     // original schedule. Effect boundaries may divide one original block into
     // adjacent source portions; they do not insert another evaluation.
     for node in (0..code.emission.blocks.len()).rev() {
-        if let Some((first, second, owner)) = operation_successor(code, node, adjacency)
+        if let Some((first, second, owner)) =
+            operation_successor(&Cover::new(code), node, adjacency)
             && let Some((producer, use_id, allows_nested)) =
-                operation_use(code, first, second, &next, access, &nested)
+                operation_use(&Cover::new(code), first, second, &next, access, &nested)
         {
             nested[producer.operation.0 as usize] = allows_nested;
             install(code, producer, use_id, Some(owner), key)?;
@@ -108,7 +95,7 @@ pub(super) fn construct(
         for index in (0..count.saturating_sub(1)).rev() {
             let first = code.emission.blocks[node].actions[index];
             let second = code.emission.blocks[node].actions[index + 1];
-            let candidate = operation_use(code, first, second, &next, access, &nested);
+            let candidate = operation_use(&Cover::new(code), first, second, &next, access, &nested);
             if let Some((producer, use_id, allows_nested)) = candidate {
                 *nested
                     .get_mut(producer.operation.0 as usize)
@@ -121,7 +108,7 @@ pub(super) fn construct(
 }
 
 fn construction_throw(
-    code: &MethodCode,
+    code: &Cover<'_>,
     node: usize,
     last: &[Option<OpId>],
     incoming: &[u8],
@@ -321,7 +308,7 @@ fn construction_throw(
                 argument: 0,
             })
         || !matches!(origin.read, Ok(StorageRead::Value { local: source, value, .. }) if source.0 == local.0 && value == publication.original.value)
-        || code.emission.composed_use(use_id).is_some()
+        || code.evaluation(use_id).is_some()
     {
         return None;
     }
@@ -340,7 +327,7 @@ struct Producer {
     family: Family,
     boolean: bool,
     site: Option<SiteId>,
-    result: ComposedResult,
+    result: EvaluationResult,
 }
 
 #[derive(Clone, Copy)]
@@ -350,7 +337,7 @@ enum UsePolicy {
 }
 
 fn producer(
-    code: &MethodCode,
+    code: &Cover<'_>,
     operation: OpId,
     statement: StatementId,
     access: &LocalAccess,
@@ -360,7 +347,7 @@ fn producer(
 }
 
 fn producer_with_nested(
-    code: &MethodCode,
+    code: &Cover<'_>,
     operation: OpId,
     statement: StatementId,
     access: &LocalAccess,
@@ -383,7 +370,7 @@ fn producer_with_nested(
     {
         return Err("suspension_owns_its_result_and_route");
     }
-    if code.emission.composed_operation(operation)
+    if code.nested_operation(operation)
         || matches!(
             code.emission
                 .origin_only_operations
@@ -447,13 +434,13 @@ fn producer_with_nested(
     let result = match value_access.protection {
         LocalProtection::Pinned => return Err("producer_local_pinned"),
         LocalProtection::CopySource if matches!(policy, UsePolicy::PreserveStore) => {
-            ComposedResult::Store(local)
+            EvaluationResult::Store(local)
         }
         LocalProtection::CopySource => return Err("producer_copy_source_requires_store"),
         LocalProtection::None => match value_access.reads {
-            1 => ComposedResult::Value,
+            1 => EvaluationResult::Value,
             count if count > 1 && matches!(policy, UsePolicy::PreserveStore) => {
-                ComposedResult::Store(local)
+                EvaluationResult::Store(local)
             }
             _ => return Err("producer_not_single_read"),
         },
@@ -496,7 +483,7 @@ fn producer_with_nested(
             false
         }
         ExprKind::String(reference)
-            if family == Family::Reference && matches!(result, ComposedResult::Value) =>
+            if family == Family::Reference && matches!(result, EvaluationResult::Value) =>
         {
             let reference = code
                 .references
@@ -516,7 +503,7 @@ fn producer_with_nested(
             left,
             right,
         } if family == Family::Integral
-            && matches!(result, ComposedResult::Value)
+            && matches!(result, EvaluationResult::Value)
             && long_leaf(code, *left)
             && long_leaf(code, *right) =>
         {
@@ -624,20 +611,18 @@ fn producer_with_nested(
     })
 }
 
-fn nested_argument(code: &MethodCode, argument: ExprId, consumer: OpId) -> bool {
-    code.emission
-        .composed_use(argument)
-        .is_some_and(|composed| {
-            matches!(composed.result, ComposedResult::Value)
-                && composed.operation.0 < consumer.0
-                && composed.source_control.is_none()
-        })
+fn nested_argument(code: &Cover<'_>, argument: ExprId, consumer: OpId) -> bool {
+    code.evaluation(argument).is_some_and(|composed| {
+        matches!(composed.result, EvaluationResult::Value)
+            && composed.operation.0 < consumer.0
+            && composed.source_control.is_none()
+    })
 }
 
 /// Existing adjacent sibling blocks are the only cross-portion operation path.
 /// No traversal crosses a loop, try, synchronization or other control boundary.
 fn operation_successor(
-    code: &MethodCode,
+    code: &Cover<'_>,
     node: usize,
     adjacency: &super::adjacency::Adjacency,
 ) -> Option<(BodyAction, BodyAction, ControlId)> {
@@ -650,7 +635,7 @@ fn operation_successor(
 }
 
 fn operation_use(
-    code: &MethodCode,
+    code: &Cover<'_>,
     first: BodyAction,
     second: BodyAction,
     next: &[Option<OpId>],
@@ -672,8 +657,7 @@ fn operation_use(
         return None;
     };
     if next.get(operation.0 as usize).copied().flatten()? != consumer
-        || (code.emission.composed_operation(consumer)
-            && !nested.get(consumer.0 as usize).copied()?)
+        || (code.nested_operation(consumer) && !nested.get(consumer.0 as usize).copied()?)
     {
         return None;
     }
@@ -764,7 +748,7 @@ fn operation_use(
 }
 
 fn string_argument(
-    code: &MethodCode,
+    code: &Cover<'_>,
     producer: Producer,
     consumer: OpId,
     statement: &Statement,
@@ -799,7 +783,7 @@ fn string_argument(
     None
 }
 
-fn long_leaf(code: &MethodCode, id: ExprId) -> bool {
+fn long_leaf(code: &Cover<'_>, id: ExprId) -> bool {
     leaf(code, id)
         && matches!(
             code.expressions[id.0 as usize].kind,
@@ -819,7 +803,7 @@ fn long_leaf(code: &MethodCode, id: ExprId) -> bool {
         )
 }
 
-fn first_operand(code: &MethodCode, statement: &Statement) -> Option<ExprId> {
+fn first_operand(code: &Cover<'_>, statement: &Statement) -> Option<ExprId> {
     match &statement.kind {
         StatementKind::Move { expression, .. } => Some(*expression),
         StatementKind::Evaluate { expression } => {
@@ -843,7 +827,7 @@ fn first_operand(code: &MethodCode, statement: &Statement) -> Option<ExprId> {
 }
 
 fn terminal_use(
-    code: &MethodCode,
+    code: &Cover<'_>,
     node: usize,
     last: &[Option<OpId>],
     incoming: &[u8],
@@ -1025,7 +1009,7 @@ fn terminal_use(
     .then_some((producer, use_id, owner))
 }
 
-fn boolean_type(code: &MethodCode, local: &LocalDeclaration, family: Family) -> bool {
+fn boolean_type(code: &Cover<'_>, local: &LocalDeclaration, family: Family) -> bool {
     family == Family::Integral
         && !local.type_source_unknown
         && !local.declared_types.is_empty()
@@ -1049,8 +1033,8 @@ fn initialized(initialization: Option<Initialization>, family: Family) -> bool {
     }
 }
 
-fn matches_use(code: &MethodCode, producer: Producer, id: ExprId, site: UseSite) -> bool {
-    if code.emission.composed_use(id).is_some() {
+fn matches_use(code: &Cover<'_>, producer: Producer, id: ExprId, site: UseSite) -> bool {
+    if code.evaluation(id).is_some() {
         return false;
     }
     let Some(expression) = code.expressions.get(id.0 as usize) else {
@@ -1070,17 +1054,12 @@ fn matches_use(code: &MethodCode, producer: Producer, id: ExprId, site: UseSite)
             if local == producer.destination && value == producer.value && state == producer.state)
 }
 
-fn install(
-    code: &mut MethodCode,
+fn prepare_evaluation(
+    code: &Cover<'_>,
     producer: Producer,
     use_id: ExprId,
     source_control: Option<ControlId>,
-    key: crate::MethodKey,
-) -> Result<(), ExpressionError> {
-    let source = code
-        .operations
-        .get(producer.operation.0 as usize)
-        .ok_or(bug("composed operation disappeared"))?;
+) -> Result<Evaluation, ExpressionError> {
     let predicate = if let ExprKind::Compare {
         op: crate::p2::CompareOp::CmpLong,
         left,
@@ -1106,36 +1085,54 @@ fn install(
         else {
             return Err(bug("composed cmp-long lost its zero branch"));
         };
-        ComposedPredicate::LongComparison { op, left, right }
+        EvaluationPredicate::LongComparison { op, left, right }
     } else if producer.boolean {
-        ComposedPredicate::Boolean
+        EvaluationPredicate::Boolean
     } else {
-        ComposedPredicate::Value
+        EvaluationPredicate::Value
     };
-    code.emission.composed_uses[use_id.0 as usize] = Some(ComposedExpression {
+    Ok(Evaluation {
         expression: producer.expression,
         operation: producer.operation,
-        statement: producer.statement,
-        pc: source.pc,
-        result_pc: source.result_pc,
-        site: producer.site,
         predicate,
         result: producer.result,
+        site: producer.site,
         source_control,
-    });
-    if let Some(control) = source_control {
+    })
+}
+
+fn install(
+    code: &mut MethodCode,
+    producer: Producer,
+    use_id: ExprId,
+    source_control: Option<ControlId>,
+    key: crate::MethodKey,
+) -> Result<(), ExpressionError> {
+    let evaluation = prepare_evaluation(&Cover::new(code), producer, use_id, source_control)?;
+    install_evaluation(code, use_id, evaluation, key)
+}
+
+fn install_evaluation(
+    code: &mut MethodCode,
+    use_id: ExprId,
+    evaluation: Evaluation,
+    key: crate::MethodKey,
+) -> Result<(), ExpressionError> {
+    if let Some(control) = evaluation.source_control {
         let deferred = code
             .emission
             .deferred_controls
-            .get_mut(control.0 as usize)
+            .get(control.0 as usize)
             .ok_or(bug("composed operation lost its control"))?;
         if *deferred {
             return Err(bug("control has multiple deferred compositions"));
         }
-        *deferred = true;
     }
-    code.emission.composed_operations[producer.operation.0 as usize] = Some(producer.result);
-    let kind = match code.expressions[producer.expression.0 as usize].kind {
+    code.place_evaluation(use_id, evaluation)?;
+    if let Some(control) = evaluation.source_control {
+        code.emission.deferred_controls[control.0 as usize] = true;
+    }
+    let kind = match code.expressions[evaluation.expression.0 as usize].kind {
         ExprKind::String(_) => Some("string"),
         ExprKind::Compare {
             op: crate::p2::CompareOp::CmpLong,
@@ -1147,16 +1144,18 @@ fn install(
         super::trace::expression_selected(
             key,
             kind,
-            producer.operation,
-            producer.statement,
+            evaluation.operation,
+            code.operations[evaluation.operation.0 as usize]
+                .statement
+                .ok_or(bug("evaluation lost its statement"))?,
             use_id,
         );
     }
     Ok(())
 }
 
-fn leaf(code: &MethodCode, id: ExprId) -> bool {
-    code.emission.composed_use(id).is_none()
+fn leaf(code: &Cover<'_>, id: ExprId) -> bool {
+    code.evaluation(id).is_none()
         && matches!(
             code.expressions.get(id.0 as usize).map(|v| &v.kind),
             Some(ExprKind::Read { .. } | ExprKind::Literal { .. })
@@ -1222,22 +1221,44 @@ enum ConditionChoice {
     },
 }
 
-struct ConditionComposition {
-    uses: Vec<Option<ComposedExpression>>,
-    operations: Vec<Option<ComposedResult>>,
+/// Sparse proposed execution ownership over the immutable current product.
+struct Cover<'a> {
+    code: &'a MethodCode,
+    work: Vec<(ExprId, Evaluation)>,
 }
-
-impl ConditionComposition {
-    fn take(code: &MethodCode) -> Self {
+impl<'a> Cover<'a> {
+    fn new(code: &'a MethodCode) -> Self {
         Self {
-            uses: code.emission.composed_uses.clone(),
-            operations: code.emission.composed_operations.clone(),
+            code,
+            work: Vec::new(),
         }
     }
-
-    fn restore(self, code: &mut MethodCode) {
-        code.emission.composed_uses = self.uses;
-        code.emission.composed_operations = self.operations;
+    fn evaluation(&self, id: ExprId) -> Option<Evaluation> {
+        self.work
+            .iter()
+            .find(|(operand, _)| *operand == id)
+            .map(|(_, evaluation)| *evaluation)
+            .or_else(|| self.code.evaluation(id))
+    }
+    fn nested_operation(&self, operation: OpId) -> bool {
+        self.code.nested_operation(operation)
+            || self
+                .work
+                .iter()
+                .any(|(_, evaluation)| evaluation.operation == operation)
+    }
+    fn propose(&mut self, producer: Producer, operand: ExprId) -> Result<(), ExpressionError> {
+        if self.evaluation(operand).is_some() || self.nested_operation(producer.operation) {
+            return Err(bug("cover has multiple execution owners"));
+        }
+        let evaluation = prepare_evaluation(self, producer, operand, None)?;
+        push(&mut self.work, (operand, evaluation))
+    }
+}
+impl std::ops::Deref for Cover<'_> {
+    type Target = MethodCode;
+    fn deref(&self) -> &Self::Target {
+        self.code
     }
 }
 
@@ -1260,9 +1281,9 @@ fn compose(
         EmissionLayout::Condition { tests, .. } => tests.len(),
         _ => return Err(bug("condition composition lost its layout")),
     };
-    let before = ConditionComposition::take(code);
-    let composed = (|| -> Result<(ConditionChoice, Vec<(Producer, ExprId)>), ExpressionError> {
-        let mut work = Vec::new();
+    let composed = (|| -> Result<(ConditionChoice, Vec<(ExprId, Evaluation)>), ExpressionError> {
+        let mut cover = Cover::new(code);
+        let code = &mut cover;
         for position in 0..count {
             let refuse = |why, statement| {
                 Ok((
@@ -1339,13 +1360,13 @@ fn compose(
                 }
                 Condition::Zero { value, .. } => push(&mut operands, (*value, 0u32))?,
             }
-            compose_condition_arguments(code, &nodes, access, key)?;
+            compose_condition_arguments(code, &nodes, access)?;
             let scheduled =
                 scheduled(code, &nodes, test.terminal, &operands, access, position > 0)?;
             match scheduled {
                 Ok(scheduled) => {
-                    for item in scheduled {
-                        push(&mut work, item)?;
+                    for (producer, operand) in scheduled {
+                        code.propose(producer, operand)?;
                     }
                 }
                 Err(reason) => return refuse(reason.why, reason.statement),
@@ -1356,18 +1377,11 @@ fn compose(
                 values: 0,
                 stores: 0,
             },
-            work,
+            cover.work,
         ))
     })();
-    let (choice, work) = match composed {
-        Ok(composed) => composed,
-        Err(error) => {
-            before.restore(code);
-            return Err(error);
-        }
-    };
+    let (choice, work) = composed?;
     if matches!(choice, ConditionChoice::Explicit { .. }) {
-        before.restore(code);
         return Ok(choice);
     }
     // Install only after every test admits its whole schedule. A refused later
@@ -1391,17 +1405,19 @@ fn compose(
     }
     let mut values = 0;
     let mut stores = 0;
-    for (producer, operand) in work {
-        install(code, producer, operand, None, key)?;
-        match producer.result {
-            ComposedResult::Value => values += 1,
-            ComposedResult::Store(storage) => {
+    for (operand, evaluation) in work {
+        install_evaluation(code, operand, evaluation, key)?;
+        match evaluation.result {
+            EvaluationResult::Value => values += 1,
+            EvaluationResult::Store(storage) => {
                 stores += 1;
                 super::trace::condition_store(
                     key,
                     code.controls[index].id,
-                    producer.operation,
-                    producer.statement,
+                    evaluation.operation,
+                    code.operations[evaluation.operation.0 as usize]
+                        .statement
+                        .ok_or(bug("condition evaluation lost its statement"))?,
                     operand,
                     storage,
                 );
@@ -1458,7 +1474,7 @@ fn compose(
 /// The final other edge is selected only after every test declined the shared
 /// arm. Its copies can print in that exact else position, never in the common
 /// continuation or on another test's selected edge.
-fn original_edge_copies(code: &MethodCode, edge: TransferId) -> Result<bool, ExpressionError> {
+fn original_edge_copies(code: &Cover<'_>, edge: TransferId) -> Result<bool, ExpressionError> {
     let transfer = code
         .transfers
         .get(edge.0 as usize)
@@ -1493,7 +1509,7 @@ fn original_edge_copies(code: &MethodCode, edge: TransferId) -> Result<bool, Exp
 /// policy. A boolean value is a zero test with an integral-zero meaning; it is
 /// not a pair operand or a different comparison operator.
 fn supported_role(
-    code: &MethodCode,
+    code: &Cover<'_>,
     terminal: crate::p2::BlockId,
     producer: Producer,
     argument: u32,
@@ -1503,7 +1519,7 @@ fn supported_role(
         ExprKind::Compare { .. }
     ) {
         return argument == 0
-            && matches!(producer.result, ComposedResult::Value)
+            && matches!(producer.result, EvaluationResult::Value)
             && matches!(
                 code.terminals[terminal.0 as usize].kind,
                 TerminalKind::If {
@@ -1540,7 +1556,7 @@ fn supported_role(
 
 /// The block nodes of one straight test run, in original order.
 fn run_nodes(
-    code: &MethodCode,
+    code: &Cover<'_>,
     control: ControlId,
 ) -> Result<Option<Vec<crate::p6::NodeId>>, ExpressionError> {
     let Some(plan) = code.controls.get(control.0 as usize) else {
@@ -1576,10 +1592,9 @@ fn run_nodes(
 /// first composed producer and the consumer must also be a producer for that
 /// consumer or a display-only check-cast.
 fn compose_condition_arguments(
-    code: &mut MethodCode,
+    code: &mut Cover<'_>,
     nodes: &[crate::p6::NodeId],
     access: &LocalAccess,
-    key: crate::MethodKey,
 ) -> Result<(), ExpressionError> {
     let mut actions = Vec::new();
     for &node in nodes {
@@ -1618,7 +1633,7 @@ fn compose_condition_arguments(
     }
     for consumer_index in 1..actions.len() {
         let (consumer, statement_id) = actions[consumer_index];
-        if code.emission.composed_operation(consumer) {
+        if code.nested_operation(consumer) {
             continue;
         }
         let Some(consumer_statement) = code.statements.get(statement_id.0 as usize) else {
@@ -1635,7 +1650,7 @@ fn compose_condition_arguments(
         }
         let mut candidates = Vec::new();
         for (index, &(operation, statement)) in actions.iter().enumerate().take(consumer_index) {
-            if code.emission.composed_operation(operation)
+            if code.nested_operation(operation)
                 || matches!(
                     code.statements.get(statement.0 as usize).map(|s| &s.kind),
                     Some(StatementKind::CheckCast { .. })
@@ -1654,7 +1669,7 @@ fn compose_condition_arguments(
                 Ok(producer) => producer,
                 Err(_) => continue,
             };
-            if producer.boolean || !matches!(producer.result, ComposedResult::Value) {
+            if producer.boolean || !matches!(producer.result, EvaluationResult::Value) {
                 continue;
             }
             let Some((use_id, argument)) =
@@ -1667,11 +1682,7 @@ fn compose_condition_arguments(
         let Some(&(first, ..)) = candidates.first() else {
             continue;
         };
-        let ordered = candidates
-            .iter()
-            .map(|(index, _, _, argument)| (*index, *argument))
-            .collect::<Vec<_>>();
-        if !ordered.windows(2).all(|pair| pair[0].1 < pair[1].1) {
+        if !candidates.windows(2).all(|pair| pair[0].3 < pair[1].3) {
             continue;
         }
         let complete = (first..consumer_index).all(|index| {
@@ -1687,14 +1698,14 @@ fn compose_condition_arguments(
             continue;
         }
         for (_, producer, use_id, _) in candidates {
-            install(code, producer, use_id, None, key)?;
+            code.propose(producer, use_id)?;
         }
     }
     Ok(())
 }
 
 fn condition_argument_use(
-    code: &MethodCode,
+    code: &Cover<'_>,
     producer: Producer,
     consumer: OpId,
     statement: &Statement,
@@ -1725,7 +1736,7 @@ fn condition_argument_use(
 type Scheduled = Result<Vec<(Producer, ExprId)>, Unscheduled>;
 
 fn scheduled(
-    code: &mut MethodCode,
+    code: &Cover<'_>,
     nodes: &[crate::p6::NodeId],
     terminal: crate::p2::BlockId,
     operands: &[(ExprId, u32)],
@@ -1746,7 +1757,7 @@ fn scheduled(
             else {
                 return refuse("test_run_has_nonstatement_action", None);
             };
-            if code.emission.composed_operation(operation)
+            if code.nested_operation(operation)
                 || matches!(
                     code.statements
                         .get(statement.0 as usize)
@@ -1830,7 +1841,7 @@ fn scheduled(
 /// transfers only to the next listed node, and the last node owns the predicate
 /// terminal. A skipped run may not carry copies whose steps would disappear.
 fn straight(
-    code: &MethodCode,
+    code: &Cover<'_>,
     nodes: &[crate::p6::NodeId],
     skipped: bool,
 ) -> Result<bool, ExpressionError> {

@@ -163,6 +163,7 @@ impl<'f, 'a> Context<'f, 'a> {
                 id: at,
                 kind,
                 origin,
+                evaluation: None,
             },
         )?;
         Ok(at)

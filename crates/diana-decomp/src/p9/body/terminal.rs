@@ -219,8 +219,8 @@ impl Expressions<'_, '_> {
                 Ok(())
             }
             Condition::Zero { op, value, meaning } => {
-                if let Some(composed) = self.code.emission().composed_use(*value)
-                    && let ComposedPredicate::LongComparison { op, left, right } =
+                if let Some(composed) = self.code.evaluation(*value)
+                    && let EvaluationPredicate::LongComparison { op, left, right } =
                         composed.predicate
                 {
                     return self.comparison_predicate(
@@ -233,9 +233,8 @@ impl Expressions<'_, '_> {
                 }
                 if self
                     .code
-                    .emission()
-                    .composed_use(*value)
-                    .is_some_and(|value| matches!(value.predicate, ComposedPredicate::Boolean))
+                    .evaluation(*value)
+                    .is_some_and(|value| matches!(value.predicate, EvaluationPredicate::Boolean))
                 {
                     if !matches!(meaning, ZeroMeaning::IntegralZero) {
                         return Err(RenderError::Invariant(
@@ -300,11 +299,9 @@ impl Expressions<'_, '_> {
                 value,
                 meaning: ZeroMeaning::IntegralZero,
             } if test.negate
-                && self
-                    .code
-                    .emission()
-                    .composed_use(*value)
-                    .is_some_and(|value| matches!(value.predicate, ComposedPredicate::Boolean)) =>
+                && self.code.evaluation(*value).is_some_and(|value| {
+                    matches!(value.predicate, EvaluationPredicate::Boolean)
+                }) =>
             {
                 Some(*value)
             }

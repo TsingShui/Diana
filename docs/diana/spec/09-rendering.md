@@ -40,10 +40,10 @@ phase boundaries. These forms do not introduce runtime helpers or a dispatcher.
 Ordinary values use P7's locals, literal views and materializations. P9 renders
 nested composed expressions with a fallibly allocated work stack, preserving each
 producer's statement, operation, site, result-commit and control spans. A delivered
-`ComposedResult::Store` prints `(local = expression)`: the original local is
+`EvaluationResult::Store` prints `(local = expression)`: the original local is
 assigned only after the expression completes normally, before its value is used
 by the surrounding predicate. P9 does not infer store retention from read counts.
-A delivered `ComposedPredicate::LongComparison` prints the original left and
+A delivered `EvaluationPredicate::LongComparison` prints the original left and
 right operands with P7's selected relation. Predicate negation complements that
 relation; P9 does not infer a comparison from numeric syntax or fold floating
 NaN behavior. Both the comparison expression and its consumed read retain spans,

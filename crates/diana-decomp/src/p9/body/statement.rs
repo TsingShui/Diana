@@ -128,7 +128,7 @@ impl Expressions<'_, '_> {
         op: OpId,
         release: Option<ControlId>,
     ) -> Result<(), RenderError> {
-        if self.code.emission().composed_operation(op) {
+        if self.code.nested_operation(op) {
             return Ok(());
         }
         let original = &self.code.operations()[op.0 as usize];

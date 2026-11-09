@@ -37,7 +37,10 @@ pub(in crate::p9) trait ExpressionSource {
     fn forwarded_copy(&self, _bundle: CopyPlanId, _step: usize) -> Option<ExprId> {
         None
     }
-    fn composed_use(&self, _id: ExprId) -> Option<ComposedExpression> {
+    fn operation(&self, _id: crate::p2::OpId) -> Option<&Operation> {
+        None
+    }
+    fn evaluation(&self, _id: ExprId) -> Option<Evaluation> {
         None
     }
     /// A partial product has no selected display plan, so it keeps the type.
@@ -131,8 +134,11 @@ impl ExpressionSource for MethodCode {
     fn copies(&self) -> &[CopyBundle] {
         self.copies()
     }
-    fn composed_use(&self, id: ExprId) -> Option<ComposedExpression> {
-        self.emission().composed_use(id)
+    fn operation(&self, id: crate::p2::OpId) -> Option<&Operation> {
+        self.operations().get(id.0 as usize)
+    }
+    fn evaluation(&self, id: ExprId) -> Option<Evaluation> {
+        MethodCode::evaluation(self, id)
     }
     fn field_receiver_owner(&self, reference: ReferenceId) -> Option<TypeUseId> {
         self.emission().field_receiver_owner(reference)

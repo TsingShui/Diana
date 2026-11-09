@@ -146,6 +146,58 @@ impl MethodCode {
     pub fn emission(&self) -> &EmissionPlan {
         &self.emission
     }
+    pub fn evaluation(&self, id: ExprId) -> Option<Evaluation> {
+        self.expressions.get(id.0 as usize)?.evaluation
+    }
+    pub fn nested_operation(&self, id: crate::p2::OpId) -> bool {
+        self.operations
+            .get(id.0 as usize)
+            .is_some_and(|operation| operation.nested_at.is_some())
+    }
+    pub(super) fn operation_evaluation(&self, id: crate::p2::OpId) -> Option<Evaluation> {
+        self.evaluation(self.operations.get(id.0 as usize)?.nested_at?)
+    }
+    pub(super) fn materializes_operation(&self, id: crate::p2::OpId) -> bool {
+        !self.origin_only_operation(id)
+            && !self
+                .operation_evaluation(id)
+                .is_some_and(|evaluation| matches!(evaluation.result, EvaluationResult::Value))
+    }
+    pub(super) fn place_evaluation(
+        &mut self,
+        id: ExprId,
+        evaluation: Evaluation,
+    ) -> Result<(), ExpressionError> {
+        let expression = self
+            .expressions
+            .get_mut(id.0 as usize)
+            .ok_or(build::bug("evaluation lost its operand"))?;
+        let operation = self
+            .operations
+            .get_mut(evaluation.operation.0 as usize)
+            .ok_or(build::bug("evaluation lost its operation"))?;
+        if expression.evaluation.is_some() || operation.nested_at.is_some() {
+            return Err(build::bug("evaluation has multiple execution owners"));
+        }
+        expression.evaluation = Some(evaluation);
+        operation.nested_at = Some(id);
+        Ok(())
+    }
+    pub fn origin_only_operation(&self, op: crate::p2::OpId) -> bool {
+        match self
+            .emission
+            .origin_only_operations
+            .get(op.0 as usize)
+            .copied()
+            .flatten()
+        {
+            Some(super::emission::OriginOnly::Attachment) => true,
+            Some(super::emission::OriginOnly::Identity(read)) => {
+                !self.nested_operation(op) && self.evaluation(read).is_none()
+            }
+            None => false,
+        }
+    }
     pub fn coverage(&self) -> &[crate::p2::Coverage] {
         &self.coverage
     }

@@ -32,7 +32,7 @@ pub(super) enum ExprEvent {
     Dimensions(u32),
     Initializer(ReferenceId, ReferenceId),
     CompositionEnd {
-        composed: ComposedExpression,
+        composed: Evaluation,
         start: crate::p9::TextOffset,
         previous_carrier: Option<CheckCarrier>,
         previous_statement: Option<StatementId>,

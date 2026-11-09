@@ -582,6 +582,15 @@ establish whole-method behavioral correctness.
 
 ## Shared control delivery
 
+P7 stores selected nested Evaluation edges in the expression arena and each
+original operation names its unique nested_at occurrence. P9 obtains statement,
+PC and result-commit origins from that original operation. The separate composed
+use/result tables are removed. Condition candidates use an immutable sparse
+proposal view, so refused candidates require neither arena copies nor rollback.
+The new joint-expression-cover input has four passing ownership/origin checks;
+historical fixture adaptation and regression are deferred during the structural
+rewrite at the operator's request. These checks do not execute helper behavior.
+
 P6 now publishes the common `ControlLayout` with named roles and original
 predicate/transfer coordinates. P7 consumes that structure directly and keeps
 one `Control` arena for selected execution, presentation and retained source

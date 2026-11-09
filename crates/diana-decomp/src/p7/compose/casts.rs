@@ -503,7 +503,7 @@ fn definition_carrier(
     if carrier.protection[previous_node] != carrier.protection[node] {
         return Err(Stop::Refuse("definition_changes_protection"));
     }
-    if code.emission.composed_operation(definition_operation)
+    if code.nested_operation(definition_operation)
         || !matches!(
             code.operations[definition_operation.0 as usize].emission,
             Emission::Block { .. }
@@ -798,7 +798,7 @@ fn first_terminal_read(
         let Some(expression) = code.expressions.get(id.0 as usize) else {
             return Ok(None);
         };
-        if code.emission.composed_use(id).is_some() {
+        if code.evaluation(id).is_some() {
             return Ok(None);
         }
         match &expression.kind {
@@ -881,7 +881,7 @@ fn first_read(
         let Some(expression) = code.expressions.get(id.0 as usize) else {
             return Ok(None);
         };
-        if code.emission.composed_use(id).is_some() {
+        if code.evaluation(id).is_some() {
             return Ok(None);
         }
         match &expression.kind {
@@ -934,24 +934,12 @@ fn statement_keeps_protection(
         if protection.get(source.node.0 as usize).copied() != Some(context) {
             return false;
         }
-        if !code.emission.composed_operation(operation) {
+        if !code.nested_operation(operation) {
             return true;
         }
-        let mut uses = code
-            .emission
-            .composed_uses
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| entry.is_some_and(|entry| entry.operation == operation));
-        let Some((index, _)) = uses.next() else {
-            return false;
-        };
-        if uses.next().is_some() {
-            return false;
-        }
-        let Some(origin) = code
-            .expressions
-            .get(index)
+        let Some(origin) = source
+            .nested_at
+            .and_then(|operand| code.expressions.get(operand.0 as usize))
             .and_then(|expression| expression.origin.as_ref())
         else {
             return false;
@@ -1250,7 +1238,7 @@ fn once_in(code: &MethodCode, root: ExprId, occurrence: ExprId) -> Result<bool, 
             .expressions
             .get(id.0 as usize)
             .ok_or(bug("terminal expression is outside its arena"))?;
-        if code.emission.composed_use(id).is_some() {
+        if code.evaluation(id).is_some() {
             continue;
         }
         match &expression.kind {
@@ -1370,7 +1358,7 @@ fn observable_carrier(
         let Some(expression) = code.expressions.get(id.0 as usize) else {
             return Ok(None);
         };
-        if code.emission.composed_use(id).is_some() {
+        if code.evaluation(id).is_some() {
             // The composed subtree prints under another carrier.
             return Ok(None);
         }
@@ -1432,7 +1420,7 @@ fn rendered_once(
     if code
         .emission
         .statement_operation(statement)
-        .is_some_and(|op| code.emission.origin_only_operation(op))
+        .is_some_and(|op| code.origin_only_operation(op))
     {
         return Ok(false);
     }
@@ -1482,7 +1470,7 @@ fn rendered_once(
             .expressions
             .get(id.0 as usize)
             .ok_or(bug("statement expression is outside its arena"))?;
-        if code.emission.composed_use(id).is_some() {
+        if code.evaluation(id).is_some() {
             continue;
         }
         match &expression.kind {
@@ -1533,7 +1521,7 @@ fn rendered_once(
 
 fn leftmost(code: &MethodCode, expression: ExprId) -> Option<ExprId> {
     let expression = code.expressions.get(expression.0 as usize)?;
-    if code.emission.composed_use(expression.id).is_some() {
+    if code.evaluation(expression.id).is_some() {
         // A composed use prints another statement's expression under that
         // statement's carrier, so this read cannot carry the check here.
         return None;
