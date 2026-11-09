@@ -107,6 +107,16 @@ an automated behavioral execution result or executed behavioral-regression accep
 failed deterministic check; repair acceptance still follows
 [EVOLUTION](../docs/diana/EVOLUTION.md#acceptance-and-regression).
 
+## Source-aligned APK reviews
+
+Public application reviews record pinned APK/source provenance, retrieval coverage,
+method-level source/DEX comparisons and evidence limits. They are discovery
+records, not whole-application behavioral acceptance or text-similarity ratings.
+Downloaded inputs and generated output remain outside version control.
+
+- [AntennaPod 3.12.3](reports/antennapod-3.12.3.md): character-use text disclosure,
+  explicit date retries and resource cleanup.
+
 ## Fixtures
 
 ### Atoms
