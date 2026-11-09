@@ -154,6 +154,7 @@ failed deterministic check; repair acceptance still follows
 | `typed-catch-loop-exits` | Shared catch entries and enclosing cleanup in a multi-exit loop; nonadjacent-alias priority guard |
 | `nested-catch-rejoins` | Two nested loops with held cleanup and shared catch rejoin; foreign pre-loop exception guard |
 | `branching-finally-suffix` | Whole-loop branching cleanup, unequal-argument guard and a shared outside pending-rethrow route |
+| `protected-loop-exits` | Nested protected abrupt corridors, literal cleanup order, cleanup-skipping returns, shared/recovering refusals and raw selector targets |
 | `iteration-tail-cleanup` | Nested shared body updates through cleanup, update-skipping backedges and original monitor routing |
 | `while-tail-continuations` | Three-level private exits, shared-entry refusal, cleanup before body updates and first-body do-while |
 | `monitor-iteration-exits` | Held cleanup before supplied update continuations, mixed release exits and a backedge skipping the update |

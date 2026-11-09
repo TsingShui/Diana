@@ -121,8 +121,11 @@ There is no for/enhanced-for reconstruction or dedicated update product.
 Initialization and updates remain at their original body positions. A shared
 update is an ordinary target, not a new continue destination: copies, cleanup
 and release precede it only on the original paths, and update-skipping exits
-remain distinct. Predicate work stays at its original position even when it
-cannot fit a compact header.
+remain distinct. A whole-loop catch-all can use the actual predicate follow
+before try admission, including protected private return/throw corridors. Closed
+abrupt handler ownership permits those corridors without acquiring recovering
+handlers, shared entrances or unguarded cleanup. Predicate work stays at its
+original position even when it cannot fit a compact header.
 Labels and selected edge copies remain concrete. Original switch links can share
 one case body, with acyclic private case-entry joins ordered once. Several
 predecessors can share one case entry: only the adjacent one falls through;
@@ -270,6 +273,11 @@ Nine [terminal-guard checks](../../quality/fixtures/branches/terminal-guard-arms
 cover original predicate direction, actual other-edge Phi assignments after the
 guard, parent declaration scope, recovering-Try refusal, cleanup, construction
 and early void return. Missing natural protection still retains explicit code.
+Five [protected-loop checks](../../quality/fixtures/exceptions/protected-loop-exits/README.md)
+cover nested protected throw corridors, real returns that skip cleanup, foreign
+normal entrances, recovering handlers and explicit raw-selector destinations.
+A raw selector's next statement is not its next case label; its supplied gotos
+survive display simplification.
 These checks cover ownership,
 transfer spelling and source anchors, not independent execution of the final plan.
 The retained independent verifier code is not enabled on ordinary requests. Real-input corpus runs have not encountered custom/polymorphic

@@ -90,6 +90,15 @@ declared(0,0) returns0 with10; declared(1,0) returns10 with11,22,9;
 declared(1,1) throws read ISE with11,22; declared(1,3) throws Error with11,22.
 The second mark must not execute after a failed read.
 
+## Protected-loop follow-up
+
+The later [protected-loop challenge](../../exceptions/protected-loop-exits/README.md)
+repairs the missing P6 scope producer for loop. Its existing behavioral matrix is
+unchanged. The ordinary-Engine check now requires that enclosing P6 finally and
+private throw corridor before observing the Guard; this is not a parallel P7
+recovery route. Fresh foreign-entry and recovering-handler cases retain the
+corresponding refusals. Baseline7354242 versus this candidate uses the same DEX.
+
 ## Preparation
 
 Use the repository Smali procedure with API24 in the ignored fixture cache,

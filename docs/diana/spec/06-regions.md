@@ -455,8 +455,13 @@ whole backedge core establishes an enclosing loop; header proximity or overlap
 alone does not. Follow and continue destinations remain outside the corridor.
 The corridor has that exit as its only normal entrance and no executable exceptional
 entrance. It can lie inside an enclosing core, but cannot reenter its own core,
-intersect any non-enclosing loop core or an established try/synchronized plan,
-contain a monitor, or throw to a local handler. Construction groups stay whole in the enlarged
+intersect any non-enclosing loop core or synchronized plan, or contain a monitor.
+An established try permits the corridor only in its body, with the entire loop
+core in that same body and its selected handlers proved normally closed and
+abrupt by the protection producer. Handler content, cleanup alternatives and
+partial/recovering try intersections do not qualify. A local catch target also
+requires that established enclosing owner; absent ownership keeps the exit
+explicit. Construction groups stay whole in the enlarged
 loop; candidate partitioning also keeps them whole in each child. Shared corridor work, cycles, branching corridors and unknown completion retain
 explicit control. The selected body interface retains private operations and the
 original outgoing copies before its selected break; predicate-exhaustion copies
@@ -471,6 +476,10 @@ only that composition; resource or construction-invariant failure keeps its exis
 classified RegionStop behavior.
 
 Original switch case keys, default, roles and duplicate-target edges remain distinct.
+An original selector without a selected Switch interface keeps explicit original
+gotos. A Sequence sibling is not a case-label successor, so that adjacency cannot
+supply Next, break or continue to a raw selector arm. Selected switches retain
+their existing arm/group and completion products.
 A switch with no concrete postdominator can use one unique first shared actual
 normal target as its external continuation. Reach counts start at distinct case
 targets: duplicate selector edges do not manufacture an external follow.
@@ -711,17 +720,31 @@ finally.
 
 ### Completed abrupt catch scopes over loops
 
-For an unbounded single catch-all scope, protection planning can use an established
-LoopPlan to complete a partial per-iteration body over the enclosing loop. The
-whole old body must lie in its core, selected handlers must be outside that core,
-and every handler's normal completion must stay inside the handler or exit the
-method. A recovering catch with an iteration join does not qualify. Every added
-throwing site must retain this exact selected protection interval or dispatch
-entirely inside the completed body. An unguarded call, even another cleanup call,
-prevents the enlargement. All loop normal exits must name its established follow.
-The largest eligible established loop supplies the body/entry/follow, with ordinary
-combined entry checks; no loop or protection analysis is retried. Bounded monitor
-contexts are not widened by this rule.
+Before try admission, an unbounded single catch-all can use an established
+LoopPlan's actual predicate follow as its primary normal boundary when the
+ordinary common follow is absent or inside that core. P6 constructs the header's
+original normal/executable-exceptional footprint up to that follow, excluding
+selected/outer captures. Every core node and guarded seed must be present, every
+throwing site must retain the exact selected interval or dispatch entirely
+inside the body, and original normal/executable-exceptional arrivals must close
+at the header. Private abrupt branches can lie outside the backedge core. An
+unguarded call, even another cleanup call, or a foreign arrival refuses this
+nomination.
+
+The existing normal dominance establishes each original handler's closed-abrupt
+fact once: dominated content has no normal outlet beyond that subtree, and its
+normal leaves are original return/throw terminals. A shared recovery join or an
+unestablished capture root does not qualify. The largest eligible core supplies
+one footprint, header and follow before ordinary handler/construction/owner
+admission. That footprint is reused, not reconstructed; optional backward prefixes
+do not acquire initialization before its already proved header entrance. A later
+admission rejection does not search another loop or boundary. Bounded monitor
+contexts do not widen.
+
+The TryPlan retains the private closed-abrupt handler fact for lexical-loop
+corridor construction. Only a whole enclosing body can license a protected
+private exit; consumers do not rediscover abrupt handlers or infer an owner from
+printed nesting. Original core, links, copies and priority stay unchanged.
 
 This preserves one catch owner while exposing the real normal loop completion
 instead of an intermediate iteration join. It does not by itself claim finally:

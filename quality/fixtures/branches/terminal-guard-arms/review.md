@@ -1,6 +1,25 @@
 # Fixture: terminal-guard-arms
 
-## Current LLM semantic judgement
+## Current verdict — protected loop ownership
+
+Compared the same prepared DEX on7354242 and this candidate. loop now receives
+one enclosing P6 finally and a private protected throw corridor. Its initialization
+remains before the scope; probe then either the original construction/throw or
+read/add/row update execute inside the while. Cleanup runs once afterward.
+The unchanged scenario matrix still gives15 for limit2/hit7, skips the selected
+read on a hit, cleans once on predicate/read failure, and replaces pending Error
+on mode3 cleanup failure. Zero limit runs cleanup40 without probing.
+
+This supersedes the missing-natural-product observation below, not the original
+effect expectations. The [fresh nested challenge](../../exceptions/protected-loop-exits/review.md)
+adds two loops, literal cleanup order, a return that skips cleanup and real
+foreign/recovering refusals. The check now requires the owning P6 facts before
+observing Guard; no downstream reconstruction route was introduced. Other
+members' current text/products are unchanged and reuse their preceding review.
+Original P2/P3/P4/P5 facts agree. This is bounded LLM reading and structural
+evidence, not behavioral execution.
+
+## Prior LLM semantic judgement
 
 Compared authored Java/Smali, concrete helpers and complete ordinary Engine
 source on the same prepared DEX, baseline29f1b82 versus the commit containing

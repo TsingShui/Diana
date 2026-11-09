@@ -70,7 +70,11 @@ pub(super) fn transfers(f: &mut RegionFacts, g: &Graph) -> Result<(), RegionErro
             }
             at = f.parents[id.0 as usize];
         }
-        if !handled {
+        // An unselected switch still prints all selector labels together.
+        // Sequence adjacency is not case fallthrough: an implicit transfer on
+        // an earlier label would execute the next selector arm instead. Only a
+        // selected Switch supplies that lexical interface; raw arms keep gotos.
+        if !handled && !g.switch_nodes[l.from.0 as usize] {
             let mut crossed_loop = false;
             let mut pending_sibling = false;
             let mut at = Some(f.labels[l.from.0 as usize].owner);

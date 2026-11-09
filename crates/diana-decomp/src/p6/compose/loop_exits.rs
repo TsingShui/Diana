@@ -61,6 +61,14 @@ pub(super) fn construct(
     Ok(())
 }
 
+// Only the established enclosing BODY is available to a private normal arm.
+// Handler/canonical cleanup membership and recovering scopes are not permission.
+fn enclosing_try(scope: &TryPlan, plan: &LoopPlan, at: NodeId) -> bool {
+    scope.abrupt_handlers
+        && scope.body.contains(&at)
+        && plan.members.iter().all(|node| scope.body.contains(node))
+}
+
 fn corridor(
     storage: &StorageMethod<'_>,
     f: &RegionFacts,
@@ -102,7 +110,9 @@ fn corridor(
             || f.loops
                 .iter()
                 .any(|other| other.members.contains(&at) && !enclosing.contains(&other.id))
-            || f.tries.iter().any(|scope| scope.members.contains(&at))
+            || f.tries
+                .iter()
+                .any(|scope| scope.members.contains(&at) && !enclosing_try(scope, plan, at))
             || f.synchronized
                 .iter()
                 .any(|scope| scope.members.contains(&at))
@@ -120,7 +130,12 @@ fn corridor(
                 && f.chains[site.chain.0 as usize]
                     .clauses
                     .iter()
-                    .any(|clause| matches!(clause.target, CatchTarget::Handler(_)))
+                    .any(|clause| match clause.target {
+                        CatchTarget::Handler(target) => !f.tries.iter().any(|scope| {
+                            enclosing_try(scope, plan, at) && scope.handlers.contains(&target)
+                        }),
+                        CatchTarget::Uncaught => false,
+                    })
         }) {
             return Ok(None);
         }

@@ -668,6 +668,8 @@ pub struct TryPlan {
     pub(super) handlers: Vec<NodeId>,
     pub(super) handler_bodies: Vec<Vec<NodeId>>,
     pub(super) handler_clauses: Vec<std::ops::Range<u32>>,
+    // Owning protection proof: no selected handler resumes shared normal code.
+    pub(super) abrupt_handlers: bool,
     pub(super) finally: Option<FinallyPlan>,
     pub(super) members: Vec<NodeId>,
     pub(super) follow: Option<NodeId>,

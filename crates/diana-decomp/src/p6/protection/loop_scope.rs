@@ -1,59 +1,83 @@
-//! Completes an abrupt catch-all scope over an already established loop.
-//! A first per-iteration normal join is not necessarily the protection boundary.
-//! No throwing work or recovering handler is silently acquired by this closure.
+//! Nominate one protected loop frontier before ordinary try admission.
 
 use super::*;
 
-pub(super) fn enclosing<'f>(
+// Normal dominance is already established over the original normal roots. A
+// recovering handler has an outgoing link into content not dominated by its
+// capture root; a closed abrupt handler cannot resume that shared content.
+pub(super) fn abrupt(
     storage: &StorageMethod<'_>,
-    f: &'f RegionFacts,
+    f: &RegionFacts,
     g: &Graph,
-    body: &[NodeId],
-    arms: &[Vec<NodeId>],
+    s: &Structure,
+    root: NodeId,
+) -> bool {
+    s.dom.dominates(root.0 as usize, root.0 as usize)
+        && f.nodes
+            .iter()
+            .filter(|n| s.dom.dominates(root.0 as usize, n.id.0 as usize))
+            .all(|n| {
+                let outgoing = &g.outgoing[n.id.0 as usize];
+                outgoing.iter().all(|l| {
+                    s.dom
+                        .dominates(root.0 as usize, f.links[l.0 as usize].to.0 as usize)
+                }) && (!outgoing.is_empty()
+                    || (n.terminal
+                        && matches!(
+                            storage.execution().blocks()[n.block.0 as usize].terminal(),
+                            Some(
+                                crate::p2::Terminal::Return { .. }
+                                    | crate::p2::Terminal::Throw { .. }
+                            )
+                        )))
+            })
+}
+
+pub(super) struct Completion {
+    pub body: Vec<bool>,
+    pub entry: NodeId,
+    pub follow: NodeId,
+}
+
+pub(super) fn complete(
+    storage: &StorageMethod<'_>,
+    f: &RegionFacts,
+    g: &Graph,
+    seeds: &[NodeId],
     wanted: &[HandlerClause],
-) -> Option<&'f LoopPlan> {
+    excluded: &[bool],
+    current: Option<NodeId>,
+) -> Result<Option<Completion>, RegionError> {
     let [clause] = wanted else {
-        return None;
+        return Ok(None);
     };
     if clause.catch.is_some() || !matches!(clause.target, CatchTarget::Handler(_)) {
-        return None;
+        return Ok(None);
     }
-    // Every normal completion of a handler is internal or an original method
-    // exit. An ordinary recovery join must stay at its original iteration.
-    for arm in arms {
-        for &node in arm {
-            let outgoing = &g.outgoing[node.0 as usize];
-            if outgoing
-                .iter()
-                .any(|l| !arm.contains(&f.links[l.0 as usize].to))
-            {
-                return None;
-            }
-            if outgoing.is_empty() {
-                let n = &f.nodes[node.0 as usize];
-                if !n.terminal
-                    || !matches!(
-                        storage.execution().blocks()[n.block.0 as usize].terminal(),
-                        Some(
-                            crate::p2::Terminal::Return { .. } | crate::p2::Terminal::Throw { .. }
-                        )
-                    )
-                {
-                    return None;
-                }
-            }
+    let mut selected = None;
+    let mut size = 0;
+    for plan in &f.loops {
+        let Some(follow) = plan.follow else { continue };
+        if plan.members.len() <= size
+            || current.is_some_and(|n| !plan.members.contains(&n))
+            || !seeds.iter().any(|n| plan.members.contains(n))
+        {
+            continue;
         }
+        let body = reachable(storage, f, g, &[plan.header], Some(follow), excluded, true)?;
+        if plan.members.iter().any(|n| !body[n.0 as usize])
+            || seeds.iter().any(|n| !body[n.0 as usize])
+            || !guarded(f, wanted, |n| body[n.0 as usize])
+            || !closed_entry(storage, f, g, &body, plan.header)
+        {
+            continue;
+        }
+        size = plan.members.len();
+        selected = Some(Completion {
+            body,
+            entry: plan.header,
+            follow,
+        });
     }
-    f.loops
-        .iter()
-        .filter(|p| {
-            p.members.len() > body.len()
-                && body.iter().all(|n| p.members.contains(n))
-                && arms.iter().flatten().all(|n| !p.members.contains(n))
-                && p.follow.is_some_and(|follow| {
-                    p.exits.iter().all(|l| f.links[l.0 as usize].to == follow)
-                })
-                && super::guarded(f, wanted, |n| p.members.contains(&n))
-        })
-        .max_by_key(|p| p.members.len())
+    Ok(selected)
 }

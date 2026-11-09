@@ -382,6 +382,10 @@ pub(super) fn plan(
     s: &Structure,
 ) -> Result<(), RegionError> {
     let handler_frontiers = handler_frontiers(storage, f, g)?;
+    let mut abrupt = filled(f.nodes.len(), false)?;
+    for handler in &f.handlers {
+        abrupt[handler.node.0 as usize] = loop_scope::abrupt(storage, f, g, s, handler.node);
+    }
     let mut patterns: Vec<Pattern> = Vec::new();
     for context in 0..=f.synchronized.len() {
         let outer = if context == 0 {
@@ -528,6 +532,7 @@ pub(super) fn plan(
         // continuation. Membership and entrance checks below still prove the
         // entire candidate around this boundary.
         let mut follow = s.common_follow(&follows).or(normal_follow);
+        let abrupt_handlers = targets.iter().all(|root| abrupt[root.0 as usize]);
         let mut excluded = filled(f.nodes.len(), false)?;
         if let Some(scope) = outer {
             for (i, slot) in excluded.iter_mut().enumerate() {
@@ -541,15 +546,34 @@ pub(super) fn plan(
                 excluded[target.0 as usize] = true;
             }
         }
-        let mut body = reachable(storage, f, g, &seeds, follow, &excluded, true)?;
-        let Some(mut entry) = prefix::complete(storage, f, g, &mut body, follow, &excluded)? else {
+        let completion = if outer.is_none() && abrupt_handlers {
+            loop_scope::complete(storage, f, g, &seeds, wanted, &excluded, follow)?
+        } else {
+            None
+        };
+        let (mut body, loop_entry) = match completion {
+            Some(completion) => {
+                follow = Some(completion.follow);
+                (completion.body, Some(completion.entry))
+            }
+            None => (
+                reachable(storage, f, g, &seeds, follow, &excluded, true)?,
+                None,
+            ),
+        };
+        // A completed loop already has its proved header entrance. Optional
+        // prefixes must not acquire initialization preceding that whole scope.
+        let Some(entry) = (match loop_entry {
+            Some(entry) => Some(entry),
+            None => prefix::complete(storage, f, g, &mut body, follow, &excluded)?,
+        }) else {
             continue;
         };
         if !guarded(f, wanted, |n| body[n.0 as usize]) {
             continue;
         }
         let mut members = body;
-        let mut body_nodes = list(&members)?;
+        let body_nodes = list(&members)?;
         let mut valid = true;
         let mut handler_bodies = Vec::new();
         for &target in &targets {
@@ -632,24 +656,6 @@ pub(super) fn plan(
         if !valid || !closed_entry(storage, f, g, &members, entry) {
             continue;
         }
-        if outer.is_none()
-            && let Some(scope) =
-                loop_scope::enclosing(storage, f, g, &body_nodes, &handler_bodies, wanted)
-        {
-            let mut expanded = filled(f.nodes.len(), false)?;
-            for &node in scope.members.iter().chain(handler_bodies.iter().flatten()) {
-                expanded[node.0 as usize] = true;
-            }
-            if closed_entry(storage, f, g, &expanded, scope.header) {
-                body_nodes.clear();
-                for &node in &scope.members {
-                    push(&mut body_nodes, node)?;
-                }
-                members = expanded;
-                entry = scope.header;
-                follow = scope.follow;
-            }
-        }
         let plan = TryPlan {
             id: TryId(id(f.tries.len())?),
             chain,
@@ -660,6 +666,7 @@ pub(super) fn plan(
             handlers: targets,
             handler_bodies,
             handler_clauses,
+            abrupt_handlers,
             finally: None,
             members: list(&members)?,
             follow,

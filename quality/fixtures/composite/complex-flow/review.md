@@ -1,6 +1,22 @@
 # Fixture: complex-flow
 
-## Current verdict — while/do-while architecture correction
+## Current verdict — protected private exit completion
+
+Compared the same prepared DEX on7354242 and this candidate. In run([I)I,
+MIN_VALUE still skips only advance/count and reaches the original index update.
+DONE now breaks the enclosing while directly instead of jumping outside it.
+That break skips advance/count/index update and reaches the same normal steps
+addition. Exhaustion reaches it once as well. The catch still adds the saved
+applied count and rethrows; cleanup field accesses remain explicit and are not
+incorrectly qualified as finally. No update moves into a header.
+
+Read Java against all changed paths and both complete method texts; other
+members are unchanged. Original P2/P3/P4/P5, edges, snapshots and copy obligations
+agree. The [fresh challenge](../../exceptions/protected-loop-exits/review.md)
+covers the enclosing abrupt-handler proof and refusals. This is bounded LLM
+review, not a behavior executor/device/Java run.
+
+## Prior verdict — while/do-while architecture correction
 
 Read the protected array loop and its outward planned goto: ordinary completion
 advances once, while the original abrupt route bypasses that update and reaches

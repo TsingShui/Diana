@@ -94,6 +94,12 @@ chapters describe the existing implementation until migrated to this target.
 
 ## Workflow
 
+- Contributors MUST develop and verify changes in a dedicated Git worktree and
+  branch, not directly in the `main` working tree. Concurrent agents MUST use
+  separate worktrees, build outputs and mutable run artifacts. Merge completed,
+  checked commits into `main`; preserve concurrent commits and uncommitted work.
+  Do not overwrite another agent's changes to resolve a conflict. Conflicting
+  semantics require an explicit decision before integration.
 - Contributors MUST NOT develop by accumulating local patches that mask symptoms,
   special-case observed inputs or bypass missing producer facts. Contributors MUST
   trace each problem to its architectural cause and implement a general solution

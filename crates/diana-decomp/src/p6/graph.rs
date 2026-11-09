@@ -9,6 +9,7 @@ pub(super) struct Graph {
     pub exceptions: Vec<Vec<crate::p2::EdgeId>>,
     pub op_node: Vec<NodeId>,
     pub terminal_node: Vec<NodeId>,
+    pub switch_nodes: Vec<bool>,
     pub roots: Vec<NodeId>,
 }
 fn node(
@@ -177,6 +178,12 @@ pub(super) fn construct(
             },
         )?;
     }
+    let mut switch_nodes = filled(f.nodes.len(), false)?;
+    for block in flow.blocks() {
+        if matches!(block.terminal(), Some(crate::p2::Terminal::Switch { .. })) {
+            switch_nodes[terminal_node[block.id().0 as usize].0 as usize] = true;
+        }
+    }
     let mut outgoing = lists(f.nodes.len())?;
     let mut incoming = lists(f.nodes.len())?;
     for e in &f.links {
@@ -309,6 +316,7 @@ pub(super) fn construct(
         exceptions,
         op_node,
         terminal_node,
+        switch_nodes,
         roots,
     })
 }

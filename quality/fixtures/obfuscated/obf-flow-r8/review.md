@@ -1,6 +1,23 @@
 # Fixture: obf-flow-r8
 
-## Current verdict — while/do-while architecture correction
+## Current verdict — protected private exit completion
+
+Compared the same prepared DEX on7354242 and this candidate. The obfuscated
+b([I)I still skips MIN_VALUE without applying input, and still tests the original
+enum state before this.a(input). State c now breaks the enclosing while directly,
+skipping the input call, applied increment and index update. Exhaustion and
+that break reach the same single normal b += applied. The catch retains its
+own add/rethrow for a failed original action; no finally is guessed around
+unguarded field cleanup. Actual body updates remain visible.
+
+Read original ComplexFlow Java with the existing mapping and both complete
+changed method texts; other members are unchanged. Original P2/P3/P4/P5 facts,
+edges and copy obligations agree. The
+[fresh protected-loop challenge](../../exceptions/protected-loop-exits/review.md)
+covers the owning abrupt-handler fact and its refusal cases. This bounded LLM
+judgement is not behavioral execution.
+
+## Prior verdict — while/do-while architecture correction
 
 Read the protected obfuscated loop's original outward goto and normal update.
 The goto bypasses the counter tail; the ordinary path advances once after the

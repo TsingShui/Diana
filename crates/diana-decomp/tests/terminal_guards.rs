@@ -314,18 +314,34 @@ fn the_flattened_body_declaration_keeps_its_original_initializer_position() {
 }
 
 #[test]
-fn missing_natural_protection_does_not_authorize_a_parallel_guard_route() {
+fn owning_protection_facts_authorize_the_guard_inside_the_original_loop() {
     inspect(
         "branches/terminal-guard-arms",
         "Lfixture/GuardArms;",
         "loop",
         "(III)I",
         |facts, code, rendered| {
-            assert!(guards(code).is_empty());
-            assert_eq!(facts.loops().len(), 1);
-            assert!(rendered.text().contains("[exn c0]"));
-            assert_eq!(rendered.text().matches("GuardArms.cleanup(").count(), 2);
-            assert!(rendered.text().contains("goto L"));
+            assert_eq!(guards(code).len(), 1);
+            let [loop_plan] = facts.loops() else {
+                panic!("one original loop")
+            };
+            let scope = facts
+                .tries()
+                .iter()
+                .find(|p| p.finally().is_some())
+                .unwrap();
+            assert!(
+                loop_plan
+                    .lexical_members()
+                    .iter()
+                    .all(|n| scope.body().contains(n))
+            );
+            assert_eq!(scope.entry(), loop_plan.header());
+            assert_eq!(loop_plan.private_exits().len(), 1);
+            assert!(!rendered.text().contains("[exn c0]"));
+            assert_eq!(rendered.text().matches("GuardArms.cleanup(").count(), 1);
+            assert!(rendered.text().contains("finally {"));
+            assert!(!rendered.text().contains("goto L"));
             assert!(!rendered.text().contains("for ("));
         },
     );

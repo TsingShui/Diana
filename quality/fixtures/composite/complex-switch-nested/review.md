@@ -1,6 +1,26 @@
 # Fixture: complex-switch-nested
 
-## Current verdict — whole-operation follow-up
+## Current verdict — raw default and protected loop exits
+
+Compared the same prepared DEX on7354242 and this candidate. Default still goes
+to its one original L8, now a private exit inside the while that breaks that
+loop. It skips state writes, the applied increment and outer update before
+normal cleanup. Case2 explicitly goes to L9, writes state2 and preserves applied
+while advancing index. Case0 goes to L23, writes state1 and adds one. Case1
+retains its original inner sum and outer-continue routes. Negative remainders
+still select the original default. Before-effect snapshots retain the current
+outer/inner accumulator and the handler's receive remains after capture.
+
+An intermediate draft made default empty before case0 and was rejected: that
+would select case0 work. P6 explicit raw-selector routes and P7's selector-phase
+collapse guard now retain the exact gotos. A Sequence successor is not a raw
+case-label successor. Read the complete changed method and original Java; all
+original P2/P3/P4/P5 facts and copy obligations agree. The
+[fresh cyclic-selector challenge](../../exceptions/protected-loop-exits/review.md)
+retains this trigger under protection with a private default and real case cycle.
+No behavioral executor, Java recompilation or device run is claimed.
+
+## Prior verdict — whole-operation follow-up
 
 Compared the same prepared DEX with completed-eleven-repair bda9a49. Only
 derived label/control coordinates change. Development-only correspondence found

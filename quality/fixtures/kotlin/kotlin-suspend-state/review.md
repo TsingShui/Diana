@@ -1,6 +1,23 @@
 # Fixture: kotlin-suspend-state
 
-## Current verdict — terminal guard follow-up
+## Current verdict — explicit raw selector destination
+
+Compared the same prepared DEX on7354242 and this candidate. Only fetch's raw
+default gains an explicit goto to its original invalid-state throw label.
+The selector's other labels, resume fields/copies, suspended marker, load calls,
+state writes and returns are unchanged. An unmatched original label now visibly
+reaches that throw rather than an empty default preceding case0's goto.
+This is original-dispatch correspondence, not a new coroutine analysis or a
+claim that all suspension/resume paths have been independently validated.
+
+The [fresh raw-selector challenge](../../exceptions/protected-loop-exits/review.md)
+covers the statement-successor versus label-table distinction. P6 keeps raw
+selector targets; P7 preserves supplied gotos instead of treating the owning
+Block's next statement as the next case. Original P2/P3/P4/P5 facts agree.
+The bounded review covers this changed route and reuses prior reading elsewhere;
+no behavioral executor, Java recompilation or device run occurred.
+
+## Prior verdict — terminal guard follow-up
 
 Read suspended-marker returns and resume copies. load and label writes still
 precede testing the marker; a suspended result returns before the original Phi

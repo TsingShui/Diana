@@ -20,6 +20,15 @@ pub(super) fn collapse_fallthrough_gotos(code: &mut MethodCode) -> Result<(), Ex
         }
     }
     for transfer in 0..code.emission.transfers.len() {
+        // Selector transfers print inside the raw label table, not after the
+        // owning block. Its next Sequence child is not the next printed case.
+        // Selected case layouts already own their supplied arm spellings.
+        if matches!(
+            code.transfers[transfer].role,
+            Some(crate::p2::NormalEdge::SwitchCase { .. } | crate::p2::NormalEdge::SwitchDefault)
+        ) {
+            continue;
+        }
         let TransferSpelling::Goto(label) = code.emission.transfers[transfer].spelling else {
             continue;
         };
