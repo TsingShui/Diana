@@ -55,16 +55,6 @@ pub(super) fn transfers(f: &mut RegionFacts, g: &Graph) -> Result<(), RegionErro
                         break;
                     }
                 }
-                RegionKind::Try(scope) => {
-                    let p = &f.tries[scope.0 as usize];
-                    if p.finally.as_ref().is_some_and(|cleanup| {
-                        cleanup.normal.first() == Some(&l.to) && p.body.contains(&l.from)
-                    }) {
-                        action = TransferAction::Next(l.to);
-                        handled = true;
-                        break;
-                    }
-                }
                 RegionKind::Synchronized(scope) => {
                     let p = &f.synchronized[scope.0 as usize];
                     if p.enter_link == l.id {
@@ -105,6 +95,25 @@ pub(super) fn transfers(f: &mut RegionFacts, g: &Graph) -> Result<(), RegionErro
                         // Reaching an outer sibling is not fallthrough through
                         // this loop's closing brace: repetition would run first.
                         crossed_loop |= !r.nodes.contains(&l.to);
+                    }
+                    RegionKind::Try(scope)
+                        if f.tries[scope.0 as usize]
+                            .finally
+                            .as_ref()
+                            .is_some_and(|cleanup| {
+                                cleanup.normal.first() == Some(&l.to)
+                                    && f.tries[scope.0 as usize].body.contains(&l.from)
+                            }) =>
+                    {
+                        // Entering the matched normal duplicate completes this
+                        // try body. Bypassing pending work needs a real scoped
+                        // exit, not a goto to the duplicate's hidden label.
+                        action = if crossed_loop || pending_sibling {
+                            TransferAction::Break(id)
+                        } else {
+                            TransferAction::Next(l.to)
+                        };
+                        break;
                     }
                     RegionKind::Synchronized(sync) => {
                         let p = &f.synchronized[sync.0 as usize];
@@ -244,6 +253,15 @@ pub(super) fn transfers(f: &mut RegionFacts, g: &Graph) -> Result<(), RegionErro
                     match parent.kind {
                         RegionKind::Switch { cases: Some(_), .. }
                             if parent.follow == Some(follow) =>
+                        {
+                            continuation = Continuation::Break(scope);
+                            break;
+                        }
+                        RegionKind::Try(try_id)
+                            if matches!(continuation, Continuation::Goto(_))
+                                && f.tries[try_id.0 as usize].finally.as_ref().is_some_and(
+                                    |cleanup| cleanup.normal.first() == Some(&follow),
+                                ) =>
                         {
                             continuation = Continuation::Break(scope);
                             break;

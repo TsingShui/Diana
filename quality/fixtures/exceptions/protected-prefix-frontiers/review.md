@@ -1,5 +1,21 @@
 # Fixture: protected-prefix-frontiers
 
+## Current verdict — whole-operation follow-up
+
+Read both final methods. branch retains both guarded reads, their common pure
+prefix and outer-only lead calls; natural finally runs the original cleanup
+once. split retains genuine multiple-entry protection and both reads/one shared
+handler in an explicit graph. Normal cleanup's changed graph-container placement
+adds no catch semantics; its original link/order and later mark50 remain, while
+failures keep their original delivery.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
 ## Current LLM semantic review
 
 Compared Java/Smali, concrete helpers and final ordinary Engine output on the same

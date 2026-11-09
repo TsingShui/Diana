@@ -1,5 +1,20 @@
 # Fixture: algo-dp
 
+## Current verdict — whole-operation follow-up
+
+Read the changed dynamic-programming loops: initial state/table work remains
+before the first test; cell dependencies and array accesses retain their order.
+Supplied scalar counter tails execute after the same completed body, not after
+an exiting test or fault. No arithmetic, recurrence or result is invented by the
+new for headers.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
 edit distance, longest increasing subsequence and knapsack. The Java source is the reference; the DEX is generated from it with
 `javac --release 8 -g` + `d8 --min-api 24` (see `quality/build.sh`) and committed
 so a review needs no toolchain.
@@ -7,7 +22,7 @@ so a review needs no toolchain.
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 
-## Current verdict — iteration-tail review
+## Prior verdict — iteration-tail review
 
 Java and final text were reread for editDistance(String,String), knapsack(int[],int[],int)
 and longestIncreasing(int[]). The recurrence's outer/inner counters, outer item

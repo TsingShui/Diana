@@ -3,6 +3,7 @@
 //! branches and joins are matched as a graph without inventing storage bindings.
 
 mod matching;
+mod preparation;
 
 use super::build::*;
 use super::graph::Graph;
@@ -14,6 +15,7 @@ use crate::p5::{
 
 struct Match {
     plan: FinallyPlan,
+    preparation: Vec<NodeId>,
     follow: NodeId,
 }
 
@@ -152,6 +154,8 @@ fn candidate(
         return Ok(None);
     };
     let Some(matching::Matched {
+        preparation,
+        entry,
         normal,
         operations: pairs,
         predicates,
@@ -201,10 +205,11 @@ fn candidate(
     {
         return Ok(None);
     }
+    let body_contains = |node| p.body.contains(&node) || preparation.contains(&node);
     for &node in &normal {
         if g.incoming[node.0 as usize].iter().any(|l| {
             let l = &f.links[l.0 as usize];
-            !normal.contains(&l.from) && !p.body.contains(&l.from)
+            !normal.contains(&l.from) && !body_contains(l.from)
         }) || g.exceptions.iter().flatten().any(|&e| {
             Graph::exception_possible(f, e) && Graph::exception_target(f, storage, e) == Some(node)
         }) {
@@ -214,11 +219,12 @@ fn candidate(
     // No additional normal outlet can bypass or re-enter the matched cleanup.
     if f.links
         .iter()
-        .any(|l| p.body.contains(&l.from) && !p.body.contains(&l.to) && Some(l.to) != p.follow)
+        .any(|l| body_contains(l.from) && !body_contains(l.to) && l.to != entry)
     {
         return Ok(None);
     }
     Ok(Some(Match {
+        preparation,
         plan: FinallyPlan {
             normal,
             operations: pairs,
@@ -240,6 +246,11 @@ pub(super) fn construct(
             continue;
         };
         let p = &mut f.tries[index];
+        for &node in &matched.preparation {
+            push(&mut p.body, node)?;
+            push(&mut p.members, node)?;
+        }
+        p.body.sort_unstable();
         for &node in &matched.plan.normal {
             push(&mut p.members, node)?;
         }

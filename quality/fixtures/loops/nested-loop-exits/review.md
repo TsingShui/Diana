@@ -1,5 +1,22 @@
 # Fixture: nested-loop-exits
 
+## Current verdict — whole-operation follow-up
+
+Reread Java, Smali and all final methods. Inner/outer Break roles remain
+distinct; outerContinue keeps its two explicit row updates rather than inventing
+one shared tail. protectedExit/sharedExit gotos still reach their outside-inner
+mark/add tail, then exactly one outer update; normal no-hit completion takes the
+update without that tail. Protected RuntimeException returns -1 before update.
+siblingLoop's entry goto reaches the second loop's test before its first update,
+while no-hit completion skips that loop.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
 ## Current iteration-tail review
 
 Direct LLM comparison of the Java explanation, actual Smali, mark helper model

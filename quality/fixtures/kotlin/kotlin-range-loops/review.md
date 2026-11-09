@@ -1,5 +1,19 @@
 # Fixture: kotlin-range-loops
 
+## Current verdict — whole-operation follow-up
+
+Read the changed lowered range loop. Actual comparisons, body effects and scalar
+tail retain their original order, including entry/exit values. No Kotlin
+source-level stride, range type or progress fact is inferred from for
+presentation.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
 Kotlin loop forms: `until`, `downTo`, `step`, `repeat`, `forEach` and labelled
 `break@`/`continue@`. The Kotlin source is the semantic reference for the LLM review below.
 
@@ -8,7 +22,7 @@ Kotlin loop forms: `until`, `downTo`, `step`, `repeat`, `forEach` and labelled
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 - Selector: `Lfixture/Case;`
 
-## Current verdict — iteration-tail review
+## Prior verdict — iteration-tail review
 
 Case.kt and final text were reread. Lfixture/Case;->labelled([[I)I now places the
 outer array index in a for: negative exits both loops without updates, while

@@ -1,5 +1,21 @@
 # Fixture: finally-overrides-exit
 
+## Current verdict — whole-operation follow-up
+
+Reread Java, Smali and complete final replaceExit. Body construction/read and
+original catch-all remain. On normal and caught paths close executes first; bit2
+then returns -7, otherwise bit4 throws the finally IAE, otherwise return5 or
+original rethrow completes. Close failure replaces the pending exit and is not
+retried. Constructor preparations remain original explicit operations when no
+complete natural group is established.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
 An explicit finally whose close, return and throw replace a pending body exit.
 `FinallyOverridesExit.java` explains the mode-bit behavior;
 `FinallyOverridesExit.smali` is the assembly input. The prepared `classes.dex`
@@ -12,7 +28,7 @@ was assembled from the Smali and copied beside it.
   `12de370`.
 - Expected behavior: the scenario table in `README.md`.
 
-## Current verdict — round 2
+## Prior verdict — round 2
 
 Manually reread the Java explanation, Smali and fresh P6/P9 delivery at
 `09e322b`. The protected body routes to H15; its close, bit-2 return and bit-4

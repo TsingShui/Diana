@@ -1,6 +1,21 @@
 # Fixture: monitor-iteration-exits
 
-## Current verdict — split-outlet review
+## Current verdict — whole-operation follow-up
+
+Read changed pure update placement with retained synchronized outlets. Held
+cleanup/release occurs before the selected update; update-skipping exits still
+skip it, and release exceptions do not run it. Original captures, lock
+boundaries, release targets/routing and post-release copy phases remain. No goto
+to a hidden update is introduced.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
+## Prior verdict — split-outlet review
 
 Java/Smali, helper scenarios and final walk/bypass were reread. Closed scopes now
 retain distinct explicit outlets with no shared normal follow. walk's negative

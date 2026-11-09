@@ -1,5 +1,19 @@
 # Fixture: algo-string
 
+## Current verdict — whole-operation follow-up
+
+Read the changed string/index loops. Character accesses, tests and selected
+accumulator work retain their order; index tails remain after the completed
+body. Zero-length/early-exit paths do not acquire another access or update. No
+external String implementation facts are used by recovery.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
 KMP prefix/search, word frequency over HashMap and string reversal. The Java source is the reference; the DEX is generated from it with
 `javac --release 8 -g` + `d8 --min-api 24` (see `quality/build.sh`) and committed
 so a review needs no toolchain.
@@ -7,7 +21,7 @@ so a review needs no toolchain.
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 
-## Current verdict — iteration-tail review
+## Prior verdict — iteration-tail review
 
 Java and final text were reread for indexOf(String,String) and topWords(String).
 indexOf advances only after its fallback, character comparison and match-length

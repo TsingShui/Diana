@@ -9,6 +9,8 @@ use diana_decomp::p9::Origin;
 
 #[path = "support/inspection.rs"]
 mod inspection;
+#[path = "support/rethrows.rs"]
+mod rethrows;
 use inspection::inspect;
 
 #[test]
@@ -120,7 +122,7 @@ fn protected_completion_keeps_cleanup_and_later_effects() {
             );
             assert!(rendered.text().contains("TailCompletion.mark(30)"));
             assert!(rendered.text().contains("TailCompletion.mark(40)"));
-            assert!(rendered.text().contains("throw "));
+            rethrows::assert_pending_rethrow(facts, rendered);
         },
     );
     inspect(

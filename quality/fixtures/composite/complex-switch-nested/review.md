@@ -1,5 +1,22 @@
 # Fixture: complex-switch-nested
 
+## Current verdict — whole-operation follow-up
+
+Compared the same prepared DEX with completed-eleven-repair bda9a49. Only
+derived label/control coordinates change. Development-only correspondence found
+identical printed words, original L/H program points and identical printed
+lexical-scope bindings across every method publication; declaration-only members
+are exact. Original P2/P3/P4/P5 facts agree. The unchanged semantic path review
+below is reused, not replaced by a naming score or a claim of behavioral
+execution.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
 switch inside a loop inside try, with labelled break and continue. The Java source is the reference; the DEX is generated from it with
 `javac --release 8 -g` + `d8 --min-api 24` (see `quality/build.sh`) and committed
 so a review needs no toolchain.
@@ -7,7 +24,7 @@ so a review needs no toolchain.
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 
-## Current verdict — round 2
+## Prior verdict — round 2
 
 LLM reread of Java, original delivered control/storage facts and current text for
 `Lfixture/ComplexSwitchNested;->run([I)I`, candidate based on `ebbc003`.

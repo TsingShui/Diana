@@ -104,15 +104,17 @@ Construction plans now select natural groups for established allocation/construc
 correspondence, including private alias publication and compatible snapshot
 preludes; other relationships retain explicit operations and concrete reasons.
 P6 delivers Block/Sequence/If/Loop/original Switch/LabelledBlock/Try/Synchronized
-and explicit Graph regions through the same method chain. Synchronized plans
+and explicit Graph regions through the same method chain. Every original
+operation/commit and terminal has its own whole portion before planning; original
+blocks, edges, PCs and member identities remain unchanged. Synchronized plans
 separate held execution from individual release outlets and retain cleanup control,
 handler receives and before/after-release P5 obligations. Closed scopes with
 distinct unlocked targets keep those explicit outlet gotos and no fabricated
 shared follow. Executable path-specific post-release copies still retain explicit
 monitors rather than moving assignments under the lock. Normal LT dominators,
 finite-exit postdominator candidates and iterative SCC analysis drive composition.
-Private handler rejoins can establish a closed loop entry without changing normal
-LT relations. An original shared pure update with a unique backedge can supply a
+Private handler rejoins can establish a closed loop entry without replacing
+normal dominance with an exceptional-edge relation. An original shared pure update with a unique backedge can supply a
 for continuation: body skips still execute the update, while abrupt exits do not.
 The original update can read other available locals, including a body-mutated
 step; no invariant-stride or progress claim is made.
@@ -137,7 +139,12 @@ print as `finally` when its cleanup graph matches the normal exit. Matching cove
 conditional branches, field accesses and calls, including private result pairs
 established from P5 definitions and reads. Both paths retain their original
 effect order and require no copy execution inside cleanup; original body-outlet
-copies remain before it. Shared handler continuations retain one external owner; their private entries
+copies remain before it. Pure normal preparation can complete the original body
+up to the cleanup cursor's first admitted event; only a complete match commits
+that preparation. Literal cleanup arguments stay in cleanup. A switch bypass can
+break its selected Try and execute finally once rather than jump to a hidden
+normal duplicate. Foreign entrances and failed correspondence keep explicit code,
+without searching another start. Shared handler continuations retain one external owner; their private entries
 can print as natural catches with original copies and explicit outward transfers.
 Cross-handler finally folding, unmatched Phi values and different cleanup exits
 retain the original catch or explicit handlers.
@@ -152,7 +159,12 @@ explicit emission ownership. P7 also attaches local declarations to their first
 assignment when later reads and writes remain in scope; joins, copy destinations
 and unknown placements retain outer declarations. The P7 compose passes select only adjacent
 expressions and compact control forms admitted by their delivered facts; original
-operation and control origins remain in the final source spans. Planned actions
+operation and control origins remain in the final source spans. A shared private
+adjacency view of selected sibling Blocks preserves expressions, check carriers
+and exact array literals across operation portions. Checks cannot move across a
+call, early selection, copy phase or protection change merely because a later
+read names the same value. An initializer carrier keeps the check's own PC and
+operation, not its preceding call's identity. Planned actions
 after an already printed unconditional exit can be omitted through linear
 Sequence tails, without crossing the exit's scope or an opaque protected/loop
 container. Original transfers and inspection continuations remain available.
@@ -240,6 +252,12 @@ nonlocal condition exits and throwing-update refusal.
 Three [quiet-copy checks](../../quality/fixtures/branches/quiet-condition-copies/README.md)
 distinguish origin-only condition copies from executable call-result/parameter Phi
 assignments, preserving one original anchor without an empty else.
+Four [pure-tail checks](../../quality/fixtures/exceptions/pure-tail-finally/README.md)
+cover branched preparation, actual parameter Phi copies, foreign entrances,
+switch bypass completion, literal cleanup prefixes and reachable second-cleanup
+faults. Four [carrier checks](../../quality/fixtures/atoms/refined-carriers/README.md)
+retain exact check provenance and prevent delaying a check past a call or fusing
+an array fill across another reference check.
 These checks cover ownership,
 transfer spelling and source anchors, not independent execution of the final plan.
 The retained independent verifier code is not enabled on ordinary requests. Real-input corpus runs have not encountered custom/polymorphic

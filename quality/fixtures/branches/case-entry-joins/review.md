@@ -1,6 +1,22 @@
 # Fixture: case-entry-joins
 
-## Current verdict — protected-entry follow-up
+## Current verdict — whole-operation follow-up
+
+Read route's default, case joins, typed recovery and cleanup paths. The
+normal-cleanup bypass now exits the selected Try rather than jumping to a hidden
+duplicate: read/recovery is skipped only on the original bypass, cleanup runs
+once, and later normal work stays outside. Existing case-entry DAG joins retain
+one body and nonadjacent gotos. Parameter-entry copies, literal cycles and
+non-case sharing retain their explicit guards.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
+## Prior verdict — protected-entry follow-up
 
 Java/Smali, helpers and final route(III)I were reread. P6 now retains the valid
 single-entry typed read core instead of absorbing a lone optional goto and losing

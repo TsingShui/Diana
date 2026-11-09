@@ -1,5 +1,20 @@
 # Fixture: branching-finally-suffix
 
+## Current verdict — whole-operation follow-up
+
+Read the changed protected scalar placement and conditional cleanup. Pure
+preparation keeps its original position before cleanup; cleanup branches,
+arguments and field/call order are unchanged. Pending rethrow is folded only
+with its original unhandled delivery; the outside-handler recovery case remains
+explicit and retains its result300.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
 ## Current LLM verdict
 
 Direct reading of Java, actual Smali, helper bodies, P6/P7 delivery and final

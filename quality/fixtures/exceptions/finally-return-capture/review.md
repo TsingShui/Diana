@@ -1,5 +1,20 @@
 # Fixture: finally-return-capture
 
+## Current verdict — whole-operation follow-up
+
+Read both changed capture paths. The return value/state read is captured before
+cleanup updates state99/records99; the later return uses that captured value,
+not the changed field. Body failure keeps its original object pending; cleanup
+failure replaces it or the pending return. Normal and exceptional cleanup remain
+once, with no retry or invented default.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
 A finally overwrites the local or field used by a pending return and records the
 new value. `FinallyReturnCapture.java` explains the behavior;
 `FinallyReturnCapture.smali` is the assembly input. The prepared `classes.dex`
@@ -13,7 +28,7 @@ was assembled from the Smali and copied beside it.
   `12de370`.
 - Expected behavior: the scenario table in `README.md`.
 
-## Current verdict — round 3
+## Prior verdict — round 3
 
 Direct LLM reread against the same Java/Smali and candidate based on `ebbc003`.
 fieldReturn now has a natural try: state=10 remains before it, the saved field

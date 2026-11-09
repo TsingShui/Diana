@@ -1,0 +1,118 @@
+# Fixture: pure-tail-finally
+
+## Current LLM semantic judgement
+
+Compared authored Java/Smali, concrete helpers and ordinary Engine output on the
+same prepared DEX: completed-eleven-repair baseline bda9a49 versus candidate.
+Each subject's independent expectations preceded its first inspection. Recorded
+paths agree in the final source. No scenario executor, Java recompilation or
+device run was performed; this is bounded manual evidence, not behavioral PASS.
+
+| Original owner Lfixture/TailPreparation; subject | Reading |
+|---|---|
+| finish(IIIII)I | Both diamonds, actual parameter Phi assignment and sum precede cleanup; the later OR follows it. |
+| foreign(III)I | Shared tail keeps its outside entrance; the unprotected read does not acquire cleanup. |
+| bypass(IIIII)I | Original switch bypass completes the selected Try, executes finally once, then performs the outside addition/test. |
+| literal(IIIII)I | Body XOR precedes cleanup(7,mode), then cleanup(code,mode); literal7 remains cleanup preparation. |
+| mark(I)V, read(II)I, cleanup(II)V | Original arguments, wrapping trace and event-before-result/fault order remain. |
+
+### Normal and typed recovery
+
+finish selects read(code)+1, or100 after NFE/NPE and mark20. The first diamond
+selects +2/-2 or the original flag parameter; the second selects1/-1. Their sum
+and executable parameter-to-Phi copy occur before cleanup. The final OR skips
+mark50 only when both inputs are zero. Positive, negative and typed recovery
+returns retain the README matrix, including7/3/0 and103/99/96. No default result
+is invented after a throw.
+
+ISE/Error bypass typed recovery and remain pending while cleanup runs. Normal
+cleanup failure replaces a pending return; cleanup failure after Error replaces
+that Error. Neither case runs mark50 or retries cleanup. Original catch priority
+and captured-object identity remain in supplied products.
+
+### Foreign entrance
+
+foreign's unprotected branch reads code+1 and enters the same +1 tail as the
+protected branch. Its outside normal predecessor prevents private completion.
+The local catch-all remains explicit. A protected NFE/Error runs cleanup and
+rethrows or is replaced; an unprotected failure propagates without cleanup. A
+successful unprotected read still reaches the ordinary cleanup and mark50.
+This is a real incoming-edge refusal, not an unrelated copy or lock guard.
+
+### Scoped bypass
+
+The switch default marks9, selects -1 and skips both typed-read work and the
+pending +2 body tail. The supplied Break targets this Try, not the switch or loop:
+finally executes once, then the outside +3/test executes. Selector1/2 mark their
+selector, execute read/recovery and +2, then share cleanup. Returns2/9/105 and
+README failure events agree. Mode6 on the bypass reaches no read Error: its
+failure is a normal-cleanup IAE, not replacement of an invented pending exception.
+No jump targets an unprinted normal-duplicate label.
+
+### Cleanup literal and reachable late faults
+
+literal's body sum/XOR precedes both cleanup calls. The first const7 stays with
+cleanup's original call. Normal/typed results6/2/1/102/97 agree. Mode5 fails on
+the first call after13,37; mode6 replaces pending Error at that call. Modes7/8
+fail only for code3, so cleanup(7,mode) succeeds and the second call is actually
+reached:13,37,33 distinguish these faults. For code4/mode7 both calls succeed and
+return9; code4/mode8 rethrows original Error after14,37,34. No mark50/return follows
+a failed cleanup; neither retry nor suppression is introduced.
+
+## Producer repair and blocked drafts
+
+Discovery was MutableStep.walk's pure step selection before cleanup. A blind
+maximal pure-tail draft swallowed cleanup literals and lost switch structure;
+it was rejected. Effect-only cuts still fused finish's sum with cleanup argument
+preparation, preventing whole-node ownership. P6 now establishes one original
+operation/commit portion and a separate terminal once, before planning.
+Original blocks, edges, PCs, values and member identities remain unchanged.
+
+The same paired cleanup cursor supplies its first event. A fallible forward
+closure provides available pure normal preparation without foreign arrivals,
+constructor or held-scope crossing. Its first admitted single frontier is the
+only candidate; full matching still pairs every cleanup operation, argument,
+result and rethrow. Failure leaves the original TryPlan, not another search
+start. Only successful matching commits preparation as body.
+
+New finally ownership exposed a consumer regression: CaseEntryJoins.route printed
+a goto to hidden normal cleanup. P6 now distinguishes lexical completion from
+an outlet bypassing pending siblings or a loop, supplying the selected Try Break.
+Original targets/copies remain. bypass was authored after that repair. Source-run
+entry and shared P7 adjacency consume established products; P7/P9 do not discover
+cleanup or control ownership.
+
+## Supporting checks and limits
+
+Four ordinary-Engine product checks establish whole-operation coverage, actual
+Phi Assigns, original bypass target/completion, two cleanup calls with literal
+preparation, and real foreign-entry refusal. Shared test-only rethrow inspection
+requires the original explicit throw or exactly one zero-width implicit-finally
+terminal anchor. The outside-handler rethrow guard remains. These checks do not
+execute the independent scenarios.
+
+The [carrier challenge](../../atoms/refined-carriers/review.md) checks consumers
+after refinement, including a confirmed old delayed-check defect. The method
+chain, construction authority and normal dominator algorithm remain single;
+no production replay, external facts, dispatcher, dependency or output validation
+was added.
+
+Within recorded paths the final recovery is effective and blocked drafts'
+regressions are repaired. Arbitrary inputs, concurrency and README-excluded
+faults remain unreviewed. Corpus counts and natural syntax are observations,
+not universal equivalence or quality certificates.
+
+## Verification observations
+
+Reproduce the product checks from the repository root with
+`cargo nextest run --locked -p diana-decomp --test pure_tail_finally --no-fail-fast`.
+Candidate is the commit containing this review; baseline is bda9a49 and both
+consume the same committed classes.dex. Default and all-feature package suites
+each ran 70 tests across 17 binaries with 70 passing. Package Clippy with warnings
+denied, release/dbg_shell builds, format, diff and desensitization checks passed.
+
+The corpus inspection observed 88 fixtures, 139 classes and 665 methods without
+stopped members or render failures/issues. Original P2/P3/P4/P5 and P6 original
+operation/edge/exception/lock/copy-phase projections agree despite changed portion
+coordinates. Current changed paths have manual reviews or unchanged-source
+binding correspondence; these observations do not execute the scenario matrix.

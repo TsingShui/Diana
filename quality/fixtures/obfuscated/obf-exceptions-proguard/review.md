@@ -1,5 +1,20 @@
 # Fixture: obf-exceptions-proguard
 
+## Current verdict — whole-operation follow-up
+
+Read the changed protected arithmetic/resource paths against the retained
+explanation/mapping. Original obfuscated identities, acquisitions, reads,
+reverse cleanup order and pending fault delivery remain. Pure scalar placement
+outside a smaller catch does not cross a cleanup effect or fabricate a result
+after failure.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
 ProGuard-obfuscated nested finally, resource cleanup inside a loop and
 multi-catch. The Java reference is authored for this repository; no third-party
 program or data is used.
@@ -9,7 +24,7 @@ program or data is used.
   declarations. Overloaded short names alone do not identify a method.
 - Regenerate from the sources; never edit the DEX by hand.
 
-## Current verdict — round 3
+## Prior verdict — round 3
 
 The Java resource method and helper were compared directly with current ordinary
 Engine output at `650dade`, using the mapping only for this written review:

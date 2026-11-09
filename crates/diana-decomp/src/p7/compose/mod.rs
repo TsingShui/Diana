@@ -4,6 +4,7 @@
 //! `trace` prints those reports when the `trace-passes` feature is enabled.
 
 mod access;
+mod adjacency;
 mod allocation;
 mod arrays;
 mod booleans;

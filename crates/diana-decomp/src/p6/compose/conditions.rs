@@ -304,11 +304,25 @@ pub(super) fn candidate(
     {
         return Ok(None);
     }
-    let first_part = f.blocks[f.nodes[predicate.0 as usize].block().0 as usize]
-        .parts()
+    let block_parts = f.blocks[f.nodes[predicate.0 as usize].block().0 as usize].parts();
+    let mut first_part = *block_parts
         .first()
-        .copied()
         .ok_or(bug("condition predicate has no block run"))?;
+    // A matched cleanup already owns its normal duplicate, including a prefix
+    // of this original block. Its established continuation starts a new source
+    // run even when no DEX block cut occurs there. Keep the prefix in that
+    // existing product; do not acquire it again or retry after owner rejection.
+    for &part in block_parts {
+        if f.tries
+            .iter()
+            .any(|plan| plan.finally.is_some() && plan.follow == Some(part))
+        {
+            first_part = part;
+        }
+        if part == predicate {
+            break;
+        }
+    }
     let Some(first_run) = run(f, first_part)? else {
         return Ok(None);
     };

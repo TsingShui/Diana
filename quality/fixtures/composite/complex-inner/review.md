@@ -1,5 +1,19 @@
 # Fixture: complex-inner
 
+## Current verdict — whole-operation follow-up
+
+Read the changed inner-class accumulation loop. Outer/inner receiver field
+accesses and body additions retain their order; the scalar update remains after
+a completed iteration. Constructors, enclosing-instance identities and other
+members are preserved.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
 anonymous class, member inner, static nested and a generic bag. The Java source is the reference; the DEX is generated from it with
 `javac --release 8 -g` + `d8 --min-api 24` (see `quality/build.sh`) and committed
 so a review needs no toolchain.
@@ -7,7 +21,7 @@ so a review needs no toolchain.
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 
-## Current verdict — round 1, 2026-11-08
+## Prior verdict — round 1, 2026-11-08
 
 ### Semantics
 

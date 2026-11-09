@@ -70,6 +70,12 @@ definition at an admitted adjacent use. P7 MUST NOT inline an effect merely
 because its result has one use. Unused calls, loads, checks and arithmetic effects
 retain their original execution and exception sites.
 
+An allocation and its exact whole payload fill can share an array literal across
+whole-operation portions using the supplied linear adjacency described below. Every existing type/count/element/storage/copy
+requirement still holds. An intervening check or other event prevents this
+placement even if another pass removes its separate action; empty effectful
+portions are not transparent.
+
 The operation rules cover moves, constants, unary conversions, binary/compare
 operations, field/array reads and writes, array length/fill/allocation,
 instance-of, check-cast, invocation, object allocation/initialization, monitors,
@@ -78,6 +84,14 @@ retains operand orientation. Literal interpretation is P4's view, not a guessed
 Java type. `check-cast` is a check with no invented SSA write or replacement
 binding.
 
+One private adjacency module indexes the already selected Sequence/Graph sibling
+schedule once. Expressions, checks and array literals consume it. Crossing a
+portion requires direct sibling Blocks in the same original block, one original
+within-block fallthrough, no link copies or required target label, and no control
+continuation. It crosses no protected, loop or synchronized container. Each caller
+still enforces its operand, phase and effect requirements; this is not another
+control or storage analysis.
+
 P7 composes a check-cast's display into the first printed read of its checked
 local only when that read is the first evaluated value of the following statement
 or the first executed step of this block's single unconditional transfer copy set.
@@ -85,7 +99,11 @@ Carriers are tried in one fixed priority order: the declaration that produced th
 value, the following statement, this block's transfer copy step, the terminal
 operand, then a later read. The first carrier that answers owns the check, so one
 check-cast prints at most one cast; a carrier that refuses leaves the check to the
-next one and keeps its first refusal for the trace.
+next one and keeps its first refusal for the trace. A later carrier requires a
+continuous supplied linear run with no intervening effect, copy phase, selection
+or protection change. Searching the method for the same value is not an ordering
+guarantee. Target before-operation/terminal phases and suspension-owned operands
+remain barriers.
 The carrier names that exact statement and read-expression occurrence, so a second
 read of the same storage in the printed form never carries the check. A carrier
 read whose state a pure reference copy of the checked value published also carries
@@ -108,7 +126,10 @@ instead when four facts hold: that store is the local's only store, the check's
 read state is that store's published state, the check action directly follows the
 store with no event between them, and the check's reference type replaces the
 erased `java.lang.Object` declaration. P7 then declares the local with the check's
-type and prints one cast on the store's expression, `T v = (T) <producer>;`. Later
+type and prints one cast on the store's expression, `T v = (T) <producer>;`.
+Both the standalone definition and check keep empty phase obligations and the
+same protection context. The inline record names the check's own operation/PC,
+not the preceding definition or invocation. Later
 reads print the declared narrow type; a read carrier MUST NOT print the same check
 again. The store, its expression, the check's operation, pc, reference, route and
 origins all stay at their original positions, and a local with another store or a

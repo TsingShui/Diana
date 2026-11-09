@@ -1,6 +1,23 @@
 # Fixture: mutable-iteration-step
 
-## Current verdict — quiet-copy follow-up
+## Current verdict — whole-operation follow-up
+
+Reread complete walk/nested output. The two normal step assignments are now
+inside the outer try before natural finally; the header reads that current step
+only after successful cleanup. The first OR remains compact without an empty
+else. Flag2 still breaks after row2 cleanup, with no row3 read/update. Nested
+outer Break/Continue targets and post-inner marks90/91 remain. Cleanup
+failure/replacement skips update and later effects; throwing divide remains an
+ordinary while.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
+## Prior verdict — quiet-copy follow-up
 
 Java/Smali and final walk were reread. Only the first condition's empty else is
 removed: its final other edge has a complete identity requirement with no

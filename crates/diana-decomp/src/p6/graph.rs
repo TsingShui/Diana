@@ -1,6 +1,6 @@
 use super::build::*;
 use super::*;
-use crate::p2::{EdgeRole, EdgeTarget, OpKind};
+use crate::p2::{EdgeRole, EdgeTarget};
 use crate::p5::{CopyEmission, CopyLocation, StorageMethod, TransferSite};
 
 pub(super) struct Graph {
@@ -10,12 +10,6 @@ pub(super) struct Graph {
     pub op_node: Vec<NodeId>,
     pub terminal_node: Vec<NodeId>,
     pub roots: Vec<NodeId>,
-}
-#[derive(Clone, Copy, Eq, PartialEq)]
-struct Guard {
-    order: u32,
-    catch: Option<crate::TypeId>,
-    target: Option<crate::p2::BlockId>,
 }
 fn node(
     f: &mut RegionFacts,
@@ -98,59 +92,21 @@ pub(super) fn construct(
     if flow.blocks().is_empty() {
         return Err(bug("P6 input has no original entry block"));
     }
-    let mut guards = lists(flow.operations().len())?;
-    for e in flow.edges() {
-        if let (Some(op), EdgeRole::Exception { order, catch, .. }) = (e.source_op(), e.role()) {
-            push(
-                &mut guards[op.0 as usize],
-                Guard {
-                    order,
-                    catch,
-                    target: match e.target() {
-                        EdgeTarget::Block(b) => Some(b),
-                        EdgeTarget::Exit(_) => None,
-                    },
-                },
-            )?;
-        }
-    }
     let mut op_node = filled(flow.operations().len(), NodeId(0))?;
     let mut terminal_node = filled(flow.blocks().len(), NodeId(0))?;
     for block in flow.blocks() {
         let range = block.operations();
-        let mut cuts = Vec::new();
-        push(&mut cuts, range.start)?;
-        let mut previous_guard = None;
-        for index in range.clone() {
-            let op = &flow.operations()[index as usize];
-            if !guards[index as usize].is_empty() {
-                if previous_guard.is_some_and(|p: usize| guards[p] != guards[index as usize]) {
-                    push(&mut cuts, index)?;
-                }
-                previous_guard = Some(index as usize);
-            }
-            if matches!(op.kind(), OpKind::Monitor { .. }) {
-                push(&mut cuts, index)?;
-                push(
-                    &mut cuts,
-                    index
-                        .checked_add(1)
-                        .ok_or(crate::RequestError::PlatformCapacity)?,
-                )?;
-            }
-        }
-        push(&mut cuts, range.end)?;
-        cuts.sort_unstable();
-        cuts.dedup();
         let mut parts = Vec::new();
-        for pair in cuts.windows(2) {
-            if pair[0] == pair[1] {
-                continue;
-            }
-            let n = node(f, block.id(), pair[0]..pair[1], false)?;
-            for index in pair[0]..pair[1] {
-                op_node[index as usize] = n;
-            }
+        // One original operation and its commit are indivisible. Body work,
+        // cleanup argument preparation and effects can have different source
+        // owners even when no DEX block or handler-chain boundary separates
+        // them. Supply every such boundary once, before any region analysis.
+        for index in range.clone() {
+            let end = index
+                .checked_add(1)
+                .ok_or(crate::RequestError::PlatformCapacity)?;
+            let n = node(f, block.id(), index..end, false)?;
+            op_node[index as usize] = n;
             push(&mut parts, n)?;
         }
         if block.terminal().is_some() || parts.is_empty() {

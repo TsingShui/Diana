@@ -1,5 +1,21 @@
 # Fixture: complex-exceptions
 
+## Current verdict — whole-operation follow-up
+
+Read changed resource/protected arithmetic placement against the Java
+explanation and existing DEX facts. Nonthrowing local sums can sit outside a
+smaller try without changing their execution relative to close.
+Acquisition/read/close order, nested catch priority, selected return values and
+cleanup failure replacement remain. No new external resource declaration or
+helper contract is required.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
 Nested finally, caught rethrow with a cause, resources inside a loop and
 multi-catch. `ComplexExceptions.java` is the authored reference; the committed
 DEX was prepared with `javac --release 8 -g` and `d8 --min-api 24` through
@@ -8,7 +24,7 @@ DEX was prepared with `javac --release 8 -g` and `d8 --min-api 24` through
 - Provenance: authored for this repository; no third-party code or data.
 - Regenerate from the sources; never edit the DEX by hand.
 
-## Current verdict — round 3
+## Prior verdict — round 3
 
 The resource method and its helper were compared directly with the current
 ordinary Engine output at `650dade`:

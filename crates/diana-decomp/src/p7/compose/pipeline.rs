@@ -68,17 +68,18 @@ pub(in crate::p7) fn construct(
     );
     selection.select(code)?;
 
-    traced!("expressions", expressions::construct(code, key));
+    let adjacency = super::adjacency::Adjacency::construct(code)?;
+    traced!("expressions", expressions::construct(code, key, &adjacency));
     traced!("loop_compact", loops::select_compact(code));
     traced!("natural_stores", stores::natural_stores(code));
     literals::omit_materialized_literals(code)?;
-    traced!("casts", casts::construct(code, types, key));
+    traced!("casts", casts::construct(code, types, key, &adjacency));
     traced!("branches", branches::construct(code));
     traced!(
         "omit_trailing_void_return",
         returns::omit_trailing_void_return(code)
     );
-    traced!("array_literals", arrays::array_literals(code));
+    traced!("array_literals", arrays::array_literals(code, &adjacency));
     traced!(
         "allocation_declarations",
         allocation::allocation_declarations(code)

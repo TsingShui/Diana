@@ -1,5 +1,19 @@
 # Fixture: complex-generics
 
+## Current verdict — whole-operation follow-up
+
+Read the changed repetition/traversal paths. Original calls, casts, selected
+values and generic metadata remain; the original pure counter tail is supplied
+at the same body end. No next call or cast moves across an earlier effect, and
+zero-trip paths still skip body work.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
 generic class, generic method with a bound, bridge method and generic call. The Java source is the reference; the DEX is generated from it with
 `javac --release 8 -g` + `d8 --min-api 24` (see `quality/build.sh`) and committed
 so a review needs no toolchain.
@@ -7,7 +21,7 @@ so a review needs no toolchain.
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 
-## Current verdict — round 1, 2026-11-08
+## Prior verdict — round 1, 2026-11-08
 
 ### Semantics
 

@@ -1,5 +1,22 @@
 # Fixture: loop-shared-exit
 
+## Current verdict — whole-operation follow-up
+
+Compared the same prepared DEX with completed-eleven-repair bda9a49. Only
+derived label/control coordinates change. Development-only correspondence found
+identical printed words, original L/H program points and identical printed
+lexical-scope bindings across every method publication; declaration-only members
+are exact. Original P2/P3/P4/P5 facts agree. The unchanged semantic path review
+below is reused, not replaced by a naming score or a claim of behavioral
+execution.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
 nested loops leaving through a flag or a labelled break. The Java source is the reference; the DEX is generated from it
 with the fixture's `javac.args`/`d8.args` or the shared defaults (see
 `quality/build.sh`) and committed so a review needs no toolchain.
@@ -8,7 +25,7 @@ with the fixture's `javac.args`/`d8.args` or the shared defaults (see
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 - Selector: `Lfixture/LoopSharedExit;`
 
-## Current verdict — iteration-tail review
+## Prior verdict — iteration-tail review
 
 Java and final text were reread for flagExit([[II)I, labelledExit([[II)I and
 sharedTail([I)I. flagExit sets found/result then leaves the inner loop without a

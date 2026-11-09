@@ -1,5 +1,19 @@
 # Fixture: complex-iteration
 
+## Current verdict — whole-operation follow-up
+
+Read changed array/collection iteration paths. Loads, iterator calls, casts and
+accumulation preserve their order; supplied scalar tails remain at their
+original repetition points. Empty-input exits and failures skip the same
+updates; no iterator protocol or external hierarchy is inferred.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
 iterator loops, enhanced for, map entries and removal via iterator. The Java source is the reference; the DEX is generated from it with
 `javac --release 8 -g` + `d8 --min-api 24` (see `quality/build.sh`) and committed
 so a review needs no toolchain.
@@ -7,7 +21,7 @@ so a review needs no toolchain.
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 
-## Current verdict — iteration-tail review
+## Prior verdict — iteration-tail review
 
 Java and final text were reread for
 Lfixture/ComplexIteration;->sumNested([[I)I. Its outer captured-length traversal

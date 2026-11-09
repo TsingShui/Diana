@@ -7,7 +7,10 @@ use super::*;
 /// prints that payload as its own array literal. Every other allocation keeps
 /// the separate `new Element[count]` and `fill_array` statements: a display flag
 /// is only ever set from facts that already decide each condition.
-pub(super) fn array_literals(code: &mut MethodCode) -> Result<(), ExpressionError> {
+pub(super) fn array_literals(
+    code: &mut MethodCode,
+    adjacency: &super::adjacency::Adjacency,
+) -> Result<(), ExpressionError> {
     let Some(access) = super::access::local_access(code)? else {
         return Ok(());
     };
@@ -15,7 +18,10 @@ pub(super) fn array_literals(code: &mut MethodCode) -> Result<(), ExpressionErro
     let mut folded = filled(code.statements.len(), false)?;
     for node in 0..code.emission.blocks.len() {
         let actions = &code.emission.blocks[node].actions;
-        for index in 0..actions.len().saturating_sub(1) {
+        for (index, &action) in actions.iter().enumerate() {
+            let Some((_, _, next)) = adjacency.next_action(code, node, index) else {
+                continue;
+            };
             let (
                 BodyAction::Statement {
                     operation: allocation_operation,
@@ -25,7 +31,7 @@ pub(super) fn array_literals(code: &mut MethodCode) -> Result<(), ExpressionErro
                     operation: fill_operation,
                     statement: fill,
                 },
-            ) = (actions[index], actions[index + 1])
+            ) = (action, next)
             else {
                 continue;
             };

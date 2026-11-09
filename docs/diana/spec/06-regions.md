@@ -55,8 +55,13 @@ to regions.
 ## Original blocks and normal structure
 
 Each original P2 block has one `BlockPlan`. Its ordered `Node` portions partition
-the original operations and terminal without duplication. Portions isolate monitor
-operations, terminal evaluation and changes of exception protection. A
+the original operations and terminal without duplication. Each operation and its
+normal result commit owns one whole portion; a terminal owns its own portion.
+An empty original block retains its routing portion. Pure body completion,
+cleanup argument preparation and effects therefore need no interior cursor or
+new block cut to acquire different source owners. This partition is established
+once before normal structure, locks, protection and region selection. Node and
+Link IDs are derived coordinates, not original DEX member identities. A
 `WithinBlock` link is a sequencing relation between those portions; it is not a
 new DEX edge, effect, instruction or SSA definition. Original normal edges retain
 their `EdgeId` and connect the original block's final portion to the target's
@@ -215,7 +220,12 @@ order. A test run is the original block's parts from the run entry to its
 terminal predicate; P6 MUST NOT move an operation out of its block or reorder
 tests. A run that does not end in another conditional starts the other arm. When
 the last other link leaves the region directly, the region owns no other arm and
-MUST keep that original link and its copies. P6 separately records `other_exit`
+MUST keep that original link and its copies. A matched cleanup's established
+continuation can start the first test run inside an original block: its preceding
+normal duplicate remains with that existing cleanup product. Without such a
+supplied source entry, the original block prefix stays in the first run. This
+choice occurs before owner admission, not as a retry after rejection.
+P6 separately records `other_exit`
 when this no-body link reaches an enclosing completion boundary different from
 the common follow. Absence of an owned body MUST NOT collapse that boundary
 transfer into ordinary condition fallthrough. Its classified original target and
@@ -724,6 +734,19 @@ recognizing cleanup syntax.
 
 ### Matched unlocked cleanup
 
+The cleanup cursor first supplies its original first event after capture. P6 can
+complete the normal body's whole pure portions from its established sole outlet
+until one complete single-frontier entry names that first cleanup event. Every
+new portion has only body predecessors, no executable exceptional entrance, and
+available ordinary scalar reads; it crosses no method entry, construction group
+or held monitor scope. Temporary multiple frontiers can close at a later common
+join. Checked counters and one fallible queue construct the closure; no graph or
+dominance relation is recomputed. The first admitted event is the only candidate:
+a later correspondence failure does not search another start. Literal argument
+preparation belonging to cleanup stays at that start, rather than being swallowed
+as body work. Only a successful complete cleanup match commits the supplied
+preparation as protected body; otherwise the original TryPlan remains available.
+
 Before composition, P6 can attach a `FinallyPlan` to a `TryPlan` whose selected
 original clause interval is one catch-all, even when its source chain has an
 inner typed prefix. Exceptional body transfers may stay in nested body handlers
@@ -770,8 +793,13 @@ joins reject this alternative.
 
 The plan pairs original normal and handler operations and predicates, retains the original
 capture/rethrow, and adds the normal duplicate as a separate source child.
-The protected body still owns only its original nodes; normal completion enters
-the matched cleanup, then continues at its original next node. Catch-all
+The protected body owns its original nodes plus the established pure normal
+preparation; normal completion enters the matched cleanup, then continues at its
+original next node. A body outlet targeting the normal duplicate is implicit only
+when lexical completion reaches it without bypassing pending work or a loop.
+Otherwise P6 supplies a Break of this selected Try, preserving the original target
+and copies while executing finally once. Derived child completions obey that same
+rule; they do not print a goto to the hidden duplicate's label. Catch-all
 completion executes that same cleanup and implicitly rethrows the established
 capture unless cleanup itself throws. No store, binding or copy is manufactured
 or moved. Ordinary region admission still selects the whole interface; an

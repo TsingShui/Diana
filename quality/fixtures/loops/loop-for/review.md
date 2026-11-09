@@ -1,5 +1,19 @@
 # Fixture: loop-for
 
+## Current verdict — whole-operation follow-up
+
+Read changed headers, initializers and body tails. Every for update is the
+supplied original scalar self-store at its original repetition point; pre-test
+assignments stay before the first test. Bounds, body effects, early exits and
+returned totals retain the prior paths.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
 classic for, with break and continue in the body. The Java source is the reference and the expectation; the DEX is
 generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 `quality/build.sh`) and committed so a review needs no toolchain.
@@ -7,7 +21,7 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 
-## Current verdict — iteration-tail review
+## Prior verdict — iteration-tail review
 
 Java and final text were reread. skipNegative([I)I retains both original array
 reads on its nonnegative path and only the first on a negative skip, followed by

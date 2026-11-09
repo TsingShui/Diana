@@ -1,5 +1,19 @@
 # Fixture: loop-do-while-sideeffect
 
+## Current verdict — whole-operation follow-up
+
+Read the changed lowered loop schedule. Side-effecting predicate/body
+evaluations stay at their original point and count; only the established pure
+tail appears in the supplied update. The first iteration and its eventual test
+do not gain a speculative evaluation.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
 loop conditions that call something on every test. The Java source is the reference; the DEX is generated from it
 with the fixture's `javac.args`/`d8.args` or the shared defaults (see
 `quality/build.sh`) and committed so a review needs no toolchain.
@@ -8,7 +22,7 @@ with the fixture's `javac.args`/`d8.args` or the shared defaults (see
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 - Selector: `Lfixture/LoopDoWhileSideEffect;`
 
-## Current verdict — round 3, 2026-11-08
+## Prior verdict — round 3, 2026-11-08
 
 ### Semantics
 

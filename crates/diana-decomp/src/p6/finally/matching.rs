@@ -354,6 +354,8 @@ enum Work {
     Finish(Position),
 }
 pub(super) struct Matched {
+    pub preparation: Vec<NodeId>,
+    pub entry: NodeId,
     pub normal: Vec<NodeId>,
     pub operations: Vec<(OpId, OpId)>,
     pub predicates: Vec<(NodeId, NodeId)>,
@@ -368,7 +370,7 @@ pub(super) fn construct(
     capture: OpId,
     definition: &crate::p5::DefinitionPlan,
 ) -> Result<Option<Matched>, RegionError> {
-    let (Some(&handler), Some(normal_entry)) = (plan.handlers.first(), plan.follow) else {
+    let Some(&handler) = plan.handlers.first() else {
         return Ok(None);
     };
     let Materialization::ExceptionCapture(local) = definition.materialization() else {
@@ -390,6 +392,41 @@ pub(super) fn construct(
         visited: filled(f.nodes.len(), false)?,
         order: Vec::new(),
     };
+    let Some((first, first_event)) = event(
+        storage,
+        f,
+        g,
+        &mut canonical,
+        Position::entry(f, handler),
+        Some(capture),
+    )?
+    else {
+        return Ok(None);
+    };
+    let Some(preparation) = super::preparation::construct(storage, f, g, plan, |node| {
+        if !normal_set[node.0 as usize] {
+            return false;
+        }
+        let n = &f.nodes[node.0 as usize];
+        match first_event {
+            Event::Operation(operation) if !n.operations.is_empty() => {
+                storage.execution().operations()[n.operations.start as usize].kind()
+                    == storage.execution().operations()[operation.0 as usize].kind()
+            }
+            Event::Branch(op, _) if n.operations.is_empty() && n.terminal => matches!(
+                storage.execution().blocks()[n.block.0 as usize].terminal(),
+                Some(Terminal::Branch { op: normal, .. }) if *normal == op
+            ),
+            _ => false,
+        }
+    })?
+    else {
+        return Ok(None);
+    };
+    let normal_entry = preparation.entry;
+    for node in &preparation.nodes {
+        normal_set[node.0 as usize] = false;
+    }
     let mut normal = Cursor {
         allowed: &normal_set,
         visited: filled(f.nodes.len(), false)?,
@@ -404,10 +441,7 @@ pub(super) fn construct(
     let mut end = None;
     push(
         &mut work,
-        Work::Pair(
-            Position::entry(f, handler),
-            Position::entry(f, normal_entry),
-        ),
+        Work::Pair(first, Position::entry(f, normal_entry)),
     )?;
     while let Some(task) = work.pop() {
         let (a, mut b) = match task {
@@ -513,6 +547,8 @@ pub(super) fn construct(
         return Ok(None);
     }
     Ok(Some(Matched {
+        preparation: preparation.nodes,
+        entry: normal_entry,
         normal: normal.order,
         operations,
         predicates,

@@ -15,6 +15,7 @@ use crate::p5::{LocalId, LocalKind, Materialization, StorageRead, StorageType};
 pub(super) fn construct(
     code: &mut MethodCode,
     key: crate::MethodKey,
+    adjacency: &super::adjacency::Adjacency,
 ) -> Result<(), ExpressionError> {
     for group in &code.constructions {
         for argument in &group.prepared_arguments {
@@ -51,8 +52,8 @@ pub(super) fn construct(
 
     let mut last: Vec<Option<OpId>> = filled(code.terminals.len(), None)?;
     let mut next: Vec<Option<OpId>> = filled(code.operations.len(), None)?;
-    let mut incoming = filled(code.blocks.len(), 0u8)?;
-    let mut sibling = filled(code.controls.len(), None)?;
+    let incoming = &adjacency.incoming;
+    let sibling = &adjacency.sibling;
     // A store may print a plain receiver before its value. Its existing pure
     // producer can move there, but further nesting could move an effect across
     // that receiver, so that composition is a boundary for earlier producers.
@@ -68,31 +69,9 @@ pub(super) fn construct(
         }
         *previous = Some(operation.source);
     }
-    for transfer in &code.transfers {
-        let count = incoming
-            .get_mut(transfer.destination.0 as usize)
-            .ok_or(bug("transfer names an unknown node"))?;
-        *count = count.saturating_add(1).min(2);
-    }
-    for control in &code.controls {
-        let emitted = &code.emission.controls[control.id.0 as usize];
-        if matches!(
-            emitted.layout,
-            EmissionLayout::Sequence | EmissionLayout::Graph
-        ) {
-            for pair in emitted.children(control).windows(2) {
-                let next = sibling
-                    .get_mut(pair[0].0 as usize)
-                    .ok_or(bug("sequence names an unknown child"))?;
-                if next.replace(pair[1]).is_some() {
-                    return Err(bug("region child has multiple sequence owners"));
-                }
-            }
-        }
-    }
     for node in 0..code.emission.blocks.len() {
         if let Some((group, use_id, control)) =
-            construction_throw(code, node, &last, &incoming, &sibling, &access)
+            construction_throw(code, node, &last, incoming, sibling, &access)
         {
             let construction = &code.constructions[group.0 as usize];
             let source = &code.operations[construction.initialization.0 as usize];
@@ -112,15 +91,27 @@ pub(super) fn construct(
             code.emission.hidden_locals[local.0 as usize] = true;
             code.emission.deferred_controls[control.0 as usize] = true;
         }
-        let candidate = terminal_use(code, node, &last, &incoming, &sibling, &access);
+        let candidate = terminal_use(code, node, &last, incoming, sibling, &access);
         if let Some((producer, use_id, control)) = candidate {
             install(code, producer, use_id, Some(control), key)?;
         }
-        // Select the use nearest the end first. An earlier producer can then
-        // compose into the already selected expression without moving its use.
+    }
+    // Select terminal uses first, then operation uses from the end of the
+    // original schedule. Effect boundaries may divide one original block into
+    // adjacent source portions; they do not insert another evaluation.
+    for node in (0..code.emission.blocks.len()).rev() {
+        if let Some((first, second, owner)) = operation_successor(code, node, adjacency)
+            && let Some((producer, use_id, allows_nested)) =
+                operation_use(code, first, second, &next, &access, &nested)
+        {
+            nested[producer.operation.0 as usize] = allows_nested;
+            install(code, producer, use_id, Some(owner), key)?;
+        }
         let count = code.emission.blocks[node].actions.len();
         for index in (0..count.saturating_sub(1)).rev() {
-            let candidate = operation_use(code, node, index, &next, &access, &nested);
+            let first = code.emission.blocks[node].actions[index];
+            let second = code.emission.blocks[node].actions[index + 1];
+            let candidate = operation_use(code, first, second, &next, &access, &nested);
             if let Some((producer, use_id, allows_nested)) = candidate {
                 *nested
                     .get_mut(producer.operation.0 as usize)
@@ -585,26 +576,40 @@ fn producer(
     })
 }
 
-fn operation_use(
+/// Existing adjacent sibling blocks are the only cross-portion operation path.
+/// No traversal crosses a loop, try, synchronization or other control boundary.
+fn operation_successor(
     code: &MethodCode,
     node: usize,
-    index: usize,
+    adjacency: &super::adjacency::Adjacency,
+) -> Option<(BodyAction, BodyAction, ControlId)> {
+    let target = adjacency.next_node(node)?;
+    Some((
+        *code.emission.blocks.get(node)?.actions.last()?,
+        *code.emission.blocks.get(target)?.actions.first()?,
+        code.labels.get(node)?.owner,
+    ))
+}
+
+fn operation_use(
+    code: &MethodCode,
+    first: BodyAction,
+    second: BodyAction,
     next: &[Option<OpId>],
     access: &LocalAccess,
     nested: &[bool],
 ) -> Option<(Producer, ExprId, bool)> {
-    let block = code.emission.blocks.get(node)?;
     let BodyAction::Statement {
         operation,
         statement,
-    } = *block.actions.get(index)?
+    } = first
     else {
         return None;
     };
     let BodyAction::Statement {
         operation: consumer,
         statement: consumer_statement,
-    } = *block.actions.get(index + 1)?
+    } = second
     else {
         return None;
     };

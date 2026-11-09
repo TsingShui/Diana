@@ -1,5 +1,19 @@
 # Fixture: loop-map-views
 
+## Current verdict — whole-operation follow-up
+
+Read changed traversal/accumulation paths. Original receiver accesses, iterator
+calls, selected key/value operations and body order remain. Any supplied scalar
+tail follows the same successful body; no call is moved into a header update or
+removed by an empty-body assumption.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
 map views and a custom Iterable behind an enhanced for. The Java source is the reference; the DEX is generated from it
 with the fixture's `javac.args`/`d8.args` or the shared defaults (see
 `quality/build.sh`) and committed so a review needs no toolchain.
@@ -8,7 +22,7 @@ with the fixture's `javac.args`/`d8.args` or the shared defaults (see
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 - Selector: `Lfixture/LoopMapViews;`
 
-## Current verdict — round 1, 2026-11-08
+## Prior verdict — round 1, 2026-11-08
 
 ### Semantics
 

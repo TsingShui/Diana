@@ -1,5 +1,19 @@
 # Fixture: obf-dp-r8
 
+## Current verdict — whole-operation follow-up
+
+Read the changed obfuscated scalar loops using original member identities and
+retained source mapping. Recurrence/array dependency order and exit values
+remain; supplied counters stay at their original body tails. No original name or
+external declaration is substituted into the input facts.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
 R8-obfuscated edit distance, LIS and knapsack. Built from the same Java reference as its source fixture with an
 obfuscator, so the decompiled bodies can be compared against a known-good
 reference.
@@ -13,7 +27,7 @@ reference.
   original owner, name and full prototype; reused short names alone are ambiguous.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 
-## Current verdict — iteration-tail review
+## Prior verdict — iteration-tail review
 
 Mapping and complete final class were reread; the Java pair is identical to
 algo-dp. Subjects are La;->a(Ljava/lang/String;Ljava/lang/String;)I,

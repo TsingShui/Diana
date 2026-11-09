@@ -1,6 +1,23 @@
 # Fixture: nested-catch-rejoins
 
-## Current verdict — monitor continuation review
+## Current verdict — whole-operation follow-up
+
+Compared the same prepared DEX with completed-eleven-repair bda9a49. Only
+derived label/control coordinates change. Development-only correspondence found
+identical printed words, original L/H program points and identical printed
+lexical-scope bindings across every method publication; declaration-only members
+are exact. Original P2/P3/P4/P5 facts agree. The unchanged semantic path review
+below is reused, not replaced by a naming score or a claim of behavioral
+execution.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
+## Prior verdict — monitor continuation review
 
 The final run(Object,int,int) now has both for updates. Java/Smali, helper models
 and final changed path were reread: code is computed before acquisition; read,

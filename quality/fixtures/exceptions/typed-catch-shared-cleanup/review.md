@@ -1,6 +1,21 @@
 # Fixture: typed-catch-shared-cleanup
 
-## Current verdict — round 4
+## Current verdict — whole-operation follow-up
+
+Read typed read/recovery, nested resource and outer recovery paths. NFE recovery
+retains its original open/read/close and +100 result before cleanup; close
+failure or rethrow reaches the original outer handler where applicable. Normal
+and captured return values are selected before close. Pure arithmetic placement
+changes no throwing site, handler priority or cleanup order.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
+## Prior verdict — round 4
 
 The candidate's enclosing cleanup now prints as finally. The original normal
 result copies still execute before close(50); two executable incoming-copy spans

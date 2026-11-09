@@ -1,5 +1,20 @@
 # Fixture: three-resources-late-failure
 
+## Current verdict — whole-operation follow-up
+
+Read late third-acquisition/read failures and normal completion. Acquired
+handles50/51 retain their identities and close order; no unacquired third handle
+is closed. The normal pure total remains computed before the same cleanup calls.
+Pending read/acquisition faults and replacement cleanup faults keep the original
+routing; no return is fabricated after failure.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
 Three nested resources with later-acquisition, body and independent close
 failures. `ThreeResourceLateFailure.java` explains the behavior;
 `ThreeResourceLateFailure.smali` is the actual assembly input. The prepared
@@ -13,7 +28,7 @@ failures. `ThreeResourceLateFailure.java` explains the behavior;
 - Expected behavior: the scenario table in `README.md`, authored from the Smali
   and Java sources before this reading pass.
 
-## Current verdict — round 2
+## Prior verdict — round 2
 
 Manually reread the Java explanation, Smali and fresh P6/P9 delivery at
 `09e322b`, using the README's native-helper models. The reviewed normal, late

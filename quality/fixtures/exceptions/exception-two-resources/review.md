@@ -1,5 +1,20 @@
 # Fixture: exception-two-resources
 
+## Current verdict — whole-operation follow-up
+
+Read changed nested resource arithmetic: the pure total is computed before the
+same closes even where it lies outside a smaller inner try. First/second
+acquisition and reverse close order, captured return values, original fault
+priority and suppression/propagation paths remain. Moving a nonthrowing scalar
+expression across a catch delimiter does not move it across a close effect.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
 Two-resource try-with-resources. `ExceptionTwoResources.java` is the authored
 reference; `classes.dex` was prepared with `javac --release 8 -g` and
 `d8 --min-api 24` through `quality/build.sh`.
@@ -8,7 +23,7 @@ reference; `classes.dex` was prepared with `javac --release 8 -g` and
 - Regenerate from the sources; never edit the DEX by hand.
 - Original subject: `Lfixture/ExceptionTwoResources;->sum(I)I`.
 
-## Current verdict — round 3
+## Prior verdict — round 3
 
 The current text was compared directly with the Java reference, including both
 resource helper bodies, using the ordinary Engine implementation at `650dade`:

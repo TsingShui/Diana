@@ -1,5 +1,22 @@
 # Fixture: obf-flow-r8
 
+## Current verdict — whole-operation follow-up
+
+Compared the same prepared DEX with completed-eleven-repair bda9a49. Only
+derived label/control coordinates change. Development-only correspondence found
+identical printed words, original L/H program points and identical printed
+lexical-scope bindings across every method publication; declaration-only members
+are exact. Original P2/P3/P4/P5 facts agree. The unchanged semantic path review
+below is reused, not replaced by a naming score or a claim of behavioral
+execution.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
 R8-obfuscated enum state machine (switch, loop, try/finally, ternary). Built from the same Java reference as its source fixture with an
 obfuscator, so the decompiled bodies can be compared against a known-good
 reference.
@@ -13,7 +30,7 @@ reference.
   original owner, name and full prototype; reused short names alone are ambiguous.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 
-## Current verdict — iteration-tail review
+## Prior verdict — iteration-tail review
 
 Mapping and changed Lb;->b([I)I were reread against the identical Java explanation.
 MIN_VALUE skips advance/count but still updates the index. DONE, a.c, exits via

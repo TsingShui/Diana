@@ -1,6 +1,23 @@
 # Fixture: abrupt-continuation-tails
 
-## Current verdict — protected-entry follow-up
+## Current verdict — whole-operation follow-up
+
+Read both changed dispatches against Java/Smali. select keeps matches/read order
+and selects -1 only on the original mismatch/default path; successful read
+bypasses that assignment via the supplied Try Break, then cleans30 and marks40.
+decorated still performs its first dispatch, shared read, cleanup90 and
+normal-only mark91. Read failure cleans and rethrows the same object without the
+later mark. Matched finally retains the original implicit rethrow anchor; the
+shared non-case graph is not fabricated into a switch.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
+## Prior verdict — protected-entry follow-up
 
 Java/Smali and final decorated(III)I were reread. The selected read now has its
 natural catch-all instead of an explicit site-chain dispatch. Its optional body

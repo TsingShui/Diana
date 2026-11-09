@@ -5,6 +5,8 @@ use diana_decomp::p7::{ControlId, EmissionLayout, MethodCode, TransferId, Transf
 
 #[path = "support/inspection.rs"]
 mod inspection;
+#[path = "support/rethrows.rs"]
+mod rethrows;
 use inspection::inspect;
 
 fn groups(code: &MethodCode) -> Option<(&[ControlId], &[Vec<TransferId>])> {
@@ -144,10 +146,10 @@ fn non_case_sharing_and_protected_recovery_keep_original_fragments() {
         "Lfixture/CaseEntryJoins;",
         "route",
         "(III)I",
-        |_, _, rendered| {
+        |facts, _, rendered| {
             assert!(rendered.text().contains(".cleanup(0, p2)"));
             assert!(rendered.text().contains(".mark(40)"));
-            assert!(rendered.text().contains("throw "));
+            rethrows::assert_pending_rethrow(facts, rendered);
         },
     );
 }

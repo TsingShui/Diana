@@ -7,16 +7,11 @@
 //! check's separate display action is dropped, so the surviving text still names
 //! one original check.
 //!
-//! Two carriers exist, and both must be the next event after the check:
-//!
-//! 1. The next statement action of the same block, when the checked value is the
-//!    first value that statement evaluates in its printed form. The carrier is
-//!    that statement plus the exact read occurrence, so a second read of the same
-//!    storage in the same statement keeps its own text.
-//! 2. The first step of the single unconditional transfer that ends this block,
-//!    when that existing copy assignment reads the checked storage. A check that
-//!    is the block's last action has no other printed event before the transfer,
-//!    so the assignment's right-hand side is its first read.
+//! The fixed priority is an adjacent standalone definition, the next statement,
+//! the first step of one unconditional copy transfer, the immediate terminal,
+//! then a later first read in the same supplied linear run. Adjacency can cross
+//! whole-operation portions, but never an event, phase, selection or protected
+//! scope. Every carrier names its exact original read and CHECK operation/PC.
 //!
 //! A check whose pre-check disposition P4 published as redundant never composes:
 //! the cast states nothing there, so its own statement is omitted and the
@@ -28,7 +23,7 @@
 
 use super::super::build::{bug, copy, push};
 use super::super::*;
-use crate::p2::OpId;
+use crate::p2::{Effects, OpId};
 use crate::p4::CheckDisposition;
 use crate::p5::{CopyLocation, Materialization, TransferSite};
 
@@ -38,6 +33,7 @@ use crate::p5::{CopyLocation, Materialization, TransferSite};
 /// iteration, the "already claimed" bookkeeping and every written slot.
 struct Carrier<'a> {
     code: &'a MethodCode,
+    adjacency: &'a super::adjacency::Adjacency,
     protection: &'a [Option<ControlId>],
     found: &'a [(StatementId, InlineCheck)],
     /// The operation that owns each statement, so a carrier never rescans.
@@ -96,6 +92,7 @@ pub(super) fn construct(
     code: &mut MethodCode,
     types: &crate::p4::TypeFacts,
     key: crate::MethodKey,
+    adjacency: &super::adjacency::Adjacency,
 ) -> Result<(), ExpressionError> {
     let omitted = redundant(code, types)?;
     let mut why_slots: Vec<Option<&'static str>> =
@@ -139,6 +136,7 @@ pub(super) fn construct(
             };
             let carrier = Carrier {
                 code,
+                adjacency,
                 protection: &protection,
                 found: &found,
                 operation_of: &operation_of,
@@ -456,13 +454,13 @@ fn statement_carrier(
     let code = carrier.code;
     let (node, index) = (carrier.node, carrier.index);
     let actions = &code.emission.blocks[node].actions;
-    let Some(next_action) = actions.get(index + 1) else {
+    let Some((_, _, next_action)) = carrier.adjacency.next_action(code, node, index) else {
         return Ok(None);
     };
     let BodyAction::Statement {
         operation: consumer,
         statement: next,
-    } = *next_action
+    } = next_action
     else {
         return Err(Stop::Refuse("next_action_is_not_a_statement"));
     };
@@ -472,6 +470,12 @@ fn statement_carrier(
     let Some((_, reference)) = eligible_check(code, operation, statement, None) else {
         return Ok(None);
     };
+    if !code.emission.operations[consumer.0 as usize]
+        .before
+        .is_empty()
+    {
+        return Err(Stop::Refuse("next_statement_has_before_copies"));
+    }
     if carrier.suspended[next.0 as usize] {
         // This surface has an implicit continuation occurrence. Keep a
         // preceding check at its original action rather than attach it
@@ -531,16 +535,35 @@ fn definition_carrier(
 ) -> Result<Option<Carried>, Stop> {
     let code = carrier.code;
     let (node, index) = (carrier.node, carrier.index);
-    let Some(previous) = index.checked_sub(1) else {
+    let Some((previous_node, _, previous)) = carrier.adjacency.previous_action(code, node, index)
+    else {
         return Ok(None);
     };
     let BodyAction::Statement {
-        operation,
+        operation: definition_operation,
         statement: definition,
-    } = code.emission.blocks[node].actions[previous]
+    } = previous
     else {
         return Err(Stop::Refuse("definition_not_adjacent"));
     };
+    if carrier.protection[previous_node] != carrier.protection[node] {
+        return Err(Stop::Refuse("definition_changes_protection"));
+    }
+    if code.emission.composed_operation(definition_operation)
+        || !matches!(
+            code.operations[definition_operation.0 as usize].emission,
+            Emission::Block { .. }
+        )
+    {
+        return Err(Stop::Refuse("definition_is_not_standalone"));
+    }
+    let phases = &code.emission.operations[definition_operation.0 as usize];
+    if !phases.before.is_empty() || !phases.snapshots.is_empty() || !phases.after.is_empty() {
+        return Err(Stop::Refuse("definition_has_copy_phase"));
+    }
+    // The carrier is the definition, but the mapped check remains THIS original
+    // check operation/PC, never the preceding store or invocation.
+    let operation = carrier.operation;
     let Some((_, reference)) = eligible_check(code, operation, statement, None) else {
         return Ok(None);
     };
@@ -621,6 +644,56 @@ fn definition_carrier(
         ty: *type_use,
     }))
 }
+/// A later carrier must be reached through the supplied linear source schedule,
+/// with no intervening effect, phase, selection or protection change. Searching
+/// for a matching value elsewhere in the method is not an ordering guarantee.
+fn distant_path(carrier: &Carrier<'_>, target: usize, statement: Option<StatementId>) -> bool {
+    let code = carrier.code;
+    let mut node = carrier.node;
+    let mut index = carrier.index + 1;
+    loop {
+        if carrier.protection[node] != carrier.protection[carrier.node] {
+            return false;
+        }
+        let actions = &code.emission.blocks[node].actions;
+        if node == target && statement.is_none() && index == actions.len() {
+            return true;
+        }
+        if let Some(action) = actions.get(index) {
+            let BodyAction::Statement {
+                operation,
+                statement: current,
+            } = *action
+            else {
+                return false;
+            };
+            if node == target && statement == Some(current) {
+                return true;
+            }
+            let source = &code.operations[operation.0 as usize];
+            let phases = &code.emission.operations[operation.0 as usize];
+            if source.effects != Effects::default()
+                || source.exceptional.is_some()
+                || !phases.before.is_empty()
+                || !phases.snapshots.is_empty()
+                || !phases.after.is_empty()
+            {
+                return false;
+            }
+            index += 1;
+        } else {
+            if actions.is_empty() && !carrier.adjacency.empty_is_quiet(node) {
+                return false;
+            }
+            let Some(next) = carrier.adjacency.next_node(node) else {
+                return false;
+            };
+            node = next;
+            index = 0;
+        }
+    }
+}
+
 fn distant_carrier(
     carrier: &Carrier<'_>,
     statement: StatementId,
@@ -652,6 +725,18 @@ fn distant_carrier(
         else {
             continue;
         };
+        if !code.emission.operations[consumed.source.0 as usize]
+            .before
+            .is_empty()
+            || carrier.suspended[candidate.id.0 as usize]
+        {
+            why = Some("distant_use_has_before_phase_or_suspension");
+            continue;
+        }
+        if !distant_path(carrier, consumed.node.0 as usize, Some(candidate.id)) {
+            why = Some("distant_use_crosses_an_event");
+            continue;
+        }
         if carrier.protection.get(consumed.node.0 as usize).copied()
             != carrier.protection.get(node).copied()
         {
@@ -693,6 +778,17 @@ fn distant_carrier(
         let Some(occurrence) = first_terminal_read(code, terminal, storage)? else {
             continue;
         };
+        if !code.emission.terminals[terminal.0 as usize]
+            .before
+            .is_empty()
+        {
+            why = Some("distant_terminal_has_before_copies");
+            continue;
+        }
+        if !distant_path(carrier, index, None) {
+            why = Some("distant_terminal_crosses_an_event");
+            continue;
+        }
         if carrier.protection.get(index).copied() != carrier.protection.get(node).copied() {
             why = Some("distant_use_changes_protection");
             continue;

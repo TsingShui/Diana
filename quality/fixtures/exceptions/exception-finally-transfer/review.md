@@ -1,5 +1,21 @@
 # Fixture: exception-finally-transfer
 
+## Current verdict — whole-operation follow-up
+
+Read Java and complete final methods. breakInFinally's original goto still
+bypasses the for update and reaches state3; normal nonnegative cleanup selects
+state4. A failure during the finally read replaces a pending exception.
+continueInFinally's state5 precedes its original update on either normal branch.
+Return overrides and nested typed-catch parse/trim order remain explicit; these
+overriding cleanups are not unsafely folded.
+
+The [pure-tail challenge](../../exceptions/pure-tail-finally/review.md) and
+[carrier challenge](../../atoms/refined-carriers/review.md) record the owning
+producer/consumer repairs and blocked drafts. This is bounded current source
+reading; historical execution claims below were not rerun and do not certify
+this output. No behavioral executor, device run or Java recompilation ran.
+
+
 finally with return/break/continue, and try inside catch. The Java source is the reference; the DEX is generated from it with
 `javac --release 8 -g` + `d8 --min-api 24` (see `quality/build.sh`) and committed
 so a review needs no toolchain.
@@ -8,7 +24,7 @@ so a review needs no toolchain.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 - Selector: `Lfixture/ExceptionFinallyTransfer;`
 
-## Current verdict — iteration-tail review
+## Prior verdict — iteration-tail review
 
 Java and final text were reread for
 Lfixture/ExceptionFinallyTransfer;->continueInFinally([I)I. Zero still skips
