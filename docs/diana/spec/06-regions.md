@@ -589,6 +589,40 @@ still refers to its precise continuation operand and original callee binding.
 A missing prerequisite leaves the complete original layout and local facts
 available. Resource and construction errors retain the ordinary classified stop.
 
+### Ordinary-method suspend loop alternative
+
+P6 publishes `CoroutineLoopPlan` for an ordinary Object-returning method whose
+last declared parameter is Continuation and whose original dispatch has state
+zero, one positive resume state, and a closed invalid-state exception arm.
+The existing SCC product nominates the first cyclic node reached by the initial
+corridor. P6 MUST establish a head predicate, one closed normal-run cycle, its
+straight exit, and one private resume corridor entering the original result
+merge. Other branches, multiple suspension sites, executable handlers, unknown
+locks, unavailable operands, and additional entrances retain the original layout.
+
+P6 MUST match the original call binding, continuation storage, state publication,
+reference-identity marker comparison, and private marker return. Private direct
+calls are eligible under the same Object/Continuation binding contract as other
+ordinary invocations. Prefix allocation/cast/constructor references must identify
+the continuation owner. The marker, entry result, and continuation storage cannot
+be reassigned to another value. Prefix and invalid-state effects remain original
+ABI attachments; they are not declared pure.
+
+The owning correspondence requires each resumed merge copy to carry the same
+available value/state as the normal route, or an unchanged local saved in the
+same original field. Move normalization follows existing P5 definition/use facts;
+it reconstructs no register state or SSA. Every normal merge assignment needs
+its resumed counterpart. Changed captures, foreign fields, resumed-only effects,
+copy gaps, and unmatched result delivery reject this alternative locally.
+
+The plan partitions every original node into initial work, repeated work, exit
+work, the head predicate, or ABI attachments. It delivers original normal links,
+protocol operations, spill pairs, and ABI targets within the source body.
+P7 consumes this order without planning another loop; P9 renders it without
+analysis. The existing node/link/control arenas remain source evidence. Resource
+and construction failures retain the owning P6 stop and its partial facts.
+Normal requests run no independent output verifier or repeated SCC/dominance pass.
+
 ## Transfers, labels and P5 obligations
 
 Every original edge has an `EdgePlan`. Each normal `LinkPlan` chooses a concrete

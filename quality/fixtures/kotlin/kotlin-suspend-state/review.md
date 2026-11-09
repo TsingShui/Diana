@@ -1,5 +1,38 @@
 # Fixture: kotlin-suspend-state
 
+## Current total loop review
+
+This LLM review compares `Case.kt::total`, its prepared DEX, and the suspend-loop
+candidate against baseline `73542421d671be2fc169b72c7233aa0b5b955fd5`.
+The signature retains Object, the original int parameter, and
+Continuation<? super Integer>, and adds `suspend`. The body has initial sum/index,
+a head-tested while, one load call, the original Number conversion and additions,
+and the boxed return. The old whole loop/reentry graph becomes ABI attachments
+plus the source order, rather than disappearing with its original facts.
+
+For a nonpositive limit, the initial predicate returns boxed zero without load.
+For each nonnegative index below limit, load's original helper rejects negative
+arguments only, then returns boxed index * 2. The returned int contributes to sum
+before index increases. For limit 4 the loads receive 0, 1, 2, 3 and the result is
+12; limit 1 returns 0. Integer overflow keeps the original DEX integer operations.
+
+The resume corridor restores I$0 (limit), I$2 (index), and I$3 (captured sum), then
+checks failure before the Number cast or arithmetic. I$1 is also read, as in the
+input, although that read does not supply the eventual sum update. Both result
+routes reach the same original sum/index update. The three forwarded copies
+read the call result, old sum and old index before their sources change; no
+update or call is duplicated. The original state stores precede load. A marker
+result returns before the tail, and a resumed failure skips all tail work.
+Frame selection, high-bit label adjustment, invalid-state throw/message and ABI
+targets remain visible, with original source mappings. The view infers suspension
+from the input protocol; the supplied load helper itself completes immediately.
+
+No contradiction was found in these reviewed paths. The
+[captured-effect challenge](../suspend-loop-captured-effects/review.md) adds another
+mutable value, a captured expression, helper effects, and mismatching boundaries.
+Other original fixture members have unchanged output in the fixture comparison.
+Not run: a final-plan behavioral executor or actual coroutine scheduling.
+
 ## Current verdict — terminal guard follow-up
 
 Read suspended-marker returns and resume copies. load and label writes still

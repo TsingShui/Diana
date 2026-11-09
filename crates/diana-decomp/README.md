@@ -190,6 +190,16 @@ as an inference. ABI parameters and wrapper members remain; original source-lamb
 signatures, multi-suspension spills and source exception recovery are not established
 by this view. Missing prerequisites retain the original method layout.
 
+Ordinary suspend methods with one closed head-tested loop and one resume state
+also have a Kotlin-style body view. It restores `while`, suppresses the matched
+continuation argument at the call, and forwards proven loop-local copies. The
+Java-style signature gains `suspend`; boxing, casts, original names, ABI
+entry/reentry, state publication and error paths remain explicit. The
+[captured-effect challenge](../../quality/fixtures/kotlin/suspend-loop-captured-effects/README.md)
+exercises another mutable value and effects around suspension. Mismatched spills,
+changed captures, and resumed-only effects retain their original explicit code.
+Multi-site and protected coroutine source-body recovery remains unestablished.
+
 P8 produces owned `ClassResult`/`TypeNamePlan` from the original directory and
 joined method deliveries. Success, no-code and stopped members remain distinct.
 The same execution retains inspection while sharing immutable owned P7 results.

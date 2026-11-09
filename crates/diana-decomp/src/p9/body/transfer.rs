@@ -1,6 +1,6 @@
 //! Transfers and the copies that execute with them.
 
-use super::super::expressions::Expressions;
+use super::super::expressions::{ExpressionSource, Expressions};
 use super::super::{Origin, RenderError};
 use crate::p7::*;
 
@@ -40,7 +40,14 @@ impl Expressions<'_, '_> {
     pub(super) fn copies_print_no_words(&self, copies: &[CopyPlanId]) -> bool {
         copies.iter().all(|&copy| {
             let bundle = &self.code.copies()[copy.0 as usize];
-            bundle.steps.is_empty() && bundle.assignments.iter().all(|c| c.issue().is_none())
+            (bundle.steps.is_empty()
+                || (!self.out.abi_comment
+                    && bundle
+                        .steps
+                        .iter()
+                        .enumerate()
+                        .all(|(step, _)| self.code.forwarded_copy(copy, step).is_some())))
+                && bundle.assignments.iter().all(|c| c.issue().is_none())
         })
     }
 

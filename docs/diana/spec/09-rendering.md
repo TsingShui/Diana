@@ -450,6 +450,17 @@ ordinary origins in the ABI attachments. These products preserve original
 identities and uncertainty; they do not establish recovery of the whole original
 Kotlin class.
 
+A delivered `CoroutineLoop` prints its original initial nodes, one `while` with
+the supplied predicate, repeated nodes, and original exit nodes. P9 uses the
+ordinary block-control events, not a graph walk or another renderer. Its ABI node
+attachments retain original dispatch/resume/error statements and branch targets;
+short comments mark targets inside the source body. All original operations,
+controls, labels, expressions, copies, and transfers retain source mappings.
+The declaration adds `suspend` while retaining Java return/parameter syntax.
+Forwarded loop-copy steps print their supplied source names only in executable
+code; their original source reads and copy identities retain anchors. P9 MUST
+NOT establish forwarding, hide another argument, or reinterpret another copy.
+
 ## Spans
 
 `TextOffset` is a byte coordinate in the final UTF-8 text. `SourceSpan` ranges are

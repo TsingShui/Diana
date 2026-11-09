@@ -421,9 +421,19 @@ fn invalid_arm(
     region: RegionId,
     entrance: LinkId,
 ) -> Result<Result<Vec<OpId>, ()>, RegionError> {
-    let flow = storage.execution();
     let r = &f.regions[region.0 as usize];
-    let Some(mut node) = r.entry else {
+    invalid_nodes(storage, f, graph, &r.nodes, r.entry, entrance)
+}
+pub(super) fn invalid_nodes(
+    storage: &StorageMethod<'_>,
+    f: &RegionFacts,
+    graph: &Graph,
+    nodes: &[NodeId],
+    entry: Option<NodeId>,
+    entrance: LinkId,
+) -> Result<Result<Vec<OpId>, ()>, RegionError> {
+    let flow = storage.execution();
+    let Some(mut node) = entry else {
         return Ok(Err(()));
     };
     if graph.incoming[node.0 as usize].as_slice() != [entrance] {
@@ -432,10 +442,10 @@ fn invalid_arm(
     let mut operations = Vec::new();
     let mut terminal = None;
     let mut in_region = filled(f.nodes.len(), false)?;
-    for &inside in &r.nodes {
+    for &inside in nodes {
         in_region[inside.0 as usize] = true;
     }
-    for _ in 0..r.nodes.len() {
+    for _ in 0..nodes.len() {
         if !in_region[node.0 as usize] {
             return Ok(Err(()));
         }

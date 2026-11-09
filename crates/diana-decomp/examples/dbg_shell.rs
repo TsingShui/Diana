@@ -1791,6 +1791,17 @@ fn region_json(method: diana_decomp::p7::MethodInspection<'_, '_>, details: bool
             "operations":body.operations().iter().map(|op|json!({"operation":op.operation().0,"role":format!("{:?}",op.role())})).collect::<Vec<_>>(),
             "implicit_locals":body.implicit_locals().iter().map(|local|local.0).collect::<Vec<_>>()
         })));
+        result["coroutine_loop"] = json!(f.coroutine_loop().map(|p| json!({
+            "initial":p.initial().iter().map(|n|n.0).collect::<Vec<_>>(),
+            "body":p.body().iter().map(|n|n.0).collect::<Vec<_>>(),
+            "tail":p.tail().iter().map(|n|n.0).collect::<Vec<_>>(),
+            "abi":p.abi().iter().map(|n|n.0).collect::<Vec<_>>(),
+            "abi_entries":p.abi_entries().iter().map(|n|n.0).collect::<Vec<_>>(),
+            "condition":format!("{:?}",p.condition()),"call":p.call().0,"state":p.state(),
+            "protocol_operations":p.protocol_operations().iter().map(|op|op.0).collect::<Vec<_>>(),
+            "normal_links":p.normal_links().iter().map(|l|l.0).collect::<Vec<_>>(),
+            "spills":p.spills().iter().map(|(put,get)|[put.0,get.0]).collect::<Vec<_>>()
+        })));
         result["suspensions"] = json!(f.suspensions().iter().map(|s| json!({
             "dispatch":s.dispatch().0,"control":s.control().0,"state":s.state(),"call":s.call().0,
             "state_store":s.state_store().0,"result":s.result().0,"merged":s.merged().0,

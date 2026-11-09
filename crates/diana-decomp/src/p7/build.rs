@@ -138,12 +138,14 @@ fn construct(
     super::control::construct(&mut c)?;
     super::emission::construct(c.code)?;
     super::suspension::construct(&mut c)?;
+    super::suspension::construct_loop(&mut c)?;
     let key = partial
         .header
         .as_ref()
         .ok_or(bug("compose lost its method header"))?
         .key;
     super::compose::construct(c.code, planned.type_facts(), key)?;
+    super::suspension::finish_loop(&mut c)?;
     super::local_names::construct(
         c.code,
         planned.storage_facts().definitions(),

@@ -5,6 +5,10 @@ use crate::p2::{BlockId, OpId};
 use crate::p7::{ControlId, PredicateEmission, TransferId};
 
 pub(super) enum Event {
+    AbiMode(bool),
+    CoroutineLoopHead(PredicateEmission),
+    CoroutineControls,
+    CoroutineEntry(crate::p6::NodeId),
     OriginOnly(bool),
     Finally,
     BeginAbi(&'static str, ControlId),

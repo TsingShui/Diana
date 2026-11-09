@@ -350,7 +350,12 @@ fn producer(
         .operations
         .get(operation.0 as usize)
         .ok_or("producer_operation_unavailable")?;
-    if code.emission.suspension(operation).is_some() {
+    if code.emission.suspension(operation).is_some()
+        || code
+            .emission
+            .coroutine_loop()
+            .is_some_and(|p| p.call == operation)
+    {
         return Err("suspension_owns_its_result_and_route");
     }
     if code.emission.composed_operation(operation)
