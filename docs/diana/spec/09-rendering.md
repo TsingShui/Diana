@@ -492,6 +492,14 @@ value`; method declarations retain Java ABI types/parameters and inferred
 `suspend`. Header and initialized local types consume the same P8 facts, without
 new null checks or external declarations.
 
+A cyclic `CoroutineFlow` prints its initial controls, one `while` with the
+delivered head predicate and its exit copies, the repeated controls, and then
+the tail controls. The original latch and initial-header links print as ordinary
+fallthrough. P9 does not invent a `break` for a repeated-body exit: a branch
+that leaves the selected cycle keeps the explicit transfer to its original tail
+label, and the shared exit keeps its original operations and return. ABI
+attachments, state stores and marker returns keep their comments and anchors.
+
 ## Spans
 
 `TextOffset` is a byte coordinate in the final UTF-8 text. `SourceSpan` ranges are

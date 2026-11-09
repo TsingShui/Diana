@@ -219,17 +219,25 @@ entry/reentry, state publication and error paths remain explicit. The
 [captured-effect challenge](../../quality/fixtures/kotlin/suspend-loop-captured-effects/README.md)
 exercises another mutable value and effects around suspension. Mismatched spills,
 changed captures, and resumed-only effects retain their original explicit code.
-Acyclic ordinary methods with matched multiple suspension sites now select a
-source body over existing P6 controls, including early returns and saved scalars.
+Ordinary methods with matched multiple suspension sites now select a source body
+over existing P6 controls, including early returns, saved scalars and one closed
+head-tested cycle. A cyclic flow keeps the original head predicate, exit copies
+and interior resume corridors; it restores `while` only when one component, one
+latch and one initial-header edge are established.
 Original fetch and the
 [three-step challenge](../../quality/fixtures/kotlin/suspend-three-step-effects/README.md)
 exercise private/shared marker returns and distinct result/capture merges.
-Normal-only effects, missing spills, cyclic source bodies and protected coroutine
-source reconstruction remain explicit rather than using this view.
-The [multi-site branch](../../quality/fixtures/kotlin/suspend-two-step-branch/README.md),
-[two-site loop](../../quality/fixtures/kotlin/suspend-loop-two-sites/README.md), and
+Normal-only effects, missing spills, nested or multi-latch cycles, do-while
+shapes and protected coroutine source reconstruction remain explicit rather
+than using this view.
+The [multi-site branch](../../quality/fixtures/kotlin/suspend-two-step-branch/README.md)
+and [two-site loop](../../quality/fixtures/kotlin/suspend-loop-two-sites/README.md)
+inputs keep original call/capture origins, state publication and resume copies.
+The [two-site checksum](../../quality/fixtures/kotlin/suspend-loop-two-site-checksum/README.md)
+challenge adds a mutable checksum with pre- and post-update effects across both
+sites. The
 [protected two-site](../../quality/fixtures/kotlin/suspend-finally-two-sites/README.md)
-inputs retain explicit state dispatch and original resume/protection facts.
+input retains explicit state dispatch and original protection facts.
 An [effectful-default challenge](../../quality/fixtures/kotlin/suspend-default-shared-capture/README.md)
 also preserves a shared seed across both sites. Their ordinary Engine checks
 cover available members, original call/capture origins and dispatch spelling;

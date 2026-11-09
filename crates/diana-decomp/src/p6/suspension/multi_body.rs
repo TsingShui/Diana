@@ -337,7 +337,6 @@ fn candidate(
             continue;
         }
         source_mask[node.0 as usize] = true;
-        need!(!s.cyclic[s.component[node.0 as usize]], "flow_source_cycle");
         for &link in &g.outgoing[node.0 as usize] {
             if !sites.iter().any(|p| p.suspended == link) {
                 push(&mut queue, f.links[link.0 as usize].to)?;
@@ -647,46 +646,168 @@ fn candidate(
     let Some(root) = f.root else {
         return Ok(Err("flow_root"));
     };
-    let mut work = Vec::new();
-    push(&mut work, root)?;
-    let mut source = Vec::new();
-    while let Some(id) = work.pop() {
-        let region = &f.regions[id.0 as usize];
-        if region.nodes.is_empty() || region.nodes.iter().all(|n| !source_mask[n.0 as usize]) {
-            continue;
+    let entry = f.links[initial.0 as usize].to;
+    let has_cycle = source_nodes
+        .iter()
+        .any(|n| s.cyclic[s.component[n.0 as usize]]);
+    let mut explicit_predicates = Vec::new();
+    let (source, cycle) = if has_cycle {
+        let mut initial_mask = super::super::build::filled(f.nodes.len(), false)?;
+        let mut at = entry;
+        for _ in 0..f.nodes.len() {
+            if s.cyclic[s.component[at.0 as usize]] {
+                break;
+            }
+            initial_mask[at.0 as usize] = true;
+            let [link] = g.outgoing[at.0 as usize].as_slice() else {
+                return Ok(Err("cycle_initial_branch"));
+            };
+            at = f.links[link.0 as usize].to;
         }
-        if region.nodes.iter().all(|n| source_mask[n.0 as usize]) {
-            need!(
-                !matches!(region.continuation,Continuation::Goto(label) if !source_mask[label.0 as usize]),
-                "flow_source_completion_enters_protocol"
-            );
-            push(&mut source, id)?;
-        } else {
-            let protocol_guard = matches!(region.kind, RegionKind::If { .. })
-                && region
-                    .entry
-                    .is_some_and(|entry| sites.iter().any(|s| s.guard == entry));
-            need!(
-                matches!(region.kind, RegionKind::Sequence | RegionKind::Graph { .. })
-                    || (matches!(region.kind, RegionKind::Switch { .. })
-                        && region.entry == Some(dispatch))
-                    || protocol_guard,
-                "flow_mixed_control_owner"
-            );
-            for &child in region.children.iter().rev() {
-                push(&mut work, child)?;
+        let header = at;
+        let Some(initial_header) = g.incoming[header.0 as usize]
+            .iter()
+            .find(|&&id| initial_mask[f.links[id.0 as usize].from.0 as usize])
+            .copied()
+        else {
+            return Ok(Err("cycle_initial_header_edge"));
+        };
+        let component = s.component[header.0 as usize];
+        need!(
+            s.cyclic[component]
+                && f.nodes[header.0 as usize].terminal
+                && f.nodes[header.0 as usize].operations.is_empty()
+                && matches!(
+                    flow.blocks()[f.nodes[header.0 as usize].block.0 as usize].terminal(),
+                    Some(Terminal::Branch { .. })
+                ),
+            "cycle_head_condition"
+        );
+        need!(
+            source_nodes
+                .iter()
+                .all(|n| !s.cyclic[s.component[n.0 as usize]]
+                    || s.component[n.0 as usize] == component),
+            "cycle_multiple_components"
+        );
+        need!(
+            s.retreating
+                .iter()
+                .filter(|&&l| source_mask[f.links[l.0 as usize].from.0 as usize]
+                    && s.component[f.links[l.0 as usize].from.0 as usize] == component)
+                .all(|l| f.links[l.0 as usize].to == header),
+            "cycle_nested_header"
+        );
+        let mut repeat = None;
+        let mut exit = None;
+        for &link in &g.outgoing[header.0 as usize] {
+            if s.component[f.links[link.0 as usize].to.0 as usize] == component {
+                repeat = Some(link);
+            } else {
+                exit = Some(link);
             }
         }
-    }
-    let entry = f.links[initial.0 as usize].to;
-    let Some(first) = source
-        .iter()
-        .position(|id| f.regions[id.0 as usize].entry == Some(entry))
-    else {
-        return Ok(Err("flow_initial_source_owner"));
+        let (Some(repeat), Some(exit)) = (repeat, exit) else {
+            return Ok(Err("cycle_condition_roles"));
+        };
+        let mut body_mask = super::super::build::filled(f.nodes.len(), false)?;
+        let mut tail_mask = super::super::build::filled(f.nodes.len(), false)?;
+        for &node in &source_nodes {
+            if node != header {
+                if s.component[node.0 as usize] == component {
+                    body_mask[node.0 as usize] = true;
+                } else if !initial_mask[node.0 as usize] {
+                    tail_mask[node.0 as usize] = true;
+                }
+            }
+        }
+        let Ok((mut initial_roots, mut e0)) =
+            select(f, root, &initial_mask, &source_mask, &sites, dispatch, true)?
+        else {
+            return Ok(Err("cycle_initial_owner"));
+        };
+        explicit_predicates.append(&mut e0);
+        let Ok((mut body_roots, mut e1)) =
+            select(f, root, &body_mask, &source_mask, &sites, dispatch, true)?
+        else {
+            return Ok(Err("cycle_body_owner"));
+        };
+        explicit_predicates.append(&mut e1);
+        let Ok((mut tail_roots, mut e2)) =
+            select(f, root, &tail_mask, &source_mask, &sites, dispatch, true)?
+        else {
+            return Ok(Err("cycle_tail_owner"));
+        };
+        explicit_predicates.append(&mut e2);
+        need!(
+            rotate(f, &mut initial_roots, entry)
+                && rotate(f, &mut body_roots, f.links[repeat.0 as usize].to)
+                && rotate(f, &mut tail_roots, f.links[exit.0 as usize].to),
+            "cycle_entry_order"
+        );
+        let Some(&last) = body_roots.last() else {
+            return Ok(Err("cycle_empty_body"));
+        };
+        let Some(implicit_latch) = f
+            .links
+            .iter()
+            .find(|l| {
+                l.to == header
+                    && f.regions[last.0 as usize].nodes.contains(&l.from)
+                    && g.outgoing[l.from.0 as usize].len() == 1
+            })
+            .map(|l| l.id)
+        else {
+            return Ok(Err("cycle_latch_owner"));
+        };
+        need!(
+            f.links
+                .iter()
+                .filter(|l| l.to == header
+                    && source_mask[l.from.0 as usize]
+                    && s.component[l.from.0 as usize] == component)
+                .count()
+                == 1,
+            "cycle_multiple_latches"
+        );
+        need!(
+            last_source_node(f, last) == Some(f.links[implicit_latch.0 as usize].from),
+            "cycle_latch_not_lexical_end"
+        );
+        let mut roots = Vec::new();
+        for &id in initial_roots.iter().chain(&body_roots).chain(&tail_roots) {
+            push(&mut roots, id)?;
+        }
+        (
+            roots,
+            Some(CoroutineCyclePlan {
+                header,
+                condition: LoopCondition {
+                    node: header,
+                    repeat,
+                    exit,
+                },
+                initial: initial_roots,
+                body: body_roots,
+                tail: tail_roots,
+                implicit_latch,
+                initial_header,
+            }),
+        )
+    } else {
+        let Ok((mut roots, explicit)) =
+            select(f, root, &source_mask, &source_mask, &sites, dispatch, false)?
+        else {
+            return Ok(Err("flow_mixed_control_owner"));
+        };
+        explicit_predicates = explicit;
+        need!(rotate(f, &mut roots, entry), "flow_initial_source_owner");
+        (roots, None)
     };
-    source.rotate_left(first);
     let mut covered = super::super::build::filled(f.nodes.len(), false)?;
+    if let Some(cycle) = &cycle {
+        covered[cycle.header.0 as usize] = true;
+    }
     for &id in &source {
         for &node in &f.regions[id.0 as usize].nodes {
             need!(!covered[node.0 as usize], "flow_duplicate_source_owner");
@@ -702,6 +823,11 @@ fn candidate(
     }
     let mut gotos = Vec::new();
     for link in &f.links {
+        if cycle.as_ref().is_some_and(|p| {
+            link.from == p.header || link.id == p.implicit_latch || link.id == p.initial_header
+        }) {
+            continue;
+        }
         if source_mask[link.from.0 as usize]
             && source_mask[link.to.0 as usize]
             && owner[link.from.0 as usize] != owner[link.to.0 as usize]
@@ -784,6 +910,9 @@ fn candidate(
             }
         }
     }
+    if let Some(cycle) = &cycle {
+        active[cycle.header.0 as usize] = true;
+    }
     let mut completions = Vec::new();
     for (index, &used) in active.iter().enumerate() {
         if !used {
@@ -791,6 +920,13 @@ fn candidate(
         }
         let id = RegionId(super::super::build::id(index)?);
         let region = &f.regions[index];
+        if cycle.as_ref().is_some_and(|p| {
+            matches!(region.continuation,Continuation::Goto(label)if label.0==p.header.0)
+                && (p.body.last() == Some(&id) || p.initial.last() == Some(&id))
+        }) {
+            push(&mut completions, (id, None))?;
+            continue;
+        }
         if guards.iter().any(|g| g.control == id) {
             push(&mut completions, (id, None))?;
             continue;
@@ -839,7 +975,84 @@ fn candidate(
         completions,
         abi_gotos,
         retired_transfers,
+        cycle,
+        explicit_predicates,
     }))
+}
+
+fn rotate(f: &RegionFacts, roots: &mut [RegionId], entry: NodeId) -> bool {
+    if roots.is_empty() {
+        return false;
+    }
+    let Some(at) = roots
+        .iter()
+        .position(|id| f.regions[id.0 as usize].entry == Some(entry))
+    else {
+        return false;
+    };
+    roots.rotate_left(at);
+    true
+}
+fn last_source_node(f: &RegionFacts, mut id: RegionId) -> Option<NodeId> {
+    for _ in 0..f.regions.len() {
+        let region = &f.regions[id.0 as usize];
+        match region.kind {
+            RegionKind::Block(node) => return Some(node),
+            RegionKind::Sequence | RegionKind::Graph { .. } => id = *region.children.last()?,
+            _ => return None,
+        }
+    }
+    None
+}
+type SelectedControls = (Vec<RegionId>, Vec<NodeId>);
+fn select(
+    f: &RegionFacts,
+    root: RegionId,
+    mask: &[bool],
+    source: &[bool],
+    sites: &[CoroutineSite],
+    dispatch: NodeId,
+    partition: bool,
+) -> Result<Result<SelectedControls, ()>, RegionError> {
+    let mut work = Vec::new();
+    push(&mut work, root)?;
+    let mut result = Vec::new();
+    let mut explicit = Vec::new();
+    while let Some(id) = work.pop() {
+        let region = &f.regions[id.0 as usize];
+        if region.nodes.is_empty() || region.nodes.iter().all(|n| !mask[n.0 as usize]) {
+            continue;
+        }
+        if region.nodes.iter().all(|n| mask[n.0 as usize]) {
+            if matches!(region.continuation,Continuation::Goto(label)if !source[label.0 as usize]) {
+                return Ok(Err(()));
+            }
+            push(&mut result, id)?;
+            continue;
+        }
+        let guard = matches!(region.kind, RegionKind::If { .. })
+            && region
+                .entry
+                .is_some_and(|n| sites.iter().any(|s| s.guard == n));
+        let partial_if = partition && matches!(region.kind, RegionKind::If { .. });
+        if !(matches!(region.kind, RegionKind::Sequence | RegionKind::Graph { .. })
+            || (matches!(region.kind, RegionKind::Switch { .. }) && region.entry == Some(dispatch))
+            || guard
+            || partial_if)
+        {
+            return Ok(Err(()));
+        }
+        if partial_if && !guard && region.entry.is_some_and(|n| mask[n.0 as usize]) {
+            push(
+                &mut explicit,
+                region.entry.ok_or(bug("partition If lost predicate"))?,
+            )?;
+        }
+        for &child in region.children.iter().rev() {
+            push(&mut work, child)?;
+        }
+    }
+    Ok(Ok((result, explicit)))
 }
 
 fn closed_values(

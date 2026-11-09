@@ -1089,6 +1089,41 @@ pub struct CoroutineFlowPlan {
     pub(super) completions: Vec<(RegionId, Option<NodeId>)>,
     pub(super) abi_gotos: Vec<LinkId>,
     pub(super) retired_transfers: Vec<LinkId>,
+    pub(super) cycle: Option<CoroutineCyclePlan>,
+    pub(super) explicit_predicates: Vec<NodeId>,
+}
+#[derive(Debug)]
+pub struct CoroutineCyclePlan {
+    pub(super) header: NodeId,
+    pub(super) condition: LoopCondition,
+    pub(super) initial: Vec<RegionId>,
+    pub(super) body: Vec<RegionId>,
+    pub(super) tail: Vec<RegionId>,
+    pub(super) implicit_latch: LinkId,
+    pub(super) initial_header: LinkId,
+}
+impl CoroutineCyclePlan {
+    pub fn header(&self) -> NodeId {
+        self.header
+    }
+    pub fn condition(&self) -> LoopCondition {
+        self.condition
+    }
+    pub fn initial(&self) -> &[RegionId] {
+        &self.initial
+    }
+    pub fn body(&self) -> &[RegionId] {
+        &self.body
+    }
+    pub fn tail(&self) -> &[RegionId] {
+        &self.tail
+    }
+    pub fn implicit_latch(&self) -> LinkId {
+        self.implicit_latch
+    }
+    pub fn initial_header(&self) -> LinkId {
+        self.initial_header
+    }
 }
 #[derive(Clone, Copy, Debug)]
 pub struct CoroutineGuardControl {
@@ -1119,6 +1154,12 @@ pub struct CoroutineSite {
     pub(super) spills: Vec<(OpId, OpId)>,
 }
 impl CoroutineFlowPlan {
+    pub fn cycle(&self) -> Option<&CoroutineCyclePlan> {
+        self.cycle.as_ref()
+    }
+    pub fn explicit_predicates(&self) -> &[NodeId] {
+        &self.explicit_predicates
+    }
     pub fn guards(&self) -> &[CoroutineGuardControl] {
         &self.guards
     }

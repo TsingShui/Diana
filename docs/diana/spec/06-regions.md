@@ -651,7 +651,7 @@ Normal requests run no independent output verifier or repeated SCC/dominance pas
 
 ## Transfers, labels and P5 obligations
 
-### Acyclic multi-site continuation body
+### Multi-site continuation body
 
 `CoroutineFlowPlan` consumes the same P5 accesses, original P6 graph, shared SCC
 facts and selected region hierarchy. Its site records associate each positive
@@ -666,9 +666,11 @@ guards. It does not invoke composition, rebuild SSA or run dominance again.
 Source control order, original targets and transfer copies remain delivered
 facts. P7 lowers protocol terminal comments and the normal selected transfer at
 the original guard position; P9 consumes that schedule without analysis.
-Unmatched fields/effects, cyclic source content, executable handlers or incomplete
-control ownership retain the original readable layout. These alternatives are
-not whole-method output qualification or independent runtime verification.
+Unmatched fields/effects, executable handlers or incomplete control ownership
+retain the original readable layout. A cyclic source body uses the closed
+alternative below; cycle shapes it cannot establish also retain the original
+layout. These alternatives are not whole-method output qualification or
+independent runtime verification.
 
 The complete alternative also supplies selected guard-control replacements,
 source completions after retiring the ABI dispatch scope, and explicit ABI
@@ -677,6 +679,34 @@ normal copies. A source completion naming a retired scope needs its established
 source follow; it cannot become an unqualified break outside the old switch.
 P7 consumes these products together. It MUST NOT keep both the original marker
 If and the projected guard, or borrow case-body completion from the ABI layout.
+
+#### Closed cyclic source body
+
+When selected source content contains a cycle, the same `CoroutineFlowPlan`
+carries a `CoroutineCyclePlan` only if the shared SCC facts and selected region
+hierarchy establish one closed head-tested loop. P6 MUST require one cyclic
+component among the selected source nodes, a unique initial corridor from the
+original case-zero entry to that component, and a header that is the component's
+only terminal branch with no operations. The corridor's controls each have one
+normal successor, and the header has exactly one repeat edge and one straight
+exit. Every retreating link from the component targets that header, and exactly
+one source link enters it from the repeated body.
+
+P6 MUST own the whole selected body: initial controls, repeated controls and
+exit controls partition every selected node, with the header as the only shared
+control. The latch is the unique source link from the last repeated control to
+the header, that source node has one normal successor, and no other repeated
+link targets the header. P6 delivers the original head `LoopCondition`, the
+implicit latch, the initial-header link and the three control lists. The
+repeat/exit edges, exit copies, interior resume corridors, spill barriers and
+protocol operations remain original facts.
+
+Nested cycles, do-while shapes, multiple latches, additional cyclic components,
+header operations, branches on the initial corridor and foreign entries reject
+this alternative locally. The plan then falls back to the original readable
+layout with its ABI dispatch and resume facts. P7 and P9 consume the delivered
+partition without selecting a latch, retargeting a transfer or moving an
+interior resume corridor.
 
 Every original edge has an `EdgePlan`. Each normal `LinkPlan` chooses a concrete
 `Goto`, `Next`, arm, loop predicate, `Break`, `Continue` or synchronized-boundary

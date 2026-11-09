@@ -19,8 +19,26 @@ impl Expressions<'_, '_> {
         let mut work = Vec::new();
         if let Some(flow) = self.code.emission().coroutine_flow() {
             push(&mut work, Event::CoroutineFlowControls)?;
-            for &id in flow.source.iter().rev() {
-                push(&mut work, Event::Control(id))?;
+            if let Some(cycle) = &flow.cycle {
+                for &id in cycle.tail.iter().rev() {
+                    push(&mut work, Event::Control(id))?;
+                }
+                push(&mut work, Event::Close)?;
+                for &id in cycle.body.iter().rev() {
+                    push(&mut work, Event::Control(id))?;
+                }
+                push(&mut work, Event::CoroutineLoopHead(cycle.test))?;
+                push(
+                    &mut work,
+                    Event::Control(crate::p7::ControlId(cycle.header.0)),
+                )?;
+                for &id in cycle.initial.iter().rev() {
+                    push(&mut work, Event::Control(id))?;
+                }
+            } else {
+                for &id in flow.source.iter().rev() {
+                    push(&mut work, Event::Control(id))?;
+                }
             }
             push(&mut work, Event::AbiMode(false))?;
             for &node in flow.abi.iter().rev() {

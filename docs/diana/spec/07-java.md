@@ -765,7 +765,8 @@ bits and an integral view. Other bit-pattern literals keep their supplied views.
 ## Suspension surfaces
 
 P7 installs a suspension surface only from P6's closed `CoroutineBodyPlan`,
-`CoroutineLoopPlan` or `CoroutineFlowPlan`.
+`CoroutineLoopPlan` or `CoroutineFlowPlan`. A flow may additionally carry
+P6's `CoroutineCyclePlan`.
 
 `CoroutineFlow` consumes P6's existing source-control order, guard/call
 associations and ABI partition. A guard carries its original normal transfer:
@@ -775,6 +776,14 @@ Source/ABI controls use the ordinary traversal with disjoint control anchors.
 P7 MUST retain every projected call, continuation occurrence and state/spill
 barrier against generic expression or check relocation. It runs no register
 replay, region composition or upstream analysis.
+A cyclic flow keeps the same source/ABI partition. P7 installs the delivered
+header as the loop test, marks the implicit latch and initial-header links as
+fallthrough, and retains the original exit predicate copies. It MUST NOT choose
+a latch, retarget a transfer or move an interior resume corridor. Predicate
+blocks that P6 split at a partition boundary keep their original terminal and
+both display arms, so a repeated-body exit that leaves the selected cycle stays
+an explicit transfer to its original target.
+
 A local `SuspensionPlan` without that body product leaves the original header,
 call, marker branch and dispatch untouched. P7 MUST NOT discover a body from
 names, metadata or text, or walk a graph to find another tail.

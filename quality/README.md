@@ -268,6 +268,7 @@ Downloaded inputs and generated output remain outside version control.
 | `suspend-loop-captured-effects` | one suspend loop with captured arithmetic, mutable checksum, effects, and divergent reentry boundaries |
 | `suspend-two-step-branch` | two suspend sites, a conditional second call, early return, and distinct resume values |
 | `suspend-loop-two-sites` | two resume entries inside a loop, between-site effects, early loop exit, and repeated captures |
+| `suspend-loop-two-site-checksum` | two resume entries, mutable checksum, pre/post-update effects, early loop exit, and resumed captures |
 | `suspend-finally-two-sites` | two suspend sites, resumed failures, physical marker returns, and normal/exceptional cleanup |
 | `suspend-default-shared-capture` | effectful dispatch default and a live seed captured across both suspend sites |
 | `suspend-three-step-effects` | three suspension sites, simultaneous captures, two early returns, shared/private marker returns, and normal-only effect boundary |

@@ -73,6 +73,15 @@ pub struct CoroutineFlow {
     pub abi_entries: Vec<crate::p6::NodeId>,
     pub sites: Vec<CoroutineCall>,
     pub anchors: Vec<ControlId>,
+    pub cycle: Option<CoroutineCycle>,
+}
+#[derive(Debug, Serialize)]
+pub struct CoroutineCycle {
+    pub header: crate::p6::NodeId,
+    pub test: PredicateEmission,
+    pub initial: Vec<ControlId>,
+    pub body: Vec<ControlId>,
+    pub tail: Vec<ControlId>,
 }
 #[derive(Debug, Serialize)]
 pub struct CoroutineCall {
@@ -157,6 +166,11 @@ pub(super) fn construct_flow(c: &mut Context<'_, '_>) -> Result<(), ExpressionEr
         c.code.emission.blocks[site.guard.0 as usize].end =
             BlockEnd::Transfers(vec_fallible(site.normal)?);
     }
+    for &node in plan.explicit_predicates() {
+        c.code.emission.blocks[node.0 as usize].end =
+            BlockEnd::Terminal(c.planned.facts().nodes()[node.0 as usize].block());
+        c.code.emission.controls[node.0 as usize].continuation = None;
+    }
     for guard in plan.guards() {
         let mut children = Vec::new();
         push(&mut children, ControlId(guard.header().0))?;
@@ -167,12 +181,46 @@ pub(super) fn construct_flow(c: &mut Context<'_, '_>) -> Result<(), ExpressionEr
         control.label_required = false;
         control.continuation = None;
     }
+    let cycle = if let Some(cycle) = plan.cycle() {
+        let terminal = c.planned.facts().nodes()[cycle.header().0 as usize].block();
+        let TerminalKind::If {
+            when_true,
+            when_false,
+            ..
+        } = c.code.terminals[terminal.0 as usize].kind
+        else {
+            return Err(bug("coroutine cycle lost predicate"));
+        };
+        let controls =
+            |regions: &[crate::p6::RegionId]| -> Result<Vec<ControlId>, ExpressionError> {
+                let mut result = Vec::new();
+                for &id in regions {
+                    push(&mut result, ControlId(id.0))?;
+                }
+                Ok(result)
+            };
+        Some(CoroutineCycle {
+            header: cycle.header(),
+            test: PredicateEmission {
+                terminal,
+                when_true,
+                when_false,
+                negate: when_false == TransferId(cycle.condition().repeat().0),
+            },
+            initial: controls(cycle.initial())?,
+            body: controls(cycle.body())?,
+            tail: controls(cycle.tail())?,
+        })
+    } else {
+        None
+    };
     c.code.emission.coroutine_flow = Some(CoroutineFlow {
         source,
         abi: copy(plan.abi())?,
         abi_entries: copy(plan.abi_entries())?,
         sites,
         anchors: Vec::new(),
+        cycle,
     });
     Ok(())
 }
@@ -205,6 +253,16 @@ pub(super) fn finish_flow(c: &mut Context<'_, '_>) -> Result<(), ExpressionError
             push(&mut work, child)?;
         }
     }
+    if let Some(cycle) = plan.cycle() {
+        active[cycle.header().0 as usize] = true;
+        c.code.emission.blocks[cycle.header().0 as usize].end = BlockEnd::None;
+        c.code.emission.controls[cycle.header().0 as usize].continuation = None;
+        c.code.emission.transfers[cycle.implicit_latch().0 as usize].spelling =
+            TransferSpelling::Fallthrough;
+        c.code.emission.transfers[cycle.initial_header().0 as usize].spelling =
+            TransferSpelling::Fallthrough;
+        c.code.emission.blocks[cycle.header().0 as usize].show_label = false;
+    }
     for &node in plan.abi() {
         active[node.0 as usize] = true;
         let original = &c.planned.facts().nodes()[node.0 as usize];
@@ -236,6 +294,10 @@ pub(super) fn finish_flow(c: &mut Context<'_, '_>) -> Result<(), ExpressionError
         } else {
             TransferSpelling::Fallthrough
         };
+    }
+    for &node in plan.explicit_predicates() {
+        c.code.emission.ifs[c.planned.facts().nodes()[node.0 as usize].block().0 as usize] =
+            IfDisplay::Both;
     }
     let mut anchors = Vec::new();
     for (index, used) in active.into_iter().enumerate() {

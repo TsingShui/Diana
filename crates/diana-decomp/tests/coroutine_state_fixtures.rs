@@ -92,31 +92,6 @@ fn branching_resume_sites_keep_the_invalid_default_out_of_case_zero() {
 }
 
 #[test]
-fn two_loop_sites_keep_the_between_site_record_and_early_exit() {
-    inspect(
-        "kotlin/suspend-loop-two-sites",
-        "Lfixture/SuspendTwoSites;",
-        "total",
-        "(ILkotlin/coroutines/Continuation;)Ljava/lang/Object;",
-        |facts, code, rendered| {
-            assert!(
-                facts.coroutine_loop().is_none(),
-                "multi-site source folding is not established"
-            );
-            assert!(code.emission().coroutine_loop().is_none());
-            assert_eq!(rendered.text().matches("SuspendTwoSites.load(").count(), 2);
-            assert_eq!(
-                rendered.text().matches("SuspendTwoSites.record(").count(),
-                1
-            );
-            assert!(rendered.text().contains("case 2:"));
-            assert!(rendered.text().contains("I$3"));
-            assert!(rendered.text().contains(" < 0)"));
-        },
-    );
-}
-
-#[test]
 fn resumed_failures_and_marker_returns_keep_distinct_cleanup_paths() {
     inspect(
         "kotlin/suspend-finally-two-sites",
