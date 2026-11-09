@@ -1,5 +1,17 @@
 # Response and resource cleanup review
 
+## Combined verdict
+
+Integration 271eb47 retains concurrent recovery through cfc9da3. Compared with
+that latest-main baseline on the same prepared bytes, response gains its two
+natural scopes; resource text is unchanged. Direct reading of the integrated
+headers binds v4/v5/v6 once before their original receives and body work. Null/
+handle snapshots, typed priority and outward normal-close targets remain exact.
+Relative to the isolated P6 repair, resource's private primary/secondary captures
+also bind in their headers, with distinct values and unchanged suppression/
+rethrow order. Both combined configurations pass 164 checks; original P2–P5 and
+P6 coordinates agree. No R1/R2 native model or Java/DEX execution is claimed.
+
 ## P6 ownership observation against 73fc879
 
 Against fixed baseline 73fc879, response now exposes two natural catch scopes

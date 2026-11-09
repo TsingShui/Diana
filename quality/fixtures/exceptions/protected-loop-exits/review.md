@@ -1,5 +1,16 @@
 # Protected loop abrupt exits review
 
+## Combined verdict
+
+Integration 271eb47 retains concurrent recovery through cfc9da3. Against that
+latest-main source on the same prepared bytes, only foreign changes text. Its
+new outer catch binds the original v10 once in the header before cleanup7/8 and
+rethrow; both incoming construction paths still share one target outside the
+loop. Existing early/recover header bindings are already present in that
+baseline. Direct rereading finds no changed capture lifetime, update or cleanup
+order. The original input facts remain exact; both combined configurations pass
+164 checks. This is source/product/manual evidence, not fixture execution.
+
 ## P6 ownership observation against 73fc879
 
 The guarded-frontier repair was compared with 73fc879 on the same prepared DEX.

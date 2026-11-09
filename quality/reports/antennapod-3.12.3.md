@@ -281,6 +281,31 @@ These are bounded source/model/DEX/product readings and executed product tests,
 not execution of AntennaPod, native fixture models or decompiled Java. Natural
 catch ownership does not assert a general finally or try-with-resources rewrite.
 
+### Combined integration observation
+
+Merge 271eb4766c33a5af080888af931b2d16594b1ba1 retains concurrent terminal-follow
+conjunction and monitor/catch-binding recovery through
+cfc9da31c89a5d91ce3aca655b38020887d347ab. Both combined nextest configurations
+pass 164/164, with zero skipped. Formatting, package all-target/all-feature Clippy
+with warnings denied and release CLI/dbg_shell builds pass. Against that
+latest-main baseline on identical bytes, 114 fixtures/182 classes/872 methods
+retain complete P2–P5 and original P6 coordinates, with no retrieval/render
+failures and the same six fixture text deltas. The APK keeps the complete
+coverage above; the 13 selected methods again retain those source facts, and only
+DateUtils/ChapterUtils change class text relative to latest main. Three changed
+subject CLI text/JSON publications agree exactly without issues.
+
+Direct integration reading additionally checks scoped header bindings for
+resource primaries/secondaries and new response catches: each original capture
+still binds once, before its receiving/body phases, with no new normal binding.
+Split-context captures whose values escape their handler remain explicit. DateUtils
+text is exact to the isolated repair. The public URL wrapper separately gains the
+concurrent terminal-follow disjunction: force still selects network immediately;
+otherwise cache loads once, null skips size, size<=1 selects network once and a
+larger list returns the original cache object. Static cache-policy access remains
+before its call. No R1/R2 native callback model, APK/device or Java-output execution
+is claimed by these combined product checks and bounded readings.
+
 ## Reproduction
 
 Use the pinned APK and extract its three named DEX entries into `$DEX_DIR`.

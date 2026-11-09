@@ -93,3 +93,17 @@ and nine passes on the candidate. Both full isolated configurations pass 155 che
 Across 111 fixtures/179 classes/853 methods, P2–P5 and original P6 coordinates
 are unchanged, with no retrieval/render failures. These are not executions of
 this fixture or its native/library models.
+
+## Combined integration observation
+
+Merge 271eb4766c33a5af080888af931b2d16594b1ba1 retains concurrent recovery through
+cfc9da31c89a5d91ce3aca655b38020887d347ab. Default/all-feature runs pass 164/164,
+zero skipped; format, package Clippy and release CLI/dbg_shell builds pass.
+Compared identical prepared bytes with that latest-main baseline:
+114 fixtures/182 classes/872 methods, exact P2–P5 and original P6 coordinates,
+no retrieval/render failures and the same six fixture text deltas. Direct reading
+of integration changes preserves original capture identity and receiving order
+when a private capture binds in its natural header. Shared split captures remain
+explicit. The same full APK coverage and selected-method source facts are retained;
+see the [APK record](../../../reports/antennapod-3.12.3.md#combined-integration-observation).
+This remains product/manual evidence, not execution of the R1/R2 native models.
