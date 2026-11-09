@@ -1,3 +1,4 @@
+use super::{RegionError, build};
 use crate::p2::{BlockId, EdgeId, ExceptionCompletion, ExitId, OpId};
 use crate::p5::{CopyLocation, GroupId, PlanId, StorageGap, StorageRead, ThrowSite};
 
@@ -611,7 +612,8 @@ pub struct Region {
     pub(super) entry: Option<NodeId>,
     pub(super) follow: Option<NodeId>,
     pub(super) children: Vec<RegionId>,
-    pub(super) nodes: Vec<NodeId>,
+    pub(super) member_range: Option<std::ops::Range<usize>>,
+    pub(super) member_count: usize,
     pub(super) continuation: Continuation,
 }
 impl Region {
@@ -635,9 +637,6 @@ impl Region {
     }
     pub fn children(&self) -> &[RegionId] {
         &self.children
-    }
-    pub fn nodes(&self) -> &[NodeId] {
-        &self.nodes
     }
 }
 /// One cleanup spelling with its original normal/exceptional instruction pairs.
@@ -1352,6 +1351,8 @@ pub struct RegionFacts {
     pub(super) edges: Vec<EdgePlan>,
     pub(super) loops: Vec<LoopPlan>,
     pub(super) regions: Vec<Region>,
+    pub(super) member_nodes: Vec<NodeId>,
+    pub(super) member_positions: Vec<usize>,
     pub(super) root: Option<RegionId>,
     pub(super) parents: Vec<Option<RegionId>>,
     pub(super) chains: Vec<HandlerChain>,
@@ -1400,6 +1401,8 @@ impl RegionFacts {
             edges: Vec::new(),
             loops: Vec::new(),
             regions: Vec::new(),
+            member_nodes: Vec::new(),
+            member_positions: Vec::new(),
             root: None,
             parents: Vec::new(),
             chains: Vec::new(),
@@ -1447,6 +1450,33 @@ impl RegionFacts {
     }
     pub fn regions(&self) -> &[Region] {
         &self.regions
+    }
+    /// Original membership in child traversal order, separate from execution.
+    /// A partial construction without the shared index has no member slice.
+    pub fn region_nodes(&self, region: RegionId) -> Option<&[NodeId]> {
+        if self.member_nodes.len() != self.nodes.len() {
+            return None;
+        }
+        self.member_nodes
+            .get(self.regions.get(region.0 as usize)?.member_range.clone()?)
+    }
+    pub(super) fn members(&self, region: RegionId) -> Result<&[NodeId], RegionError> {
+        self.region_nodes(region)
+            .ok_or(build::bug("region membership is not established"))
+    }
+    pub(super) fn membership(
+        &self,
+        region: RegionId,
+    ) -> Result<impl Fn(NodeId) -> bool + '_, RegionError> {
+        let range = self
+            .regions
+            .get(region.0 as usize)
+            .and_then(|region| region.member_range.as_ref())
+            .ok_or(build::bug("region membership is not established"))?;
+        if self.member_positions.len() != self.nodes.len() {
+            return Err(build::bug("region member positions are not established"));
+        }
+        Ok(move |node: NodeId| range.contains(&self.member_positions[node.0 as usize]))
     }
     pub fn root(&self) -> Option<RegionId> {
         self.root

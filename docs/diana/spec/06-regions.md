@@ -150,6 +150,29 @@ allocates after reservation. Owning candidate/part constructors establish disjoi
 children and original membership; this operation does not reinterpret their
 loop, protection, lock or construction facts.
 
+An installed region retains its member count and child relationships, without
+an owned descendant-node vector. Whole-owner admission counts each current owner
+inside one proposed part; the count must equal that owner's original member
+count. Successor-arm contraction consumes a selected loop's established lexical
+members. Neither check rebuilds a descendant list.
+
+After hierarchy commitment, P6 constructs one original-leaf permutation and its
+inverse positions. Every region receives a range in that permutation. Region
+membership enumeration follows child order and is not an execution schedule or
+an original-PC ordering promise. `RegionFacts::region_nodes` returns the borrowed
+range; an unestablished partial index returns None. Normal transfer and graph
+interface consumers use the same range/position predicate without per-region
+membership masks. Original node, edge and source-PC identities remain unchanged.
+
+The owning index constructor consumes the installed child forest once. Checked
+leaf coordinates, single static placement and child/count correspondence are
+construction obligations of this representation, not independent replay or
+duplicate graph/dominance verification. Region children always reference earlier
+installed records; each leaf receives one position. Index storage and iterative
+construction are bounded by original nodes plus installed regions. Allocation
+remains fallible. A missing required index produces the existing classified
+method-private construction stop with unpublished partial facts.
+
 An accepted candidate carries its original CompletionInterface through child
 construction to successor-boundary admission. Original edges and membership do
 not change during that interval. One active exclusion set describes the current

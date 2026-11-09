@@ -26,9 +26,12 @@ fn topological(
         index[root.0 as usize] = slot;
     }
     let mut representatives = filled(f.nodes.len(), usize::MAX)?;
+    let mut keys = filled(roots.len(), NodeId(u32::MAX))?;
     for (node, &inside) in set.iter().enumerate() {
         if inside {
-            representatives[node] = index[owners[node].0 as usize];
+            let owner = index[owners[node].0 as usize];
+            representatives[node] = owner;
+            keys[owner] = keys[owner].min(f.nodes[node].id);
         }
     }
     let start = entry.map(|node| index[owners[node.0 as usize].0 as usize]);
@@ -39,7 +42,7 @@ fn topological(
         start,
         loop_continue,
         |_| true,
-        |slot| f.regions[roots[slot].0 as usize].nodes[0],
+        |slot| keys[slot],
     )?
     else {
         return Ok(None);
@@ -124,13 +127,7 @@ pub(super) fn compose(
     let labelled = matches!(kind, RegionKind::Graph { .. })
         .then(|| part.follow.filter(|n| !set[n.0 as usize]))
         .flatten();
-    let mut nodes = part.nodes;
-    let members = if labelled.is_some() {
-        copy(&nodes)?
-    } else {
-        std::mem::take(&mut nodes)
-    };
-    let mut region = contract(f, owners, kind, part.entry, part.follow, order, members)?;
+    let mut region = contract(f, owners, kind, part.entry, part.follow, order, &part.nodes)?;
     if let Some(target) = labelled {
         let mut children = Vec::new();
         push(&mut children, region)?;
@@ -141,7 +138,7 @@ pub(super) fn compose(
             part.entry,
             part.follow,
             children,
-            nodes,
+            &part.nodes,
         )?;
     }
     Ok(region)

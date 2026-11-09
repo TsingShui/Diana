@@ -589,19 +589,45 @@ structure from the remaining replacement; the complete design is not accepted.
 | Design area | Delivered | Remaining |
 |---|---|---|
 | Common control grammar | P6 delivers named `ControlLayout` roles; P7 keeps one selected `Control` arena; P9 consumes it. | Planning `RegionKind` and protocol-specific executable forms remain. Common leaf/reference mapping and protocol consolidation are incomplete. |
-| Fragment composition | One installer updates parents/current owners after reservation. Sequence ordering and successor-arm admission share one kernel; accepted interfaces reach commitment without another outlet scan. Nested scopes share active ancestor exclusions. | Per-family candidate walks and descendant node lists remain. General interface-based contraction and affected-neighbor scheduling are incomplete. |
+| Fragment composition | One installer updates parents/current owners after reservation. Sequence ordering and successor-arm admission share one kernel; accepted interfaces reach commitment without another outlet scan. Nested scopes share active ancestor exclusions. One leaf permutation/ranges replaces owned descendant lists; whole-owner admission uses counts. | Per-family candidate/part walks and original semantic membership facts remain. General interface-based contraction and affected-neighbor scheduling are incomplete. |
 | Operation ownership | Operation records own body data; original coordinates replace the statement arena and reverse map. Nested `Evaluation`/`nested_at` identify one execution owner. Selected operation phases replace copied body phase lists. | Declaration/copy check attachments, protocol variants and other placement bookkeeping remain to be consolidated where their semantics permit. |
 | Expression covers | Ordinary and condition consumers share ordered suffix forests. Required checks use the same producer and installer. Statement, terminal and later-read check searches share one bounded cursor. | Dependency-driven reconsideration and broader cross-context cover obligations are incomplete. |
 | Local fixed points | Selected roots leave the active suffix; rejected condition proposals leave the product unchanged. | The P6 and P7 pipelines still run ordered passes. Neither stage has the complete dependency-driven local convergence specified by the design. |
 | Finalization | P9 consumes selected layouts and nested operations. Existing declaration and label passes remain. | Protocol traversal and a single final declaration/label derivation still need replacement. |
 
-Against `f6e7893`, the current engine production tree has 67,982 physical Rust
-source lines, compared with 68,495 at the baseline: 513 fewer lines. This count
+Against `f6e7893`, the current engine production tree has 68,087 physical Rust
+source lines, compared with 68,495 at the baseline: 408 fewer lines. This count
 includes every `*.rs` file under `crates/diana-decomp/src/`, including shared
 helpers, comments and blank lines; tests and documentation are excluded. The
 small reduction does not establish the design's substantial size objective or
 comparable recovery capability. Full replacement acceptance and a comparative
 recovery evaluation remain unrun.
+
+## Shared original membership
+
+P6's region-owned descendant vectors and labelled-wrapper member copies are
+removed. One leaf permutation and inverse position index retain original node
+identities; each installed region names one borrowed range. Current-owner counts
+replace the repeated whole-owner walk for every proposed member. Transfer and
+Graph boundary consumers use the same constant-time membership predicate.
+The constructor materializes its installed child forest once with fallible,
+input-derived storage. This does not replace the per-family nomination walks or
+add dependency-driven reconsideration.
+
+The [new challenge](../../quality/fixtures/composite/member-forest/README.md)
+adds physically interleaved arm portions, typed catches inside a loop/switch,
+and a locked loop. Thirty-one scoped nextest checks pass, including three new
+checks comparing independent child-leaf traversal with the shared member ranges.
+Three helper-free branch scenarios execute through the limited selected-plan
+model. Loop/switch VM execution remains unrun. Before/after P6 facts agree as
+sets, and P9 class text agrees on six fixture groups, including the new challenge,
+construction snapshots and multi-site/cyclic coroutine cases. That comparison
+preserves recovery; it does not establish a new recovery family.
+
+This slice adds 105 production lines against `02831ff`. Permanent membership
+storage has an original-node-plus-region bound instead of the sum of descendant
+list lengths. The source-size objective remains unmet; the new representation
+still requires deletion of broader candidate and protocol machinery.
 
 ## Operation-owned body data
 
@@ -635,8 +661,8 @@ P7 blocks now retain original operation ranges; the per-node operation-vector
 index is removed. P9 uses those same ranges to retain zero-width rematerialized
 constant origins. This slice adds 78 production lines against `d5c665e`, counting
 the new shared kernel and source-origin handling. The added checks and ownership
-mechanisms do not establish the final size objective; repeated member lists and
-the broader old recovery machinery still require replacement.
+mechanisms do not establish the final size objective; broader candidate and
+protocol machinery still requires replacement.
 
 The focused nextest run passes 17 tests: the four new fragment-order cases plus
 cast_carrier_walk, cast_preparation_order and joint_expression_cover. Strict

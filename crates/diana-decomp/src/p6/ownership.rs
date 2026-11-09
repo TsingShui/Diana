@@ -132,7 +132,7 @@ pub(super) fn protect(
                 storage,
                 f,
                 g,
-                &r.nodes,
+                r.id,
                 r.entry,
                 RecoveryReason::ProtectionBoundary,
             )?;
@@ -197,7 +197,7 @@ pub(super) fn scope_contexts(
                 storage,
                 f,
                 g,
-                &r.nodes,
+                r.id,
                 entry,
                 RecoveryReason::LockBoundary,
             )?;

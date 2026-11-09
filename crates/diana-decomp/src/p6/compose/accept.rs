@@ -102,17 +102,21 @@ pub(super) fn accept(
             return Ok(Err(RecoveryReason::LockBoundary));
         }
     }
+    let mut owners_in_parts = filled(f.regions.len(), None)?;
     for &n in &c.members {
         let part = partition[n.0 as usize];
         if part == usize::MAX {
             return Err(bug("region candidate omitted execution content"));
         }
         let root = owners[n.0 as usize];
-        if f.regions[root.0 as usize]
-            .nodes
-            .iter()
-            .any(|n| partition[n.0 as usize] != part)
-        {
+        let (assigned, count) = owners_in_parts[root.0 as usize].get_or_insert((part, 0usize));
+        if *assigned != part {
+            return Ok(Err(RecoveryReason::Overlap));
+        }
+        *count += 1;
+    }
+    for (root, assignment) in owners_in_parts.into_iter().enumerate() {
+        if assignment.is_some_and(|(_, count)| count != f.regions[root].member_count) {
             return Ok(Err(RecoveryReason::Overlap));
         }
     }
@@ -206,11 +210,14 @@ pub(super) fn successor_arm_acyclic(
     }
     while let Some(id) = stack.pop() {
         let region = &f.regions[id.0 as usize];
-        if matches!(region.kind, RegionKind::Loop(_))
-            && region.nodes.iter().all(|n| arm[n.0 as usize])
+        if let RegionKind::Loop(loop_id) = region.kind
+            && f.loops[loop_id.0 as usize]
+                .lexical_members
+                .iter()
+                .all(|n| arm[n.0 as usize])
         {
             let entry = region.entry.ok_or(bug("selected loop has no entry"))?;
-            for &n in &region.nodes {
+            for &n in &f.loops[loop_id.0 as usize].lexical_members {
                 representative[n.0 as usize] = entry.0 as usize;
                 contracted[n.0 as usize] = true;
             }

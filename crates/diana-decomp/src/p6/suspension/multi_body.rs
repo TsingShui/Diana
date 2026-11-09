@@ -748,13 +748,12 @@ fn candidate(
         let Some(&last) = body_roots.last() else {
             return Ok(Err("cycle_empty_body"));
         };
+        let contains = f.membership(last)?;
         let Some(implicit_latch) = f
             .links
             .iter()
             .find(|l| {
-                l.to == header
-                    && f.regions[last.0 as usize].nodes.contains(&l.from)
-                    && g.outgoing[l.from.0 as usize].len() == 1
+                l.to == header && contains(l.from) && g.outgoing[l.from.0 as usize].len() == 1
             })
             .map(|l| l.id)
         else {
@@ -809,7 +808,7 @@ fn candidate(
         covered[cycle.header.0 as usize] = true;
     }
     for &id in &source {
-        for &node in &f.regions[id.0 as usize].nodes {
+        for &node in f.members(id)? {
             need!(!covered[node.0 as usize], "flow_duplicate_source_owner");
             covered[node.0 as usize] = true;
         }
@@ -817,7 +816,7 @@ fn candidate(
     need!(covered == source_mask, "flow_source_coverage");
     let mut owner = super::super::build::filled(f.nodes.len(), None)?;
     for (index, &id) in source.iter().enumerate() {
-        for &node in &f.regions[id.0 as usize].nodes {
+        for &node in f.members(id)? {
             owner[node.0 as usize] = Some(index);
         }
     }
@@ -875,10 +874,7 @@ fn candidate(
                 return Ok(Err("flow_guard_link_owner"));
             };
             need!(
-                f.regions[normal.0 as usize]
-                    .nodes
-                    .iter()
-                    .all(|n| source_mask[n.0 as usize]),
+                f.members(normal)?.iter().all(|n| source_mask[n.0 as usize]),
                 "flow_guard_normal_coverage"
             );
             push(
@@ -1020,10 +1016,10 @@ fn select(
     let mut explicit = Vec::new();
     while let Some(id) = work.pop() {
         let region = &f.regions[id.0 as usize];
-        if region.nodes.is_empty() || region.nodes.iter().all(|n| !mask[n.0 as usize]) {
+        if region.member_count == 0 || f.members(region.id)?.iter().all(|n| !mask[n.0 as usize]) {
             continue;
         }
-        if region.nodes.iter().all(|n| mask[n.0 as usize]) {
+        if f.members(region.id)?.iter().all(|n| mask[n.0 as usize]) {
             if matches!(region.continuation,Continuation::Goto(label)if !source[label.0 as usize]) {
                 return Ok(Err(()));
             }

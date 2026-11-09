@@ -241,7 +241,7 @@ pub(super) fn construct(
                     Some(candidate.entry),
                     candidate.follow,
                     children,
-                    candidate.members,
+                    &candidate.members,
                 )?;
                 push(&mut results, region)?;
             }

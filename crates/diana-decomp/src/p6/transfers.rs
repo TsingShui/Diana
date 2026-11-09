@@ -87,13 +87,14 @@ pub(super) fn transfers(f: &mut RegionFacts, g: &Graph) -> Result<(), RegionErro
                             action = TransferAction::Continue(*loop_id);
                             break;
                         }
-                        if p.follow == Some(l.to) && !r.nodes.contains(&l.to) {
+                        let contains = f.membership(r.id)?;
+                        if p.follow == Some(l.to) && !contains(l.to) {
                             action = TransferAction::Break(id);
                             break;
                         }
                         // Reaching an outer sibling is not fallthrough through
                         // this loop's closing brace: repetition would run first.
-                        crossed_loop |= !r.nodes.contains(&l.to);
+                        crossed_loop |= !contains(l.to);
                     }
                     RegionKind::Try(scope)
                         if f.tries[scope.0 as usize]
@@ -130,7 +131,7 @@ pub(super) fn transfers(f: &mut RegionFacts, g: &Graph) -> Result<(), RegionErro
                         }
                     }
                     RegionKind::Switch { .. } | RegionKind::LabelledBlock { .. }
-                        if r.follow == Some(l.to) && !r.nodes.contains(&l.to) =>
+                        if r.follow == Some(l.to) && !f.membership(r.id)?(l.to) =>
                     {
                         action = TransferAction::Break(id);
                         break;
@@ -141,7 +142,7 @@ pub(super) fn transfers(f: &mut RegionFacts, g: &Graph) -> Result<(), RegionErro
                         for pair in r.children.windows(2) {
                             let a = &f.regions[pair[0].0 as usize];
                             let b = &f.regions[pair[1].0 as usize];
-                            if a.nodes.contains(&l.from) {
+                            if f.membership(a.id)?(l.from) {
                                 if b.entry == Some(l.to) {
                                     action = TransferAction::Next(l.to);
                                     handled = true;
@@ -222,20 +223,18 @@ pub(super) fn transfers(f: &mut RegionFacts, g: &Graph) -> Result<(), RegionErro
             }
         }
         if let Some(follow) = r.follow {
-            let mut normal = r.nodes.is_empty();
+            let contains = f.membership(r.id)?;
+            let mut normal = r.member_count == 0;
             for link in &f.links {
-                if !r.nodes.contains(&link.from) || link.to != follow {
+                if !contains(link.from) || link.to != follow {
                     continue;
                 }
                 let consumed = match f.link_plans[link.id.0 as usize].action {
-                    TransferAction::Break(scope) => !f.regions[scope.0 as usize]
-                        .nodes
-                        .iter()
-                        .all(|n| r.nodes.contains(n)),
+                    TransferAction::Break(scope) => !f.members(scope)?.iter().all(|&n| contains(n)),
                     TransferAction::Continue(loop_id) => !f.loops[loop_id.0 as usize]
                         .lexical_members
                         .iter()
-                        .all(|n| r.nodes.contains(n)),
+                        .all(|&n| contains(n)),
                     _ => false,
                 };
                 normal |= !consumed;

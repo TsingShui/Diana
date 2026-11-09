@@ -244,7 +244,7 @@ pub(super) fn construct(
                 continue;
             };
             let normal = &f.regions[normal_body.0 as usize];
-            if !normal.nodes.is_empty()
+            if normal.member_count != 0
                 || normal.follow != Some(follow)
                 || !matches!(normal.continuation, Continuation::Parent)
                 || f.links[true_link.0 as usize].to != follow
@@ -252,7 +252,7 @@ pub(super) fn construct(
                 continue;
             }
             let suspended_node = f.links[false_link.0 as usize].to;
-            if f.regions[suspended_body.0 as usize].nodes.as_slice() != [suspended_node]
+            if f.members(*suspended_body)? != [suspended_node]
                 || !f.nodes[suspended_node.0 as usize].operations.is_empty()
                 || !f.nodes[suspended_node.0 as usize].terminal
                 || graph.incoming[suspended_node.0 as usize].as_slice() != [false_link]

@@ -63,7 +63,7 @@ pub(super) fn contract(
     entry: Option<NodeId>,
     follow: Option<NodeId>,
     children: Vec<RegionId>,
-    nodes: Vec<NodeId>,
+    nodes: &[NodeId],
 ) -> Result<RegionId, RegionError> {
     if f.parents.len() != f.regions.len() || owners.len() != f.nodes.len() {
         return Err(bug("fragment ownership has the wrong extent"));
@@ -80,7 +80,7 @@ pub(super) fn contract(
     }
     crate::substrate::owned::reserve(&mut f.parents, 1)?;
     crate::substrate::owned::reserve(&mut f.regions, 1)?;
-    for &node in &nodes {
+    for &node in nodes {
         if node.0 as usize >= owners.len() {
             return Err(bug("fragment membership names an unknown node"));
         }
@@ -89,7 +89,7 @@ pub(super) fn contract(
     for &child in &children {
         f.parents[child.0 as usize] = Some(region);
     }
-    for &node in &nodes {
+    for &node in nodes {
         owners[node.0 as usize] = region;
     }
     f.regions.push(Region {
@@ -99,7 +99,8 @@ pub(super) fn contract(
         entry,
         follow,
         children,
-        nodes,
+        member_range: None,
+        member_count: nodes.len(),
         continuation: Continuation::None,
     });
     Ok(region)
@@ -108,11 +109,12 @@ pub(in crate::p6) fn graph_kind(
     storage: &StorageMethod<'_>,
     f: &RegionFacts,
     g: &Graph,
-    members: &[NodeId],
+    region: RegionId,
     entry: Option<NodeId>,
     reason: RecoveryReason,
 ) -> Result<RegionKind, RegionError> {
-    let interface = super::super::interface::CompletionInterface::collect(storage, f, g, members)?;
+    let interface =
+        super::super::interface::CompletionInterface::for_region(storage, f, g, region)?;
     let entries = interface.entry_nodes(storage, f, entry)?;
     Ok(RegionKind::Graph {
         reason,

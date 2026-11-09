@@ -16,6 +16,7 @@ mod completion;
 mod conditions;
 mod hierarchy;
 mod loop_exits;
+mod membership;
 mod order;
 pub(super) mod parts;
 mod stack;
@@ -49,8 +50,6 @@ pub(super) fn construct(
     let mut owners = filled(f.nodes.len(), RegionId(0))?;
     for n in 0..f.nodes.len() {
         let node = NodeId(id(n)?);
-        let mut members = Vec::new();
-        push(&mut members, node)?;
         let follow = if g.outgoing[n].len() == 1 {
             Some(f.links[g.outgoing[n][0].0 as usize].to)
         } else {
@@ -63,7 +62,7 @@ pub(super) fn construct(
             Some(node),
             follow,
             Vec::new(),
-            members,
+            &[node],
         )?;
         f.labels[n].owner = region;
     }
@@ -84,6 +83,7 @@ pub(super) fn construct(
             follow: None,
         },
     )?);
+    membership::construct(f)?;
     protect(storage, f, g)?;
     scope_contexts(storage, f, g)?;
     for monitor in &mut f.monitors {

@@ -38,7 +38,7 @@ pub(super) fn construct(f: &mut RegionFacts, g: &Graph) -> Result<(), RegionErro
         let mut completions = Vec::new();
         for (position, &child) in children.iter().enumerate() {
             let r = &f.regions[child.0 as usize];
-            for &node in &r.nodes {
+            for &node in f.members(r.id)? {
                 membership[node.0 as usize] = Some(child);
             }
             let next = children
@@ -89,7 +89,7 @@ pub(super) fn construct(f: &mut RegionFacts, g: &Graph) -> Result<(), RegionErro
                 Continuation::Next(node) => Some(node),
                 Continuation::Goto(_) | Continuation::Break(_) | Continuation::Continue(_) => None,
             };
-            for &node in &r.nodes {
+            for &node in f.members(r.id)? {
                 for &link in &g.outgoing[node.0 as usize] {
                     let original = &f.links[link.0 as usize];
                     if matches!(

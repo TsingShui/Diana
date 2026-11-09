@@ -227,7 +227,7 @@ fn candidate(
     }
     push(&mut terminals, plan.predicate)?;
     push(&mut terminals, plan.marker_return)?;
-    for node in &f.regions[invalid.0 as usize].nodes {
+    for node in f.members(invalid)? {
         if f.nodes[node.0 as usize].terminal {
             push(&mut terminals, f.nodes[node.0 as usize].block)?;
         }
@@ -270,18 +270,14 @@ fn candidate(
     for test in &decision.tests {
         protocol_nodes[test.predicate.0 as usize] = true;
     }
-    for &node in f.regions[plan.resume.0 as usize]
-        .nodes
-        .iter()
-        .chain(&f.regions[invalid.0 as usize].nodes)
-    {
+    for &node in f.members(plan.resume)?.iter().chain(f.members(invalid)?) {
         protocol_nodes[node.0 as usize] = true;
     }
     protocol_nodes[f.regions[plan.header.0 as usize]
         .entry
         .ok_or(bug("protocol guard lost its header"))?
         .0 as usize] = true;
-    for &node in &f.regions[plan.suspended_body.0 as usize].nodes {
+    for &node in f.members(plan.suspended_body)? {
         protocol_nodes[node.0 as usize] = true;
     }
     for (node, is_protocol) in protocol_nodes.iter().copied().enumerate() {
@@ -307,7 +303,7 @@ fn candidate(
     // select the initial body / resume merge; no hidden jump becomes fallthrough.
     // One mask answers both membership questions for every link.
     let mut in_initial = filled(f.nodes.len(), false)?;
-    for &node in &f.regions[initial.0 as usize].nodes {
+    for &node in f.members(initial)? {
         in_initial[node.0 as usize] = true;
     }
     for link in &f.links {
@@ -422,7 +418,7 @@ fn invalid_arm(
     entrance: LinkId,
 ) -> Result<Result<Vec<OpId>, ()>, RegionError> {
     let r = &f.regions[region.0 as usize];
-    invalid_nodes(storage, f, graph, &r.nodes, r.entry, entrance)
+    invalid_nodes(storage, f, graph, f.members(r.id)?, r.entry, entrance)
 }
 pub(super) fn invalid_nodes(
     storage: &StorageMethod<'_>,
