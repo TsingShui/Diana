@@ -880,15 +880,23 @@ facts remain available in the source arenas; an attachment is not an alternative
 execution schedule.
 
 Exception site annotations consume the selected surface. A naturally delivered
-site can omit its repeated chain marker when all original clauses are represented
-by enclosing visible catches/finally, the delivered implicit monitor cleanup, or
-one plain typed catch whose remaining original route is the method-level uncaught
-completion. The plain case requires Natural syntax, one available typed clause,
-an uncaught final clause and two original routes; P7 MUST also establish that the
-selected catch control encloses the site and that its emission layout prints that
-handler. The uncaught route then follows ordinary lexical propagation, so the
-marker and an unused chain line would repeat the same two routes. Delivered typed
-specialization in a multi-clause chain, explicit protection, use issues and
-unplaced routes keep their existing markers. Original ordered chains and targets
-remain in the owned product; P9 does not point readers at a hidden compiler
-handler through a redundant chain line.
+site can omit its repeated chain marker when every original clause is represented
+by the printed surface: an enclosing visible catch/finally handler, the delivered
+implicit monitor cleanup, or the method-level uncaught completion. The omitted
+form requires all of the following:
+
+- the route count equals the original clause count and each uncaught clause has
+exactly its `Explicit` route;
+- every typed clause's route is a `Catch` delivery whose selected control encloses
+the site and whose supplied emission layout prints that handler position;
+- resolved controls satisfy original priority order, so each later clause's
+control is the same as or encloses the previous clause's control;
+- within one control, handler positions never move backward, and an equal
+position is permitted only when one printed union clause group covers exactly those
+clauses and therefore names both types at that single handler.
+
+Otherwise the marker and its chain line stay. P7 MUST NOT infer a handler from
+printed adjacency, reorder clauses, or drop a chain whose printed positions state
+fewer types or a different order. Original ordered chains and targets remain in
+the owned product; P9 does not point readers at a hidden compiler handler through
+a redundant chain line.

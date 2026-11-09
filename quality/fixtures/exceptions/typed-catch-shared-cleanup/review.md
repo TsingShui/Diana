@@ -1,5 +1,14 @@
 # Fixture: typed-catch-shared-cleanup
 
+## Natural catch display
+
+The outer union/RuntimeException/finally shape prints without chain text or labels,
+including the three constructed throwables and `parse`. The catch body's own
+`open`/`read`/`close` inner scope, its result commits and the `-2` recovery stay
+text-identical, so the shared-cleanup and rejection guards are still stated. Text and JSON publish together; owned sites, chains, completions, snapshots
+and receives remain. Renewed LLM reading and product equality, not executed
+behavior.
+
 ## Current verdict — scoped catch capture
 
 Compared the same prepared input on `c95c6dd` and this repair. Reviewed header

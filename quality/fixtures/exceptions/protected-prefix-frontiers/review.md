@@ -1,5 +1,14 @@
 # Fixture: protected-prefix-frontiers
 
+## Natural catch display
+
+`branch` now prints its union catch and enclosing finally without chain text or
+labels. The switch prefix, both `read` arms, `mark(20)`, `v7=100`, `mark(40)`,
+`cleanup(2,p2)` and `mark(50)` keep their order; the self-entry refusal and graph
+output of the other subject are text-identical. Text and JSON publish together; owned sites, chains, completions, snapshots
+and receives remain. Renewed LLM reading and product equality, not executed
+behavior.
+
 ## Current verdict — scoped catch capture
 
 Compared the same prepared input on `c95c6dd` and this repair. Reviewed header

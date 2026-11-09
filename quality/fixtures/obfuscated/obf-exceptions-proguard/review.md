@@ -10,6 +10,14 @@ completions, snapshots and receives remain in the owned product. This is a
 renewed LLM reading of the exact before/after text plus product equality, not
 executed behavior.
 
+### Multi-clause and nested shapes
+
+Obfuscated `a(Object)` additionally loses its four-row chain, markers and labels.
+The three printed catches keep NumberFormatException, NullPointerException then
+RuntimeException priority; `instanceof`, `toString`, `parseInt`, the check on
+`p0` and `return -3` match the reviewed source counterpart. Text and JSON publish together; owned sites, chains, completions,
+snapshots and receives remain. Renewed LLM reading and product equality, not
+executed behavior.
 ## Prior verdict — scoped catch capture
 
 Compared the same prepared input on `c95c6dd` and this repair. Reviewed header

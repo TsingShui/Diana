@@ -1,5 +1,14 @@
 # Fixture: nested-catch-rejoins
 
+## Natural catch display
+
+Both the loop subject's typed/union/RuntimeException/finally shape and the
+synchronized subject's union catch plus all-catch now print without chain text or
+handler labels. Monitor enter/release ordering, `mark(20)`/`mark(21)`, `v2=100`,
+`-2`, the cleanup call and its own explicit `c3` rethrow chain are unchanged. Text and JSON publish together; owned sites, chains, completions, snapshots
+and receives remain. Renewed LLM reading and product equality, not executed
+behavior.
+
 ## Current verdict — scoped catch capture
 
 Compared the same prepared input on `c95c6dd` and this repair. Reviewed header

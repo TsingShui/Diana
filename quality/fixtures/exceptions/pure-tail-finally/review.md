@@ -1,5 +1,14 @@
 # Fixture: pure-tail-finally
 
+## Natural catch display
+
+The union catch inside each finally-owning subject prints without chain text or
+labels. `bypass`'s switch, `read`, `mark(20)`, `v5=100`, `v7=v5+2` and the finally
+cleanup, and the two later subjects' preparation, condition and cleanup order,
+remain text-identical. Explicit refusals in the same fixture are unchanged. Text and JSON publish together; owned sites, chains, completions, snapshots
+and receives remain. Renewed LLM reading and product equality, not executed
+behavior.
+
 ## Current verdict — scoped catch capture
 
 Compared the same prepared input on `c95c6dd` and this repair. Reviewed header

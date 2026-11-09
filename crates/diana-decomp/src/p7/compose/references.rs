@@ -48,9 +48,13 @@ pub(super) fn field_qualifications(code: &MethodCode) -> Result<Vec<bool>, Expre
     Ok(explicit)
 }
 
-/// A natural route already printed as the enclosing try/catch needs no repeated
-/// annotation. A single typed catch can also represent its unmatched propagation.
-/// Explicit protection, other multi-route shapes and unplaced routes keep one.
+/// A natural route already printed as enclosing catches/finally needs no repeated
+/// annotation. Every original clause must be represented in order: a printed
+/// handler of an enclosing Try, delivered implicit monitor cleanup, or the
+/// method-level uncaught propagation. Resolved clauses nest inner-first; two
+/// clauses in one printed Try keep increasing handler positions, and an equal
+/// position needs one printed union group that lists exactly those types. Any
+/// other reordering keeps its explicit chain.
 pub(super) fn site_annotations(code: &MethodCode) -> Result<Vec<bool>, ExpressionError> {
     let mut parent: Vec<Option<ControlId>> = filled(code.controls.len(), None)?;
     for control in &code.controls {
@@ -91,59 +95,9 @@ pub(super) fn site_annotations(code: &MethodCode) -> Result<Vec<bool>, Expressio
             continue;
         }
         let clauses = &code.chains[site.chain.0 as usize].clauses;
-        let plain_typed = site.routes.len() == 2
-            && clauses.len() == 2
-            && clauses[0].target.is_some()
-            && clauses[0]
-                .catch
-                .as_ref()
-                .is_some_and(|catch| catch.descriptor.is_ok() && catch.use_issue.is_none())
-            && clauses[1].catch.is_none()
-            && clauses[1].target.is_none()
-            && matches!(site.routes[1].delivery, Delivery::Explicit);
-        let has_monitor = !plain_typed
-            && site.routes.iter().any(|route| {
-                matches!(route.delivery, Delivery::Catch(target)
-            if code.controls.iter().any(|control| matches!(&control.kind,
-                ControlKind::Synchronized { implicit: Some(surface), .. }
-                    if surface.cleanups.iter().any(|(id, _)| *id == target))))
-            });
-        if plain_typed || has_monitor {
-            let node = match site.original {
-                ThrowSite::Operation(op) => code.operations.get(op.0 as usize).map(|o| o.node),
-                ThrowSite::Terminal(block) => node_of_block
-                    .get(block.0 as usize)
-                    .copied()
-                    .flatten()
-                    .map(crate::p6::NodeId),
-            };
-            if let Some(start) = node.and_then(|node| owner.get(node.0 as usize).copied().flatten())
-            {
-                let represented = site.routes.len() == clauses.len() && site.routes.iter().zip(clauses).all(|(route, clause)| {
-                    let Some(label) = clause.target else { return true; };
-                    let Delivery::Catch(target) = route.delivery else { return false; };
-                    if !super::sequence::contains(&parent, start, target) { return false; }
-                    let ControlKind::Try { handlers, .. } = &code.controls[target.0 as usize].kind else { return false; };
-                    let Some(index) = handlers.iter().position(|node| node.0 == label.0) else { return false; };
-                    if matches!(&code.emission.controls[target.0 as usize].layout,
-                        EmissionLayout::Try { catches, finally, .. } if finally.is_some() || index < catches.len()) { return true; }
-                    code.controls.iter().any(|control| matches!(&control.kind,
-                        ControlKind::Synchronized { implicit: Some(surface), .. }
-                            if surface.cleanups.contains(&(target, index as u32))
-                                && super::sequence::contains(&parent, start, control.id)))
-                });
-                if represented {
-                    required[site.id.0 as usize] = false;
-                    continue;
-                }
-            }
+        if site.routes.len() != clauses.len() || clauses.is_empty() {
+            continue;
         }
-        let [route] = site.routes.as_slice() else {
-            continue;
-        };
-        let Delivery::Catch(target) = route.delivery else {
-            continue;
-        };
         let node = match site.original {
             ThrowSite::Operation(op) => code.operations.get(op.0 as usize).map(|o| o.node),
             ThrowSite::Terminal(block) => node_of_block
@@ -156,11 +110,77 @@ pub(super) fn site_annotations(code: &MethodCode) -> Result<Vec<bool>, Expressio
         else {
             continue;
         };
-        if super::sequence::contains(&parent, start, target) {
+        let mut resolved: Vec<(ControlId, usize, u32)> = Vec::new();
+        let mut previous: Option<ControlId> = None;
+        let mut represented = true;
+        for (offset, (route, clause)) in site.routes.iter().zip(clauses).enumerate() {
+            let Some(label) = clause.target else {
+                represented = matches!(route.delivery, Delivery::Explicit);
+                if !represented {
+                    break;
+                }
+                continue;
+            };
+            let Delivery::Catch(target) = route.delivery else {
+                represented = false;
+                break;
+            };
+            if !super::sequence::contains(&parent, start, target)
+                || previous.is_some_and(|inner| !super::sequence::contains(&parent, inner, target))
+            {
+                represented = false;
+                break;
+            }
+            let ControlKind::Try { handlers, .. } = &code.controls[target.0 as usize].kind else {
+                represented = false;
+                break;
+            };
+            let Some(index) = handlers.iter().position(|node| node.0 == label.0) else {
+                represented = false;
+                break;
+            };
+            let printed = matches!(&code.emission.controls[target.0 as usize].layout,
+                    EmissionLayout::Try { catches, finally, .. } if finally.is_some() || index < catches.len())
+                || code.controls.iter().any(|control| {
+                    matches!(&control.kind,
+                    ControlKind::Synchronized { implicit: Some(surface), .. }
+                        if surface.cleanups.contains(&(target, index as u32))
+                            && super::sequence::contains(&parent, start, control.id))
+                });
+            let position =
+                u32::try_from(offset).map_err(|_| crate::RequestError::PlatformCapacity)?;
+            if !printed
+                || resolved.iter().any(|&(control, earlier, at)| {
+                    control == target
+                        && (index < earlier
+                            || (index == earlier && !union(code, target, at, position)))
+                })
+            {
+                represented = false;
+                break;
+            }
+            super::super::build::push(&mut resolved, (target, index, position))?;
+            previous = Some(target);
+        }
+        if represented {
             required[site.id.0 as usize] = false;
         }
     }
     Ok(required)
+}
+
+/// One printed union catch clause lists every original type of its group, so two
+/// clauses sharing that handler position keep both types without a chain line.
+fn union(code: &MethodCode, control: ControlId, first: u32, second: u32) -> bool {
+    let Some(ControlKind::Try {
+        handler_clauses, ..
+    }) = code.controls.get(control.0 as usize).map(|c| &c.kind)
+    else {
+        return false;
+    };
+    handler_clauses.iter().any(|group| {
+        group.start <= first && first < group.end && group.start <= second && second < group.end
+    })
 }
 
 /// Owner omission depends on the receiver that still prints after composition.

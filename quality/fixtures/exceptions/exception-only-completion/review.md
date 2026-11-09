@@ -11,6 +11,15 @@ explicit `[exn c0]` on its matched outer `finally` interval, because that shape
 is not covered by this first narrow rule. Original sites, chains, completions,
 snapshots and receives remain in the owned product; text and JSON agree.
 
+### Multi-clause and nested shapes
+
+`nested` now also prints without `c0`, its markers or `H2`/`H6`: the typed `try`
+sits inside the printed all-clause expressed as a cleanup structure. The
+caught-result commit, scoped break, one cleanup and pending rethrow keep their
+order, and the outer interval still excludes the inner handler body. `typed` text
+from the previous round is unchanged. Text and JSON publish together; owned sites, chains, completions,
+snapshots and receives remain. Renewed LLM reading and product equality, not
+executed behavior.
 ## Verdict and scope
 
 Compared identical prepared bytes on ffdea3b9a98f6cdcc93a07da7df8487581de0779

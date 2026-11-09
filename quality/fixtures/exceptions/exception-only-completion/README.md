@@ -71,9 +71,10 @@ Baseline ffdea3b9a98f6cdcc93a07da7df8487581de0779. Actual preparation used
 Smali2.5.2, OpenJDK21.0.12.1 and API24, not an exact-version admission pin.
 Original subjects are class0: foreign/method2, nested/method3, typed/method6.
 The same prepared bytes give one passing refusal and three failed recovery
-checks on baseline, then four passes on the candidate. Typed gains its natural
-catch and nested gains the inner typed owner, allowing its existing outer cleanup
-to remain natural rather than ProtectionBoundary. Foreign text is unchanged.
+checks on baseline, then four passes on the candidate. Typed gains its
+natural catch and nested gains the inner typed owner, allowing its existing outer
+cleanup to remain natural rather than ProtectionBoundary. Later display rules
+remove the redundant chain text for both natural shapes; foreign stays explicit.
 Both isolated suites pass 168 checks; format, package Clippy and release builds
 pass. The 115-fixture comparison retains P2–P5/original P6 facts without retrieval/
 render failures. [review.md](review.md) records each path and the execution limits.

@@ -1,5 +1,15 @@
 # Fixture: case-entry-joins
 
+## Natural catch display
+
+`route` now prints its switch/dispatch outer all-catch and the inner union catch
+without chain lines, inline markers or `H13`/`H29` labels. The dispatch, case
+assignments, `read(0,p2)`, `mark(20)`, `v3=100`, the finally `cleanup(0,p2)` and
+`mark(40)` keep their order; the inner catch still sits inside the printed
+finally. Text and JSON publish together; owned sites, chains, completions, snapshots
+and receives remain. Renewed LLM reading and product equality, not executed
+behavior.
+
 ## Current verdict — scoped catch capture
 
 Compared the same prepared input on `c95c6dd` and this repair. Reviewed header

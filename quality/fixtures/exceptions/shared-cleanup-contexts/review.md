@@ -11,6 +11,15 @@ remain explicit. Original P2–P6 source products are exact, and text/JSON publi
 together. This is a renewed LLM reading of the exact before/after text plus product
 equality, not executed behavior.
 
+### Multi-clause and nested shapes
+
+`split` now also omits the outer three-row chain, its markers and `H18`/`H21`/`H23`
+labels: the acquisition `try` prints inside the shared all-clause. The crossing
+post-acquisition contexts keep their explicit `c1`/`c3` chains. Capture adapters,
+the shared logging/rethrow tails, the outside close guard and null handling are
+text-identical. Text and JSON publish together; owned sites, chains, completions,
+snapshots and receives remain. Renewed LLM reading and product equality, not
+executed behavior.
 ## Verdict
 
 The challenge was authored after the shared-frontier refinement and before its

@@ -65,8 +65,9 @@ Smali2.5.2, OpenJDK21.0.12.1 and API24, not an exact-version admission pin.
 Original subjects are class0: foreign/method2, multi/method3, rethrow/method4,
 run/method5. On the same bytes the baseline fails the three plain typed-catch
 display checks and passes the two refusal checks; the candidate passes all five.
-`run` and `rethrow` drop only the redundant chain line, inline markers and `H`
-labels. `foreign` and `multi` texts are unchanged. Both isolated suites pass173
+`run`, `rethrow` and `multi` drop only the redundant chain line, inline markers and
+`H` labels; `multi` became covered once the rule generalized to ordered printed
+catches. `foreign` text is unchanged. Both isolated suites pass 173
 checks. The116-fixture comparison keeps complete P2–P5 and original P6 facts,
 with12 changed texts reviewed individually; the same APK retains full coverage.
 [review.md](review.md) records each path and the execution limits.

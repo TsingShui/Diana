@@ -1,5 +1,14 @@
 # Fixture: branching-finally-suffix
 
+## Natural catch display
+
+The loop's union catch and the enclosing all-catch now print without chain text or
+handler labels. `read`, `mark(20)`, `v3=100`, the branch `mark(40)` and the single
+finally cleanup keep their original positions; a failing cleanup still replaces
+the pending throwable. Text and JSON publish together; owned sites, chains, completions, snapshots
+and receives remain. Renewed LLM reading and product equality, not executed
+behavior.
+
 ## Current verdict — scoped catch capture
 
 Compared the same prepared input on `c95c6dd` and this repair. Reviewed header

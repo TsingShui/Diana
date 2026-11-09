@@ -10,6 +10,15 @@ completions, snapshots and receives remain in the owned product. This is a
 renewed LLM reading of the exact before/after text plus product equality, not
 executed behavior.
 
+### Multi-clause and nested shapes
+
+`multiAndInstance` additionally loses its four-row chain, markers and labels. Its
+three printed catches keep original order NumberFormatException,
+NullPointerException, RuntimeException, followed by method-level propagation for
+unmatched failures. `instanceof`, `toString`, `parseInt`, the check on `p0`, and
+`return -3` keep their positions; the two `goto L15` bodies remain distinct. Text and JSON publish together; owned sites, chains, completions,
+snapshots and receives remain. Renewed LLM reading and product equality, not
+executed behavior.
 ## Prior verdict — scoped catch capture
 
 Compared the same prepared input on `c95c6dd` and this repair. Reviewed header

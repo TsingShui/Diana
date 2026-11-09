@@ -1,5 +1,14 @@
 # Fixture: monitor-split-tails
 
+## Natural catch display
+
+The nested monitor subject prints its union catch and all-catch cleanup without
+chain text or labels. Both monitor enters/releases, `read(0,p3)`, `mark(20)`,
+`v4=100` and the cleanup's own `c4` chain remain, so the released-tail behaviour
+is unchanged. Text and JSON publish together; owned sites, chains, completions, snapshots
+and receives remain. Renewed LLM reading and product equality, not executed
+behavior.
+
 ## Current verdict — monitor surface and capture
 
 Compared the same prepared DEX on `c95c6dd` and this repair. Read the complete

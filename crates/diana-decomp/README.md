@@ -139,10 +139,12 @@ latest established single-entry frontier, so an optional predecessor cannot eras
 an available inner catch. A genuine multi-entry core stays explicit. Ordered
 throw-site chains,
 original captures, P5 construction ownership and explicit monitor separation reasons
-survive failed natural composition. A plain typed catch also covers its remaining
-uncaught route for display, so an outer try/catch no longer repeats that shape as
-a chain line and inline markers. Multi-clause typed chains, use issues and
-unplaced routes keep their markers. One private completion interface supplies
+survive failed natural composition. A printed catch or cleanup structure also covers
+its original clause set for display, so nested typed catches, several ordered
+catches, one union clause over adjacent same-handler types and the remaining
+method-level propagation no longer repeat that shape as a chain line and inline
+markers. Reordered clauses, a printed position naming fewer types than its
+original clauses, use issues and unplaced routes keep their markers. One private completion interface supplies
 normal and executable exceptional entrances/outlets, including uncaught exits,
 with original copy/snapshot references. A guarded core with only throw completion
 has no normal follow into its catch; independent normal outlets keep their roles. The [P6 chapter](../../docs/diana/spec/06-regions.md)
@@ -308,7 +310,8 @@ order. Four [exception-only completion checks](tests/exception_only_completion.r
 cover protected construction, typed/unmatched exits,
 [nested cleanup and a foreign entrance](../../quality/fixtures/exceptions/exception-only-completion/README.md).
 Five [natural catch display checks](tests/natural_exception_display.rs) cover
-[loop/rethrow/foreign/multi shapes](../../quality/fixtures/exceptions/natural-typed-catch-display/README.md):
+[loop/rethrow/foreign/multi shapes](../../quality/fixtures/exceptions/natural-typed-catch-display/README.md)
+and the [nested/union challenge](../../quality/fixtures/exceptions/nested-catch-display/README.md):
 redundant markers disappear while sites, chains and explicit protection remain.
 These product checks do not execute fixture behavior.
 Six structural checks cover

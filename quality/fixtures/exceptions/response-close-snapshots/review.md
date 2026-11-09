@@ -1,5 +1,15 @@
 # Response and resource cleanup review
 
+## Natural catch display
+
+`response` additionally prints without its three-row chain, inline markers or
+`H9`/`H11`/`H17` labels, because the typed `try` sits inside the printed all-clause.
+Acquisition-time null versus committed-handle snapshots, interruption-before-
+IOException priority, logging, both outward close targets and ordinary-finally
+replacement remain text-identical. `resource` is unchanged. Text and JSON publish together; owned sites, chains, completions,
+snapshots and receives remain. Renewed LLM reading and product equality, not
+executed behavior.
+
 ## Combined verdict
 
 Integration 271eb47 retains concurrent recovery through cfc9da3. Compared with

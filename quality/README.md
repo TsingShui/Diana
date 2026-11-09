@@ -199,6 +199,7 @@ Downloaded inputs and generated output remain outside version control.
 | `shared-cleanup-contexts` | Split pre/post captures, shared cleanup/rethrow frontiers, resource outlets and outside IO recovery |
 | `exception-only-completion` | Throw-only guarded cores, typed/uncaught exception outlets, outer cleanup and a genuine foreign normal entrance |
 | `natural-typed-catch-display` | Typed-catch display coverage inside loops/rethrows beside explicit shared-handler and multi-handler guards |
+| `nested-catch-display` | Enclosing same-type catches, cleanup between catch levels, a catch-body inner handler and one printed union clause |
 
 ### Synchronization
 

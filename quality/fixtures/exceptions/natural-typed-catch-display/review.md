@@ -1,5 +1,15 @@
 # Natural typed catch display review
 
+## Natural catch display
+
+`multi` now prints without its three-row chain or markers. Both printed catches
+keep their original order and bodies, `return -2` and the unreachable-after-throw
+`return v1` are unchanged, and the separate `foreign` refusal keeps an explicit
+chain. The [nested challenge](../nested-catch-display/review.md) covers the
+enclosing-same-type, catch-body and union shapes. Text and JSON publish together; owned sites, chains, completions,
+snapshots and receives remain. Renewed LLM reading and product equality, not
+executed behavior.
+
 ## Verdict and scope
 
 The fixture was authored after the display draft and before its first inspection.

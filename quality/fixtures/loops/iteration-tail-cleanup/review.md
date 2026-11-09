@@ -1,5 +1,14 @@
 # Fixture: iteration-tail-cleanup
 
+## Natural catch display
+
+The nested-loop subject's union catch, `RuntimeException` catch and per-iteration
+finally print without chain text or labels. Loop heads, `read`, `mark(20)`/`21`,
+`v5=100`/`-2`, the negative-exit test and the single per-iteration cleanup keep
+their positions; the skip-update branch is unchanged. Text and JSON publish together; owned sites, chains, completions, snapshots
+and receives remain. Renewed LLM reading and product equality, not executed
+behavior.
+
 ## Current verdict — scoped catch capture
 
 Compared the same prepared input on `c95c6dd` and this repair. Reviewed header

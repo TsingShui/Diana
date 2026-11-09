@@ -1,5 +1,14 @@
 # Fixture: exception-multi-catch
 
+## Natural catch display
+
+Both subjects now print only their `try/catch` layout. The two-clause `parse` and
+the three-clause `multiCapture` keep their original clause order and original
+`goto` targets, including the `capture_exception` statements its printed clauses
+do not bind in a header. No catch body, order or result changed. Text and JSON publish together; owned sites, chains, completions,
+snapshots and receives remain. Renewed LLM reading and product equality, not
+executed behavior.
+
 ## Current verdict — scoped catch capture
 
 Compared the same prepared input on `c95c6dd` and this repair. Reviewed header

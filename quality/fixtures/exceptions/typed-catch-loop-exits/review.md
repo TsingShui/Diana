@@ -1,5 +1,13 @@
 # Fixture: typed-catch-loop-exits
 
+## Natural catch display
+
+The loop's union catch, `RuntimeException` catch and enclosing finally now print
+without chain text or handler labels. `read`, `mark(20)`/`mark(21)`, `v2=100`/`-2`,
+the negative-exit test and the single cleanup call keep their original order. Text and JSON publish together; owned sites, chains, completions, snapshots
+and receives remain. Renewed LLM reading and product equality, not executed
+behavior.
+
 ## Current verdict — scoped catch capture
 
 Compared the same prepared input on `c95c6dd` and this repair. Reviewed header

@@ -298,6 +298,22 @@ subject CLI text/JSON publications agree exactly without issues.
 Direct integration reading additionally checks scoped header bindings for
 resource primaries/secondaries and new response catches: each original capture
 still binds once, before its receiving/body phases, with no new normal binding.
+
+### Natural catch display observation
+
+The P7 display rule that omits a chain already fully stated by printed catches was
+compared on the same APK bytes. Selected-class text shrinks from eight chain lines
+and 49 inline markers to six and 30. Besides the previously repaired methods,
+`FileNameGenerator.md5` loses its two-exception union chain: the printed
+`catch (NoSuchAlgorithmException | UnsupportedEncodingException)` now states both
+original types at the one shared handler, and `all -> propagate` remains the
+method-level route. `MessageDigest.getInstance`, the UTF-8 conversion, digest,
+per-byte mask/OR/substring and string append order are text-identical. Failure
+still returns null and other exceptions still propagate; the caller's existing
+string concatenation of that null is unchanged. Full APK coverage, failure
+counters and the 13 selected methods' P2-P6 coordinates remain unchanged. This is
+a bounded text review, not execution.
+
 Split-context captures whose values escape their handler remain explicit. DateUtils
 text is exact to the isolated repair. The public URL wrapper separately gains the
 concurrent terminal-follow disjunction: force still selects network immediately;

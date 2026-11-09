@@ -1,6 +1,17 @@
 # Switch shared-tail review
 
-## Current verdict — scoped catch capture
+## Natural catch display
+
+`conditional`'s two-clause chain (typed catch plus the enclosing all-clause) now
+prints without a chain line, both inline markers or handler labels: the printed
+inner `try/catch` sits inside the printed `finally`, which states both rows in
+original order. The case loop, read operand, `mark(v16+30)` recovery, `v12` sum
+commit and single `cleanup(p4)` remain text-identical. Original P2–P6 products are
+exact. Text and JSON publish together; owned sites, chains, completions,
+snapshots and receives remain. Renewed LLM reading plus product equality, not
+executed behavior.
+
+## Prior verdict — scoped catch capture
 
 Compared the same prepared input on `c95c6dd` and this repair. Reviewed header
 bindings: `IllegalArgumentException v13`. The original captured object is bound once at exceptional

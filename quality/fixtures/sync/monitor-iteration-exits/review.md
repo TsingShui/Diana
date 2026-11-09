@@ -1,5 +1,14 @@
 # Fixture: monitor-iteration-exits
 
+## Natural catch display
+
+Both monitored loop subjects print their union/RuntimeException catches and the
+all-catch cleanup without chain text or labels. Monitor enter/release, `read`,
+`mark(20)`/`21`, `v3=100`/`-2` and the cleanup's own explicit `c3` rethrow chain
+remain; no release, cleanup or exit was merged. Text and JSON publish together; owned sites, chains, completions, snapshots
+and receives remain. Renewed LLM reading and product equality, not executed
+behavior.
+
 ## Current verdict — monitor surface and capture
 
 Compared the same prepared DEX on `c95c6dd` and this repair. Read the complete

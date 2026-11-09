@@ -1,5 +1,16 @@
 # Cleanup outlet frontier review
 
+## Natural catch display
+
+`dual` now prints as its actual nested scopes: the inner `RuntimeException` catch
+inside the acquisition-clause `try`, inside the outer all-clause. Both redundant
+chain lines, every inline marker and the `H15`/`H23`/`H25`/`H33` labels are gone.
+Acquisition commits, null/handle snapshots, the B-then-A close pairs, `v19` result
+commits and the `addSuppressed`-free order remain text-identical. `gap` keeps its
+explicit chains. Text and JSON publish together; owned sites, chains, completions,
+snapshots and receives remain. Renewed LLM reading and product equality, not
+executed behavior.
+
 ## Verdict
 
 Compared the same prepared DEX on 73fc8793a91d766d021d117aa83ddfd644f7ac82

@@ -1,5 +1,14 @@
 # Fixture: mutable-iteration-step
 
+## Natural catch display
+
+The union catch and enclosing finally print without chain text or labels in the
+changed subject. `read`, `mark(20)`, `v3=100`, the body-updated condition and the
+single cleanup keep their order. The fixture's deliberate no-body and row-exit
+behaviour remains text-identical. Text and JSON publish together; owned sites, chains, completions, snapshots
+and receives remain. Renewed LLM reading and product equality, not executed
+behavior.
+
 ## Current verdict — scoped catch capture
 
 Compared the same prepared input on `c95c6dd` and this repair. Reviewed header
