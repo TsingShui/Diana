@@ -135,10 +135,15 @@ fn non_case_sharing_and_protected_recovery_keep_original_fragments() {
         "(II)I",
         |_, code, rendered| {
             assert!(
-                groups(code).is_none(),
-                "shared tail is not a selector entry"
+                groups(code).is_some(),
+                "the non-case tail has one external owner"
             );
-            assert!(rendered.text().contains("-2"));
+            assert_eq!(rendered.text().matches("-2").count(), 1);
+            assert!(!rendered.text().contains("graph<"));
+            assert!(
+                rendered.text().contains("goto L"),
+                "successful cases bypass the failure tail"
+            );
         },
     );
     inspect(

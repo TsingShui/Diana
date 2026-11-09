@@ -495,24 +495,36 @@ targets: duplicate selector edges do not manufacture an external follow.
 They identify sharing of original targets, not equality of returned values. Multiple first shared targets
 remain unresolved and explicit.
 
+When that first shared target is not a selector entry, P6 gives its whole normal
+suffix one outer owner, stopping at the enclosing completion boundary. The suffix
+cannot reenter the selector. The primary switch body stops at every node in this
+supplied suffix, not only its first node: a case that bypasses an earlier suffix
+operation retains an outward link to its actual downstream entry. This suffix
+precedes the ordinary postdominator nomination; a selector-entry join retains the
+existing postdominator/shared-target choice. One primary proposal enters owner
+admission; rejection does not search another boundary or reconstruct a tail.
+
 Before child construction, P6 can group original selector links by their exact
 entry and give each group one private child instead of one multi-entry body.
 `RegionKind::Switch::cases` records those groups in selected lexical order;
 `None` retains the explicit shared-body layout. Original keys, default roles,
 link identities and selector order remain in the original arm list.
 
-Normal membership stops at other distinct case entries and the established
-completion boundary. Bodies are disjoint, cover the original body exactly, have
-no normal cycle or executable exceptional entrance, and retain whole construction
-groups/scopes. Normal entrances come only from selection or another case body
+Normal membership stops at other distinct case entries and the supplied body
+interface, including external shared suffix entries. Bodies are disjoint, cover
+the original body exactly, have no executable exceptional entrance, and retain
+whole construction groups/scopes. Whole established try bodies close over their
+private handlers using the ordinary membership rule. A private case body can
+contain its original loops or explicit cyclic graphs; case partitioning does not
+classify those cycles, construct another loop, or supply a synthetic exit. Normal entrances come only from selection or another case body
 at that body's entry. A body can name at most one other distinct case-entry
 target, but that entry may have several original predecessors. P6 orders this
 case-entry DAG once: ready roots follow original selector order, predecessor
 counts retain all incoming relationships, and a next entry is visited adjacent
 only after its last predecessor has been placed. Other predecessors retain their
 explicit original gotos to that entry's one printed label. Only actual adjacency
-can become implicit Next. Cycles, conflicting outgoing targets and arbitrary
-shared non-case tails retain explicit layout; no owner or boundary is retried.
+can become implicit Next. Case-entry cycles, conflicting outgoing targets and
+unresolved sharing retain explicit layout; no owner or boundary is retried.
 
 A shared-label header or an entry reached from another case, adjacent or by an
 explicit goto, requires complete zero-step selector copies already established
@@ -520,7 +532,12 @@ by P5. Otherwise its entry-only
 assignment would also run on fallthrough, so P6 declines the layout instead of
 moving or hiding that copy. Other selected copies remain on their original edge.
 A direct target of the external follow has an empty final child, retaining its
-selected copies and switch completion. Shared follow work has one external owner.
+selected copies and switch completion. A selector targeting a different external
+suffix entry or enclosing outlet has an empty child whose follow is that actual
+target, not the switch's other follow. Its selected assignment executes before
+that completion. Other cases reach the external original label without entering
+this selector-only assignment. Only internal case entries participate in the
+case-entry DAG/copy-free checks. Shared suffix work has one external owner.
 
 Adjacent case completion can become Next only for the exact supplied next entry.
 Normal completion to the external follow becomes Break only against the selected

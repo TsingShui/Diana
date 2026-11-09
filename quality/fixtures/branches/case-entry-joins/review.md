@@ -1,6 +1,24 @@
 # Fixture: case-entry-joins
 
-## Current verdict — terminal guard follow-up
+## Current verdict — external non-case failure tail
+
+Compared the same prepared DEX on dd70d20 and this candidate. nonCaseTail now
+owns private cases but leaves its shared failure assignment -2 and return
+outside the switch. A successful matches call selects10/20/30 then jumps to the
+return label, bypassing -2. Failed matches break to that one -2 assignment;
+unknown key assigns-1 and jumps to return without any matches event. The
+recorded81/82/83 events and all independent values remain unchanged.
+
+The earlier missing-non-case-product negative is now positive ownership coverage.
+Actual foreign arrivals, executable shared-label entry copies and case-entry
+cycles remain refusal cases; their text and current tests are unchanged.
+Read the complete changed method against original Java/Smali and reuse prior
+reviews only for unchanged members. Original P2/P3/P4/P5 and copied obligations
+agree. The [fresh challenge](../switch-shared-tails/review.md) adds two tail
+levels, direct parameter-carrier assignment and typed recovery inside a case
+loop. This is bounded LLM/product review, not executed behavior.
+
+## Prior verdict — terminal guard follow-up
 
 Read the changed terminal alternatives and remaining body. The selected
 return/throw keeps its original evaluation, while other copies, calls, accesses

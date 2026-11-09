@@ -1,6 +1,26 @@
 # Fixture: kotlin-suspend-state
 
-## Current fetch review — explicit raw selector destination
+## Current fetch review — shared result suffix outside its cases
+
+Compared the same prepared DEX on dd70d20 and this candidate. fetch's ABI switch
+now has private case bodies. Default retains its original invalid-state throw.
+Initial state0 checks failure, spills/publishes state1 and invokes the first
+load; marker equality still returns before the result copies. Its normal route
+and resumed state1 reach the same first Number conversion and next call. State1
+restores I$0 before failure checking and its result copies. State2 retains both
+original field reads, checks failure, then copies its result and prior number
+before jumping to the later suffix; it does not repeat the first conversion,
+negative test, label1 publication or second load.
+
+All original marker returns, references, field order and result-copy phases
+remain. This is ABI-case ownership from existing P6 facts, not another coroutine
+projection or external protocol inference. The separate total source-body result
+is unchanged and reuses the recorded suspend-loop review below. The
+[fresh shared-tail challenge](../../branches/switch-shared-tails/review.md)
+covers downstream bypasses and actual selected assignments. Original P2/P3/P4/P5
+facts agree. Bounded direct reading/product checks are not coroutine execution.
+
+## Prior fetch review — explicit raw selector destination
 
 Compared the same prepared DEX on7354242 and this candidate. Only fetch's raw
 default gains an explicit goto to its original invalid-state throw label.

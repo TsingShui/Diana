@@ -7,6 +7,37 @@ use super::super::*;
 use super::parts::*;
 use crate::p5::StorageMethod;
 
+// A shared non-case suffix has one OUTER owner, including downstream entries
+// bypassed by some cases. Cutting only its first node would pull those later
+// nodes back into another arm and create a foreign entrance from the follow.
+pub(super) fn frontier(
+    f: &RegionFacts,
+    g: &Graph,
+    s: &super::super::dominance::Structure,
+    scope: &Part,
+    selector: NodeId,
+    starts: &[NodeId],
+    boundary: &[bool],
+) -> Result<(Option<NodeId>, Vec<bool>), RegionError> {
+    let shared = super::completion::shared_target(f, g, starts, boundary)?;
+    let mut frontier = copy(boundary)?;
+    if let Some(entry) = shared.filter(|n| !starts.contains(n)) {
+        let tail = super::completion::reachable(f, g, &[entry], boundary, None)?;
+        if !tail[selector.0 as usize] {
+            for (slot, inside) in frontier.iter_mut().zip(tail) {
+                *slot |= inside;
+            }
+            return Ok((Some(entry), frontier));
+        }
+    }
+    let follow = s
+        .follow(selector)
+        .filter(|n| scope.nodes.contains(n))
+        .or(shared)
+        .or(scope.follow);
+    Ok((follow, frontier))
+}
+
 pub(super) struct SwitchParts {
     pub parts: Vec<Part>,
     pub cases: Vec<Vec<LinkId>>,
@@ -75,18 +106,24 @@ pub(super) fn private_switch_parts(
     let mut owners = filled(f.nodes.len(), None)?;
     let mut interfaces = Vec::new();
     for (index, case) in cases.iter_mut().enumerate() {
-        if Some(case.entry) != c.follow
-            && (!set[case.entry.0 as usize] || boundary[case.entry.0 as usize])
-        {
+        // An original selector target outside the supplied body is an empty
+        // arm to that ACTUAL target, including a downstream shared-tail entry.
+        if set[case.entry.0 as usize] && boundary[case.entry.0 as usize] {
             return Ok(None);
         }
+        // Candidate membership is the supplied interface, not permission to
+        // reacquire its external shared tail through a bypassing case.
         let mut frontier = copy(boundary)?;
+        for (slot, &inside) in frontier.iter_mut().zip(&set) {
+            *slot |= !inside;
+        }
         for (node, &group) in entries.iter().enumerate() {
             if group.is_some_and(|other| other != index) {
                 frontier[node] = true;
             }
         }
-        let arm = super::completion::reachable(f, g, &[case.entry], &frontier, c.follow)?;
+        let mut arm = super::completion::reachable(f, g, &[case.entry], &frontier, c.follow)?;
+        super::completion::include_try_handlers(f, &frontier, c.follow, &mut arm);
         case.nodes = list(&arm)?;
         let interface =
             super::completion::CompletionInterface::collect(storage, f, g, &case.nodes)?;
@@ -104,7 +141,7 @@ pub(super) fn private_switch_parts(
         }
         for &outlet in &interface.outlets {
             let target = f.links[outlet.0 as usize].to;
-            if Some(target) == c.follow {
+            if !set[target.0 as usize] {
                 continue;
             }
             if let Some(next) = entries[target.0 as usize] {
@@ -115,9 +152,6 @@ pub(super) fn private_switch_parts(
             } else if !boundary[target.0 as usize] {
                 return Ok(None);
             }
-        }
-        if !normal_arm_acyclic(f, g, &arm)? {
-            return Ok(None);
         }
         push(&mut interfaces, interface)?;
     }
@@ -152,7 +186,11 @@ pub(super) fn private_switch_parts(
         },
     )?;
     for index in order {
-        let follow = cases[index].next.map(|next| cases[next].entry).or(c.follow);
+        let follow = if cases[index].nodes.is_empty() {
+            Some(cases[index].entry)
+        } else {
+            cases[index].next.map(|next| cases[next].entry).or(c.follow)
+        };
         let case = &mut cases[index];
         let nodes = std::mem::take(&mut case.nodes);
         push(
@@ -234,35 +272,4 @@ fn order(
         return Ok(None);
     }
     Ok(Some(order))
-}
-
-fn normal_arm_acyclic(f: &RegionFacts, g: &Graph, arm: &[bool]) -> Result<bool, RegionError> {
-    let mut incoming = filled(f.nodes.len(), 0usize)?;
-    let mut queue = Vec::new();
-    let mut remaining = 0usize;
-    for (node, &inside) in arm.iter().enumerate() {
-        if inside {
-            remaining += 1;
-            incoming[node] = g.incoming[node]
-                .iter()
-                .filter(|l| arm[f.links[l.0 as usize].from.0 as usize])
-                .count();
-            if incoming[node] == 0 {
-                push(&mut queue, NodeId(id(node)?))?;
-            }
-        }
-    }
-    while let Some(node) = queue.pop() {
-        remaining -= 1;
-        for &link in &g.outgoing[node.0 as usize] {
-            let target = f.links[link.0 as usize].to;
-            if arm[target.0 as usize] {
-                incoming[target.0 as usize] -= 1;
-                if incoming[target.0 as usize] == 0 {
-                    push(&mut queue, target)?;
-                }
-            }
-        }
-    }
-    Ok(remaining == 0)
 }

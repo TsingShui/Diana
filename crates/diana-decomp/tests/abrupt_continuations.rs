@@ -2,8 +2,7 @@
 
 use diana_decomp::p6::{RegionKind, SyncExitKind};
 use diana_decomp::p7::{
-    BlockEnd, Continuation, ControlCompletion, ControlKind, EmissionLayout, TerminalKind,
-    TransferSpelling,
+    BlockEnd, ControlCompletion, ControlKind, EmissionLayout, TerminalKind, TransferSpelling,
 };
 use diana_decomp::p9::Origin;
 
@@ -23,11 +22,9 @@ fn case_breaks_keep_their_original_transfer_but_no_second_action() {
         |_, code, rendered| {
             let mut omitted = 0;
             for control in code.controls() {
-                if !matches!(control.continuation, Continuation::Goto(_)) {
-                    continue;
-                }
-                // This input's planned action belongs to the case Sequence,
-                // not its final original goto block. Inspect the delivered tail.
+                // A precise shared-tail producer can already omit the source
+                // continuation. The invariant still applies to every printed
+                // unconditional exit, not only an old Goto-shaped plan.
                 let mut tail = control;
                 while matches!(
                     code.emission().controls()[tail.id.0 as usize].layout,
@@ -55,7 +52,9 @@ fn case_breaks_keep_their_original_transfer_but_no_second_action() {
                 let Some(t) = transfer else { continue };
                 if matches!(
                     code.emission().transfers()[t.0 as usize].spelling,
-                    TransferSpelling::Break(_) | TransferSpelling::BreakHere(_)
+                    TransferSpelling::Break(_)
+                        | TransferSpelling::BreakHere(_)
+                        | TransferSpelling::Goto(_)
                 ) {
                     assert!(
                         code.emission().controls()[control.id.0 as usize]
@@ -76,7 +75,7 @@ fn case_breaks_keep_their_original_transfer_but_no_second_action() {
             }
             assert!(
                 omitted >= 2,
-                "original shared-default dispatch keeps completed-tail coverage active"
+                "original case exits keep single-completion coverage active"
             );
         },
     );

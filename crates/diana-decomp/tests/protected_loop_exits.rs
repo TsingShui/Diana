@@ -196,27 +196,12 @@ fn a_recovering_handler_is_not_an_abrupt_enclosing_corridor_owner() {
 
 #[test]
 fn raw_selector_edges_keep_explicit_targets_even_next_to_a_sequence_child() {
-    for (fixture, owner, name, proto) in [
-        (
-            "composite/complex-switch-nested",
-            "Lfixture/ComplexSwitchNested;",
-            "run",
-            "([I)I",
-        ),
-        (
-            "exceptions/protected-loop-exits",
-            "Lfixture/ProtectedExits;",
-            "switchExit",
-            "(IIII)I",
-        ),
-        (
-            "kotlin/kotlin-suspend-state",
-            "Lfixture/Case;",
-            "fetch",
-            "(ILkotlin/coroutines/Continuation;)Ljava/lang/Object;",
-        ),
-    ] {
-        inspect(fixture, owner, name, proto, |facts, code, rendered| {
+    inspect(
+        "exceptions/protected-loop-exits",
+        "Lfixture/ProtectedExits;",
+        "switchExit",
+        "(IIII)I",
+        |facts, code, rendered| {
             let mut selectors = 0;
             for terminal in code.terminals() {
                 let TerminalKind::Switch { arms, .. } = &terminal.kind else {
@@ -240,6 +225,6 @@ fn raw_selector_edges_keep_explicit_targets_even_next_to_a_sequence_child() {
             assert_eq!(selectors, 1);
             assert!(rendered.text().contains("default: goto L"));
             assert!(!rendered.text().contains("for ("));
-        });
-    }
+        },
+    );
 }

@@ -1,6 +1,31 @@
 # Fixture: complex-switch-nested
 
-## Current verdict — raw default and protected loop exits
+## Current verdict — private case loop with shared suffix bypasses
+
+Compared the same prepared DEX on dd70d20 and this candidate. run now owns one
+natural case interface. Default breaks the original outer while, skipping all
+case effects, shared applied increment and index update. Case0 writes state1,
+copies the outer accumulator and breaks to the one shared +1. Case2 writes
+state2 and jumps to the downstream index update, skipping +1. Case1 contains
+the complete original inner while: matching the remainder preserves the current
+inner accumulator and reaches that same downstream update; exhaustion copies
+the final inner accumulator and includes +1. Snapshot saves remain immediately
+before the original effects and the catch receives after capture.
+
+Read all complete changed paths against Java and original products. Empty input
+and default-first input return0 with the original final addition; [0] returns1,
+[2]/[1] return0, [5] returns1, and [0,2,1,5,3,0] returns2/final state4 without
+reading its last0. Negative remainders retain their actual default. Array failure
+still uses the saved current accumulator and cleanup/rethrow. This is source
+reasoning, not scenario execution. The remaining original gotos skip real shared
+work and are not replaced with a while continue that would skip index update.
+
+The [fresh challenge](../../branches/switch-shared-tails/review.md) adds a typed
+catch, outer finally and actual selector-only assignment at a downstream entry.
+Original P2/P3/P4/P5, normal edges and copy phases agree; P7/P9 consume supplied
+case ownership without discovery. Other members retain their prior review.
+
+## Prior verdict — raw default and protected loop exits
 
 Compared the same prepared DEX on7354242 and this candidate. Default still goes
 to its one original L8, now a private exit inside the while that breaks that

@@ -272,8 +272,8 @@ pub(super) fn candidates(
             },
         )?;
     }
-    for index in 0..f.nodes.len() {
-        if !in_scope[index] || !f.nodes[index].terminal {
+    for (index, &inside) in in_scope.iter().enumerate() {
+        if !inside || !f.nodes[index].terminal {
             continue;
         }
         let n = f.nodes[index].id();
@@ -365,11 +365,9 @@ pub(super) fn candidates(
                 push(&mut starts, target)?;
             }
         }
-        let follow = match s.follow(n).filter(|node| in_scope[node.0 as usize]) {
-            Some(follow) => Some(follow),
-            None => super::completion::shared_target(f, g, &starts, boundary)?.or(scope.follow),
-        };
-        let body = super::completion::reachable(f, g, &starts, boundary, follow)?;
+        let (follow, frontier) = super::switch::frontier(f, g, s, scope, n, &starts, boundary)?;
+        let mut body = super::completion::reachable(f, g, &starts, &frontier, follow)?;
+        super::completion::include_try_handlers(f, &frontier, follow, &mut body);
         if body[n.0 as usize] {
             continue;
         }

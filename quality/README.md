@@ -160,6 +160,7 @@ failed deterministic check; repair acceptance still follows
 | `monitor-iteration-exits` | Held cleanup before supplied update continuations, mixed release exits and a backedge skipping the update |
 | `monitor-split-tails` | Nested captures, three distinct unlocked tails and an executable post-release Phi-copy barrier |
 | `abrupt-continuation-tails` | Completed case exits, a shared-default dispatch with later cleanup, and opaque completion guards |
+| `switch-shared-tails` | One external shared suffix with downstream bypass entries, case-local loop/catch, outer finally and selected-entry copies |
 | `case-entry-joins` | Three predecessors of one conditional body, executable selector-copy and copy-free cycle guards |
 | `protected-prefix-frontiers` | Branched guarded cores, optional predecessor frontiers and a genuine multi-entry recovery guard |
 | `mutable-iteration-step` | Body-mutated update operands, cleanup and distinct no-body nonlocal condition completions |

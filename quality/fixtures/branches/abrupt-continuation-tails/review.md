@@ -1,6 +1,26 @@
 # Fixture: abrupt-continuation-tails
 
-## Current verdict — terminal guard follow-up
+## Current verdict — one external discriminator tail
+
+Compared the same prepared DEX on dd70d20 and this candidate. decorated now has
+private first-dispatch cases and one external -1 assignment. A successful match
+sets the original discriminator and jumps past that assignment to the second
+switch; a failed match or unknown key reaches -1 once. Thus matches still marks
+80/81/82 only on the selected case, then read records110/120/130 or99, cleanup90
+runs once, and mark91 runs only after normal read completion. The goto enters
+the original second-dispatch label; no selector, read or tail is duplicated.
+
+Direct LLM reading covers the original Java/Smali scenarios and complete changed
+method. Its old raw shared-default shape is superseded, not its expected events.
+The test now checks one original anchor and no second continuation for every
+printed unconditional exit, even when precise P6 ownership already omitted the
+old source Goto. breakScope/caught/select remain unchanged and reuse prior review.
+Original P2/P3/P4/P5 facts and copy phases agree. The
+[fresh shared-tail challenge](../switch-shared-tails/review.md) adds downstream
+bypasses, real selected assignments and nested protection. No behavior execution
+or Java/device run is claimed.
+
+## Prior verdict — terminal guard follow-up
 
 Read the changed terminal alternatives and remaining body. The selected
 return/throw keeps its original evaluation, while other copies, calls, accesses

@@ -130,8 +130,11 @@ Labels and selected edge copies remain concrete. Original switch links can share
 one case body, with acyclic private case-entry joins ordered once. Several
 predecessors can share one case entry: only the adjacent one falls through;
 others retain original gotos to its label. Entry copies that still require
-selected-only execution, case cycles and arbitrary shared non-case tails retain
-explicit layout. Protected prefix completion keeps every guarded seed and the
+selected-only execution, case-entry cycles and unresolved sharing retain
+explicit layout. A unique shared non-case suffix has one outer owner, including
+its downstream bypass entries. Private case bodies can retain whole loops and
+established handlers; direct dispatch to an external suffix still executes only
+that selector's original copies before its actual completion. Protected prefix completion keeps every guarded seed and the
 latest established single-entry frontier, so an optional predecessor cannot erase
 an available inner catch. A genuine multi-entry core stays explicit. Ordered
 throw-site chains,
@@ -287,6 +290,9 @@ Nine [terminal-guard checks](../../quality/fixtures/branches/terminal-guard-arms
 cover original predicate direction, actual other-edge Phi assignments after the
 guard, parent declaration scope, recovering-Try refusal, cleanup, construction
 and early void return. Missing natural protection still retains explicit code.
+Five [shared-tail checks](../../quality/fixtures/branches/switch-shared-tails/README.md)
+cover nested case loops/recovery, two-level suffix bypasses, actual selector
+assignments, foreign case arrivals and original ABI marker/default exits.
 Five [protected-loop checks](../../quality/fixtures/exceptions/protected-loop-exits/README.md)
 cover nested protected throw corridors, real returns that skip cleanup, foreign
 normal entrances, recovering handlers and explicit raw-selector destinations.
