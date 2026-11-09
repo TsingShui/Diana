@@ -75,3 +75,22 @@ passes/seven failures on the baseline versus13/13 on the candidate. These
 results establish product/text sensitivity, not executed scenario behavior.
 See [review.md](review.md) and the linked challenge for the bounded iteration
 judgment. Native/library execution and Java-output compilation were not run.
+
+## Combined integration observation
+
+The isolated repair is 7347d50; integration at 3ecfe5e retains concurrent changes
+through f233202, including constructor trees and abrupt finally completion.
+Default and all-feature nextest runs each passed145/145, with zero skipped;
+format, package Clippy with all targets/features and -D warnings, and release
+CLI/dbg_shell builds passed. Compared with the isolated f233202 baseline, all
+107 fixtures / 172 classes / 827 methods retain exact P2–P8 products and no
+retrieval/render failures. The same eight scalar-related texts change; all four
+new fixture texts are identical to the isolated repair's reviewed output.
+
+The same APK again delivers70,403 declarations /66,345 bodies /4,058 no-code
+members without failure counters. The six selected source products agree with
+f233202; C1's delta still changes only FileNameGenerator and DateUtils. Separate
+constructor changes in FeedItemFilter.without and ChapterUtils.openStream were
+reread: outer allocation, argument calls, inner initialization and outer
+initialization retain their original order. These observations support bounded
+integration, not executed fixture/APK behavior.

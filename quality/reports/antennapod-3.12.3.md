@@ -205,13 +205,23 @@ conversion, changes no local storage and does not infer external overloads.
   reproduces R2's protection/snapshot/suppression form, without declaring its
   verbose notation a behavioral defect or claiming a cleanup repair.
 
-The same APK's complete retrieval was repeated without changed coverage or
-failure counters. Six selected class source products were equal to the review
-baseline; only FileNameGenerator and DateUtils changed text. The original char
+The isolated scalar repair 7347d50 repeated the same APK's complete retrieval
+without changed coverage or failure counters. Six selected class source products
+were equal to the review baseline; only FileNameGenerator and DateUtils changed text. The original char
 append calls now disclose their views, and replace(CC) prints slash/dash char
 literals. The other four selected texts are unchanged. Control/cleanup reasoning
 is reused on that basis; character argument spelling was reread directly.
 This is a bounded source/product/text review, not execution of AntennaPod.
+
+Integration at 3ecfe5e retains concurrent changes through f233202. Repeating the
+comparison against that latest-main baseline again gives equal six-class source
+products and the same two scalar-only text changes, with unchanged full-APK
+coverage/failure counters. Constructor grouping separately changes
+FeedItemFilter.without and ChapterUtils.openStream relative to the initial
+review. Direct reading retains allocation before argument calls, each argument
+call once, initialization after arguments and the original outer-wrapper order.
+The [scalar fixture record](../fixtures/atoms/scalar-use-views/README.md#combined-integration-observation)
+records combined tests and corpus checks with their execution limits.
 
 ## Reproduction
 

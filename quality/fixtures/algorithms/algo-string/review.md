@@ -30,6 +30,9 @@ performs no append; a reached access failure skips append/update. Under the
 ordinary StringBuilder model, reverse("ab") yields "ba", not the decimal codes.
 All P2–P8 products are exact in this comparison. This is bounded LLM source/path
 reading, not execution or a claim about arbitrary library/allocation behavior.
+After integrating f233202, comparison with that latest-main baseline again
+changes only the char-use annotation; the accepted constructor ordering remains.
+Combined corpus inspection retains exact P2–P8 products for this scalar delta.
 
 ### Semantics
 
