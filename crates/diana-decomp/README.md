@@ -106,19 +106,38 @@ preludes; other relationships retain explicit operations and concrete reasons.
 P6 delivers Block/Sequence/If/Loop/original Switch/LabelledBlock/Try/Synchronized
 and explicit Graph regions through the same method chain. Synchronized plans
 separate held execution from individual release outlets and retain cleanup control,
-handler receives and before/after-release P5 obligations. Normal LT dominators,
+handler receives and before/after-release P5 obligations. Closed scopes with
+distinct unlocked targets keep those explicit outlet gotos and no fabricated
+shared follow. Executable path-specific post-release copies still retain explicit
+monitors rather than moving assignments under the lock. Normal LT dominators,
 finite-exit postdominator candidates and iterative SCC analysis drive composition.
+Private handler rejoins can establish a closed loop entry without changing normal
+LT relations. An original shared pure update with a unique backedge can supply a
+for continuation: body skips still execute the update, while abrupt exits do not.
+The original update can read other available locals, including a body-mutated
+step; no invariant-stride or progress claim is made.
+Multiple or update-skipping backedges, partial ownership, executable copy phases
+and incompatible established monitor continuations retain the ordinary loop.
+Selected monitor releases can consume that same supplied update continuation;
+their original targets, routing and copy phases do not move. Predicate work
+stays at its original point even when it cannot fit a compact header.
 Labels and selected edge copies remain concrete. Original switch links can share
-one case body, with private bodies ordered into linear fallthrough chains. Entry
-copies that still require selected-only execution and conflicting shared tails
-retain explicit layout. Ordered throw-site chains,
+one case body, with acyclic private case-entry joins ordered once. Several
+predecessors can share one case entry: only the adjacent one falls through;
+others retain original gotos to its label. Entry copies that still require
+selected-only execution, case cycles and arbitrary shared non-case tails retain
+explicit layout. Protected prefix completion keeps every guarded seed and the
+latest established single-entry frontier, so an optional predecessor cannot erase
+an available inner catch. A genuine multi-entry core stays explicit. Ordered
+throw-site chains,
 original captures, P5 construction ownership and explicit monitor separation reasons
 survive failed natural composition. The [P6 chapter](../../docs/diana/spec/06-regions.md)
 defines the boundary and scope rules. A single unlocked catch-all cleanup can
 print as `finally` when its cleanup graph matches the normal exit. Matching covers
 conditional branches, field accesses and calls, including private result pairs
 established from P5 definitions and reads. Both paths retain their original
-effect order and require no copy phases. Shared handler continuations retain one external owner; their private entries
+effect order and require no copy execution inside cleanup; original body-outlet
+copies remain before it. Shared handler continuations retain one external owner; their private entries
 can print as natural catches with original copies and explicit outward transfers.
 Cross-handler finally folding, unmatched Phi values and different cleanup exits
 retain the original catch or explicit handlers.
@@ -133,7 +152,11 @@ explicit emission ownership. P7 also attaches local declarations to their first
 assignment when later reads and writes remain in scope; joins, copy destinations
 and unknown placements retain outer declarations. The P7 compose passes select only adjacent
 expressions and compact control forms admitted by their delivered facts; original
-operation and control origins remain in the final source spans. Metadata and
+operation and control origins remain in the final source spans. Planned actions
+after an already printed unconditional exit can be omitted through linear
+Sequence tails, without crossing the exit's scope or an opaque protected/loop
+container. Original transfers and inspection continuations remain available.
+Metadata and
 bootstrap declarations travel from their owning producers; P7 does not reopen
 input. See the [P7 chapter](../../docs/diana/spec/07-java.md).
 
@@ -184,9 +207,40 @@ Integration checks live in `tests/` and consume prepared inputs from
 [nested private loop exits](../../quality/fixtures/loops/nested-loop-exits/README.md).
 Four [resource-cleanup checks](../../quality/fixtures/exceptions/resource-cleanup/README.md)
 cover loop-private handlers, nested protection, propagation-only sites and shared
-handler separation. Nine [switch checks](../../quality/fixtures/branches/switch-fallthrough/README.md)
+handler separation. Three [catch-group checks](../../quality/fixtures/exceptions/typed-catch-loop-exits/README.md)
+cover adjacent typed aliases, inherited cleanup ownership and a nonadjacent-alias
+priority guard. Three [loop-entry checks](../../quality/fixtures/exceptions/nested-catch-rejoins/README.md)
+cover private catch rejoins, nested loops under a monitor and a genuine pre-loop
+exceptional arrival. Five [finally-scope checks](../../quality/fixtures/exceptions/branching-finally-suffix/README.md)
+cover suffix cleanup, original body copies, loop completion, unequal arguments
+and preservation of a pending rethrow's outside dispatch. Five
+[iteration-tail checks](../../quality/fixtures/loops/iteration-tail-cleanup/README.md)
+cover original update anchors, nested continuations, pre-test evaluation, an
+update-skipping backedge and specialized monitor routing. Four
+[monitor-continuation checks](../../quality/fixtures/sync/monitor-iteration-exits/README.md)
+cover held cleanup, direct release delivery, mixed exits and a released
+update-skipping backedge. Four
+[split-outlet checks](../../quality/fixtures/sync/monitor-split-tails/README.md)
+cover nested captures with separate unlocked tails, a live-parameter Phi copy
+barrier, mixed loop exits and preservation of the direct header continuation.
+Four [completed-tail checks](../../quality/fixtures/branches/abrupt-continuation-tails/README.md)
+cover original case breaks, opaque switch/protection work and a retained release
+continuation when no original jump prints. Nine [switch checks](../../quality/fixtures/branches/switch-fallthrough/README.md)
 cover grouped entries, fallthrough, original constant placement, conditional
-breaks, wide values and explicit-layout guards. These checks cover ownership,
+breaks, wide values and explicit-layout guards. Four
+[case-entry checks](../../quality/fixtures/branches/case-entry-joins/README.md)
+cover three predecessors of one body, nonadjacent original gotos, executable
+selector-copy separation, case cycles and non-case sharing. Four
+[protected-prefix checks](../../quality/fixtures/exceptions/protected-prefix-frontiers/README.md)
+cover a retained guarded entry, a branched common prefix, foreign throwing
+predecessors, real multi-entry refusal and complete outer coverage.
+Four [variable-update checks](../../quality/fixtures/loops/mutable-iteration-step/README.md)
+cover an original parameter read, body-mutated step through cleanup, no-body
+nonlocal condition exits and throwing-update refusal.
+Three [quiet-copy checks](../../quality/fixtures/branches/quiet-condition-copies/README.md)
+distinguish origin-only condition copies from executable call-result/parameter Phi
+assignments, preserving one original anchor without an empty else.
+These checks cover ownership,
 transfer spelling and source anchors, not independent execution of the final plan.
 The retained independent verifier code is not enabled on ordinary requests. Real-input corpus runs have not encountered custom/polymorphic
 invokes or method-handle/type constants.

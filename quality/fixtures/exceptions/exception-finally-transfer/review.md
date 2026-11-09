@@ -8,7 +8,22 @@ so a review needs no toolchain.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 - Selector: `Lfixture/ExceptionFinallyTransfer;`
 
-## Current verdict — round 1, 2026-11-08
+## Current verdict — iteration-tail review
+
+Java and final text were reread for
+Lfixture/ExceptionFinallyTransfer;->continueInFinally([I)I. Zero still skips
+total++ but both normal branches write state=5 before the original index update.
+Either protected read failure writes 5 and rethrows without updating the index;
+failure in the finally write also skips the update. Return/break and nested-catch
+subjects are unchanged.
+
+This is direct LLM source/path evidence on the candidate based on `ebbc003`, not
+executed behavioral PASS. Original P2/P3/P4/P5 and relevant P6 control/exception/
+lock facts agree in corpus inspection. Unchanged member text reuses prior reviews.
+The new [iteration-tail challenge](../../loops/iteration-tail-cleanup/review.md)
+records the interacting cases and unsupported execution scope.
+
+## Prior verdict — round 1, 2026-11-08
 
 ### Semantics
 

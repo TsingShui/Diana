@@ -132,7 +132,11 @@ pub(super) fn candidates(
         let mut parts = Vec::new();
         let mut body = Vec::new();
         for &node in &members {
-            if !l.evaluation.contains(&node) {
+            if !l.evaluation.contains(&node)
+                && l.iteration
+                    .as_ref()
+                    .is_none_or(|step| !step.nodes.contains(&node))
+            {
                 push(&mut body, node)?;
             }
         }
@@ -164,6 +168,17 @@ pub(super) fn candidates(
                     nodes: copy(&l.evaluation)?,
                     entry: l.evaluation.first().copied(),
                     follow: None,
+                },
+            )?;
+        }
+        if let Some(step) = &l.iteration {
+            push(
+                &mut parts,
+                Part {
+                    completion: PartCompletion::Ordinary,
+                    nodes: copy(&step.nodes)?,
+                    entry: Some(step.entry),
+                    follow: Some(l.header),
                 },
             )?;
         }

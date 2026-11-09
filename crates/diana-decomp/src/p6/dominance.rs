@@ -178,6 +178,7 @@ pub(super) struct Structure {
     pub post: Dominance,
     pub component: Vec<usize>,
     pub cyclic: Vec<bool>,
+    pub retreating: Vec<LinkId>,
     pub virtual_node: usize,
 }
 impl Structure {
@@ -203,6 +204,8 @@ impl Structure {
         let dom = Dominance::construct(&out, n)?;
         let post = Dominance::construct(&reverse, n)?;
         let mut seen = filled(n, false)?;
+        let mut active = filled(n, false)?;
+        let mut retreating = Vec::new();
         let mut order = Vec::new();
         let mut stack = Vec::new();
         for seed in 0..n {
@@ -210,10 +213,12 @@ impl Structure {
                 continue;
             }
             seen[seed] = true;
+            active[seed] = true;
             push(&mut stack, (seed, 0usize))?;
             while let Some(&(p, cursor)) = stack.last() {
                 if cursor == g.outgoing[p].len() {
                     push(&mut order, p)?;
+                    active[p] = false;
                     stack.pop();
                     continue;
                 }
@@ -221,9 +226,14 @@ impl Structure {
                     .last_mut()
                     .ok_or(bug("P6 SCC traversal lost frame"))?
                     .1 += 1;
-                let q = f.links[g.outgoing[p][cursor].0 as usize].to.0 as usize;
+                let link = g.outgoing[p][cursor];
+                let q = f.links[link.0 as usize].to.0 as usize;
+                if active[q] {
+                    push(&mut retreating, link)?;
+                }
                 if !seen[q] {
                     seen[q] = true;
+                    active[q] = true;
                     push(&mut stack, (q, 0))?;
                 }
             }
@@ -265,6 +275,7 @@ impl Structure {
             post,
             component,
             cyclic,
+            retreating,
             virtual_node: n,
         })
     }

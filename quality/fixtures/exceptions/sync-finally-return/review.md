@@ -12,7 +12,25 @@ assembled from the Smali and copied beside it.
   `12de370`.
 - Expected behavior: the scenario table in `README.md`.
 
-## Current verdict — round 2
+## Current verdict — monitor continuation review
+
+Java, actual Smali, native-helper scenarios and final syncFinally(Object,int)
+were reread. The same goto L7 after release is now the supplied control continuation
+rather than a duplicate ordinary transfer. Both branches still close while held;
+mode1 skips record and returns captured 70 after release. Normal mode records 0
+before release. Read, close and record failures retain replacement/identity and
+release order, with no cleanup retry. Null acquisition and open failure remain
+outside held cleanup. The output change is annotation-only, but its source routing
+was checked rather than treated as automatic evidence of equivalence.
+
+This follow-up is bounded direct LLM path reading, not executed behavioral PASS.
+Corpus inspection preserves exact P2/P3/P4/P5 and original P6 graph/lock facts,
+including synchronized release targets, routing and before/after plans. Unchanged
+text reuses prior reviews. See the new
+[monitor-exit challenge](../../sync/monitor-iteration-exits/review.md) for scope
+and the initial candidate regression; no device run or Java recompilation ran.
+
+## Prior verdict — round 2
 
 Manually reread the Java explanation, Smali and fresh P6/P9 delivery at
 `09e322b`. Close runs while locked on normal, early-return and read-failure

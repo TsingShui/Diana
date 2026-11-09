@@ -81,8 +81,11 @@ fn layout(
         ControlKind::Block { node } => EmissionLayout::Block(*node),
         ControlKind::Sequence => EmissionLayout::Sequence,
         ControlKind::Condition {
-            tests, else_arm, ..
-        } => condition_layout(code, c, tests, *else_arm)?,
+            tests,
+            else_arm,
+            other_exit,
+            ..
+        } => condition_layout(code, c, tests, *else_arm, *other_exit)?,
         ControlKind::If { terminal, .. } => EmissionLayout::If {
             header: child(c, 0)?,
             yes: child(c, 1)?,
@@ -90,26 +93,59 @@ fn layout(
             test: predicate(code, *terminal, None)?,
             shape: IfShape::IfElse,
         },
-        ControlKind::Loop { syntax, .. } => EmissionLayout::Loop {
-            body: child(c, 0)?,
-            placement: match syntax {
-                LoopSyntax::Infinite => LoopPlacement::Infinite,
-                LoopSyntax::While {
-                    terminal, repeat, ..
-                } => LoopPlacement::While {
+        ControlKind::Loop {
+            syntax, iteration, ..
+        } => {
+            let placement = match (syntax, iteration) {
+                (
+                    LoopSyntax::While {
+                        terminal, repeat, ..
+                    },
+                    Some(operation),
+                ) => {
+                    let owner = plan
+                        .loop_header_operations
+                        .get_mut(operation.0 as usize)
+                        .ok_or(bug("loop update has no original operation"))?;
+                    if owner.replace(c.id).is_some() {
+                        return Err(bug("loop update has two header owners"));
+                    }
+                    LoopPlacement::For {
+                        predicate: child(c, 1)?,
+                        test: predicate(code, *terminal, Some(*repeat))?,
+                        compact: false,
+                        operation: *operation,
+                        update: child(c, 2)?,
+                    }
+                }
+                (LoopSyntax::Infinite, None) => LoopPlacement::Infinite,
+                (
+                    LoopSyntax::While {
+                        terminal, repeat, ..
+                    },
+                    None,
+                ) => LoopPlacement::While {
                     predicate: child(c, 1)?,
                     test: predicate(code, *terminal, Some(*repeat))?,
                     compact: false,
                 },
-                LoopSyntax::DoWhile {
-                    terminal, repeat, ..
-                } => LoopPlacement::DoWhile {
+                (
+                    LoopSyntax::DoWhile {
+                        terminal, repeat, ..
+                    },
+                    None,
+                ) => LoopPlacement::DoWhile {
                     predicate: child(c, 1)?,
                     test: predicate(code, *terminal, Some(*repeat))?,
                     compact: false,
                 },
-            },
-        },
+                _ => return Err(bug("iteration update has no head predicate")),
+            };
+            EmissionLayout::Loop {
+                body: child(c, 0)?,
+                placement,
+            }
+        }
         ControlKind::Switch {
             terminal,
             arms,
@@ -133,6 +169,7 @@ fn condition_layout(
     c: &Control,
     tests: &[ConditionTest],
     else_arm: bool,
+    other_exit: bool,
 ) -> Result<EmissionLayout, ExpressionError> {
     let runs = tests.len();
     let mut emitted = Vec::new();
@@ -147,6 +184,8 @@ fn condition_layout(
         yes: child(c, runs)?,
         no: if else_arm {
             ConditionElse::Body(child(c, runs + 1)?)
+        } else if other_exit {
+            ConditionElse::Transfer
         } else {
             ConditionElse::None
         },
@@ -275,6 +314,15 @@ pub(super) fn construct(code: &MethodCode, plan: &mut EmissionPlan) -> Result<()
 
 pub(super) fn complete(code: &MethodCode, plan: &mut EmissionPlan) -> Result<(), ExpressionError> {
     for c in &code.controls {
+        if matches!(
+            c.kind,
+            ControlKind::Loop {
+                iteration: Some(_),
+                ..
+            }
+        ) {
+            plan.controls[c.id.0 as usize].explicit_children = Some(copy(&c.children[..2])?);
+        }
         if let ControlKind::Try {
             finally: Some(_), ..
         } = c.kind
@@ -290,7 +338,9 @@ pub(super) fn complete(code: &MethodCode, plan: &mut EmissionPlan) -> Result<(),
             }
             EmissionLayout::Loop {
                 placement:
-                    LoopPlacement::While { predicate, .. } | LoopPlacement::DoWhile { predicate, .. },
+                    LoopPlacement::For { predicate, .. }
+                    | LoopPlacement::While { predicate, .. }
+                    | LoopPlacement::DoWhile { predicate, .. },
                 ..
             } => Some(predicate),
             EmissionLayout::Synchronized { entry, .. } => Some(entry),

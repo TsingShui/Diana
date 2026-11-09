@@ -118,12 +118,65 @@ fn event(
     }
     Ok(None)
 }
+// Finish at the first real continuation, not at a branch-specific empty goto.
+// Consumed routing remains in the normal cleanup product so its copies/owners
+// receive the same admission checks as every other folded node.
+fn normal_continuation(
+    storage: &StorageMethod<'_>,
+    f: &RegionFacts,
+    g: &Graph,
+    cursor: &mut Cursor<'_>,
+    mut at: Position,
+) -> Result<Option<Position>, RegionError> {
+    for _ in 0..=f.nodes.len() {
+        if !cursor.allowed[at.node.0 as usize] {
+            return Ok(None);
+        }
+        let node = &f.nodes[at.node.0 as usize];
+        if at.operation != node.operations.start {
+            if at.operation != node.operations.end || node.terminal {
+                return Ok(None);
+            }
+        } else {
+            let transparent = node.operations.is_empty()
+                && (!node.terminal
+                    || matches!(
+                        storage.execution().blocks()[node.block.0 as usize].terminal(),
+                        Some(Terminal::Goto { .. })
+                    ));
+            if !transparent {
+                return Ok(Some(at));
+            }
+            if !f.lock_entries.empty_at(at.node) {
+                return Ok(None);
+            }
+            cursor.touch(at.node)?;
+        }
+        let [link] = g.outgoing[at.node.0 as usize].as_slice() else {
+            return Ok(None);
+        };
+        at = Position::entry(f, f.links[link.0 as usize].to);
+    }
+    Ok(None)
+}
 // A paired definition is valid only after matching its original operation and
 // operands. This is not a register environment or a Phi equivalence class.
 #[derive(Clone, Copy)]
 struct DefinitionPair {
     normal: (crate::p5::LocalId, crate::p3::StateId),
     canonical: (crate::p5::LocalId, crate::p3::StateId),
+}
+// View compatibility is used only alongside an established state/definition
+// correspondence or equal literal bits; it never establishes value equality.
+fn same_view(a: crate::p4::Interpretation, b: crate::p4::Interpretation) -> bool {
+    a == b
+        || matches!(
+            (a, b),
+            (
+                crate::p4::Interpretation::IntegralView { .. },
+                crate::p4::Interpretation::IntegralView { .. }
+            )
+        )
 }
 fn same_read(a: StorageRead, b: StorageRead, definitions: &[DefinitionPair]) -> bool {
     if a == b {
@@ -144,10 +197,14 @@ fn same_read(a: StorageRead, b: StorageRead, definitions: &[DefinitionPair]) -> 
                 ..
             },
         ) => {
-            av == bv
-                && definitions
-                    .iter()
-                    .any(|p| p.normal == (al, a) && p.canonical == (bl, b))
+            // IntegralView is producer-proved value preserving, not a
+            // conversion. Its method-local declaration name ID is provenance,
+            // not a different numeric read of the same established state.
+            same_view(av, bv)
+                && ((al, a) == (bl, b)
+                    || definitions
+                        .iter()
+                        .any(|p| p.normal == (al, a) && p.canonical == (bl, b)))
         }
         (
             StorageRead::Literal {
@@ -156,7 +213,7 @@ fn same_read(a: StorageRead, b: StorageRead, definitions: &[DefinitionPair]) -> 
             StorageRead::Literal {
                 bits: b, view: bv, ..
             },
-        ) => a == b && av == bv,
+        ) => a == b && same_view(av, bv),
         _ => false,
     }
 }
@@ -375,21 +432,11 @@ pub(super) fn construct(
             {
                 return Ok(None);
             }
-            // Finish only at a whole normal node boundary. No instruction may
-            // be swallowed from the continuation just to align block sizes.
-            let bn = &f.nodes[b.node.0 as usize];
-            if b.operation == bn.operations.end
-                && b.operation != bn.operations.start
-                && !bn.terminal
-            {
-                let [link] = g.outgoing[b.node.0 as usize].as_slice() else {
-                    return Ok(None);
-                };
-                b = Position::entry(f, f.links[link.0 as usize].to);
-            }
-            if b.operation != f.nodes[b.node.0 as usize].operations.start {
+            // No unpaired instruction is swallowed to align block cuts.
+            let Some(continuation) = normal_continuation(storage, f, g, &mut normal, b)? else {
                 return Ok(None);
-            }
+            };
+            b = continuation;
             if end.is_some_and(|old| old != (a.node, b.node)) {
                 return Ok(None);
             }

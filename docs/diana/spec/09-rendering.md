@@ -144,11 +144,18 @@ execute the following case.
 An ordered condition prints one `if (test0 || test1 ...)`. Each test keeps its
 own terminal span around its predicate text and both original test-edge transfer
 spans at the same evaluation position except for the final other edge when an
-else is present. `ConditionElse::Copies` prints an else containing only that
+else is present. When P7 keeps `ConditionElse::None` for origin-only bundles,
+those bundles and the final other transfer keep zero-width anchors at that test;
+P9 does not invent an empty else or reclassify the copy schedule.
+`ConditionElse::Copies` prints an else containing only that
 edge's original bundles, in their delivered order. Its Copy and Transfer spans
 occur there once; P9 does not emit those copies while printing the tests or again
 after the condition. `ConditionElse::Body` prints the edge's copies before the
-delivered body. The shared predicate renderer establishes
+delivered body. `ConditionElse::Transfer` prints that edge's copies and full
+delivered completion in its else, including a nonlocal break or continue. That
+edge is not also anchored or executed while printing the final test. Absence of
+an arm body does not mean absence of a completion. P9 only consumes that plan.
+The shared predicate renderer establishes
 and restores that terminal's check carrier for ordinary If, Loop and ordered
 Condition tests, including on rendering failure. The final `else` route keeps the
 selected `other` link. Later test runs print no text, so P7 delivers those run controls
@@ -156,6 +163,25 @@ and P9 anchors their controls, block labels, transfers and empty copy bundles as
 zero-length spans, without recovering control from the graph. A terminal whose
 route prints no words keeps both its Transfer and Terminal anchors, including
 zero-step copy bundles, and leaves no indentation in the text.
+
+A delivered for placement prints `for (; condition; update)` without moving an
+initializer into the header. The update is the supplied original assignment,
+printed once with its operation/statement/expression origins. Its source subtree
+is traversed only for the remaining control, label, routing and zero-step-copy
+anchors. P9 does not discover a counter or choose a continue target.
+
+When P7 supplies a noncompact predicate, the spelling is `for (; ; update)` and
+the original predicate evaluation plus exiting test stays at the body start.
+A successful body continuation reaches the update before retesting; break,
+return and throw skip it. These placements describe the original schedule, not
+a Java compilability check or a claim about the original source loop keyword.
+Nonprinting selected-edge copy bundles keep their anchors without adding a blank
+line at an If/Else arm header.
+
+A catch header prints the original type alternatives from its supplied clause
+group in order, separated by `|`, followed by its single supplied body. Capture,
+receives and labels keep their existing source owners; P9 does not identify aliases
+or reorder catches.
 
 P7 fixes condition/header ownership, loop repetition, child roles and necessary
 continuations. P9 prints those choices. A delivered control completion prints

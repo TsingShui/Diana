@@ -151,6 +151,17 @@ failed deterministic check; repair acceptance still follows
 | `exception-two-resources` | try-with-resources over two resources, `close` + `addSuppressed` |
 | `exception-finally-transfer` | `finally` with `return`/`break`/`continue`, try inside catch |
 | `resource-cleanup` | Java/Smali reproduction of loop cleanup, nested resources and a shared-handler guard |
+| `typed-catch-loop-exits` | Shared catch entries and enclosing cleanup in a multi-exit loop; nonadjacent-alias priority guard |
+| `nested-catch-rejoins` | Two nested loops with held cleanup and shared catch rejoin; foreign pre-loop exception guard |
+| `branching-finally-suffix` | Whole-loop branching cleanup, unequal-argument guard and a shared outside pending-rethrow route |
+| `iteration-tail-cleanup` | Nested for continuations through cleanup, update-skipping backedges and specialized monitor routing |
+| `monitor-iteration-exits` | Held cleanup before supplied update continuations, mixed release exits and a backedge skipping the update |
+| `monitor-split-tails` | Nested captures, three distinct unlocked tails and an executable post-release Phi-copy barrier |
+| `abrupt-continuation-tails` | Completed case exits, a shared-default dispatch with later cleanup, and opaque completion guards |
+| `case-entry-joins` | Three predecessors of one conditional body, executable selector-copy and copy-free cycle guards |
+| `protected-prefix-frontiers` | Branched guarded cores, optional predecessor frontiers and a genuine multi-entry recovery guard |
+| `mutable-iteration-step` | Body-mutated update operands, cleanup and distinct no-body nonlocal condition completions |
+| `quiet-condition-copies` | Origin-only condition edges beside actual call-result and parameter Phi assignments |
 
 ### Synchronization
 

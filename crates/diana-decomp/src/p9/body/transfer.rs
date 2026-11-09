@@ -37,15 +37,18 @@ impl Expressions<'_, '_> {
         matches!(p.spelling, TransferSpelling::Fallthrough) && p.copies.is_empty()
     }
 
+    pub(super) fn copies_print_no_words(&self, copies: &[CopyPlanId]) -> bool {
+        copies.iter().all(|&copy| {
+            let bundle = &self.code.copies()[copy.0 as usize];
+            bundle.steps.is_empty() && bundle.assignments.iter().all(|c| c.issue().is_none())
+        })
+    }
+
     /// A fallthrough whose bundles only carry source facts prints no words.
     /// Their Copy and Transfer origins are emitted as zero-width anchors.
     pub(super) fn transfer_prints_no_words(&self, id: TransferId) -> bool {
         let p = &self.code.emission().transfers()[id.0 as usize];
-        matches!(p.spelling, TransferSpelling::Fallthrough)
-            && p.copies.iter().all(|&copy| {
-                let bundle = &self.code.copies()[copy.0 as usize];
-                bundle.steps.is_empty() && bundle.assignments.iter().all(|c| c.issue().is_none())
-            })
+        matches!(p.spelling, TransferSpelling::Fallthrough) && self.copies_print_no_words(&p.copies)
     }
 
     pub(super) fn transfer_with_indent(

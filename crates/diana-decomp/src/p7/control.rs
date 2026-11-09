@@ -216,10 +216,12 @@ pub enum ControlKind {
     Condition {
         tests: Vec<ConditionTest>,
         else_arm: bool,
+        other_exit: bool,
         explicit: ConditionSchedule,
     },
     Loop {
         syntax: LoopSyntax,
+        iteration: Option<OpId>,
         continue_target: LabelId,
     },
     Switch {
@@ -233,6 +235,7 @@ pub enum ControlKind {
     Try {
         chain: p6::ChainId,
         clauses: std::ops::Range<u32>,
+        handler_clauses: Vec<std::ops::Range<u32>>,
         handlers: Vec<p6::NodeId>,
         planning_scope: Option<p6::SyncId>,
         finally: Option<Finally>,

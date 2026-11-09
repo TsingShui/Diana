@@ -1,6 +1,23 @@
 # Fixture: switch-fallthrough
 
-## Current LLM semantic review
+## Current verdict — acyclic case-entry review
+
+Java, Smali, helpers and final sharedTail(I)I were reread. Case1 marks1 then keeps
+its original goto to L6, skipping case2; case2 marks2 then falls into the one case3
+body; direct case3 skips both prefixes. Each path still marks3 once, returning
+state13,23,3 respectively; default marks9 and returns9. The shared body is now a
+natural case entry, not duplicated work. Other method text is unchanged, including
+the nonidentity parameter and mixed-view copy guards.
+
+The old requirement for a graph with two predecessors was a source-layout
+qualification, not a semantic obligation. Its package check now asserts one shared
+body and the exact retained nonadjacent target. The new
+[case-entry challenge](../case-entry-joins/review.md) adds three predecessors,
+conditional work, executable selector copies and a copy-free case cycle.
+This is bounded direct LLM reading, not executed behavioral PASS. No device run
+or Java recompilation ran.
+
+## Prior LLM semantic review
 
 The Java explanation, actual Smali transfers and current ordinary Engine output
 were read together, including `mark` and `observeFloat`. The candidate is based

@@ -12,7 +12,26 @@ assembled from the Smali and copied beside it.
   `12de370`.
 - Expected behavior: the scenario table in `README.md`.
 
-## Current verdict — round 2
+## Current verdict — monitor continuation review
+
+The Java/Smali/README native-helper model and final guarded(Object,int) were
+reread. Only the ordinary goto immediately following normal release disappears;
+the containing planned goto L7 still skips exception handlers and reaches close
+outside the monitor. Return remains 50 for the normal model. Read/body failure
+still closes and suppresses while held, then releases and rethrows the original
+object. A normal close failure remains outside that catch; suppression failure
+replaces the pending error and releases. Null acquisition still follows open and
+skips all cleanup; open failure acquires nothing. No release, helper call or
+suppression order changed.
+
+This follow-up is bounded direct LLM path reading, not executed behavioral PASS.
+Corpus inspection preserves exact P2/P3/P4/P5 and original P6 graph/lock facts,
+including synchronized release targets, routing and before/after plans. Unchanged
+text reuses prior reviews. See the new
+[monitor-exit challenge](../../sync/monitor-iteration-exits/review.md) for scope
+and the initial candidate regression; no device run or Java recompilation ran.
+
+## Prior verdict — round 2
 
 Manually reread the Java explanation, Smali and fresh P6/P9 delivery at
 `09e322b`. Normal execution releases before its close. Read/body failure closes

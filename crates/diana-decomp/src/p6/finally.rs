@@ -1,5 +1,5 @@
 //! Matches a catch-all cleanup against the original normal exit before region
-//! selection. Exact P5 reads, copy-free scopes and equal propagation are required;
+//! selection. Established P5 reads, copy-free cleanup and equal propagation are required;
 //! branches and joins are matched as a graph without inventing storage bindings.
 
 mod matching;
@@ -8,11 +8,22 @@ use super::build::*;
 use super::graph::Graph;
 use super::*;
 use crate::p2::{InvokeKind, OpId, OpKind, Terminal};
-use crate::p5::{CopyLocation, Materialization, StorageMethod, StorageRead, TransferSite};
+use crate::p5::{
+    CopyLocation, Materialization, StorageMethod, StorageRead, ThrowSite, TransferSite,
+};
 
 struct Match {
     plan: FinallyPlan,
     follow: NodeId,
+}
+
+fn unhandled(f: &RegionFacts, site: ThrowSite) -> bool {
+    f.throws.iter().find(|t| t.site == site).is_some_and(|t| {
+        f.chains[t.chain.0 as usize]
+            .clauses
+            .iter()
+            .all(|c| c.target == CatchTarget::Uncaught)
+    })
 }
 
 fn operation_allowed(storage: &StorageMethod<'_>, f: &RegionFacts, op: OpId) -> bool {
@@ -43,15 +54,7 @@ fn operation_allowed(storage: &StorageMethod<'_>, f: &RegionFacts, op: OpId) -> 
     if operation.exceptional().is_none() {
         return !operation.effects().may_throw();
     }
-    f.throws
-        .iter()
-        .find(|t| t.site == crate::p5::ThrowSite::Operation(op))
-        .is_some_and(|t| {
-            f.chains[t.chain.0 as usize]
-                .clauses
-                .iter()
-                .all(|c| c.target == CatchTarget::Uncaught)
-        })
+    unhandled(f, ThrowSite::Operation(op))
 }
 
 fn copies_touch(storage: &StorageMethod<'_>, f: &RegionFacts, g: &Graph, nodes: &[NodeId]) -> bool {
@@ -65,7 +68,11 @@ fn copies_touch(storage: &StorageMethod<'_>, f: &RegionFacts, g: &Graph, nodes: 
                 TransferSite::NormalEdge(e) => {
                     if let EdgeRoute::Normal(l) = f.edges[e.0 as usize].route {
                         let l = &f.links[l.0 as usize];
-                        nodes.contains(&l.from) || nodes.contains(&l.to)
+                        // Selected-edge copies execute with the original
+                        // source outlet, not with the target cleanup node.
+                        // Body-to-cleanup copies remain before the finally;
+                        // interior/exit copies would be folded and decline it.
+                        nodes.contains(&l.from)
                     } else {
                         false
                     }
@@ -95,12 +102,14 @@ fn candidate(
     let [handler] = p.handlers.as_slice() else {
         return Ok(None);
     };
-    let clauses = &f.chains[p.chain.0 as usize].clauses;
+    let clauses = &f.chains[p.chain.0 as usize].clauses
+        [p.clause_range.start as usize..p.clause_range.end as usize];
+    let [clause] = clauses else {
+        return Ok(None);
+    };
     if p.outer_sync.is_some()
-        || p.clause_range.start != 0
-        || p.clause_range.end != 1
-        || clauses.len() != 1
-        || clauses[0].catch.is_some()
+        || clause.catch.is_some()
+        || clause.target != CatchTarget::Handler(*handler)
     {
         return Ok(None);
     }
@@ -110,11 +119,17 @@ fn candidate(
         (n.terminal && matches!(terminal, Some(Terminal::Return { .. })))
             || (g.outgoing[node.0 as usize].is_empty()
                 && !(n.terminal && matches!(terminal, Some(Terminal::Throw { .. }))))
-    }) || f
-        .throws
-        .iter()
-        .any(|t| p.body.contains(&t.node) && f.chains[t.chain.0 as usize].clauses != clauses[..1])
-    {
+    }) || f.throws.iter().any(|t| {
+        p.body.contains(&t.node)
+            && f.chains[t.chain.0 as usize].clauses.iter().any(|c| {
+                match c.target {
+                    // Nested catches stay in the body. Only this cleanup
+                    // may receive an exceptional escape from it.
+                    CatchTarget::Handler(n) => n != *handler && !p.body.contains(&n),
+                    CatchTarget::Uncaught => true,
+                }
+            })
+    }) {
         return Ok(None);
     }
     let Some(capture) = f
@@ -146,6 +161,11 @@ fn candidate(
     else {
         return Ok(None);
     };
+    // An implicit pending rethrow cannot replace a site-specific outward
+    // dispatch. Enclosing lexical delivery has not been established here.
+    if !unhandled(f, ThrowSite::Terminal(f.nodes[rethrow.0 as usize].block)) {
+        return Ok(None);
+    }
     if copies_touch(storage, f, g, &p.handler_bodies[0]) {
         return Ok(None);
     }

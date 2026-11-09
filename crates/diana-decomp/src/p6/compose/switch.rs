@@ -1,5 +1,5 @@
-//! Partitions an original switch at its distinct case entries, then orders
-//! disjoint bodies into linear fallthrough chains without copying shared work.
+//! Partitions an original switch at distinct case entries and orders its case
+//! DAG once. Nonadjacent arrivals retain original gotos; shared work has one body.
 
 use super::super::build::*;
 use super::super::graph::Graph;
@@ -178,31 +178,32 @@ fn order(
     cases: &[Case],
     follow: Option<NodeId>,
 ) -> Result<Option<Vec<usize>>, RegionError> {
-    let mut previous = filled(cases.len(), None)?;
-    for (index, case) in cases.iter().enumerate() {
+    let mut incoming = filled(cases.len(), 0usize)?;
+    for case in cases {
         if let Some(next) = case.next {
-            if previous[next].is_some() {
-                return Ok(None);
-            }
-            previous[next] = Some(index);
+            incoming[next] = incoming[next]
+                .checked_add(1)
+                .ok_or(bug("case predecessor count overflow"))?;
         }
     }
     for (index, case) in cases.iter().enumerate() {
         // A header's copy would also run on lexical fallthrough. Shared labels
         // similarly cannot execute each other's entry copies. Keep such cases
         // explicit unless P5 has already established identity copies.
-        if (previous[index].is_some() || case.arms.len() > 1) && !copy_free(storage, f, &case.arms)
-        {
+        if (incoming[index] != 0 || case.arms.len() > 1) && !copy_free(storage, f, &case.arms) {
             return Ok(None);
         }
     }
     let empty = cases.iter().position(|case| Some(case.entry) == follow);
+    let mut roots = Vec::new();
+    for (index, &count) in incoming.iter().enumerate() {
+        if count == 0 && Some(index) != empty {
+            push(&mut roots, index)?;
+        }
+    }
     let mut order = Vec::new();
     let mut seen = filled(cases.len(), false)?;
-    for (root, predecessor) in previous.iter().enumerate() {
-        if predecessor.is_some() || Some(root) == empty {
-            continue;
-        }
+    for root in roots {
         let mut at = Some(root);
         while let Some(index) = at {
             if seen[index] {
@@ -210,7 +211,17 @@ fn order(
             }
             seen[index] = true;
             push(&mut order, index)?;
-            at = cases[index].next;
+            // Several original case outlets may share this entry. Visit it
+            // adjacent only after its last predecessor; other predecessors
+            // retain explicit original gotos to its one printed label.
+            at = if let Some(next) = cases[index].next {
+                incoming[next] = incoming[next]
+                    .checked_sub(1)
+                    .ok_or(bug("case predecessor count underflow"))?;
+                (incoming[next] == 0).then_some(next)
+            } else {
+                None
+            };
         }
     }
     // A direct dispatch to the external follow must not accidentally enter the

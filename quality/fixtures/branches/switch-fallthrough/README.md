@@ -91,12 +91,22 @@ actual environment, not required tool versions. The same prepared input was
 inspected with the engine at `6d663d9` and the candidate based on that revision.
 The baseline's shared labels and accumulator fallthrough require explicit graph
 routing; the candidate supplies grouped case bodies and preserves the guarded
-parameter/mixed-view/shared-tail layouts.
+parameter/mixed-view/shared-tail layouts in that earlier comparison.
 
 `crates/diana-decomp/tests/switch_fallthrough.rs` runs nine structural/source-anchor
 checks through the ordinary Engine entry. Use
 `cargo nextest run --locked -p diana-decomp --test switch_fallthrough`.
-All nine pass on the candidate; the complete current engine set has 19 passing
+All nine passed on that candidate; the complete engine set then had 19 passing
 structural checks. The LLM semantic comparison is recorded in `review.md`.
 These observations are not execution of the independent scenario table or
 EVOLUTION behavioral regression acceptance.
+
+## Case-entry follow-up
+
+A later candidate based on ebbc003 retains sharedTail's one case3 body as natural
+cases with an original goto from nonadjacent case1. Case2 remains the actual
+fallthrough predecessor; no mark3 is duplicated. The previous explicit-graph
+qualification is no longer required by that delivered source schedule. The
+parameter and mixed-view entry-copy guards remain explicit. See review.md and
+../case-entry-joins/ for current direct reading evidence and new complexity/copy/
+cycle guards; behavioral execution remains unrun.

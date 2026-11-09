@@ -13,7 +13,22 @@ reference.
   original owner, name and full prototype; reused short names alone are ambiguous.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 
-## Current verdict — round 1, 2026-11-08
+## Current verdict — iteration-tail review
+
+Mapping and complete final class were reread; the Java pair is identical to
+algo-dp. Subjects are La;->a(Ljava/lang/String;Ljava/lang/String;)I,
+La;->b([I[II)I and La;->c([I)I, not an ambiguous short-name match. R8's original
+cached loads/indices remain intact. Recurrence stores, descending room work and
+LIS conditional/max writes precede the same extracted counters. Failure skips
+the pending update; empty LIS returns zero. No original short identity changed.
+
+This is direct LLM source/path evidence on the candidate based on `ebbc003`, not
+executed behavioral PASS. Original P2/P3/P4/P5 and relevant P6 control/exception/
+lock facts agree in corpus inspection. Unchanged member text reuses prior reviews.
+The new [iteration-tail challenge](../../loops/iteration-tail-cleanup/review.md)
+records the interacting cases and unsupported execution scope.
+
+## Prior verdict — round 1, 2026-11-08
 
 ### Semantics
 

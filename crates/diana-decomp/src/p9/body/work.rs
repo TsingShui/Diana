@@ -30,6 +30,7 @@ pub(super) enum Event {
     Anchors(ControlId),
     EmptyArmAnchors(ControlId),
     Else(TransferId),
+    ElseTransfer(TransferId),
     ElseIf(TransferId),
     LoopHead(PredicateEmission),
     CompactLoopTail(ControlId, PredicateEmission),

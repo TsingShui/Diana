@@ -13,7 +13,21 @@ was assembled from the Smali and copied beside it.
   `12de370`.
 - Expected behavior: the scenario table in `README.md`.
 
-## Current verdict — round 2
+## Current verdict — round 3
+
+Direct LLM reread against the same Java/Smali and candidate based on `ebbc003`.
+fieldReturn now has a natural try: state=10 remains before it, the saved field
+read occurs before either state=99 write, and record(99) remains outside the
+protection it implements. Mode 1 still writes/records then rethrows the original
+body exception; a record failure replaces that exception without retry.
+Normal return still uses the saved 10, never the overwritten 99.
+
+localReturn text and the reviewed folded-constant facts are unchanged. The normal
+record can still replace the saved return with a failure, and the exceptional
+record can replace the body exception. No new helper execution is claimed. This
+recovery changes the container, not return capture, call order or member identity.
+
+## Prior verdict — round 2
 
 Manually reread both Java/Smali methods and fresh P6/P9 delivery at `09e322b`,
 plus localReturn's P2/P5 products. localReturn saves 1 or 2 before record(3); its body throw records

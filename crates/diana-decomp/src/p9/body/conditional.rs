@@ -145,6 +145,7 @@ impl Expressions<'_, '_> {
                 push(work, Event::Else(fall))?;
             }
             ConditionElse::Copies => push(work, Event::Else(fall))?,
+            ConditionElse::Transfer => push(work, Event::ElseTransfer(fall))?,
             ConditionElse::None => {}
         }
         push(work, Event::Control(yes))?;
@@ -201,10 +202,7 @@ impl Expressions<'_, '_> {
         } else {
             test.when_true
         };
-        if !self.code.emission().transfers()[edge.0 as usize]
-            .copies
-            .is_empty()
-        {
+        if !self.copies_print_no_words(&self.code.emission().transfers()[edge.0 as usize].copies) {
             self.out.indent()?;
             self.selected(edge, false)?;
             self.out.put("\n")?;
@@ -222,16 +220,22 @@ impl Expressions<'_, '_> {
         Ok(())
     }
 
-    pub(super) fn else_header(&mut self, edge: TransferId) -> Result<(), RenderError> {
+    pub(super) fn else_transfer_header(&mut self, edge: TransferId) -> Result<(), RenderError> {
+        self.else_open()?;
+        self.branch_transfer(edge, true)
+    }
+
+    fn else_open(&mut self) -> Result<(), RenderError> {
         self.out.close()?;
         self.out.indent()?;
         self.out.mark_outline("else");
         self.out.put("else")?;
-        self.out.open()?;
-        if !self.code.emission().transfers()[edge.0 as usize]
-            .copies
-            .is_empty()
-        {
+        self.out.open()
+    }
+
+    pub(super) fn else_header(&mut self, edge: TransferId) -> Result<(), RenderError> {
+        self.else_open()?;
+        if !self.copies_print_no_words(&self.code.emission().transfers()[edge.0 as usize].copies) {
             self.out.indent()?;
             self.selected(edge, false)?;
             self.out.put("\n")?;

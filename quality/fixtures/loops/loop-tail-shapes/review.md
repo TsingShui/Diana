@@ -12,7 +12,24 @@ committed so a review needs no toolchain.
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 
-## Current verdict — round 2, 2026-11-08
+## Current verdict — iteration-tail review
+
+Java and final text were reread. breakInsideWhile, emptyForBody,
+infiniteWithBreak, plainWhile and scanLength gain for placements without changing
+their head-tested P6 LoopForm or first-test behavior. Break at 3 skips the update;
+nonpositive bounds return zero; scanLength still evaluates array length before
+each possible update. All tail-tested, side-effecting and truly empty while
+subjects are unchanged. Historical "stay while" notes concern head-versus-tail
+classification, not recovery of a source keyword: emptyForBody's Java itself is
+for. No body/test was reordered to imitate that spelling.
+
+This is direct LLM source/path evidence on the candidate based on `ebbc003`, not
+executed behavioral PASS. Original P2/P3/P4/P5 and relevant P6 control/exception/
+lock facts agree in corpus inspection. Unchanged member text reuses prior reviews.
+The new [iteration-tail challenge](../../loops/iteration-tail-cleanup/review.md)
+records the interacting cases and unsupported execution scope.
+
+## Prior verdict — round 2, 2026-11-08
 
 ### Semantics
 

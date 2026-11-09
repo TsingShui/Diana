@@ -8,7 +8,22 @@ with the fixture's `javac.args`/`d8.args` or the shared defaults (see
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 - Selector: `Lfixture/LoopSharedExit;`
 
-## Current verdict — round 2, 2026-11-08
+## Current verdict — iteration-tail review
+
+Java and final text were reread for flagExit([[II)I, labelledExit([[II)I and
+sharedTail([I)I. flagExit sets found/result then leaves the inner loop without a
+column update; its outer row update still precedes the next bound/found tests.
+labelledExit's return or outer break skips both pending updates. sharedTail
+retains distinct index initializations, repeated array reads and total across
+both loops; either skip path still advances its own index once.
+
+This is direct LLM source/path evidence on the candidate based on `ebbc003`, not
+executed behavioral PASS. Original P2/P3/P4/P5 and relevant P6 control/exception/
+lock facts agree in corpus inspection. Unchanged member text reuses prior reviews.
+The new [iteration-tail challenge](../../loops/iteration-tail-cleanup/review.md)
+records the interacting cases and unsupported execution scope.
+
+## Prior verdict — round 2, 2026-11-08
 
 ### Semantics
 

@@ -159,6 +159,13 @@ pub struct PredicateEmission {
 #[derive(Debug, Serialize)]
 pub enum LoopPlacement {
     Infinite,
+    For {
+        predicate: ControlId,
+        test: PredicateEmission,
+        compact: bool,
+        operation: OpId,
+        update: ControlId,
+    },
     While {
         predicate: ControlId,
         test: PredicateEmission,
@@ -194,11 +201,13 @@ pub enum IfShape {
     Empty,
 }
 /// The last condition test's original other edge either reaches the common
-/// follow, executes only its copies there, or enters its delivered body.
+/// follow, executes its boundary transfer, or enters its delivered body.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub enum ConditionElse {
     None,
     Copies,
+    /// Execute the original final other edge's copies and boundary completion.
+    Transfer,
     Body(ControlId),
 }
 #[derive(Debug, Serialize)]
@@ -350,6 +359,8 @@ pub struct EmissionPlan {
     pub(super) definition_check_uses: Vec<Vec<u32>>,
     pub(super) composed_uses: Vec<Option<ComposedExpression>>,
     pub(super) composed_operations: Vec<bool>,
+    /// The one source operation printed by its owning for header, not its block.
+    pub(super) loop_header_operations: Vec<Option<ControlId>>,
     /// By the statement whose allocation prints the payload.
     pub(super) array_literals: Vec<Option<ArrayLiteral>>,
     /// By the statement whose check prints nothing because P4 established it
@@ -457,6 +468,7 @@ impl EmissionPlan {
             definition_check_uses: Vec::new(),
             composed_uses: Vec::new(),
             composed_operations: Vec::new(),
+            loop_header_operations: Vec::new(),
             array_literals: Vec::new(),
             omitted_checks: Vec::new(),
             omitted_literals: Vec::new(),
@@ -550,6 +562,12 @@ impl EmissionPlan {
     }
     pub fn composed_use(&self, id: ExprId) -> Option<ComposedExpression> {
         self.composed_uses.get(id.0 as usize).copied().flatten()
+    }
+    pub fn loop_header_operation(&self, id: OpId) -> Option<ControlId> {
+        self.loop_header_operations
+            .get(id.0 as usize)
+            .copied()
+            .flatten()
     }
     pub fn composed_operation(&self, id: OpId) -> bool {
         self.composed_operations

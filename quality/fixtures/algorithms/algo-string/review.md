@@ -7,7 +7,23 @@ so a review needs no toolchain.
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 
-## Current verdict — round 1, 2026-11-08
+## Current verdict — iteration-tail review
+
+Java and final text were reread for indexOf(String,String) and topWords(String).
+indexOf advances only after its fallback, character comparison and match-length
+test; an early successful return skips the update. Empty pattern still returns
+before touching text. topWords advances after its optional nonempty-word
+get/unbox/count/put, including the empty-word skip path. Exceptions skip updates.
+The captured array length, regex units, later iterator traversal, prefix and
+reverse remain unchanged.
+
+This is direct LLM source/path evidence on the candidate based on `ebbc003`, not
+executed behavioral PASS. Original P2/P3/P4/P5 and relevant P6 control/exception/
+lock facts agree in corpus inspection. Unchanged member text reuses prior reviews.
+The new [iteration-tail challenge](../../loops/iteration-tail-cleanup/review.md)
+records the interacting cases and unsupported execution scope.
+
+## Prior verdict — round 1, 2026-11-08
 
 ### Semantics
 

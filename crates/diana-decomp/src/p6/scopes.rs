@@ -240,19 +240,24 @@ fn select(
     let mut follow = None;
     let mut separation = None;
     let mut fallthroughs = 0usize;
+    let mut shared = true;
     for exit in exits.iter_mut() {
         obligations(storage, f, g, exit)?;
         if let SyncExitKind::Follow(target) = exit.kind {
             fallthroughs += 1;
             if follow.is_some_and(|old| old != target) {
-                separation = Some(LockSeparation::IncompatibleContinuation {
-                    release: exit.release,
-                    target,
-                });
+                shared = false;
             } else {
                 follow = Some(target);
             }
         }
+    }
+    // Different closed outlets have no implicit shared continuation. Their
+    // original targets stay explicit: release/routing block continuations carry
+    // each goto, or selected loop context supplies its break/continue role.
+    // This does not make path-specific post-release copies representable.
+    if !shared {
+        follow = None;
     }
     for exit in exits {
         if matches!(exit.kind, SyncExitKind::Follow(_)) && fallthroughs == 1 {

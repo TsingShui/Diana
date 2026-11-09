@@ -56,15 +56,30 @@ impl Expressions<'_, '_> {
         self.out.indent()?;
         self.out.mark_outline("catch");
         self.out.put("catch (")?;
-        let ControlKind::Try { chain, clauses, .. } = &self.code.controls()[id.0 as usize].kind
+        let ControlKind::Try {
+            chain,
+            handler_clauses,
+            ..
+        } = &self.code.controls()[id.0 as usize].kind
         else {
             return Err(RenderError::Invariant("catch lost its try"));
         };
-        let clause = &self.code.chains()[chain.0 as usize].clauses[clauses.start as usize + index];
+        let group = handler_clauses
+            .get(index)
+            .ok_or(RenderError::Invariant("catch lost its clause group"))?;
         // The handler block follows immediately, so the clause
         // prints only the type it catches; the route target is the
         // enclosing catch itself and needs no second mention.
-        self.clause_type(clause)?;
+        for (i, clause) in self.code.chains()[chain.0 as usize].clauses
+            [group.start as usize..group.end as usize]
+            .iter()
+            .enumerate()
+        {
+            if i != 0 {
+                self.out.put(" | ")?;
+            }
+            self.clause_type(clause)?;
+        }
         self.out.put(")")?;
         self.out.open()?;
         Ok(())

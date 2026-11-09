@@ -31,13 +31,20 @@ use super::transfers::transfers;
 use super::*;
 use crate::p5::StorageMethod;
 
+pub(super) fn loop_members(
+    storage: &StorageMethod<'_>,
+    f: &mut RegionFacts,
+    g: &Graph,
+) -> Result<(), RegionError> {
+    loop_exits::construct(storage, f, g)
+}
+
 pub(super) fn construct(
     storage: &StorageMethod<'_>,
     f: &mut RegionFacts,
     g: &Graph,
     s: &Structure,
 ) -> Result<(), RegionError> {
-    loop_exits::construct(storage, f, g)?;
     let mut owners = Vec::new();
     for n in 0..f.nodes.len() {
         let node = NodeId(id(n)?);

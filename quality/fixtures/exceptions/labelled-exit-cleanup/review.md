@@ -12,7 +12,24 @@ assembled from the Smali and copied beside it.
   `12de370`.
 - Expected behavior: the scenario table in `README.md`.
 
-## Current verdict — round 2
+## Current verdict — iteration-tail review
+
+The Java explanation, actual Smali, README helper model and final scan(II)I were
+reread. Only the inner column becomes for; the outer while keeps its separate
+row updates. Limit match closes, updates row and continues OUTER without a
+column update. Negative closes then breaks outer with neither update; threshold
+closes then returns 111 without either update. Read failure still closes,
+suppresses on the original throwable and rethrows. A failing normal close cannot
+retry or increment. The normal 48, limit-match 4, threshold 111, acquisition-failure
+and zero-row paths retain their recorded calls.
+
+This is direct LLM source/path evidence on the candidate based on `ebbc003`, not
+executed behavioral PASS. Original P2/P3/P4/P5 and relevant P6 control/exception/
+lock facts agree in corpus inspection. Unchanged member text reuses prior reviews.
+The new [iteration-tail challenge](../../loops/iteration-tail-cleanup/review.md)
+records the interacting cases and unsupported execution scope.
+
+## Prior verdict — round 2
 
 Manually reread the Java explanation, Smali and fresh P6/P9 delivery at
 `09e322b`, using the README's native-helper models. Continue closes before the

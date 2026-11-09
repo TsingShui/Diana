@@ -7,7 +7,22 @@ so a review needs no toolchain.
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 
-## Current verdict — round 1, 2026-11-08
+## Current verdict — iteration-tail review
+
+Java and final text were reread for bfs(int[][],int), dfs(int[][],boolean[],int)
+and components(int[][]). Neighbor updates follow the same tested edge, distance
+write, boxing/enqueue or recursive count addition. A failed access/call does not
+advance the counter. DFS's visited early return/write is unchanged; components
+counts only after a successful DFS. The queue's outer while and all original
+array/queue/call ordering remain intact.
+
+This is direct LLM source/path evidence on the candidate based on `ebbc003`, not
+executed behavioral PASS. Original P2/P3/P4/P5 and relevant P6 control/exception/
+lock facts agree in corpus inspection. Unchanged member text reuses prior reviews.
+The new [iteration-tail challenge](../../loops/iteration-tail-cleanup/review.md)
+records the interacting cases and unsupported execution scope.
+
+## Prior verdict — round 1, 2026-11-08
 
 ### Semantics
 

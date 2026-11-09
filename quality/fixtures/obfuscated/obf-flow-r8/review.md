@@ -13,7 +13,42 @@ reference.
   original owner, name and full prototype; reused short names alone are ambiguous.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 
-## Current verdict — round 1, 2026-11-08
+## Current verdict — iteration-tail review
+
+Mapping and changed Lb;->b([I)I were reread against the identical Java explanation.
+MIN_VALUE skips advance/count but still updates the index. DONE, a.c, exits via
+L8 before update. The original bound, this.a(v3), count-after-success and normal/
+exceptional this.b write-back ordering remain intact. Other methods and short
+member identities are unchanged.
+
+This is direct LLM source/path evidence on the candidate based on `ebbc003`, not
+executed behavioral PASS. Original P2/P3/P4/P5 and relevant P6 control/exception/
+lock facts agree in corpus inspection. Unchanged member text reuses prior reviews.
+The new [iteration-tail challenge](../../loops/iteration-tail-cleanup/review.md)
+records the interacting cases and unsupported execution scope.
+
+## Prior verdict — round 2
+
+LLM reread of the Java explanation, delivered original facts, current text and
+mapping for `Lb;->b([I)I` (original ComplexFlow.run). The candidate is based on
+`ebbc003`. Pairing uses owner and full prototype, not the overloaded short name.
+
+The changed try includes only nonthrowing counter prefixes. A MIN_VALUE element
+goes to the index update without calling a(I)La; or increasing the applied count.
+Enum DONE is a.c; reaching it exits to the normal cleanup. Other inputs call
+a(I)La; with the original loaded element and count only after success. Both
+cleanup routes write this.b + applied once, with the handler rethrowing its
+captured object. A cleanup failure is not caught by the same cleanup handler.
+Null input can fail only after applied is initialized to zero. No original
+short member identity or available body was dropped.
+
+Other method text is unchanged. Existing enum/ternary/naming observations remain,
+including a.c denoting DONE and this.b denoting steps; generated local shadowing
+does not authorize treating a short name as a different member. This is manual
+path evidence under the source's ordinary helper/VM assumptions, not executed
+behavioral acceptance.
+
+## Prior verdict — round 1, 2026-11-08
 
 ### Semantics
 

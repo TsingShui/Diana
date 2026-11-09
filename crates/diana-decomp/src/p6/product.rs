@@ -181,6 +181,7 @@ impl LoopCondition {
 pub struct LoopPlan {
     pub(super) id: LoopId,
     pub(super) header: NodeId,
+    pub(super) iteration: Option<LoopUpdate>,
     pub(super) members: Vec<NodeId>,
     pub(super) evaluation: Vec<NodeId>,
     pub(super) lexical_members: Vec<NodeId>,
@@ -190,13 +191,41 @@ pub struct LoopPlan {
     pub(super) follow: Option<NodeId>,
     pub(super) form: LoopForm,
 }
+/// One original phase-free pure self-update followed by its original backedge.
+/// It executes after the body and before the next head predicate.
+#[derive(Debug)]
+pub struct LoopUpdate {
+    pub(super) entry: NodeId,
+    pub(super) operation: OpId,
+    pub(super) repeat: LinkId,
+    pub(super) nodes: Vec<NodeId>,
+}
+impl LoopUpdate {
+    pub fn entry(&self) -> NodeId {
+        self.entry
+    }
+    pub fn operation(&self) -> OpId {
+        self.operation
+    }
+    pub fn repeat(&self) -> LinkId {
+        self.repeat
+    }
+    pub fn nodes(&self) -> &[NodeId] {
+        &self.nodes
+    }
+}
 impl LoopPlan {
+    pub fn iteration(&self) -> Option<&LoopUpdate> {
+        self.iteration.as_ref()
+    }
     pub fn id(&self) -> LoopId {
         self.id
     }
     pub fn header(&self) -> NodeId {
         self.header
     }
+    /// Established cycle core, including internally entered handler rejoin
+    /// corridors when normal-dominance roots alone cannot establish the loop.
     pub fn members(&self) -> &[NodeId] {
         &self.members
     }
@@ -227,7 +256,12 @@ impl LoopPlan {
             LoopForm::Infinite => None,
         }
     }
+    /// Source continuation: the supplied iteration update, a tail predicate,
+    /// or the original head. This does not retarget an original link.
     pub fn continue_target(&self) -> NodeId {
+        if let Some(iteration) = &self.iteration {
+            return iteration.entry;
+        }
         match self.form {
             LoopForm::DoWhile(c) => c.node,
             _ => self.header,
@@ -421,13 +455,16 @@ impl ConditionTest {
     }
 }
 /// Ordered short-circuit tests. The shared arm is entered by every `select` link;
-/// the last `other` link reaches the other result arm or the follow directly.
+/// the last `other` link reaches the other result arm, common follow or an
+/// enclosing completion boundary. A no-body boundary remains a real outlet.
 #[derive(Debug)]
 pub struct ConditionPlan {
     pub(super) id: ConditionId,
     pub(super) tests: Vec<ConditionTest>,
     pub(super) shared: NodeId,
     pub(super) else_arm: bool,
+    /// The final other edge leaves at a context boundary, not the common follow.
+    pub(super) other_exit: bool,
     pub(super) explicit: Option<ConditionSchedule>,
 }
 /// Explicit alternative of an accepted condition. Child interiors, entry and
@@ -486,6 +523,11 @@ impl ConditionPlan {
     pub fn else_arm(&self) -> bool {
         self.else_arm
     }
+    /// No body is owned for this arm, but its original boundary transfer must
+    /// execute instead of falling through the condition's normal completion.
+    pub fn other_exit(&self) -> bool {
+        self.other_exit
+    }
 }
 #[derive(Debug)]
 pub enum RegionKind {
@@ -516,7 +558,8 @@ pub enum RegionKind {
         exits: Vec<LinkId>,
     },
 }
-/// Children are positional: If=(header,true,false), Loop=(body),
+/// Children are positional: If=(header,true,false),
+/// Loop=(body,predicate?,update?),
 /// Switch=(header,body) or (header,case-groups...), Try=(body,handlers...),
 /// Sync=(enter,body,cleanup...).
 /// A display alternative over selected If regions. The source tree stays intact.
@@ -644,6 +687,7 @@ pub struct TryPlan {
     pub(super) body: Vec<NodeId>,
     pub(super) handlers: Vec<NodeId>,
     pub(super) handler_bodies: Vec<Vec<NodeId>>,
+    pub(super) handler_clauses: Vec<std::ops::Range<u32>>,
     pub(super) finally: Option<FinallyPlan>,
     pub(super) members: Vec<NodeId>,
     pub(super) follow: Option<NodeId>,
@@ -672,6 +716,10 @@ impl TryPlan {
     }
     pub fn handler_bodies(&self) -> &[Vec<NodeId>] {
         &self.handler_bodies
+    }
+    /// Ordered contiguous original clauses delivered to each unique handler body.
+    pub fn handler_clauses(&self) -> &[std::ops::Range<u32>] {
+        &self.handler_clauses
     }
     pub fn finally(&self) -> Option<&FinallyPlan> {
         self.finally.as_ref()
@@ -768,8 +816,10 @@ pub enum SyncLoopTransfer {
     Break,
     Continue,
 }
-/// The outlet's original continuation. Abrupt intents carry no new dispatcher
-/// state; a non-representable continuation keeps the scope explicit instead.
+/// The outlet's original continuation and supplied source role. Selected loop
+/// context can complete Follow(update) as Continue without changing its target
+/// or phases. Abrupt intents carry no new dispatcher state; a non-representable
+/// continuation keeps the scope explicit instead.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyncExitKind {
     Follow(NodeId),
@@ -862,6 +912,8 @@ impl SyncPlan {
     pub fn members(&self) -> &[NodeId] {
         &self.members
     }
+    /// The shared normal follow, not a target invented for distinct outlets.
+    /// None permits closed explicit outlet continuations with no fallthrough.
     pub fn follow(&self) -> Option<NodeId> {
         self.follow
     }

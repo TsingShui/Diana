@@ -53,6 +53,8 @@ fn construct(
     super::locks::construct(storage, f, &graph)?;
     super::protection::plan(storage, f, &graph, &structure)?;
     super::finally::construct(storage, f, &graph)?;
+    super::compose::loop_members(storage, f, &graph)?;
+    super::loops::iterations(storage, f, &graph)?;
     super::compose::construct(storage, f, &graph, &structure)
 }
 pub(super) fn push<T>(v: &mut Vec<T>, x: T) -> Result<(), RegionError> {

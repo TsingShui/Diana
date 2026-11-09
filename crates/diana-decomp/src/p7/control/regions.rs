@@ -35,6 +35,7 @@ fn kind(c: &mut Context<'_, '_>, r: &p6::Region) -> Result<ControlKind, Expressi
             };
             ControlKind::Loop {
                 syntax,
+                iteration: p.iteration().map(|step| step.operation()),
                 continue_target: label(c, p.continue_target())?,
             }
         }
@@ -62,6 +63,13 @@ fn kind(c: &mut Context<'_, '_>, r: &p6::Region) -> Result<ControlKind, Expressi
             ControlKind::Try {
                 chain: p.chain(),
                 clauses: p.clauses(),
+                handler_clauses: {
+                    let mut groups = Vec::new();
+                    for range in p.handler_clauses() {
+                        push(&mut groups, range.clone())?;
+                    }
+                    groups
+                },
                 handlers: ids(p.handlers(), |n| n)?,
                 planning_scope: p.outer_sync(),
                 finally: p
@@ -131,6 +139,7 @@ fn condition(
     Ok(ControlKind::Condition {
         tests,
         else_arm: plan.else_arm(),
+        other_exit: plan.other_exit(),
         explicit: ConditionSchedule {
             children: ids(explicit.children(), |r| ControlId(r.0))?,
             completions,

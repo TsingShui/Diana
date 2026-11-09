@@ -31,11 +31,10 @@ pub(super) fn deliveries(f: &RegionFacts) -> Result<Vec<ExceptionDelivery>, Regi
                 let actual = protection::handlers(&f.chains[t.chain.0 as usize]);
                 let wanted = &f.chains[p.chain.0 as usize].clauses
                     [p.clause_range.start as usize..p.clause_range.end as usize];
-                if !protection::suffix(actual, wanted) {
+                let Some(range) = protection::matching_clauses(actual, wanted) else {
                     continue;
-                }
-                let start = actual.len() - wanted.len();
-                for &edge in &t.edges[start..actual.len()] {
+                };
+                for &edge in &t.edges[range] {
                     if !matches!(
                         out[edge.0 as usize],
                         ExceptionDelivery::ImpossibleRelease(_)
@@ -56,20 +55,44 @@ pub(super) fn protect(
     loop {
         let selected = deliveries(f)?;
         let mut withdraw = filled(f.regions.len(), false)?;
+        let mut scopes = filled(f.tries.len(), None)?;
+        for region in &f.regions {
+            if let RegionKind::Try(id) = region.kind {
+                scopes[id.0 as usize] = Some(region.id);
+            }
+        }
         for t in &f.throws {
             let mut explicit = false;
             let mut natural = false;
+            let mut previous: Option<RegionId> = None;
+            let mut priority_conflict = false;
             for (&edge, c) in t.edges.iter().zip(&f.chains[t.chain.0 as usize].clauses) {
                 if c.target == CatchTarget::Uncaught {
                     continue;
                 }
                 match selected[edge.0 as usize] {
                     ExceptionDelivery::Explicit => explicit = true,
-                    ExceptionDelivery::Catch(_) => natural = true,
+                    ExceptionDelivery::Catch(id) => {
+                        natural = true;
+                        let scope = scopes[id.0 as usize]
+                            .ok_or(bug("catch delivery lost its selected scope"))?;
+                        if let Some(inner) = previous {
+                            // Earlier clauses must be selected before outer catches.
+                            let mut at = Some(inner);
+                            while let Some(parent) = at {
+                                if parent == scope {
+                                    break;
+                                }
+                                at = f.parents[parent.0 as usize];
+                            }
+                            priority_conflict |= at.is_none();
+                        }
+                        previous = Some(scope);
+                    }
                     _ => {}
                 }
             }
-            if !explicit || !natural {
+            if !natural || (!explicit && !priority_conflict) {
                 continue;
             }
             for &edge in &t.edges {
@@ -127,6 +150,46 @@ pub(super) fn protect(
         }
     }
 }
+// Finalize source continuation roles only against selected enclosing loops.
+// Earlier lock construction retains the exact target/routing/copy schedule;
+// an iteration update may establish its source continue target only later.
+fn contextual_exit(
+    f: &RegionFacts,
+    region: usize,
+    original: SyncExitKind,
+) -> Result<SyncExitKind, LockSeparation> {
+    if !matches!(
+        original,
+        SyncExitKind::Follow(_) | SyncExitKind::Loop { .. }
+    ) {
+        return Ok(original);
+    }
+    let mut at = f.parents[region];
+    while let Some(parent) = at {
+        if let RegionKind::Loop(id) = f.regions[parent.0 as usize].kind {
+            let plan = &f.loops[id.0 as usize];
+            match original {
+                SyncExitKind::Follow(target)
+                    if plan.iteration().is_some() && plan.continue_target() == target =>
+                {
+                    return Ok(SyncExitKind::Loop {
+                        loop_id: id,
+                        kind: SyncLoopTransfer::Continue,
+                        target,
+                    });
+                }
+                SyncExitKind::Loop { loop_id, .. } if loop_id == id => return Ok(original),
+                _ => {}
+            }
+        }
+        at = f.parents[parent.0 as usize];
+    }
+    match original {
+        SyncExitKind::Loop { loop_id, .. } => Err(LockSeparation::LoopContext(loop_id)),
+        _ => Ok(original),
+    }
+}
+
 pub(super) fn scope_contexts(
     storage: &StorageMethod<'_>,
     f: &mut RegionFacts,
@@ -137,22 +200,14 @@ pub(super) fn scope_contexts(
             continue;
         };
         let mut failure = None;
-        for exit in &f.synchronized[scope.0 as usize].exits {
-            let SyncExitKind::Loop { loop_id, .. } = exit.kind else {
-                continue;
-            };
-            let mut at = f.parents[index];
-            let mut found = false;
-            while let Some(parent) = at {
-                if matches!(f.regions[parent.0 as usize].kind,RegionKind::Loop(id)if id==loop_id) {
-                    found = true;
+        for exit in 0..f.synchronized[scope.0 as usize].exits.len() {
+            let original = f.synchronized[scope.0 as usize].exits[exit].kind;
+            match contextual_exit(f, index, original) {
+                Ok(kind) => f.synchronized[scope.0 as usize].exits[exit].kind = kind,
+                Err(reason) => {
+                    failure = Some(reason);
                     break;
                 }
-                at = f.parents[parent.0 as usize];
-            }
-            if !found {
-                failure = Some(LockSeparation::LoopContext(loop_id));
-                break;
             }
         }
         if let Some(reason) = failure {

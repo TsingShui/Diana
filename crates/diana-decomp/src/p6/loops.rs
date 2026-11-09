@@ -1,3 +1,14 @@
+mod entries;
+mod iteration;
+
+pub(super) fn iterations(
+    storage: &crate::p5::StorageMethod<'_>,
+    f: &mut RegionFacts,
+    g: &Graph,
+) -> Result<(), RegionError> {
+    iteration::construct(storage, f, g)
+}
+
 use super::build::*;
 use super::dominance::Structure;
 use super::graph::Graph;
@@ -18,30 +29,37 @@ pub(super) fn construct(
             push(&mut heads[link.to.0 as usize], link.id)?;
         }
     }
+    let mut closed_entries = entries::construct(storage, f, g, s, &mut heads)?;
     for (header, latches) in heads.into_iter().enumerate() {
         if latches.is_empty() {
             continue;
         }
+        let closed = closed_entries[header].take();
         let header = NodeId(id(header)?);
-        let mut member = filled(n, false)?;
-        member[header.0 as usize] = true;
-        let mut queue = Vec::new();
-        for &l in &latches {
-            let from = f.links[l.0 as usize].from;
-            if !member[from.0 as usize] {
-                member[from.0 as usize] = true;
-                push(&mut queue, from)?;
-            }
-        }
-        while let Some(p) = queue.pop() {
-            for &l in &g.incoming[p.0 as usize] {
-                let q = f.links[l.0 as usize].from;
-                if !member[q.0 as usize] && s.dom.dominates(header.0 as usize, q.0 as usize) {
-                    member[q.0 as usize] = true;
-                    push(&mut queue, q)?;
+        let member = if let Some(members) = closed {
+            members
+        } else {
+            let mut member = filled(n, false)?;
+            member[header.0 as usize] = true;
+            let mut queue = Vec::new();
+            for &l in &latches {
+                let from = f.links[l.0 as usize].from;
+                if !member[from.0 as usize] {
+                    member[from.0 as usize] = true;
+                    push(&mut queue, from)?;
                 }
             }
-        }
+            while let Some(p) = queue.pop() {
+                for &l in &g.incoming[p.0 as usize] {
+                    let q = f.links[l.0 as usize].from;
+                    if !member[q.0 as usize] && s.dom.dominates(header.0 as usize, q.0 as usize) {
+                        member[q.0 as usize] = true;
+                        push(&mut queue, q)?;
+                    }
+                }
+            }
+            member
+        };
         if g.external_entry(f, &member, header) {
             push(
                 &mut f.issues,
@@ -181,6 +199,7 @@ pub(super) fn construct(
             LoopPlan {
                 id: loop_id,
                 header,
+                iteration: None,
                 lexical_members: Vec::new(),
                 private_exits: Vec::new(),
                 members,
@@ -199,19 +218,19 @@ pub(super) fn construct(
         let mut members = Vec::new();
         for i in 0..n {
             if s.component[i] == component {
-                push(&mut members, i)?;
+                push(&mut members, NodeId(id(i)?))?;
             }
         }
-        if !f.loops.iter().any(|l| {
-            members
-                .iter()
-                .all(|&i| s.dom.dominates(l.header.0 as usize, i))
-        }) && let Some(&entry) = members.first()
+        if !f
+            .loops
+            .iter()
+            .any(|l| members.iter().all(|i| l.members.contains(i)))
+            && let Some(&entry) = members.first()
         {
             push(
                 &mut f.issues,
                 PlanningIssue::Graph {
-                    entry: NodeId(id(entry)?),
+                    entry,
                     reason: RecoveryReason::Irreducible,
                 },
             )?;

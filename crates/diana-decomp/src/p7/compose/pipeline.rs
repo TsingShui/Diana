@@ -45,8 +45,8 @@ pub(in crate::p7) fn construct(
         continues::drop_trailing_continues(code)
     );
     traced!(
-        "drop_duplicate_continuation",
-        continuations::drop_duplicate_continuation(code)
+        "drop_completed_continuations",
+        continuations::drop_completed_continuations(code)
     );
     traced!(
         "collapse_planned_continuations",

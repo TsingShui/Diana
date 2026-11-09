@@ -1,3 +1,6 @@
+mod loop_scope;
+mod prefix;
+
 use super::build::*;
 use super::dominance::Structure;
 use super::graph::Graph;
@@ -167,6 +170,26 @@ pub(super) fn suffix(actual: &[HandlerClause], wanted: &[HandlerClause]) -> bool
             .zip(wanted)
             .all(|(a, b)| a.catch == b.catch && a.target == b.target)
 }
+/// Matches one unchanged ordered clause interval, without guessing hierarchy.
+pub(super) fn matching_clauses(
+    actual: &[HandlerClause],
+    wanted: &[HandlerClause],
+) -> Option<std::ops::Range<usize>> {
+    if wanted.is_empty() || wanted.len() > actual.len() {
+        return None;
+    }
+    let mut found = None;
+    for (start, slice) in actual.windows(wanted.len()).enumerate() {
+        if suffix(slice, wanted) {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(start..start + wanted.len());
+        }
+    }
+    found
+}
+
 pub(super) fn reachable(
     storage: &StorageMethod<'_>,
     f: &RegionFacts,
@@ -328,6 +351,24 @@ fn handler_frontiers(
     }
     Ok(frontiers)
 }
+fn guarded(f: &RegionFacts, wanted: &[HandlerClause], inside: impl Fn(NodeId) -> bool) -> bool {
+    f.throws.iter().filter(|t| inside(t.node)).all(|t| {
+        t.edges.iter().all(|e| {
+            matches!(
+                f.edges[e.0 as usize].route,
+                EdgeRoute::Exception {
+                    delivery: ExceptionDelivery::ImpossibleRelease(_),
+                    ..
+                }
+            )
+        }) || matching_clauses(handlers(&f.chains[t.chain.0 as usize]), wanted).is_some()
+            || f.chains[t.chain.0 as usize]
+                .clauses
+                .iter()
+                .all(|c| matches!(c.target, CatchTarget::Handler(n) if inside(n)))
+    })
+}
+
 struct Pattern {
     chain: ChainId,
     start: usize,
@@ -356,27 +397,41 @@ pub(super) fn plan(
                 continue;
             }
             let clauses = handlers(&f.chains[t.chain.0 as usize]);
-            for start in 0..clauses.len() {
-                let wanted = &clauses[start..];
-                if patterns.iter().any(|p| {
-                    p.outer == outer
-                        && p.end - p.start == wanted.len()
-                        && suffix(
-                            &f.chains[p.chain.0 as usize].clauses[p.start..p.end],
-                            wanted,
-                        )
-                }) {
-                    continue;
+            // An observed proper suffix supplies an enclosing protection layer.
+            // Use its longest match as the immediate outer layer, not an arbitrary
+            // search over all possible clause partitions.
+            let inherited = f
+                .chains
+                .iter()
+                .map(handlers)
+                .filter(|outer| {
+                    !outer.is_empty() && outer.len() < clauses.len() && suffix(clauses, outer)
+                })
+                .map(|outer| outer.len())
+                .max();
+            for end in std::iter::once(clauses.len()).chain(inherited.map(|n| clauses.len() - n)) {
+                for start in 0..end {
+                    let wanted = &clauses[start..end];
+                    if patterns.iter().any(|p| {
+                        p.outer == outer
+                            && p.end - p.start == wanted.len()
+                            && suffix(
+                                &f.chains[p.chain.0 as usize].clauses[p.start..p.end],
+                                wanted,
+                            )
+                    }) {
+                        continue;
+                    }
+                    push(
+                        &mut patterns,
+                        Pattern {
+                            chain: t.chain,
+                            start,
+                            end,
+                            outer,
+                        },
+                    )?;
                 }
-                push(
-                    &mut patterns,
-                    Pattern {
-                        chain: t.chain,
-                        start,
-                        end: clauses.len(),
-                        outer,
-                    },
-                )?;
             }
         }
     }
@@ -389,16 +444,37 @@ pub(super) fn plan(
         } = pattern;
         let wanted = &f.chains[chain.0 as usize].clauses[start..end];
         let mut targets = Vec::new();
+        let mut handler_clauses: Vec<std::ops::Range<u32>> = Vec::new();
         let mut repeated = false;
-        for clause in wanted {
+        for (offset, clause) in wanted.iter().enumerate() {
             let CatchTarget::Handler(target) = clause.target else {
                 continue;
             };
-            if targets.contains(&target) {
+            let at = id(start + offset)?;
+            if targets.last() == Some(&target)
+                && clause.catch.is_some()
+                && offset > 0
+                && wanted[offset - 1].catch.is_some()
+            {
+                let group = handler_clauses
+                    .last_mut()
+                    .ok_or(bug("catch group lost its clauses"))?;
+                group.end = id(start + offset + 1)?;
+                continue;
+            }
+            // Nonadjacent aliases cannot be reordered without hierarchy facts;
+            // a suffix cannot acquire a handler also used by its outer prefix.
+            if targets.contains(&target)
+                || f.chains[chain.0 as usize].clauses[..start]
+                    .iter()
+                    .chain(&f.chains[chain.0 as usize].clauses[end..])
+                    .any(|c| c.target == clause.target)
+            {
                 repeated = true;
                 break;
             }
             push(&mut targets, target)?;
+            push(&mut handler_clauses, at..id(start + offset + 1)?)?;
         }
         if repeated || targets.is_empty() {
             continue;
@@ -408,7 +484,9 @@ pub(super) fn plan(
             if outer.is_some_and(|id| !f.synchronized[id.0 as usize].body.contains(&t.node)) {
                 continue;
             }
-            if suffix(handlers(&f.chains[t.chain.0 as usize]), wanted) && !seeds.contains(&t.node) {
+            if matching_clauses(handlers(&f.chains[t.chain.0 as usize]), wanted).is_some()
+                && !seeds.contains(&t.node)
+            {
                 push(&mut seeds, t.node)?;
             }
         }
@@ -449,7 +527,7 @@ pub(super) fn plan(
         // A returning or throwing handler need not share the body's normal
         // continuation. Membership and entrance checks below still prove the
         // entire candidate around this boundary.
-        let follow = s.common_follow(&follows).or(normal_follow);
+        let mut follow = s.common_follow(&follows).or(normal_follow);
         let mut excluded = filled(f.nodes.len(), false)?;
         if let Some(scope) = outer {
             for (i, slot) in excluded.iter_mut().enumerate() {
@@ -458,60 +536,20 @@ pub(super) fn plan(
                     .contains(&NodeId(id(i)?));
             }
         }
-        for &target in &targets {
-            excluded[target.0 as usize] = true;
-        }
-        let body = reachable(storage, f, g, &seeds, follow, &excluded, true)?;
-        let mut entries = Vec::new();
-        if body[0] {
-            push(&mut entries, NodeId(0))?;
-        }
-        for l in &f.links {
-            if body[l.to.0 as usize] && !body[l.from.0 as usize] && !entries.contains(&l.to) {
-                push(&mut entries, l.to)?;
+        for clause in &handlers(&f.chains[chain.0 as usize])[start..] {
+            if let CatchTarget::Handler(target) = clause.target {
+                excluded[target.0 as usize] = true;
             }
         }
-        for (from, edges) in g.exceptions.iter().enumerate() {
-            if body[from] {
-                continue;
-            }
-            for &e in edges {
-                if Graph::exception_possible(f, e)
-                    && let Some(to) = Graph::exception_target(f, storage, e)
-                    && body[to.0 as usize]
-                    && !entries.contains(&to)
-                {
-                    push(&mut entries, to)?;
-                }
-            }
-        }
-        if entries.len() != 1 {
+        let mut body = reachable(storage, f, g, &seeds, follow, &excluded, true)?;
+        let Some(mut entry) = prefix::complete(storage, f, g, &mut body, follow, &excluded)? else {
             continue;
-        }
-        let entry = entries[0];
-        let guarded =
-            f.throws
-                .iter()
-                .filter(|t| body[t.node.0 as usize])
-                .all(|t| {
-                    t.edges.iter().all(|e| {
-                        matches!(
-                            f.edges[e.0 as usize].route,
-                            EdgeRoute::Exception {
-                                delivery: ExceptionDelivery::ImpossibleRelease(_),
-                                ..
-                            }
-                        )
-                    }) || suffix(handlers(&f.chains[t.chain.0 as usize]), wanted)
-                        || f.chains[t.chain.0 as usize].clauses.iter().all(
-                            |c| matches!(c.target,CatchTarget::Handler(n)if body[n.0 as usize]),
-                        )
-                });
-        if !guarded {
+        };
+        if !guarded(f, wanted, |n| body[n.0 as usize]) {
             continue;
         }
         let mut members = body;
-        let body_nodes = list(&members)?;
+        let mut body_nodes = list(&members)?;
         let mut valid = true;
         let mut handler_bodies = Vec::new();
         for &target in &targets {
@@ -531,6 +569,14 @@ pub(super) fn plan(
                     exclude[other.0 as usize] = true;
                 }
             }
+            // Later clauses belong to the observed outer protection layer.
+            // A loop can make its cleanup reachable again from this handler;
+            // that does not make the outer capture private catch content.
+            for clause in &handlers(&f.chains[chain.0 as usize])[end..] {
+                if let CatchTarget::Handler(outer) = clause.target {
+                    exclude[outer.0 as usize] = true;
+                }
+            }
             for &frontier in &handler_frontiers[target.0 as usize] {
                 exclude[frontier.0 as usize] = true;
             }
@@ -538,7 +584,8 @@ pub(super) fn plan(
             if !arm[target.0 as usize]
                 || f.throws.iter().any(|t| {
                     arm[t.node.0 as usize]
-                        && suffix(handlers(&f.chains[t.chain.0 as usize]), wanted)
+                        && matching_clauses(handlers(&f.chains[t.chain.0 as usize]), wanted)
+                            .is_some()
                 })
             {
                 valid = false;
@@ -585,6 +632,24 @@ pub(super) fn plan(
         if !valid || !closed_entry(storage, f, g, &members, entry) {
             continue;
         }
+        if outer.is_none()
+            && let Some(scope) =
+                loop_scope::enclosing(storage, f, g, &body_nodes, &handler_bodies, wanted)
+        {
+            let mut expanded = filled(f.nodes.len(), false)?;
+            for &node in scope.members.iter().chain(handler_bodies.iter().flatten()) {
+                expanded[node.0 as usize] = true;
+            }
+            if closed_entry(storage, f, g, &expanded, scope.header) {
+                body_nodes.clear();
+                for &node in &scope.members {
+                    push(&mut body_nodes, node)?;
+                }
+                members = expanded;
+                entry = scope.header;
+                follow = scope.follow;
+            }
+        }
         let plan = TryPlan {
             id: TryId(id(f.tries.len())?),
             chain,
@@ -594,6 +659,7 @@ pub(super) fn plan(
             body: body_nodes,
             handlers: targets,
             handler_bodies,
+            handler_clauses,
             finally: None,
             members: list(&members)?,
             follow,

@@ -8,7 +8,23 @@ Kotlin loop forms: `until`, `downTo`, `step`, `repeat`, `forEach` and labelled
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 - Selector: `Lfixture/Case;`
 
-## Current verdict — round 1, 2026-11-08
+## Current verdict — iteration-tail review
+
+Case.kt and final text were reread. Lfixture/Case;->labelled([[I)I now places the
+outer array index in a for: negative exits both loops without updates, while
+zero exits only the inner loop and performs the outer update, matching the
+original continue@outer. stepped(I)I retains its one original progression-helper
+call, nonnegative-last guard, add-before-endpoint-test and no +3 after reaching
+the endpoint. No absent library declaration or helper behavior was inferred.
+The other four methods are unchanged.
+
+This is direct LLM source/path evidence on the candidate based on `ebbc003`, not
+executed behavioral PASS. Original P2/P3/P4/P5 and relevant P6 control/exception/
+lock facts agree in corpus inspection. Unchanged member text reuses prior reviews.
+The new [iteration-tail challenge](../../loops/iteration-tail-cleanup/review.md)
+records the interacting cases and unsupported execution scope.
+
+## Prior verdict — round 1, 2026-11-08
 
 ### Semantics
 

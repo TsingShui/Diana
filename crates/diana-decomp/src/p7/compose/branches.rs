@@ -310,7 +310,7 @@ fn discardable_predicate(code: &MethodCode, test: PredicateEmission) -> bool {
 
 /// A zero-step bundle still owns its original edge and a zero-length source
 /// anchor. Unavailable assignments print even when there are no executable steps.
-fn copies_print_nothing(code: &MethodCode, edge: TransferId) -> bool {
+pub(super) fn copies_print_nothing(code: &MethodCode, edge: TransferId) -> bool {
     code.emission.transfers[edge.0 as usize]
         .copies
         .iter()

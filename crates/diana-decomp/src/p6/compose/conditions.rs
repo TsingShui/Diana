@@ -514,6 +514,7 @@ pub(super) fn candidate(
             tests,
             shared: shared_entry,
             else_arm: Some(cursor) != follow && !boundary[cursor.0 as usize],
+            other_exit: Some(cursor) != follow && boundary[cursor.0 as usize],
             explicit: None,
         },
     )?;

@@ -248,9 +248,17 @@ original fallthrough links retain their origins in that subtree. Edge copies may
 remain: they are printed inside the condition by their original repeating or exiting role, so a break still
 does not execute exiting-edge copies.
 
-A control's planned continuation contributes no second jump when its last printed
-block already jumps to the same label; two adjacent jumps carry the same effect
-and only one is printed.
+A control's planned continuation contributes no second action after a printed
+unconditional goto, return, throw or selected break/continue. P7 consumes the
+completed block-end spelling and follows only a last-child Sequence chain with
+no intervening continuation. A scoped exit stops before its own target; opaque
+Try, Loop, Switch, Synchronized and other containers are not transparent to this
+rule. A throw may recover through such a container, and breaking that container
+may require its own onward completion. Conditional and origin-only terminal ends
+do not establish an unconditional printed exit. Original transfers, terminal
+phases, copies, source continuations and origins remain in their arenas; only
+the unreachable second display action is omitted. This is layout selection from
+supplied products, not output replay or another graph/dominance computation.
 
 A jump, including a planned continuation, whose target prints next is ordinary
 sequencing, so P7 MUST omit its displayed `goto`. The search follows the final
@@ -334,8 +342,11 @@ All original switch roles, duplicate-target links and selected-edge copies survi
 P7 consumes P6's optional case groups without finding regions again. Its switch
 emission lists the supplied bodies in lexical fallthrough order. Each group
 prints its original case/default labels once, then its single body, without a
-dispatch goto. P6 has established zero-step selector copies for shared labels and
-fallthrough entries; P7 does not repeat that control or storage analysis. An empty
+dispatch goto. A supplied acyclic order can also retain nonadjacent gotos from
+several cases into one original case entry; that entry's label stays available,
+and the body is not copied. P6 has established zero-step selector copies for
+shared labels and entries reached from other cases; P7 does not repeat that
+control or storage analysis or decide which predecessor falls through. An empty
 default body still executes its original selected-edge copies and delivered
 switch completion. Case-body normal completion can be a
 selected Break; a successful original Return/Throw bypasses it. P7 lowers P6's
@@ -355,6 +366,11 @@ Rejected-candidate reasons at non-graph entries are not method statements or gra
 annotations. P7/P9 MUST NOT re-derive or display P6's private candidate history.
 The retained non-graph diagnostics keep their existing `diagnostic` spelling,
 content, order and method-head placement; no other text states those issues.
+
+P7 copies each P6 handler's contiguous original clause range alongside the
+unchanged chain and full interval. One handler child owns the shared capture and
+receives once. P9 prints the supplied adjacent type alternatives on that single
+catch header; neither stage groups targets, moves clauses or infers hierarchy.
 
 Exception sites retain original completion, ordered chain, edge delivery and
 snapshot provenance. Natural catch delivery, explicit protection, propagation and
@@ -385,6 +401,17 @@ event. Rethrow retains its exact original expression; capture is provenance only
 P7 MUST NOT move unlocked work into the held body or infer outlets from a common
 follow. These outlet records retain source ownership; they are not another
 execution route alongside the final emission plan.
+
+A ReleasedSync transfer consumes P6's supplied release-block continuation rather
+than initializing an additional ordinary goto. Its emission spelling is
+Fallthrough; the source control completion delivers the original next, break,
+continue or goto once. Original copies and routing nodes still execute in their
+original phases. In particular, a direct release-to-update link must not print a
+goto to an update that is owned by a for header, nor bypass its delivered Continue.
+LeaveSync still names the original release entrance; it is not another release.
+A scope without a shared follow consumes its separately supplied original outlet
+completions. P7 MUST NOT fabricate a common destination, execute another release
+or interpret its closing brace as an implicit route into one unlocked tail.
 
 A `new-instance` statement that publishes its own storage keeps the original
 allocation point: P7 marks it so P9 prints the allocated type and local where the
@@ -422,8 +449,24 @@ scope continuations. Control completion distinguishes goto, break and continue
 without inventing another edge copy. Syntax-owned header/predicate continuations are deferred to
 their owner, so a header cannot jump past its own test or monitor acquisition.
 Loop-condition edge copies stay inside that test's selected-edge clauses; they
-are not appended after a loop. `LoopPlacement` distinguishes infinite, head-test
-and tail-test forms and records when an empty predicate can use a compact form.
+are not appended after a loop. `LoopPlacement` distinguishes infinite, head-test,
+tail-test and delivered for-update forms, and records when an empty predicate can
+use a compact form.
+
+A P6 `LoopUpdate` supplies the original operation and third update child; P7 does
+not infer an induction variable, move an initializer, identify a tail or create
+another store. The for header owns that operation's one printed assignment.
+Its original update subtree remains available for control/routing/zero-step-copy
+origins, but normal block placement does not print the operation again. Declaration
+planning accounts for the update's reads without declaring a body-only local in
+the header. The update child completes at the original head; body continuation
+enters the original update. A break, return or throw leaves before the update.
+
+Compactness consumes the same predicate subtree as a while. A noncompact for
+retains its evaluation and explicit exiting test at the body's start, with an
+empty header condition. In particular, an assignment preceding the original test
+still runs before its first test; it is not moved into the iteration expression.
+The original repetition/exiting copy roles and source anchors remain unchanged.
 
 Matched releases print at their original nodes. Their after-release copies and
 routing terminals also stay at their original nodes and therefore keep original
@@ -562,10 +605,20 @@ The tests' selected edges and all intermediate other edges require no copy
 bundles. The final other edge can retain copies at an explicit else position:
 every bundle must retain original emission, name that same original normal edge,
 and have no unavailable assignment. With no other-arm body, P7 selects
-`ConditionElse::Copies`; with a delivered body, it retains
+`ConditionElse::Copies` only when those bundles have executable steps or an
+unavailable assignment. Complete zero-step bundles keep `ConditionElse::None`
+and their Copy/Transfer anchors at the final test; a nonempty list of plan IDs
+alone does not create an empty else. The existing branch display predicate supplies
+this same no-words distinction without solving storage. With a delivered body,
+it retains
 `ConditionElse::Body`. Copies remain on the final other edge, never in the common
 continuation or on an earlier selected edge. P7 adds no region, local or copy
-schedule to represent this else.
+schedule to represent this else. When P6 supplies `other_exit` for a no-body
+boundary arm, P7 instead selects `ConditionElse::Transfer`. Compaction retains
+that final original edge's spelling and copies rather than clearing them with
+the intermediate test routing. Its else executes the supplied boundary completion
+once; the condition's common continuation is not a substitute. P7 does not infer
+an outlet or search another boundary.
 
 P7 installs compositions only after every test run admits its schedule; a
 refused later run leaves no hidden local, relocated store or copy-only else. A resolved

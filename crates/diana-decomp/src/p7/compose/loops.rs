@@ -372,7 +372,10 @@ pub(super) fn select_compact(code: &mut MethodCode) -> Result<(), ExpressionErro
         let (predicate, test) = match control.layout {
             EmissionLayout::Loop {
                 placement:
-                    LoopPlacement::While {
+                    LoopPlacement::For {
+                        predicate, test, ..
+                    }
+                    | LoopPlacement::While {
                         predicate, test, ..
                     }
                     | LoopPlacement::DoWhile {
@@ -437,7 +440,10 @@ pub(super) fn select_compact(code: &mut MethodCode) -> Result<(), ExpressionErro
     for (index, control) in code.emission.controls.iter_mut().enumerate() {
         if let EmissionLayout::Loop {
             placement:
-                LoopPlacement::While {
+                LoopPlacement::For {
+                    compact: selected, ..
+                }
+                | LoopPlacement::While {
                     compact: selected, ..
                 }
                 | LoopPlacement::DoWhile {

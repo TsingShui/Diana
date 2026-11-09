@@ -5,7 +5,42 @@ String switches with grouped results and field effects.
 with `javac --release 8 -g` and `d8 --min-api 24` through `quality/build.sh`.
 No third-party program or data is used.
 
-## Current verdict — round 2
+## Current verdict — acyclic case-entry review
+
+Java and final describe/dispatch were reread. The original first integer switches
+now have supplied case bodies rather than multi-entry wrappers. Hash selection
+still precedes exactly the relevant equals call. A failed equality in a nonadjacent
+case goes to the one default label; it does not evaluate another case's equality.
+The last case can actually fall through to that default. A successful equality
+stores its original discriminator and breaks to the unchanged second switch.
+Null, collision/default behavior and add-input versus mul-literal identity remain.
+The mul literal still resolves after hashCode and before its selected equality.
+
+These gotos after conditional Ifs are required false-path continuations, unlike
+the dead gotos after unconditional breaks removed earlier. No external string
+protocol was inferred and no source target/copy/effect was duplicated. The fresh
+[case-entry challenge](../case-entry-joins/review.md) adds three predecessors,
+conditional shared work and actual copy/cycle guards. This is bounded LLM path
+reading, not executed behavioral PASS; no device run or Java recompilation ran.
+
+## Prior verdict — completed-tail review
+
+Java and final describe/dispatch were reread. The first integer switches now omit
+planned gotos that followed their already-emitted case breaks. Original hashCode,
+equals, default/collision routes, discriminator stores and second switches are
+unchanged. Null still fails on the initial call; add still writes the input
+reference and mul the existing literal. No call, field effect or copy moved, and
+no external string protocol was inferred by the engine. The explicit graphs and
+available original members remain.
+
+This is bounded direct LLM reading, not executed behavioral PASS. The fresh
+[completed-tail challenge](../abrupt-continuation-tails/review.md) includes a
+concrete two-stage discriminator, a later throwing read/cleanup and opaque
+completion guards. Complete upstream P2/P3/P4/P5/P6 products agree. The original
+source continuations remain inspectable; only their unreachable second display
+actions disappear. No device run or Java recompilation ran.
+
+## Prior verdict — round 2
 
 The LLM review compared source with current ordinary Engine text for
 `Lfixture/BranchSwitchString;`, using candidate source based on `6d663d9`:

@@ -2,7 +2,8 @@ package fixture;
 
 /**
  * Atomic fixture: every loop whose test sits after the body, next to the
- * head-test shapes that must stay `while`. The DEX of a tail test is one block
+ * head-test shapes that must preserve their first-test timing, whether spelled
+ * while or for. The DEX of a tail test is one block
  * whose branch returns to its own start; the empty-body variants are the ones
  * that most easily collapse into each other.
  */
@@ -61,7 +62,7 @@ public final class LoopTailShapes {
         return index;
     }
 
-    /** Head test whose update runs in the body, so the shape must stay `while`. */
+    /** Head test: a recovered for update must not turn its first test into a tail test. */
     public static int emptyForBody(int limit) {
         int index;
         for (index = 0; index < limit; index++) {

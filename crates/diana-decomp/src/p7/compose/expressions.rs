@@ -849,9 +849,9 @@ fn terminal_use(
                         return None;
                     };
                     let test = match placement {
-                        LoopPlacement::While { test, .. } | LoopPlacement::DoWhile { test, .. } => {
-                            test
-                        }
+                        LoopPlacement::For { test, .. }
+                        | LoopPlacement::While { test, .. }
+                        | LoopPlacement::DoWhile { test, .. } => test,
                         LoopPlacement::Infinite => return None,
                     };
                     if test.terminal != terminal
@@ -1266,19 +1266,37 @@ fn compose(
             }
         }
     }
+    let copy_else = match &code.emission.controls[index].layout {
+        EmissionLayout::Condition {
+            no: ConditionElse::None,
+            fall,
+            ..
+        } => !super::branches::copies_print_nothing(code, *fall),
+        _ => false,
+    };
     if let EmissionLayout::Condition {
         tests, no, fall, ..
     } = &mut code.emission.controls[index].layout
     {
+        let other_spelling = code.emission.transfers[fall.0 as usize].spelling;
         for test in tests {
             code.emission.transfers[test.when_true.0 as usize].spelling =
                 TransferSpelling::Fallthrough;
             code.emission.transfers[test.when_false.0 as usize].spelling =
                 TransferSpelling::Fallthrough;
         }
-        if matches!(no, ConditionElse::None)
-            && !code.emission.transfers[fall.0 as usize].copies.is_empty()
-        {
+        if matches!(no, ConditionElse::Transfer) {
+            // P6 distinguishes a context exit from the common follow even when
+            // neither owns a child body. Compaction removes intermediate test
+            // routing, never this final edge's original boundary completion.
+            code.emission.transfers[fall.0 as usize].spelling = match other_spelling {
+                TransferSpelling::Selected => {
+                    TransferSpelling::Goto(code.transfers[fall.0 as usize].destination)
+                }
+                spelling => spelling,
+            };
+        }
+        if copy_else {
             *no = ConditionElse::Copies;
             for &copy in &code.emission.transfers[fall.0 as usize].copies {
                 super::trace::condition_copy_else(

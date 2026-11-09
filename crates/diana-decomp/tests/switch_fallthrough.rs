@@ -240,10 +240,21 @@ fn nonidentity_parameter_entry_copy_stays_explicit() {
 }
 
 #[test]
-fn multiple_fallthrough_predecessors_keep_one_explicit_tail() {
+fn multiple_case_predecessors_keep_one_body_and_a_nonadjacent_goto() {
     inspect("sharedTail", "(I)I", |code, rendered| {
-        assert!(cases(code).is_none());
-        assert!(rendered.text().contains("graph<"));
+        let (bodies, _) = cases(code).expect("case-entry sharing is scheduled once");
+        assert_eq!(group_for(code, 2) + 1, group_for(code, 3));
+        let entry = code.controls()[bodies[group_for(code, 3)].0 as usize]
+            .entry
+            .unwrap();
+        assert!(
+            code.emission()
+                .transfers()
+                .iter()
+                .any(|p| matches!(p.spelling,
+            diana_decomp::p7::TransferSpelling::Goto(target) if target == entry))
+        );
+        assert!(!rendered.text().contains("graph<"));
         assert_eq!(rendered.text().matches(".mark(3)").count(), 1);
     });
 }

@@ -68,8 +68,10 @@ handlers and otherwise disconnected components. Reverse LT supplies finite-exit
 postdominator candidates. A position with no path to an exit has no such candidate.
 P6 MUST retain every original divergent path when checking a candidate; virtual
 analysis roots do not become runtime transfers. Iterative SCC walks and
-header-dominated backedges establish natural loops. An SCC alone does not
-establish a natural loop.
+header-dominated backedges establish ordinary natural loops. The same normal DFS
+also records original retreating links as candidate headers for the private-handler
+entry construction below. Neither an SCC nor a retreating link alone establishes
+a natural loop; normal LT relations are not recomputed over exceptional edges.
 
 The region arena contains `Block`, `Sequence`, `If`, `Loop`, original `Switch`,
 `LabelledBlock`, `Try`, `Synchronized` and explicit `Graph` nodes. Enclosing
@@ -213,7 +215,11 @@ order. A test run is the original block's parts from the run entry to its
 terminal predicate; P6 MUST NOT move an operation out of its block or reorder
 tests. A run that does not end in another conditional starts the other arm. When
 the last other link leaves the region directly, the region owns no other arm and
-MUST keep that original link and its copies.
+MUST keep that original link and its copies. P6 separately records `other_exit`
+when this no-body link reaches an enclosing completion boundary different from
+the common follow. Absence of an owned body MUST NOT collapse that boundary
+transfer into ordinary condition fallthrough. Its classified original target and
+break/continue/goto role remain available to P7.
 
 The candidate enters the shared enclosing-interface construction and MUST satisfy the
 same original normal/exceptional entrance, disjoint/exact part, whole-current-owner, construction,
@@ -360,17 +366,76 @@ A selected loop child contributes every exit outside its lexical membership to
 its parent's sibling relation. Proved private corridor content inside that membership
 is not an independent sibling successor.
 
+### Private handler rejoins
+
+A normal analysis root at a catch can make an interior rejoin appear external to
+a loop, including a nested loop. For each original normal-DFS retreating header
+not already proved by normal dominance, P6 closes original latch predecessors
+backward while leaving that header boundary open. It rejects a pulled-in method
+entry, an added non-handler analysis root, and a handler root with a normal
+entrance. Every interior normal or executable exceptional arrival must originate
+inside the candidate, and every member must be reachable from the header using
+original normal or exceptional transfers. Dead, disconnected and foreign catch
+corridors are not private. These are owning-stage membership guarantees, not an
+independent output verifier or an exceptional-edge dominance graph.
+
+Both header nominations feed one LoopPlan construction before composition. The
+accepted closed core keeps original node/link identities and its internal normal
+arrivals at the header as latches. Header predicates, exit conditions, exact
+parts, protection, lock and construction constraints still decide region
+composition. Nested retreating headers are considered individually; a maximal
+SCC cannot substitute for its contained loops. A shared handler receiving an
+exception before the loop remains explicit when that arrival bypasses the
+header. Ordinary normal-dominance loops retain their existing construction.
+
+### Ordinary iteration continuations
+
+After protection/finally and lexical loop membership are established, the loop
+producer may attach a `LoopUpdate` to a head-tested core. It retains the original
+header, predicate evaluation, core/lexical members, latches and exits. The update
+is one original pure unary/binary Store reading that same storage, optionally
+with literals or other available P5 Value reads, followed by its unique original
+goto backedge in the same block. Those other locals need not be invariant: each
+read stays at the original update point after body completion and its copies.
+An unavailable read or snapshot of other storage does not gain admission. This
+establishes a source-compatible for schedule, not an assertion about the original
+source keyword, monotonicity or termination.
+
+All loop-owned arrivals at the original header must use that backedge. There is
+no exceptional entrance into the update. An enclosing loop/try/synchronized scope
+may own the whole loop; partial or sibling ownership, including an inner private
+exit corridor owning an outer update, declines this schedule. Construction groups
+cannot be split. No executable or unavailable copy phase may be anchored in the
+update/backedge; complete zero-step plans keep their origins. Incoming body edge
+copies stay on their original source outlets. An already classified monitor
+Continue whose original target differs from the proposed update declines this
+schedule. For a selected natural synchronized scope, context finalization can
+complete a Follow(update) as Continue of its actual enclosing selected for loop.
+Original release/link/target, routing and before/after copies remain unchanged;
+an unselected scope retains explicit monitors rather than acquiring another
+construction route.
+
+The body part excludes both predicate evaluation and update. Its continuation is
+the update entry; the separate update child completes implicitly at the original
+header. Original update sequencing and repeat links retain those exact targets
+as syntax-owned Next delivery. P7 receives this selected schedule and does not
+find an updater. If its expression is unavailable or ownership cannot be proved,
+the ordinary loop and explicit update remain available. This does not change the
+primary/successor branch policy above or reopen a rejected boundary.
+
 A conditional loop's normal continuation is the actual destination of its exiting
 predicate link. It is not a common postdominator beyond exit-side work. Other loop
 exits retain their own targets. A non-terminating region does not acquire a
 synthetic exit to make postdomination convenient. `LoopPlan::members()` retains
-the original backedge core, latches and exits. `lexical_members()` separately records
+the established backedge core, including proved private handler rejoin corridors
+when needed. Latches and exits retain original links. `lexical_members()` separately records
 the proposed lexical content, including closed synchronized scopes, their
 release/break corridors and private established try handlers. Before child
 selection, P6 closes lexical membership over complete established try bodies
 using the same monotone membership rule as ordinary branch arms. A try touching
 the loop header, predicate evaluation or normal follow remains outside this
-closure. Original backedge membership and follow do not change; ordinary
+closure. This later lexical closure changes neither established core membership
+nor follow; ordinary
 entry, partition and whole-owner checks still decide region admission.
 `private_exits()` identifies original exits with admitted
 private corridors. The predicate's actual exiting link and destination remain
@@ -416,12 +481,18 @@ Normal membership stops at other distinct case entries and the established
 completion boundary. Bodies are disjoint, cover the original body exactly, have
 no normal cycle or executable exceptional entrance, and retain whole construction
 groups/scopes. Normal entrances come only from selection or another case body
-at that body's entry. A body can have at most one other case-entry outlet, and
-that entry can have at most one fallthrough predecessor. These chains determine
-adjacent lexical placement; cyclic or conflicting chains remain explicit.
+at that body's entry. A body can name at most one other distinct case-entry
+target, but that entry may have several original predecessors. P6 orders this
+case-entry DAG once: ready roots follow original selector order, predecessor
+counts retain all incoming relationships, and a next entry is visited adjacent
+only after its last predecessor has been placed. Other predecessors retain their
+explicit original gotos to that entry's one printed label. Only actual adjacency
+can become implicit Next. Cycles, conflicting outgoing targets and arbitrary
+shared non-case tails retain explicit layout; no owner or boundary is retried.
 
-A shared-label header or a header reached by fallthrough requires complete,
-zero-step selector copies already established by P5. Otherwise its entry-only
+A shared-label header or an entry reached from another case, adjacent or by an
+explicit goto, requires complete zero-step selector copies already established
+by P5. Otherwise its entry-only
 assignment would also run on fallthrough, so P6 declines the layout instead of
 moving or hiding that copy. Other selected copies remain on their original edge.
 A direct target of the external follow has an empty final child, retaining its
@@ -546,9 +617,13 @@ original exception capture and P5 receives after that capture. Missing catch typ
 content is not a reason to remove its original identity or priority.
 
 A natural `TryPlan` records a clause range in an original chain and disjoint body
-and handler content. Catch ownership follows the ordered clause range, not target
-address equality. A shared target does not merge different catch roles. Normal or
-sibling-catch entrances into a natural catch body reject that wrapping.
+and handler content. `handler_clauses()` associates each unique handler body with
+its contiguous original clause range. Adjacent typed clauses with the same target
+can share one body; every original type, priority, clause and edge remains in the
+chain. Nonadjacent aliases, aliases across the selected range boundary, and a
+mixed typed/catch-all group remain explicit. No hierarchy or assignability fact
+is inferred. Normal or sibling-catch entrances into a natural catch body reject
+that wrapping.
 
 Before enumerating protection candidates, P6 computes each original handler's
 normal and executable exceptional reach. A node with a normal or executable
@@ -575,6 +650,36 @@ receives in favor of an implicit cleanup template. The unlocked cleanup alternat
 below retains these facts separately. Ordered prefix and suffix clauses remain unchanged. Candidate composition prefers the full catch frontier
 when equal memberships would otherwise let a suffix obscure it.
 
+Protection patterns retain original ordered intervals. In addition to whole-chain
+suffixes, an observed proper suffix chain establishes an inherited outer layer;
+its longest match supplies the immediate outer boundary, allowing the preceding
+interval to become an inner try. P6 does not search arbitrary partitions. Matching
+at a throw site requires one unambiguous identical interval. Selected deliveries
+must preserve clause order through equal or successively enclosing try scopes;
+a mixed explicit/natural route or reversed lexical priority withdraws that
+composition without changing original edges.
+
+A protected body's base retains every guarded seed and its original forward
+content. Optional backward prefixes require all normal successors already inside
+and no executable throw. One fallible predecessor queue grows that closure once,
+stopping at the follow, excluded handlers and throwing portions. During that
+construction P6 tracks original normal and executable-exceptional arrivals from
+outside, plus method entry, and records complete single-entry checkpoints. It
+selects the latest such checkpoint before handler/guard/owner admission: a later
+optional predecessor must not destroy an already established guarded entry.
+Temporary multi-entry growth is allowed when a later common prefix closes it.
+Choosing an earlier checkpoint removes only the optional predecessor suffix;
+every guarded seed and forward path remains. No branch path is clipped, no
+normal dominance is recomputed, and a later rejection does not retry another
+prefix or owner. If no single-entry checkpoint exists, this local scope remains
+explicit. Ordinary guarded-site, handler, construction, scope and combined-entry
+checks still apply.
+
+Original later clauses remain outer boundaries for both body and handler walks.
+A loop backedge can make the outer cleanup reachable from a catch; this reach
+alone does not authorize absorbing the outer capture into that catch. Earlier
+clauses can remain internal protected content for an established outer layer.
+
 Follow candidates start after guarded nodes. A successor that is itself one of
 the guarded seeds is internal protected content, not a follow constraint. P6
 omits those successors when deriving the common normal follow, while retaining
@@ -598,12 +703,37 @@ P7 receives either natural ownership or the complete site-specific chain; it doe
 not infer a handler relation from printing position. Catch-all is not automatically
 finally.
 
+### Completed abrupt catch scopes over loops
+
+For an unbounded single catch-all scope, protection planning can use an established
+LoopPlan to complete a partial per-iteration body over the enclosing loop. The
+whole old body must lie in its core, selected handlers must be outside that core,
+and every handler's normal completion must stay inside the handler or exit the
+method. A recovering catch with an iteration join does not qualify. Every added
+throwing site must retain this exact selected protection interval or dispatch
+entirely inside the completed body. An unguarded call, even another cleanup call,
+prevents the enlargement. All loop normal exits must name its established follow.
+The largest eligible established loop supplies the body/entry/follow, with ordinary
+combined entry checks; no loop or protection analysis is retried. Bounded monitor
+contexts are not widened by this rule.
+
+This preserves one catch owner while exposing the real normal loop completion
+instead of an intermediate iteration join. It does not by itself claim finally:
+that requires the owning-stage cleanup correspondence below, not a renderer
+recognizing cleanup syntax.
+
 ### Matched unlocked cleanup
 
-Before composition, P6 can attach a `FinallyPlan` to an established single
-catch-all `TryPlan`. Its handler is a finite acyclic cleanup graph ending at one
+Before composition, P6 can attach a `FinallyPlan` to a `TryPlan` whose selected
+original clause interval is one catch-all, even when its source chain has an
+inner typed prefix. Exceptional body transfers may stay in nested body handlers
+or enter this exact cleanup, but may not escape to another handler or uncaught
+completion. The full original chain is not substituted for the selected interval. Its handler is a finite acyclic cleanup graph ending at one
 throw that reads the exact capture storage state with a reference view.
-The captured local has no other read or copy dependency. Moves, numeric/string
+The hidden pending rethrow must also have an established unhandled original route.
+A site-specific outside handler cannot be erased by assuming implicit lexical
+propagation; until natural enclosing delivery is established, this alternative
+stays explicit. The captured local has no other read or copy dependency. Moves, numeric/string
 constants, field accesses and static/virtual/interface calls can match; allocation
 and construction members remain explicit.
 
@@ -613,21 +743,30 @@ correspondence, with original true/false edges paired by role. Bidirectional
 event maps require consistent joins; an active pair revisit rejects a cycle.
 Completed pairs are reused, not expanded into every possible path. All matched
 normal paths must stop at the same original continuation, at a whole-node
-boundary. Scratch allocation is fallible and cursor arithmetic is checked.
+boundary. Final empty routing is included in the normal duplicate before choosing
+that continuation, so one arm's goto to a shared end does not become a different
+continuation. No unpaired instruction is swallowed to align block cuts. Scratch allocation is fallible and cursor arithmetic is checked.
 
 An operation pair requires identical original kind/target, effects and normal
 commit rules, plus equal exceptional frame/heap/lock behavior and uncaught routes.
 Inputs are exact P5 reads, equal literal bits/views, or results of already matched
-definitions. Result pairs require compatible storage types and complete reads
+definitions. Two IntegralView declarations may have different method-local name
+identities: their published range proof makes both value preserving, not runtime
+conversions. They correspond only when the underlying state or previously paired
+definition already corresponds; equal literal bits are still required. Unknown,
+reference and incompatible machine interpretations are not equated by this rule. Result pairs require compatible storage types and complete reads
 confined to their respective cleanup graphs, with no copy dependency or escaping
 result. Original Phi incoming dependencies also prevent folding a private result,
 including a literal-folded incoming with no executable copy assignment. This correspondence does not coalesce storage or make a Phi input equal
 to its result. Initialization facts must match for each use.
 
-Both paths require established empty local lock entries and no attached P5 copy
-or snapshot plans. Cleanup nodes have no foreign normal or executable exceptional
-entrance. Body returns, bypass outlets, different protected chains, cross-handler
-shared tails and unmatched value joins reject this alternative.
+Both paths require established empty local lock entries and no P5 copy or snapshot
+execution inside the folded cleanup. Original selected-edge copies on body outlets
+remain at those outlets before finally; touching their target is not execution
+inside cleanup. Interior and cleanup-exit copies still decline folding. Cleanup
+nodes have no foreign normal or executable exceptional entrance. Body returns,
+bypass outlets, escaping protection, cross-handler shared tails and unmatched value
+joins reject this alternative.
 
 The plan pairs original normal and handler operations and predicates, retains the original
 capture/rethrow, and adds the normal duplicate as a separate source child.
@@ -675,10 +814,20 @@ distinct obligations even when they capture the same object.
 contains syntax-owned outlet anchors, not unlocked operations moved under the
 lock. Each `SyncExit` records its original release/link/target, routing, P5 plans
 before and after release, and continuation. Multiple releases are supported.
-A scope has at most one shared normal follow; other established outlets are
-operand-free returns, enclosing-loop break/continue, or rethrows of existing
-exception values. Loop outlets require the selected enclosing loop, not merely
-a loop analysis candidate. A rethrow retains the exact original P5 read. Its
+A scope has at most one shared normal follow. Distinct closed unlocked targets
+instead leave that follow absent and retain an explicit original goto for each
+outlet, or a selected enclosing-loop break/continue. No implicit continuation is
+invented at the closing scope boundary. Routing remains syntax-owned original
+content; target operations, including value returns and unlocked calls, stay
+outside the held body. Operand-free returns and rethrows of existing exception
+values retain their established outlet forms. Loop outlets require the selected enclosing loop, not merely
+a loop analysis candidate. Context finalization may refine only a retained
+Follow matching a supplied iteration target of an actual selected enclosing Loop.
+It does not reinterpret an incompatible existing Loop intent, reopen a declined
+scope or change early shared-follow/copy availability. A missing selected context
+keeps Follow; an already classified Loop without its required ancestor retains
+LoopContext separation. This is completion of source roles from existing products,
+not another loop or lock analysis. A rethrow retains the exact original P5 read. Its
 capture identifies provenance, not permission to substitute the current handler
 exception or the capture local.
 
@@ -694,9 +843,12 @@ execute its own post-release plans after the scope closes. Multiple normal outle
 or abrupt outlets require their post-release plans to be complete and have no
 execution steps; P6 does not hoist path-specific assignments into the locked body
 or generate a dispatcher. Distinct unlocked continuations that cannot be expressed
-by the established outlet forms retain `IncompatibleContinuation`; unsatisfied
-post-release plans retain `PostReleaseCopy`. This also preserves value-returning
-paths when a natural combination has not been established. Scope/region rejection
+by implicit fallthrough retain their explicit original targets instead; they
+need no dispatcher or invented shared follow. This does not relax closed-entry,
+capture, construction or phase admission. Unsatisfied post-release plans retain
+`PostReleaseCopy`; in particular, multiple normal outlets still cannot move an
+executable selected-edge copy under the lock. Value-returning target code remains
+at its original unlocked location. Scope/region rejection
 retains the original plans and a concrete reason, not a method failure.
 
 The synchronized entry and every release outlet retain their exact P5 obligations.
