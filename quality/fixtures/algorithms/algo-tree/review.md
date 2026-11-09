@@ -1,5 +1,20 @@
 # Fixture: algo-tree
 
+## Current verdict — terminal guard follow-up
+
+Read null/base guards, insertion and search. Null height returns0 and null
+insertion constructs once; nonnull paths retain left-before-right recursion,
+selected max, key comparisons/mutations and traversal updates. Identity and
+selected-return paths remain distinct.
+
+Compared the same prepared DEX on 29f1b82 and this commit. P7 requires a complete
+linear arm ending in a printed return/throw; opaque scopes are not exit evidence.
+The [fresh guard challenge](../../branches/terminal-guard-arms/review.md) covers
+actual other-edge Phi copies, parent scope, recovering catches and cleanup.
+Original P2 through complete P6 products agree; this is bounded LLM path reading,
+not behavioral execution. Historical execution claims below were not rerun.
+
+
 binary search tree: recursive insert/height/inOrder and iterative contains. The Java source is the reference; the DEX is generated from it with
 `javac --release 8 -g` + `d8 --min-api 24` (see `quality/build.sh`) and committed
 so a review needs no toolchain.
@@ -7,7 +22,7 @@ so a review needs no toolchain.
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 
-## Current verdict — round 1, 2026-11-08
+## Prior verdict — round 1, 2026-11-08
 
 ### Semantics
 

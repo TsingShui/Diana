@@ -1,6 +1,21 @@
 # Fixture: nested-catch-rejoins
 
-## Current verdict — while/do-while architecture correction
+## Current verdict — terminal guard follow-up
+
+Read scan's negative return guard and helper branches.
+Cleanup/addition/update/threshold order remains, including the shared typed
+capture. Synchronized run/release targets and other loop ownership are unchanged
+by this P7-only display choice.
+
+Compared the same prepared DEX on 29f1b82 and this commit. P7 requires a complete
+linear arm ending in a printed return/throw; opaque scopes are not exit evidence.
+The [fresh guard challenge](../../branches/terminal-guard-arms/review.md) covers
+actual other-edge Phi copies, parent scope, recovering catches and cleanup.
+Original P2 through complete P6 products agree; this is bounded LLM path reading,
+not behavioral execution. Historical execution claims below were not rerun.
+
+
+## Prior verdict — while/do-while architecture correction
 
 Read run's released normal paths: goto reaches each visible inner update after
 release, not a dangling hidden header label; outer update follows complete inner

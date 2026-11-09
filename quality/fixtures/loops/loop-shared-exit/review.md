@@ -1,6 +1,20 @@
 # Fixture: loop-shared-exit
 
-## Current verdict — while/do-while architecture correction
+## Current verdict — terminal guard follow-up
+
+Read the found-position guard: a match returns the original encoded indices
+before the second array access/update. A nonmatch retains that access and its
+negative outer break versus normal inner increment.
+
+Compared the same prepared DEX on 29f1b82 and this commit. P7 requires a complete
+linear arm ending in a printed return/throw; opaque scopes are not exit evidence.
+The [fresh guard challenge](../../branches/terminal-guard-arms/review.md) covers
+actual other-edge Phi copies, parent scope, recovering catches and cleanup.
+Original P2 through complete P6 products agree; this is bounded LLM path reading,
+not behavioral execution. Historical execution claims below were not rerun.
+
+
+## Prior verdict — while/do-while architecture correction
 
 Read found-flag, return and named-break paths. Inner updates run only on the
 nonmatch/nonnegative branch. Found values and encoded positions use original

@@ -1,5 +1,20 @@
 # Fixture: kotlin-data-class
 
+## Current verdict — terminal guard follow-up
+
+Read equals: identity returns before instanceof, failed membership returns
+before field reads, unequal names return before count reads, then the original
+count comparison selects true/false. Original checks and owner disclosure
+remain, without inferred hierarchy.
+
+Compared the same prepared DEX on 29f1b82 and this commit. P7 requires a complete
+linear arm ending in a printed return/throw; opaque scopes are not exit evidence.
+The [fresh guard challenge](../../branches/terminal-guard-arms/review.md) covers
+actual other-edge Phi copies, parent scope, recovering catches and cleanup.
+Original P2 through complete P6 products agree; this is bounded LLM path reading,
+not behavioral execution. Historical execution claims below were not rerun.
+
+
 data class and the members kotlinc generates (componentN, copy, copy$default, equals/hashCode/toString). The Kotlin source is the semantic reference for the LLM review below.
 
 - Provenance: authored for this repository. No third-party code or data.
@@ -8,7 +23,7 @@ data class and the members kotlinc generates (componentN, copy, copy$default, eq
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 - Selector: `Lfixture/Case;`
 
-## Current verdict — round 1, 2026-11-08
+## Prior verdict — round 1, 2026-11-08
 
 ### Semantics
 

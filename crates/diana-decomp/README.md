@@ -168,6 +168,10 @@ operation, not its preceding call's identity. Planned actions
 after an already printed unconditional exit can be omitted through linear
 Sequence tails, without crossing the exit's scope or an opaque protected/loop
 container. Original transfers and inspection continuations remain available.
+A complete linear return/throw arm can print as a guard; either original edge
+keeps its exact condition polarity. The other edge's copies/body follow once,
+in their enclosing declaration scope. Recovering or opaque scopes do not supply
+that exit fact, and a guard plus later work is not mistaken for one else-if.
 Metadata and
 bootstrap declarations travel from their owning producers; P7 does not reopen
 input. See the [P7 chapter](../../docs/diana/spec/07-java.md).
@@ -262,6 +266,10 @@ Four [while-continuation checks](../../quality/fixtures/loops/while-tail-continu
 cover three-level private outer exits, actual shared entrances, cleanup before
 visible updates and do-while first-body placement. Dedicated for/update products
 are absent; existing cases now inspect original body positions and targets.
+Nine [terminal-guard checks](../../quality/fixtures/branches/terminal-guard-arms/README.md)
+cover original predicate direction, actual other-edge Phi assignments after the
+guard, parent declaration scope, recovering-Try refusal, cleanup, construction
+and early void return. Missing natural protection still retains explicit code.
 These checks cover ownership,
 transfer spelling and source anchors, not independent execution of the final plan.
 The retained independent verifier code is not enabled on ordinary requests. Real-input corpus runs have not encountered custom/polymorphic

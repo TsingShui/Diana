@@ -335,6 +335,24 @@ the selected chain without another scope or duplicate child. These display
 choices preserve the original blocks, controls, labels, transfers, sites, copies
 and exception routes.
 
+A syntax-owned If can select `IfShape::Guard { inverted }` when its selected
+exit arm is an entire linear schedule of plain Sequences/Blocks ending in an
+actual printed return or throw. P7 MUST reject required labels, continuations,
+opaque controls anywhere in that arm, non-fallthrough prefixes and origin-only
+or omitted terminals as evidence of that exit. A return inside a recovering
+Try is not sufficient. Deferred origin spans alone are not control transfers;
+already composed statements still execute at their established uses.
+
+The guard can use either original edge. P7 supplies its exact predicate polarity;
+the other edge's original copies and complete body follow the guard in the
+enclosing scope. This removes an else wrapper, not its work. No updater,
+dispatcher, body clone, new target or graph analysis is introduced. P7 MUST NOT
+classify a Guard as a single nested If for else-if composition: it also prints
+the remaining body. Declaration placement visits the remaining body in its
+actual enclosing scope, while the terminal arm remains nested. Original calls,
+copy phases, definition/commit positions and exception routes do not move.
+
+
 Each exception site also records whether its route still needs an inline marker:
 a natural single route targeting an enclosing printed catch does not, because the
 chain line and the catch scope already state it. Other sites keep a compact chain

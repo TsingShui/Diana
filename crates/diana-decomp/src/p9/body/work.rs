@@ -18,7 +18,7 @@ pub(super) enum Event {
     If {
         test: PredicateEmission,
         chained: bool,
-        omitted_false: bool,
+        other_at_header: bool,
     },
     EmptyIf(PredicateEmission),
     Condition {
@@ -30,6 +30,7 @@ pub(super) enum Event {
     Anchors(ControlId),
     EmptyArmAnchors(ControlId),
     Else(TransferId),
+    GuardTail(TransferId),
     ElseTransfer(TransferId),
     ElseIf(TransferId),
     LoopHead(PredicateEmission),

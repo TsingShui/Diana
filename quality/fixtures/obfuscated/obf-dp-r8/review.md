@@ -1,6 +1,21 @@
 # Fixture: obf-dp-r8
 
-## Current verdict — while/do-while architecture correction
+## Current verdict — terminal guard follow-up
+
+Read the obfuscated LIS zero-length guard and remaining recurrence against
+retained identities. Empty input returns0; nonempty allocation, table writes,
+dependencies and updates remain in order. No source name or external declaration
+is substituted.
+
+Compared the same prepared DEX on 29f1b82 and this commit. P7 requires a complete
+linear arm ending in a printed return/throw; opaque scopes are not exit evidence.
+The [fresh guard challenge](../../branches/terminal-guard-arms/review.md) covers
+actual other-edge Phi copies, parent scope, recovering catches and cleanup.
+Original P2 through complete P6 products agree; this is bounded LLM path reading,
+not behavioral execution. Historical execution claims below were not rerun.
+
+
+## Prior verdict — while/do-while architecture correction
 
 Read every changed loop's entry test, ordinary body and original backedge. The
 same body work precedes the now-visible update; an exiting test or abrupt effect

@@ -107,10 +107,26 @@ impl Layout {
                     }
                 }
                 EmissionLayout::If {
-                    header, yes, no, ..
+                    header,
+                    yes,
+                    no,
+                    shape,
+                    ..
                 } => {
-                    push(&mut work, Event::Nested(*no, declarations))?;
-                    push(&mut work, Event::Nested(*yes, declarations))?;
+                    match shape {
+                        IfShape::Guard { inverted: false } => {
+                            push(&mut work, Event::Control(*no, scope, declarations))?;
+                            push(&mut work, Event::Nested(*yes, declarations))?;
+                        }
+                        IfShape::Guard { inverted: true } => {
+                            push(&mut work, Event::Control(*yes, scope, declarations))?;
+                            push(&mut work, Event::Nested(*no, declarations))?;
+                        }
+                        _ => {
+                            push(&mut work, Event::Nested(*no, declarations))?;
+                            push(&mut work, Event::Nested(*yes, declarations))?;
+                        }
+                    }
                     push(&mut work, Event::Control(*header, scope, declarations))?;
                 }
                 EmissionLayout::Condition {

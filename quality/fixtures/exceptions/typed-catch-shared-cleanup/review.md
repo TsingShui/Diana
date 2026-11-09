@@ -1,6 +1,21 @@
 # Fixture: typed-catch-shared-cleanup
 
-## Current verdict — whole-operation follow-up
+## Current verdict — terminal guard follow-up
+
+Read mode-selected constructions inside the original inner try. NFE/NPE/ISE
+still occur before parse and keep their site chains/priority. Only normal mode
+reaches parse/assignment; shared recovery, opens/closes, captured return and
+outer recovery remain unchanged.
+
+Compared the same prepared DEX on 29f1b82 and this commit. P7 requires a complete
+linear arm ending in a printed return/throw; opaque scopes are not exit evidence.
+The [fresh guard challenge](../../branches/terminal-guard-arms/review.md) covers
+actual other-edge Phi copies, parent scope, recovering catches and cleanup.
+Original P2 through complete P6 products agree; this is bounded LLM path reading,
+not behavioral execution. Historical execution claims below were not rerun.
+
+
+## Prior verdict — whole-operation follow-up
 
 Read typed read/recovery, nested resource and outer recovery paths. NFE recovery
 retains its original open/read/close and +100 result before cleanup; close

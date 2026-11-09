@@ -1,6 +1,21 @@
 # Fixture: typed-catch-loop-exits
 
-## Current verdict — while/do-while architecture correction
+## Current verdict — terminal guard follow-up
+
+Read scan and helper paths. Cleanup precedes the negative return guard; value2
+still reaches the visible update without addition, threshold break skips update.
+Shared typed catches, original priority and helper mark-before-result/fault
+order remain.
+
+Compared the same prepared DEX on 29f1b82 and this commit. P7 requires a complete
+linear arm ending in a printed return/throw; opaque scopes are not exit evidence.
+The [fresh guard challenge](../../branches/terminal-guard-arms/review.md) covers
+actual other-edge Phi copies, parent scope, recovering catches and cleanup.
+Original P2 through complete P6 products agree; this is bounded LLM path reading,
+not behavioral execution. Historical execution claims below were not rerun.
+
+
+## Prior verdict — while/do-while architecture correction
 
 Read normal and shared typed recovery: cleanup precedes addition and the visible
 counter tail; value2 skips only addition, negative return and threshold break

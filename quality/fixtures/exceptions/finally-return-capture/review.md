@@ -1,6 +1,21 @@
 # Fixture: finally-return-capture
 
-## Current verdict — whole-operation follow-up
+## Current verdict — terminal guard follow-up
+
+Read both return captures. Body failure still precedes the state read;
+successful state is captured before finally writes99/records99. The later return
+uses the original capture, not the changed field. Explicit catch/rethrow and
+normal/exceptional cleanup order remain.
+
+Compared the same prepared DEX on 29f1b82 and this commit. P7 requires a complete
+linear arm ending in a printed return/throw; opaque scopes are not exit evidence.
+The [fresh guard challenge](../../branches/terminal-guard-arms/review.md) covers
+actual other-edge Phi copies, parent scope, recovering catches and cleanup.
+Original P2 through complete P6 products agree; this is bounded LLM path reading,
+not behavioral execution. Historical execution claims below were not rerun.
+
+
+## Prior verdict — whole-operation follow-up
 
 Read both changed capture paths. The return value/state read is captured before
 cleanup updates state99/records99; the later return uses that captured value,

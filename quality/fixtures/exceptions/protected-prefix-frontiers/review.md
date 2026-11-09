@@ -1,6 +1,20 @@
 # Fixture: protected-prefix-frontiers
 
-## Current verdict — whole-operation follow-up
+## Current verdict — terminal guard follow-up
+
+Only read helper guards change, preserving each mark/result/fault and mode. Both
+natural prefix ownership and genuine multi-entry explicit protection remain
+unchanged.
+
+Compared the same prepared DEX on 29f1b82 and this commit. P7 requires a complete
+linear arm ending in a printed return/throw; opaque scopes are not exit evidence.
+The [fresh guard challenge](../../branches/terminal-guard-arms/review.md) covers
+actual other-edge Phi copies, parent scope, recovering catches and cleanup.
+Original P2 through complete P6 products agree; this is bounded LLM path reading,
+not behavioral execution. Historical execution claims below were not rerun.
+
+
+## Prior verdict — whole-operation follow-up
 
 Read both final methods. branch retains both guarded reads, their common pure
 prefix and outer-only lead calls; natural finally runs the original cleanup
@@ -16,7 +30,7 @@ reading; historical execution claims below were not rerun and do not certify
 this output. No behavioral executor, device run or Java recompilation ran.
 
 
-## Current LLM semantic review
+## Prior LLM semantic review
 
 Compared Java/Smali, concrete helpers and final ordinary Engine output on the same
 DEX. Independent expectations precede first candidate inspection. Baseline is the

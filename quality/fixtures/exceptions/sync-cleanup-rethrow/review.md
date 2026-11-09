@@ -1,6 +1,21 @@
 # Fixture: sync-cleanup-rethrow
 
-## Current verdict — whole-operation follow-up
+## Current verdict — terminal guard follow-up
+
+Read the selected body throw while held: it keeps original construction/sites
+and enters the same exceptional capture/release. Only normal completion reaches
+the original normal release. Both release routes remain once, with no early
+unlock or extra implicit release.
+
+Compared the same prepared DEX on 29f1b82 and this commit. P7 requires a complete
+linear arm ending in a printed return/throw; opaque scopes are not exit evidence.
+The [fresh guard challenge](../../branches/terminal-guard-arms/review.md) covers
+actual other-edge Phi copies, parent scope, recovering catches and cleanup.
+Original P2 through complete P6 products agree; this is bounded LLM path reading,
+not behavioral execution. Historical execution claims below were not rerun.
+
+
+## Prior verdict — whole-operation follow-up
 
 Compared the same prepared DEX with completed-eleven-repair bda9a49. Only
 derived label/control coordinates change. Development-only correspondence found

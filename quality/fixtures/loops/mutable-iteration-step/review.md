@@ -1,6 +1,20 @@
 # Fixture: mutable-iteration-step
 
-## Current verdict — while/do-while architecture correction
+## Current verdict — terminal guard follow-up
+
+Only read helper guards change: each original mode still marks then returns or
+constructs/throws its original class. walk's quiet OR, two real breaks,
+current-step update and nested outer-update goto remain unchanged.
+
+Compared the same prepared DEX on 29f1b82 and this commit. P7 requires a complete
+linear arm ending in a printed return/throw; opaque scopes are not exit evidence.
+The [fresh guard challenge](../../branches/terminal-guard-arms/review.md) covers
+actual other-edge Phi copies, parent scope, recovering catches and cleanup.
+Original P2 through complete P6 products agree; this is bounded LLM path reading,
+not behavioral execution. Historical execution claims below were not rerun.
+
+
+## Prior verdict — while/do-while architecture correction
 
 Read complete walk/nested. walk's quiet first OR remains; both row3 and
 flag2/row2 breaks are present, so no row3 read occurs for flag2. Its

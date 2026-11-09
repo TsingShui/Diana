@@ -1,6 +1,20 @@
 # Fixture: labelled-exit-cleanup
 
-## Current verdict — while/do-while architecture correction
+## Current verdict — terminal guard follow-up
+
+Read the over100 return guard. Close precedes return and skips the inner update;
+otherwise the same update follows. Outer continuation, negative break, pending
+capture/suppression and remaining closes are unchanged.
+
+Compared the same prepared DEX on 29f1b82 and this commit. P7 requires a complete
+linear arm ending in a printed return/throw; opaque scopes are not exit evidence.
+The [fresh guard challenge](../../branches/terminal-guard-arms/review.md) covers
+actual other-edge Phi copies, parent scope, recovering catches and cleanup.
+Original P2 through complete P6 products agree; this is bounded LLM path reading,
+not behavioral execution. Historical execution claims below were not rerun.
+
+
+## Prior verdict — while/do-while architecture correction
 
 Read the newly structured private tail. Matching read closes once, increments
 row once and continues the outer while, skipping inner/default close. Other

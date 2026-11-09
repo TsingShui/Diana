@@ -1,6 +1,21 @@
 # Fixture: monitor-split-tails
 
-## Current verdict — whole-operation follow-up
+## Current verdict — terminal guard follow-up
+
+Read finish/read helpers. finish still marks before mode7 fault and otherwise
+applies its original selected arithmetic; read preserves
+event-before-typed/Error/normal result. Original separate unlocked tails,
+captures, release and post-release copies are unchanged.
+
+Compared the same prepared DEX on 29f1b82 and this commit. P7 requires a complete
+linear arm ending in a printed return/throw; opaque scopes are not exit evidence.
+The [fresh guard challenge](../../branches/terminal-guard-arms/review.md) covers
+actual other-edge Phi copies, parent scope, recovering catches and cleanup.
+Original P2 through complete P6 products agree; this is bounded LLM path reading,
+not behavioral execution. Historical execution claims below were not rerun.
+
+
+## Prior verdict — whole-operation follow-up
 
 Compared the same prepared DEX with completed-eleven-repair bda9a49. Only
 derived label/control coordinates change. Development-only correspondence found
@@ -17,7 +32,7 @@ reading; historical execution claims below were not rerun and do not certify
 this output. No behavioral executor, device run or Java recompilation ran.
 
 
-## Current LLM semantic review
+## Prior LLM semantic review
 
 Direct comparison of Java explanation, actual Smali, concrete helper bodies and
 final ordinary Engine output. Split expectations precede its first inspection;

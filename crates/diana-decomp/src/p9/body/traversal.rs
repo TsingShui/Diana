@@ -62,10 +62,11 @@ impl Expressions<'_, '_> {
                 Event::If {
                     test,
                     chained,
-                    omitted_false,
-                } => self.if_header(test, chained, omitted_false)?,
+                    other_at_header,
+                } => self.if_header(test, chained, other_at_header)?,
                 Event::ElseIf(edge) => self.else_if_header(edge)?,
                 Event::Else(edge) => self.else_header(edge)?,
+                Event::GuardTail(edge) => self.guard_tail(edge)?,
                 Event::ElseTransfer(edge) => self.else_transfer_header(edge)?,
                 Event::LoopHead(test) => self.loop_head(test)?,
                 Event::CompactLoopTail(predicate, test) => {

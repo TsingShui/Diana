@@ -1,6 +1,20 @@
 # Fixture: refined-carriers
 
-## Current LLM semantic judgement
+## Current verdict — terminal guard follow-up
+
+Read checkedEarly and tick: the original check stays before tick/selection;
+negative mode returns0 before length. tick still marks before its return or ISE.
+No cast is delayed or invocation/check origin duplicated.
+
+Compared the same prepared DEX on 29f1b82 and this commit. P7 requires a complete
+linear arm ending in a printed return/throw; opaque scopes are not exit evidence.
+The [fresh guard challenge](../../branches/terminal-guard-arms/review.md) covers
+actual other-edge Phi copies, parent scope, recovering catches and cleanup.
+Original P2 through complete P6 products agree; this is bounded LLM path reading,
+not behavioral execution. Historical execution claims below were not rerun.
+
+
+## Prior LLM semantic judgement
 
 Compared authored Java/Smali and original Engine products/source on the same
 prepared DEX, completed-eleven-repair bda9a49 versus candidate. Independent

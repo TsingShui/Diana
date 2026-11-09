@@ -17,18 +17,35 @@ impl Expressions<'_, '_> {
     ) -> Result<(), RenderError> {
         match shape {
             IfShape::Empty => push(work, Event::EmptyIf(test))?,
+            IfShape::Guard { inverted } => {
+                let (exit, tail, edge) = if inverted {
+                    (no, yes, test.when_true)
+                } else {
+                    (yes, no, test.when_false)
+                };
+                push(work, Event::Control(tail))?;
+                push(work, Event::GuardTail(edge))?;
+                push(work, Event::Close)?;
+                push(work, Event::Control(exit))?;
+                push(
+                    work,
+                    Event::If {
+                        test,
+                        chained,
+                        other_at_header: false,
+                    },
+                )?;
+            }
             IfShape::Inverted => {
                 push(work, Event::Close)?;
                 push(work, Event::Control(no))?;
-                // The omitted empty arm still owns controls,
-                // labels and any silent original transfers.
                 push(work, Event::EmptyArmAnchors(yes))?;
                 push(
                     work,
                     Event::If {
                         test,
                         chained,
-                        omitted_false: false,
+                        other_at_header: true,
                     },
                 )?;
             }
@@ -57,7 +74,7 @@ impl Expressions<'_, '_> {
                     Event::If {
                         test,
                         chained,
-                        omitted_false: self.code.emission().omitted(no)
+                        other_at_header: self.code.emission().omitted(no)
                             || self.code.emission().if_display(test.terminal) == IfDisplay::NoElse,
                     },
                 )?;
@@ -170,7 +187,7 @@ impl Expressions<'_, '_> {
         &mut self,
         test: PredicateEmission,
         chained: bool,
-        omitted_false: bool,
+        other_at_header: bool,
     ) -> Result<(), RenderError> {
         if !chained {
             self.out.indent()?;
@@ -188,13 +205,13 @@ impl Expressions<'_, '_> {
                 block: test.terminal,
             },
         )?;
-        if omitted_false {
-            self.selected(test.when_false, false)?;
-        }
-        if test.negate {
-            // P7 admits only nonprinting true-edge bundles here;
-            // their plan IDs retain zero-length original origins.
-            self.selected(test.when_true, false)?;
+        if other_at_header {
+            let other = if test.negate {
+                test.when_true
+            } else {
+                test.when_false
+            };
+            self.selected(other, false)?;
         }
         self.out.open()?;
         let edge = if test.negate {
@@ -217,6 +234,19 @@ impl Expressions<'_, '_> {
         self.out.indent()?;
         self.out.put("else ")?;
         self.selected(edge, false)?;
+        Ok(())
+    }
+
+    pub(super) fn guard_tail(&mut self, edge: TransferId) -> Result<(), RenderError> {
+        let printing =
+            !self.copies_print_no_words(&self.code.emission().transfers()[edge.0 as usize].copies);
+        if printing {
+            self.out.indent()?;
+        }
+        self.selected(edge, false)?;
+        if printing {
+            self.out.put("\n")?;
+        }
         Ok(())
     }
 

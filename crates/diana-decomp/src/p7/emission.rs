@@ -186,6 +186,11 @@ pub enum IfDisplay {
 #[derive(Clone, Copy, Debug, Serialize)]
 pub enum IfShape {
     IfElse,
+    /// One arm ends in an established return/throw. The other edge's copies
+    /// and complete body follow the guard in the enclosing lexical scope.
+    Guard {
+        inverted: bool,
+    },
     ElseIf,
     /// The false edge and its original body become the sole printed arm. Any
     /// true-edge copy bundles have no steps or diagnostics, only source anchors.

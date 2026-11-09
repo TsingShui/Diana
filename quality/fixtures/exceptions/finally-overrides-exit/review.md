@@ -1,6 +1,21 @@
 # Fixture: finally-overrides-exit
 
-## Current verdict — whole-operation follow-up
+## Current verdict — terminal guard follow-up
+
+Read complete replacement paths. Body bit1 throws before read. Each cleanup
+closes first, bit2 returns-7, otherwise bit4 throws the cleanup IAE, otherwise
+returns5 or rethrows the original capture. Failures are neither retried nor
+suppressed; no guard moves across the enclosing try/catch.
+
+Compared the same prepared DEX on 29f1b82 and this commit. P7 requires a complete
+linear arm ending in a printed return/throw; opaque scopes are not exit evidence.
+The [fresh guard challenge](../../branches/terminal-guard-arms/review.md) covers
+actual other-edge Phi copies, parent scope, recovering catches and cleanup.
+Original P2 through complete P6 products agree; this is bounded LLM path reading,
+not behavioral execution. Historical execution claims below were not rerun.
+
+
+## Prior verdict — whole-operation follow-up
 
 Reread Java, Smali and complete final replaceExit. Body construction/read and
 original catch-all remain. On normal and caught paths close executes first; bit2

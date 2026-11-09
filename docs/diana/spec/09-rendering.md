@@ -131,6 +131,16 @@ An empty If retains its header and original terminal facts, with a zero-length
 terminal anchor for a suppressed explicit test. A chained If owns its own braces
 and arm emission.
 
+A supplied Guard prints its selected return/throw arm inside the If, closes that
+scope, then prints the other edge's original copies/Transfer anchor and complete
+body without an else wrapper. `inverted` chooses the original arm and P7-supplied
+predicate polarity; P9 does not infer an exit. In particular, executable copies
+on the other edge of an inverted Guard do not run at the header. A nonprinting
+bundle keeps its single zero-width anchor after the guard instead. The retained
+If control still owns the full source span; its original child/edge identities
+remain available. P9 does not flatten opaque controls or choose declaration scope.
+
+
 A delivered integer decision prints Kotlin `when (selector) { key -> { body }
 else -> { default } }`. P9 evaluates the delivered first selector expression
 once and retains later omitted read occurrences as zero-width Expression

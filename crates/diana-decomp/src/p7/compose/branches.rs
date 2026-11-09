@@ -40,6 +40,17 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
             let both_empty =
                 yes_empty && empty[no.0 as usize] && copies_print_nothing(code, test.when_false);
             let control = &code.emission.controls[id.0 as usize];
+            let guard = if !control.label_required && !test.negate {
+                if !no_empty && super::continuations::ends_in_terminal_exit(code, yes)? {
+                    Some(false)
+                } else if !yes_empty && super::continuations::ends_in_terminal_exit(code, no)? {
+                    Some(true)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             let shape = if both_empty
                 && control.continuation.is_none()
                 && !code.emission.deferred_control(id)
@@ -48,6 +59,8 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
                 IfShape::Empty
             } else if yes_empty && !no_empty && !displayed_predicate_site(code, test) {
                 IfShape::Inverted
+            } else if let Some(inverted) = guard {
+                IfShape::Guard { inverted }
             } else if !no_empty
                 && arm_prints_nothing(code, test.when_false, true)
                 && single_if[no.0 as usize]
@@ -63,7 +76,7 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
             } = &mut code.emission.controls[id.0 as usize].layout
             {
                 *selected = shape;
-                if matches!(shape, IfShape::Inverted) {
+                if matches!(shape, IfShape::Inverted | IfShape::Guard { inverted: true }) {
                     test.negate = !test.negate;
                 }
             }
@@ -142,7 +155,8 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
             } => {
                 if matches!(shape, IfShape::Empty) {
                     empty[id.0 as usize] = empty[header.0 as usize];
-                } else if empty[header.0 as usize]
+                } else if !matches!(shape, IfShape::Guard { .. })
+                    && empty[header.0 as usize]
                     && code.emission.terminals[test.terminal.0 as usize]
                         .before
                         .is_empty()
@@ -166,7 +180,7 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
     // A plain conditional terminal has no If control: its arms are the selected
     // transfer spellings. An empty true arm and a printing false arm invert the
     // same way, and the predicate still evaluates once at the same position.
-    let mut owned = vec![false; code.terminals.len()];
+    let mut owned = filled(code.terminals.len(), false)?;
     for control in &code.emission.controls {
         if let EmissionLayout::If { test, .. } = &control.layout {
             owned[test.terminal.0 as usize] = true;
