@@ -157,6 +157,16 @@ pub(super) fn construct_flow(c: &mut Context<'_, '_>) -> Result<(), ExpressionEr
         c.code.emission.blocks[site.guard.0 as usize].end =
             BlockEnd::Transfers(vec_fallible(site.normal)?);
     }
+    for guard in plan.guards() {
+        let mut children = Vec::new();
+        push(&mut children, ControlId(guard.header().0))?;
+        push(&mut children, ControlId(guard.normal().0))?;
+        let control = &mut c.code.emission.controls[guard.control().0 as usize];
+        control.layout = EmissionLayout::Sequence;
+        control.explicit_children = Some(children);
+        control.label_required = false;
+        control.continuation = None;
+    }
     c.code.emission.coroutine_flow = Some(CoroutineFlow {
         source,
         abi: copy(plan.abi())?,
@@ -189,7 +199,9 @@ pub(super) fn finish_flow(c: &mut Context<'_, '_>) -> Result<(), ExpressionError
             continue;
         }
         active[id.0 as usize] = true;
-        for &child in &c.code.controls[id.0 as usize].children {
+        for &child in
+            c.code.emission.controls[id.0 as usize].children(&c.code.controls[id.0 as usize])
+        {
             push(&mut work, child)?;
         }
     }
@@ -200,6 +212,30 @@ pub(super) fn finish_flow(c: &mut Context<'_, '_>) -> Result<(), ExpressionError
             c.code.emission.blocks[node.0 as usize].end = BlockEnd::Terminal(original.block());
         }
         c.code.emission.controls[node.0 as usize].continuation = None;
+        for &transfer in &c.code.blocks[node.0 as usize].transfers {
+            let original = &c.code.transfers[transfer.0 as usize];
+            c.code.emission.transfers[transfer.0 as usize].spelling =
+                if plan.abi_gotos().iter().any(|id| id.0 == transfer.0) {
+                    c.code.emission.blocks[original.destination.0 as usize].show_label = true;
+                    TransferSpelling::Goto(original.destination)
+                } else {
+                    TransferSpelling::Fallthrough
+                };
+        }
+    }
+    for &(id, target) in plan.completions() {
+        c.code.emission.controls[id.0 as usize].continuation =
+            target.map(|node| ControlCompletion::Goto(LabelId(node.0)));
+        if let Some(node) = target {
+            c.code.emission.blocks[node.0 as usize].show_label = true;
+        }
+    }
+    for &id in plan.retired_transfers() {
+        c.code.emission.transfers[id.0 as usize].spelling = if plan.gotos().contains(&id) {
+            TransferSpelling::Goto(c.code.transfers[id.0 as usize].destination)
+        } else {
+            TransferSpelling::Fallthrough
+        };
     }
     let mut anchors = Vec::new();
     for (index, used) in active.into_iter().enumerate() {

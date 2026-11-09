@@ -156,3 +156,29 @@ fn compiled_fetch_and_private_marker_returns_consume_selected_guard_owners() {
         },
     );
 }
+
+#[test]
+fn sparse_non_monotone_states_do_not_reintroduce_dispatch_context() {
+    inspect(
+        "kotlin/suspend-three-step-effects",
+        "Lfixture/SuspendThree;",
+        "reorderedStates",
+        "(ILkotlin/coroutines/Continuation;)Ljava/lang/Object;",
+        |facts, code, rendered| {
+            let plan = facts.coroutine_flow().unwrap();
+            assert_eq!(
+                plan.sites().iter().map(|s| s.state()).collect::<Vec<_>>(),
+                [9, 2, 5]
+            );
+            assert_eq!(code.emission().coroutine_flow().unwrap().sites.len(), 3);
+            let source = executable(rendered.text());
+            assert_eq!(source.matches("SuspendThree.load(").count(), 3);
+            assert!(
+                !source.contains("switch (")
+                    && !source.contains("goto ")
+                    && !source.contains("break;")
+            );
+            assert!(rendered.text().contains("case 9: goto "));
+        },
+    );
+}

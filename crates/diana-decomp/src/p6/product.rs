@@ -1080,6 +1080,27 @@ pub struct CoroutineFlowPlan {
     pub(super) protocol_operations: Vec<OpId>,
     pub(super) gotos: Vec<LinkId>,
     pub(super) abi_entries: Vec<NodeId>,
+    pub(super) guards: Vec<CoroutineGuardControl>,
+    pub(super) completions: Vec<(RegionId, Option<NodeId>)>,
+    pub(super) abi_gotos: Vec<LinkId>,
+    pub(super) retired_transfers: Vec<LinkId>,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct CoroutineGuardControl {
+    pub(super) control: RegionId,
+    pub(super) header: RegionId,
+    pub(super) normal: RegionId,
+}
+impl CoroutineGuardControl {
+    pub fn control(&self) -> RegionId {
+        self.control
+    }
+    pub fn header(&self) -> RegionId {
+        self.header
+    }
+    pub fn normal(&self) -> RegionId {
+        self.normal
+    }
 }
 #[derive(Clone, Debug)]
 pub struct CoroutineSite {
@@ -1093,6 +1114,18 @@ pub struct CoroutineSite {
     pub(super) spills: Vec<(OpId, OpId)>,
 }
 impl CoroutineFlowPlan {
+    pub fn guards(&self) -> &[CoroutineGuardControl] {
+        &self.guards
+    }
+    pub fn completions(&self) -> &[(RegionId, Option<NodeId>)] {
+        &self.completions
+    }
+    pub fn abi_gotos(&self) -> &[LinkId] {
+        &self.abi_gotos
+    }
+    pub fn retired_transfers(&self) -> &[LinkId] {
+        &self.retired_transfers
+    }
     pub fn source(&self) -> &[RegionId] {
         &self.source
     }

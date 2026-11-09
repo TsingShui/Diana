@@ -19,6 +19,11 @@ but three distinct marker-return nodes. It exercises already selected P6 guard
 controls rather than the shared-return raw branches. Its separate callback
 reenters privateReturns. This interaction was added after repairing the original
 compiled Kotlin fetch guard ownership.
+`reorderedStates` adds sparse non-monotone states: 9 is the first call, 2 the
+second and 5 the third. Its separate callback and private marker returns retain
+walk's logical behavior and all independent scenarios. It was added after
+repairing selected guard/case completion ownership; recovery cannot confuse
+sorted state keys with source execution order or retain ABI case breaks.
 
 ## Independent model and scenarios
 

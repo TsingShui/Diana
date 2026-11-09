@@ -69,8 +69,24 @@ fn branching_resume_sites_keep_the_invalid_default_out_of_case_zero() {
             assert!(rendered.text().contains("boxInt(-1)"));
             dispatch_delivery(facts, code, rendered);
             let default = rendered.text().find("default:").unwrap();
-            let case0 = rendered.text()[default..].find("case 0:").unwrap() + default;
-            assert!(rendered.text()[default..case0].contains("throw new "));
+            if code.emission().coroutine_flow().is_some() {
+                // The source view retains an explicit ABI dispatch attachment,
+                // so its default still reaches the original throw, not case 0.
+                let target = code
+                    .transfers()
+                    .iter()
+                    .find(|t| t.role == Some(diana_decomp::p2::NormalEdge::SwitchDefault))
+                    .unwrap()
+                    .destination;
+                let label = &code.labels()[target.0 as usize].name;
+                assert!(rendered.text()[default..].starts_with(&format!("default: goto {label};")));
+                let start = rendered.text().find(&format!("{label}:")).unwrap();
+                let throw = rendered.text()[start..].find("throw new ").unwrap() + start;
+                assert!(start > default && throw > start);
+            } else {
+                let case0 = rendered.text()[default..].find("case 0:").unwrap() + default;
+                assert!(rendered.text()[default..case0].contains("throw new "));
+            }
         },
     );
 }

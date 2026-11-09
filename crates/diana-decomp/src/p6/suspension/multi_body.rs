@@ -730,6 +730,103 @@ fn candidate(
             push(&mut abi_entries, target)?;
         }
     }
+    let mut guards = Vec::new();
+    for region in &f.regions {
+        if let RegionKind::If {
+            true_link,
+            false_link,
+        } = region.kind
+            && let Some(site) = sites.iter().find(|site| region.entry == Some(site.guard))
+        {
+            let [header, yes, no] = region.children.as_slice() else {
+                return Ok(Err("flow_guard_children"));
+            };
+            let normal = if site.normal == true_link {
+                *yes
+            } else if site.normal == false_link {
+                *no
+            } else {
+                return Ok(Err("flow_guard_link_owner"));
+            };
+            need!(
+                f.regions[normal.0 as usize]
+                    .nodes
+                    .iter()
+                    .all(|n| source_mask[n.0 as usize]),
+                "flow_guard_normal_coverage"
+            );
+            push(
+                &mut guards,
+                CoroutineGuardControl {
+                    control: region.id,
+                    header: *header,
+                    normal,
+                },
+            )?;
+        }
+    }
+    let mut active = super::super::build::filled(f.regions.len(), false)?;
+    let mut work = Vec::new();
+    for &id in &source {
+        push(&mut work, id)?;
+    }
+    while let Some(id) = work.pop() {
+        if active[id.0 as usize] {
+            continue;
+        }
+        active[id.0 as usize] = true;
+        if let Some(guard) = guards.iter().find(|g| g.control == id) {
+            push(&mut work, guard.header)?;
+            push(&mut work, guard.normal)?;
+        } else {
+            for &child in &f.regions[id.0 as usize].children {
+                push(&mut work, child)?;
+            }
+        }
+    }
+    let mut completions = Vec::new();
+    for (index, &used) in active.iter().enumerate() {
+        if !used {
+            continue;
+        }
+        let id = RegionId(super::super::build::id(index)?);
+        let region = &f.regions[index];
+        if guards.iter().any(|g| g.control == id) {
+            push(&mut completions, (id, None))?;
+            continue;
+        }
+        if let Continuation::Break(scope) = region.continuation
+            && !active[scope.0 as usize]
+        {
+            let Some(follow) = region.follow.filter(|n| source_mask[n.0 as usize]) else {
+                return Ok(Err("flow_retired_scope_follow"));
+            };
+            let next = source
+                .iter()
+                .position(|&r| r == id)
+                .and_then(|i| source.get(i + 1))
+                .and_then(|r| f.regions[r.0 as usize].entry);
+            push(
+                &mut completions,
+                (id, (next != Some(follow)).then_some(follow)),
+            )?;
+        }
+    }
+    let mut retired_transfers = Vec::new();
+    let mut abi_gotos = Vec::new();
+    for link in &f.links {
+        if !source_mask[link.from.0 as usize] {
+            if !matches!(link.origin, LinkOrigin::WithinBlock(_))
+                || link.from.0.checked_add(1) != Some(link.to.0)
+            {
+                push(&mut abi_gotos, link.id)?;
+            }
+        } else if source_mask[link.to.0 as usize]
+            && matches!(f.link_plans[link.id.0 as usize].action,TransferAction::Break(scope) if !active[scope.0 as usize])
+        {
+            push(&mut retired_transfers, link.id)?;
+        }
+    }
     Ok(Ok(CoroutineFlowPlan {
         source,
         abi,
@@ -738,6 +835,10 @@ fn candidate(
         protocol_operations: protocol,
         gotos,
         abi_entries,
+        guards,
+        completions,
+        abi_gotos,
+        retired_transfers,
     }))
 }
 

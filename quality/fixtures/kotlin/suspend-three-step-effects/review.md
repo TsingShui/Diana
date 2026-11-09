@@ -35,3 +35,14 @@ the immediate/resumed effect difference stays visible.
 No contradiction was found on the modeled paths. Original call/capture,
 terminal and normal-transfer origins remain anchored. External field/constructor
 resolution and actual scheduling remain unmodeled, not passing checks.
+
+The shared-tail integration required a complete guard/case-context alternative:
+selected marker Ifs are replaced with their original header/normal child, and
+retired ABI case completions use the established source follow. Otherwise the
+source view would repeat the marker predicate/copies or emit an orphan break.
+The corrected candidate retains raw ABI destinations and source copy delivery
+once. reorderedStates maps call order to sparse keys 9, 2, 5 and retains the same
+results, records, early returns, private markers and callbacks. Thus sorted state
+keys or selected ABI case order do not substitute for source execution order.
+The normalOnly mismatch still remains explicit. Current structural tests check
+these source/ABI boundaries, without establishing executed helper behavior.
