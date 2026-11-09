@@ -441,7 +441,7 @@ pub enum ConstructionRole {
     Alias,
     Literal,
     Initialization,
-    /// A resolved string evaluated as a constructor argument after allocation.
+    /// An expression producer evaluated inside an ordered argument tree.
     Argument,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -478,11 +478,11 @@ pub struct ConstructionGroup {
     pub(super) prelude: Option<PlanId>,
     pub(super) snapshot_members: Vec<PlanId>,
 }
-/// A checked argument producer inside the allocation-to-initialization corridor.
+/// One checked producer/use edge in the ordered construction argument trees.
 #[derive(Clone, Copy, Debug)]
 pub struct PreparedArgument {
     pub operation: OpId,
-    pub argument: u32,
+    pub target: UseSite,
     pub local: LocalId,
 }
 impl ConstructionGroup {

@@ -1,5 +1,28 @@
 # Protected loop abrupt exits review
 
+## Current verdict — constructor argument and throw recovery
+
+Compared the same prepared DEX on `e95b6a4` and the containing repair. Read the
+original Java and prepared DEX behavior and complete before/after output for nested(IIII)I, foreign(IIII)I and recover(III)I.
+Only construction spelling changes; other member output is exact.
+
+### Semantics
+
+Nested probe-selected guard construction/throw stays before read/count and both loop updates, then cleanup7 precedes cleanup8. The foreign pre-loop and probe arrivals still share their actual guard throw tail without inventing a natural single-entry body. Recovery still catches the same guard/error, performs cleanup7/8, advances by2 and rejoins L2; normal read advances by1. Cleanup failure still skips subsequent cleanup/update. P6 owners, original transfers and loop heads remain unchanged.
+
+Original P1/P3/P4 publications agree. P5 retains allocation, arguments and normal
+publication with the same ordered protection; P7 composes an adjacent throw only
+with equal handler chain/spelling and no snapshots. Original sites and effect
+order stay delivered, including explicit chains when lexical catch delivery is
+unavailable. The [fresh argument/effect challenge](../../atoms/constructor-argument-effects/review.md)
+covers trees, fault prefixes and order/sharing/handler/save refusals.
+
+LLM path review found no contradiction under the fixture's recorded helper and
+external-constructor assumptions. Unchanged paths reuse the earlier independent
+review below. This is renewed semantic reading plus current product regressions,
+not a full-method VM/device or Java execution result. Historical execution claims
+below are not rerun certifications.
+
 ## Scope and verdict
 
 Compared the same prepared DEX on baseline7354242 and this candidate through the

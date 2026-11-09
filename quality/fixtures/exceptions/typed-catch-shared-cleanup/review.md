@@ -1,6 +1,29 @@
 # Fixture: typed-catch-shared-cleanup
 
-## Current verdict — terminal guard follow-up
+## Current verdict — constructor argument and throw recovery
+
+Compared the same prepared DEX on `e95b6a4` and the containing repair. Read the
+original Java and prepared DEX behavior and complete before/after output for classify(String,I)I.
+Only construction spelling changes; other member output is exact.
+
+### Semantics
+
+Modes1/2/3 now print natural NFE(mode), NPE(mode) and ISE(mode) throws while retaining the same ordered c1 routes. The adjacent NFE/NPE handler still opens resource1, reads/adjusts its result and closes it; RuntimeException still selects -2. Normal parse and all outcomes retain the outer close of resource0. Constructor/string faults use original type dispatch and are not fabricated as the intended exception. Shared handler priority and inner/outer cleanup effects remain exact.
+
+Original P1/P3/P4 publications agree. P5 retains allocation, arguments and normal
+publication with the same ordered protection; P7 composes an adjacent throw only
+with equal handler chain/spelling and no snapshots. Original sites and effect
+order stay delivered, including explicit chains when lexical catch delivery is
+unavailable. The [fresh argument/effect challenge](../../atoms/constructor-argument-effects/review.md)
+covers trees, fault prefixes and order/sharing/handler/save refusals.
+
+LLM path review found no contradiction under the fixture's recorded helper and
+external-constructor assumptions. Unchanged paths reuse the earlier independent
+review below. This is renewed semantic reading plus current product regressions,
+not a full-method VM/device or Java execution result. Historical execution claims
+below are not rerun certifications.
+
+## Prior verdict — terminal guard follow-up
 
 Read mode-selected constructions inside the original inner try. NFE/NPE/ISE
 still occur before parse and keep their site chains/priority. Only normal mode

@@ -1,6 +1,29 @@
 # Fixture: finally-overrides-exit
 
-## Current verdict — abrupt finally recovery
+## Current verdict — constructor argument and throw recovery
+
+Compared the same prepared DEX on `e95b6a4` and the containing repair. Read the
+original Java and prepared DEX behavior and complete before/after output for replaceExit(I)I.
+Only construction spelling changes; other member output is exact.
+
+### Semantics
+
+open remains before try. Bit1 now prints one constructed body ISE throw, still before read and under the original cleanup delivery. Close precedes the bit2 return and bit4 finally throw, replacing the pending body outcome when selected; close failure skips those overrides. No override preserves the original body/read error or return5. The native helper model and acquired handle are unchanged.
+
+Original P1/P3/P4 publications agree. P5 retains allocation, arguments and normal
+publication with the same ordered protection; P7 composes an adjacent throw only
+with equal handler chain/spelling and no snapshots. Original sites and effect
+order stay delivered, including explicit chains when lexical catch delivery is
+unavailable. The [fresh argument/effect challenge](../../atoms/constructor-argument-effects/review.md)
+covers trees, fault prefixes and order/sharing/handler/save refusals.
+
+LLM path review found no contradiction under the fixture's recorded helper and
+external-constructor assumptions. Unchanged paths reuse the earlier independent
+review below. This is renewed semantic reading plus current product regressions,
+not a full-method VM/device or Java execution result. Historical execution claims
+below are not rerun certifications.
+
+## Prior verdict — abrupt finally recovery
 
 Read original Java/Smali and both complete `replaceExit(I)I` texts on baseline
 `b214ec6` and this repair. Duplicated close/override paths now become one finally;

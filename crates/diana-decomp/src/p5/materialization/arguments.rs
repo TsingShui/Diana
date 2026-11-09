@@ -54,21 +54,95 @@ pub(super) fn prepare(
     arguments: &Arguments<'_>,
 ) -> Admission<Vec<PreparedArgument>> {
     let mut prepared_arguments = Vec::new();
-    let mut previous_argument = None;
-    for &operation in preparations {
-        let (argument, prepared) = prepare_argument(
+    for (position, &operation) in preparations.iter().enumerate() {
+        let prepared = prepare_argument(
             typed,
             f,
             allocation,
             init,
             operation,
-            previous_argument,
-            arguments,
+            &preparations[position + 1..],
         )?;
-        previous_argument = Some(argument);
         push(&mut prepared_arguments, prepared)?;
     }
+    ordered_trees(
+        typed,
+        f,
+        allocation,
+        preparations,
+        &prepared_arguments,
+        arguments,
+    )?;
     Ok(prepared_arguments)
+}
+
+// The printed expression evaluates each operand tree in order, then its parent.
+// Accept only that exact original preparation sequence. One-use edges and later
+// targets make this finite; no retry or expression solver is involved.
+fn ordered_trees(
+    typed: &TypedMethod<'_>,
+    f: &StorageFacts,
+    allocation: crate::p2::OpId,
+    operations: &[crate::p2::OpId],
+    prepared: &[PreparedArgument],
+    arguments: &Arguments<'_>,
+) -> Admission<()> {
+    enum Work<'a> {
+        Read(&'a UseAccess),
+        Finish(crate::p2::OpId),
+    }
+    let anchor = typed
+        .ssa_facts()
+        .operation_site(allocation)
+        .ok_or(StorageError::InternalInvariant(
+            "allocation lost its execute point",
+        ))?
+        .execute();
+    let mut work = Vec::new();
+    for input in arguments.inputs.iter().skip(1).rev() {
+        push(&mut work, Work::Read(input))?;
+    }
+    let mut next = 0usize;
+    while let Some(item) = work.pop() {
+        match item {
+            Work::Read(input) => {
+                if let Some(producer) = prepared.iter().find(|p| p.target == input.site()) {
+                    let uses = match f.operation_uses(producer.operation) {
+                        Some(Ok(uses)) => uses,
+                        _ => {
+                            return Err(Separation::InterveningOperation(producer.operation).into());
+                        }
+                    };
+                    push(&mut work, Work::Finish(producer.operation))?;
+                    for usage in uses.iter().rev() {
+                        push(&mut work, Work::Read(usage))?;
+                    }
+                } else if !input
+                    .read()
+                    .is_ok_and(|read| source_ready(typed, read, anchor))
+                {
+                    return Err(Separation::ArgumentNotAvailable(input.site()).into());
+                }
+            }
+            Work::Finish(operation) => {
+                if operations.get(next) != Some(&operation) {
+                    return Err(Separation::InterveningOperation(operation).into());
+                }
+                next = next
+                    .checked_add(1)
+                    .ok_or(StorageError::InternalInvariant("argument order overflow"))?;
+            }
+        }
+    }
+    if next != operations.len() {
+        return Err(
+            Separation::InterveningOperation(*operations.get(next).ok_or(
+                StorageError::InternalInvariant("argument order exceeds preparation"),
+            )?)
+            .into(),
+        );
+    }
+    Ok(())
 }
 
 fn prepare_argument(
@@ -77,9 +151,8 @@ fn prepare_argument(
     allocation: crate::p2::OpId,
     init: crate::p2::OpId,
     operation: crate::p2::OpId,
-    previous_argument: Option<u32>,
-    arguments: &Arguments<'_>,
-) -> Admission<(u32, PreparedArgument)> {
+    later: &[crate::p2::OpId],
+) -> Admission<PreparedArgument> {
     let s = typed.ssa_facts();
     let flow = typed.execution();
     let op = &flow.operations()[operation.0 as usize];
@@ -125,12 +198,10 @@ fn prepare_argument(
     else {
         return Err(Separation::InterveningOperation(operation).into());
     };
-    if target != init
-        || argument == 0
+    if !(target == init && argument != 0 || later.contains(&target))
         || s.state(usage.state())
             .is_none_or(|state| !state.availability().is_available())
         || matching.next().is_some()
-        || previous_argument.is_some_and(|previous| previous >= argument)
         || s.uses().iter().any(|other| {
             other.slot() == definition_state.slot() && value(s, other.state()).is_none()
         })
@@ -164,31 +235,31 @@ fn prepare_argument(
     {
         return Err(Separation::InterveningOperation(operation).into());
     }
-    let Ok(argument_index) = usize::try_from(argument - 1) else {
-        return Err(Separation::InterveningOperation(operation).into());
-    };
-    let Some(read) = arguments.reads.get(argument_index) else {
-        return Err(Separation::InterveningOperation(operation).into());
-    };
-    let Some(input_index) = argument_index.checked_add(1) else {
-        return Err(Separation::InterveningOperation(operation).into());
-    };
-    if !matches!(read, StorageRead::Value { value, local: source, .. } if *value == produced && *source == local)
-        || arguments
-            .inputs
-            .get(input_index)
-            .is_none_or(|input| input.initialization() != Some(Initialization::Initialized))
-    {
+    let input = f
+        .operation_uses(target)
+        .and_then(Result::ok)
+        .and_then(|uses| uses.iter().find(|input| input.site() == usage.site()));
+    if !input.is_some_and(|input| {
+        let initialization = match f.locals[local.0 as usize].storage_type() {
+            StorageType::Family {
+                family: crate::p4::Family::Reference,
+                ..
+            } => input.initialization() == Some(Initialization::Initialized),
+            // P4 publishes initialization only for references. Numeric state
+            // correspondence uses its existing read/view, not a fabricated flag.
+            _ => input.initialization().is_none(),
+        };
+        initialization
+            && matches!(input.read(), Ok(StorageRead::Value { value, local: source, .. })
+                if value == produced && source == local)
+    }) {
         return Err(Separation::InterveningOperation(operation).into());
     }
-    Ok((
-        argument,
-        PreparedArgument {
-            operation,
-            argument: argument - 1,
-            local,
-        },
-    ))
+    Ok(PreparedArgument {
+        operation,
+        target: usage.site(),
+        local,
+    })
 }
 
 fn preparation_effects(
@@ -204,20 +275,13 @@ fn preparation_effects(
         flow.reference_fact(op.pc(), crate::raw::ReferenceSlot::First),
         Some(Ok(crate::p1::CheckedReferenceFact::String { .. }))
     );
-    // Both kinds print at the constructor argument they prepare, so their
-    // exception must propagate from that same position rather than enter a
-    // locally selected handler.
+    // Every throwing member keeps the same ordered handler chain. Pure
+    // preparations have no throw route; snapshots are owned by the group below.
     if flow
         .reference_use_issue(op.pc(), crate::raw::ReferenceSlot::First)
         .is_some()
-        || !matches!(
-            handlers.as_slice(),
-            [Handler {
-                catch: None,
-                target: None,
-                ..
-            }]
-        )
+        || (op.effects().may_throw()
+            && (op.exceptional().is_none() || handlers != protection(typed, allocation)?))
     {
         return Err(Separation::InterveningOperation(operation).into());
     }

@@ -1,6 +1,29 @@
 # Fixture: finally-return-capture
 
-## Current verdict — terminal guard follow-up
+## Current verdict — constructor argument and throw recovery
+
+Compared the same prepared DEX on `e95b6a4` and the containing repair. Read the
+original Java and prepared DEX behavior and complete before/after output for fieldReturn(I)I and localReturn(I)I.
+Only construction spelling changes; other member output is exact.
+
+### Semantics
+
+Field mode1 and local mode2 construct/throw the same body ISE before cleanup. Field mode0 still captures10 before writing99/record99; local ordinary modes still return their saved1/2 after record3. Error paths keep their original capture/rethrow, and record failure replaces it. The new natural throw does not move return evaluation or collapse the still-explicit local cleanup.
+
+Original P1/P3/P4 publications agree. P5 retains allocation, arguments and normal
+publication with the same ordered protection; P7 composes an adjacent throw only
+with equal handler chain/spelling and no snapshots. Original sites and effect
+order stay delivered, including explicit chains when lexical catch delivery is
+unavailable. The [fresh argument/effect challenge](../../atoms/constructor-argument-effects/review.md)
+covers trees, fault prefixes and order/sharing/handler/save refusals.
+
+LLM path review found no contradiction under the fixture's recorded helper and
+external-constructor assumptions. Unchanged paths reuse the earlier independent
+review below. This is renewed semantic reading plus current product regressions,
+not a full-method VM/device or Java execution result. Historical execution claims
+below are not rerun certifications.
+
+## Prior verdict — terminal guard follow-up
 
 Read both return captures. Body failure still precedes the state read;
 successful state is captured before finally writes99/records99. The later return

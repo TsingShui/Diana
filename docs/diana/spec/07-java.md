@@ -407,9 +407,13 @@ chain line and the catch scope already state it. Other sites keep a compact chai
 reference.
 
 P5-selected construction groups become `New` expressions. P7 places each
-P5-selected string preparation in its designated constructor argument, so `new`
+P5-selected producer at its original consuming read within the ordered argument
+trees, so `new`
 evaluates allocation, preparations and initialization in their original order.
-P5 retains an explicit plan for other intervening operations. The group retains
+Root arguments retain their original read origins. The allocation receiver is
+protocol storage, rather than an extra unevaluated expression read that could
+prevent a scoped declaration or inflate its use count. P5 retains an explicit
+plan for other intervening operations. The group retains
 allocation and initialization operations, member/edge provenance, arguments,
 normal publication point and all throwing sites. Its selected common snapshot
 prelude executes once. Alias publications occur only after successful
@@ -612,9 +616,13 @@ for that method.
 P7 may compose a selected construction into an immediately following `throw`
 when its single published local has one initialized read at that terminal, no
 copy involvement, and the intervening fallthrough and printed controls carry no
-other work. Construction and throw sites must propagate without snapshots. The
+other work. Construction and throw sites MUST retain the same delivered handler chain and
+exception spelling, without snapshots. Propagating, natural and explicit
+protection retain their original delivery; an ImpossibleRelease cannot qualify. The
 construction, its members and their sites remain in the delivered product and
-the composed expression retains their origins.
+the composed expression retains their origins. Prepared operand expressions
+own their operation/result anchors; the construction owns the complete set of
+throw-site anchors, without duplicating either.
 
 For later test runs of an ordered Condition, P7 also supports a store-preserving
 composition when the result has additional reads. `ComposedResult::Store` names

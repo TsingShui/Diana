@@ -131,45 +131,99 @@ pub(super) fn construct(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> 
         let at = ConstructionId(id(c.code.constructions.len())?);
         let reference = c.first_reference(group.allocation())?;
         let constructor = c.first_reference(group.initialization())?;
-        let mut arguments = Vec::new();
+        let uses = c
+            .planned
+            .storage_facts()
+            .operation_uses(group.initialization())
+            .and_then(Result::ok)
+            .ok_or(bug("selected construction lost its inputs"))?;
+        let mut initialization_inputs = Vec::new();
+        // The allocation receiver is protocol storage, not an extra emitted
+        // expression read. Only the actual constructor arguments are lowered.
+        if uses.len().checked_sub(1) != Some(group.arguments().len()) {
+            return Err(bug(
+                "selected construction lost its argument correspondence",
+            ));
+        }
+        for (input, &read) in uses.iter().skip(1).zip(group.arguments()) {
+            let origin = Some(ReadOrigin {
+                site: input.site(),
+                point: input.point(),
+                state: input.state(),
+                read: Ok(read),
+                initialization: input.initialization(),
+            });
+            push(&mut initialization_inputs, c.source_read(read, origin)?)?;
+        }
+        let arguments = copy(&initialization_inputs)?;
+        let mut lowered = Vec::new();
+        for prepared in group.prepared_arguments() {
+            // P5 selected each immediate producer/use edge and its exact order.
+            // Lower the existing operation once; composition attaches it to that
+            // delivered use, including an operand of another preparation.
+            let inputs = c.inputs(prepared.operation)?;
+            let source = c
+                .planned
+                .execution()
+                .operations()
+                .get(prepared.operation.0 as usize)
+                .ok_or(bug("prepared construction argument lost its operation"))?;
+            let kind = super::lower::semantic(c, source, &inputs)?;
+            let expression = match &kind {
+                StatementKind::Evaluate { expression } | StatementKind::Move { expression, .. } => {
+                    *expression
+                }
+                _ => return Err(bug("prepared construction argument is not an expression")),
+            };
+            let statement = c.statement(kind, prepared.operation, inputs)?;
+            push(&mut lowered, (prepared, statement, expression))?;
+        }
         let mut prepared_arguments = Vec::new();
-        for (index, &read) in group.arguments().iter().enumerate() {
-            let operand = c.source_read(read, None)?;
-            if let Some(prepared) = group
-                .prepared_arguments()
-                .iter()
-                .find(|prepared| usize::try_from(prepared.argument) == Ok(index))
-            {
-                // The admitted producer keeps its ordinary lowering; only its
-                // position changes, to the argument it already prepared.
-                let inputs = c.inputs(prepared.operation)?;
-                let source = c
-                    .planned
-                    .execution()
-                    .operations()
-                    .get(prepared.operation.0 as usize)
-                    .ok_or(bug("prepared construction argument lost its operation"))?;
-                let kind = super::lower::semantic(c, source, &inputs)?;
-                let expression = match &kind {
-                    StatementKind::Evaluate { expression }
-                    | StatementKind::Move { expression, .. } => *expression,
-                    _ => {
-                        return Err(bug("prepared construction argument is not an expression"));
-                    }
+        for &(prepared, statement, expression) in &lowered {
+            let crate::p3::UseSite::Operation {
+                operation: target, ..
+            } = prepared.target
+            else {
+                return Err(bug("prepared construction argument lost its target"));
+            };
+            let operands = if target == group.initialization() {
+                &initialization_inputs
+            } else {
+                let (_, target_statement, _) = lowered
+                    .iter()
+                    .find(|(p, _, _)| p.operation == target)
+                    .ok_or(bug(
+                        "prepared construction argument lost its consuming operation",
+                    ))?;
+                let Arguments::Known(inputs) =
+                    &c.code.statements[target_statement.0 as usize].inputs
+                else {
+                    return Err(bug("prepared construction target lost its inputs"));
                 };
-                let statement = c.statement(kind, prepared.operation, inputs)?;
-                push(
-                    &mut prepared_arguments,
-                    PreparedExpression {
-                        local: StorageId(prepared.local.0),
-                        operation: prepared.operation,
-                        statement,
-                        expression,
-                        operand,
-                    },
-                )?;
-            }
-            push(&mut arguments, operand)?;
+                inputs
+            };
+            let operand = operands
+                .iter()
+                .copied()
+                .find(|operand| {
+                    c.code.expressions[operand.0 as usize]
+                        .origin
+                        .as_ref()
+                        .is_some_and(|origin| origin.site == prepared.target)
+                })
+                .ok_or(bug(
+                    "prepared construction argument lost its consuming read",
+                ))?;
+            push(
+                &mut prepared_arguments,
+                PreparedExpression {
+                    local: StorageId(prepared.local.0),
+                    operation: prepared.operation,
+                    statement,
+                    expression,
+                    operand,
+                },
+            )?;
         }
         let expression = c.expression(
             ExprKind::New {

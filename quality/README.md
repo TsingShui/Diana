@@ -131,6 +131,8 @@ Downloaded inputs and generated output remain outside version control.
 | `array-basic` | sized and literal arrays, byte/boolean arrays, read, write, `.length`, 2D |
 | `cast-instanceof` | `instanceof`, `check-cast`, array cast |
 | `expr-wide` | `long` shifts/arithmetic, `float`/`double`, NaN comparison, narrowing casts |
+| `constructor-argument-chains` | Two independent call/field chains after allocation and protected exception initialization |
+| `constructor-argument-effects` | Branching argument trees, faults and order/sharing/handler/snapshot guards |
 
 ### Branches
 

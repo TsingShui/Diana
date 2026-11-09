@@ -1,6 +1,29 @@
 # Fixture: abrupt-continuation-tails
 
-## Current verdict — one external discriminator tail
+## Current verdict — constructor argument and throw recovery
+
+Compared the same prepared DEX on `e95b6a4` and the containing repair. Read the
+original Java and prepared DEX behavior and complete before/after output for caught(I)I.
+Only construction spelling changes; other member output is exact.
+
+### Semantics
+
+mark50 precedes the flag test. Flag0 allocates/initializes and throws NFE through the same ordered c0 chain, then mark51 selects9. Other flags select7 without construction. Both paths mark52 once. Constructor failure keeps its actual handler/type dispatch rather than being replaced with an initialized NFE. Explicit sharing and later work remain.
+
+Original P1/P3/P4 publications agree. P5 retains allocation, arguments and normal
+publication with the same ordered protection; P7 composes an adjacent throw only
+with equal handler chain/spelling and no snapshots. Original sites and effect
+order stay delivered, including explicit chains when lexical catch delivery is
+unavailable. The [fresh argument/effect challenge](../../atoms/constructor-argument-effects/review.md)
+covers trees, fault prefixes and order/sharing/handler/save refusals.
+
+LLM path review found no contradiction under the fixture's recorded helper and
+external-constructor assumptions. Unchanged paths reuse the earlier independent
+review below. This is renewed semantic reading plus current product regressions,
+not a full-method VM/device or Java execution result. Historical execution claims
+below are not rerun certifications.
+
+## Prior verdict — one external discriminator tail
 
 Compared the same prepared DEX on dd70d20 and this candidate. decorated now has
 private first-dispatch cases and one external -1 assignment. A successful match

@@ -163,7 +163,12 @@ P7 produces an independently owned `MethodResult`, delivered by
 from that same execution; `into_result()` releases retained analysis. No-code
 members use `Declared(MethodResult)`. Unified operation lowering retains original
 calls, conversions, checks, copies, exception sites and initialization positions.
-P5 natural constructions become `New` expressions, and P6 controls/outlets have
+P5 natural constructions become `New` expressions with complete ordered
+argument trees, including calls, arithmetic and field reads under equal handler
+protection. Different argument/effect order, shared producers, differing handlers
+and changing exception snapshots retain explicit allocation/initialization.
+Protected constructions can compose into an adjacent throw with that same
+handler chain and spelling. P6 controls/outlets have
 explicit emission ownership. P7 also attaches local declarations to their first
 assignment when later reads and writes remain in scope; joins, copy destinations
 and unknown placements retain outer declarations. The P7 compose passes select only adjacent
@@ -307,7 +312,12 @@ faults. Six [abrupt-finally checks](../../quality/fixtures/exceptions/abrupt-fin
 cover return/throw replacement, saved body-return state, always-abrupt and bare
 void cleanup, two original rethrows, exact parameter throws and unequal/foreign
 entry refusals. These are product/origin regressions, not full-method behavioral
-execution. Four [carrier checks](../../quality/fixtures/atoms/refined-carriers/README.md)
+execution. Six [constructor-argument checks](../../quality/fixtures/atoms/constructor-argument-chains/README.md)
+and their [effect challenge](../../quality/fixtures/atoms/constructor-argument-effects/README.md)
+cover two independent field/call chains, protected exception construction,
+branching argument trees, fault short-circuiting, original anchors and
+order/sharing/handler/snapshot refusal. Their independent numeric evaluator
+executes final argument trees only, not whole methods. Four [carrier checks](../../quality/fixtures/atoms/refined-carriers/README.md)
 retain exact check provenance and prevent delaying a check past a call or fusing
 an array fill across another reference check.
 Four [while-continuation checks](../../quality/fixtures/loops/while-tail-continuations/README.md)
