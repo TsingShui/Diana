@@ -65,3 +65,17 @@ cargo run -p diana-decomp --example dbg_shell --locked -- \
 
 Initial engine baseline is `6178bdd`. Assembly and actual review/check outcomes
 are recorded after preparing the input once for both revisions.
+
+## Current acyclic-body evidence
+
+The integration recheck uses engine baseline `b214ec6` and candidate `281c889`.
+Preparation used Smali 2.5.2, OpenJDK 21.0.12.1 and API 24, producing DEX 037;
+these are observed versions, not admission pins. The same prepared input is
+inspected on both engine revisions. walk, privateReturns and reorderedStates
+select source bodies while normalOnly keeps its explicit effect difference.
+Private/shared marker nodes, sparse state keys, both early returns and two
+simultaneously live values are retained. Five source-body checks and the full
+120-test engine nextest run passed. The 100-fixture dev comparison has no lost
+members, increased stops or rendering failures; only coroutine source views
+change. Workspace fmt, Clippy and dev build passed, and fetch CLI text/JSON agree.
+No release or helper/scheduler/final-plan behavioral execution ran.
