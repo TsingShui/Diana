@@ -7,10 +7,9 @@ use crate::p7::{ExprKind, ExpressionError, MethodCode, StatementKind};
 
 pub(in crate::p7) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
     let mut plan = initialize::plan(code)?;
-    let nodes = blocks::index_operations(code, &mut plan)?;
     let edge_links = phases::transfers(code, &mut plan)?;
     phases::copies(code, &mut plan, &edge_links)?;
-    blocks::construct(code, &mut plan, &nodes)?;
+    blocks::construct(code, &mut plan)?;
     controls::construct(code, &mut plan)?;
     controls::complete(code, &mut plan)?;
     controls::surfaces(code, &mut plan)?;

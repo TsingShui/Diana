@@ -50,6 +50,9 @@ attached to that nested evaluation. P9 does not infer or retry cast placement.
 Statement and terminal operands carry checks through their owned Evaluation.
 InlineCheck records apply only to original copy steps or adjacent declarations;
 P9 has no statement/terminal carrier indexes or temporary contexts to reconcile.
+The original operation range of a block also supplies rematerialized literal
+origins. These operations contribute zero-width operation and statement spans;
+the range does not execute them again or choose a new literal interpretation.
 A delivered `EvaluationPredicate::LongComparison` prints the original left and
 right operands with P7's selected relation. Predicate negation complements that
 relation; P9 does not infer a comparison from numeric syntax or fold floating

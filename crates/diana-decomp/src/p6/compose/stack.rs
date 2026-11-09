@@ -15,7 +15,6 @@ use crate::p5::StorageMethod;
 /// follows the original block layout. `None` when an owner cycle remains.
 fn topological(
     f: &RegionFacts,
-    g: &Graph,
     set: &[bool],
     owners: &[RegionId],
     roots: &[RegionId],
@@ -26,60 +25,30 @@ fn topological(
     for (slot, &root) in roots.iter().enumerate() {
         index[root.0 as usize] = slot;
     }
-    let mut outgoing = lists(roots.len())?;
-    let mut incoming = filled(roots.len(), 0usize)?;
-    for &root in roots {
-        let from = index[root.0 as usize];
-        for &node in &f.regions[root.0 as usize].nodes {
-            for &link in &g.outgoing[node.0 as usize] {
-                let target = f.links[link.0 as usize].to;
-                if Some(target) == loop_continue || !set[target.0 as usize] {
-                    continue;
-                }
-                let to = index[owners[target.0 as usize].0 as usize];
-                if to == from || outgoing[from].contains(&to) {
-                    continue;
-                }
-                push(&mut outgoing[from], to)?;
-                incoming[to] += 1;
-            }
+    let mut representatives = filled(f.nodes.len(), usize::MAX)?;
+    for (node, &inside) in set.iter().enumerate() {
+        if inside {
+            representatives[node] = index[owners[node].0 as usize];
         }
     }
-    // The part's entry owner prints first; every other owner waits for its
-    // original predecessors.
-    let mut ready = Vec::new();
     let start = entry.map(|node| index[owners[node.0 as usize].0 as usize]);
-    for (slot, &pending) in incoming.iter().enumerate() {
-        if pending == 0 {
-            push(&mut ready, slot)?;
-        }
+    let Some(order) = super::order::order(
+        f,
+        &representatives,
+        roots.len(),
+        start,
+        loop_continue,
+        |_| true,
+        |slot| f.regions[roots[slot].0 as usize].nodes[0],
+    )?
+    else {
+        return Ok(None);
+    };
+    let mut selected = Vec::new();
+    for slot in order {
+        push(&mut selected, roots[slot])?;
     }
-    let mut order = Vec::new();
-    while !ready.is_empty() {
-        let pick = match start {
-            Some(wanted) if order.is_empty() && ready.contains(&wanted) => wanted,
-            _ => {
-                let mut best = 0;
-                for (i, &slot) in ready.iter().enumerate() {
-                    let first = f.regions[roots[slot].0 as usize].nodes[0];
-                    let current = f.regions[roots[ready[best]].0 as usize].nodes[0];
-                    if first < current {
-                        best = i;
-                    }
-                }
-                ready[best]
-            }
-        };
-        ready.retain(|&slot| slot != pick);
-        push(&mut order, roots[pick])?;
-        for to in std::mem::take(&mut outgoing[pick]) {
-            incoming[to] -= 1;
-            if incoming[to] == 0 {
-                push(&mut ready, to)?;
-            }
-        }
-    }
-    Ok((order.len() == roots.len()).then_some(order))
+    Ok(Some(selected))
 }
 
 pub(super) fn compose(
@@ -116,7 +85,7 @@ pub(super) fn compose(
     // Linear chains are the single-successor case of this same contraction DAG.
     // Build and order it once instead of walking every member again on fallback.
     let ordered = if exported.len() <= 1 {
-        topological(f, g, &set, owners, &roots, part.entry, loop_continue)?
+        topological(f, &set, owners, &roots, part.entry, loop_continue)?
     } else {
         None
     };
@@ -152,22 +121,28 @@ pub(super) fn compose(
             roots,
         )
     };
-    let is_graph = matches!(kind, RegionKind::Graph { .. });
-    let mut region = add(f, kind, part.entry, part.follow, order, copy(&part.nodes)?)?;
-    if is_graph && let Some(target) = part.follow.filter(|n| !set[n.0 as usize]) {
+    let labelled = matches!(kind, RegionKind::Graph { .. })
+        .then(|| part.follow.filter(|n| !set[n.0 as usize]))
+        .flatten();
+    let mut nodes = part.nodes;
+    let members = if labelled.is_some() {
+        copy(&nodes)?
+    } else {
+        std::mem::take(&mut nodes)
+    };
+    let mut region = contract(f, owners, kind, part.entry, part.follow, order, members)?;
+    if let Some(target) = labelled {
         let mut children = Vec::new();
         push(&mut children, region)?;
-        region = add(
+        region = contract(
             f,
+            owners,
             RegionKind::LabelledBlock { target },
             part.entry,
             part.follow,
             children,
-            copy(&part.nodes)?,
+            nodes,
         )?;
-    }
-    for p in part.nodes {
-        owners[p.0 as usize] = region;
     }
     Ok(region)
 }

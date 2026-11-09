@@ -1,33 +1,12 @@
 //! Places lowered operations and handler receives in their delivered blocks.
 
 use super::{BlockEnd, BodyAction, EmissionBlock, EmissionPlan, TransferSpelling};
-use crate::p2::OpId;
 use crate::p7::build::{bug, filled, id, push};
 use crate::p7::{
     BlockCompletion, Emission, ExpressionError, HandlerCapture, MethodCode, TerminalEmission,
 };
 
-pub(super) fn index_operations(
-    code: &MethodCode,
-    plan: &mut EmissionPlan,
-) -> Result<Vec<Vec<OpId>>, ExpressionError> {
-    let mut nodes = Vec::new();
-    crate::substrate::owned::reserve(&mut nodes, code.blocks.len())?;
-    nodes.resize_with(code.blocks.len(), Vec::new);
-    for op in &code.operations {
-        push(&mut nodes[op.node.0 as usize], op.source)?;
-        if let Some(s) = op.statement {
-            plan.statement_operations[s.0 as usize] = Some(op.source);
-        }
-    }
-    Ok(nodes)
-}
-
-pub(super) fn construct(
-    code: &MethodCode,
-    plan: &mut EmissionPlan,
-    nodes: &[Vec<OpId>],
-) -> Result<(), ExpressionError> {
+pub(super) fn construct(code: &MethodCode, plan: &mut EmissionPlan) -> Result<(), ExpressionError> {
     let mut handlers = filled(code.blocks.len(), None)?;
     for (i, h) in code.handlers.iter().enumerate() {
         handlers[h.node.0 as usize] = Some(id(i)?);
@@ -43,8 +22,13 @@ pub(super) fn construct(
         {
             push(&mut actions, BodyAction::Receive { handler })?;
         }
-        for &op in &nodes[b.node.0 as usize] {
-            let o = &code.operations[op.0 as usize];
+        let range = b.original_operations.start as usize..b.original_operations.end as usize;
+        for o in code
+            .operations
+            .get(range)
+            .ok_or(bug("block lost its original operation range"))?
+        {
+            let op = o.source;
             let action = match o.emission {
                 Emission::Block { .. } | Emission::Catch(_) => Some(BodyAction::Statement {
                     operation: op,

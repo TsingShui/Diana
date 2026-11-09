@@ -37,6 +37,15 @@ are typed provenance coordinates, not permission to query a live predecessor.
 Type uses retain descriptors and original sources; P8 owns class-wide display
 names and imports.
 
+Each block retains its original P6 operation range. P7 builds the statement lookup
+once and constructs block actions from that range, without per-node operation
+vectors. The range indexes only this method's owned operation arena; it grants
+no access to a predecessor. P9 consumes it separately for source-only origins.
+Rematerialized literal operations contribute zero-width operation/statement
+anchors at their original portion without another execution or storage commit.
+An invalid range remains an owning construction/rendering error, not an empty
+completed portion. Tests retain original PC/identity expectations independently.
+
 A selected expression owns its nested `Evaluation`, which references the same
 original operation used by standalone statements. The operation's `nested_at`
 names that exact expression occurrence. Its PC, statement, result commit and

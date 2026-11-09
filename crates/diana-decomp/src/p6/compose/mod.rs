@@ -16,12 +16,13 @@ mod completion;
 mod conditions;
 mod hierarchy;
 mod loop_exits;
+mod order;
 pub(super) mod parts;
 mod stack;
 mod switch;
 pub(super) mod trace;
 
-use parts::{Part, PartCompletion, add};
+use parts::{Part, PartCompletion, contract};
 
 use super::build::*;
 use super::dominance::Structure;
@@ -45,7 +46,7 @@ pub(super) fn construct(
     g: &Graph,
     s: &Structure,
 ) -> Result<(), RegionError> {
-    let mut owners = Vec::new();
+    let mut owners = filled(f.nodes.len(), RegionId(0))?;
     for n in 0..f.nodes.len() {
         let node = NodeId(id(n)?);
         let mut members = Vec::new();
@@ -55,8 +56,9 @@ pub(super) fn construct(
         } else {
             None
         };
-        let region = add(
+        let region = contract(
             f,
+            &mut owners,
             RegionKind::Block(node),
             Some(node),
             follow,
@@ -64,7 +66,6 @@ pub(super) fn construct(
             members,
         )?;
         f.labels[n].owner = region;
-        push(&mut owners, region)?;
     }
     let mut all = Vec::new();
     for n in 0..f.nodes.len() {

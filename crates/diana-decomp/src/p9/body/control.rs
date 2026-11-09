@@ -169,6 +169,36 @@ impl Expressions<'_, '_> {
             self.out.put("\n")?;
         }
         self.label(LabelId(node.0))?;
+        let range = &self.code.blocks()[node.0 as usize].original_operations;
+        for operation in self
+            .code
+            .operations()
+            .get(range.start as usize..range.end as usize)
+            .ok_or(RenderError::Invariant(
+                "block lost its original operation range",
+            ))?
+        {
+            if matches!(operation.emission, Emission::Literal) {
+                let start = self.out.position();
+                self.out.span(
+                    start,
+                    Origin::Operation {
+                        method: self.method,
+                        operation: operation.source,
+                        pc: operation.pc,
+                    },
+                )?;
+                if let Some(statement) = operation.statement {
+                    self.out.span(
+                        start,
+                        Origin::Statement {
+                            method: self.method,
+                            statement,
+                        },
+                    )?;
+                }
+            }
+        }
         let b = &self.code.emission().blocks()[node.0 as usize];
         for action in &b.actions {
             match *action {

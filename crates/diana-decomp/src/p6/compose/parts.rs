@@ -53,37 +53,55 @@ pub(super) struct Candidate {
     pub(super) parts: Vec<Part>,
     pub(super) successor_boundary: Option<SuccessorBoundary>,
 }
-pub(super) fn add(
+/// Installs one admitted fragment after reserving both arenas. Child roles and
+/// whole original membership come from the owning candidate/part constructors.
+/// Updating parent and current-owner relations cannot allocate after reservation.
+pub(super) fn contract(
     f: &mut RegionFacts,
+    owners: &mut [RegionId],
     kind: RegionKind,
     entry: Option<NodeId>,
     follow: Option<NodeId>,
     children: Vec<RegionId>,
     nodes: Vec<NodeId>,
 ) -> Result<RegionId, RegionError> {
+    if f.parents.len() != f.regions.len() || owners.len() != f.nodes.len() {
+        return Err(bug("fragment ownership has the wrong extent"));
+    }
     let region = RegionId(id(f.regions.len())?);
     for &child in &children {
-        if f.parents[child.0 as usize].is_some() {
+        if f.parents
+            .get(child.0 as usize)
+            .ok_or(bug("fragment names an unknown child"))?
+            .is_some()
+        {
             return Err(bug("region child has two execution owners"));
         }
     }
-    push(&mut f.parents, None)?;
+    crate::substrate::owned::reserve(&mut f.parents, 1)?;
+    crate::substrate::owned::reserve(&mut f.regions, 1)?;
+    for &node in &nodes {
+        if node.0 as usize >= owners.len() {
+            return Err(bug("fragment membership names an unknown node"));
+        }
+    }
+    f.parents.push(None);
     for &child in &children {
         f.parents[child.0 as usize] = Some(region);
     }
-    push(
-        &mut f.regions,
-        Region {
-            decision: None,
-            id: region,
-            kind,
-            entry,
-            follow,
-            children,
-            nodes,
-            continuation: Continuation::None,
-        },
-    )?;
+    for &node in &nodes {
+        owners[node.0 as usize] = region;
+    }
+    f.regions.push(Region {
+        decision: None,
+        id: region,
+        kind,
+        entry,
+        follow,
+        children,
+        nodes,
+        continuation: Continuation::None,
+    });
     Ok(region)
 }
 pub(in crate::p6) fn graph_kind(

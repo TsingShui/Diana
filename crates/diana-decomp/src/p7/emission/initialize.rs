@@ -43,6 +43,11 @@ pub(super) fn plan(code: &MethodCode) -> Result<EmissionPlan, ExpressionError> {
     plan.ifs = filled(code.terminals.len(), IfDisplay::Both)?;
     plan.omitted_returns = filled(code.terminals.len(), false)?;
     plan.statement_operations = filled(code.statements.len(), None)?;
+    for operation in &code.operations {
+        if let Some(statement) = operation.statement {
+            plan.statement_operations[statement.0 as usize] = Some(operation.source);
+        }
+    }
     plan.origin_only_operations = filled(code.operations.len(), None)?;
     plan.origin_only_terminals = filled(code.terminals.len(), false)?;
     Ok(plan)

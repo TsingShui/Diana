@@ -50,6 +50,7 @@ pub enum BlockCompletion {
 pub struct Block {
     pub node: crate::p6::NodeId,
     pub original_block: crate::p2::BlockId,
+    pub original_operations: std::ops::Range<u32>,
     pub statements: Vec<StatementId>,
     pub completion: BlockCompletion,
     pub transfers: Vec<TransferId>,

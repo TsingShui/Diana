@@ -9,8 +9,9 @@ use super::super::interface::CompletionInterface;
 use super::super::*;
 use super::parts::*;
 use crate::p5::StorageMethod;
+use std::collections::HashSet;
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
 enum Selection {
     Loop(LoopId),
     Synchronized(SyncId),
@@ -27,10 +28,25 @@ fn selection(c: &Candidate) -> Selection {
 }
 
 enum Work {
-    Scope(Part, Vec<Selection>),
-    Candidate(Candidate, Vec<Selection>),
-    Commit(Candidate, usize),
+    Scope(Part),
+    Candidate(Candidate, CompletionInterface),
+    Commit(Candidate, CompletionInterface, usize),
     Assemble(Part, usize),
+}
+
+fn exclusions<'a>(
+    c: &Candidate,
+    f: &'a RegionFacts,
+) -> impl Iterator<Item = Selection> + Clone + 'a {
+    let tests = match c.kind {
+        RegionKind::Condition(id) => f.conditions[id.0 as usize].tests.as_slice(),
+        _ => &[],
+    };
+    std::iter::once(selection(c)).chain(
+        tests
+            .iter()
+            .map(|test| Selection::Predicate(test.predicate)),
+    )
 }
 
 pub(super) fn construct(
@@ -43,10 +59,11 @@ pub(super) fn construct(
 ) -> Result<RegionId, RegionError> {
     let mut work = Vec::new();
     let mut results = Vec::new();
-    push(&mut work, Work::Scope(root, Vec::new()))?;
+    let mut excluded = HashSet::new();
+    push(&mut work, Work::Scope(root))?;
     while let Some(task) = work.pop() {
         match task {
-            Work::Scope(part, excluded) => {
+            Work::Scope(part) => {
                 let set = mask(f.nodes.len(), &part.nodes)?;
                 let interface = CompletionInterface::from_membership(storage, f, g, &set)?;
                 let mut boundary = interface.normal_boundary(f)?;
@@ -146,21 +163,20 @@ pub(super) fn construct(
                     for &node in &candidate.members {
                         occupied[node.0 as usize] = true;
                     }
-                    push(&mut selected, candidate)?;
+                    push(&mut selected, (candidate, completion))?;
                 }
                 let count = selected.len();
                 push(&mut work, Work::Assemble(part, count))?;
-                for candidate in selected.into_iter().rev() {
-                    push(&mut work, Work::Candidate(candidate, copy(&excluded)?))?;
+                for (candidate, completion) in selected.into_iter().rev() {
+                    push(&mut work, Work::Candidate(candidate, completion))?;
                 }
             }
-            Work::Candidate(mut candidate, mut excluded) => {
-                push(&mut excluded, selection(&candidate))?;
-                if let RegionKind::Condition(id) = candidate.kind {
-                    for test in &f.conditions[id.0 as usize].tests {
-                        push(&mut excluded, Selection::Predicate(test.predicate))?;
-                    }
-                }
+            Work::Candidate(mut candidate, completion) => {
+                let keys = exclusions(&candidate, f);
+                excluded
+                    .try_reserve(keys.clone().count())
+                    .map_err(crate::RequestError::Allocation)?;
+                excluded.extend(keys);
                 let mut parts = std::mem::take(&mut candidate.parts);
                 if let RegionKind::Loop(id) = candidate.kind
                     && let Some(body) = parts.first_mut()
@@ -168,19 +184,23 @@ pub(super) fn construct(
                     body.completion = PartCompletion::LoopBody(id);
                 }
                 let count = parts.len();
-                push(&mut work, Work::Commit(candidate, count))?;
+                push(&mut work, Work::Commit(candidate, completion, count))?;
                 for part in parts.into_iter().rev() {
-                    push(&mut work, Work::Scope(part, copy(&excluded)?))?;
+                    push(&mut work, Work::Scope(part))?;
                 }
             }
-            Work::Commit(candidate, count) => {
+            Work::Commit(candidate, completion, count) => {
+                for key in exclusions(&candidate, f) {
+                    excluded.remove(&key);
+                }
                 let start = results
                     .len()
                     .checked_sub(count)
                     .ok_or(bug("region child result underflow"))?;
                 let children = copy(&results[start..])?;
                 results.truncate(start);
-                if let Err(reason) = super::accept::match_successor_boundary(f, owners, &candidate)?
+                if let Err(reason) =
+                    super::accept::match_successor_boundary(f, owners, &candidate, &completion)?
                 {
                     super::trace::rejected(
                         candidate.entry,
@@ -214,17 +234,15 @@ pub(super) fn construct(
                     push(&mut results, region)?;
                     continue;
                 }
-                let region = add(
+                let region = contract(
                     f,
+                    owners,
                     candidate.kind,
                     Some(candidate.entry),
                     candidate.follow,
                     children,
-                    copy(&candidate.members)?,
+                    candidate.members,
                 )?;
-                for node in candidate.members {
-                    owners[node.0 as usize] = region;
-                }
                 push(&mut results, region)?;
             }
             Work::Assemble(part, count) => {

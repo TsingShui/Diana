@@ -589,19 +589,44 @@ structure from the remaining replacement; the complete design is not accepted.
 | Design area | Delivered | Remaining |
 |---|---|---|
 | Common control grammar | P6 delivers named `ControlLayout` roles; P7 keeps one selected `Control` arena; P9 consumes it. | Planning `RegionKind` and protocol-specific executable forms remain. Common leaf/reference mapping and protocol consolidation are incomplete. |
-| Fragment composition | `CompletionInterface` supplies shared boundaries; Sequence and Graph use one contraction/order operation. | Per-family candidate walks and descendant node lists remain. General interface-based contraction and affected-neighbor scheduling are incomplete. |
+| Fragment composition | One installer updates parents/current owners after reservation. Sequence ordering and successor-arm admission share one kernel; accepted interfaces reach commitment without another outlet scan. Nested scopes share active ancestor exclusions. | Per-family candidate walks and descendant node lists remain. General interface-based contraction and affected-neighbor scheduling are incomplete. |
 | Operation ownership | Nested `Evaluation` and the original operation's `nested_at` identify one execution owner. Sparse proposals replace whole-arena rollback. | Declaration/copy check attachments and other placement bookkeeping remain to be consolidated where their semantics permit. |
 | Expression covers | Ordinary and condition consumers share ordered suffix forests. Required checks use the same producer and installer. Statement, terminal and later-read check searches share one bounded cursor. | Dependency-driven reconsideration and broader cross-context cover obligations are incomplete. |
 | Local fixed points | Selected roots leave the active suffix; rejected condition proposals leave the product unchanged. | The P6 and P7 pipelines still run ordered passes. Neither stage has the complete dependency-driven local convergence specified by the design. |
 | Finalization | P9 consumes selected layouts and nested operations. Existing declaration and label passes remain. | Protocol traversal and a single final declaration/label derivation still need replacement. |
 
-Against `f6e7893`, the current engine production tree has 67,899 physical Rust
-source lines, compared with 68,495 at the baseline: 596 fewer lines. This count
+Against `f6e7893`, the current engine production tree has 67,977 physical Rust
+source lines, compared with 68,495 at the baseline: 518 fewer lines. This count
 includes every `*.rs` file under `crates/diana-decomp/src/`, including shared
 helpers, comments and blank lines; tests and documentation are excluded. The
 small reduction does not establish the design's substantial size objective or
 comparable recovery capability. Full replacement acceptance and a comparative
 recovery evaluation remain unrun.
+
+## Shared fragment construction
+
+P6 shares source-ordered contraction and one reserved ownership installation.
+The old independent Sequence/successor DAG mechanics, copied ancestor exclusion
+vectors, candidate outlet rescans and caller-owned map updates are removed.
+Source ordering uses a bounded heap rather than repeatedly searching ready nodes.
+P7 blocks now retain original operation ranges; the per-node operation-vector
+index is removed. P9 uses those same ranges to retain zero-width rematerialized
+constant origins. This slice adds 78 production lines against `d5c665e`, counting
+the new shared kernel and source-origin handling. The added checks and ownership
+mechanisms do not establish the final size objective; repeated member lists and
+the broader old recovery machinery still require replacement.
+
+The focused nextest run passes 17 tests: the four new fragment-order cases plus
+cast_carrier_walk, cast_preparation_order and joint_expression_cover. Strict
+all-feature Clippy passes for those four targets, the engine library and dbg_shell.
+Fresh before/after inspection of the four new methods retains identical P6
+products, text and issues. Previously absent rematerialized operation anchors
+increase from 2 to 4, 3 to 4 and 4 to 6 in the three integer methods. These counts
+check original identities, not recovery quality. The written source/output path
+reviews are beside the [input](../../quality/fixtures/branches/fragment-order/README.md)
+and [challenge](../../quality/fixtures/composite/fragment-order-loops/README.md).
+Loop/graph VM or final-plan execution remains unrun. Historical adaptation and
+full regression remain deferred by the operator.
 
 ## Shared control delivery
 

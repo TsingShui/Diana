@@ -130,6 +130,33 @@ this distinction without rechecking the graph; an unowned conditional with
 separate destinations MUST NOT lose a route merely because both destinations
 are reachable through enclosing completions.
 
+### Shared fragment construction
+
+Sequence ordering and successor-arm admission consume one normal-link ordering
+kernel. The caller supplies original-node representatives: Sequence contracts
+whole selected owners; successor arms contract only complete established loops.
+Uncontracted self-edges remain cycles. Duplicate original links contribute matching
+incoming and outgoing counts. Exceptional boundaries stay in CompletionInterface.
+
+The ready heap uses original source position, with the established entry first
+when it is initially ready. Each vertex enters once, after its last predecessor
+is consumed. Heap capacity is bounded by the supplied representative domain and
+reserved fallibly. A cycle yields no order and retains explicit structure.
+
+The common contract operation consumes admitted child roles and whole membership.
+It checks available parent/node coordinates and reserves both region and parent
+arenas before installing parent and current-owner relations. No installation step
+allocates after reservation. Owning candidate/part constructors establish disjoint
+children and original membership; this operation does not reinterpret their
+loop, protection, lock or construction facts.
+
+An accepted candidate carries its original CompletionInterface through child
+construction to successor-boundary admission. Original edges and membership do
+not change during that interval. One active exclusion set describes the current
+ancestor path; commitment removes that candidate's keys before its next sibling.
+Keys refer only to original predicates or delivered loop/try/lock plans. Pending
+scopes do not copy ancestor vectors or retry another boundary after refusal.
+
 ## Ordinary branch boundaries
 
 An ordinary branch first proposes its normal postdominator follow when it lies

@@ -38,16 +38,6 @@ pub(super) fn accept(
     {
         return Ok(Err(RecoveryReason::MultipleEntry));
     }
-    for group in storage.facts().construction_groups() {
-        let inside = group
-            .members()
-            .iter()
-            .filter(|op| set[g.op_node[op.0 as usize].0 as usize])
-            .count();
-        if inside != 0 && inside != group.members().len() {
-            return Ok(Err(RecoveryReason::ConstructionSplit));
-        }
-    }
     let mut partition = filled(f.nodes.len(), usize::MAX)?;
     for (i, p) in c.parts.iter().enumerate() {
         for &n in &p.nodes {
@@ -59,16 +49,21 @@ pub(super) fn accept(
     }
     for group in storage.facts().construction_groups() {
         let mut part = None;
+        let mut inside = 0;
         for op in group.members() {
             let node = g.op_node[op.0 as usize];
             if !set[node.0 as usize] {
                 continue;
             }
+            inside += 1;
             let current = partition[node.0 as usize];
             if part.is_some_and(|old| old != current) {
                 return Ok(Err(RecoveryReason::ConstructionSplit));
             }
             part = Some(current);
+        }
+        if inside != 0 && inside != group.members().len() {
+            return Ok(Err(RecoveryReason::ConstructionSplit));
         }
     }
     // Enclosing interfaces are selected before child owners exist. Preserve
@@ -191,9 +186,11 @@ pub(super) fn successor_arm_acyclic(
     owners: &[RegionId],
     arm: &[bool],
 ) -> Result<bool, RegionError> {
-    let mut representative = Vec::new();
-    for n in 0..f.nodes.len() {
-        push(&mut representative, NodeId(id(n)?))?;
+    let mut representative = filled(f.nodes.len(), usize::MAX)?;
+    for (node, &inside) in arm.iter().enumerate() {
+        if inside {
+            representative[node] = node;
+        }
     }
     let mut contracted = filled(f.nodes.len(), false)?;
     let mut seen = filled(f.regions.len(), false)?;
@@ -214,7 +211,7 @@ pub(super) fn successor_arm_acyclic(
         {
             let entry = region.entry.ok_or(bug("selected loop has no entry"))?;
             for &n in &region.nodes {
-                representative[n.0 as usize] = entry;
+                representative[n.0 as usize] = entry.0 as usize;
                 contracted[n.0 as usize] = true;
             }
         } else {
@@ -223,47 +220,22 @@ pub(super) fn successor_arm_acyclic(
             }
         }
     }
-    let mut outgoing = lists(f.nodes.len())?;
-    let mut incoming = filled(f.nodes.len(), 0usize)?;
-    for link in &f.links {
-        if !arm[link.from.0 as usize] || !arm[link.to.0 as usize] {
-            continue;
-        }
-        let from = representative[link.from.0 as usize];
-        let to = representative[link.to.0 as usize];
-        if from == to && contracted[link.from.0 as usize] {
-            continue;
-        }
-        push(&mut outgoing[from.0 as usize], to)?;
-        incoming[to.0 as usize] = incoming[to.0 as usize]
-            .checked_add(1)
-            .ok_or(crate::RequestError::PlatformCapacity)?;
-    }
-    let mut queue = Vec::new();
-    let mut remaining = 0usize;
-    for (n, &inside) in arm.iter().enumerate() {
-        if inside && representative[n].0 as usize == n {
-            remaining += 1;
-            if incoming[n] == 0 {
-                push(&mut queue, NodeId(id(n)?))?;
-            }
-        }
-    }
-    while let Some(n) = queue.pop() {
-        remaining -= 1;
-        for &to in &outgoing[n.0 as usize] {
-            incoming[to.0 as usize] -= 1;
-            if incoming[to.0 as usize] == 0 {
-                push(&mut queue, to)?;
-            }
-        }
-    }
-    Ok(remaining == 0)
+    Ok(super::order::order(
+        f,
+        &representative,
+        f.nodes.len(),
+        None,
+        None,
+        |node| contracted[node.0 as usize],
+        |vertex| f.nodes[vertex].id,
+    )?
+    .is_some())
 }
 pub(super) fn match_successor_boundary(
     f: &RegionFacts,
     owners: &[RegionId],
     c: &Candidate,
+    interface: &super::super::interface::CompletionInterface,
 ) -> Result<Result<(), RecoveryReason>, RegionError> {
     if c.successor_boundary.is_none() {
         return Ok(Ok(()));
@@ -274,13 +246,15 @@ pub(super) fn match_successor_boundary(
     if arm[follow.0 as usize] {
         return Ok(Err(RecoveryReason::Unstructured));
     }
-    if arm[0] && c.entry != NodeId(0) {
+    if interface.method_entry && c.entry != NodeId(0) {
         return Ok(Err(RecoveryReason::MultipleEntry));
     }
-    for link in &f.links {
-        if arm[link.from.0 as usize] && !arm[link.to.0 as usize] && link.to != follow {
-            return Ok(Err(RecoveryReason::Unstructured));
-        }
+    if interface
+        .outlets
+        .iter()
+        .any(|&link| f.links[link.0 as usize].to != follow)
+    {
+        return Ok(Err(RecoveryReason::Unstructured));
     }
     arm[c.entry.0 as usize] = false;
     if !successor_arm_acyclic(f, owners, &arm)? {

@@ -39,6 +39,7 @@ impl<'f, 'a> Context<'f, 'a> {
                 Block {
                     node: node.id(),
                     original_block: node.block(),
+                    original_operations: node.operations(),
                     statements: Vec::new(),
                     completion: BlockCompletion::None,
                     transfers: Vec::new(),
