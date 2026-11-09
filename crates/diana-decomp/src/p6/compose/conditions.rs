@@ -72,6 +72,27 @@ fn run(f: &RegionFacts, entry: NodeId) -> Result<Option<Vec<NodeId>>, RegionErro
     Ok(Some(out))
 }
 
+/// The established follow is also a selected result when it starts one
+/// straight block run ending in an actual return or throw. Owning that run
+/// leaves the condition without a normal follow while preserving its terminal.
+fn abrupt_follow(
+    storage: &StorageMethod<'_>,
+    f: &RegionFacts,
+    entry: NodeId,
+) -> Result<bool, RegionError> {
+    let Some(nodes) = run(f, entry)? else {
+        return Ok(false);
+    };
+    let Some(last) = nodes.last() else {
+        return Ok(false);
+    };
+    let block = f.nodes[last.0 as usize].block();
+    Ok(matches!(
+        storage.execution().blocks()[block.0 as usize].terminal(),
+        Some(crate::p2::Terminal::Return { .. } | crate::p2::Terminal::Throw { .. })
+    ))
+}
+
 /// Every original link entering `set` from outside participates in the given
 /// condition interface. A cross-arm entrance is not a member of that interface.
 fn entered_by(f: &RegionFacts, set: &[bool], entries: &[LinkId]) -> bool {
@@ -316,6 +337,15 @@ pub(super) fn candidate(
     let Some([yes, no]) = conditional(f, g, predicate) else {
         return Ok(None);
     };
+    let selected_follow = if let Some(node) = follow {
+        if (target(f, yes) == node || target(f, no) == node) && abrupt_follow(storage, f, node)? {
+            Some(node)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     // The ordered tests select between two result arms. The arm their selected
     // links reach is the shared arm; the arm a link from the tests' own side also
     // merges inside is a result of its own and becomes this region's normal exit.
@@ -327,7 +357,10 @@ pub(super) fn candidate(
         let open_second = super::completion::reachable(f, g, &[target(f, no)], boundary, None)?;
         arm = second_arm(f, g, boundary, &open_first, &open_second)?;
     }
-    let follow = arm.or(follow);
+    let mut follow = arm.or(follow);
+    if selected_follow.is_some() && arm.is_none() {
+        follow = None;
+    }
     let first = super::completion::reachable(f, g, &[target(f, yes)], boundary, follow)?;
     let second = super::completion::reachable(f, g, &[target(f, no)], boundary, follow)?;
     if !first.iter().any(|&x| x) {

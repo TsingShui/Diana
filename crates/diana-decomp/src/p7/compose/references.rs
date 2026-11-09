@@ -89,6 +89,43 @@ pub(super) fn site_annotations(code: &MethodCode) -> Result<Vec<bool>, Expressio
         if !matches!(site.syntax, ExceptionSyntax::Natural) {
             continue;
         }
+        let has_monitor = site.routes.iter().any(|route| {
+            matches!(route.delivery, Delivery::Catch(target)
+            if code.controls.iter().any(|control| matches!(&control.kind,
+                ControlKind::Synchronized { implicit: Some(surface), .. }
+                    if surface.cleanups.iter().any(|(id, _)| *id == target))))
+        });
+        if has_monitor {
+            let node = match site.original {
+                ThrowSite::Operation(op) => code.operations.get(op.0 as usize).map(|o| o.node),
+                ThrowSite::Terminal(block) => node_of_block
+                    .get(block.0 as usize)
+                    .copied()
+                    .flatten()
+                    .map(crate::p6::NodeId),
+            };
+            if let Some(start) = node.and_then(|node| owner.get(node.0 as usize).copied().flatten())
+            {
+                let clauses = &code.chains[site.chain.0 as usize].clauses;
+                let represented = site.routes.len() == clauses.len() && site.routes.iter().zip(clauses).all(|(route, clause)| {
+                    let Some(label) = clause.target else { return true; };
+                    let Delivery::Catch(target) = route.delivery else { return false; };
+                    if !super::sequence::contains(&parent, start, target) { return false; }
+                    let ControlKind::Try { handlers, .. } = &code.controls[target.0 as usize].kind else { return false; };
+                    let Some(index) = handlers.iter().position(|node| node.0 == label.0) else { return false; };
+                    if matches!(&code.emission.controls[target.0 as usize].layout,
+                        EmissionLayout::Try { catches, finally, .. } if finally.is_some() || index < catches.len()) { return true; }
+                    code.controls.iter().any(|control| matches!(&control.kind,
+                        ControlKind::Synchronized { implicit: Some(surface), .. }
+                            if surface.cleanups.contains(&(target, index as u32))
+                                && super::sequence::contains(&parent, start, control.id)))
+                });
+                if represented {
+                    required[site.id.0 as usize] = false;
+                    continue;
+                }
+            }
+        }
         let [route] = site.routes.as_slice() else {
             continue;
         };

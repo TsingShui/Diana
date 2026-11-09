@@ -789,6 +789,7 @@ pub(super) fn plan(
             handler_bodies,
             handler_clauses,
             abrupt_handlers,
+            bindings: Vec::new(),
             finally: None,
             members: list(&members)?,
             follow,

@@ -1,5 +1,12 @@
 # Fixture: while-tail-continuations
 
+## Current verdict — terminal-follow conjunction, 2026-11-09
+
+`cleanup` now prints `if (p1 == 2 || p1 == 4) throw new
+IllegalArgumentException(); else return;`. The mark, membership tests and
+throw/return paths are unchanged; the rest of the fixture text is unchanged in the
+candidate comparison.
+
 ## Current verdict — terminal guard follow-up
 
 Read the changed terminal alternatives and remaining body. The selected

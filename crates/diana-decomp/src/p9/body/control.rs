@@ -183,7 +183,13 @@ impl Expressions<'_, '_> {
                 BodyAction::AbiOperation { operation, .. } => self.abi_operation(operation)?,
                 BodyAction::Release {
                     operation, scope, ..
-                } => self.statement(operation, Some(scope))?,
+                } => {
+                    let previous = self.out.origin_only;
+                    self.out.origin_only |= self.code.emission().origin_only_operation(operation);
+                    let result = self.statement(operation, Some(scope));
+                    self.out.origin_only = previous;
+                    result?;
+                }
                 BodyAction::Receive { handler } => {
                     let h = &self.code.handlers()[handler as usize];
                     if !h.receives.is_empty() {

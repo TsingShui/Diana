@@ -682,6 +682,7 @@ pub struct TryPlan {
     pub(super) handler_clauses: Vec<std::ops::Range<u32>>,
     // Owning protection proof: no selected handler resumes shared normal code.
     pub(super) abrupt_handlers: bool,
+    pub(super) bindings: Vec<Option<OpId>>,
     pub(super) finally: Option<FinallyPlan>,
     pub(super) members: Vec<NodeId>,
     pub(super) follow: Option<NodeId>,
@@ -714,6 +715,9 @@ impl TryPlan {
     /// Ordered contiguous original clauses delivered to each unique handler body.
     pub fn handler_clauses(&self) -> &[std::ops::Range<u32>] {
         &self.handler_clauses
+    }
+    pub fn bindings(&self) -> &[Option<OpId>] {
+        &self.bindings
     }
     pub fn finally(&self) -> Option<&FinallyPlan> {
         self.finally.as_ref()
@@ -868,6 +872,24 @@ impl SyncExit {
         &self.after
     }
 }
+/// Selected compiler cleanup that a natural synchronized boundary represents.
+#[derive(Debug)]
+pub struct ImplicitMonitor {
+    pub(super) cleanups: Vec<(TryId, u32)>,
+    pub(super) captures: Vec<OpId>,
+    pub(super) rethrows: Vec<NodeId>,
+}
+impl ImplicitMonitor {
+    pub fn cleanups(&self) -> &[(TryId, u32)] {
+        &self.cleanups
+    }
+    pub fn captures(&self) -> &[OpId] {
+        &self.captures
+    }
+    pub fn rethrows(&self) -> &[NodeId] {
+        &self.rethrows
+    }
+}
 /// Body nodes include syntax-owned exit anchors. `held_nodes` separately records
 /// original pre-release execution; exit routing must not become ordinary locked work.
 #[derive(Debug)]
@@ -882,8 +904,12 @@ pub struct SyncPlan {
     pub(super) members: Vec<NodeId>,
     pub(super) follow: Option<NodeId>,
     pub(super) separation: Option<LockSeparation>,
+    pub(super) implicit: Option<ImplicitMonitor>,
 }
 impl SyncPlan {
+    pub fn implicit(&self) -> Option<&ImplicitMonitor> {
+        self.implicit.as_ref()
+    }
     pub fn id(&self) -> SyncId {
         self.id
     }

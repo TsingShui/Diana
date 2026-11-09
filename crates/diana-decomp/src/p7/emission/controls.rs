@@ -124,7 +124,10 @@ fn layout(
         } => switch_layout(plan, c, *terminal, arms, cases.as_deref())?,
         ControlKind::LabelledBlock { .. } => EmissionLayout::Labelled,
         ControlKind::Try { finally, .. } => try_layout(code, plan, c, finally.as_ref())?,
-        ControlKind::Synchronized { acquire, .. } => EmissionLayout::Synchronized {
+        ControlKind::Synchronized {
+            acquire, implicit, ..
+        } => EmissionLayout::Synchronized {
+            implicit: implicit.is_some(),
             entry: child(c, 0)?,
             body: child(c, 1)?,
             acquire: plan
@@ -290,6 +293,7 @@ pub(super) fn construct(code: &MethodCode, plan: &mut EmissionPlan) -> Result<()
                 omitted: false,
                 transparent: false,
                 explicit_children: None,
+                source_only: Vec::new(),
                 continuation: match c.continuation {
                     Continuation::Goto(label) => Some(ControlCompletion::Goto(label)),
                     Continuation::Break(scope) => Some(ControlCompletion::Break(scope)),
@@ -341,6 +345,88 @@ pub(super) fn complete(code: &MethodCode, plan: &mut EmissionPlan) -> Result<(),
         };
         if headers[i] || deferred {
             c.continuation = None;
+        }
+    }
+    Ok(())
+}
+
+/// Apply only the surface roles delivered by P6. Source-only cleanup children
+/// retain their arenas and origins, while the boundary owns implicit release.
+pub(super) fn surfaces(code: &MethodCode, plan: &mut EmissionPlan) -> Result<(), ExpressionError> {
+    for control in &code.controls {
+        if let ControlKind::Synchronized {
+            implicit: Some(surface),
+            outlets,
+            ..
+        } = &control.kind
+        {
+            for &(cleanup, index) in &surface.cleanups {
+                let source = &code.controls[cleanup.0 as usize];
+                let index =
+                    usize::try_from(index).map_err(|_| crate::RequestError::PlatformCapacity)?;
+                if source.children.len().checked_sub(2) != Some(index) {
+                    return Err(bug("implicit monitor cleanup lost its last catch"));
+                }
+                let p = &mut plan.controls[cleanup.0 as usize];
+                if index == 0 {
+                    p.layout = EmissionLayout::Sequence;
+                } else {
+                    let EmissionLayout::Try { catches, .. } = &mut p.layout else {
+                        return Err(bug("implicit cleanup lost its catch layout"));
+                    };
+                    catches.truncate(index);
+                }
+                p.explicit_children = Some(copy(&source.children[..index + 1])?);
+                push(&mut p.source_only, source.children[index + 1])?;
+            }
+            for outlet in outlets {
+                let operation = plan
+                    .statement_operation(outlet.release)
+                    .ok_or(bug("implicit release lost its operation"))?;
+                plan.origin_only_operations[operation.0 as usize] = true;
+            }
+            for &capture in &surface.captures {
+                plan.origin_only_operations[capture.0 as usize] = true;
+                if let Some(statement) = code.operations[capture.0 as usize].statement {
+                    for output in &code.statements[statement.0 as usize].outputs {
+                        if let crate::p5::Materialization::ExceptionCapture(local) =
+                            output.materialization()
+                        {
+                            plan.hidden_locals[local.0 as usize] = true;
+                        }
+                    }
+                }
+            }
+            for &block in &surface.rethrows {
+                plan.origin_only_terminals[block.0 as usize] = true;
+            }
+        }
+    }
+    for control in &code.controls {
+        let ControlKind::Try {
+            bindings,
+            finally: None,
+            ..
+        } = &control.kind
+        else {
+            continue;
+        };
+        if !matches!(
+            plan.controls[control.id.0 as usize].layout,
+            EmissionLayout::Try { .. }
+        ) {
+            continue;
+        }
+        let EmissionLayout::Try { catches, .. } = &plan.controls[control.id.0 as usize].layout
+        else {
+            continue;
+        };
+        let visible = catches.len();
+        for binding in bindings.iter().take(visible).flatten() {
+            plan.hidden_locals[binding.local.0 as usize] = true;
+            for block in &mut plan.blocks {
+                block.actions.retain(|action| !matches!(action, super::BodyAction::Statement { operation, .. } if *operation == binding.operation));
+            }
         }
     }
     Ok(())

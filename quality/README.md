@@ -203,6 +203,8 @@ Downloaded inputs and generated output remain outside version control.
 | slug | covers |
 |---|---|
 | `sync-block` | `synchronized` block, early return inside it, nested blocks |
+| `implicit-monitor-cleanup` | Pure monitor capture/release/rethrow cleanup and scoped catch-header binding |
+| `monitor-surface-boundaries` | Nested/reentrant locks, typed recovery and extra-work/error/outlet/lock/escape guards |
 
 ### Classes and inner types
 

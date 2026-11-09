@@ -112,7 +112,9 @@ fn caught_argument_chains_retain_all_protected_sites_and_the_actual_catch() {
                     .iter()
                     .all(|id| code.sites()[id.0 as usize].chain == chain)
             );
-            assert!(rendered.text().contains("catch (all)"));
+            assert!(
+                rendered.text().contains("catch (all ") || rendered.text().contains("catch (all)")
+            );
             assert_eq!(
                 rendered
                     .text()

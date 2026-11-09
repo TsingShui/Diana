@@ -1,6 +1,6 @@
 # Response and resource cleanup review
 
-## Current verdict — P6 protection ownership
+## P6 ownership observation against 73fc879
 
 Against fixed baseline 73fc879, response now exposes two natural catch scopes
 without acquiring its unguarded normal/IO close suffixes. Read the same source,
@@ -18,6 +18,27 @@ Fresh [dual outlets](../cleanup-outlet-frontiers/review.md) and
 [shared contexts](../shared-cleanup-contexts/review.md) cover broader interactions.
 Both isolated configurations pass 155 checks. These are LLM reasoning and product
 checks; no native model, DEX VM or decompiled Java is executed.
+
+## Scoped capture observation against c95c6dd
+
+Compared the same prepared input on `c95c6dd` and this repair. Reviewed header
+bindings: `all v3`, `all v4`. The original captured object is bound once at exceptional
+entry, before the unchanged receiving/body actions. Its exact-state uses remain
+inside that handler and have no capture-phase, Phi or copy dependency requiring
+an outer assignment. Normal execution does not bind or run the handler.
+
+After accounting for that binding and its removed private declaration/assignment,
+the complete remaining output is exact. Original P1/P3/P4/P5 products agree.
+Thus the earlier independently reasoned normal, caught, cleanup, rethrow and
+secondary-failure paths below are reused: their calls, arguments, values,
+priority, transfers and effect order did not change. The renewed LLM judgment
+finds no contradictory capture lifetime or exception identity. Structural
+comparison supports this reading rather than supplying behavioral proof.
+
+The [fresh monitor/binding challenge](../../sync/monitor-surface-boundaries/review.md)
+covers capture identity, receiving/value flow, nested failures and escaping
+storage. Current fixture/model regressions are separate executed evidence;
+this record does not claim VM/device execution for this input.
 
 ## Scalar-use baseline observation
 

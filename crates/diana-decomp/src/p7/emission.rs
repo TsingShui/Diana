@@ -258,6 +258,7 @@ pub enum EmissionLayout {
     /// Explicit planned exits prevent implicit second releases, including when
     /// an unlocked routing terminal remains within its original nested catch.
     Synchronized {
+        implicit: bool,
         entry: ControlId,
         body: ControlId,
         acquire: OpId,
@@ -293,6 +294,8 @@ pub struct EmissionControl {
     /// Selected P6 explicit order; the retained control still owns its original
     /// tests/shared/other roles. Other layouts use the source child list.
     pub explicit_children: Option<Vec<ControlId>>,
+    /// Original controls retained only as source attachments, not execution children.
+    pub source_only: Vec<ControlId>,
     pub layout: EmissionLayout,
 }
 impl EmissionControl {

@@ -60,6 +60,33 @@ fn kind(c: &mut Context<'_, '_>, r: &p6::Region) -> Result<ControlKind, Expressi
         RegionKind::Try(id) => {
             let p = &f.tries()[id.0 as usize];
             ControlKind::Try {
+                bindings: {
+                    let mut bindings = Vec::new();
+                    for &capture in p.bindings() {
+                        let binding = if let Some(operation) = capture {
+                            let statement = statement(c, operation)?;
+                            let [definition] =
+                                c.code.statements[statement.0 as usize].outputs.as_slice()
+                            else {
+                                return Err(bug("catch binding lost its definition"));
+                            };
+                            let crate::p5::Materialization::ExceptionCapture(local) =
+                                definition.materialization()
+                            else {
+                                return Err(bug("catch binding lost exception storage"));
+                            };
+                            Some(CatchBinding {
+                                operation,
+                                statement,
+                                local: StorageId(local.0),
+                            })
+                        } else {
+                            None
+                        };
+                        push(&mut bindings, binding)?;
+                    }
+                    bindings
+                },
                 chain: p.chain(),
                 clauses: p.clauses(),
                 handler_clauses: {
