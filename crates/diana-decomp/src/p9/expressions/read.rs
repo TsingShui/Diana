@@ -6,6 +6,30 @@ use crate::p7::*;
 use crate::p9::{Origin, RenderError};
 
 impl<S: ExpressionSource> Expressions<'_, '_, S> {
+    /// P4 already proved this view lossless. Original primitive units select
+    /// notation only; no desired argument type establishes a new conversion.
+    pub(super) fn narrow_view(
+        &self,
+        view: crate::p4::Interpretation,
+    ) -> Result<Option<(TypeUseId, bool)>, RenderError> {
+        let crate::p4::Interpretation::IntegralView { declared } = view else {
+            return Ok(None);
+        };
+        let id = TypeUseId(declared.0);
+        let ty = self
+            .code
+            .types()
+            .get(id.0 as usize)
+            .ok_or(RenderError::Invariant(
+                "integral view lost its owned type use",
+            ))?;
+        let character = ty.units == [u16::from(b'C')];
+        Ok(
+            (character || ty.units == [u16::from(b'B')] || ty.units == [u16::from(b'S')])
+                .then_some((id, character)),
+        )
+    }
+
     pub(super) fn read_event(
         &mut self,
         work: &mut Vec<ExprEvent>,

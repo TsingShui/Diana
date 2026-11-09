@@ -131,6 +131,7 @@ Downloaded inputs and generated output remain outside version control.
 | `array-basic` | sized and literal arrays, byte/boolean arrays, read, write, `.length`, 2D |
 | `cast-instanceof` | `instanceof`, `check-cast`, array cast |
 | `expr-wide` | `long` shifts/arithmetic, `float`/`double`, NaN comparison, narrowing casts |
+| `scalar-use-views` | Range-proved char/byte/short use spelling, exact character literals and separate int uses of word carriers |
 
 ### Branches
 
@@ -187,6 +188,9 @@ Downloaded inputs and generated output remain outside version control.
 | `concat-capture-recipes` | Inferred Custom concatenation, recipe constants, char/int views, captured effects, loop/catch and explicit unsupported guards |
 | `pure-tail-finally` | Whole-operation normal preparation, literal cleanup prefixes, scoped bypasses and late cleanup failure |
 | `refined-carriers` | Adjacent cast/array carriers and checks that must precede calls and early returns |
+| `scalar-views-protected-joins` | Scalar-use challenge with producer Phis, loop/recovery/cleanup, snapshots, composition and unproved-view guards |
+| `handler-retry-rejoin` | Captureless ignored handlers sharing a retry update with normal arrivals; explicit-loop reproduction |
+| `response-close-snapshots` | Acquisition-time null versus acquired-handle snapshots, ordinary finally replacement and resource suppression |
 
 ### Synchronization
 

@@ -51,6 +51,7 @@ The following forms have fixed execution meanings:
 
 | Form | Meaning |
 |---|---|
+| `(value via byte)` / `(value via short)` / `(value via char)` | The supplied range-proved integral interpretation of that same value. This form does not convert, truncate, check or evaluate it again. |
 | `receiver.field = value` / `array[index] = value` | Ordinary assignment. It is used whenever the array, index or receiver slot is a plain local read or literal, because reading them before the value cannot be observed and the null/bounds check still follows the value. |
 | `store value -> receiver.field` or `store value -> array[index]` | Fallback when a non-value slot is an inlined expression or an unavailable operand, so Java's left-to-right order would not match the delivered store. |
 | `[after_operands_before_effect { copies }]` | Capture the operation's original operands, run its supplied snapshot steps, then execute the original effect. A result assignment commits only on normal completion. |
@@ -114,6 +115,17 @@ A qualified super call retains `super`, including `(super via Owner)` when P7
 selected owner disclosure. Static calls already name the owner before the member.
 The owned reference still carries the original target identity, dispatch kind
 and complete prototype, and the printed member keeps its source span.
+
+P9 renders supplied `IntegralView` interpretations of byte, short and char at
+that exact read or literal occurrence, without retyping its machine local.
+P4 has already established the value-preserving range; P9 matches original
+primitive units only to select notation. An exact one-word char literal prints
+one escaped UTF-16 character unit, including isolated surrogates. Other narrow
+values use the explicit `via` form. The same storage's int uses remain int uses.
+A composed producer executes once inside the view; its own operation span stays
+inside the enclosing consumer-expression span. Missing range evidence retains
+the original word and binding, not a new conversion inferred from a declaration.
+Original conversion/store operations and P7's boolean selections remain unchanged.
 
 A jump whose target prints next is sequencing, not an emitted `goto`, including planned
 continuations and the last printed If branch. P7 selects this omission and marks

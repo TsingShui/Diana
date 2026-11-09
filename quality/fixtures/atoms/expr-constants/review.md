@@ -7,7 +7,12 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 
-## Current verdict — round 1, 2026-11-08
+## Current verdict — exact character-use spelling
+
+Compared df10b74 with this rendering change on the same DEX. Only charValue
+changes text: its existing range-proved char120 now prints as 'x'. P2–P8
+products and every other method's text are unchanged; prior bounded judgments
+below are reused. No fixture behavior or Java-output compilation was executed.
 
 ### Semantics
 
@@ -18,7 +23,7 @@ The recorded LLM verdict compares reference and output; `?` marks unjudged behav
 | `longValue` | ✔ 1234567890123 |
 | `floatValue` | ✔ 1.5f |
 | `doubleValue` | ✔ 2.25 |
-| `charValue` | ✔ The value agrees; the character is printed numerically as 120. |
+| `charValue` | ~ The same UTF-16 unit120 prints as 'x' from its supplied char view, without a conversion. |
 | `booleanValue` | ✔ false |
 | `stringValue` | ✔ LABEL |
 | `nullValue` | ✔ null |
@@ -27,13 +32,14 @@ The recorded LLM verdict compares reference and output; `?` marks unjudged behav
 ### Findings
 
 - The int/long/float/double/boolean/string/null constant values are recovered.
-- The character 'x' is printed as 120 rather than a character literal.
+- The character 'x' now prints as a character literal from its existing per-use view.
 - Class literals are expressed as an intermediate assignment before use. Recorded forms: `ID ID = ID . class`.
 
 ### Ranked fixes
 
-Improve character literals such as 'x' and direct class-literal presentation. Recorded forms: `X.class`.
+Improve direct class-literal presentation while preserving resolution order. Recorded forms: `X.class`.
 
 ## Rounds
 
+- Scalar-use disclosure: replaced numeric char120 spelling with the exact 'x' literal; other constant views stay unchanged.
 - R1 2026-11-08: The int/long/float/double/boolean/string/null constant values are recovered.

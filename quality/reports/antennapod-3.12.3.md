@@ -1,6 +1,6 @@
 # AntennaPod 3.12.3: source-aligned APK review
 
-## Current finding
+## Baseline finding and follow-up
 
 Diana at `b214ec60086a09e1ab28b9dac89aa402ebb042c9` delivered every
 method declaration in this APK without member stops or rendering failures.
@@ -8,6 +8,8 @@ A source-first review of 13 methods found a concrete text-fidelity problem:
 character argument views survive in P7 but disappear from natural-looking calls
 in P9. The retained call binding is correct; the text can suggest a different
 overload. This is not an executed behavioral failure or a Java-compilation gate.
+The fixture-backed follow-up below addresses C1; the original review table and
+observations remain scoped to that recorded baseline.
 
 The reviewed control, retry and cleanup paths have no identified contradiction
 under the source models below, apart from that unresolved character-use spelling.
@@ -183,6 +185,33 @@ than source-level resource scopes. The private URL loader has a P6-supplied
 These forms are verbose but preserve the reviewed primary/suppressed exception,
 close-once, return-capture and recovery ordering. Replacing them with a broad
 finally without those proofs could change which failure replaces which result.
+
+## Fixture-backed follow-up
+
+The later scalar-use repair consumes the existing range-proved P4/P7 views:
+word carriers state `(value via char/byte/short)` at their selected uses, while
+exact character constants print escaped UTF-16 literals. It adds no runtime
+conversion, changes no local storage and does not infer external overloads.
+
+- [Scalar-use reduction](../fixtures/atoms/scalar-use-views/README.md): reproduces
+  carrier/literal disclosure, char/int coexistence, signed boundaries and escaping.
+- [Fresh protected-join challenge](../fixtures/exceptions/scalar-views-protected-joins/README.md):
+  exercises producer Phis, loop/catch/cleanup, snapshots, composition and guards
+  that retain unproved views as original words.
+- [Captureless retry reduction](../fixtures/exceptions/handler-retry-rejoin/README.md):
+  reproduces R1 after retaining the actual absent captures and shared handler/update
+  entry. The scalar repair does not claim natural-loop recovery.
+- [Response/resource reduction](../fixtures/exceptions/response-close-snapshots/README.md):
+  reproduces R2's protection/snapshot/suppression form, without declaring its
+  verbose notation a behavioral defect or claiming a cleanup repair.
+
+The same APK's complete retrieval was repeated without changed coverage or
+failure counters. Six selected class source products were equal to the review
+baseline; only FileNameGenerator and DateUtils changed text. The original char
+append calls now disclose their views, and replace(CC) prints slash/dash char
+literals. The other four selected texts are unchanged. Control/cleanup reasoning
+is reused on that basis; character argument spelling was reread directly.
+This is a bounded source/product/text review, not execution of AntennaPod.
 
 ## Reproduction
 

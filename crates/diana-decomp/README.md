@@ -242,7 +242,10 @@ owned `Rendered` text, UTF-8 spans, local diagnostics and the same source produc
 Text and JSON use that one publication. P7 fixes final child/phase placement,
 including loop-condition edge copies and original-node synchronized outlets;
 P9 does not reconstruct control. Explicit storage/check/lock notation preserves
-semantics without requiring legal Java. See the [P9 chapter](../../docs/diana/spec/09-rendering.md).
+semantics without requiring legal Java. Supplied lossless byte/short/char use
+views now remain visible on word carriers as `(value via Type)`; exact char
+literals keep their escaped UTF-16 unit. Other int uses, storage/copy phases and
+unproved views are not rewritten. See the [P9 chapter](../../docs/diana/spec/09-rendering.md).
 
 Independent translation checking compiles only under `cfg(test)`; ordinary
 Engine requests do not run symbolic replay, output audits or duplicate dominator
@@ -260,7 +263,15 @@ same product. See the [P9 outline contract](../../docs/diana/spec/09-rendering.m
 
 Integration checks live in `tests/` and consume prepared inputs from
 `quality/fixtures/` through the ordinary Engine entry. Run
-`cargo nextest run --locked -p diana-decomp`. Six structural checks cover
+`cargo nextest run --locked -p diana-decomp`. Thirteen
+[scalar-use and preservation checks](tests/scalar_use_views.rs) cover
+[carrier/literal views](../../quality/fixtures/atoms/scalar-use-views/README.md),
+[protected joins/composition](../../quality/fixtures/exceptions/scalar-views-protected-joins/README.md),
+[captureless retry](../../quality/fixtures/exceptions/handler-retry-rejoin/README.md)
+and [response/resource cleanup](../../quality/fixtures/exceptions/response-close-snapshots/README.md).
+The last two preserve original facts while their natural-recovery limitations
+remain independent investigations; none of these checks executes fixture behavior.
+Six structural checks cover
 [nested private loop exits](../../quality/fixtures/loops/nested-loop-exits/README.md).
 Four [resource-cleanup checks](../../quality/fixtures/exceptions/resource-cleanup/README.md)
 cover loop-private handlers, nested protection, propagation-only sites and shared

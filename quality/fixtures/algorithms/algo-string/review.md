@@ -1,17 +1,27 @@
 # Fixture: algo-string
 
-## Current verdict — terminal guard follow-up
+## Current verdict — scalar-use disclosure
 
-Read empty-pattern and successful-match returns. Empty pattern still returns
-before prefix/access work; KMP success returns before index update. Mismatch
-fallback, char accesses, original arguments and normal counter tail remain.
+On the same prepared DEX, baseline df10b74 versus this change differs only at
+reverse's character append. Its int carrier now states the supplied char view;
+the original charAt, append(C), decrement and exit order remain. Empty input
+performs no append; a reached access failure skips append/update. Under the
+ordinary StringBuilder model, reverse("ab") yields "ba", not the decimal codes.
+All P2–P8 products are exact in this comparison. This is bounded LLM source/path
+reading, not execution or a claim about arbitrary library/allocation behavior.
 
-Compared the same prepared DEX on 29f1b82 and this commit. P7 requires a complete
-linear arm ending in a printed return/throw; opaque scopes are not exit evidence.
-The [fresh guard challenge](../../branches/terminal-guard-arms/review.md) covers
-actual other-edge Phi copies, parent scope, recovering catches and cleanup.
-Original P2 through complete P6 products agree; this is bounded LLM path reading,
-not behavioral execution. Historical execution claims below were not rerun.
+### Semantics
+
+| Method | Judgment and scope |
+|---|---|
+| `reverse` | ~ The new `(value via char)` preserves the original UTF-16 unit and char binding at each append, without conversion or another read. |
+| `prefix` | ~ Unchanged text/products; prior recurrence and character-access judgment is reused. |
+| `indexOf` | ~ Unchanged text/products; prior empty-pattern and successful-match guard judgment is reused. |
+| `topWords` | ~ Unchanged text/products; prior selected counting/iterator-path judgment is reused. |
+
+The [scalar challenge](../../exceptions/scalar-views-protected-joins/review.md)
+adds joins, copies, loop recovery, cleanup and composition. Historical execution
+claims below were not rerun and do not certify this output.
 
 
 ## Prior verdict — while/do-while architecture correction
@@ -92,4 +102,5 @@ Improve constructor composition and generic arguments; reduce Object intermediat
 
 ## Rounds
 
+- Scalar-use disclosure: reread reverse's original char append and retained its access/update order; other member text is unchanged.
 - R1 2026-11-08: `topWords` reads Map.Entry keys/values through Object and casts; `via Map$Entry` is visible. Recorded forms: `getValue`, `getKey`.

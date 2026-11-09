@@ -2,6 +2,16 @@
 
 ## Current LLM semantic review
 
+The scalar-use change was rechecked against df10b74 on the same prepared input.
+Only moved, numeric and recipe gain an explicit supplied char view inside the
+existing P7-selected char conversion. This redundant annotation does not add an
+opcode, read, helper or String conversion. The original character, boolean and
+long order, leading String prefix and static recipe tags remain. In particular,
+charAsInt is unchanged and still projects A numerically as65. P2–P8 products
+are exact, and all other text is unchanged; their bounded judgments below are
+reused with the same bootstrap/runtime limitations. No behavioral execution or
+new linkage proof is claimed by this rendering-only follow-up.
+
 The original Java explanation, actual Smali and same prepared DEX are compared
 with ordinary Engine outputs on baseline `8785d2f` and the candidate.
 The model assumes the named standard bootstrap contract. Recovery labels that
@@ -72,4 +82,5 @@ recorded in the README; they do not establish VM/linkage or full-method behavior
 
 ## Rounds
 
+- Scalar-use disclosure: reread moved/numeric/recipe char operands; original int projection, conversion/capture order and explicit refusals remain.
 - R1 2026-11-09: Added captures, recipes, primitive views, loop/catch and explicit guards after the general P7 repair; corrected fixture metadata and a detected char/int interpretation error before acceptance.

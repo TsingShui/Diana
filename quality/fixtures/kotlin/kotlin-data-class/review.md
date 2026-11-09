@@ -1,13 +1,30 @@
 # Fixture: kotlin-data-class
 
-## Current verdict — terminal guard follow-up
+## Current verdict — scalar literals and retained guards
+
+Compared df10b74 with this rendering change on the same DEX. Only describe's
+char58 and toString's closing char41 change to ':' and ')'. Original append(C)
+bindings, field reads and StringBuilder call order remain. P2–P8 products agree
+exactly. The other member text is unchanged; earlier judgments and their
+unreviewed limits below are reused, not promoted to execution results.
+
+### Semantics
+
+| Method | Judgment and scope |
+|---|---|
+| `describe` | ~ Name append precedes the exact colon unit, then count append; the original char signature qualifier remains. |
+| `toString` | ~ Generated prefix/name/count sequence is unchanged, followed by the same closing parenthesis unit. |
+| `equals` | ~ Unchanged text/products; the prior short-circuit guard reading is reused. |
+
+### Reused guard evidence
 
 Read equals: identity returns before instanceof, failed membership returns
 before field reads, unequal names return before count reads, then the original
 count comparison selects true/false. Original checks and owner disclosure
 remain, without inferred hierarchy.
 
-Compared the same prepared DEX on 29f1b82 and this commit. P7 requires a complete
+The original guard review compared the same DEX on 29f1b82 and 7354242.
+That evidence is reused for the unchanged members. P7 requires a complete
 linear arm ending in a printed return/throw; opaque scopes are not exit evidence.
 The [fresh guard challenge](../../branches/terminal-guard-arms/review.md) covers
 actual other-edge Phi copies, parent scope, recovering catches and cleanup.
@@ -56,4 +73,5 @@ Improve character, copy$default, Metadata and property presentation. Recorded fo
 
 ## Rounds
 
+- Scalar-use disclosure: reread describe/toString colon and closing-parenthesis units; other member text and guard behavior remain unchanged.
 - R1 2026-11-08: The full Metadata annotation appears in the text; it carries the visible Kotlin class identity. Recorded forms: `@Metadata(d1 = …, d2 = …, …) runtime`.

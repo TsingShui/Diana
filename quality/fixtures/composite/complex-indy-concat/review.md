@@ -8,7 +8,15 @@ with the fixture's `javac.args`/`d8.args` or the shared defaults (see
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 - Selector: `Lfixture/ComplexIndyConcat;`
 
-## Current verdict — inferred concat presentation, 2026-11-09
+## Current verdict — inferred concat presentation and scalar views
+
+The scalar-use change was compared with df10b74 on the same DEX. Only many's
+int-stored char gains an explicit supplied view inside its existing P7-selected
+char conversion. That annotation is redundant but value-preserving: no second
+producer, runtime cast instruction or different String conversion is introduced.
+Its delimiter/capture order and inferred-bootstrap marker remain. P2–P8 products
+are exact; simple/insideLoop text is unchanged, so their bounded judgments below
+are reused. This is LLM reading, not executed linkage or behavior verification.
 
 ### Semantics
 
@@ -46,5 +54,6 @@ does not certify runtime linkage or allocation behavior.
 
 ## Rounds
 
+- Scalar-use disclosure: reread many's char operand; its existing conversion/inference, captured values and effect order remain.
 - R1 2026-11-08: invoke-custom prints explicit call-site metadata for StringConcatFactory.makeConcat followed by the original invocation and arguments.
 - R2 2026-11-09: Recovered the three original concat bodies and reviewed captures, conversions and update order; the new complexity challenge is [concat-capture-recipes](../concat-capture-recipes/review.md).

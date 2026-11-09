@@ -1,6 +1,6 @@
 //! Iterative scheduling of delivered expressions without native-stack recursion.
 
-use super::literals::{binary, literal, unary};
+use super::literals::{binary, char_literal, literal, unary};
 use super::work::{ExprEvent, push_event};
 use super::{ExpressionSource, Expressions};
 use crate::p7::*;
@@ -157,8 +157,28 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
             ))?;
         let start = self.out.position();
         push_event(work, ExprEvent::End(id, start))?;
+        let narrow = match e.kind {
+            ExprKind::Read { view, .. } | ExprKind::Literal { view, .. } => {
+                self.narrow_view(view)?
+            }
+            _ => None,
+        };
+        if let Some((_, true)) = narrow
+            && let ExprKind::Literal { bits, .. } = e.kind
+            && bits.width == crate::SlotWidth::One
+            && let Ok(unit) = u16::try_from(bits.value)
+        {
+            return char_literal(self.out, unit);
+        }
+        if let Some((ty, _)) = narrow {
+            self.out.put("(")?;
+            // The existing Via event closes the parenthesis after the value.
+            // It states a proved interpretation, not an executable cast.
+            push_event(work, ExprEvent::Via(ty))?;
+        }
+        let value_start = self.out.position();
         match &e.kind {
-            ExprKind::Read { storage, .. } => self.read_event(work, id, *storage, start)?,
+            ExprKind::Read { storage, .. } => self.read_event(work, id, *storage, value_start)?,
             ExprKind::Snapshot { storage } => self.local(*storage)?,
             ExprKind::Literal { bits, view } => {
                 if self.code.boolean_use(id) {

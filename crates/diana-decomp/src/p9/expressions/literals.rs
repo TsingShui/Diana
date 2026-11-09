@@ -129,7 +129,7 @@ pub(super) fn element_literal(
 
 /// One original `char` unit as a single-quoted literal with the project's
 /// existing escapes; an isolated surrogate or control unit keeps `\uXXXX`.
-fn char_literal(out: &mut Buffer, unit: u16) -> Result<(), RenderError> {
+pub(super) fn char_literal(out: &mut Buffer, unit: u16) -> Result<(), RenderError> {
     out.put("'")?;
     if unit == u16::from(b'\'') {
         out.put("\\'")?;
