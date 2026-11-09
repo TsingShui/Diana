@@ -51,6 +51,13 @@ ownership through the same view. P7 installs the complete list only after every
 test admits its schedule. A refusal discards that list without mutating or
 copying the method's expression and operation arenas.
 
+The private cover view indexes proposed operand and operation ownership in one
+sparse map. Ordinary consumers keep an active suffix of unowned roots; covered
+roots leave that suffix once. Installation orders origin associations by original
+operation identity and selects each portion's last member for its closing anchor.
+That installation order does not change the selected expression's evaluation order.
+Scratch allocation remains fallible; these indexes supply no new analysis facts.
+
 The single `Control` arena contains each control's selected `ControlLayout`,
 execution children, continuation and presentation, alongside its retained source
 facts. P7 consumes the common P6 grammar directly rather than translating another

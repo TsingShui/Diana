@@ -250,6 +250,11 @@ materialization. The same matcher admits ordinary suffixes and requires complete
 coverage of a skipped short-circuit prelude; refusal of that prelude discards its
 uninstalled proposal list.
 
+Pending ownership uses sparse indexes into the candidate list. An active root
+suffix replaces scans through already owned preparation. Source-anchor selection
+visits each covered portion once after ordering original operation identities;
+this is construction of origin associations, not a new execution schedule.
+
 The same cover constructor serves calls, return operands, conditions, stores and
 cast carriers. Each operation supplies its own admission conditions, such as
 check timing or receiver order. It does not supply a separate relocation engine.

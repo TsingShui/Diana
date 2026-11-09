@@ -981,37 +981,49 @@ enum ConditionChoice {
 }
 
 /// Sparse proposed execution ownership over the immutable current product.
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+enum CoverKey {
+    Operand(ExprId),
+    Operation(OpId),
+}
+
 struct Cover<'a> {
     code: &'a MethodCode,
     work: Vec<(ExprId, Evaluation)>,
+    index: std::collections::HashMap<CoverKey, usize>,
 }
 impl<'a> Cover<'a> {
     fn new(code: &'a MethodCode) -> Self {
         Self {
             code,
             work: Vec::new(),
+            index: std::collections::HashMap::new(),
         }
     }
     fn evaluation(&self, id: ExprId) -> Option<Evaluation> {
-        self.work
-            .iter()
-            .find(|(operand, _)| *operand == id)
-            .map(|(_, evaluation)| *evaluation)
+        self.index
+            .get(&CoverKey::Operand(id))
+            .map(|&index| self.work[index].1)
             .or_else(|| self.code.evaluation(id))
     }
     fn nested_operation(&self, operation: OpId) -> bool {
         self.code.nested_operation(operation)
-            || self
-                .work
-                .iter()
-                .any(|(_, evaluation)| evaluation.operation == operation)
+            || self.index.contains_key(&CoverKey::Operation(operation))
     }
     fn propose(&mut self, producer: Producer, operand: ExprId) -> Result<(), ExpressionError> {
         if self.evaluation(operand).is_some() || self.nested_operation(producer.operation) {
             return Err(bug("cover has multiple execution owners"));
         }
         let evaluation = prepare_evaluation(self, producer, operand, None)?;
-        push(&mut self.work, (operand, evaluation))
+        self.index
+            .try_reserve(2)
+            .map_err(crate::RequestError::Allocation)?;
+        let index = self.work.len();
+        push(&mut self.work, (operand, evaluation))?;
+        self.index.insert(CoverKey::Operand(operand), index);
+        self.index
+            .insert(CoverKey::Operation(producer.operation), index);
+        Ok(())
     }
 }
 impl std::ops::Deref for Cover<'_> {
@@ -1512,32 +1524,44 @@ fn cover_operations(
     access: &LocalAccess,
     ignore_checks: bool,
 ) -> Result<(), ExpressionError> {
-    for index in 1..actions.len() {
-        let (operation, statement) = actions[index];
+    let mut roots = Vec::new();
+    for &(operation, statement) in actions {
         let source = &code.statements[statement.0 as usize];
-        if !matches!(
+        if matches!(
             source.kind,
             StatementKind::Move { .. }
                 | StatementKind::Evaluate { .. }
                 | StatementKind::FieldStore { .. }
                 | StatementKind::ArrayStore { .. }
-        ) || !code.emission.operations[operation.0 as usize]
+        ) && code.emission.operations[operation.0 as usize]
             .before
             .is_empty()
+            && let Arguments::Known(operands) = &source.inputs
         {
-            continue;
-        }
-        let Arguments::Known(operands) = &source.inputs else {
-            continue;
-        };
-        let consumer = Consumer {
-            target: CoverTarget::Operation(operation, statement),
-            operands,
-        };
-        if let Ok(work) = cover_suffix(code, &actions[..index], consumer, access, ignore_checks)? {
-            for (producer, operand) in work {
-                code.propose(producer, operand)?;
+            let consumer = Consumer {
+                target: CoverTarget::Operation(operation, statement),
+                operands,
+            };
+            if let Ok(work) = cover_suffix(code, &roots, consumer, access, ignore_checks)? {
+                for (producer, operand) in work {
+                    code.propose(producer, operand)?;
+                }
             }
+        }
+        // Owned roots leave the active suffix once. A condition's check-cast
+        // remains an original action, but its temporary read is not a root.
+        while roots.last().is_some_and(|&(operation, statement)| {
+            code.nested_operation(operation)
+                || (ignore_checks
+                    && matches!(
+                        code.statements[statement.0 as usize].kind,
+                        StatementKind::CheckCast { .. }
+                    ))
+        }) {
+            roots.pop();
+        }
+        if !code.nested_operation(operation) {
+            push(&mut roots, (operation, statement))?;
         }
     }
     Ok(())
@@ -1650,8 +1674,15 @@ fn ordinary_runs(
             current = adjacency.next_node(node);
         }
         cover_operations(&mut cover, &actions, access, false)?;
-        let work = cover.work;
-        for (operand, mut evaluation) in work.iter().copied() {
+        let mut work = cover.work;
+        // Installation order is not execution order. The last original member
+        // of each source portion owns its deferred control's closing anchor.
+        work.sort_unstable_by_key(|(_, evaluation)| std::cmp::Reverse(evaluation.operation));
+        let mut portions = std::collections::HashSet::new();
+        portions
+            .try_reserve(work.len())
+            .map_err(crate::RequestError::Allocation)?;
+        for (operand, mut evaluation) in work {
             let source = &code.operations[evaluation.operation.0 as usize];
             let owner = code.labels[source.node.0 as usize].owner;
             let carrier_node = code.expressions[operand.0 as usize]
@@ -1663,13 +1694,8 @@ fn ordinary_runs(
                     }
                     UseSite::Terminal { .. } => None,
                 });
-            if carrier_node != Some(source.node)
-                && !code.emission.deferred_control(owner)
-                && !work.iter().any(|(_, other)| {
-                    other.operation.0 > source.source.0
-                        && code.operations[other.operation.0 as usize].node == source.node
-                })
-            {
+            let last = portions.insert(source.node);
+            if carrier_node != Some(source.node) && !code.emission.deferred_control(owner) && last {
                 evaluation.source_control = Some(owner);
             }
             install_evaluation(code, operand, evaluation, key)?;

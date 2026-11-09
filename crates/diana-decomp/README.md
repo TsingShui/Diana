@@ -597,8 +597,9 @@ nested preparation and exact value/state reads. An unmatched effect or reversed
 operand stops the suffix; skipped test runs require complete prelude coverage.
 The new tree/barrier challenges have five passing nextest cases, including
 scalar selected-plan results and every reachable modeled helper-fault prefix.
-This structural slice removes 159 production lines from the expression module;
-full historical regression remains deferred during the rewrite.
+The expression module has 133 fewer production lines than `c2e1ac5`, including
+the sparse pending-ownership index and active-root suffix. Full historical
+regression remains deferred during the rewrite.
 
 P6 now publishes the common `ControlLayout` with named roles and original
 predicate/transfer coordinates. P7 consumes that structure directly and keeps
