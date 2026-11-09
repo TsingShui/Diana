@@ -10,6 +10,7 @@ mod arrays;
 mod booleans;
 mod branches;
 mod casts;
+mod concatenations;
 mod continuations;
 mod continues;
 mod declarations;

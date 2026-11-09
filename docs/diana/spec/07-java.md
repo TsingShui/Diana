@@ -224,6 +224,46 @@ fields, methods, prototypes and handles. P7 copies these facts into owned refere
 records, preserving container order and literal bits. It does not reopen encoded
 values or replace custom/polymorphic calls with ordinary calls.
 
+### StringConcatFactory presentation
+
+P7 can attach an inferred concatenation presentation to an original Custom call.
+The original invocation, argument list, reference, bootstrap events and effects
+remain authoritative. The presentation assumes the named standard bootstrap
+contract; it does not prove runtime linkage or replace the call with ordinary
+calls. P7 recognizes only the exact StringConcatFactory owner, static handle and
+the complete `makeConcat` or `makeConcatWithConstants` bootstrap signature. The
+generated call name is arbitrary. Other bootstraps retain their original form.
+
+The call-site return is exactly String and every runtime operand has an available
+original read and a compatible P4 String/primitive interpretation. P7 consumes
+P4's proved narrow integral views, including the long view; declarations alone
+do not establish ranges. String reads retain established initialization and
+complete String sources. Numeric-bit storage, unknown interpretations, objects,
+arrays and nonfinite bit literals retain the explicit call. Primitive char/int
+spelling follows the original ABI view and actual parameter/local display type,
+without changing values, local storage or binding. Parameter header types remain
+distinct from the early machine-storage spelling.
+
+The recipe is read from owned flat bootstrap String facts, never reparsed from
+input bytes. Dynamic tags consume each original operand once in order; constant
+tags consume each static constant once in order. Missing or extra tags keep the
+original explicit call. Literal recipe portions reference their original UTF-16
+ranges. Static String, signed integral, boolean and char constants have a retained
+one-time standard String-conversion presentation; other constants stay explicit.
+A tag inside a static String remains literal content. An empty-prefix flag is
+String-conversion notation for numeric starts and single-operand null handling,
+not an extra original operand or a fabricated SSA value.
+
+The selected view consumes already-captured operands. P7 keeps calls, field
+reads, casts and arithmetic argument producers at their existing positions.
+The existing resolved-String composition may apply only before the first printed
+join and with its original adjacency, phase and exact-use guarantees. Copy,
+snapshot, exception, initialization and result-commit phases do not move.
+Plan allocation failure records a classified unavailable presentation on that
+call, preserving its original form and independent calls; it does not stop the
+method or erase previously recovered presentations. P9 consumes this owned
+decision without discovering protocols or solving argument conversions.
+
 ## Materialization and ordered phases
 
 A statement retains ordered operand reads, P5 definitions and distinct

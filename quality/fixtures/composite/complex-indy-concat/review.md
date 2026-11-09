@@ -8,26 +8,43 @@ with the fixture's `javac.args`/`d8.args` or the shared defaults (see
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 - Selector: `Lfixture/ComplexIndyConcat;`
 
-## Current verdict — round 1, 2026-11-08
+## Current verdict — inferred concat presentation, 2026-11-09
 
 ### Semantics
 
 | method | semantics |
 |---|---|
-| `simple` | ✔ The explicit call site retains the bootstrap and arguments. |
-| `many` | ? Not reviewed line by line for promotion of all six arguments. |
-| `insideLoop` | ? Not reviewed line by line for the indy call inside the loop. |
+| `simple` | ~ Under the standard bootstrap contract, p0, colon and p1 occupy their original positions and give the same String content. |
+| `many` | ~ String, int, long and char views retain the same argument sequence; preparation and the char conversion remain explicit. |
+| `insideLoop` | ~ Captured result/bracket/element/end values concatenate before the original index/result updates. |
+
+The current reading compares baseline `8785d2f` and candidate outputs on the same
+DEX. P7 retains the original Custom invocation and complete bootstrap definition;
+the expression marks the StringConcatFactory interpretation as inferred. Runtime
+linkage/library replacement and allocation behavior are not proved.
+Simple resolves the colon at its admitted original operand position before the
+first join, then uses the count. Many preserves the original @, %, slash and #
+preparation order and all captured values; its int-stored char is explicitly
+viewed as char, so A stays A rather than 65. Long uses the delivered integral long
+view. InsideLoop reads the element before resolving its delimiters, computes the
+new String, then keeps index/result updates in their original order. The closing
+delimiter remains a statement because it follows the first printed join.
+Null input still fails at the original initial length read; an empty array returns
+the original empty result. No new helper invocation or loop syntax is inferred.
 
 ### Findings
 
-- invoke-custom prints explicit call-site metadata for StringConcatFactory.makeConcat followed by the original invocation and arguments.
-- A single concatenation expands into metadata and an explicit call.
+- The call now has a readable `+` presentation, with inference and original
+  call-site disclosure. Complete bootstrap metadata remains available.
 - Bootstrap method, prototype and argument count remain available; no replacement facts are invented.
 
-### Ranked fixes
+### Remaining boundary
 
-Improve StringConcatFactory expression presentation while keeping call-site metadata available.
+Arbitrary bootstrap behavior, unsupported object/static-constant conversions and
+missing argument views retain their original explicit invocation. The inference
+does not certify runtime linkage or allocation behavior.
 
 ## Rounds
 
 - R1 2026-11-08: invoke-custom prints explicit call-site metadata for StringConcatFactory.makeConcat followed by the original invocation and arguments.
+- R2 2026-11-09: Recovered the three original concat bodies and reviewed captures, conversions and update order; the new complexity challenge is [concat-capture-recipes](../concat-capture-recipes/review.md).

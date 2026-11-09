@@ -13,6 +13,15 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
         call: &Call,
     ) -> Result<(), RenderError> {
         self.outline_call(call.target, call.kind)?;
+        match call.concatenation() {
+            Some(ConcatOutcome::Inferred(concat)) => {
+                return self.concat_event(work, id, call.target, concat);
+            }
+            Some(ConcatOutcome::Explicit(reason)) => {
+                push_event(work, ExprEvent::ConcatUnavailable(*reason))?
+            }
+            None => {}
+        }
         if matches!(
             call.kind,
             crate::p2::InvokeKind::Custom | crate::p2::InvokeKind::Polymorphic

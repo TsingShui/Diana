@@ -56,8 +56,22 @@ for slug_dir in "$QUALITY"/fixtures/*/*/; do
             echo "error: $slug needs a local Smali assembler; set SMALI_CLASSPATH" >&2
             exit 1
         fi
-        java -cp "$SMALI_CLASSPATH" org.jf.smali.Main assemble --api 24 \
-            -o "$out/dex/classes.dex" "$slug_dir"
+        smali_api=24
+        if grep -Eq '^[[:space:]]*invoke-custom(/range)?[[:space:]]' "${smali_sources[@]}"; then
+            smali_api=28
+        fi
+        java -cp "$SMALI_CLASSPATH" org.jf.smali.Main assemble --api "$smali_api" \
+            -o "$out/assembled.dex" "$slug_dir"
+        if [ "$smali_api" -eq 28 ]; then
+            # Smali 2.5's writer omits invoke-custom from outgoing-word sizing.
+            # Correct code_item metadata from the assembled instruction operands.
+            mkdir -p "$WORK/tools"
+            javac -cp "$SMALI_CLASSPATH" -d "$WORK/tools" "$QUALITY/NormalizeSmali.java"
+            java -cp "$WORK/tools:$SMALI_CLASSPATH" NormalizeSmali \
+                "$out/assembled.dex" "$out/dex/classes.dex"
+        else
+            cp "$out/assembled.dex" "$out/dex/classes.dex"
+        fi
         cp "$out/dex/classes.dex" "$slug_dir/classes.dex"
         echo "wrote ${slug_dir#"$QUALITY"/}classes.dex ($(wc -c < "$slug_dir/classes.dex" | tr -d ' ') bytes)"
         continue

@@ -4,6 +4,7 @@
 mod arrays;
 mod calls;
 mod composition;
+mod concatenations;
 mod context;
 mod copies;
 mod literals;

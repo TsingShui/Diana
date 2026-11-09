@@ -643,6 +643,24 @@ fn operation_use(
     let Arguments::Known(inputs) = &consumer_statement.inputs else {
         return None;
     };
+    if let StatementKind::Evaluate { expression } = consumer_statement.kind
+        && let ExprKind::Call(call) = &code.expressions.get(expression.0 as usize)?.kind
+        && let Some(ConcatOutcome::Inferred(plan)) = call.concatenation()
+    {
+        // Concat consumes already-captured operands. Only an original resolved
+        // String before the first printed join can retain the existing safe
+        // argument composition; calls, reads, casts and arithmetic stay put.
+        if !matches!(
+            code.expressions[producer.expression.0 as usize].kind,
+            ExprKind::String(_)
+        ) {
+            return None;
+        }
+        let operand = string_argument(code, producer, consumer, consumer_statement, inputs)?;
+        return plan
+            .permits_string_composition(operand)
+            .then_some((producer, operand, false));
+    }
     // The producer preceded every original capture. It may occupy that same
     // position only when the first delivered capture is also the first operand
     // in the selected spelling. A store can print its plain receiver before its

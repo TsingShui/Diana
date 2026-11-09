@@ -185,6 +185,13 @@ delivered complete explicit schedule and original routing origins.
 Metadata and
 bootstrap declarations travel from their owning producers; P7 does not reopen
 input. See the [P7 chapter](../../docs/diana/spec/07-java.md).
+Known StringConcatFactory call sites can print an explicitly inferred `+`
+presentation while retaining the original Custom invocation and complete
+bootstrap facts. P4 argument views, captured effects and conversion positions
+remain; unsupported references, recipes or constant conversions keep their
+original call with a local presentation-unavailable reason. Recipe tags and
+static String/integral/boolean/char constants are interpreted from owned facts.
+The presentation is not proof of runtime linkage or library behavior.
 
 A closed single-suspension SuspendLambda entry can now select a Kotlin-style
 suspend body: its initial work, suspended result and original common tail form
@@ -314,6 +321,11 @@ executable copies, effect barriers, foreign entries, cycles and complete explici
 preludes, including floating NaN comparisons.
 These checks cover ownership,
 transfer spelling and source anchors, not independent execution of the final plan.
+Six [concat checks](../../quality/fixtures/composite/concat-capture-recipes/README.md)
+cover original bindings and anchors, independent parameter/constant content
+scenarios, char/int and null handling, captured helper order, loop/catch and
+explicit unavailable cases. The small content evaluator covers projections,
+not complete methods, arbitrary callees or VM linkage.
 The retained independent verifier code is not enabled on ordinary requests. Real-input corpus runs have not encountered custom/polymorphic
 invokes or method-handle/type constants.
 

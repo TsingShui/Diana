@@ -27,6 +27,16 @@ Product scope: Diana is the entire project, `diana` is the active product/CLI, a
 
 The review covers source, public entry points and documentation; it makes no corpus coverage claim. Pinned commits do not track HEAD. Each reference update requires separate review; another version must not be substituted silently. The RG parent repository's gitlink does not automatically extend the parent's Apache declaration to the child repository; see §6.
 
+### 1.1 Standard library protocol reference
+
+StringConcatFactory protocol reference: the [JDK 21 API](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/invoke/StringConcatFactory.html)
+describes the standard bootstrap signatures, recipe tags and static constant
+conversion. P7's implementation is independently authored from that protocol
+contract and analyzed DEX facts. No JDK implementation, external declarations or
+classpath become Engine inputs. Recognition is explicitly marked as an inference;
+runtime linkage, arbitrary library replacement and allocation behavior are not
+certified by the reference or by fixture output.
+
 ## 2. Kuna: borrow mechanisms, not the whole engine
 
 | Evidence ID | File / symbol (pinned version) | Source observation | Diana decision |

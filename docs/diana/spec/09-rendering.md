@@ -266,6 +266,16 @@ words, not zero, null or an empty argument list.
 
 ## Declarations, metadata and literal identity
 
+P9 prints a supplied StringConcatFactory presentation as a parenthesized `+`
+expression with the owning P7 operand conversions and literal segments. The
+empty String prefix is emitted only from the supplied flag. Every original
+argument keeps its expression anchor; recipes and static constants retain their
+bootstrap origins and complete original call-site definition. The expression
+states `Diana: inferred StringConcatFactory` with its original call-site reference.
+An unavailable presentation retains `invoke<Custom>` and its supplied local reason.
+This notation is not a linkage, Java-legality or whole-result verification badge.
+P9 does not infer a recipe, alter a parameter view or reopen encoded values.
+
 Static preparation prints one `name = value` line per original static ordinal
 before the class initializer, when the class result reports that the list states an
 encoded value. Each line uses the field declaration name and the original index

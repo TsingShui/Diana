@@ -4,9 +4,9 @@
 use super::super::build::filled;
 use super::super::{ExpressionError, MethodCode};
 use super::{
-    allocation, arrays, booleans, branches, casts, continuations, continues, declarations,
-    expressions, fallthrough, labels, literals, loops, references, returns, scope_labels, scopes,
-    stores, trace,
+    allocation, arrays, booleans, branches, casts, concatenations, continuations, continues,
+    declarations, expressions, fallthrough, labels, literals, loops, references, returns,
+    scope_labels, scopes, stores, trace,
 };
 
 /// Applies display choices to the established plan before method publication.
@@ -30,6 +30,7 @@ pub(in crate::p7) fn construct(
     }
     // Select complete condition alternatives before generic layout and labels.
     traced!("conditions", expressions::conditions(code, key));
+    concatenations::construct(code, types);
     // Sequencing is fixed before labels are selected, so a collapsed jump no
     // longer keeps a display label alive.
     traced!(

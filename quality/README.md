@@ -24,6 +24,7 @@ and keep their judgment separate from independently executed behavioral checks.
 ```text
 quality/
 ├── build.sh                     regenerate DEX from Smali or Java/Kotlin sources
+├── NormalizeSmali.java          fixture-only outgoing-word metadata correction
 ├── dump.py                      reference + Diana output side by side, per method
 ├── lib.py                       fixture lookup and method extraction
 ├── .gitignore                   keeps the committed fixture DEX in the tree
@@ -65,6 +66,12 @@ For a fixture with Smali, set `SMALI_CLASSPATH` to a locally available assembler
 classpath before running `build.sh`. Its Java file is an explanation, not an
 alternative compile input. No tool is downloaded implicitly, and a failed
 assembly does not publish a replacement DEX.
+For Smali custom invocations, the shared preparation helper corrects `outs_size`
+from the assembled invoke operands using the assembler's existing dexlib2 reader.
+Only deficient code-item metadata and required DEX integrity fields change;
+instructions, declarations and call-site references remain intact. This handles
+the Smali writer's missing Custom-call word count without adding dummy calls or
+relaxing Diana's input checks.
 
 For Kotlin, compare the Kotlin reference directly with the output. Review `?.`,
 `?:`, `!!`, `when`, safe-call chains and lowered coroutine/property protocols by
@@ -167,6 +174,7 @@ failed deterministic check; repair acceptance still follows
 | `quiet-condition-copies` | Origin-only condition edges beside actual call-result and parameter Phi assignments |
 | `terminal-guard-arms` | Return/throw guards with exact other-edge copies, parent scope, recovering-catch refusal and cleanup |
 | `short-circuit-shared-routes` | Ordered effectful disjunctions through empty selected routes; copy, effect, entry, cycle and explicit-prelude guards |
+| `concat-capture-recipes` | Inferred Custom concatenation, recipe constants, char/int views, captured effects, loop/catch and explicit unsupported guards |
 | `pure-tail-finally` | Whole-operation normal preparation, literal cleanup prefixes, scoped bypasses and late cleanup failure |
 | `refined-carriers` | Adjacent cast/array carriers and checks that must precede calls and early returns |
 

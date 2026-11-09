@@ -68,6 +68,13 @@ pub struct Call {
     pub receiver: Option<ExprId>,
     pub arguments: Arguments,
     pub qualification: Qualification,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(in crate::p7) concatenation: Option<super::ConcatOutcome>,
+}
+impl Call {
+    pub fn concatenation(&self) -> Option<&super::ConcatOutcome> {
+        self.concatenation.as_ref()
+    }
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]

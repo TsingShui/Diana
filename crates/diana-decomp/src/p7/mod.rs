@@ -2,6 +2,10 @@
 //! remain with their producers. MethodResult has no borrowed input or stage product.
 mod build;
 mod compose;
+mod concatenation;
+pub use concatenation::{
+    ConcatConversion, ConcatOutcome, ConcatPart, ConcatUnavailable, Concatenation,
+};
 mod control;
 mod copies;
 mod emission;

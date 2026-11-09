@@ -106,6 +106,14 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
                     self.out.put("]")?;
                 }
                 ExprEvent::UnavailableArguments(id) => self.unavailable_arguments(id)?,
+                ExprEvent::ConcatPart { call, part } => self.concat_part(&mut work, call, part)?,
+                ExprEvent::ConcatEnd { call, reference } => self.concat_end(call, reference)?,
+                ExprEvent::ConcatUnavailable(reason) => {
+                    self.out.fmt(format_args!(
+                        " /* Diana: concat unavailable: {} */",
+                        reason.message()
+                    ))?;
+                }
                 ExprEvent::ArrayEnd(kind) => self.out.fmt(format_args!("] /* {kind:?} load */"))?,
                 ExprEvent::Dimensions(dimensions) => {
                     self.out.put("]")?;

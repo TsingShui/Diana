@@ -190,6 +190,7 @@ fn call(
         receiver,
         arguments,
         qualification,
+        concatenation: None,
     })
 }
 pub(super) fn semantic(

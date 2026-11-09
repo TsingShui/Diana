@@ -19,6 +19,15 @@ pub(super) enum ExprEvent {
     MemberEnd(ReferenceId, bool, bool, crate::p9::TextOffset),
     InvocationPrototype(ReferenceId),
     UnavailableArguments(ExprId),
+    ConcatPart {
+        call: ExprId,
+        part: usize,
+    },
+    ConcatEnd {
+        call: ExprId,
+        reference: ReferenceId,
+    },
+    ConcatUnavailable(ConcatUnavailable),
     ArrayEnd(crate::p2::ValueKind),
     Dimensions(u32),
     Initializer(ReferenceId, ReferenceId),
