@@ -165,7 +165,22 @@ pub(super) fn construct(
             },
         )?;
     }
+    let implicit = p
+        .implicit()
+        .map(|surface| -> Result<ImplicitSync, ExpressionError> {
+            let mut cleanups = Vec::new();
+            for &(id, index) in surface.cleanups() {
+                push(&mut cleanups, (control(c.tries[id.0 as usize])?, index))?;
+            }
+            Ok(ImplicitSync {
+                cleanups,
+                captures: ids(surface.captures(), |op| op)?,
+                rethrows: ids(surface.rethrows(), |node| terminal(c, node))?,
+            })
+        })
+        .transpose()?;
     Ok(ControlKind::Synchronized {
+        implicit,
         acquire,
         lock,
         enter: TransferId(p.enter_link().0),

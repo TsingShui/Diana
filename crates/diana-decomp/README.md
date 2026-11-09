@@ -158,6 +158,13 @@ can print as natural catches with original copies and explicit outward transfers
 Cross-handler finally folding, unmatched Phi values and different cleanup exits
 retain the original catch or explicit handlers.
 
+A selected monitor can use natural implicit release when P6 establishes one
+normal outlet and private exact capture/rethrow cleanup with equal natural
+delivery and no release-phase work. Typed recovery remains inside the monitor;
+extra cleanup, different locks, replaced exceptions and multiple normal outlets
+keep explicit events. Private captures can bind in the catch header while
+original operations, sites and receiving phases remain inspectable.
+
 P7 produces an independently owned `MethodResult`, delivered by
 `MethodOutcome::Expressed(ExpressedMethod)`. `inspection()` borrows earlier facts
 from that same execution; `into_result()` releases retained analysis. No-code
@@ -336,7 +343,12 @@ and their [effect challenge](../../quality/fixtures/atoms/constructor-argument-e
 cover two independent field/call chains, protected exception construction,
 branching argument trees, fault short-circuiting, original anchors and
 order/sharing/handler/snapshot refusal. Their independent numeric evaluator
-executes final argument trees only, not whole methods. Four [carrier checks](../../quality/fixtures/atoms/refined-carriers/README.md)
+executes final argument trees only, not whole methods. Six [monitor-surface checks](../../quality/fixtures/sync/implicit-monitor-cleanup/README.md)
+and their [boundary challenge](../../quality/fixtures/sync/monitor-surface-boundaries/README.md)
+cover implicit release, header capture, nested/reentrant locks, typed recovery,
+extra cleanup, changed errors, split returns and escaping capture storage.
+Their test-only final-plan model executes the documented fixture subset, not a
+general JVM. Four [carrier checks](../../quality/fixtures/atoms/refined-carriers/README.md)
 retain exact check provenance and prevent delaying a check past a call or fusing
 an array fill across another reference check.
 Four [while-continuation checks](../../quality/fixtures/loops/while-tail-continuations/README.md)

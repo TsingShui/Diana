@@ -80,6 +80,16 @@ impl Expressions<'_, '_> {
             }
             self.clause_type(clause)?;
         }
+        if let ControlKind::Try { bindings, .. } = &self.code.controls()[id.0 as usize].kind
+            && let Some(binding) = bindings.get(index).copied().flatten()
+        {
+            self.out.put(" ")?;
+            let start = self.out.position();
+            self.local(binding.local)?;
+            let source = &self.code.operations()[binding.operation.0 as usize];
+            let statement = &self.code.statements()[binding.statement.0 as usize];
+            self.statement_origins(binding.operation, source, statement, start)?;
+        }
         self.out.put(")")?;
         self.out.open()?;
         Ok(())
@@ -131,7 +141,14 @@ impl Expressions<'_, '_> {
         )?;
         // The closing brace is not a release: the delivered
         // `release synchronized` statements are the only releases.
-        self.out.open_note("// Diana: releases are explicit")?;
+        if matches!(
+            control.layout,
+            EmissionLayout::Synchronized { implicit: true, .. }
+        ) {
+            self.out.open()?;
+        } else {
+            self.out.open_note("// Diana: releases are explicit")?;
+        }
         if !phase.after.is_empty()
             || !self.code.emission().transfers()[enter.0 as usize]
                 .copies

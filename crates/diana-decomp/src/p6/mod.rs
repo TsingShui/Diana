@@ -12,6 +12,7 @@ mod ownership;
 mod product;
 mod protection;
 mod scopes;
+mod surface;
 mod suspension;
 mod transfers;
 pub use build::RegionError;

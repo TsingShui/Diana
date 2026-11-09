@@ -333,7 +333,10 @@ fn loop_catch_and_machine_word_views_keep_their_original_work() {
                     assert!(
                         rendered
                             .text()
-                            .contains("catch (java.lang.IllegalStateException)")
+                            .contains("catch (java.lang.IllegalStateException ")
+                            || rendered
+                                .text()
+                                .contains("catch (java.lang.IllegalStateException)")
                     );
                     assert!(rendered.text().contains("while ("));
                 }

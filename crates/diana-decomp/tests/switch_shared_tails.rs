@@ -119,7 +119,10 @@ fn a_case_local_recovering_try_and_loop_stay_whole_under_outer_finally() {
             assert!(
                 rendered
                     .text()
-                    .contains("catch (java.lang.IllegalArgumentException)")
+                    .contains("catch (java.lang.IllegalArgumentException ")
+                    || rendered
+                        .text()
+                        .contains("catch (java.lang.IllegalArgumentException)")
             );
             assert!(rendered.text().contains("finally {"));
             assert!(rendered.text().contains("break R"));

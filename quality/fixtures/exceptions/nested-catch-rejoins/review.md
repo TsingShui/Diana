@@ -1,6 +1,27 @@
 # Fixture: nested-catch-rejoins
 
-## Current verdict — terminal-follow conjunction, 2026-11-09
+## Current verdict — scoped catch capture
+
+Compared the same prepared input on `c95c6dd` and this repair. Reviewed header
+bindings: `NumberFormatException | NullPointerException v3`, `RuntimeException v4`, `NumberFormatException | NullPointerException v6`, `all v10`. The original captured object is bound once at exceptional
+entry, before the unchanged receiving/body actions. Its exact-state uses remain
+inside that handler and have no capture-phase, Phi or copy dependency requiring
+an outer assignment. Normal execution does not bind or run the handler.
+
+After accounting for that binding and its removed private declaration/assignment,
+the complete remaining output is exact. Original P1/P3/P4/P5 products agree.
+Thus the earlier independently reasoned normal, caught, cleanup, rethrow and
+secondary-failure paths below are reused: their calls, arguments, values,
+priority, transfers and effect order did not change. The renewed LLM judgment
+finds no contradictory capture lifetime or exception identity. Structural
+comparison supports this reading rather than supplying behavioral proof.
+
+The [fresh monitor/binding challenge](../../sync/monitor-surface-boundaries/review.md)
+covers capture identity, receiving/value flow, nested failures and escaping
+storage. Current fixture/model regressions are separate executed evidence;
+this record does not claim VM/device execution for this input.
+
+## Prior verdict — terminal-follow conjunction, 2026-11-09
 
 `cleanup` now prints `p1 == 5 || p1 == 6` before its `IllegalArgumentException`;
 `read` prints `p1 == 4 || p1 == 6` before its `AssertionError`. The successful

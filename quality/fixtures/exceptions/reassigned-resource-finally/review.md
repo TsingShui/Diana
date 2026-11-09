@@ -1,5 +1,26 @@
 # Fixture: reassigned-resource-finally
 
+## Current verdict — scoped catch capture
+
+Compared the same prepared input on `c95c6dd` and this repair. Reviewed header
+bindings: `all v10`. The original captured object is bound once at exceptional
+entry, before the unchanged receiving/body actions. Its exact-state uses remain
+inside that handler and have no capture-phase, Phi or copy dependency requiring
+an outer assignment. Normal execution does not bind or run the handler.
+
+After accounting for that binding and its removed private declaration/assignment,
+the complete remaining output is exact. Original P1/P3/P4/P5 products agree.
+Thus the earlier independently reasoned normal, caught, cleanup, rethrow and
+secondary-failure paths below are reused: their calls, arguments, values,
+priority, transfers and effect order did not change. The renewed LLM judgment
+finds no contradictory capture lifetime or exception identity. Structural
+comparison supports this reading rather than supplying behavioral proof.
+
+The [fresh monitor/binding challenge](../../sync/monitor-surface-boundaries/review.md)
+covers capture identity, receiving/value flow, nested failures and escaping
+storage. Current fixture/model regressions are separate executed evidence;
+this record does not claim VM/device execution for this input.
+
 An acquisition argument, a resource slot reassigned inside the protected region,
 and a conditional finally. `ReassignedResourceFinally.java` explains the
 behavior; `ReassignedResourceFinally.smali` is the assembly input. The prepared
@@ -12,7 +33,7 @@ behavior; `ReassignedResourceFinally.smali` is the assembly input. The prepared
   `12de370`.
 - Expected behavior: the scenario table in `README.md`.
 
-## Current verdict — round 2
+## Prior verdict — round 2
 
 Manually reread the Java explanation, Smali and fresh P6/P9 delivery at
 `09e322b`. Throw-site snapshots retain ownership: first read saves {owned, old};

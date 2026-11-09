@@ -233,6 +233,7 @@ pub enum ControlKind {
         target: LabelId,
     },
     Try {
+        bindings: Vec<Option<CatchBinding>>,
         chain: p6::ChainId,
         clauses: std::ops::Range<u32>,
         handler_clauses: Vec<std::ops::Range<u32>>,
@@ -241,6 +242,7 @@ pub enum ControlKind {
         finally: Option<Finally>,
     },
     Synchronized {
+        implicit: Option<ImplicitSync>,
         acquire: StatementId,
         lock: ExprId,
         enter: TransferId,
@@ -320,4 +322,17 @@ pub struct Control {
     pub entry: Option<LabelId>,
     pub follow: Option<LabelId>,
     pub continuation: Continuation,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct CatchBinding {
+    pub operation: OpId,
+    pub statement: StatementId,
+    pub local: StorageId,
+}
+#[derive(Debug, Serialize)]
+pub struct ImplicitSync {
+    pub cleanups: Vec<(ControlId, u32)>,
+    pub captures: Vec<OpId>,
+    pub rethrows: Vec<crate::p2::BlockId>,
 }

@@ -970,6 +970,16 @@ or moved. Ordinary region admission still selects the whole interface; an
 unselected or refused alternative leaves its instructions explicit. Allocation
 and necessary construction failures retain the ordinary classified P6 stop.
 
+## Catch binding surface
+
+After region ownership is selected, P6 publishes optional header captures for
+selected Try handlers. A capture requires one original ExceptionCapture definition,
+only exact-state reads within that handler body, and no Phi, copy or capture-phase
+obligation. These facts permit P7 to bind the same exception at the catch header;
+unavailable dependencies and escaping/shared storage retain the original assignment.
+The original type clauses, handler priority and receiving copies remain unchanged.
+P6 consumes published P5 storage and selected regions without another analysis chain.
+
 ## Monitor capture and scope proof
 
 Lock analysis describes method-local acquisition obligations under P2's completion
@@ -1048,6 +1058,27 @@ Successful body completion executes the selected release before its after-releas
 plans and original continuation. Synchronized syntax and ordinary monitor emission
 do not both own the same event. An explicit goto does not add release, finally,
 heap rollback or initialization. Independent proven nested regions remain available.
+
+### Implicit monitor surface
+
+P6 can publish an `ImplicitMonitor` on a selected SyncPlan after ownership and
+transfer finalization. The surface consumes the existing closed held graph and
+stable matched releases. It requires one original normal Follow outlet without
+routing, no executable release-phase copies, and only private exact capture
+rethrows on the other outlets. Every hidden cleanup must be the last catch-all
+handler of a selected enclosing Try inside that monitor scope. Its body contains
+only capture, the matched release, transparent routing and the exact rethrow.
+Every executable entrance already requires natural delivery to that same Try.
+A pending rethrow must propagate uncaught or into an existing enclosing natural
+catch; an unplaced outside handler cannot become implicit propagation.
+
+The surface identifies the Try and handler index, captures and rethrow terminals.
+Earlier typed handlers remain executable. Extra cleanup, replaced exceptions,
+different locks, multiple normal outlets, missing delivery and changing/copy
+obligations retain the explicit surface. Independent inner scopes can stay
+explicit while a qualified outer scope becomes implicit. No node, edge, capture,
+copy or original monitor fact is deleted, and no independent lock/graph verifier
+runs on ordinary requests.
 
 ## Correspondence and evidence
 

@@ -13,6 +13,7 @@ pub(in crate::p7) fn construct(code: &mut MethodCode) -> Result<(), ExpressionEr
     blocks::construct(code, &mut plan, &nodes)?;
     controls::construct(code, &mut plan)?;
     controls::complete(code, &mut plan)?;
+    controls::surfaces(code, &mut plan)?;
     identity_moves(code, &mut plan);
     code.emission = plan;
     Ok(())

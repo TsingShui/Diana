@@ -410,6 +410,7 @@ pub(super) fn construct(
                 members: all,
                 follow,
                 separation,
+                implicit: None,
             },
         )?;
         push(

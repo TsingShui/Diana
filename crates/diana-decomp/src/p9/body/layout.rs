@@ -73,6 +73,13 @@ impl Expressions<'_, '_> {
         let p = &self.code.emission().controls()[id.0 as usize];
         let start = self.out.position();
         push(work, Event::End(id, start))?;
+        if !p.source_only.is_empty() {
+            push(work, Event::OriginOnly(self.out.origin_only))?;
+            for &source in p.source_only.iter().rev() {
+                push(work, Event::Control(source))?;
+            }
+            push(work, Event::OriginOnly(true))?;
+        }
         match &p.layout {
             EmissionLayout::Block(node) => self.block(*node)?,
             EmissionLayout::Suspension { plan } => self.suspension_tail(*plan)?,
@@ -146,6 +153,7 @@ impl Expressions<'_, '_> {
                 entry,
                 body,
                 acquire,
+                ..
             } => {
                 push(work, Event::Close)?;
                 push(work, Event::Control(*body))?;

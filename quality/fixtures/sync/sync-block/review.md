@@ -1,5 +1,23 @@
 # Fixture: sync-block
 
+## Current verdict — monitor surface and capture
+
+Compared the same prepared DEX on `c95c6dd` and this repair. Read the complete
+source, helper assumptions and both output paths.
+
+### Semantics
+
+add retains counter read/update/read while held, then releases before returning the saved counter. clearIfPositive keeps its original predicate and store before the release. nested keeps the two separate LOCK field reads and captured references; even if they resolve to the same object, inner release precedes the outside counter read and outer release. Every body failure uses that same reverse unwind order. No current-field value is substituted for an already captured lock.
+
+The original acquire/release/capture operations each retain one anchor. Only
+qualified implicit releases are zero-width; an explicit inner release still
+executes at its original node. P1/P3/P4/P5 and original held-node/outlet facts
+remain unchanged. LLM path review found no contradiction under the recorded
+helper/lock assumptions; prior unchanged handler and helper path reviews are
+reused below. The [fresh challenge](../monitor-surface-boundaries/review.md)
+adds actual final-plan model traces for nested/reentrant unwinding and typed
+recovery. No VM/device or whole-input behavioral execution is claimed here.
+
 synchronized block, including an early return inside it. The Java source is the reference and the expectation; the DEX is
 generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 `quality/build.sh`) and committed so a review needs no toolchain.
@@ -7,7 +25,7 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 
-## Current verdict — monitor continuation review
+## Prior verdict — monitor continuation review
 
 Java and final add(int), clearIfPositive() and nested(int) were reread.
 Release no longer prints a redundant ordinary goto before its already supplied

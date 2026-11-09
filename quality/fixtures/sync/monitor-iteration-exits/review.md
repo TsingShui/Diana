@@ -1,6 +1,24 @@
 # Fixture: monitor-iteration-exits
 
-## Current verdict — terminal-follow conjunction, 2026-11-09
+## Current verdict — monitor surface and capture
+
+Compared the same prepared DEX on `c95c6dd` and this repair. Read the complete
+source, helper assumptions and both output paths.
+
+### Semantics
+
+Only catch capture placement changes. Iteration updates, bypass routes and held cleanup retain their exact body text, original release points and explicit continuation targets. Cleanup can still replace a pending body error, and those calls remain under the original lock. Captures used by their rethrows are bound at the same exceptional entry; the distinct outer handler facts remain available.
+
+The original acquire/release/capture operations each retain one anchor. Only
+qualified implicit releases are zero-width; an explicit inner release still
+executes at its original node. P1/P3/P4/P5 and original held-node/outlet facts
+remain unchanged. LLM path review found no contradiction under the recorded
+helper/lock assumptions; prior unchanged handler and helper path reviews are
+reused below. The [fresh challenge](../monitor-surface-boundaries/review.md)
+adds actual final-plan model traces for nested/reentrant unwinding and typed
+recovery. No VM/device or whole-input behavioral execution is claimed here.
+
+## Prior verdict — terminal-follow conjunction, 2026-11-09
 
 `cleanup` now prints `p1 == 5 || p1 == 6` before its `IllegalArgumentException`;
 `read` prints `p1 == 4 || p1 == 6` before its `AssertionError`. The successful

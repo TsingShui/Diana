@@ -462,6 +462,11 @@ P7 copies each P6 handler's contiguous original clause range alongside the
 unchanged chain and full interval. One handler child owns the shared capture and
 receives once. P9 prints the supplied adjacent type alternatives on that single
 catch header; neither stage groups targets, moves clauses or infers hierarchy.
+A delivered header binding removes only the capture's body action and hides its
+method-level declaration. P9 prints the original local in that header and anchors
+the original capture operation/statement there. Receiving copies still follow
+capture. A binding with missing producer facts is a classified construction error;
+unqualified captures retain their original statements.
 
 Exception sites retain original completion, ordered chain, edge delivery and
 snapshot provenance. Natural catch delivery, explicit protection, propagation and
@@ -556,10 +561,14 @@ test at the body's start under `while (true)`. An assignment before the first
 test still runs there. Tail tests stay after the first body, including when
 copies or effects require an explicit predicate phase.
 
-Matched releases print at their original nodes. Their after-release copies and
-routing terminals also stay at their original nodes and therefore keep original
-lexical try/catch ownership. The synchronized container has explicit planned
-exits, not another implicit release at its closing brace. A selected compound
+A synchronized layout states whether P6 supplied an implicit monitor surface.
+The explicit layout prints releases and routing at their original nodes, with
+original lexical try/catch ownership; its closing brace adds no release.
+The implicit layout owns one release on each selected completion. Original
+release actions become origin-only, and the qualified compiler catch becomes a
+source-only attachment rather than an execution child. Earlier typed catches
+stay executable and their original clause indices remain. After-release work
+and value returns stay outside the held body. Entry phases remain in place. A selected compound
 construction prints at the original constructor call; correlated members that
 only alias the object or define literals remain suppressed. These are
 placements of existing plans, not region identification or a new dispatcher.
@@ -859,3 +868,20 @@ switch. P7 JSON serializes the inspection product; final text and UTF-8 spans ar
 owned by [P9](09-rendering.md), without a Java-legality gate. P8/P9 MUST consume
 the existing expression and naming products rather than repairing or re-analyzing
 execution. Corpus completion is not an arbitrary VM, heap/callee or lock proof.
+
+## Source-only control attachments
+
+EmissionControl's `source_only` list retains original controls that have no
+executable placement in the selected surface. The execution child list excludes
+those controls. P9 visits their existing products with zero-width origins; it
+performs no reconstruction or semantic retry. An implicit monitor's qualified
+cleanup handler uses this attachment. Ordinary operations, snapshots and monitor
+facts remain available in the source arenas; an attachment is not an alternative
+execution schedule.
+
+Exception site annotations consume the selected surface. A naturally delivered
+site can omit its repeated chain marker when all original clauses are represented
+by enclosing visible catches/finally or the delivered implicit monitor cleanup.
+Other explicit or unplaced routes keep their markers. Original ordered chains
+and targets remain in the owned product; P9 does not point readers at a hidden
+compiler handler through a redundant chain line.
