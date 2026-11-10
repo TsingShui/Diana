@@ -37,9 +37,9 @@ construction boundaries and later-stage responsibilities are in [phases](phases.
 | [WRITING.md](WRITING.md) | Documentation conventions. |
 
 Archived implementations are not active stages or alternate recovery paths. Removed specifications and historical
-execution records remain available in git history. The archived implementation
-in `ref-old-impl/` supplies semantic/check reference material, not another build
-or method-analysis route.
+execution records remain available in git history. The archived implementations in `ref-old-impl/v1/` and `ref-old-impl/v2/`
+supply semantic/check reference material, not another build or method-analysis
+route.
 
 Engine inspection uses the single `dbg_shell` Cargo example. Build/lint success,
 byte roundtrip and finite corpus checks have different evidence scopes; none alone

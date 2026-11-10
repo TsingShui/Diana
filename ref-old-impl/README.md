@@ -1,12 +1,10 @@
-# Old Diana pipeline implementation
+# Archived Diana implementations
 
-Historical copy of the pre-refactor P2–P7 implementation, the old P8 emission
-modules, the preloaded declaration context and the old Engine helper modules.
+This directory keeps historical implementations as reference material.
 
-- Source commit for P2–P8 and `context/`: `451116c`.
-- Source commit for the old `engine/*` helpers: `e5d01c4`.
+- `v1/`: pre-refactor P2–P8 stages, declaration context and Engine helpers.
+- `v2/`: staged P2–P9 recovery chain kept when the backend became the
+  ordinary `Engine::analyze` entry.
 
-This tree is reference material only. It is not part of the workspace build, is
-not compiled, tested or linted, and must not be imported by active code. Preserve
-it while rebuilding stages; do not treat its private IR or interfaces as the
-target contract.
+Neither tree is part of the workspace build. They are not compiled, tested
+or linted, and active code must not import them.

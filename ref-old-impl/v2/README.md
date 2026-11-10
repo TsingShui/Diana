@@ -1,4 +1,4 @@
-# Old Diana staged pipeline, second reference copy
+# Old Diana staged pipeline implementation (v2)
 
 Historical copy of the P2–P9 staged recovery chain as it stood when the backend
 became the ordinary `Engine::analyze` entry.
