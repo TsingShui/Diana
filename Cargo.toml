@@ -5,11 +5,9 @@ members = [
     "apps/diana-gui",
     "crates/diana-decomp",
     "crates/diana-facts",
-    "crates/dexdec",
 ]
 default-members = ["apps/diana", "crates/diana-decomp"]
-# The forked decompiler core inherits only these three fields, so its own files
-# stay comparable with the upstream revision in crates/dexdec/UPSTREAM.md.
+# Shared package fields for the workspace crates.
 [workspace.package]
 version = "1.0.2"
 edition = "2021"

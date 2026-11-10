@@ -1,23 +1,24 @@
 # Diana phases
 
 The approved architecture is [PIPELINE_DESIGN](PIPELINE_DESIGN.md). The application
-owns files/APKs and lends DEX bytes to the native engine. Engine holds indexes,
-starts method tasks and delivers classified products; stage algorithms stay in
-their owning modules.
+owns files/APKs and lends DEX bytes to the native engine. The active path is P0/P1
+facts in `crates/diana-facts/`, followed by the recovery backend in
+`crates/diana-decomp/`. The P2–P9 rows below describe the archived staged
+implementation under `ref-old-impl/v2/`, not active modules.
 
-| Stage | Active location | Product and responsibility |
+| Stage | Location | Product and responsibility |
 |---|---|---|
-| P0 | `crates/diana-decomp/src/p0/` | `ClassFacts`: original declarations, four-group directory, static preparation and metadata facts; the class declaration is shared as an immutable `OwnerFacts` handle. |
-| Method reader | `crates/diana-decomp/src/input/` | `MethodSource`: bound P0 method entry, safely located code and independent metadata state. |
-| P1 | `crates/diana-decomp/src/p1/` | `DecodedMethod`: complete instruction/payload facts, entry/reference layouts and original structural associations. |
-| P2 | `crates/diana-decomp/src/p2/` | `FlowMethod`: ordered operations/terminals, explicit completion rules, normal/exception transfers, exits and source coverage. |
-| P3 | `crates/diana-decomp/src/p3/` | `SsaMethod`: exact-slot states, LT dominators, live-pruned IDF Phis, definitions/uses, availability and original state-position mappings. |
-| P4 | `crates/diana-decomp/src/p4/` | `TypedMethod`: value facts, per-use interpretations, Phi incoming adaptations and position-related initialization. |
-| P5 | `crates/diana-decomp/src/p5/` | `StorageMethod`: value bindings, original-position materialization, per-transfer copies, exception snapshots and local storage gaps. |
-| P6 | `crates/diana-decomp/src/p6/` | `PlannedMethod`: natural/explicit regions, original edge and copy delivery, labels, ordered protection and monitor ownership. |
-| P7 | `crates/diana-decomp/src/p7/` | Owned `MethodResult`: unified operations, storage phases, selected control/protection expressions, declarations and local gaps. |
-| P8 | `crates/diana-decomp/src/p8/` | Owned `ClassResult`/`TypeNamePlan`: directory-driven member assembly, static/annotation expression and scope-aware naming. |
-| P9 | `crates/diana-decomp/src/p9/` | Owned `Rendered`: existing expressions/names to UTF-8 text, JSON, source spans and concrete output diagnostics. |
+| P0 | `crates/diana-facts/src/p0/` | `ClassFacts`: original declarations, four-group directory, static preparation and metadata facts; the class declaration is shared as an immutable `OwnerFacts` handle. |
+| Method reader | `crates/diana-facts/src/input/` | `MethodSource`: bound P0 method entry, safely located code and independent metadata state. |
+| P1 | `crates/diana-facts/src/p1/` | `DecodedMethod`: complete instruction/payload facts, entry/reference layouts and original structural associations. |
+| P2 | `ref-old-impl/v2/crates/diana-decomp/src/p2/` | `FlowMethod`: ordered operations/terminals, explicit completion rules, normal/exception transfers, exits and source coverage. |
+| P3 | `ref-old-impl/v2/crates/diana-decomp/src/p3/` | `SsaMethod`: exact-slot states, LT dominators, live-pruned IDF Phis, definitions/uses, availability and original state-position mappings. |
+| P4 | `ref-old-impl/v2/crates/diana-decomp/src/p4/` | `TypedMethod`: value facts, per-use interpretations, Phi incoming adaptations and position-related initialization. |
+| P5 | `ref-old-impl/v2/crates/diana-decomp/src/p5/` | `StorageMethod`: value bindings, original-position materialization, per-transfer copies, exception snapshots and local storage gaps. |
+| P6 | `ref-old-impl/v2/crates/diana-decomp/src/p6/` | `PlannedMethod`: natural/explicit regions, original edge and copy delivery, labels, ordered protection and monitor ownership. |
+| P7 | `ref-old-impl/v2/crates/diana-decomp/src/p7/` | Owned `MethodResult`: unified operations, storage phases, selected control/protection expressions, declarations and local gaps. |
+| P8 | `ref-old-impl/v2/crates/diana-decomp/src/p8/` | Owned `ClassResult`/`TypeNamePlan`: directory-driven member assembly, static/annotation expression and scope-aware naming. |
+| P9 | `ref-old-impl/v2/crates/diana-decomp/src/p9/` | Owned `Rendered`: existing expressions/names to UTF-8 text, JSON, source spans and concrete output diagnostics. |
 
 Archived implementations are not active stages or alternate recovery paths.
 The [P1–P9 local-result contract](PIPELINE_DESIGN.md#92-p1p9-uniformly-consume-local-results) applies

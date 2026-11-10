@@ -79,23 +79,13 @@ pub fn run_with_jobs(
     selector: &Selector,
     jobs: usize,
 ) -> Result<Decompiled, DecompileError> {
-    run_presentation(scope, selector, jobs, false)
-}
-
-/// The same method/class chain, with P9's optional outline facts enabled.
-pub(super) fn run_outline(
-    scope: &RequestScope,
-    selector: &Selector,
-    jobs: usize,
-) -> Result<Decompiled, DecompileError> {
-    run_presentation(scope, selector, jobs, true)
+    run_presentation(scope, selector, jobs)
 }
 
 fn run_presentation(
     scope: &RequestScope,
     selector: &Selector,
     jobs: usize,
-    outline: bool,
 ) -> Result<Decompiled, DecompileError> {
     let class_selector = match selector {
         Selector::Class(class) => class,
@@ -119,11 +109,6 @@ fn run_presentation(
         },
     };
     let engine = Engine::focus(defining, selected.image.dex)?.with_method_jobs(jobs);
-    let engine = if outline {
-        engine.with_outline()
-    } else {
-        engine
-    };
     let class = ClassKey {
         dex: selected.image.dex,
         class_def: selected.class_def,

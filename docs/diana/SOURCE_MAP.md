@@ -52,7 +52,12 @@ certified by the reference or by fixture output.
 
 Do not reuse SLEIGH, p-code, native calling-convention inference, code discovery, stack-frame layout or binary alias analysis. DEX supplies explicit methods, registers and most declarations, but invocation dispatch, resolution, access, exceptions and source legality remain problems; invocation-semantics analysis cannot be removed on that basis.
 
-## 3. dexdec: borrow the correctness checklist and local algorithms
+## 3. dexdec: active recovery backend fork
+
+The active `crates/diana-decomp/` is a fork of `asLody/dexdec` at
+`08ed478781ddddb16381c31b9cf6d8946fdf2919`, licensed under Apache-2.0; see the
+crate README and LICENSE. Upstream paths below are relative to the pinned source,
+not to the active fork.
 
 | Evidence ID | File / symbol | Source observation | Diana decision |
 |---|---|---|---|
@@ -108,20 +113,18 @@ For each algorithm ported during implementation, add a record of source project/
 
 ### 6.1 Current reuse register
 
-Observed state: Diana engine and CLI implementation code contains no copied
-reference source. The GUI's adapted theme data is recorded in §6.2. The
-archived reference tree was removed from the working tree at commit 5cb156c and
-survives only in git history; it is not a workspace member. DX and rusty-dex license files are still present;
-RG remains unreviewable for copying, so it stays reading-only. No vendored
-reference file was added to `crates/diana-decomp/` or `apps/diana/`.
+Observed state: `crates/diana-decomp/` is a source fork of `asLody/dexdec` at the
+pinned revision above and retains its Apache-2.0 `LICENSE`. Local changes remove
+the whole-image frontend and orchestration and add the P0/P1 fact adapter. The
+archived staged P2–P9 implementation is under `ref-old-impl/v2/` and is not a
+workspace member. The GUI's adapted theme data is recorded in §6.2. RG remains
+unreviewable for copying, so it stays reading-only.
 
-Production dependencies remain the reviewed set in the package manifests: `serde`,
-`serde_json`, `thiserror`, `rayon`, `unicode-general-category` and the optional
-`fastrace` 0.7 `perf` feature. They are general-purpose libraries, not decompiler
-implementations. Both workspace packages declare `Apache-2.0`; the repository
-[LICENSE](../../LICENSE) is that license text. No per-crate license bundle was
-added, per the repository instruction to retain existing files rather than
-introduce a new bundle.
+Production dependencies remain the reviewed set in each package manifest. The
+backend fork additionally carries `mimalloc`, `bitflags`, `crc32fast` and `zstd`;
+these are general-purpose libraries, not separate decompiler implementations. The
+CLI and facts crates declare `Apache-2.0`; the forked backend inherits the same
+license and keeps its upstream [LICENSE](../../crates/diana-decomp/LICENSE).
 
 Fixture inputs are self-made. [FIXTURES](FIXTURES.md) defines Java/Smali source
 pairs, assembly-environment records without exact-version admission gates, and

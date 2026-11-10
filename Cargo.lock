@@ -1304,20 +1304,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dexdec"
-version = "1.0.2"
-dependencies = [
- "bitflags 2.13.2",
- "crc32fast",
- "diana-facts",
- "mimalloc",
- "pretty_assertions",
- "rayon",
- "tempfile",
- "zstd",
-]
-
-[[package]]
 name = "diana"
 version = "0.1.0"
 dependencies = [
@@ -1336,17 +1322,18 @@ dependencies = [
 
 [[package]]
 name = "diana-decomp"
-version = "0.0.0"
+version = "1.0.2"
 dependencies = [
- "dexdec",
+ "bitflags 2.13.2",
+ "crc32fast",
  "diana-facts",
- "fastrace",
- "memchr",
+ "mimalloc",
+ "pretty_assertions",
  "rayon",
  "serde",
  "serde_json",
- "thiserror 2.0.21",
- "unicode-general-category",
+ "tempfile",
+ "zstd",
 ]
 
 [[package]]

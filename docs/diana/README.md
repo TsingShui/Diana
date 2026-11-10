@@ -5,11 +5,11 @@ of decompilation facts. Available readable code, original identities and materia
 uncertainty are the product goal; Java legality and compilability are not output
 gates.
 
-[PIPELINE_DESIGN](PIPELINE_DESIGN.md) is the approved, locked architecture for the
-complete P0–P9 product chain. Current Engine requests implement P0 → method reader
-→ P1 → P2 → P3 → P4 → P5 → P6 planning → P7 owned method expression
-→ P8 class assembly and type-name plans → P9 text/JSON and UTF-8 source spans. Current scheduling,
-construction boundaries and later-stage responsibilities are in [phases](phases.md).
+[PIPELINE_DESIGN](PIPELINE_DESIGN.md) remains the approved architecture for the
+complete P0–P9 product chain. The active backend is `crates/diana-decomp/`, a fork
+of dexdec that consumes P0/P1 facts from `diana-facts` and returns Java-like text.
+The staged P2–P9 implementation is archived under `ref-old-impl/v2/` and is not
+part of the active build.
 
 | Document | Responsibility |
 |---|---|
@@ -26,7 +26,7 @@ construction boundaries and later-stage responsibilities are in [phases](phases.
 | [spec/07-java.md](spec/07-java.md) | P7 owned expressions, declarations, execution phases, selected controls and local gaps. |
 | [spec/08-class.md](spec/08-class.md) | P8 directory-driven assembly, preparation/metadata expressions and scope-aware names. |
 | [spec/09-rendering.md](spec/09-rendering.md) | P9 pure rendering, explicit phase notation, source spans and output failure locality. |
-| [Engine README](../../crates/diana-decomp/README.md) | Implemented engine capabilities and inspection commands. |
+| [Engine README](../../crates/diana-decomp/README.md) | Fork provenance, input boundary and license. |
 | [CLI README](../../apps/diana/README.md) | Application commands, selectors and publication behavior. |
 | [GUI DESIGN](../../apps/diana-gui/DESIGN.md) | Host-level resource, identity, navigation, view and result contracts; not an Engine integration status claim. |
 | [SOURCE_MAP.md](SOURCE_MAP.md) | Source attribution, reproducibility and evidence boundaries. |
@@ -41,7 +41,7 @@ execution records remain available in git history. The archived implementations 
 supply semantic/check reference material, not another build or method-analysis
 route.
 
-Engine inspection uses the single `dbg_shell` Cargo example. Build/lint success,
+Engine checks use the crate tests and ordinary CLI requests. Build/lint success,
 byte roundtrip and finite corpus checks have different evidence scopes; none alone
 proves complete decompilation correctness. Production safety and stage-owned
 transform checks remain required.
@@ -53,9 +53,8 @@ fixture discovery, owning-stage repair, newly authored complexity challenges,
 LLM path-by-path semantic review, and preservation of original/prior effects.
 A repair of the discovery case alone does not complete the iteration.
 [FIXTURES](FIXTURES.md) uses paired Java explanations and Smali inputs without
-requiring a fixed Java/D8/R8 toolchain or exact assembler version. The existing
-`dbg_shell` supplies ordinary Engine products for review; implemented structural
-checks are described in the [engine README](../../crates/diana-decomp/README.md).
+requiring a fixed Java/D8/R8 toolchain or exact assembler version. The crate tests and ordinary CLI requests supply the available products for
+review. The old staged inspection shell is archived with the staged pipeline.
 
 The final-output-plan executor and admitted regression suite are not implemented.
 There is no automated final-plan behavioral acceptance command or regression CI

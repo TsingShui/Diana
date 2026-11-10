@@ -2,7 +2,7 @@
 
 Diana is the native command-line front end of the
 [Diana engine](../../crates/diana-decomp/README.md). `get-class` and `get-method`
-deliver the existing P0–P9 Engine result, without a second analysis or renderer.
+deliver Java-like text recovered from original P0/P1 facts by the active backend.
 The binary is `diana` (`diana.exe` on Windows). CLI binary releases use
 `diana-v<version>` tags and are available from
 [GitHub Releases](https://github.com/TsingShui/Diana/releases). Cargo installation
@@ -50,7 +50,7 @@ matching modes retain completion order.
 | `xref` | `context, match, use` |
 | `resources` | `context, id, name, config, value` |
 | `manifest` | XML, or JSON with `status, xml, warnings` |
-| `get-class`, `get-method` | P9 Java-like text, or JSON schema 3 |
+| `get-class`, `get-method` | Backend Java-like text, or JSON schema 3 |
 | `outline-class`, `outline-method` | Structured tree with call links, or JSON schema 1 |
 | `extract` | One output file |
 
