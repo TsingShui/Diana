@@ -2,6 +2,7 @@
 
 mod collect;
 mod facts;
+mod node;
 mod relations;
 
 pub use collect::collect;

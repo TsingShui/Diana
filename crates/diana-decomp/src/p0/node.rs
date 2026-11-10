@@ -16,7 +16,7 @@ use crate::p0::{ClassFacts, Fact, InitialValue, ScalarValue};
 
 /// Build the frontend class node the recovery backend expects from the original
 /// class facts. Fields the facts do not carry stay empty rather than inferred.
-pub(crate) fn class_node(facts: &ClassFacts) -> Option<ClassNode> {
+pub(crate) fn build(facts: &ClassFacts) -> Option<ClassNode> {
     let descriptor = String::from_utf16(facts.descriptor().units()).ok()?;
     let info = ClassInfo::from_type_descriptor(&descriptor).ok()?;
     let mut node = ClassNode::new(

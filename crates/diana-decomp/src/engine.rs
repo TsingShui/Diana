@@ -274,8 +274,11 @@ fn build_class_parts<'a>(
     input: BackendInput<'a>,
     jobs: Option<usize>,
 ) -> Result<ClassParts, DexError> {
-    let class = crate::local::class_node(&input.class)
-        .ok_or_else(|| DexError::Backend("class node assembly failed".to_owned()))?;
+    let class = input
+        .class
+        .node()
+        .ok_or_else(|| DexError::Backend("class node assembly failed".to_owned()))?
+        .clone();
     let (methods, outcomes) = build_method_inputs(&class, input.methods, jobs)?;
     let mut nested = Vec::new();
     nested
@@ -318,8 +321,8 @@ fn decompile_class<'a>(
         .try_reserve_exact(related.len())
         .map_err(|_| DexError::Backend("related class allocation failed".to_owned()))?;
     for facts in &related {
-        if let Some(node) = crate::local::class_node(facts) {
-            related_nodes.push(node);
+        if let Some(node) = facts.node() {
+            related_nodes.push(node.clone());
         }
     }
     let mut declarations: Vec<&ClassNode> = Vec::new();

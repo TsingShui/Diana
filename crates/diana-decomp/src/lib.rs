@@ -27,7 +27,6 @@ mod engine;
 pub mod frontend;
 pub mod ir;
 pub mod language;
-mod local;
 pub mod p9;
 pub mod platform_symbols;
 pub mod profiling;

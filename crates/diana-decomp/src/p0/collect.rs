@@ -539,5 +539,6 @@ pub fn collect(index: &ProgramIndex<'_>, owner: ClassKey) -> Result<ClassFacts, 
         methods_issue,
         annotations: std::sync::Arc::new(annotations.facts),
         annotations_issue: annotations.issue.map(std::sync::Arc::new),
+        node: std::sync::OnceLock::new(),
     })
 }
