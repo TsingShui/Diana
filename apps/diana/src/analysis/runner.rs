@@ -8,12 +8,16 @@ use std::thread;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct EmitFailed;
 
-/// Each worker can queue one completed row; channel closure propagates sink
-/// failure directly to producers.
+/// Workers deliver completed rows in batches: a wide query produces hundreds of
+/// thousands of rows, and one channel handoff per row costs more than the scan
+/// that found it. Channel closure still propagates sink failure directly.
 enum Message<T, E> {
-    Row(T),
+    Batch(Vec<T>),
     Failed(E),
 }
+
+/// Rows a worker accumulates before one channel handoff.
+const BATCH_ROWS: usize = 256;
 
 /// Runs `produce` over every image on a worker pool.
 ///
@@ -84,12 +88,30 @@ fn worker_loop<T, C, P, E>(
         }
         // A closed channel means the consumer already failed; the producer keeps
         // its own error type and stops through the ordinary failure path.
-        let mut emit = |row| {
-            sender
-                .send(Message::Row(row))
-                .map_err(|_| E::from(EmitFailed))
+        let mut batch: Vec<T> = Vec::new();
+        let mut closed = false;
+        let result = {
+            let mut emit = |row| {
+                batch.push(row);
+                if batch.len() >= BATCH_ROWS
+                    && sender
+                        .send(Message::Batch(std::mem::take(&mut batch)))
+                        .is_err()
+                {
+                    closed = true;
+                    return Err(E::from(EmitFailed));
+                }
+                Ok(())
+            };
+            produce(context, ordinal, &mut emit)
         };
-        if let Err(error) = produce(context, ordinal, &mut emit) {
+        if closed {
+            return;
+        }
+        if !batch.is_empty() && sender.send(Message::Batch(batch)).is_err() {
+            return;
+        }
+        if let Err(error) = result {
             let _ = sender.send(Message::Failed(error));
             return;
         }
@@ -102,7 +124,11 @@ fn consume<T, E>(
 ) -> Result<(), E> {
     while let Ok(message) = receiver.recv() {
         match message {
-            Message::Row(row) => sink(row)?,
+            Message::Batch(rows) => {
+                for row in rows {
+                    sink(row)?;
+                }
+            }
             Message::Failed(error) => return Err(error),
         }
     }

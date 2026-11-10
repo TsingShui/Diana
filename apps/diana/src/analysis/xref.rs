@@ -82,7 +82,7 @@ impl Target {
 }
 
 /// The original referenced value actually found at one site, never the pattern.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum Matched {
     Resource {
         id: crate::analysis::resources::ResourceId,

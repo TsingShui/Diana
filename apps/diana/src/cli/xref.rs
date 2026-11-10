@@ -198,78 +198,57 @@ pub fn run(
             "//Diana Warn: Too much results, only show top {shown} , use --no-limit or --limit N"
         )
     });
+    // A wide query repeats the same method locator, matched value and use label
+    // across thousands of rows. Render each distinct one once and let every row
+    // point at it, instead of formatting the whole line per site.
+    let shown_rows = &rows[..shown];
+    let mut contexts: std::collections::HashMap<ContextKey, u32> = std::collections::HashMap::new();
+    let mut matches: std::collections::HashMap<&Matched, u32> = std::collections::HashMap::new();
+    let mut uses: std::collections::HashMap<(&str, u32), u32> = std::collections::HashMap::new();
+    let mut context_text: Vec<String> = Vec::new();
+    let mut match_text: Vec<String> = Vec::new();
+    let mut use_text: Vec<String> = Vec::new();
+    for row in shown_rows {
+        if let std::collections::hash_map::Entry::Vacant(entry) = contexts.entry(context_key(row)) {
+            let id = u32::try_from(context_text.len())
+                .map_err(|_| Failure::input(InputError::PlatformCapacity))?;
+            entry.insert(id);
+            context_text.push(render_context(row, &images));
+        }
+        if let std::collections::hash_map::Entry::Vacant(entry) = matches.entry(&row.matched) {
+            let id = u32::try_from(match_text.len())
+                .map_err(|_| Failure::input(InputError::PlatformCapacity))?;
+            entry.insert(id);
+            match_text.push(matched_text(&row.matched));
+        }
+        if let std::collections::hash_map::Entry::Vacant(entry) =
+            uses.entry((row.use_.as_str(), row.depth))
+        {
+            let id = u32::try_from(use_text.len())
+                .map_err(|_| Failure::input(InputError::PlatformCapacity))?;
+            entry.insert(id);
+            use_text.push(format!("{} depth {}", row.use_, row.depth));
+        }
+    }
     let mut output_rows = Vec::new();
     output_rows
         .try_reserve_exact(shown)
         .map_err(|error| Failure::input(InputError::Allocation(error)))?;
-    for row in rows.iter().take(shown) {
-        let image = &images[row.image.0];
-        let entry = image.entry.map(|entry| entry.0);
+    for row in shown_rows {
+        let locator = &context_text[contexts[&context_key(row)] as usize];
         let context = match &row.site {
-            Site::Class => at::class(entry, row.logical.0, row.class_def.0, &row.class_descriptor),
-            Site::UnknownField(id) => format!(
-                "e{}:l{}:c{}:f{}",
-                entry.unwrap_or(0),
-                row.logical.0,
-                row.class_def.0,
-                id.0
-            ),
-            Site::UnknownMethod(id) => format!(
-                "e{}:l{}:c{}:m{}",
-                entry.unwrap_or(0),
-                row.logical.0,
-                row.class_def.0,
-                id.0
-            ),
-            Site::Field {
-                field,
-                name,
-                field_type,
-            } => at::field(
-                entry,
-                row.logical.0,
-                row.class_def.0,
-                field.0,
-                &row.class_descriptor,
-                name,
-                field_type,
-            ),
-            Site::Method {
-                method,
-                name,
-                prototype,
-            } => at::method(
-                entry,
-                row.logical.0,
-                row.class_def.0,
-                method.0,
-                &row.class_descriptor,
-                name,
-                prototype,
-            ),
-            Site::Code {
-                method,
-                name,
-                prototype,
-                code_unit,
-            } => format!(
-                "{}@cu:{code_unit:#06x}",
-                at::method(
-                    entry,
-                    row.logical.0,
-                    row.class_def.0,
-                    method.0,
-                    &row.class_descriptor,
-                    name,
-                    prototype
-                )
-            ),
+            Site::Code { code_unit, .. } => {
+                std::borrow::Cow::Owned(format!("{locator}@cu:{code_unit:#06x}"))
+            }
+            _ => std::borrow::Cow::Borrowed(locator.as_str()),
         };
-        output_rows.push(vec![
+        let matched = &match_text[matches[&row.matched] as usize];
+        let use_ = &use_text[uses[&(row.use_.as_str(), row.depth)] as usize];
+        output_rows.push(OutputRow {
             context,
-            matched_text(&row.matched),
-            format!("{} depth {}", row.use_, row.depth),
-        ]);
+            matched,
+            use_,
+        });
     }
     publish_rows(
         &output_rows,
@@ -284,6 +263,141 @@ pub fn run(
             issues: &issues,
         },
     )
+}
+
+/// One rendered row: the locator is shared, while a code site appends its own
+/// offset. Match and use strings are shared tables.
+struct OutputRow<'a> {
+    context: std::borrow::Cow<'a, str>,
+    matched: &'a str,
+    use_: &'a str,
+}
+
+impl crate::cli::table::Cells for OutputRow<'_> {
+    fn cells(&self) -> impl Iterator<Item = &str> {
+        [self.context.as_ref(), self.matched, self.use_].into_iter()
+    }
+}
+
+/// Identity behind one rendered locator: the class, or one member of it.
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+enum ContextKey {
+    Class {
+        image: usize,
+        logical: u32,
+        class_def: u32,
+    },
+    Method {
+        image: usize,
+        logical: u32,
+        class_def: u32,
+        method: u32,
+    },
+    Field {
+        image: usize,
+        logical: u32,
+        class_def: u32,
+        field: u32,
+    },
+}
+
+fn context_key(row: &XrefRow) -> ContextKey {
+    let image = row.image.0;
+    let logical = row.logical.0;
+    let class_def = row.class_def.0;
+    match &row.site {
+        Site::Class => ContextKey::Class {
+            image,
+            logical,
+            class_def,
+        },
+        Site::UnknownField(id) => ContextKey::Field {
+            image,
+            logical,
+            class_def,
+            field: id.0,
+        },
+        Site::Field { field, .. } => ContextKey::Field {
+            image,
+            logical,
+            class_def,
+            field: field.0,
+        },
+        Site::UnknownMethod(id) => ContextKey::Method {
+            image,
+            logical,
+            class_def,
+            method: id.0,
+        },
+        Site::Method { method, .. } | Site::Code { method, .. } => ContextKey::Method {
+            image,
+            logical,
+            class_def,
+            method: method.0,
+        },
+    }
+}
+
+fn render_context(row: &XrefRow, images: &[crate::analysis::query::ImageInfo]) -> String {
+    let image = &images[row.image.0];
+    let entry = image.entry.map(|entry| entry.0);
+    match &row.site {
+        Site::Class => at::class(entry, row.logical.0, row.class_def.0, &row.class_descriptor),
+        Site::UnknownField(id) => format!(
+            "e{}:l{}:c{}:f{}",
+            entry.unwrap_or(0),
+            row.logical.0,
+            row.class_def.0,
+            id.0
+        ),
+        Site::UnknownMethod(id) => format!(
+            "e{}:l{}:c{}:m{}",
+            entry.unwrap_or(0),
+            row.logical.0,
+            row.class_def.0,
+            id.0
+        ),
+        Site::Field {
+            field,
+            name,
+            field_type,
+        } => at::field(
+            entry,
+            row.logical.0,
+            row.class_def.0,
+            field.0,
+            &row.class_descriptor,
+            name,
+            field_type,
+        ),
+        Site::Method {
+            method,
+            name,
+            prototype,
+        } => at::method(
+            entry,
+            row.logical.0,
+            row.class_def.0,
+            method.0,
+            &row.class_descriptor,
+            name,
+            prototype,
+        ),
+        Site::Code {
+            method,
+            name,
+            prototype,
+            ..
+        } => at::method(
+            entry,
+            row.logical.0,
+            row.class_def.0,
+            method.0,
+            &row.class_descriptor,
+            name,
+            prototype,
+        ),
+    }
 }
 
 fn row_order(row: &XrefRow) -> (usize, u32, u32, u32, u32) {
