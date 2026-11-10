@@ -292,6 +292,7 @@ struct BackendInput<'a> {
     class: Arc<ClassFacts>,
     related: Vec<Arc<ClassFacts>>,
     methods: Vec<MethodFacts<'a>>,
+    nested: Vec<BackendInput<'a>>,
 }
 
 struct MethodOutcome {
@@ -306,29 +307,20 @@ struct ClassOutput {
     pub methods: Vec<MethodOutcome>,
 }
 
-fn decompile_class<'a>(input: BackendInput<'a>) -> Result<ClassOutput, DexError> {
+struct ClassParts {
+    class: ClassNode,
+    methods: Vec<crate::analysis::ClassMethodInput>,
+    outcomes: Vec<MethodOutcome>,
+    nested: Vec<crate::analysis::NestedClassInput>,
+}
+
+fn build_method_inputs<'a>(
+    class: &ClassNode,
+    methods: Vec<MethodFacts<'a>>,
+) -> Result<(Vec<crate::analysis::ClassMethodInput>, Vec<MethodOutcome>), DexError> {
     use rayon::prelude::*;
 
-    let class = crate::local::class_node(&input.class)
-        .ok_or_else(|| DexError::Backend("class node assembly failed".to_owned()))?;
-    let mut related_nodes = Vec::new();
-    related_nodes
-        .try_reserve_exact(input.related.len())
-        .map_err(|_| DexError::Backend("related class allocation failed".to_owned()))?;
-    for facts in &input.related {
-        if let Some(node) = crate::local::class_node(facts) {
-            related_nodes.push(node);
-        }
-    }
-    let mut declarations: Vec<&ClassNode> = Vec::new();
-    declarations
-        .try_reserve_exact(related_nodes.len() + 1)
-        .map_err(|_| DexError::Backend("declaration allocation failed".to_owned()))?;
-    declarations.push(&class);
-    declarations.extend(related_nodes.iter());
-
-    let prepared: Vec<(MethodOutcome, Option<crate::analysis::ClassMethodInput>)> = input
-        .methods
+    let prepared: Vec<(MethodOutcome, Option<crate::analysis::ClassMethodInput>)> = methods
         .into_par_iter()
         .map(|facts| {
             let method_id = match &facts {
@@ -407,21 +399,80 @@ fn decompile_class<'a>(input: BackendInput<'a>) -> Result<ClassOutput, DexError>
             failure: outcome.failure.clone(),
         })
         .collect();
-    let mut inputs: Vec<crate::analysis::ClassMethodInput> = prepared
+    let inputs = prepared
         .into_iter()
         .filter_map(|(_, input)| input)
         .collect();
+    Ok((inputs, outcomes))
+}
+
+fn build_class_parts<'a>(input: BackendInput<'a>) -> Result<ClassParts, DexError> {
+    let class = crate::local::class_node(&input.class)
+        .ok_or_else(|| DexError::Backend("class node assembly failed".to_owned()))?;
+    let (methods, outcomes) = build_method_inputs(&class, input.methods)?;
+    let mut nested = Vec::new();
+    nested
+        .try_reserve_exact(input.nested.len())
+        .map_err(|_| DexError::Backend("nested class allocation failed".to_owned()))?;
+    for child in input.nested {
+        let parts = build_class_parts(child)?;
+        nested.push(crate::analysis::NestedClassInput {
+            class: parts.class,
+            methods: parts.methods,
+            nested: parts.nested,
+        });
+    }
+    Ok(ClassParts {
+        class,
+        methods,
+        outcomes,
+        nested,
+    })
+}
+
+fn collect_nested_declarations<'a>(
+    input: &'a crate::analysis::NestedClassInput,
+    declarations: &mut Vec<&'a ClassNode>,
+) {
+    declarations.push(&input.class);
+    for nested in &input.nested {
+        collect_nested_declarations(nested, declarations);
+    }
+}
+
+fn decompile_class<'a>(input: BackendInput<'a>) -> Result<ClassOutput, DexError> {
+    let related = input.related.clone();
+    let parts = build_class_parts(input)?;
+    let mut related_nodes = Vec::new();
+    related_nodes
+        .try_reserve_exact(related.len())
+        .map_err(|_| DexError::Backend("related class allocation failed".to_owned()))?;
+    for facts in &related {
+        if let Some(node) = crate::local::class_node(facts) {
+            related_nodes.push(node);
+        }
+    }
+    let mut declarations: Vec<&ClassNode> = Vec::new();
+    declarations
+        .try_reserve_exact(related_nodes.len() + 1)
+        .map_err(|_| DexError::Backend("declaration allocation failed".to_owned()))?;
+    declarations.push(&parts.class);
+    declarations.extend(related_nodes.iter());
+    for nested in &parts.nested {
+        collect_nested_declarations(nested, &mut declarations);
+    }
     let observer: Arc<dyn AnalysisObserver> = Arc::new(NullAnalysisObserver);
+    let mut methods = parts.methods;
     let source =
         JavaDecompiler::new(JavaDecompilerConfig::default().with_preserved_dex_names(true))
             .with_shared_type_hierarchy(hierarchy(&declarations))
             .with_source_abi(java_abi(&declarations))
             .with_analysis_observer(observer)
-            .generate_class_with_nested(&class, &mut inputs, Vec::new())
+            .generate_class_with_nested(&parts.class, &mut methods, parts.nested)
             .map_err(|error| DexError::Backend(error.to_string()))?;
     Ok(ClassOutput {
         source,
-        methods: outcomes,
+        methods: parts.outcomes,
     })
 }
 
@@ -483,16 +534,18 @@ impl<'a> Engine<'a> {
         image.index.class_facts_cached(class.class_def)
     }
 
-    /// Recover one class from P0/P1 facts through the backend.
-    pub fn class_source(&self, request: Request) -> Result<ClassSource, RequestError> {
-        let image = self
-            .image(request.class.dex)
-            .ok_or(RequestError::UnknownDex)?;
-        let facts = image.index.class_facts_cached(request.class.class_def)?;
-        let mut method_facts = Vec::new();
+    fn backend_input(
+        &self,
+        image: &IndexedImage<'a>,
+        class_def: crate::ClassDefId,
+        selector: Option<&MethodSelector>,
+        include_nested: bool,
+    ) -> Result<BackendInput<'a>, RequestError> {
+        let facts = image.index.class_facts_cached(class_def)?;
+        let mut methods = Vec::new();
         for entry in facts.methods() {
             let id = entry.method();
-            if let Some(selector) = &request.method {
+            if let Some(selector) = selector {
                 let selected = facts.resolve_method(&selector.name, &selector.prototype)?;
                 if selected != id {
                     continue;
@@ -501,7 +554,7 @@ impl<'a> Engine<'a> {
             let source = match image.index.method_source(&facts, id) {
                 Ok(source) => source,
                 Err(error) => {
-                    method_facts.push(MethodFacts::Failed {
+                    methods.push(MethodFacts::Failed {
                         method: id,
                         failure: error.to_string(),
                     });
@@ -514,7 +567,7 @@ impl<'a> Engine<'a> {
             let decoded = match image.index.decode_method_source(&source) {
                 Ok(decoded) => decoded,
                 Err(error) => {
-                    method_facts.push(MethodFacts::Failed {
+                    methods.push(MethodFacts::Failed {
                         method: id,
                         failure: error.to_string(),
                     });
@@ -522,8 +575,8 @@ impl<'a> Engine<'a> {
                 }
             };
             match decoded.decoded {
-                Some(decoded) => method_facts.push(MethodFacts::Decoded(decoded)),
-                None => method_facts.push(MethodFacts::Failed {
+                Some(decoded) => methods.push(MethodFacts::Decoded(decoded)),
+                None => methods.push(MethodFacts::Failed {
                     method: id,
                     failure: decoded
                         .error
@@ -564,12 +617,57 @@ impl<'a> Engine<'a> {
             }
         }
 
-        let output = decompile_class(BackendInput {
+        let mut nested = Vec::new();
+        if include_nested {
+            let Ok(current) = String::from_utf16(facts.descriptor().units()) else {
+                return Err(RequestError::InternalInvariant(
+                    "class descriptor is not UTF-16",
+                ));
+            };
+            let base = current.strip_suffix(';').unwrap_or(&current);
+            let prefix = format!("{base}$");
+            for ordinal in 0..image.index.class_count() {
+                let key = crate::ClassDefId(ordinal);
+                if key == class_def {
+                    continue;
+                }
+                let Ok(other) = image.index.class_facts_cached(key) else {
+                    continue;
+                };
+                let Ok(descriptor) = String::from_utf16(other.descriptor().units()) else {
+                    continue;
+                };
+                let Some(rest) = descriptor.strip_prefix(&prefix) else {
+                    continue;
+                };
+                let name = rest.strip_suffix(';').unwrap_or(rest);
+                if name.contains('$') {
+                    continue;
+                }
+                nested.push(self.backend_input(image, key, None, true)?);
+            }
+        }
+
+        Ok(BackendInput {
             class: facts,
             related,
-            methods: method_facts,
+            methods,
+            nested,
         })
-        .map_err(|error| {
+    }
+
+    /// Recover one class from P0/P1 facts through the backend.
+    pub fn class_source(&self, request: Request) -> Result<ClassSource, RequestError> {
+        let image = self
+            .image(request.class.dex)
+            .ok_or(RequestError::UnknownDex)?;
+        let input = self.backend_input(
+            image,
+            request.class.class_def,
+            request.method.as_ref(),
+            request.method.is_none(),
+        )?;
+        let output = decompile_class(input).map_err(|error| {
             RequestError::InternalInvariant(Box::leak(
                 format!("backend failed: {error}").into_boxed_str(),
             ))
