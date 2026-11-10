@@ -92,6 +92,10 @@ impl JavaClassModel {
     pub fn as_nested_source_member(mut self, class: &ClassNode) -> Self {
         self.declaration.is_nested = true;
         self.declaration.package = None;
+        // The binary name keeps the `Outer$Inner` form. A nested declaration
+        // prints only the source segment unless InnerClass metadata supplies a
+        // better one.
+        self.declaration.name = simple_inner_class_name(class);
         let lifted_from_static_method =
             class.metadata.enclosing.as_ref().is_some_and(|enclosing| {
                 enclosing.method_reference.is_some() && enclosing.method_static == Some(true)
@@ -100,6 +104,15 @@ impl JavaClassModel {
             (class.is_anonymous() || class.is_local_class() || FunctionObjectClass::analyze(class))
                 && EnclosingInstanceAbi::analyze(class).is_none();
         if (lifted_from_static_method || lifted_without_enclosing_instance)
+            && !self.declaration.modifiers.contains(&JavaModifier::Static)
+        {
+            self.declaration.modifiers.push(JavaModifier::Static);
+        }
+        // A nested source member without an outer-instance field has no way to
+        // hold an enclosing instance, so it is a static nested class.
+        if self.outer_instance.is_none()
+            && !self.declaration.is_anonymous
+            && !class.is_local_class()
             && !self.declaration.modifiers.contains(&JavaModifier::Static)
         {
             self.declaration.modifiers.push(JavaModifier::Static);
