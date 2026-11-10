@@ -229,6 +229,14 @@ pub(crate) struct ClassTask {
 pub enum Presentation {
     Class(crate::p8::ClassOutcome),
     Method(crate::p8::MethodDisplayOutcome),
+    /// Source text recovered by the pluggable backend from original facts.
+    External(ExternalClass),
+}
+
+/// One class recovered outside the staged chain.
+pub struct ExternalClass {
+    pub class: ClassKey,
+    pub text: String,
 }
 pub struct SingleMethodAnalysis<'a> {
     pub key: MethodKey,
@@ -402,6 +410,37 @@ impl<'a> Engine<'a> {
             .image(request.class.dex)
             .ok_or(RequestError::UnknownDex)?;
         let facts = image.index.class_facts_cached(request.class.class_def)?;
+        let origin = image.image.origin;
+        let class = request.class;
+        let source = self.class_source(request)?;
+        let rendered = crate::p9::RenderOutcome::Ready(crate::p9::Rendered::external(
+            class,
+            source.text.clone(),
+            facts.clone(),
+        ));
+        Ok(ClassAnalysis {
+            image: ImageFact {
+                dex: class.dex,
+                header_offset: image.image.header_offset,
+                origin,
+            },
+            facts,
+            methods: Vec::new(),
+            diagnostics: Vec::new(),
+            presentation: Presentation::External(ExternalClass {
+                class,
+                text: source.text,
+            }),
+            rendered,
+        })
+    }
+
+    /// The staged P1-P9 chain, retained until the backend replaces it.
+    pub fn analyze_staged(&self, request: Request) -> Result<ClassAnalysis<'a>, RequestError> {
+        let image = self
+            .image(request.class.dex)
+            .ok_or(RequestError::UnknownDex)?;
+        let facts = image.index.class_facts_cached(request.class.class_def)?;
         let mut entries = Vec::new();
         match &request.method {
             Some(selector) => crate::substrate::owned::push(
@@ -466,6 +505,13 @@ impl<'a> Engine<'a> {
                 crate::p9::SourceProduct::ClassStopped(c.clone())
             }
             Presentation::Method(m) => method_source(m),
+            Presentation::External(external) => crate::p9::SourceProduct::External(
+                std::sync::Arc::new(crate::p9::ExternalProduct {
+                    class: external.class,
+                    text: external.text.clone(),
+                    facts: facts.clone(),
+                }),
+            ),
         };
         let rendered = crate::p9::render(&self.render_task(), source);
         Ok(ClassAnalysis {
@@ -516,8 +562,10 @@ impl Engine<'_> {
     /// Recover one class through the backend and wrap the text as a rendered result.
     pub fn analyze_external(&self, request: Request) -> Result<crate::p9::Rendered, RequestError> {
         let class = request.class;
+        let image = self.image(class.dex).ok_or(RequestError::UnknownDex)?;
+        let facts = image.index.class_facts_cached(class.class_def)?;
         let source = self.class_source(request)?;
-        Ok(crate::p9::Rendered::external(class, source.text))
+        Ok(crate::p9::Rendered::external(class, source.text, facts))
     }
 
     /// Recover one class through the backend from the original P0/P1 facts.

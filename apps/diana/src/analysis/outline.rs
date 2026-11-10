@@ -165,6 +165,7 @@ fn facts(source: &SourceProduct) -> &diana_decomp::p0::ClassFacts {
         SourceProduct::Class(c) => c.facts(),
         SourceProduct::Method(m) => m.facts(),
         SourceProduct::ClassStopped(s) | SourceProduct::MethodStopped(s) => s.facts(),
+        SourceProduct::External(e) => &e.facts,
     }
 }
 fn members(source: &SourceProduct) -> &[p8::MethodMember] {
@@ -172,6 +173,7 @@ fn members(source: &SourceProduct) -> &[p8::MethodMember] {
         SourceProduct::Class(c) => c.methods(),
         SourceProduct::Method(m) => std::slice::from_ref(m.member()),
         SourceProduct::ClassStopped(s) | SourceProduct::MethodStopped(s) => s.methods(),
+        SourceProduct::External(_) => &[],
     }
 }
 fn view(result: &RenderOutcome) -> (&str, &SourceProduct, Option<&diana_decomp::p9::Outline>) {

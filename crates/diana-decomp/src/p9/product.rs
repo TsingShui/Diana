@@ -101,8 +101,10 @@ pub enum SourceProduct {
 /// One class recovered outside the staged chain, with the text it produced.
 #[derive(Serialize)]
 pub struct ExternalProduct {
-    pub(super) class: ClassKey,
-    pub(super) text: String,
+    pub(crate) class: ClassKey,
+    pub(crate) text: String,
+    #[serde(skip)]
+    pub facts: Arc<crate::p0::ClassFacts>,
 }
 impl SourceProduct {
     pub fn class(&self) -> ClassKey {
@@ -128,7 +130,11 @@ pub struct Rendered {
 impl Rendered {
     /// Wrap source text recovered by the pluggable backend. It carries no staged
     /// product, no source spans and no render issues.
-    pub(crate) fn external(class: ClassKey, text: String) -> Self {
+    pub(crate) fn external(
+        class: ClassKey,
+        text: String,
+        facts: Arc<crate::p0::ClassFacts>,
+    ) -> Self {
         Self {
             outline: None,
             class,
@@ -136,6 +142,7 @@ impl Rendered {
             source: SourceProduct::External(Arc::new(ExternalProduct {
                 class,
                 text: text.clone(),
+                facts,
             })),
             text,
             spans: Vec::new(),
