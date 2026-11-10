@@ -462,7 +462,7 @@ fn scan_class<'a>(
             image,
             logical,
             class_def,
-            descriptor: copy(&class.descriptor.units()?)?,
+            descriptor: class.descriptor,
         };
         let hierarchy = match class.hierarchy() {
             Ok(hierarchy) => hierarchy,
@@ -495,7 +495,7 @@ fn scan_class<'a>(
             image,
             logical,
             class_def,
-            descriptor: copy(&class.descriptor.units()?)?,
+            descriptor: class.descriptor,
         };
         if !prefilter.impossible() {
             scan_code(index, class, &location, plan, prefilter, emit)?;
@@ -530,7 +530,7 @@ fn scan_class<'a>(
             image,
             logical,
             class_def,
-            descriptor: copy(&class.descriptor.units()?)?,
+            descriptor: class.descriptor,
         };
         {
             let stopped = std::cell::Cell::new(false);
@@ -573,7 +573,7 @@ fn scan_class<'a>(
             image,
             logical,
             class_def,
-            descriptor: copy(&class.descriptor.units()?)?,
+            descriptor: class.descriptor,
         };
         declarations::scan_type_declarations(
             index,
@@ -591,7 +591,7 @@ fn scan_class<'a>(
         image,
         logical,
         class_def,
-        descriptor: copy(&class_descriptor)?,
+        descriptor: class.descriptor,
     };
     if plan
         .targets
@@ -930,7 +930,7 @@ fn emit_hierarchy(
     access_flags: u32,
     superclass: Option<&diana_decomp::input::DexString<'_>>,
     interfaces: &[diana_decomp::input::DexString<'_>],
-    location: &declarations::Location,
+    location: &declarations::InputLocation<'_>,
     plan: &XrefPlan,
     emit: &mut dyn FnMut(Event) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
@@ -979,10 +979,10 @@ fn emit_hierarchy(
 /// read only when its bytes contain a target operand, and its instructions are
 /// walked with a packed width/kind table; encodings that need operand expansion
 /// fall back to the checked decoder.
-fn scan_code(
-    index: &ProgramIndex<'_>,
-    class: &ClassView<'_, '_>,
-    location: &declarations::Location,
+fn scan_code<'a>(
+    index: &ProgramIndex<'a>,
+    class: &ClassView<'_, 'a>,
+    location: &declarations::InputLocation<'a>,
     plan: &XrefPlan,
     prefilter: &prefilter::Prefilter,
     emit: &mut dyn FnMut(Event) -> Result<(), QueryError>,
@@ -992,7 +992,7 @@ fn scan_code(
     }
     let mut failure = None;
     let mut sites = Vec::new();
-    let mut batch = code::Builder::new(location, plan.depth)?;
+    let mut batch = code::Builder::new(location, plan.depth);
     let visited = class.visit_method_codes(|method_idx, access_flags, code_offset| {
         if failure.is_some() {
             return Ok(());
@@ -1219,13 +1219,35 @@ fn append(out: &mut Vec<u16>, units: &[u16]) -> Result<(), QueryError> {
 }
 
 fn prototype_units(prototype: &Prototype<'_, '_>) -> Result<Vec<u16>, QueryError> {
-    let mut units = Vec::new();
-    append(&mut units, &[u16::from(b'(')])?;
+    // Every decoded unit consumes at least one payload byte. This bounds the
+    // single reservation without trusting the advisory declared UTF-16 count.
+    let mut capacity = prototype
+        .return_type
+        .bytes()
+        .len()
+        .checked_add(2)
+        .ok_or(InputError::PlatformCapacity)?;
     for parameter in prototype.parameter_descriptors() {
-        append(&mut units, &parameter.units()?)?;
+        capacity = capacity
+            .checked_add(parameter.bytes().len())
+            .ok_or(InputError::PlatformCapacity)?;
     }
-    append(&mut units, &[u16::from(b')')])?;
-    append(&mut units, &prototype.return_type.units()?)?;
+    let mut units = Vec::new();
+    units
+        .try_reserve_exact(capacity)
+        .map_err(InputError::Allocation)?;
+    units.push(u16::from(b'('));
+    for parameter in prototype.parameter_descriptors() {
+        let mut reader = parameter.reader()?;
+        while let Some(unit) = reader.next()? {
+            units.push(unit);
+        }
+    }
+    units.push(u16::from(b')'));
+    let mut reader = prototype.return_type.reader()?;
+    while let Some(unit) = reader.next()? {
+        units.push(unit);
+    }
     Ok(units)
 }
 

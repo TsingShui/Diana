@@ -10,16 +10,37 @@ use diana_decomp::{
     AnnotationLocation, AnnotationToken, AnnotationValueKind, ClassDefId, ClassKey, DexId,
 };
 
-use super::{Event, FilterMatch, Issue, Matched, QueryError, Site, Target, XrefRow, copy};
+use super::{
+    Event, FilterMatch, Issue, Matched, QueryError, Site, Target, XrefRow, copy, prototype_units,
+};
 use crate::analysis::{dex::ImageIndex, images::LogicalDex};
 
-pub(super) struct Location {
+pub(super) trait Descriptor {
+    fn to_units(&self) -> Result<Vec<u16>, QueryError>;
+}
+
+impl Descriptor for Vec<u16> {
+    fn to_units(&self) -> Result<Vec<u16>, QueryError> {
+        copy(self)
+    }
+}
+
+impl Descriptor for diana_decomp::input::DexString<'_> {
+    fn to_units(&self) -> Result<Vec<u16>, QueryError> {
+        Ok(self.units()?)
+    }
+}
+
+/// Scans borrow encoded descriptors; rows materialize original units on a hit.
+pub(super) struct Location<D = Vec<u16>> {
     pub image: ImageIndex,
     pub logical: LogicalDex,
     pub class_def: ClassDefId,
-    pub descriptor: Vec<u16>,
+    pub descriptor: D,
 }
-impl Location {
+
+pub(super) type InputLocation<'a> = Location<diana_decomp::input::DexString<'a>>;
+impl<D: Descriptor> Location<D> {
     pub fn context(&self) -> String {
         format!(
             "image:{}:l{}:c{}",
@@ -38,7 +59,7 @@ impl Location {
             image: self.image,
             logical: self.logical,
             class_def: self.class_def,
-            class_descriptor: copy(&self.descriptor)?,
+            class_descriptor: self.descriptor.to_units()?,
             relevance: selected.relevance,
             site,
             depth,
@@ -183,7 +204,7 @@ pub(super) fn matched_value(
 }
 
 struct Scan<'a, 'e> {
-    location: &'a Location,
+    location: &'a InputLocation<'a>,
     facts: &'a ClassFacts,
     targets: &'a [Target],
     emit: &'e mut dyn FnMut(Event) -> Result<(), QueryError>,
@@ -465,7 +486,7 @@ impl Scan<'_, '_> {
 
 pub(super) fn scan(
     facts: &ClassFacts,
-    location: &Location,
+    location: &InputLocation<'_>,
     targets: &[Target],
     depth: u32,
     emit: &mut dyn FnMut(Event) -> Result<(), QueryError>,
@@ -657,7 +678,7 @@ fn borrowed_error(error: &diana_decomp::RequestError) -> QueryError {
 pub(super) fn scan_type_declarations<'a>(
     index: &ProgramIndex<'a>,
     class: &diana_decomp::input::ClassView<'_, 'a>,
-    location: &Location,
+    location: &InputLocation<'a>,
     targets: &[Target],
     depth: u32,
     emit: &mut dyn FnMut(Event) -> Result<(), QueryError>,
@@ -794,7 +815,7 @@ pub(super) fn scan_type_declarations<'a>(
 
 /// One declaration type row when the target filter selects it.
 fn emit_type_row(
-    location: &Location,
+    location: &InputLocation<'_>,
     targets: &[Target],
     depth: u32,
     emit: &mut dyn FnMut(Event) -> Result<(), QueryError>,
@@ -820,29 +841,6 @@ fn emit_type_row(
     Ok(())
 }
 
-/// `(parameter-types)return-type` for one prototype.
-pub(super) fn prototype_units(
-    prototype: &diana_decomp::input::Prototype<'_, '_>,
-) -> Result<Vec<u16>, QueryError> {
-    let mut units = Vec::new();
-    units
-        .try_reserve(2 + prototype.parameter_descriptors().len())
-        .map_err(|_| QueryError::from(allocation_error()))?;
-    units.push(u16::from(b'('));
-    for parameter in prototype.parameter_descriptors() {
-        units.extend_from_slice(&parameter.units()?);
-    }
-    units.push(u16::from(b')'));
-    units.extend_from_slice(&prototype.return_type.units()?);
-    Ok(units)
-}
-
-fn allocation_error() -> diana_decomp::input::InputError {
-    diana_decomp::input::InputError::Allocation {
-        offset_byte: diana_decomp::ByteOffset(0),
-    }
-}
-
 /// Declaration rows that live outside code.
 ///
 /// An annotation value or a static initial value can carry an encoded
@@ -853,7 +851,7 @@ fn allocation_error() -> diana_decomp::input::InputError {
 pub(super) fn scan_declared_values<'a>(
     index: &ProgramIndex<'a>,
     class: &diana_decomp::input::ClassView<'_, 'a>,
-    location: &Location,
+    location: &InputLocation<'a>,
     targets: &[Target],
     depth: u32,
     include_values: bool,
@@ -891,7 +889,7 @@ pub(super) fn scan_declared_values<'a>(
 
 struct MemberScan<'i, 'a, 'e> {
     index: &'i ProgramIndex<'a>,
-    location: &'e Location,
+    location: &'e InputLocation<'a>,
     targets: &'e [Target],
     depth: u32,
     emit: &'e mut dyn FnMut(Event) -> Result<(), QueryError>,

@@ -5,8 +5,8 @@ use diana_decomp::input::ProgramIndex;
 use diana_decomp::raw::OperandReference;
 use diana_decomp::{ClassDefId, MethodId};
 
-use super::declarations::Location;
-use super::{FlatSite, Matched, QueryError, RowView, Site, XrefPlan, copy, declarations, matched};
+use super::declarations::InputLocation;
+use super::{FlatSite, Matched, QueryError, RowView, Site, XrefPlan, matched, prototype_units};
 use crate::analysis::{dex::ImageIndex, filter::Relevance, images::LogicalDex, input::InputError};
 
 #[derive(Clone, Copy, Debug)]
@@ -71,26 +71,28 @@ impl Batch {
     }
 }
 
-pub(super) struct Builder {
+pub(super) struct Builder<'a> {
+    descriptor: diana_decomp::input::DexString<'a>,
     batch: Batch,
     resolved: HashMap<(u8, u32, &'static str), Range<usize>>,
 }
 
-impl Builder {
-    pub fn new(location: &Location, depth: u32) -> Result<Self, QueryError> {
-        Ok(Self {
+impl<'a> Builder<'a> {
+    pub fn new(location: &InputLocation<'a>, depth: u32) -> Self {
+        Self {
+            descriptor: location.descriptor,
             batch: Batch {
                 image: location.image,
                 logical: location.logical,
                 class_def: location.class_def,
-                descriptor: copy(&location.descriptor)?,
+                descriptor: Vec::new(),
                 depth,
                 contexts: Vec::new(),
                 references: Vec::new(),
                 hits: Vec::new(),
             },
             resolved: HashMap::new(),
-        })
+        }
     }
 
     pub fn finish(self) -> Batch {
@@ -152,6 +154,9 @@ impl Builder {
                 Some(id) => id,
                 None => {
                     let reference = index.method_reference(method)?;
+                    if self.batch.contexts.is_empty() {
+                        self.batch.descriptor = self.descriptor.units()?;
+                    }
                     let id = ContextId(
                         u32::try_from(self.batch.contexts.len())
                             .map_err(|_| InputError::PlatformCapacity)?,
@@ -163,7 +168,7 @@ impl Builder {
                     self.batch.contexts.push(Site::Method {
                         method,
                         name: reference.declaration.name.units()?,
-                        prototype: declarations::prototype_units(&reference.declaration.prototype)?,
+                        prototype: prototype_units(&reference.declaration.prototype)?,
                     });
                     context = Some(id);
                     id
