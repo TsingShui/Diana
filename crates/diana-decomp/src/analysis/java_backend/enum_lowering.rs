@@ -270,7 +270,7 @@ impl EnumDeclarationRecovery {
         statements: &mut Vec<JavaStmt>,
         field: &JavaIdentifier,
     ) -> Option<ValuesInitializer> {
-        let Some(position) = statements.iter().position(|statement| {
+        let position = statements.iter().position(|statement| {
             matches!(
                 statement,
                 JavaStmt::Assign {
@@ -279,9 +279,7 @@ impl EnumDeclarationRecovery {
                     ..
                 } if name == field
             )
-        }) else {
-            return None;
-        };
+        })?;
         let JavaStmt::Assign { value, .. } = statements.remove(position) else {
             return None;
         };

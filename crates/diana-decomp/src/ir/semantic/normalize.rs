@@ -1229,7 +1229,7 @@ impl TryLexicalScope {
                 unreachable!("try lexical extension lost its checked node");
             };
             let protected = std::mem::replace(body.as_mut(), SemanticNode::Empty);
-            *body = Box::new(SemanticNode::sequence([protected, continuation]));
+            **body = SemanticNode::sequence([protected, continuation]);
         }
         SemanticNode::sequence(nodes)
     }

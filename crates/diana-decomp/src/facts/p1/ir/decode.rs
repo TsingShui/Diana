@@ -636,7 +636,7 @@ fn fill_array_data(facts: &DecodedMethod<'_>, payload: CodeUnitOffset) -> Option
     let Ok(Some(array)) = facts.array_payload_at(payload) else {
         return None;
     };
-    let width = array.element_width().0 as usize;
+    let width = array.element_width().0;
     let mut data = Vec::with_capacity(width.saturating_mul(array.element_count() as usize));
     for element in array.elements() {
         for byte in 0..width {

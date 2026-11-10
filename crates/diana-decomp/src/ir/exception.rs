@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
 thread_local! {
-    static DISABLE_TRIVIAL_EARLY_RETURNS: Cell<bool> = Cell::new(false);
+    static DISABLE_TRIVIAL_EARLY_RETURNS: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Candidate for skip-only shortcuts. Not a license to drop SSA, source
@@ -1206,10 +1206,11 @@ impl<'analysis, 'cfg> HandlerStackForest<'analysis, 'cfg> {
             for key in chain.into_iter().skip(common) {
                 let parent = active.last().map(|(_, id)| *id);
                 let inherited_clause_count = active.last().map_or(0, |(parent, _)| {
-                    parent
-                        .is_suffix_of(&key)
-                        .then_some(parent.0.len())
-                        .unwrap_or(0)
+                    if parent.is_suffix_of(&key) {
+                        parent.0.len()
+                    } else {
+                        0
+                    }
                 });
                 let full_clauses = representatives
                     .get(&key)
@@ -3252,10 +3253,8 @@ impl<'cfg> ExceptionScopeNesting<'cfg> {
             blocks.extend(inherited);
             let changed = blocks.len() != previous;
             regions[outer_index].blocks = blocks.into_iter().collect();
-            if changed {
-                if regions[outer_index].parent.is_some() {
-                    pending.push_back(outer);
-                }
+            if changed && regions[outer_index].parent.is_some() {
+                pending.push_back(outer);
             }
         }
         for region in &mut regions {
@@ -4353,8 +4352,7 @@ impl HandlerBodies {
             let mut visited = BTreeSet::new();
             let mut work = vec![*entry];
             while let Some(block) = work.pop() {
-                if (block != *entry && ordinary.contains(&block))
-                    || (block != *entry && entries.contains(&block))
+                if block != *entry && (ordinary.contains(&block) || entries.contains(&block))
                     || !visited.insert(block)
                 {
                     continue;

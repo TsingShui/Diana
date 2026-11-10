@@ -141,8 +141,8 @@ pub enum JavaDecompilerError {
     SourceVariables(SourceVariableError),
     SsaInvariant(SsaInvariantError),
     Exception(ExceptionInvariantError),
-    Region(RegionInvariantError),
-    Structure(StructureError),
+    Region(Box<RegionInvariantError>),
+    Structure(Box<StructureError>),
     SemanticInvariant(SemanticInvariantError),
     Semantic(crate::ir::SemanticFoldError),
     Type(TypeConstraintError),
@@ -235,8 +235,8 @@ impl std::error::Error for JavaDecompilerError {
             Self::SourceVariables(source) => Some(source),
             Self::SsaInvariant(source) => Some(source),
             Self::Exception(source) => Some(source),
-            Self::Region(source) => Some(source),
-            Self::Structure(source) => Some(source),
+            Self::Region(source) => Some(source.as_ref()),
+            Self::Structure(source) => Some(source.as_ref()),
             Self::SemanticInvariant(source) => Some(source),
             Self::Semantic(source) => Some(source),
             Self::Type(source) => Some(source),
@@ -257,8 +257,18 @@ impl std::error::Error for JavaDecompilerError {
 
 impl From<StructureError> for JavaDecompilerError {
     fn from(e: StructureError) -> Self {
-        Self::Structure(e)
+        Self::Structure(Box::new(e))
     }
+}
+
+macro_rules! boxed_backend_error_conversion {
+    ($source:ty, $variant:ident) => {
+        impl From<$source> for JavaDecompilerError {
+            fn from(error: $source) -> Self {
+                Self::$variant(Box::new(error))
+            }
+        }
+    };
 }
 
 macro_rules! backend_error_conversion {
@@ -276,7 +286,7 @@ backend_error_conversion!(crate::ir::AnalysisCancelled, Cancelled);
 backend_error_conversion!(SourceVariableError, SourceVariables);
 backend_error_conversion!(SsaInvariantError, SsaInvariant);
 backend_error_conversion!(ExceptionInvariantError, Exception);
-backend_error_conversion!(RegionInvariantError, Region);
+boxed_backend_error_conversion!(RegionInvariantError, Region);
 backend_error_conversion!(SemanticInvariantError, SemanticInvariant);
 backend_error_conversion!(crate::ir::SemanticFoldError, Semantic);
 backend_error_conversion!(TypeConstraintError, Type);

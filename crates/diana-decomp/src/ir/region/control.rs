@@ -557,11 +557,7 @@ impl LoopConnectivity {
         }
     }
 
-    fn predecessors<'a>(
-        self,
-        facts: &'a ControlFlowFacts,
-        block: BlockId,
-    ) -> Option<&'a [BlockId]> {
+    fn predecessors(self, facts: &ControlFlowFacts, block: BlockId) -> Option<&[BlockId]> {
         match self {
             Self::Normal => facts.predecessors(block),
             Self::ExceptionAware => facts.semantic_predecessors(block),

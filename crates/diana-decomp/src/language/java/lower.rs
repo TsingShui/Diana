@@ -414,11 +414,11 @@ where
                     None
                 };
                 let mut expression = self.dialect.condition(condition)?;
-                if else_stmt.is_some() {
+                if let Some(else_stmt) = else_stmt.as_mut() {
                     let negated = self.dialect.negated_condition(condition)?;
                     if negated.cost() < expression.cost() {
                         expression = negated;
-                        std::mem::swap(&mut then_stmt, else_stmt.as_mut().expect("checked above"));
+                        std::mem::swap(&mut then_stmt, else_stmt);
                     }
                 }
                 JavaStmt::If {

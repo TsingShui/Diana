@@ -715,10 +715,8 @@ impl SemanticFlowGraph {
         let mut reaching = points
             .into_iter()
             .enumerate()
-            .filter_map(|(index, point)| {
-                (reachable[index] && targets.contains(&point))
-                    .then(|| (point, facts[index].clone()))
-            })
+            .filter(|&(index, point)| reachable[index] && targets.contains(&point))
+            .map(|(index, point)| (point, facts[index].clone()))
             .collect::<BTreeMap<_, _>>();
         self.insert_unreachable_target_bottoms(&mut reaching, targets, definition_count);
         SemanticReachingValues {
@@ -971,9 +969,11 @@ impl FlowFragment {
             normal: true,
             exits: BTreeSet::from([after]),
             abrupt: BTreeMap::new(),
-            throwing: may_throw
-                .then(|| BTreeSet::from([before]))
-                .unwrap_or_default(),
+            throwing: if may_throw {
+                BTreeSet::from([before])
+            } else {
+                Default::default()
+            },
         }
     }
 
@@ -1787,6 +1787,23 @@ fn expression_may_throw(expression: &SemanticExpression) -> bool {
     expression.effects().may_throw()
 }
 
+fn predicate_may_throw(predicate: &SemanticPredicate) -> bool {
+    let mut pending = vec![predicate];
+    while let Some(predicate) = pending.pop() {
+        match predicate {
+            SemanticPredicate::Test(instruction) if instruction.effects().may_throw() => {
+                return true;
+            }
+            SemanticPredicate::Test(_) | SemanticPredicate::True | SemanticPredicate::False => {}
+            SemanticPredicate::Not(inner) => pending.push(inner),
+            SemanticPredicate::And(terms) | SemanticPredicate::Or(terms) => {
+                pending.extend(terms);
+            }
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1910,21 +1927,4 @@ mod tests {
 
         assert_eq!(reaching.at(0, points[3]), Some(vec![0, 1]));
     }
-}
-
-fn predicate_may_throw(predicate: &SemanticPredicate) -> bool {
-    let mut pending = vec![predicate];
-    while let Some(predicate) = pending.pop() {
-        match predicate {
-            SemanticPredicate::Test(instruction) if instruction.effects().may_throw() => {
-                return true;
-            }
-            SemanticPredicate::Test(_) | SemanticPredicate::True | SemanticPredicate::False => {}
-            SemanticPredicate::Not(inner) => pending.push(inner),
-            SemanticPredicate::And(terms) | SemanticPredicate::Or(terms) => {
-                pending.extend(terms);
-            }
-        }
-    }
-    false
 }

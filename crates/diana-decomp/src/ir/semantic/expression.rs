@@ -386,7 +386,7 @@ impl SemanticOperation {
             .class_type
             .as_deref()
             .or_else(|| self.result.as_ref().map(|result| &result.ty))
-            .or_else(|| match self.payload.reference.as_deref() {
+            .or(match self.payload.reference.as_deref() {
                 Some(MemberReference::Method(method)) => Some(&method.owner),
                 _ => None,
             })

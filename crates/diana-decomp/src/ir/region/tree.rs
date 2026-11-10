@@ -321,7 +321,7 @@ impl RegionTree {
             })?;
         for region in self.regions.values() {
             let intersects = !blocks.is_disjoint(&region.blocks);
-            let nested = blocks.is_subset(&region.blocks) || region.blocks.is_subset(&blocks);
+            let nested = blocks.is_subset(&region.blocks) || region.blocks.is_subset(blocks);
             if intersects && !nested {
                 return Ok(None);
             }
@@ -1778,7 +1778,7 @@ impl SynchronizationPlacement {
         entries: &BTreeSet<BlockId>,
     ) -> bool {
         tree.region(region).is_some_and(|region| {
-            let semantic_entry = region.entry.or_else(|| match &region.kind {
+            let semantic_entry = region.entry.or(match &region.kind {
                 RegionKind::Catch(catch) | RegionKind::Cleanup(catch) => catch.continuation,
                 _ => None,
             });

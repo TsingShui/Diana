@@ -1644,16 +1644,14 @@ impl ConstructorSyntaxRecovery {
         arguments: &[JavaExpr],
         values: &BTreeMap<JavaIdentifier, JavaType>,
     ) -> Option<std::ops::Range<usize>> {
-        let Some(marker_index) = arguments.iter().rposition(|argument| {
+        let marker_index = arguments.iter().rposition(|argument| {
             matches!(
                 argument,
                 JavaExpr::Cast { value, .. }
                     if matches!(value.as_ref(), JavaExpr::Literal(JavaLiteral::Null))
             ) && Self::infer_constructor_argument_type(argument, values)
                 .is_some_and(|ty| Self::is_kotlin_default_constructor_marker(&ty))
-        }) else {
-            return None;
-        };
+        })?;
         let mask_count = (1..=marker_index).find(|mask_count| {
             let original_count = marker_index - mask_count;
             original_count > 0 && original_count.div_ceil(32) == *mask_count
@@ -2488,9 +2486,7 @@ impl ConstructorSyntaxRecovery {
                 .all(|guard| ConstructorParameterGuards::is_parameter_guard(guard, &parameters))
             || !Self::static_factory_expression(value, &parameters)
             || !Self::static_factory_types_in_scope(constructor, ty, class_type_parameters)
-            || ImmediateExpressionUses::collect_statements(trailing)
-                .get(name)
-                .is_none()
+            || !ImmediateExpressionUses::collect_statements(trailing).contains_key(name)
         {
             return None;
         }
@@ -3413,15 +3409,19 @@ impl ConstructorBindings {
         let [value] = args else {
             return false;
         };
-        match (wrapper.as_str(), value) {
-            ("Boolean", JavaExpr::Literal(JavaLiteral::Boolean(_))) => true,
-            ("Byte" | "Short" | "Integer", JavaExpr::Literal(JavaLiteral::Integer(-128..=127))) => {
-                true
-            }
-            ("Long", JavaExpr::Literal(JavaLiteral::Long(-128..=127))) => true,
-            ("Character", JavaExpr::Literal(JavaLiteral::Character(0..=127))) => true,
-            _ => false,
-        }
+        matches!(
+            (wrapper.as_str(), value),
+            ("Boolean", JavaExpr::Literal(JavaLiteral::Boolean(_)))
+                | (
+                    "Byte" | "Short" | "Integer",
+                    JavaExpr::Literal(JavaLiteral::Integer(-128..=127))
+                )
+                | ("Long", JavaExpr::Literal(JavaLiteral::Long(-128..=127)))
+                | (
+                    "Character",
+                    JavaExpr::Literal(JavaLiteral::Character(0..=127))
+                )
+        )
     }
 }
 
@@ -4159,11 +4159,9 @@ impl ImmediateExpressionUses {
                     Self::statement(statement, uses);
                 }
             }
-            JavaStmt::Variable { value, .. } => {
-                if let Some(value) = value {
-                    Self::expression(value, uses);
-                }
-            }
+            JavaStmt::Variable {
+                value: Some(value), ..
+            } => Self::expression(value, uses),
             JavaStmt::Expression(expression) => Self::expression(expression, uses),
             JavaStmt::Assign { target, value, .. } => {
                 Self::expression(target, uses);

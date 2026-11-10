@@ -107,7 +107,7 @@ impl<'a> Parser<'a> {
     }
 
     fn type_parameter(&mut self) -> Result<TypeParameter, SignatureError> {
-        let name = self.name_until(&[b':'])?;
+        let name = self.name_until(b":")?;
         self.expect(b':')?;
         let class_bound = if Self::starts_reference(self.peek()) {
             Some(self.reference_type()?)
@@ -181,7 +181,7 @@ impl<'a> Parser<'a> {
         let name = std::str::from_utf8(&self.bytes[start..self.position])
             .map(str::to_owned)
             .map_err(|_| self.error())?;
-        if !self.eat(b';') && !(allow_end_terminator && self.peek().is_none()) {
+        if !(self.eat(b';') || allow_end_terminator && self.peek().is_none()) {
             return Err(self.error());
         }
         Ok(JvmTypeSignature::TypeVariable(name))
@@ -189,12 +189,12 @@ impl<'a> Parser<'a> {
 
     fn class_type(&mut self) -> Result<ClassTypeSignature, SignatureError> {
         self.expect(b'L')?;
-        let raw_name = self.name_until(&[b'<', b';', b'.', b'$'])?;
+        let raw_name = self.name_until(b"<;.$")?;
         let type_arguments = self.optional_type_arguments()?;
         let mut inner_segments = Vec::new();
         while matches!(self.peek(), Some(b'.' | b'$')) {
             self.position += 1;
-            let simple_name = self.name_until(&[b'<', b';', b'.', b'$'])?;
+            let simple_name = self.name_until(b"<;.$")?;
             let type_arguments = self.optional_type_arguments()?;
             inner_segments.push(InnerClassTypeSignature {
                 simple_name,

@@ -556,7 +556,7 @@ impl DexJavaDialect {
         owner: &SemanticExpression,
     ) -> Option<&OuterInstanceBinding> {
         self.is_this(owner)
-            .then(|| self.outer_instance.as_ref())
+            .then_some(self.outer_instance.as_ref())
             .flatten()
             .filter(|binding| binding.field.as_ref() == Some(field))
     }
@@ -841,8 +841,8 @@ impl DexJavaDialect {
         erased: &ArgType,
         expected: &JavaType,
     ) -> Result<JavaExpr, JavaLoweringError> {
-        let when_true = self.select_branch_with_source_type(when_true, &erased, expected)?;
-        let when_false = self.select_branch_with_source_type(when_false, &erased, expected)?;
+        let when_true = self.select_branch_with_source_type(when_true, erased, expected)?;
+        let when_false = self.select_branch_with_source_type(when_false, erased, expected)?;
         self.select_expression(condition, when_true, when_false)
     }
 
@@ -1355,7 +1355,7 @@ impl DexJavaDialect {
         match self.expression_type(opposite).cloned() {
             Ok(expected) => self.arg_as(arg, &expected),
             Err(_) if Self::constant(arg) != Some(0) => self.arg(arg),
-            Err(error) => Err(error.into()),
+            Err(error) => Err(error),
         }
     }
 
@@ -1704,14 +1704,13 @@ impl DexJavaDialect {
                     .first()
                     .ok_or(JavaLoweringError::MissingArgument(insn.insn_type))?;
                 let owner_expression = self.arg(owner)?;
-                if self.outer_instance(field, owner).is_some()
-                    || self.outer_instance_fields.contains_key(field)
+                if (self.outer_instance(field, owner).is_some()
+                    || self.outer_instance_fields.contains_key(field))
+                    && self.is_implicit_enclosing_instance(&owner_expression, Some(&field.owner))
                 {
-                    if self.is_implicit_enclosing_instance(&owner_expression, Some(&field.owner)) {
-                        return Ok(JavaExpr::QualifiedThis(
-                            self.source_type(&field.field_type)?,
-                        ));
-                    }
+                    return Ok(JavaExpr::QualifiedThis(
+                        self.source_type(&field.field_type)?,
+                    ));
                 }
                 Ok(JavaExpr::Field {
                     owner: Box::new(owner_expression),
@@ -2902,7 +2901,7 @@ impl DexJavaDialect {
                 } else if target.is_reference()
                     && source_target
                         .as_ref()
-                        .is_some_and(|source| self.source_assignable_to(&source, expected))
+                        .is_some_and(|source| self.source_assignable_to(source, expected))
                     && source_target.as_ref().is_some_and(|target| {
                         self.source_check_cast_is_redundant(operation, target)
                     })
@@ -3582,7 +3581,7 @@ impl DexJavaDialect {
         }
         value
             .declared_type()
-            .filter(|ty| self.source_object_types.contains_key(*ty))
+            .filter(|ty| self.source_object_types.contains_key(ty))
             .is_some()
             || self
                 .source_expression_type(value)
@@ -4703,9 +4702,9 @@ impl JavaDialect for DexJavaDialect {
         if let (Some(expected), Some(source)) =
             (self.return_type.clone(), self.source_return_type.clone())
         {
-            return self.arg_as_source_target(value, &expected, &source);
+            self.arg_as_source_target(value, &expected, &source)
         } else if let Some(expected) = self.return_type.clone() {
-            return self.arg_as(value, &expected);
+            self.arg_as(value, &expected)
         } else {
             self.arg(value)
         }

@@ -243,7 +243,7 @@ where
                 continue;
             };
             overridden.push(ancestor_method.reference.clone());
-            if self.is_base_method(&ancestor, method)? {
+            if self.is_base_method(ancestor, method)? {
                 bases.push(ancestor_method.reference);
                 if inherited_signature.is_none() {
                     inherited_signature = instantiated_signature;
@@ -791,11 +791,7 @@ impl GenericTypeHierarchy {
         let declared = self.hierarchy.class_details(&instantiated_type.erased())?;
         let bound = bind_class(&self.hierarchy, &declared, instantiated_type).ok()?;
         let mut classes = vec![bound.clone()];
-        classes.extend(
-            collect_instantiated_super_types(&self.hierarchy, &bound)
-                .ok()?
-                .into_iter(),
-        );
+        classes.extend(collect_instantiated_super_types(&self.hierarchy, &bound).ok()?);
         let owner = method.owner.to_descriptor();
         let short_id = format!("{}{}", method.name, method.descriptor);
         classes
@@ -1527,12 +1523,10 @@ impl PlatformClassSet {
         let platform = Arc::new(Self::load_default()?);
         match DEFAULT_SYMBOLS.set(Arc::clone(&platform)) {
             Ok(()) => Ok(platform),
-            Err(_) => DEFAULT_SYMBOLS.get().map(Arc::clone).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::Other,
-                    "platform symbol cache publication failed",
-                )
-            }),
+            Err(_) => DEFAULT_SYMBOLS
+                .get()
+                .map(Arc::clone)
+                .ok_or_else(|| io::Error::other("platform symbol cache publication failed")),
         }
     }
 

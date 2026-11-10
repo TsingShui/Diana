@@ -99,7 +99,7 @@ impl ReachingConditions {
             }
             conditions.insert(*block, ReachingCondition { domain });
         }
-        let reachability = ReachabilityMatrix::analyze(cfg, &nodes, &order)?;
+        let reachability = ReachabilityMatrix::analyze(cfg, nodes, &order)?;
         let ranks = order
             .iter()
             .copied()
@@ -317,7 +317,7 @@ impl ReachabilityMatrix {
             .enumerate()
             .map(|(index, block)| (block, index))
             .collect::<BTreeMap<_, _>>();
-        let words = (order.len() + u64::BITS as usize - 1) / u64::BITS as usize;
+        let words = order.len().div_ceil(u64::BITS as usize);
         let bytes = order
             .len()
             .checked_mul(words)

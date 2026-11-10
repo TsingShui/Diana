@@ -399,9 +399,9 @@ impl Topology {
         }
         for (&source, targets) in &induced_successors {
             for target in targets {
-                if !induced_predecessors
+                if induced_predecessors
                     .get(target)
-                    .is_some_and(|sources| sources.binary_search(&source).is_ok())
+                    .is_none_or(|sources| sources.binary_search(&source).is_err())
                 {
                     return Err(DominanceError::InconsistentEdge {
                         source,
@@ -412,9 +412,9 @@ impl Topology {
         }
         for (&target, sources) in &induced_predecessors {
             for source in sources {
-                if !induced_successors
+                if induced_successors
                     .get(source)
-                    .is_some_and(|targets| targets.binary_search(&target).is_ok())
+                    .is_none_or(|targets| targets.binary_search(&target).is_err())
                 {
                     return Err(DominanceError::InconsistentEdge {
                         source: *source,

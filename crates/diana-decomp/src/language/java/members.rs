@@ -389,36 +389,6 @@ struct MethodNameAllocation {
     scopes: BTreeMap<ArgType, JavaNameScope>,
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::ir::ArgType;
-
-    use super::{JavaFieldSymbol, JavaIdentifier, JavaMemberNames};
-
-    #[test]
-    fn hidden_field_does_not_reuse_a_declared_field_name() {
-        let owner = ArgType::object("example/Owner");
-        let declared = JavaFieldSymbol::new(
-            owner.clone(),
-            JavaIdentifier::from_dex("value"),
-            ArgType::BOOLEAN,
-        );
-        let hidden = JavaFieldSymbol::new(
-            owner,
-            JavaIdentifier::from_dex("value"),
-            ArgType::object("example/Outer"),
-        );
-        let names =
-            JavaMemberNames::allocate([declared.clone()], []).with_hidden_fields([hidden.clone()]);
-
-        assert_eq!(
-            names.field_symbol(&declared),
-            JavaIdentifier::from_dex("value")
-        );
-        assert_ne!(names.field_symbol(&hidden), names.field_symbol(&declared));
-    }
-}
-
 impl MethodNameAllocation {
     fn new(methods: &BTreeSet<JavaMethodSymbol>) -> Self {
         let mut scopes = BTreeMap::<ArgType, JavaNameScope>::new();
@@ -456,5 +426,35 @@ impl MethodNameAllocation {
                 (method.key(), name)
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::ir::ArgType;
+
+    use super::{JavaFieldSymbol, JavaIdentifier, JavaMemberNames};
+
+    #[test]
+    fn hidden_field_does_not_reuse_a_declared_field_name() {
+        let owner = ArgType::object("example/Owner");
+        let declared = JavaFieldSymbol::new(
+            owner.clone(),
+            JavaIdentifier::from_dex("value"),
+            ArgType::BOOLEAN,
+        );
+        let hidden = JavaFieldSymbol::new(
+            owner,
+            JavaIdentifier::from_dex("value"),
+            ArgType::object("example/Outer"),
+        );
+        let names =
+            JavaMemberNames::allocate([declared.clone()], []).with_hidden_fields([hidden.clone()]);
+
+        assert_eq!(
+            names.field_symbol(&declared),
+            JavaIdentifier::from_dex("value")
+        );
+        assert_ne!(names.field_symbol(&hidden), names.field_symbol(&declared));
     }
 }

@@ -1,3 +1,5 @@
+use crate::ir::Utf16String;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum JavaPrimitiveType {
     Void,
@@ -1051,4 +1053,3 @@ mod tests {
         assert_eq!(with_preserved_dex_names(true, || second.to_string()), "a!");
     }
 }
-use crate::ir::Utf16String;

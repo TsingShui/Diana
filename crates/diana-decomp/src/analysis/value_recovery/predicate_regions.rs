@@ -78,7 +78,7 @@ impl PredicateRegionFormation {
                 let mut candidate = previous.clone();
                 if let SemanticNode::If { then_node, .. } = &mut candidate {
                     let body = std::mem::replace(then_node, Box::new(SemanticNode::Empty));
-                    *then_node = Box::new(SemanticNode::sequence([*body, next]));
+                    **then_node = SemanticNode::sequence([*body, next]);
                 } else {
                     unreachable!("predicate region candidate changed");
                 }

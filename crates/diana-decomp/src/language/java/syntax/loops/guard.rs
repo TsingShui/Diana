@@ -154,7 +154,7 @@ impl GuardedIteration {
         let mut prefix = nodes[..*decision].to_vec();
         let selected = nodes[*decision].clone();
         let suffix = nodes[decision + 1..].to_vec();
-        prefix.retain(|node| Self::empty(node));
+        prefix.retain(Self::empty);
         Some((prefix, selected, suffix))
     }
 

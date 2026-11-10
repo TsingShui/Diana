@@ -464,8 +464,7 @@ pub(super) fn same_value(left: &InsnArg, right: &InsnArg) -> bool {
     while let Some((left, right)) = pending.pop() {
         match (left, right) {
             (InsnArg::Reg(left), InsnArg::Reg(right)) => {
-                if !SsaVar::from_reg(left).is_some_and(|left| SsaVar::from_reg(right) == Some(left))
-                {
+                if SsaVar::from_reg(left).is_none_or(|left| SsaVar::from_reg(right) != Some(left)) {
                     return false;
                 }
             }

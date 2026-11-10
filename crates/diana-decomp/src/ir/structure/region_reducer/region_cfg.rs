@@ -860,11 +860,9 @@ impl RegionCfgState {
                 {
                     let boundary = self.intern_boundary(leave)?;
                     self.edges.insert((from, boundary, kind));
-                } else {
-                    if let Some(&to) = self.layout.mapping.get(&target) {
-                        if from != to {
-                            self.edges.insert((from, to, kind));
-                        }
+                } else if let Some(&to) = self.layout.mapping.get(&target) {
+                    if from != to {
+                        self.edges.insert((from, to, kind));
                     }
                 }
             }

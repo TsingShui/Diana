@@ -370,60 +370,6 @@ fn trivial_cleanup_constant(
     false
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ir::analysis::PhiInput;
-    use crate::ir::{ArgType, EdgeKind, InsnArg, InstructionId};
-
-    #[test]
-    fn cleanup_state_closure_does_not_retain_shared_null_constant() {
-        let result = SsaVar::new(1, 26);
-        let live_input = SsaVar::new(1, 25);
-        let normal = SsaVar::new(12, 3);
-        let null = SsaVar::new(1, 8);
-        let phis = [PhiMerge {
-            block: BlockId::new(118),
-            instruction: InstructionId::new(0),
-            result,
-            inputs: vec![
-                PhiInput {
-                    predecessor: BlockId::new(74),
-                    edge_kind: EdgeKind::Normal,
-                    value: null,
-                },
-                PhiInput {
-                    predecessor: BlockId::new(117),
-                    edge_kind: EdgeKind::Normal,
-                    value: live_input,
-                },
-            ],
-        }];
-        let constants = BTreeMap::from([(null, InsnArg::lit(0, ArgType::unknown_object()))]);
-
-        assert_eq!(
-            cleanup_state_closure([result, normal], &phis, &constants),
-            BTreeSet::from([result, live_input, normal])
-        );
-    }
-
-    #[test]
-    fn cleanup_state_closure_retains_a_nonzero_constant_root() {
-        let catch_result = SsaVar::new(1, 13);
-        let normal = SsaVar::new(1, 6);
-        let zero = SsaVar::new(1, 0);
-        let constants = BTreeMap::from([
-            (catch_result, InsnArg::lit(-1, ArgType::INT)),
-            (zero, InsnArg::lit(0, ArgType::INT)),
-        ]);
-
-        assert_eq!(
-            cleanup_state_closure([catch_result, normal, zero], &[], &constants),
-            BTreeSet::from([catch_result, normal])
-        );
-    }
-}
-
 struct SsaValueSolver<'a> {
     recovered_phis: &'a BTreeSet<SsaVar>,
     constants: &'a BTreeMap<SsaVar, crate::ir::InsnArg>,
@@ -494,5 +440,59 @@ impl<'a> SsaValueSolver<'a> {
         method: &mut SemanticMethod<SsaSemantics>,
     ) -> Result<BTreeMap<SsaVar, crate::ir::InsnArg>, ValueRecoveryError> {
         crate::profile_scope!("value.ssa.solve", self.solve(method))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::analysis::PhiInput;
+    use crate::ir::{ArgType, EdgeKind, InsnArg, InstructionId};
+
+    #[test]
+    fn cleanup_state_closure_does_not_retain_shared_null_constant() {
+        let result = SsaVar::new(1, 26);
+        let live_input = SsaVar::new(1, 25);
+        let normal = SsaVar::new(12, 3);
+        let null = SsaVar::new(1, 8);
+        let phis = [PhiMerge {
+            block: BlockId::new(118),
+            instruction: InstructionId::new(0),
+            result,
+            inputs: vec![
+                PhiInput {
+                    predecessor: BlockId::new(74),
+                    edge_kind: EdgeKind::Normal,
+                    value: null,
+                },
+                PhiInput {
+                    predecessor: BlockId::new(117),
+                    edge_kind: EdgeKind::Normal,
+                    value: live_input,
+                },
+            ],
+        }];
+        let constants = BTreeMap::from([(null, InsnArg::lit(0, ArgType::unknown_object()))]);
+
+        assert_eq!(
+            cleanup_state_closure([result, normal], &phis, &constants),
+            BTreeSet::from([result, live_input, normal])
+        );
+    }
+
+    #[test]
+    fn cleanup_state_closure_retains_a_nonzero_constant_root() {
+        let catch_result = SsaVar::new(1, 13);
+        let normal = SsaVar::new(1, 6);
+        let zero = SsaVar::new(1, 0);
+        let constants = BTreeMap::from([
+            (catch_result, InsnArg::lit(-1, ArgType::INT)),
+            (zero, InsnArg::lit(0, ArgType::INT)),
+        ]);
+
+        assert_eq!(
+            cleanup_state_closure([catch_result, normal, zero], &[], &constants),
+            BTreeSet::from([catch_result, normal])
+        );
     }
 }

@@ -31,3 +31,12 @@ perf = ["dep:fastrace", "fastrace/enable", "diana-decomp/perf"]
 [[example]]
 name = "app_profile"
 required-features = ["perf"]
+
+[lints.clippy]
+# The recovery pipeline carries structured failure payloads by value: a failed
+# semantic step returns the statement or region that could not be transformed.
+# Boxing them would change hundreds of hot-path signatures without improving
+# failure handling.
+result_large_err = "allow"
+large_enum_variant = "allow"
+too_many_arguments = "allow"

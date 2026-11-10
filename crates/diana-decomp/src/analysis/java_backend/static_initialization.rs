@@ -487,15 +487,19 @@ impl ReplayableInitialization {
         let [value] = args else {
             return false;
         };
-        match (wrapper.as_str(), value) {
-            ("Boolean", JavaExpr::Literal(JavaLiteral::Boolean(_))) => true,
-            ("Byte" | "Short" | "Integer", JavaExpr::Literal(JavaLiteral::Integer(-128..=127))) => {
-                true
-            }
-            ("Long", JavaExpr::Literal(JavaLiteral::Long(-128..=127))) => true,
-            ("Character", JavaExpr::Literal(JavaLiteral::Character(0..=127))) => true,
-            _ => false,
-        }
+        matches!(
+            (wrapper.as_str(), value),
+            ("Boolean", JavaExpr::Literal(JavaLiteral::Boolean(_)))
+                | (
+                    "Byte" | "Short" | "Integer",
+                    JavaExpr::Literal(JavaLiteral::Integer(-128..=127))
+                )
+                | ("Long", JavaExpr::Literal(JavaLiteral::Long(-128..=127)))
+                | (
+                    "Character",
+                    JavaExpr::Literal(JavaLiteral::Character(0..=127))
+                )
+        )
     }
 }
 

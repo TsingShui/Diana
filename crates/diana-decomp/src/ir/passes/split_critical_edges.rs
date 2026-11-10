@@ -39,7 +39,7 @@ impl Pass for SplitCriticalEdges {
                 continue;
             }
 
-            for (v, kind) in succs.to_vec() {
+            for (v, kind) in succs.iter().copied() {
                 if kind.is_exception() {
                     continue;
                 }

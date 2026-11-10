@@ -1368,9 +1368,7 @@ impl<'a> GenericTypeSolver<'a> {
     }
 
     pub(super) fn owner_type(&self, owner: &ClassTypeSignature) -> Option<JavaType> {
-        if Self::owner_parameters(owner).next().is_none() {
-            return None;
-        }
+        Self::owner_parameters(owner).next()?;
         if Self::owner_parameters(owner).any(|parameter| self.raw_owner.contains(parameter)) {
             return self
                 .resolve_source_type(&JvmTypeSignature::ClassType(owner.clone()).erased())
@@ -2724,9 +2722,11 @@ impl<'a> SourceTypeFlow<'a> {
         flow.equation_graph
             .rebuild(&flow.equations, &flow.invocations);
         flow.converge();
-        let invocations = collect_diagnostics
-            .then(|| flow.invocation_diagnostics())
-            .unwrap_or_default();
+        let invocations = if collect_diagnostics {
+            flow.invocation_diagnostics()
+        } else {
+            Default::default()
+        };
         let object_types = if collect_diagnostics {
             flow.object_types
                 .iter()
@@ -2797,9 +2797,11 @@ impl<'a> SourceTypeFlow<'a> {
                 })
                 .collect(),
             equations,
-            requirement_candidates: collect_diagnostics
-                .then_some(flow.requirement_candidates)
-                .unwrap_or_default(),
+            requirement_candidates: if collect_diagnostics {
+                flow.requirement_candidates
+            } else {
+                Default::default()
+            },
             invocations,
         }
     }
@@ -3773,8 +3775,7 @@ impl<'a> SourceTypeFlow<'a> {
             return false;
         };
         let exact_erasure = equation.result.ty == required_erasure;
-        (!Self::has_source_specific_type(requirement) || exact_erasure)
-            && exact_erasure
+        exact_erasure
             && required_erasure.is_reference()
             && self.expression_is_reference(&equation.value)
     }
@@ -4038,12 +4039,15 @@ impl<'a> SourceTypeFlow<'a> {
                     .result
                     .as_ref()
                     .is_some_and(|result| result.ty == ArgType::BOOLEAN)
-                    || operation.payload.reference.as_deref().and_then(
-                        |reference| match reference {
-                            MemberReference::Method(method) => Some(&method.descriptor.return_type),
-                            MemberReference::Field(field) => Some(&field.field_type),
-                        },
-                    ) == Some(&ArgType::BOOLEAN)
+                    || operation
+                        .payload
+                        .reference
+                        .as_deref()
+                        .map(|reference| match reference {
+                            MemberReference::Method(method) => &method.descriptor.return_type,
+                            MemberReference::Field(field) => &field.field_type,
+                        })
+                        == Some(&ArgType::BOOLEAN)
             }
             SemanticExpression::Register(register) => {
                 register.ty == ArgType::BOOLEAN
@@ -5138,20 +5142,18 @@ impl<'a> SourceTypeFlow<'a> {
             } else {
                 function_type.clone()
             }
-        } else if kind != TypeConstraintKind::Definition
+        } else if (kind != TypeConstraintKind::Definition
             && declared_erasure.is_reference()
-            && erased.is_reference()
+            && erased.is_reference())
+            || erased == *declared_erasure
+            || (*declared_erasure == object && erased.is_reference() && erased != object)
+            || (unknown_reference && erased.is_reference())
         {
             // A use constrains the capabilities required from a value. Keep
             // that target type intact; specializing it back to the verifier's
             // concrete register type loses the principal declaration type.
             // definitions_fit validates every reaching definition before the
             // requirement can replace the local's source type.
-            ty
-        } else if erased == *declared_erasure
-            || (*declared_erasure == object && erased.is_reference() && erased != object)
-            || (unknown_reference && erased.is_reference())
-        {
             ty
         } else if kind != TypeConstraintKind::Definition
             && erased == ArgType::BOOLEAN
@@ -5549,7 +5551,7 @@ impl<'a> SourceTypeFlow<'a> {
             [JavaTypeArgument::Exact(element) | JavaTypeArgument::Extends(element)] => {
                 Some(element.clone())
             }
-            [JavaTypeArgument::Any | JavaTypeArgument::Super(_)] | _ => None,
+            _ => None,
         }
     }
 
@@ -5716,9 +5718,9 @@ impl<'a> SourceTypeFlow<'a> {
             {
                 continue;
             }
-            if !projection
+            if projection
                 .declared_type_parameters(erased)
-                .is_some_and(|parameters| !parameters.is_empty())
+                .is_none_or(|parameters| parameters.is_empty())
             {
                 continue;
             }
@@ -6756,7 +6758,8 @@ mod tests {
             inner_segments: Vec::new(),
         });
 
-        assert!(!solver.owner_requires_capture_conversion(&iterable_owner, &[input.clone()]));
+        assert!(!solver
+            .owner_requires_capture_conversion(&iterable_owner, std::slice::from_ref(&input)));
         assert_eq!(
             solver.invocation_input_type(&input),
             Some(class(

@@ -235,9 +235,7 @@ impl JavaDecompiler {
             })
             .collect::<std::collections::BTreeMap<_, _>>();
         let recover = |input: &mut ClassMethodInput| {
-            let Some((decoded_method, cfg)) = input.decoded_mut() else {
-                return None;
-            };
+            let (decoded_method, cfg) = input.decoded_mut()?;
             let method_reference = crate::ir::MethodReference {
                 owner: class.class_type().clone(),
                 name: decoded_method.name().to_string(),

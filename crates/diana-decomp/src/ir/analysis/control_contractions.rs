@@ -279,17 +279,13 @@ impl<'a> ExceptionEntryCorridors<'a> {
             }
             corridor.push(block);
 
-            let Some(successor) = self.transport_successor(block) else {
-                return None;
-            };
+            let successor = self.transport_successor(block)?;
             block = successor;
         }
     }
 
     fn transport_successor(&self, block: BlockId) -> Option<BlockId> {
-        let Some(body) = self.cfg.block(block) else {
-            return None;
-        };
+        let body = self.cfg.block(block)?;
         let transport = body.insns.iter().all(|instruction| {
             matches!(
                 instruction.insn_type,

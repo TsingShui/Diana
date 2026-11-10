@@ -276,24 +276,6 @@ fn remap_removed_handlers(
     handlers.retain(|handler| seen.insert(*handler));
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn synchronization_handler_remapping_preserves_catch_order() {
-        let typed = RegionId::new(6);
-        let broader_typed = RegionId::new(7);
-        let catch_all = RegionId::new(2);
-        let removed = RegionId::new(8);
-        let mut handlers = vec![typed, broader_typed, catch_all, removed];
-
-        remap_removed_handlers(&mut handlers, &BTreeSet::from([removed]), broader_typed);
-
-        assert_eq!(handlers, vec![typed, broader_typed, catch_all]);
-    }
-}
-
 struct ImplicitCleanupCompletions;
 
 impl ImplicitCleanupCompletions {
@@ -362,7 +344,7 @@ impl ExceptionalCleanupFlow {
             for rethrow in &handler.rethrow_blocks {
                 let continuations = cfg
                     .successors_with_kind(*rethrow)
-                    .into_iter()
+                    .iter()
                     .filter(|(_, kind)| *kind == EdgeKind::Exception)
                     .map(|(target, _)| *target)
                     .filter(|target| !component.contains(target))
@@ -682,5 +664,23 @@ impl SynchronizationCandidate {
                     .iter()
                     .all(|(_, kind)| !kind.is_exception())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn synchronization_handler_remapping_preserves_catch_order() {
+        let typed = RegionId::new(6);
+        let broader_typed = RegionId::new(7);
+        let catch_all = RegionId::new(2);
+        let removed = RegionId::new(8);
+        let mut handlers = vec![typed, broader_typed, catch_all, removed];
+
+        remap_removed_handlers(&mut handlers, &BTreeSet::from([removed]), broader_typed);
+
+        assert_eq!(handlers, vec![typed, broader_typed, catch_all]);
     }
 }

@@ -2117,7 +2117,7 @@ impl<'a> CleanupProof<'a> {
                     && !InstructionEffects::of_tree(insn).is_pure()
                     && !insn.insn_type.is_branch()
                     && insn.insn_type != InsnType::Return
-                    && !(elide_rethrow && insn.insn_type == InsnType::Throw)
+                    && (!elide_rethrow || insn.insn_type != InsnType::Throw)
             })
             .collect()
     }

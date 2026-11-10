@@ -498,9 +498,11 @@ impl JavaPrinter {
 
     fn type_parameters_prefix(parameters: &[super::JavaTypeParameter]) -> String {
         let parameters = Self::type_parameters(parameters);
-        (!parameters.is_empty())
-            .then(|| format!("{parameters} "))
-            .unwrap_or_default()
+        if parameters.is_empty() {
+            String::new()
+        } else {
+            format!("{parameters} ")
+        }
     }
 
     fn render<'a>(

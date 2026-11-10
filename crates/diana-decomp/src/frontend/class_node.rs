@@ -101,18 +101,17 @@ impl ClassInfo {
 
     /// Get outer class name for inner class
     pub fn outer_class_name(&self) -> Option<String> {
-        if let Some(dollar_pos) = self.full_name.rfind('$') {
-            Some(self.full_name[..dollar_pos].to_string())
-        } else {
-            None
-        }
+        self.full_name
+            .rfind('$')
+            .map(|dollar_pos| self.full_name[..dollar_pos].to_string())
     }
 }
 
 /// Processing state of a class
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ClassState {
     /// Not yet loaded
+    #[default]
     NotLoaded,
     /// Structure loaded (fields, methods declared)
     Loaded,
@@ -122,12 +121,6 @@ pub enum ClassState {
     ProcessComplete,
     /// Error during processing
     Error,
-}
-
-impl Default for ClassState {
-    fn default() -> Self {
-        ClassState::NotLoaded
-    }
 }
 
 /// Class node - represents a class in the DEX file
@@ -337,7 +330,7 @@ impl ClassNode {
             .inner_class
             .as_ref()
             .and_then(|inner| inner.simple_name.as_deref())
-            .map_or(true, looks_like_anonymous_inner_name)
+            .is_none_or(looks_like_anonymous_inner_name)
             && self.metadata.inner_class.is_some()
     }
 

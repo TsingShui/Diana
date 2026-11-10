@@ -715,8 +715,8 @@ impl JavaSourceAbi {
             .map(|outer| (outer.reference, outer.outer_type))
             .collect::<BTreeMap<_, _>>();
         let outer_instance_by_owner = outer_instances
-            .iter()
-            .map(|(field, _)| (field.owner.clone(), field.clone()))
+            .keys()
+            .map(|field| (field.owner.clone(), field.clone()))
             .collect();
         let constructor_owner_types = &open_owners;
         let constructors = classes
@@ -946,7 +946,7 @@ impl JavaSourceAbi {
         for (field, contract) in &field_types {
             generic_field_declarations
                 .entry((field.name.clone(), field.field_type.clone()))
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push((field.owner.clone(), contract.clone()));
         }
         let mut abi = Self {

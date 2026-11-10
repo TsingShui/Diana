@@ -994,11 +994,9 @@ impl StringSwitchRecovery {
                 let JavaExpr::Literal(JavaLiteral::Integer(selected)) = label else {
                     return None;
                 };
-                let Some((_, literal)) =
-                    mappings.iter().find(|(candidate, _)| candidate == selected)
-                else {
-                    return None;
-                };
+                let (_, literal) = mappings
+                    .iter()
+                    .find(|(candidate, _)| candidate == selected)?;
                 labels.push(JavaExpr::Literal(literal.clone()));
             }
             if labels.is_empty() {

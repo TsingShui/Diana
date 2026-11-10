@@ -69,10 +69,9 @@ fn main() {
             descriptor: descriptor.clone(),
         });
         let started = Instant::now();
-        let result = decompile::run(&scope, &selector).expect("decompile");
+        let _result = decompile::run(&scope, &selector).expect("decompile");
         eprintln!(
-            "class {class_def} {} {:.3}s",
-            "rendered",
+            "class {class_def} rendered {:.3}s",
             started.elapsed().as_secs_f64()
         );
     }

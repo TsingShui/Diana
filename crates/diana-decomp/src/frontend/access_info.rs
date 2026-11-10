@@ -54,8 +54,9 @@ pub enum AccessFlag {
 }
 
 /// Access flag type (class, method, or field)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AccessFlagType {
+    #[default]
     Class,
     Method,
     Field,
@@ -68,12 +69,6 @@ pub struct AccessInfo {
     flags: u32,
     /// Type of the access info (class, method, field)
     flag_type: AccessFlagType,
-}
-
-impl Default for AccessFlagType {
-    fn default() -> Self {
-        AccessFlagType::Class
-    }
 }
 
 impl AccessInfo {

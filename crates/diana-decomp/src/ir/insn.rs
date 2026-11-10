@@ -1129,7 +1129,7 @@ impl fmt::Display for InsnNode {
             }
             InsnType::Arith => {
                 if let (Some(op), Some(arg1), Some(arg2)) =
-                    (self.payload.arith_op, self.args.get(0), self.args.get(1))
+                    (self.payload.arith_op, self.args.first(), self.args.get(1))
                 {
                     write!(f, "{} {} {}", arg1, op, arg2)?;
                 }
@@ -1171,7 +1171,7 @@ impl fmt::Display for InsnNode {
             InsnType::If => {
                 if let (Some(op), Some(arg1), Some(arg2), Some(target)) = (
                     self.payload.if_op,
-                    self.args.get(0),
+                    self.args.first(),
                     self.args.get(1),
                     self.payload.target,
                 ) {

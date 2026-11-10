@@ -213,25 +213,17 @@ impl<'a> ValueNumbering<'a> {
                             .operands()
                             .iter()
                             .cloned()
-                            .into_iter()
                             .rev()
                             .map(ExpressionTask::Expression),
                     );
                 }
                 ExpressionTask::Expression(SemanticExpression::Register(register)) => {
-                    let mut visited = BTreeSet::new();
-                    loop {
-                        let value = self.root(self.key(&register)?);
-                        if !visited.insert(value) {
-                            values.push(ValueOperand::Register(value));
-                            break;
+                    let value = self.root(self.key(&register)?);
+                    match self.canonical_values.get(&value) {
+                        Some(canonical) => {
+                            pending.push(ExpressionTask::Canonical(canonical.clone()));
                         }
-                        let Some(canonical) = self.canonical_values.get(&value) else {
-                            values.push(ValueOperand::Register(value));
-                            break;
-                        };
-                        pending.push(ExpressionTask::Canonical(canonical.clone()));
-                        break;
+                        None => values.push(ValueOperand::Register(value)),
                     }
                 }
                 ExpressionTask::Expression(SemanticExpression::Literal(literal)) => {

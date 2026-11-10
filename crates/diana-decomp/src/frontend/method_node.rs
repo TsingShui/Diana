@@ -91,7 +91,7 @@ impl MethodInfo {
             "{}({}) -> {}",
             self.name,
             params.join(", "),
-            self.return_type.to_string()
+            self.return_type
         )
     }
 }

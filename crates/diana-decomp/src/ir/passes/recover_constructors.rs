@@ -703,10 +703,8 @@ impl Pass for RecoverConstructors<'_> {
                             aliases: &plan.aliases,
                             replacement,
                         };
-                        *target = Box::new(InstructionTree::transform_arg(
-                            (**target).clone(),
-                            &mut rewriter,
-                        )?);
+                        **target =
+                            InstructionTree::transform_arg((**target).clone(), &mut rewriter)?;
                     }
                 }
                 if let Some((value, ty)) = constructors.get(&position) {

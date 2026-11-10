@@ -51,8 +51,7 @@ impl ConstantEvaluator {
         match ty.as_primitive()? {
             PrimitiveType::Boolean => match op {
                 ArithOp::And | ArithOp::Or | ArithOp::Xor => {
-                    Self::int_arithmetic(op, left as i32, right as i32)
-                        .map(|value| i64::from(value))
+                    Self::int_arithmetic(op, left as i32, right as i32).map(i64::from)
                 }
                 _ => None,
             },
@@ -60,7 +59,7 @@ impl ConstantEvaluator {
             | PrimitiveType::Short
             | PrimitiveType::Char
             | PrimitiveType::Int => {
-                Self::int_arithmetic(op, left as i32, right as i32).map(|value| i64::from(value))
+                Self::int_arithmetic(op, left as i32, right as i32).map(i64::from)
             }
             PrimitiveType::Long => Self::long_arithmetic(op, left, right),
             PrimitiveType::Float => {

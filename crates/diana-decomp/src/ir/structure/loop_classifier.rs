@@ -1198,7 +1198,7 @@ impl LoopContinuationDecision {
 
         let decision_setup = SemanticNode::sequence(body.drain(..setup_len));
         let setup = std::mem::replace(&mut *test.setup, SemanticNode::Empty);
-        test.setup = Box::new(SemanticNode::sequence([setup, decision_setup]));
+        *test.setup = SemanticNode::sequence([setup, decision_setup]);
         test.condition.value = PredicateAlgebra::and(
             std::mem::replace(&mut test.condition.value, SemanticPredicate::True),
             continue_path,

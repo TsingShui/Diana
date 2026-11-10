@@ -267,11 +267,9 @@ impl<'a> DefiniteDefinition<'a> {
                 {
                     self.valid = false;
                 }
-                return;
             }
             crate::ir::SemanticExpression::Operation(operation) => {
                 self.read_operation(operation, state);
-                return;
             }
             crate::ir::SemanticExpression::Select {
                 condition,
@@ -282,7 +280,7 @@ impl<'a> DefiniteDefinition<'a> {
                 self.read_expression(when_true, state);
                 self.read_expression(when_false, state);
             }
-            crate::ir::SemanticExpression::Literal(_) => return,
+            crate::ir::SemanticExpression::Literal(_) => (),
         }
     }
 }

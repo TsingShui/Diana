@@ -33,3 +33,17 @@ zstd = "0.11"
 [dev-dependencies]
 pretty_assertions = "1"
 tempfile = "3.24.0"
+
+[lints.clippy]
+# The recovery pipeline carries structured failure payloads by value: a failed
+# semantic step returns the statement or region that could not be transformed.
+# Boxing them would change hundreds of hot-path signatures without improving
+# failure handling.
+result_large_err = "allow"
+large_enum_variant = "allow"
+too_many_arguments = "allow"
+# Public analysis APIs return compound tuples and builder-style names that keep
+# their historical spelling; renaming them would churn every caller.
+type_complexity = "allow"
+wrong_self_convention = "allow"
+should_implement_trait = "allow"

@@ -189,7 +189,7 @@ pub fn walk_node<V: SemanticVisitor + ?Sized>(visitor: &mut V, node: &SemanticNo
                 pending.extend(block.statements.iter().rev().map(VisitTask::Statement))
             }
             SemanticNode::Sequence(children) => {
-                pending.extend(children.iter().rev().map(|child| VisitTask::Enter(child)))
+                pending.extend(children.iter().rev().map(VisitTask::Enter))
             }
             SemanticNode::If {
                 condition,
@@ -616,7 +616,7 @@ impl FoldFrame {
                     catches,
                     finally: {
                         if let Some(finally) = &mut finally {
-                            finally.body = Box::new(Self::child(&mut children)?);
+                            *finally.body = Self::child(&mut children)?;
                         }
                         finally
                     },

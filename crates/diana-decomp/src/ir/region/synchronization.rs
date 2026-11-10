@@ -113,9 +113,7 @@ impl<'a> SynchronizationAnalysis<'a> {
     }
 
     pub(super) fn region(&self, region: &TryRegion) -> Option<SynchronizationFact> {
-        let Some(release) = self.cleanup_release(region) else {
-            return None;
-        };
+        let release = self.cleanup_release(region)?;
         let candidates = self
             .cfg
             .block_ids()

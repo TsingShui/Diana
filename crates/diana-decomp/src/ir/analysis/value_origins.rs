@@ -23,9 +23,11 @@ impl SsaOrigins {
         let mut origins = values
             .values()
             .map(|value| {
-                let roots = (!sources.contains_key(&value.variable))
-                    .then(|| BTreeSet::from([value.variable]))
-                    .unwrap_or_default();
+                let roots = if !sources.contains_key(&value.variable) {
+                    BTreeSet::from([value.variable])
+                } else {
+                    Default::default()
+                };
                 (value.variable, roots)
             })
             .collect::<BTreeMap<_, _>>();

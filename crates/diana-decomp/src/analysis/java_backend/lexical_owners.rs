@@ -316,9 +316,11 @@ impl EnclosingOwnerQualifier<'_> {
                 .enumerate()
                 .map(|(position, name)| JavaClassTypeSegment {
                     name: name.clone(),
-                    arguments: (position == index)
-                        .then(|| arguments.clone())
-                        .unwrap_or_default(),
+                    arguments: if position == index {
+                        arguments.clone()
+                    } else {
+                        Default::default()
+                    },
                 })
                 .collect(),
         })

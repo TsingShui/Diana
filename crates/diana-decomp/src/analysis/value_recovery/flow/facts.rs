@@ -68,9 +68,11 @@ impl<'a> SparseValueFacts<'a> {
         );
         let required_phi_inputs = crate::profile_scope!(
             "value.facts.phi_inputs",
-            (graph.identity() == ValueIdentity::Ssa)
-                .then(|| graph.required_phi_inputs())
-                .unwrap_or_default()
+            if graph.identity() == ValueIdentity::Ssa {
+                graph.required_phi_inputs()
+            } else {
+                Default::default()
+            }
         );
         let effects = crate::profile_scope!(
             "value.facts.effects",

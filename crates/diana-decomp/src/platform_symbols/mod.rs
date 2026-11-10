@@ -38,11 +38,9 @@ pub fn default_platform_symbols() -> io::Result<Arc<PlatformSymbolSet>> {
     });
     match DEFAULT.set(Arc::clone(&symbols)) {
         Ok(()) => Ok(symbols),
-        Err(_) => DEFAULT.get().map(Arc::clone).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                "platform symbol cache publication failed",
-            )
-        }),
+        Err(_) => DEFAULT
+            .get()
+            .map(Arc::clone)
+            .ok_or_else(|| io::Error::other("platform symbol cache publication failed")),
     }
 }

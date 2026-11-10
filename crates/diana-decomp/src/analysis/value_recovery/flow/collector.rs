@@ -182,7 +182,7 @@ impl<'ir> FlowCollector<'ir> {
         loop_owners: Arc<[u32]>,
         event: usize,
     ) {
-        let Some(key) = self.graph.key(&result) else {
+        let Some(key) = self.graph.key(result) else {
             return;
         };
         self.graph
@@ -243,13 +243,13 @@ impl<'ir> FlowCollector<'ir> {
                 *next_predicate += 1;
                 *prefix = prefix.clone().join(self.visit_predicate_uses(
                     condition,
-                    domain.clone(),
+                    domain,
                     event,
                     site.map(|site| UseSite::SelectedPredicate(site, current)),
                     origin,
                 )?);
                 let condition = self.graph.logic.compile(&condition.domain()?)?;
-                let true_domain = self.graph.logic.and(domain.clone(), condition)?;
+                let true_domain = self.graph.logic.and(domain, condition)?;
                 let negated = self.graph.logic.not(condition)?;
                 let false_domain = self.graph.logic.and(domain, negated)?;
                 let mut true_prefix = prefix.clone();
