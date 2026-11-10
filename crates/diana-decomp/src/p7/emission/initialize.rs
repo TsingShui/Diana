@@ -9,19 +9,14 @@ pub(super) fn plan(code: &MethodCode) -> Result<EmissionPlan, ExpressionError> {
     plan.show_chains = filled(code.chains.len(), true)?;
     plan.site_annotations = filled(code.sites.len(), true)?;
     plan.field_qualifications = filled(code.references.len(), true)?;
-    plan.natural_stores = filled(code.operations.len(), false)?;
+    plan.placements = filled(code.operations.len(), super::Placement::default())?;
     plan.copy_check_uses = filled(code.copies.len(), Vec::new())?;
     plan.definition_check_uses = filled(code.operations.len(), Vec::new())?;
-    plan.array_literals = filled(code.operations.len(), None)?;
-    plan.omitted_checks = filled(code.operations.len(), None)?;
-    plan.omitted_literals = filled(code.operations.len(), false)?;
-    plan.omitted_nops = filled(code.operations.len(), false)?;
     for statement in code.statements() {
         if matches!(*statement.operator(code), ExprKind::Nop) {
-            plan.omitted_nops[statement.id.0 as usize] = true;
+            plan.placements[statement.id.0 as usize].omitted_nop = true;
         }
     }
-    plan.allocation_declarations = filled(code.operations.len(), false)?;
     plan.allocation_locals = filled(code.locals.len(), false)?;
     plan.hidden_locals = filled(code.locals.len(), false)?;
     for local in &code.locals {
@@ -42,7 +37,6 @@ pub(super) fn plan(code: &MethodCode) -> Result<EmissionPlan, ExpressionError> {
         .resize_with(code.terminals.len(), EvaluationPhases::default);
     plan.ifs = filled(code.terminals.len(), IfDisplay::Both)?;
     plan.omitted_returns = filled(code.terminals.len(), false)?;
-    plan.origin_only_operations = filled(code.operations.len(), None)?;
     plan.origin_only_terminals = filled(code.terminals.len(), false)?;
     Ok(plan)
 }

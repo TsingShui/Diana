@@ -31,6 +31,10 @@ pub(super) fn natural_stores(code: &mut MethodCode) -> Result<(), ExpressionErro
             _ => continue,
         };
     }
-    code.emission.natural_stores = natural;
+    for (index, value) in natural.into_iter().enumerate() {
+        if value {
+            code.emission.placements[index].natural_store = true;
+        }
+    }
     Ok(())
 }

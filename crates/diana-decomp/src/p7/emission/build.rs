@@ -54,7 +54,7 @@ fn identity_moves(code: &MethodCode, plan: &mut EmissionPlan) {
             && phases.after.is_empty()
             && s.sites.is_empty()
         {
-            plan.origin_only_operations[op.source.0 as usize] =
+            plan.placements[op.source.0 as usize].origin_only =
                 Some(super::OriginOnly::Identity(expression));
         }
     }

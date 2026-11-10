@@ -35,7 +35,7 @@ pub(super) fn omit_materialized_literals(code: &mut MethodCode) -> Result<(), Ex
         }
         let phases = &code.emission.operations[operation.source.0 as usize];
         if phases.before.is_empty() && phases.snapshots.is_empty() && phases.after.is_empty() {
-            code.emission.omitted_literals[statement.id.0 as usize] = true;
+            code.emission.placements[statement.id.0 as usize].omitted_literal = true;
         }
     }
     Ok(())

@@ -191,10 +191,9 @@ impl MethodCode {
     pub fn origin_only_operation(&self, op: crate::p2::OpId) -> bool {
         match self
             .emission
-            .origin_only_operations
+            .placements
             .get(op.0 as usize)
-            .copied()
-            .flatten()
+            .and_then(|placement| placement.origin_only)
         {
             Some(super::emission::OriginOnly::Attachment) => true,
             Some(super::emission::OriginOnly::Identity(read)) => {

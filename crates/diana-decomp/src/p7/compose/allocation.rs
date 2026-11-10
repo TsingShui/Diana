@@ -28,11 +28,11 @@ pub(super) fn allocation_declarations(code: &mut MethodCode) -> Result<(), Expre
             | crate::p5::Materialization::AllocationCarrier(local) => local,
             _ => continue,
         };
-        *code
-            .emission
-            .allocation_declarations
+        code.emission
+            .placements
             .get_mut(statement.id.0 as usize)
-            .ok_or(bug("allocation names an unknown statement"))? = true;
+            .ok_or(bug("allocation names an unknown statement"))?
+            .allocation_declaration = true;
         *code
             .emission
             .allocation_locals

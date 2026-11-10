@@ -327,9 +327,10 @@ fn producer_with_nested(
     if code.nested_operation(operation)
         || matches!(
             code.emission
-                .origin_only_operations
-                .get(operation.0 as usize),
-            Some(Some(super::super::emission::OriginOnly::Attachment))
+                .placements
+                .get(operation.0 as usize)
+                .and_then(|placement| placement.origin_only),
+            Some(super::super::emission::OriginOnly::Attachment)
         )
         || !matches!(source.emission, Emission::Block { .. })
     {

@@ -187,9 +187,10 @@ pub struct EmissionPlan {
     /// references would otherwise be indistinguishable.
     pub(super) field_qualifications: Vec<bool>,
     pub(super) field_receiver_owners: Vec<Option<TypeUseId>>,
-    /// A store prints as an ordinary assignment only when reordering its
-    /// operands to Java's left-to-right order cannot be observed.
-    pub(super) natural_stores: Vec<bool>,
+    /// One structural placement record per original operation index. Every
+    /// statement-keyed display decision lives here, so the plan keeps one index
+    /// space instead of a parallel vector per decision.
+    pub(super) placements: Vec<Placement>,
     pub(super) inline_checks: Vec<InlineCheck>,
     /// Indices into `inline_checks`, by the copy bundle that carries the check.
     pub(super) copy_check_uses: Vec<Vec<u32>>,
@@ -197,20 +198,15 @@ pub struct EmissionPlan {
     /// check names.
     pub(super) definition_check_uses: Vec<Vec<u32>>,
     /// By the statement whose allocation prints the payload.
-    pub(super) array_literals: Vec<Option<ArrayLiteral>>,
     /// By the statement whose check prints nothing because P4 established it
     /// cannot add behavior at that position.
-    pub(super) omitted_checks: Vec<Option<OmittedCheck>>,
     /// By the statement whose value prints only where it is used: every output
     /// materializes as a literal, so the statement itself states nothing. Its
     /// operation, PC, result commit and expression keep zero-length anchors.
-    pub(super) omitted_literals: Vec<bool>,
     /// A `nop` operation states nothing a reader can execute: the plan keeps its
     /// statement, operation and PC as zero-length anchors instead of text.
-    pub(super) omitted_nops: Vec<bool>,
     /// By the statement that allocates an object without constructing it yet.
     /// It prints the allocated type and its local where that allocation happens.
-    pub(super) allocation_declarations: Vec<bool>,
     /// By the local whose declaration is that allocation statement.
     pub(super) allocation_locals: Vec<bool>,
     pub(super) hidden_locals: Vec<bool>,
@@ -224,8 +220,20 @@ pub struct EmissionPlan {
     pub(super) omitted_returns: Vec<bool>,
     pub(super) transfers: Vec<EmissionTransfer>,
     pub(super) initial: Vec<CopyPlanId>,
-    pub(super) origin_only_operations: Vec<Option<OriginOnly>>,
     pub(super) origin_only_terminals: Vec<bool>,
+}
+/// Every statement-keyed display decision for one original operation.
+#[derive(Clone, Debug, Default, Serialize)]
+pub(super) struct Placement {
+    /// A store prints as an ordinary assignment only when reordering its
+    /// operands to Java's left-to-right order cannot be observed.
+    pub(super) natural_store: bool,
+    pub(super) array_literal: Option<ArrayLiteral>,
+    pub(super) omitted_check: Option<OmittedCheck>,
+    pub(super) omitted_literal: bool,
+    pub(super) omitted_nop: bool,
+    pub(super) allocation_declaration: bool,
+    pub(super) origin_only: Option<OriginOnly>,
 }
 #[derive(Clone, Copy, Debug, Serialize)]
 pub(super) enum OriginOnly {
@@ -298,15 +306,10 @@ impl EmissionPlan {
             site_annotations: Vec::new(),
             field_qualifications: Vec::new(),
             field_receiver_owners: Vec::new(),
-            natural_stores: Vec::new(),
+            placements: Vec::new(),
             inline_checks: Vec::new(),
             copy_check_uses: Vec::new(),
             definition_check_uses: Vec::new(),
-            array_literals: Vec::new(),
-            omitted_checks: Vec::new(),
-            omitted_literals: Vec::new(),
-            omitted_nops: Vec::new(),
-            allocation_declarations: Vec::new(),
             allocation_locals: Vec::new(),
             hidden_locals: Vec::new(),
             deferred_controls: Vec::new(),
@@ -316,7 +319,6 @@ impl EmissionPlan {
             omitted_returns: Vec::new(),
             transfers: Vec::new(),
             initial: Vec::new(),
-            origin_only_operations: Vec::new(),
             origin_only_terminals: Vec::new(),
         }
     }
@@ -362,10 +364,9 @@ impl EmissionPlan {
         None
     }
     pub fn natural_store(&self, id: StatementId) -> bool {
-        self.natural_stores
+        self.placements
             .get(id.0 as usize)
-            .copied()
-            .unwrap_or(false)
+            .is_some_and(|placement| placement.natural_store)
     }
     pub fn field_qualification(&self, id: ReferenceId) -> bool {
         self.field_qualifications
@@ -380,25 +381,23 @@ impl EmissionPlan {
             .unwrap_or(true)
     }
     pub fn array_literal(&self, id: StatementId) -> Option<ArrayLiteral> {
-        self.array_literals.get(id.0 as usize).copied().flatten()
+        self.placements.get(id.0 as usize)?.array_literal
     }
     /// The original check this statement's own display omits, if P4 established
     /// it cannot add behavior at this position.
     /// Whether this statement is a `nop` the plan prints without text.
     pub fn omitted_nop(&self, id: StatementId) -> bool {
-        self.omitted_nops
+        self.placements
             .get(id.0 as usize)
-            .copied()
-            .unwrap_or(false)
+            .is_some_and(|placement| placement.omitted_nop)
     }
     pub fn omitted_literal(&self, id: StatementId) -> bool {
-        self.omitted_literals
+        self.placements
             .get(id.0 as usize)
-            .copied()
-            .unwrap_or(false)
+            .is_some_and(|placement| placement.omitted_literal)
     }
     pub fn omitted_check(&self, id: StatementId) -> Option<&OmittedCheck> {
-        self.omitted_checks.get(id.0 as usize)?.as_ref()
+        self.placements.get(id.0 as usize)?.omitted_check.as_ref()
     }
     pub fn hidden_local(&self, id: StorageId) -> bool {
         self.hidden_locals
@@ -407,10 +406,9 @@ impl EmissionPlan {
             .unwrap_or(false)
     }
     pub fn allocation_declaration(&self, id: StatementId) -> bool {
-        self.allocation_declarations
+        self.placements
             .get(id.0 as usize)
-            .copied()
-            .unwrap_or(false)
+            .is_some_and(|placement| placement.allocation_declaration)
     }
     pub fn allocation_local(&self, id: StorageId) -> bool {
         self.allocation_locals

@@ -10,7 +10,7 @@ fn retain_cleanup_effects(
     plan: &mut EmissionPlan,
     finally: &Finally,
 ) -> Result<(), ExpressionError> {
-    plan.origin_only_operations[finally.capture.0 as usize] = Some(super::OriginOnly::Attachment);
+    plan.placements[finally.capture.0 as usize].origin_only = Some(super::OriginOnly::Attachment);
     if let Some(statement) = code.operations[finally.capture.0 as usize].statement {
         for d in &code.require_statement(statement)?.outputs {
             if let crate::p5::Materialization::ExceptionCapture(local) = d.materialization() {
@@ -28,7 +28,7 @@ fn retain_cleanup_effects(
         plan.origin_only_terminals[normal.0 as usize] = true;
     }
     for &(normal, _) in &finally.operations {
-        plan.origin_only_operations[normal.0 as usize] = Some(super::OriginOnly::Attachment);
+        plan.placements[normal.0 as usize].origin_only = Some(super::OriginOnly::Attachment);
         if let Some(statement) = code.operations[normal.0 as usize].statement {
             for d in &code.require_statement(statement)?.outputs {
                 if let crate::p5::Materialization::Store(local) = d.materialization() {
@@ -141,11 +141,11 @@ pub(super) fn surfaces(
                 let operation = code
                     .statement_operation(outlet.release)
                     .ok_or(bug("implicit release lost its operation"))?;
-                plan.origin_only_operations[operation.0 as usize] =
+                plan.placements[operation.0 as usize].origin_only =
                     Some(super::OriginOnly::Attachment);
             }
             for &capture in &surface.captures {
-                plan.origin_only_operations[capture.0 as usize] =
+                plan.placements[capture.0 as usize].origin_only =
                     Some(super::OriginOnly::Attachment);
                 if let Some(statement) = code.operations[capture.0 as usize].statement {
                     for output in &code.require_statement(statement)?.outputs {

@@ -57,7 +57,9 @@ pub(super) fn array_literals(
     if !folded.contains(&true) {
         return Ok(());
     }
-    code.emission.array_literals = literals;
+    for (index, literal) in literals.into_iter().enumerate() {
+        code.emission.placements[index].array_literal = literal;
+    }
     // The literal states the fill's whole effect, so the fill prints no text.
     // Every other action stays at its own position.
     for block in &mut code.emission.blocks {

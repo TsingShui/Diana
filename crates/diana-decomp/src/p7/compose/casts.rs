@@ -73,7 +73,9 @@ pub(super) fn prepare(
     code: &mut MethodCode,
     types: &crate::p4::TypeFacts,
 ) -> Result<(), ExpressionError> {
-    code.emission.omitted_checks = redundant(code, types)?;
+    for (index, check) in redundant(code, types)?.into_iter().enumerate() {
+        code.emission.placements[index].omitted_check = check;
+    }
     Ok(())
 }
 
