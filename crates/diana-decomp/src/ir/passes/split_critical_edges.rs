@@ -57,11 +57,10 @@ impl Pass for SplitCriticalEdges {
         }
 
         // Find maximum block ID to generate new ones
-        let mut next_id = cfg.block_ids().iter().map(|id| id.0).max().unwrap_or(0) + 1;
+        let next_id = cfg.block_ids().iter().map(|id| id.0).max().unwrap_or(0) + 1;
 
-        for ((u, v), kinds) in edges_to_split {
+        for (next_id, ((u, v), kinds)) in (next_id..).zip(edges_to_split) {
             let mid_id = BlockId::new(next_id);
-            next_id += 1;
 
             // 1. Create new intermediate block with a Goto to v
             let coverage = cfg.common_exception_coverage(u, v);

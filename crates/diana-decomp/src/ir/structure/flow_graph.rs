@@ -527,7 +527,7 @@ impl SemanticFlowGraph {
                 .copied()
                 .flat_map(|block| self.targets(block))
                 .filter(|target| !arm.nodes.contains(target))
-                .chain(switch.join.filter(|join| arm.entry == *join).into_iter())
+                .chain(switch.join.filter(|join| arm.entry == *join))
                 .collect();
             let body = if switch.join == Some(arm.entry) {
                 SemanticNode::Empty

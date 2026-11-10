@@ -496,14 +496,13 @@ impl JavaAstRewriter for MethodReferences<'_> {
                     self.methods.insert(key);
                 }
             }
-            JavaExpr::MethodReference { method, .. } => {
+            JavaExpr::MethodReference { method, .. }
                 if self
                     .candidates
                     .iter()
-                    .any(|candidate| candidate.name == *method)
-                {
-                    self.names.insert(method.clone());
-                }
+                    .any(|candidate| candidate.name == *method) =>
+            {
+                self.names.insert(method.clone());
             }
             _ => {}
         }

@@ -332,7 +332,7 @@ fn apply_invoke_return_type(insn: &mut InsnNode, method: &MethodReference) {
 fn handlers(facts: &DecodedMethod<'_>) -> Vec<ExceptionHandler> {
     let boundaries: Vec<u32> = facts.try_boundaries().collect();
     let mut handlers = Vec::new();
-    for pair in boundaries.chunks_exact(2) {
+    for pair in boundaries.as_chunks::<2>().0 {
         let (start, end) = (pair[0], pair[1]);
         let clauses = facts
             .catch_clauses_at(CodeUnitOffset(start))

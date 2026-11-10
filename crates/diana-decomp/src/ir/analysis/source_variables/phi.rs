@@ -466,10 +466,7 @@ impl<'a> SsaCopyResolver<'a> {
     ) -> Option<InsnArg> {
         let mut source = self.resolve(source);
         let mut visited = BTreeSet::new();
-        loop {
-            let Some(register) = source.as_register() else {
-                break;
-            };
+        while let Some(register) = source.as_register() {
             let Some(value) = SsaVar::from_reg(register) else {
                 break;
             };

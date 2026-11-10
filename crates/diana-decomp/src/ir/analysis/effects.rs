@@ -21,7 +21,7 @@ impl ThrowEffect {
                 instruction
                     .args
                     .iter()
-                    .chain(instruction.payload.compound_target.as_deref().into_iter())
+                    .chain(instruction.payload.compound_target.as_deref())
                     .filter_map(|argument| match argument {
                         InsnArg::Wrapped(child) => Some(child.as_ref()),
                         InsnArg::Reg(_) | InsnArg::Lit(_) => None,
@@ -180,7 +180,7 @@ impl InstructionEffects {
                 instruction
                     .args
                     .iter()
-                    .chain(instruction.payload.compound_target.as_deref().into_iter())
+                    .chain(instruction.payload.compound_target.as_deref())
                     .filter_map(|argument| match argument {
                         InsnArg::Wrapped(child) => Some(child.as_ref()),
                         InsnArg::Reg(_) | InsnArg::Lit(_) => None,
