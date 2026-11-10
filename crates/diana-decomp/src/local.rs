@@ -1,48 +1,10 @@
-//! Symbol sources for IR reference resolution.
-//!
-//! The IR decoder leaves pool indices in each instruction. Resolution turns
-//! those indices into method, field, string and type identities. A whole-DEX
-//! reader is one source; a caller that already decoded the method can supply the
-//! same identities directly, so the recovery pipeline does not have to re-parse
-//! the image for a local request.
-
-use std::collections::HashMap;
-
-/// Resolved pool entries the IR needs while its instructions are still indexed.
-pub trait SymbolSource {
-    fn method(&self, index: u32) -> Option<&str>;
-    fn field(&self, index: u32) -> Option<&str>;
-    fn ty(&self, index: u32) -> Option<&str>;
-    fn string(&self, index: u32) -> Option<&[u16]>;
-}
-
-/// Identities a caller already resolved for one method's pool indices.
-#[derive(Default)]
-pub struct LocalSymbols {
-    pub methods: HashMap<u32, String>,
-    pub fields: HashMap<u32, String>,
-    pub types: HashMap<u32, String>,
-    pub strings: HashMap<u32, Vec<u16>>,
-}
-
-impl SymbolSource for LocalSymbols {
-    fn method(&self, index: u32) -> Option<&str> {
-        self.methods.get(&index).map(String::as_str)
-    }
-    fn field(&self, index: u32) -> Option<&str> {
-        self.fields.get(&index).map(String::as_str)
-    }
-    fn ty(&self, index: u32) -> Option<&str> {
-        self.types.get(&index).map(String::as_str)
-    }
-    fn string(&self, index: u32) -> Option<&[u16]> {
-        self.strings.get(&index).map(Vec::as_slice)
-    }
-}
+//! Original class facts to the recovery backend class view.
 
 /// Build the frontend class node the recovery backend expects from the original
 /// class facts. Fields the facts do not carry stay empty rather than inferred.
-pub fn class_node(facts: &diana_facts::p0::ClassFacts) -> Option<crate::frontend::ClassNode> {
+pub(crate) fn class_node(
+    facts: &diana_facts::p0::ClassFacts,
+) -> Option<crate::frontend::ClassNode> {
     use crate::frontend::{
         AccessInfo, ClassInfo, ClassNode, FieldInfo, FieldNode, MethodInfo, MethodNode,
     };

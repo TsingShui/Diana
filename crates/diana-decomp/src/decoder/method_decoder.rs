@@ -251,11 +251,21 @@ pub struct MethodDecoder<'a> {
 impl<'a> MethodDecoder<'a> {
     /// Create from MethodCode
     pub fn from_code(code: &'a MethodCode) -> Self {
+        Self::from_parts(&code.insns, &code.tries, code.registers_size, code.ins_size)
+    }
+
+    /// Build directly from an already checked method fact view.
+    pub fn from_parts(
+        insns: &'a [u16],
+        tries: &'a [TryCatchBlock],
+        registers_size: u16,
+        ins_size: u16,
+    ) -> Self {
         Self {
-            insns: &code.insns,
-            tries: &code.tries,
-            registers_size: code.registers_size,
-            ins_size: code.ins_size,
+            insns,
+            tries,
+            registers_size,
+            ins_size,
         }
     }
 

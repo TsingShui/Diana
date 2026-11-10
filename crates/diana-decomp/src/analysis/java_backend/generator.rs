@@ -352,7 +352,8 @@ impl JavaDecompiler {
             .iter()
             .filter(|method| !method.access_flags.is_bridge())
         {
-            if method.code().is_none() {
+            let has_input = methods.iter().any(|input| input.method().id == method.id);
+            if !has_input {
                 let declaration = match JavaMethodDeclaration::from_method_node(
                     class,
                     method,

@@ -1,14 +1,16 @@
-//! Thin Engine facade over the original DEX facts and the recovery backend.
+//! Engine facade over P0 class facts and P1 decoded methods.
 
 use std::sync::Arc;
 
 use crate::analysis::java_backend::{JavaDecompiler, JavaDecompilerConfig};
-use crate::frontend::{ClassNode, DexError, DexResult, MethodCode, MethodNode};
+use crate::frontend::{
+    ClassNode, DexError, DexResult, ExceptionHandler, MethodNode, TryCatchBlock,
+};
 use crate::input::{DexContainer, InputError, InputProblem, ProgramIndex};
 use crate::ir::analysis::ClassHierarchyIndex;
 use crate::ir::{AnalysisObserver, NullAnalysisObserver, CFG};
-use crate::local::LocalSymbols;
 use crate::p0::{ClassFacts, Fact};
+use crate::p1::{CheckedPrototype, CheckedReferenceFact, DecodedMethod};
 use crate::p9::{RenderOutcome, Rendered};
 use crate::{ByteOffset, ClassKey, DexId, ImageFact, ImageOrigin, MethodId, RequestError};
 
@@ -62,13 +64,20 @@ pub struct SingleMethodAnalysis {
     pub rendered: RenderOutcome,
 }
 
-/// Decode one method's original code into the recovery CFG.
-fn decode_method_code(code: &MethodCode, method: &MethodNode) -> DexResult<CFG> {
+/// Decode one P1 method directly into the recovery CFG.
+fn decode_decoded_method(method: &MethodNode, facts: &DecodedMethod<'_>) -> DexResult<CFG> {
+    let source = facts.source();
+    let bytes = source.instructions();
+    let mut insns = Vec::with_capacity(bytes.len() / 2);
+    for pair in bytes.chunks_exact(2) {
+        insns.push(u16::from_le_bytes([pair[0], pair[1]]));
+    }
+    let tries = tries(facts);
     let owner = method
         .info
         .declaring_class
         .parse::<crate::ir::ArgType>()
-        .map_err(|source| crate::frontend::DexError::InvalidDescriptor {
+        .map_err(|source| DexError::InvalidDescriptor {
             descriptor: method.info.declaring_class.clone(),
             source,
         })?;
@@ -82,7 +91,13 @@ fn decode_method_code(code: &MethodCode, method: &MethodNode) -> DexResult<CFG> 
         method.access_flags.is_static(),
     )
     .with_declared_synchronization(method.access_flags.is_synchronized());
-    let result = crate::decoder::method_decoder::MethodDecoder::from_code(code).decode();
+    let result = crate::decoder::method_decoder::MethodDecoder::from_parts(
+        &insns,
+        &tries,
+        source.registers_size(),
+        source.ins_size(),
+    )
+    .decode();
     let mut cfg = crate::ir::splitter::Splitter::new("method")
         .method(context)
         .instructions(result.insns)
@@ -90,65 +105,122 @@ fn decode_method_code(code: &MethodCode, method: &MethodNode) -> DexResult<CFG> 
         .registers(result.registers)
         .ins(result.ins)
         .build();
-    cfg.debug_info = code.debug_info.clone();
+    resolve_symbols(facts, &mut cfg)?;
     Ok(cfg)
 }
 
-/// Resolve the pool indices an IR still carries through a caller-supplied table.
-fn resolve_symbols(source: &dyn crate::local::SymbolSource, ir: &mut CFG) -> DexResult<()> {
+/// Resolve IR references directly from P1 checked reference facts.
+fn resolve_symbols(facts: &DecodedMethod<'_>, ir: &mut CFG) -> DexResult<()> {
     for block in ir.blocks.values_mut() {
         for insn in &mut block.insns {
-            if let Some(index) = insn.payload.method_index {
-                let raw = source
-                    .method(index)
-                    .ok_or(crate::frontend::DexError::InvalidMethodIndex(index))?;
-                let method = raw
-                    .parse::<crate::ir::MethodReference>()
-                    .map_err(|source| crate::frontend::DexError::InvalidMemberReference {
-                        reference: raw.to_string(),
-                        source,
-                    })?;
+            let pc = crate::CodeUnitOffset(insn.offset);
+            if insn.payload.method_index.is_some() {
+                let fact = reference(facts, pc)?;
+                let CheckedReferenceFact::Method {
+                    owner,
+                    name,
+                    prototype,
+                    ..
+                } = fact
+                else {
+                    return Err(DexError::Backend(format!(
+                        "method reference at {pc:?} has another kind"
+                    )));
+                };
+                let method = crate::ir::MethodReference {
+                    owner: descriptor(*owner)?,
+                    name: text(*name)?,
+                    descriptor: prototype_descriptor(prototype)?,
+                };
                 apply_invoke_return_type(insn, &method);
                 insn.payload.reference = Some(Box::new(crate::ir::MemberReference::Method(method)));
             }
-            if let Some(index) = insn.payload.field_index {
-                let raw = source
-                    .field(index)
-                    .ok_or(crate::frontend::DexError::InvalidFieldIndex(index))?;
-                let field = raw.parse::<crate::ir::FieldReference>().map_err(|source| {
-                    crate::frontend::DexError::InvalidMemberReference {
-                        reference: raw.to_string(),
-                        source,
-                    }
-                })?;
+            if insn.payload.field_index.is_some() {
+                let fact = reference(facts, pc)?;
+                let CheckedReferenceFact::Field {
+                    owner,
+                    name,
+                    field_type,
+                    ..
+                } = fact
+                else {
+                    return Err(DexError::Backend(format!(
+                        "field reference at {pc:?} has another kind"
+                    )));
+                };
+                let field = crate::ir::FieldReference {
+                    owner: descriptor(*owner)?,
+                    name: text(*name)?,
+                    field_type: descriptor(*field_type)?,
+                };
                 insn.payload.reference = Some(Box::new(crate::ir::MemberReference::Field(field)));
             }
-            if let Some(index) = insn.payload.string_index {
-                if insn.payload.string_value.is_none() {
-                    let units = source
-                        .string(index)
-                        .ok_or(crate::frontend::DexError::InvalidStringIndex(index))?;
-                    insn.payload.string_value =
-                        Some(Box::new(crate::ir::Utf16String::from_utf16(units.to_vec())));
-                }
+            if insn.payload.string_index.is_some() && insn.payload.string_value.is_none() {
+                let fact = reference(facts, pc)?;
+                let CheckedReferenceFact::String { value } = fact else {
+                    return Err(DexError::Backend(format!(
+                        "string reference at {pc:?} has another kind"
+                    )));
+                };
+                let units = value
+                    .units()
+                    .map_err(|error| DexError::Backend(error.to_string()))?;
+                insn.payload.string_value =
+                    Some(Box::new(crate::ir::Utf16String::from_utf16(units)));
             }
-            if let Some(index) = insn.payload.type_index {
-                if insn.payload.class_type.is_none() {
-                    let descriptor = source
-                        .ty(index)
-                        .ok_or(crate::frontend::DexError::InvalidTypeIndex(index))?;
-                    insn.payload.class_type =
-                        Some(Box::new(descriptor.parse::<crate::ir::ArgType>().map_err(
-                            |source| crate::frontend::DexError::InvalidDescriptor {
-                                descriptor: descriptor.to_string(),
-                                source,
-                            },
-                        )?));
-                }
+            if insn.payload.type_index.is_some() && insn.payload.class_type.is_none() {
+                let fact = reference(facts, pc)?;
+                let CheckedReferenceFact::Type { descriptor, .. } = fact else {
+                    return Err(DexError::Backend(format!(
+                        "type reference at {pc:?} has another kind"
+                    )));
+                };
+                insn.payload.class_type = Some(Box::new(self::descriptor(*descriptor)?));
             }
         }
     }
     Ok(())
+}
+
+fn reference<'a>(
+    facts: &'a DecodedMethod<'_>,
+    pc: crate::CodeUnitOffset,
+) -> DexResult<&'a CheckedReferenceFact<'a>> {
+    facts
+        .reference_fact(pc, crate::raw::ReferenceSlot::First)
+        .ok_or_else(|| DexError::Backend(format!("missing reference fact at {pc:?}")))?
+        .map_err(|error| DexError::Backend(error.to_string()))
+}
+
+fn text(value: crate::input::DexString<'_>) -> DexResult<String> {
+    value
+        .utf8_lossy()
+        .map(|text| text.into_owned())
+        .map_err(|error| DexError::Backend(error.to_string()))
+}
+
+fn descriptor(value: crate::input::DexString<'_>) -> DexResult<crate::ir::ArgType> {
+    let text = text(value)?;
+    text.parse().map_err(|source| DexError::InvalidDescriptor {
+        descriptor: text,
+        source,
+    })
+}
+
+fn prototype_descriptor(
+    prototype: &CheckedPrototype<'_>,
+) -> DexResult<crate::ir::MethodDescriptor> {
+    let mut parameters = Vec::new();
+    parameters
+        .try_reserve_exact(prototype.parameters().len())
+        .map_err(|_| DexError::Backend("prototype parameter allocation failed".to_owned()))?;
+    for parameter in prototype.parameters() {
+        parameters.push(descriptor(parameter.descriptor())?);
+    }
+    Ok(crate::ir::MethodDescriptor {
+        parameters,
+        return_type: descriptor(prototype.return_type())?,
+    })
 }
 
 /// The class hierarchy facts the backend needs, built from the supplied classes.
@@ -164,6 +236,39 @@ fn java_abi(classes: &[&ClassNode]) -> Arc<crate::analysis::java_backend::JavaSo
     ))
 }
 
+fn tries(facts: &DecodedMethod<'_>) -> Vec<TryCatchBlock> {
+    let boundaries: Vec<u32> = facts.try_boundaries().collect();
+    let mut blocks = Vec::new();
+    for pair in boundaries.chunks_exact(2) {
+        let (start, end) = (pair[0], pair[1]);
+        let clauses = facts
+            .catch_clauses_at(crate::CodeUnitOffset(start))
+            .unwrap_or_default();
+        let mut handlers = Vec::new();
+        for (exception, target) in clauses {
+            let handler = match exception {
+                Some(id) => facts
+                    .catch_type(crate::TypeId(id))
+                    .and_then(|fact| fact.descriptor().ok())
+                    .and_then(|text| text.utf8_lossy().ok())
+                    .and_then(|text| text.parse::<crate::ir::ArgType>().ok())
+                    .map_or_else(
+                        || ExceptionHandler::catch_all(target),
+                        |ty| ExceptionHandler::typed(ty, target),
+                    ),
+                None => ExceptionHandler::catch_all(target),
+            };
+            handlers.push(handler);
+        }
+        blocks.push(TryCatchBlock {
+            start_addr: start,
+            end_addr: end,
+            handlers,
+        });
+    }
+    blocks
+}
+
 fn apply_invoke_return_type(insn: &mut crate::ir::InsnNode, method: &crate::ir::MethodReference) {
     if insn.insn_type != crate::ir::InsnType::Invoke {
         return;
@@ -177,41 +282,30 @@ fn apply_invoke_return_type(insn: &mut crate::ir::InsnNode, method: &crate::ir::
     }
 }
 
-/// One method handed to the class entry: its declaration, original code and the
-/// identities its pool indices resolve to.
-struct MethodInput {
+struct MethodInput<'a> {
     pub method: MethodNode,
-    pub code: MethodCode,
-    pub symbols: LocalSymbols,
+    pub facts: DecodedMethod<'a>,
 }
 
-/// Everything the class entry needs about one class.
-struct ClassInput {
+struct ClassInput<'a> {
     pub class: ClassNode,
-    pub methods: Vec<MethodInput>,
+    pub methods: Vec<MethodInput<'a>>,
 }
 
-/// Per-method outcome of one class request.
 struct MethodOutcome {
     pub name: String,
     pub descriptor: String,
-    /// Present when this method alone could not be recovered.
     pub failure: Option<String>,
 }
 
-/// Class-level result: the assembled source plus one outcome per method.
 struct ClassOutput {
     pub source: String,
     pub methods: Vec<MethodOutcome>,
 }
 
-/// Recover one class the way the engine drives it: the class declaration is
-/// already established, methods decode and recover in parallel, then the class
-/// source is assembled once. A method that fails keeps its own classified
-/// outcome and never removes the others.
-fn decompile_class(
+fn decompile_class<'a>(
     declarations: &[&ClassNode],
-    input: ClassInput,
+    input: ClassInput<'a>,
 ) -> Result<ClassOutput, DexError> {
     use rayon::prelude::*;
 
@@ -223,40 +317,31 @@ fn decompile_class(
         Option<crate::analysis::ClassMethodInput>,
     )> = methods
         .into_par_iter()
-        .map(
-            |MethodInput {
-                 method,
-                 code,
-                 symbols,
-             }| {
-                let name = method.info.name.clone();
-                let descriptor = method.info.descriptor().to_string();
-                let recovered = decode_method_code(&code, &method).and_then(|mut cfg| {
-                    resolve_symbols(&symbols, &mut cfg)?;
-                    Ok(cfg)
-                });
-                match recovered {
-                    Ok(cfg) => (
-                        name,
-                        descriptor,
-                        None,
-                        Some(crate::analysis::ClassMethodInput::decoded(method, cfg)),
-                    ),
-                    Err(error) => (
-                        name,
-                        descriptor,
-                        Some(error.to_string()),
-                        Some(crate::analysis::ClassMethodInput::failed(
-                            method,
-                            crate::analysis::MethodRecoveryFailure::new(
-                                crate::analysis::MethodRecoveryStage::Decode,
-                                error,
-                            ),
-                        )),
-                    ),
-                }
-            },
-        )
+        .map(|MethodInput { method, facts }| {
+            let name = method.info.name.clone();
+            let descriptor = method.info.descriptor().to_string();
+            let recovered = decode_decoded_method(&method, &facts);
+            match recovered {
+                Ok(cfg) => (
+                    name,
+                    descriptor,
+                    None,
+                    Some(crate::analysis::ClassMethodInput::decoded(method, cfg)),
+                ),
+                Err(error) => (
+                    name,
+                    descriptor,
+                    Some(error.to_string()),
+                    Some(crate::analysis::ClassMethodInput::failed(
+                        method,
+                        crate::analysis::MethodRecoveryFailure::new(
+                            crate::analysis::MethodRecoveryStage::Decode,
+                            error,
+                        ),
+                    )),
+                ),
+            }
+        })
         .collect();
     let outcomes = prepared
         .iter()
@@ -348,9 +433,9 @@ impl<'a> Engine<'a> {
             .image(request.class.dex)
             .ok_or(RequestError::UnknownDex)?;
         let facts = image.index.class_facts_cached(request.class.class_def)?;
-        let mut node = crate::backend::class_node(&facts).ok_or(
-            RequestError::InternalInvariant("class node assembly failed"),
-        )?;
+        let node = crate::local::class_node(&facts).ok_or(RequestError::InternalInvariant(
+            "class node assembly failed",
+        ))?;
         let mut methods = Vec::new();
         let mut inputs = Vec::new();
         for entry in facts.methods() {
@@ -364,9 +449,9 @@ impl<'a> Engine<'a> {
             let Ok(source) = image.index.method_source(&facts, id) else {
                 continue;
             };
-            let crate::input::RawPrintable::Method(view) = source.raw() else {
+            if !matches!(source.raw(), crate::input::RawPrintable::Method(_)) {
                 continue;
-            };
+            }
             let Ok(decoded) = image.index.decode_method_source(&source) else {
                 continue;
             };
@@ -387,21 +472,9 @@ impl<'a> Engine<'a> {
                 prototype: method.info.descriptor().encode_utf16().collect(),
                 failure: None,
             });
-            let code =
-                crate::backend::method_code(view, crate::backend::tries(&image.index, &decoded));
-            if let Some(target) = node
-                .methods_mut()
-                .iter_mut()
-                .find(|method| method.id == id.0)
-            {
-                target.code = Some(code.clone());
-            }
-            let mut method = method;
-            method.code = Some(code.clone());
             inputs.push(MethodInput {
                 method,
-                code,
-                symbols: crate::backend::symbols(&image.index, &decoded),
+                facts: decoded,
             });
         }
 
@@ -432,7 +505,7 @@ impl<'a> Engine<'a> {
                     continue;
                 };
                 if text == descriptor {
-                    if let Some(node) = crate::backend::class_node(&other) {
+                    if let Some(node) = crate::local::class_node(&other) {
                         related.push(node);
                     }
                     break;
