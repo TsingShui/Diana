@@ -1,7 +1,6 @@
 //! Call-tree outline over the Engine's P0 declarations and P1 invoke sites.
 
 use diana_decomp::outline::{OutlineDepth, OutlineKind, OutlineMember};
-use diana_decomp::p0::Fact;
 use diana_decomp::{ClassKey, DexImage, Engine, ImageOrigin, InputId, RequestError};
 use serde::Serialize;
 
@@ -132,7 +131,7 @@ pub fn run(
     for node in outline.nodes {
         let at = match (node.kind, node.member) {
             (OutlineKind::Class, _) => Some(selection.class_at.clone()),
-            (_, Some(member)) => locator(&engine, &images, member).ok(),
+            (_, Some(member)) => locator(&images, member),
             _ => None,
         };
         nodes.push(Node {
@@ -156,33 +155,12 @@ pub fn run(
     })
 }
 
-fn locator(
-    engine: &Engine<'_>,
-    images: &ImageSet<'_>,
-    member: OutlineMember,
-) -> Result<String, RequestError> {
-    let facts = engine.class_facts(member.class)?;
-    let image = images
-        .images()
-        .get(member.class.dex.0 as usize)
-        .ok_or(RequestError::UnknownDex)?;
-    let entry = facts
-        .method_entry(member.method)
-        .ok_or(RequestError::InternalInvariant(
-            "outline member declaration was not delivered",
-        ))?;
-    let Fact::Present(declaration) = entry.declaration() else {
-        return Err(RequestError::InternalInvariant(
-            "outline member declaration is unavailable",
-        ));
-    };
-    Ok(at::method(
+fn locator(images: &ImageSet<'_>, member: OutlineMember) -> Option<String> {
+    let image = images.images().get(member.class.dex.0 as usize)?;
+    Some(at::method_index(
         image.entry.map(|entry| entry.0),
         image.logical.0,
         member.class.class_def.0,
         member.method.0,
-        facts.descriptor().units(),
-        declaration.name_units(),
-        declaration.prototype_units(),
     ))
 }

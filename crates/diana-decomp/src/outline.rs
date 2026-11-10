@@ -49,6 +49,8 @@ pub enum OutlineKind {
     Import,
     Method,
     Call,
+    /// A repeated or cyclic method that points at its first expansion.
+    Link,
 }
 
 impl OutlineKind {
@@ -59,6 +61,7 @@ impl OutlineKind {
             Self::Import => "import",
             Self::Method => "method",
             Self::Call => "call",
+            Self::Link => "link",
         }
     }
 }

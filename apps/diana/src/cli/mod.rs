@@ -683,6 +683,7 @@ fn query_command(
     let images = query.images().to_vec();
     let columns: &[&str] = match kind {
         QueryKind::Strings => &["at", "value"],
+        QueryKind::Classes => &["at", "descriptor"],
         _ => &["at"],
     };
     let command = match kind {

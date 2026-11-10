@@ -212,6 +212,12 @@ fn write_column(
             Some(value) => Ok(at::write_value(out, mode, value)?),
             None => Ok(()),
         },
+        "descriptor" => match &row.at {
+            Locator::Class { descriptor, .. }
+            | Locator::Method { descriptor, .. }
+            | Locator::Field { descriptor, .. } => Ok(at::write_value(out, mode, *descriptor)?),
+            Locator::String { .. } => Ok(()),
+        },
         _ => Ok(()),
     }?;
     if quoted {
@@ -228,13 +234,11 @@ fn write_locator(out: &mut Vec<u8>, locator: &Locator<'_>, mode: Mode) -> Result
             entry,
             logical,
             class_def,
-            descriptor,
+            ..
         } => {
             at::write_prefix(out, *entry, *logical);
             out.extend_from_slice(b":c");
             at::push_decimal(out, u64::from(*class_def));
-            out.extend_from_slice(b"::");
-            at::write_value(out, mode, *descriptor)?;
         }
         Locator::Method {
             entry,

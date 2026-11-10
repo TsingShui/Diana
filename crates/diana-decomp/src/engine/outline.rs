@@ -139,7 +139,7 @@ impl Builder<'_, '_> {
                     self.issue(format!("method#{} declaration is unavailable", method.0));
                     format!("method#{}", method.0)
                 },
-                |(name, prototype)| format!("{name}{prototype}"),
+                |(name, prototype)| simple_signature(&name, &prototype),
             );
         self.push(
             parent,
@@ -159,6 +159,7 @@ impl Builder<'_, '_> {
         let key = (self.class.dex.0, self.class.class_def.0, method.0);
         if let Some(first) = self.expanded.get(&key) {
             self.nodes[node].text.push_str(&format!(" -> see #{first}"));
+            self.nodes[node].kind = OutlineKind::Link;
             return;
         }
         self.expanded.insert(key, node);
@@ -234,7 +235,11 @@ impl Builder<'_, '_> {
         let owner = reference.owner.to_descriptor();
         let name = reference.name.clone();
         let prototype = reference.descriptor.to_string();
-        let text = format!("{}.{name}{prototype}", simple_owner(&owner));
+        let text = format!(
+            "{}.{}",
+            simple_owner(&owner),
+            simple_signature(&name, &prototype)
+        );
         let Some(location) = self.engine.class_location(&owner) else {
             if platform_owner(&owner) {
                 self.record_import(&owner, &name);
@@ -442,4 +447,79 @@ fn platform_owner(descriptor: &str) -> bool {
         .and_then(|value| value.strip_suffix(';'))
         .unwrap_or(descriptor);
     PREFIXES.iter().any(|prefix| name.starts_with(prefix))
+}
+
+/// Renders a JVM descriptor as a readable signature with simple type names.
+fn simple_signature(name: &str, descriptor: &str) -> String {
+    let Some((parameters, returns)) = split_prototype(descriptor) else {
+        return format!("{name}{descriptor}");
+    };
+    let mut text = format!("{name}(");
+    for (index, parameter) in parameters.iter().enumerate() {
+        if index > 0 {
+            text.push_str(", ");
+        }
+        text.push_str(parameter);
+    }
+    text.push(')');
+    if returns != "void" {
+        text.push_str(": ");
+        text.push_str(&returns);
+    }
+    text
+}
+
+fn split_prototype(descriptor: &str) -> Option<(Vec<String>, String)> {
+    let rest = descriptor.strip_prefix('(')?;
+    let end = rest.find(')')?;
+    let parameters = parse_types(&rest[..end])?;
+    let (returns, tail) = simple_type_at(&rest[end + 1..])?;
+    tail.is_empty().then_some((parameters, returns))
+}
+
+fn parse_types(mut text: &str) -> Option<Vec<String>> {
+    let mut types = Vec::new();
+    while !text.is_empty() {
+        let (ty, rest) = simple_type_at(text)?;
+        types.push(ty);
+        text = rest;
+    }
+    Some(types)
+}
+
+fn simple_type_at(text: &str) -> Option<(String, &str)> {
+    let mut dimensions = 0;
+    let mut index = 0;
+    while index < text.len() {
+        match text.as_bytes()[index] {
+            b'[' => {
+                dimensions += 1;
+                index += 1;
+            }
+            b'L' => {
+                let end = text[index..].find(';')? + index;
+                let name = &text[index + 1..end];
+                let simple = name.rsplit('/').next().unwrap_or(name);
+                let suffix = "[]".repeat(dimensions);
+                return Some((format!("{simple}{suffix}"), &text[end + 1..]));
+            }
+            byte => {
+                let ty = match byte {
+                    b'Z' => "boolean",
+                    b'B' => "byte",
+                    b'C' => "char",
+                    b'S' => "short",
+                    b'I' => "int",
+                    b'J' => "long",
+                    b'F' => "float",
+                    b'D' => "double",
+                    b'V' => "void",
+                    _ => return None,
+                };
+                let suffix = "[]".repeat(dimensions);
+                return Some((format!("{ty}{suffix}"), &text[index + 1..]));
+            }
+        }
+    }
+    None
 }

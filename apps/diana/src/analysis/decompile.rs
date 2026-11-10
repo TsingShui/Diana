@@ -162,6 +162,8 @@ pub(super) fn select_method(
     let mut found = None;
     let mut unavailable = facts.methods_issue();
     let mut not_read = false;
+    let index_only =
+        selector.method.is_some() && selector.name.is_empty() && selector.prototype.is_empty();
     for entry in facts.methods() {
         if let Some(id) = selector.method
             && entry.method().0 != id
@@ -170,8 +172,9 @@ pub(super) fn select_method(
         }
         match entry.declaration() {
             Fact::Present(declaration) => {
-                if declaration.name_units() != selector.name
-                    || declaration.prototype_units() != selector.prototype
+                if !index_only
+                    && (declaration.name_units() != selector.name
+                        || declaration.prototype_units() != selector.prototype)
                 {
                     if selector.method.is_some() {
                         return Err(SelectorError::InvalidIndex.into());

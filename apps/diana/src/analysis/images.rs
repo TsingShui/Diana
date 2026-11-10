@@ -278,7 +278,7 @@ fn scan_image(
             return Err(SelectorError::InvalidIndex);
         }
         let class = index.class(ClassDefId(id))?;
-        if !class.descriptor.matches(&selector.descriptor)? {
+        if !selector.descriptor.is_empty() && !class.descriptor.matches(&selector.descriptor)? {
             return Err(SelectorError::InvalidIndex);
         }
         return Ok(Some((ClassDefId(id), class.descriptor.units()?)));

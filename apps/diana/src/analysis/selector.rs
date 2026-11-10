@@ -97,10 +97,24 @@ fn number(text: &str) -> Option<u32> {
 /// Parses the canonical class-at, or a class descriptor / dotted class name.
 pub fn class(text: &str) -> Result<ClassSelector, SelectorError> {
     if let Some(((entry, logical), rest)) = at_parts(text)? {
-        let (class_def, rest) = rest
+        let rest = rest
             .strip_prefix('c')
-            .and_then(|value| value.split_once(':'))
-            .ok_or(SelectorError::Syntax("class-at requires c<class-def>::"))?;
+            .ok_or(SelectorError::Syntax("class-at requires c<class-def>"))?;
+        let (class_def, rest) = match rest.split_once(':') {
+            Some((class_def, rest)) => (class_def, rest),
+            None => (rest, ""),
+        };
+        let class_def = Some(number(class_def).ok_or(SelectorError::InvalidIndex)?);
+        if rest.is_empty() {
+            // Index-only locator: entry, logical and class_def identify the
+            // definition without repeating its descriptor.
+            return Ok(ClassSelector {
+                entry: Some(entry),
+                logical: Some(logical),
+                class_def,
+                descriptor: Vec::new(),
+            });
+        }
         let descriptor = rest
             .strip_prefix(':')
             .ok_or(SelectorError::Syntax("class-at requires ::<descriptor>"))?;
@@ -110,7 +124,7 @@ pub fn class(text: &str) -> Result<ClassSelector, SelectorError> {
         return Ok(ClassSelector {
             entry: Some(entry),
             logical: Some(logical),
-            class_def: Some(number(class_def).ok_or(SelectorError::InvalidIndex)?),
+            class_def,
             descriptor: units(descriptor),
         });
     }
@@ -160,10 +174,28 @@ pub fn method(text: &str) -> Result<MethodSelector, SelectorError> {
             .strip_prefix('c')
             .and_then(|value| value.split_once(':'))
             .ok_or(SelectorError::Syntax("method-at requires c<class-def>"))?;
-        let (method, rest) = rest
+        let rest = rest
             .strip_prefix('m')
-            .and_then(|value| value.split_once(':'))
             .ok_or(SelectorError::Syntax("method-at requires :m<method-id>"))?;
+        let (method, rest) = match rest.split_once(':') {
+            Some((method, rest)) => (method, rest),
+            None => (rest, ""),
+        };
+        if rest.is_empty() {
+            // Index-only locator: entry, class_def and method identify the
+            // definition without repeating its descriptor.
+            return Ok(MethodSelector {
+                class: ClassSelector {
+                    entry: Some(entry),
+                    logical: Some(logical),
+                    class_def: Some(number(class_def).ok_or(SelectorError::InvalidIndex)?),
+                    descriptor: Vec::new(),
+                },
+                method: Some(number(method).ok_or(SelectorError::InvalidIndex)?),
+                name: Vec::new(),
+                prototype: Vec::new(),
+            });
+        }
         let reference = rest.strip_prefix(':').ok_or(SelectorError::Syntax(
             "method-at requires ::<owner>-><name>(proto)",
         ))?;

@@ -81,6 +81,10 @@ pub fn method(
     )
 }
 
+pub fn method_index(entry: Option<usize>, logical: u32, class_def: u32, method: u32) -> String {
+    format!("{}:c{class_def}:m{method}", prefix(entry, logical))
+}
+
 pub fn field(
     entry: Option<usize>,
     logical: u32,
