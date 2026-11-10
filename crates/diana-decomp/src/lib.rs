@@ -66,8 +66,8 @@ pub use substrate::slots::{RegisterSlot, SlotWidth};
 
 // Engine facade over original facts and the recovery backend.
 pub use engine::{
-    ClassAnalysis, ClassSource, DexImage, Engine, MethodSelector, MethodSource, Request,
-    SingleMethodAnalysis,
+    ClassAnalysis, ClassSource, DexImage, Engine, ImageLoader, MethodSelector, MethodSource,
+    Request, SingleMethodAnalysis,
 };
 pub use outline::{
     OutlineDepth, OutlineDocument, OutlineIssue, OutlineKind, OutlineMember, OutlineNode,

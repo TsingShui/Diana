@@ -35,7 +35,7 @@ const EXAMPLES: &str = "Examples:
   diana manifest app.apk
 Copy classes.at into get-class; copy methods.at into get-method and outline-method.
 Locators name the entry and index, so follow-up commands skip the APK-wide scan.
-Outline expands same-DEX calls only; classes in other DEX files stay [other-dex] leaves.
+Outline follows calls across every DEX; a class outside the input stays [other-dex].
 Java may contain explicit stubs for constructs the recovery cannot express.";
 
 use output::{Failure, Format, publish};

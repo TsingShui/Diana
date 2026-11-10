@@ -1,7 +1,7 @@
 //! Call-tree outline over the Engine's P0 declarations and P1 invoke sites.
 
 use diana_decomp::outline::{OutlineDepth, OutlineKind, OutlineMember};
-use diana_decomp::{ClassKey, DexImage, Engine, ImageOrigin, InputId, RequestError};
+use diana_decomp::{ClassKey, Engine, RequestError};
 use serde::Serialize;
 
 use super::at;
@@ -71,28 +71,16 @@ pub fn run(
             )));
         }
     };
-    let (images, resolved) = ImageSet::resolve(scope, class_selector, super::image_jobs())
-        .map_err(DecompileError::from)?;
+    // The index names every class in the input, so a call into another image
+    // expands without opening every image up front: each loader runs when the
+    // walk first reaches that image.
+    let (images, resolved, locations) =
+        ImageSet::resolve_indexed(scope, class_selector, super::image_jobs())
+            .map_err(DecompileError::from)?;
     let selected = images.selection(&resolved);
-    let mut dex_images = Vec::new();
-    dex_images
-        .try_reserve(images.images().len())
-        .map_err(|_| RequestError::PlatformCapacity)?;
-    for image in images.images() {
-        dex_images.push(DexImage {
-            bytes: images.bytes(image).map_err(DecompileError::from)?,
-            header_offset: image.header_offset,
-            origin: ImageOrigin {
-                input: InputId(
-                    u64::try_from(image.entry.map_or(0, |entry| entry.0))
-                        .map_err(|_| RequestError::PlatformCapacity)?,
-                ),
-            },
-        });
-    }
-    let engine = Engine::open(dex_images)
-        .map_err(DecompileError::from)?
-        .with_method_jobs(jobs);
+    let engine = Engine::open_lazy(images.loaders().map_err(DecompileError::from)?)
+        .with_method_jobs(jobs)
+        .with_class_locations(locations);
     let class = ClassKey {
         dex: selected.image.dex,
         class_def: selected.class_def,
@@ -141,17 +129,22 @@ pub fn run(
             at,
         });
     }
+    let mut issues = Vec::new();
+    issues
+        .try_reserve(outline.issues.len() + images.index_issues().len())
+        .map_err(|_| RequestError::PlatformCapacity)?;
+    issues.extend(outline.issues.into_iter().map(|issue| Issue {
+        at: None,
+        detail: issue.detail,
+    }));
+    issues.extend(images.index_issues().iter().map(|detail| Issue {
+        at: None,
+        detail: detail.clone(),
+    }));
     Ok(Document {
         root: outline.root,
         nodes,
-        issues: outline
-            .issues
-            .into_iter()
-            .map(|issue| Issue {
-                at: None,
-                detail: issue.detail,
-            })
-            .collect(),
+        issues,
     })
 }
 

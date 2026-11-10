@@ -36,12 +36,20 @@ pub struct Request {
     pub method: Option<MethodSelector>,
 }
 
+/// Produces one image's bytes on first use.
+pub type ImageLoader<'a> = Box<dyn FnOnce() -> Option<DexImage<'a>> + 'a>;
+
 pub struct Engine<'a> {
-    images: Vec<IndexedImage<'a>>,
+    images: Vec<std::cell::OnceCell<Option<IndexedImage<'a>>>>,
+    /// Loaders for images that are inflated only when first referenced.
+    loaders: Vec<std::cell::RefCell<Option<ImageLoader<'a>>>>,
     jobs: Option<usize>,
     /// Descriptor hash to packed (image position, class_def) for cross-image
     /// outline resolution. Built once on first use.
     locations: std::sync::OnceLock<std::collections::HashMap<u64, u32>>,
+    /// True when the caller supplied the whole-APK index, which needs no
+    /// per-hit descriptor verification.
+    trusted_locations: bool,
 }
 
 pub struct ClassSource {
@@ -305,9 +313,14 @@ impl<'a> Engine<'a> {
             indexed.push(IndexedImage::open(image, dex)?);
         }
         Ok(Self {
-            images: indexed,
+            images: indexed
+                .into_iter()
+                .map(|image| std::cell::OnceCell::from(Some(image)))
+                .collect(),
+            loaders: Vec::new(),
             jobs: None,
             locations: std::sync::OnceLock::new(),
+            trusted_locations: false,
         })
     }
 
@@ -320,18 +333,79 @@ impl<'a> Engine<'a> {
             })?;
         images.push(IndexedImage::open(image, dex)?);
         Ok(Self {
-            images,
+            images: images
+                .into_iter()
+                .map(|image| std::cell::OnceCell::from(Some(image)))
+                .collect(),
+            loaders: Vec::new(),
             jobs: None,
             locations: std::sync::OnceLock::new(),
+            trusted_locations: false,
         })
     }
 
-    pub(in crate::engine) fn image(&self, dex: DexId) -> Option<&IndexedImage<'a>> {
-        self.images.iter().find(|image| image.dex == dex)
+    /// Opens images on demand: each loader runs when its image is first used.
+    pub fn open_lazy(loaders: Vec<ImageLoader<'a>>) -> Self {
+        let count = loaders.len();
+        Self {
+            images: (0..count).map(|_| std::cell::OnceCell::new()).collect(),
+            loaders: loaders
+                .into_iter()
+                .map(|loader| std::cell::RefCell::new(Some(loader)))
+                .collect(),
+            jobs: None,
+            locations: std::sync::OnceLock::new(),
+            trusted_locations: false,
+        }
     }
 
+    /// Supplies a whole-APK descriptor index built by the caller.
+    ///
+    /// Keys are [`Engine::class_descriptor_hash`] values and values are
+    /// [`Engine::pack_class_location`] words. The index answers cross-image
+    /// lookups without opening every image.
+    pub fn with_class_locations(mut self, locations: std::collections::HashMap<u64, u32>) -> Self {
+        if self.locations.set(locations).is_ok() {
+            self.trusted_locations = true;
+        }
+        self
+    }
+
+    /// Descriptor hash used by the supplied class index.
+    pub fn class_descriptor_hash(descriptor: &str) -> u64 {
+        descriptor_hash(descriptor)
+    }
+
+    /// Packs an image position and class_def the way the index expects.
+    pub fn pack_class_location(position: usize, class_def: ClassDefId) -> Option<u32> {
+        let position = u32::try_from(position).ok()?;
+        (position < (1 << 8) && class_def.0 < (1 << 24)).then_some((position << 24) | class_def.0)
+    }
+
+    pub(in crate::engine) fn image(&self, dex: DexId) -> Option<&IndexedImage<'a>> {
+        // Positions and identities agree for images the engine opened itself;
+        // `focus` keeps a caller-provided identity, so fall back to a search
+        // over the images that are already open.
+        if let Some(image) = self.image_at(dex.0 as usize) {
+            if image.dex == dex {
+                return Some(image);
+            }
+        }
+        self.images
+            .iter()
+            .filter_map(|cell| cell.get().and_then(Option::as_ref))
+            .find(|image| image.dex == dex)
+    }
+
+    /// Returns the image at one position, inflating it on first use.
     pub(in crate::engine) fn image_at(&self, position: usize) -> Option<&IndexedImage<'a>> {
-        self.images.get(position)
+        let cell = self.images.get(position)?;
+        cell.get_or_init(|| {
+            let loader = self.loaders.get(position)?.borrow_mut().take()?;
+            let image = loader()?;
+            IndexedImage::open(image, DexId(u32::try_from(position).ok()?)).ok()
+        })
+        .as_ref()
     }
 
     /// Locates a class definition across every opened image.
@@ -344,9 +418,27 @@ impl<'a> Engine<'a> {
         descriptor: &str,
     ) -> Option<(usize, ClassDefId)> {
         let hash = descriptor_hash(descriptor);
+        if self.trusted_locations {
+            let packed = *self.locations.get()?.get(&hash)?;
+            let position = (packed >> 24) as usize;
+            let class_def = ClassDefId(packed & 0x00ff_ffff);
+            // Verify against an image that is already open; never open one just
+            // to re-check an index the caller built from the same descriptors.
+            if self
+                .images
+                .get(position)
+                .is_some_and(|cell| cell.get().is_some())
+            {
+                return self.verified_location(position, class_def, descriptor);
+            }
+            return Some((position, class_def));
+        }
         let locations = self.locations.get_or_init(|| {
             let mut locations = std::collections::HashMap::new();
-            for (position, image) in self.images.iter().enumerate() {
+            for (position, cell) in self.images.iter().enumerate() {
+                let Some(image) = cell.get().and_then(Option::as_ref) else {
+                    continue;
+                };
                 let position = match u32::try_from(position) {
                     Ok(position) => position,
                     Err(_) => break,
@@ -359,9 +451,9 @@ impl<'a> Engine<'a> {
                     let Ok(text) = view.descriptor.utf8_lossy() else {
                         continue;
                     };
-                    locations
-                        .entry(descriptor_hash(&text))
-                        .or_insert((position << 24) | (key.0 & 0x00ff_ffff));
+                    if let Some(packed) = Self::pack_class_location(position as usize, key) {
+                        locations.entry(descriptor_hash(&text)).or_insert(packed);
+                    }
                 }
             }
             locations
@@ -374,7 +466,10 @@ impl<'a> Engine<'a> {
             }
         }
         // A hash collision or a packed overflow falls back to the exact scan.
-        for (position, image) in self.images.iter().enumerate() {
+        for position in 0..self.images.len() {
+            let Some(image) = self.image_at(position) else {
+                continue;
+            };
             for ordinal in 0..image.index.class_count() {
                 let key = ClassDefId(ordinal);
                 if self.verified_location(position, key, descriptor).is_some() {
@@ -391,7 +486,7 @@ impl<'a> Engine<'a> {
         class_def: ClassDefId,
         descriptor: &str,
     ) -> Option<(usize, ClassDefId)> {
-        let image = self.images.get(position)?;
+        let image = self.image_at(position)?;
         let view = image.index.class(class_def).ok()?;
         let text = view.descriptor.utf8_lossy().ok()?;
         (text == descriptor).then_some((position, class_def))
