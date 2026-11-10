@@ -513,6 +513,13 @@ pub struct MethodSource {
 }
 
 impl Engine<'_> {
+    /// Recover one class through the backend and wrap the text as a rendered result.
+    pub fn analyze_external(&self, request: Request) -> Result<crate::p9::Rendered, RequestError> {
+        let class = request.class;
+        let source = self.class_source(request)?;
+        Ok(crate::p9::Rendered::external(class, source.text))
+    }
+
     /// Recover one class through the backend from the original P0/P1 facts.
     pub fn class_source(&self, request: Request) -> Result<ClassSource, RequestError> {
         let image = self

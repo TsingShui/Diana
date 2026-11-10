@@ -24,6 +24,7 @@ pub(super) fn render(out: &mut Buffer, source: &SourceProduct) -> Result<(), Ren
                 false,
             )
         }
+        SourceProduct::External(external) => out.put(&external.text),
         SourceProduct::ClassStopped(stop) | SourceProduct::MethodStopped(stop) => {
             let lookup = Lookup::new(stop.partial_name_uses(), stop.partial_name_targets())?;
             out.fmt(format_args!("assembly_unavailable<{:?}>;\n", stop.error()))?;

@@ -80,3 +80,36 @@ fn the_backend_keeps_try_ranges_from_original_facts() {
     }
     assert!(saw_try, "backend produced no handler structure");
 }
+
+#[test]
+fn the_backend_result_renders_as_a_rendered_product() {
+    let bytes = fixture("atoms/expr-arith");
+    let engine = Engine::open(vec![DexImage {
+        bytes: &bytes,
+        header_offset: ByteOffset(0),
+        origin: ImageOrigin { input: InputId(0) },
+    }])
+    .unwrap();
+    let index = diana_decomp::input::ProgramIndex::open(&bytes).unwrap();
+    let mut found = None;
+    for ordinal in 0..index.class_count() {
+        let key = ClassDefId(ordinal);
+        let facts = index.class_facts_cached(key).unwrap();
+        if String::from_utf16(facts.descriptor().units()).unwrap() == "Lfixture/ExprArith;" {
+            found = Some(key);
+        }
+    }
+    let class = ClassKey {
+        dex: DexId(0),
+        class_def: found.expect("fixture class"),
+    };
+    let rendered = engine
+        .analyze_external(Request {
+            class,
+            method: None,
+        })
+        .unwrap();
+    assert!(rendered.text().contains("ExprArith"));
+    assert!(rendered.spans().is_empty());
+    assert_eq!(rendered.source().class(), class);
+}

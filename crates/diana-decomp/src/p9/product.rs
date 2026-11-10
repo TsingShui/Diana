@@ -93,6 +93,16 @@ pub enum SourceProduct {
     ClassStopped(Arc<crate::p8::AssemblyStop>),
     #[serde(serialize_with = "shared")]
     MethodStopped(Arc<crate::p8::AssemblyStop>),
+    /// Source text recovered by the pluggable backend from original facts.
+    #[serde(serialize_with = "shared")]
+    External(Arc<ExternalProduct>),
+}
+
+/// One class recovered outside the staged chain, with the text it produced.
+#[derive(Serialize)]
+pub struct ExternalProduct {
+    pub(super) class: ClassKey,
+    pub(super) text: String,
 }
 impl SourceProduct {
     pub fn class(&self) -> ClassKey {
@@ -100,6 +110,7 @@ impl SourceProduct {
             Self::Class(r) => r.key(),
             Self::Method(r) => r.facts().owner(),
             Self::ClassStopped(s) | Self::MethodStopped(s) => s.facts().owner(),
+            Self::External(external) => external.class,
         }
     }
 }
@@ -115,6 +126,22 @@ pub struct Rendered {
     pub(super) issues: Vec<RenderIssue>,
 }
 impl Rendered {
+    /// Wrap source text recovered by the pluggable backend. It carries no staged
+    /// product, no source spans and no render issues.
+    pub(crate) fn external(class: ClassKey, text: String) -> Self {
+        Self {
+            outline: None,
+            class,
+            notation: "dexdec-java",
+            source: SourceProduct::External(Arc::new(ExternalProduct {
+                class,
+                text: text.clone(),
+            })),
+            text,
+            spans: Vec::new(),
+            issues: Vec::new(),
+        }
+    }
     pub fn outline(&self) -> Option<&super::Outline> {
         self.outline.as_ref()
     }
