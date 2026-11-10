@@ -627,7 +627,17 @@ mod tests {
         });
         class.set_parent_class("Lcom/example/Outer;");
 
-        let model = JavaClassModel::from_class_node(&class, Vec::new(), None)
+        // A non-static inner class keeps its outer instance, so the nested
+        // member must not be rewritten into a static one.
+        let outer = OuterInstanceField {
+            reference: crate::ir::FieldReference {
+                owner: ArgType::object("com/example/Outer$Inner"),
+                name: "this$0".to_string(),
+                field_type: ArgType::object("com/example/Outer"),
+            },
+            outer_type: ArgType::object("com/example/Outer"),
+        };
+        let model = JavaClassModel::from_class_node(&class, Vec::new(), Some(outer))
             .expect("class model")
             .as_nested_source_member(&class);
 
