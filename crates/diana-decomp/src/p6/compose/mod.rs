@@ -114,5 +114,5 @@ pub(super) fn construct(
     super::condition_layout::construct(f, g)?;
     super::decision_layout::construct(storage, f, g)?;
     super::surface::construct(storage, f, g)?;
-    super::suspension::construct(storage, f, g, s)
+    Ok(())
 }

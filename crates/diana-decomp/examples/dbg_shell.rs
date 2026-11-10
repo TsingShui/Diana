@@ -1785,31 +1785,13 @@ fn region_json(method: diana_decomp::p7::MethodInspection<'_, '_>, details: bool
         result["regions"]=json!(f.regions().iter().map(|r|json!({"id":r.id().0,"kind":format!("{:?}",r.kind()),"decision":r.decision(),"entry":r.entry().map(|n|n.0),"follow":r.follow().map(|n|n.0),"continuation":format!("{:?}",r.continuation()),"parent":f.parent(r.id()).map(|r|r.0),"children":r.children().iter().map(|r|r.0).collect::<Vec<_>>(),"nodes":f.region_nodes(r.id()).map(|nodes|nodes.iter().map(|n|n.0).collect::<Vec<_>>())})).collect::<Vec<_>>());
         result["controls"] = json!(f.controls());
         result["control_root"] = json!(f.control_root());
-        result["coroutine_body"] = json!(f.coroutine_body().map(|body| json!({
-            "root":body.root().0,"prefix":body.prefix().iter().map(|r|r.0).collect::<Vec<_>>(),"dispatch":body.dispatch().0,
-            "initial":body.initial().0,"resume":body.resume().0,"invalid":body.invalid().0,
-            "entry_check":body.entry_check().0,
-            "sequence":body.sequence().iter().map(|r|r.0).collect::<Vec<_>>(),
-            "operations":body.operations().iter().map(|op|json!({"operation":op.operation().0,"role":format!("{:?}",op.role())})).collect::<Vec<_>>(),
-            "implicit_locals":body.implicit_locals().iter().map(|local|local.0).collect::<Vec<_>>()
-        })));
-        result["coroutine_loop"] = json!(f.coroutine_loop().map(|p| json!({
-            "initial":p.initial().iter().map(|n|n.0).collect::<Vec<_>>(),
-            "body":p.body().iter().map(|n|n.0).collect::<Vec<_>>(),
-            "tail":p.tail().iter().map(|n|n.0).collect::<Vec<_>>(),
-            "abi":p.abi().iter().map(|n|n.0).collect::<Vec<_>>(),
-            "abi_entries":p.abi_entries().iter().map(|n|n.0).collect::<Vec<_>>(),
-            "condition":format!("{:?}",p.condition()),"call":p.call().0,"state":p.state(),
-            "protocol_operations":p.protocol_operations().iter().map(|op|op.0).collect::<Vec<_>>(),
-            "normal_links":p.normal_links().iter().map(|l|l.0).collect::<Vec<_>>(),
-            "spills":p.spills().iter().map(|(put,get)|[put.0,get.0]).collect::<Vec<_>>()
-        })));
-        result["coroutine_flow"] = json!(f.coroutine_flow().map(|p|json!({
-            "source":p.source().iter().map(|r|r.0).collect::<Vec<_>>(),
-            "source_nodes":p.source_nodes().iter().map(|n|n.0).collect::<Vec<_>>(),
-            "abi":p.abi().iter().map(|n|n.0).collect::<Vec<_>>(),
-            "gotos":p.gotos().iter().map(|l|l.0).collect::<Vec<_>>(),
-            "sites":p.sites().iter().map(|s|json!({"state":s.state(),"call":s.call().0,"guard":s.guard().0,"normal":s.normal().0,"suspended":s.suspended().0,"resume":s.resume().iter().map(|n|n.0).collect::<Vec<_>>(),"spills":s.spills().iter().map(|(a,b)|[a.0,b.0]).collect::<Vec<_>>() })).collect::<Vec<_>>()
+        result["protocol"] = json!(f.protocol().map(|p| json!({
+            "root":p.root.0,"entry_check":p.entry_check.0,
+            "source_nodes":p.source_nodes.iter().map(|n|n.0).collect::<Vec<_>>(),
+            "operations":p.operations.iter().map(|event|json!({"operation":event.operation.0,"role":format!("{:?}",event.role)})).collect::<Vec<_>>(),
+            "abi_entries":p.abi_entries.iter().map(|n|n.0).collect::<Vec<_>>(),
+            "iteration":p.iteration.as_ref().map(|p|json!({"control":p.control.0,"condition":format!("{:?}",p.condition),"implicit":p.implicit.map(|(a,b)|[a.0,b.0])})),
+            "calls":p.calls.iter().map(|s|json!({"call":s.call.0,"state":s.state,"guard":s.guard.0,"predicate":s.predicate.0,"continuation_argument":s.continuation_argument,"normal":s.normal.0,"suspended":s.suspended.0,"publication":s.publication.map(|(a,b)|[a.0,b.0]),"resume":s.resume.iter().map(|n|n.0).collect::<Vec<_>>(),"spills":s.spills.iter().map(|(a,b)|[a.0,b.0]).collect::<Vec<_>>() })).collect::<Vec<_>>()
         })));
         result["suspensions"] = json!(f.suspensions().iter().map(|s| json!({
             "dispatch":s.dispatch().0,"control":s.control().0,"state":s.state(),"call":s.call().0,

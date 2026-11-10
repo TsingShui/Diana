@@ -20,11 +20,11 @@ fn two_reentries_recover_the_loop_and_keep_the_negative_exit() {
         "(ILkotlin/coroutines/Continuation;)Ljava/lang/Object;",
         |facts, code, rendered| {
             assert!(
-                facts.coroutine_loop().is_none(),
+                facts.protocol().unwrap().calls.len() == 2,
                 "multi-site input must not use the single-site loop plan"
             );
-            let plan = facts.coroutine_flow().unwrap();
-            let cycle = plan.cycle().unwrap();
+            let plan = facts.protocol().unwrap();
+            let cycle = plan.iteration.as_ref().unwrap();
             let header = code
                 .controls()
                 .iter()
@@ -36,15 +36,15 @@ fn two_reentries_recover_the_loop_and_keep_the_negative_exit() {
                     _ => None,
                 })
                 .expect("ordinary loop control");
-            assert_eq!(plan.sites().len(), 2);
-            assert!(!cycle.body().is_empty());
-            assert_eq!(header.0, cycle.header().0);
+            assert_eq!(plan.calls.len(), 2);
+            assert!(!plan.source_nodes.is_empty());
+            assert_eq!(header.0, cycle.condition.node().0);
             assert!(matches!(
-                code.emission().transfers()[cycle.implicit_latch().0 as usize].spelling,
+                code.emission().transfers()[cycle.implicit.unwrap().0.0 as usize].spelling,
                 TransferSpelling::Fallthrough
             ));
             assert!(matches!(
-                code.emission().transfers()[cycle.initial_header().0 as usize].spelling,
+                code.emission().transfers()[cycle.implicit.unwrap().1.0 as usize].spelling,
                 TransferSpelling::Fallthrough
             ));
             let source = executable(rendered.text());
@@ -67,15 +67,15 @@ fn checksum_captures_and_effects_stay_on_the_original_sides_of_suspension() {
         "total",
         "(IILkotlin/coroutines/Continuation;)Ljava/lang/Object;",
         |facts, code, rendered| {
-            let plan = facts.coroutine_flow().unwrap();
-            assert!(plan.cycle().is_some());
-            assert_eq!(plan.sites().len(), 2);
+            let plan = facts.protocol().unwrap();
+            assert!(plan.iteration.as_ref().is_some());
+            assert_eq!(plan.calls.len(), 2);
             assert!(
-                plan.sites()
+                plan.calls
                     .iter()
-                    .find(|s| s.state() == 2)
+                    .find(|s| s.state == 2)
                     .unwrap()
-                    .spills()
+                    .spills
                     .len()
                     >= 4
             );

@@ -95,7 +95,8 @@ pub(super) fn construct(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> 
     }
     // ABI text remains an operation action: state publication is still an
     // execution-order barrier before expression covering selects its operands.
-    for &op in &plan.operations {
+    for event in &plan.operations {
+        let op = event.operation;
         let node = c.op_nodes[op.0 as usize].ok_or(bug("protocol event lost its portion"))?;
         for action in &mut c.code.emission.blocks[node.0 as usize].actions {
             if let BodyAction::Statement {
@@ -178,11 +179,11 @@ pub(super) fn finish(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> {
     }
     // Existing interval correspondence still owns protocol aliases. This is
     // storage metadata, not another executable loop or a new reachability pass.
-    if let Some(loop_plan) = c.planned.facts().coroutine_loop() {
+    if let Some(interval) = &plan.forwarding {
         let mut forwarded = Vec::new();
-        for &link in loop_plan.normal_links() {
-            if !loop_plan
-                .body()
+        for &link in &interval.links {
+            if !interval
+                .repeated
                 .contains(&c.planned.facts().links()[link.0 as usize].from())
             {
                 continue;
@@ -217,7 +218,7 @@ pub(super) fn finish(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> {
                     {
                         continue;
                     }
-                    if forwardable(c, loop_plan, link, destination, source) {
+                    if forwardable(c, interval, &plan.operations, link, destination, source) {
                         push(
                             &mut forwarded,
                             ProtocolCopy {
@@ -273,7 +274,7 @@ fn visible_storage(
     code: &MethodCode,
     nodes: impl Iterator<Item = crate::p6::NodeId>,
     transfers: impl Iterator<Item = TransferId>,
-    protocol: &[crate::p2::OpId],
+    protocol: &[crate::p6::ProtocolEvent],
 ) -> Result<Vec<bool>, ExpressionError> {
     let mut visible = super::build::filled(code.locals.len(), false)?;
     let mut mark = |source: Option<crate::p5::LocalId>| {
@@ -285,7 +286,10 @@ fn visible_storage(
         let block = &code.blocks[node.0 as usize];
         for index in block.original_operations.clone() {
             let source = &code.operations[index as usize];
-            if protocol.contains(&source.source) {
+            if protocol
+                .iter()
+                .any(|event| event.operation == source.source)
+            {
                 continue;
             }
             let Some(id) = source.statement else { continue };
@@ -366,7 +370,8 @@ fn visible_storage(
 }
 fn forwardable(
     c: &Context<'_, '_>,
-    plan: &crate::p6::CoroutineLoopPlan,
+    interval: &crate::p6::CopyInterval,
+    events: &[crate::p6::ProtocolEvent],
     copied_at: crate::p6::LinkId,
     destination: StorageId,
     source: StorageId,
@@ -377,12 +382,7 @@ fn forwardable(
                 == Some(crate::p5::LocalId(destination.0))
         })
     };
-    for &node in plan
-        .initial()
-        .iter()
-        .chain(plan.tail())
-        .chain(std::iter::once(&plan.condition().node()))
-    {
+    for &node in &interval.outside {
         let original = &c.planned.facts().nodes()[node.0 as usize];
         for index in original.operations() {
             if c.planned
@@ -405,11 +405,11 @@ fn forwardable(
     }
     let mut ready = false;
     let mut used = false;
-    for &node in plan.body() {
+    for &node in &interval.repeated {
         let original = &c.planned.facts().nodes()[node.0 as usize];
         for index in original.operations() {
             let operation = crate::p2::OpId(index);
-            if plan.protocol_operations().contains(&operation) {
+            if events.iter().any(|event| event.operation == operation) {
                 continue;
             }
             let Some(Ok(uses)) = c.planned.storage_facts().operation_uses(operation) else {

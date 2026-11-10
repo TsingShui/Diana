@@ -588,20 +588,45 @@ structure from the remaining replacement; the complete design is not accepted.
 
 | Design area | Delivered | Remaining |
 |---|---|---|
-| Common control grammar | P6 delivers named `ControlRecord` roles and source/ABI/origin scopes; P7 keeps one selected arena and protocol associations; P9 traverses the common root. | Planning `RegionKind` and raw recognition plans remain. Common leaf/reference mapping is incomplete. |
+| Common control grammar | P6 delivers named `ControlRecord` roles and source/ABI/origin scopes; P7 keeps one selected arena and protocol associations; P9 traverses the common root. | Planning `RegionKind` and per-family nomination algorithms remain; raw nominations are private and consumed once. Common leaf/reference mapping is incomplete. |
 | Fragment composition | One installer updates parents/current owners after reservation. Sequence ordering and successor-arm admission share one kernel; accepted interfaces reach commitment without another outlet scan. Nested scopes share active ancestor exclusions. One leaf permutation/ranges replaces owned descendant lists; whole-owner admission uses counts. | Per-family candidate/part walks and original semantic membership facts remain. General interface-based contraction and affected-neighbor scheduling are incomplete. |
 | Operation ownership | Operation records own body data; original coordinates replace the statement arena and reverse map. Nested `Evaluation`/`nested_at` identify one execution owner. Selected operation phases replace copied body phase lists. | Declaration/copy check attachments, forwarding and other placement bookkeeping remain to be consolidated where their semantics permit. |
 | Expression covers | Ordinary and condition consumers share ordered suffix forests. Required checks use the same producer and installer. Statement, terminal and later-read check searches share one bounded cursor. | Dependency-driven reconsideration and broader cross-context cover obligations are incomplete. |
 | Local fixed points | Selected roots leave the active suffix; rejected condition proposals leave the product unchanged. | The P6 and P7 pipelines still run ordered passes. Neither stage has the complete dependency-driven local convergence specified by the design. |
 | Finalization | P9 consumes selected layouts and nested operations. Existing declaration and label passes remain. Loop/flow visibility shares one P7-owned observer query. | Protocol-specific traversal is removed. Copy forwarding and a single final declaration/label derivation still need replacement. |
 
-Against `f6e7893`, the current engine production tree has 67,954 physical Rust
-source lines, compared with 68,495 at the baseline: 541 fewer lines. This count
+Against `f6e7893`, the current engine production tree has 67,835 physical Rust
+source lines, compared with 68,495 at the baseline: 660 fewer lines. This count
 includes every `*.rs` file under `crates/diana-decomp/src/`, including shared
 helpers, comments and blank lines; tests and documentation are excluded. The
 small reduction does not establish the design's substantial size objective or
 comparable recovery capability. Full replacement acceptance and a comparative
 recovery evaluation remain unrun.
+
+## Consumed protocol nominations
+
+P6 no longer retains CoroutineBodyPlan, CoroutineLoopPlan or CoroutineFlowPlan
+as published products. Its private nominations are consumed once into common
+controls and one ProtocolPlan. Call/state/resume/spill associations remain,
+and source leaves are enumerated from that selected grammar. P7 consumes only
+the existing narrow forwarding interval; it cannot read a raw loop program.
+Protocol event records expose their original IDs and roles without per-form
+getter facades. RegionFacts construction remains sealed.
+
+The [outside-observer challenge](../../quality/fixtures/kotlin/protocol-candidate-lifetimes/README.md)
+adds an observed captured checksum after loop completion, including zero
+iterations. Copy forwarding keeps that storage; canonical call correspondence
+retains the actual resume corridor and original spill fields. Baseline `f565f88`
+and this replacement produce identical class text for that input and six relevant
+protocol fixture groups, with no construction or rendering failures. These are
+compatibility observations and path reviews, not executed coroutine/VM behavior.
+The published duplicate representations and their conversion copies are removed.
+Physical production source is 119 lines smaller than `f565f88`, counting the
+private nomination module and all shared helpers. The larger size, convergence
+and comparative-recovery objectives remain incomplete. Validation for this
+representation slice: 43 scoped nextest tests, strict all-feature engine/example/
+relevant-test Clippy, formatting and desensitization pass. Historical test API
+adaptation and coroutine/VM execution remain deferred/unrun.
 
 ## Protocol controls and successful publication
 

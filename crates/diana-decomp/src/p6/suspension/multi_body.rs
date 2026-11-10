@@ -8,13 +8,13 @@ pub(super) fn construct(
     f: &mut RegionFacts,
     g: &Graph,
     s: &super::super::dominance::Structure,
-) -> Result<(), RegionError> {
+) -> Result<Option<CoroutineFlowPlan>, RegionError> {
     let prototype = storage.execution().declaration().prototype_units();
     let suffix = b"Lkotlin/coroutines/Continuation;)Ljava/lang/Object;";
     if prototype.len() < suffix.len()
         || !units(&prototype[prototype.len() - suffix.len()..], suffix)
     {
-        return Ok(());
+        return Ok(None);
     }
     for index in 0..f.nodes.len() {
         let node = NodeId(super::super::build::id(index)?);
@@ -29,13 +29,12 @@ pub(super) fn construct(
         }
         match candidate(storage, f, g, s, node)? {
             Ok(plan) => {
-                f.coroutine_flow = Some(plan);
-                break;
+                return Ok(Some(plan));
             }
             Err(reason) => reject(storage, RegionId(node.0), reason),
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 fn candidate(
@@ -780,7 +779,6 @@ fn candidate(
         (
             roots,
             Some(CoroutineCyclePlan {
-                header,
                 condition: LoopCondition {
                     node: header,
                     repeat,
@@ -805,7 +803,7 @@ fn candidate(
     };
     let mut covered = super::super::build::filled(f.nodes.len(), false)?;
     if let Some(cycle) = &cycle {
-        covered[cycle.header.0 as usize] = true;
+        covered[cycle.condition.node.0 as usize] = true;
     }
     for &id in &source {
         for &node in f.members(id)? {
@@ -823,7 +821,9 @@ fn candidate(
     let mut gotos = Vec::new();
     for link in &f.links {
         if cycle.as_ref().is_some_and(|p| {
-            link.from == p.header || link.id == p.implicit_latch || link.id == p.initial_header
+            link.from == p.condition.node
+                || link.id == p.implicit_latch
+                || link.id == p.initial_header
         }) {
             continue;
         }
@@ -907,7 +907,7 @@ fn candidate(
         }
     }
     if let Some(cycle) = &cycle {
-        active[cycle.header.0 as usize] = true;
+        active[cycle.condition.node.0 as usize] = true;
     }
     let mut completions = Vec::new();
     for (index, &used) in active.iter().enumerate() {
@@ -917,7 +917,7 @@ fn candidate(
         let id = RegionId(super::super::build::id(index)?);
         let region = &f.regions[index];
         if cycle.as_ref().is_some_and(|p| {
-            matches!(region.continuation,Continuation::Goto(label)if label.0==p.header.0)
+            matches!(region.continuation,Continuation::Goto(label)if label.0==p.condition.node.0)
                 && (p.body.last() == Some(&id) || p.initial.last() == Some(&id))
         }) {
             push(&mut completions, (id, None))?;
@@ -961,8 +961,8 @@ fn candidate(
     }
     Ok(Ok(CoroutineFlowPlan {
         source,
+        entry_check,
         abi,
-        source_nodes,
         sites,
         protocol_operations: protocol,
         gotos,

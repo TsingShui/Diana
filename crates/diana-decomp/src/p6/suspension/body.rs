@@ -8,9 +8,9 @@ pub(super) fn construct(
     storage: &StorageMethod<'_>,
     f: &mut RegionFacts,
     graph: &Graph,
-) -> Result<(), RegionError> {
+) -> Result<Option<CoroutineBodyPlan>, RegionError> {
     if f.suspensions.len() != 1 {
-        return Ok(());
+        return Ok(None);
     }
     match candidate(storage, f, graph)? {
         Ok(body) => {
@@ -26,7 +26,7 @@ pub(super) fn construct(
                     body.sequence.len()
                 );
             }
-            f.coroutine_body = Some(body);
+            return Ok(Some(body));
         }
         Err(reason) => {
             if cfg!(feature = "trace-passes") {
@@ -43,7 +43,7 @@ pub(super) fn construct(
             }
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 fn candidate(
@@ -197,9 +197,9 @@ fn candidate(
     for index in prefix_range {
         let operation = OpId(index);
         let role = if operation == marker {
-            CoroutineOperationRole::Marker
+            ProtocolRole::Marker
         } else if operation == label_read {
-            CoroutineOperationRole::LabelRead
+            ProtocolRole::LabelRead
         } else {
             require!(
                 matches!(
@@ -214,13 +214,13 @@ fn candidate(
                             .all(|d| matches!(d.materialization(), Materialization::Literal(_)))),
                 "body_entry_prefix_contains_nonprotocol_work"
             );
-            CoroutineOperationRole::Literal
+            ProtocolRole::Literal
         };
         require!(
             plain_operation(storage, f, operation),
             "body_entry_prefix_has_reference_issue_phase_or_handler"
         );
-        push(&mut operations, CoroutineOperation { operation, role })?;
+        push(&mut operations, ProtocolEvent { operation, role })?;
     }
     require!(
         plain_operation(storage, f, plan.state_store),
@@ -228,16 +228,16 @@ fn candidate(
     );
     push(
         &mut operations,
-        CoroutineOperation {
+        ProtocolEvent {
             operation: plan.state_store,
-            role: CoroutineOperationRole::PublishState,
+            role: ProtocolRole::PublishState,
         },
     )?;
     push(
         &mut operations,
-        CoroutineOperation {
+        ProtocolEvent {
             operation: plan.resume_check,
-            role: CoroutineOperationRole::ResumeCheck,
+            role: ProtocolRole::ResumeCheck,
         },
     )?;
     let invalid_operations = invalid_arm(storage, f, graph, invalid, decision.tests[1].remaining)?;
@@ -249,9 +249,9 @@ fn candidate(
     for operation in invalid_operations {
         push(
             &mut operations,
-            CoroutineOperation {
+            ProtocolEvent {
                 operation,
-                role: CoroutineOperationRole::InvalidState,
+                role: ProtocolRole::InvalidState,
             },
         )?;
     }
@@ -394,7 +394,7 @@ fn definition_op(storage: &StorageMethod<'_>, local: LocalId) -> Option<OpId> {
 }
 fn closed_values(
     storage: &StorageMethod<'_>,
-    operations: &[CoroutineOperation],
+    operations: &[ProtocolEvent],
     terminals: &[crate::p2::BlockId],
     copies: [crate::p5::PlanId; 2],
     locals: &[LocalId],

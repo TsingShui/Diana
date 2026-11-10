@@ -104,7 +104,7 @@ fn a_loop_keeps_constructor_storage_after_immediate_or_resumed_completion() {
         "total",
         "(IILkotlin/coroutines/Continuation;)Ljava/lang/Object;",
         |facts, code, rendered| {
-            assert!(facts.coroutine_loop().is_some());
+            assert!(facts.protocol().unwrap().iteration.as_ref().is_some());
             retained_reads(code, rendered);
             let text = rendered.text();
             assert!(text.contains("while (") && text.contains("ReadBox("));
@@ -122,7 +122,7 @@ fn a_multi_site_body_keeps_constructor_reads_before_its_early_return() {
         "walk",
         "(ILkotlin/coroutines/Continuation;)Ljava/lang/Object;",
         |facts, code, rendered| {
-            assert_eq!(facts.coroutine_flow().unwrap().sites().len(), 3);
+            assert_eq!(facts.protocol().unwrap().calls.len(), 3);
             retained_reads(code, rendered);
             let text = rendered.text();
             assert_eq!(text.matches("OwnedFlow.observe(").count(), 1);

@@ -25,7 +25,15 @@ Sequence, Loop and Scope records reference the same original leaves. The selecte
 projection adds compounds. Control and transfer IDs remain the same in P7;
 shared immutable lists retain no predecessor lease.
 
-P6 projects established protocol plans into this grammar. Scope modes distinguish
+P6 projects private protocol nominations into this grammar and consumes each
+nomination once. Published RegionFacts stores one ProtocolPlan, not the original
+per-form body/loop/flow programs. The common plan exposes immutable original-ID
+call/state/resume/spill associations and ordered protocol-event annotations.
+Source-node enumeration follows the selected grammar. P7's copy forwarding
+consumes a private interval with established repeated and outside observers;
+that interval supplies no alternative execution program.
+
+P6 constructs these records before publication. Scope modes distinguish
 source code, readable ABI attachments and zero-width origins. An annotated leaf
 completion retains its original terminal/marker correspondence and the supplied
 normal transfer. A qualified call's successful result copy has
@@ -683,7 +691,7 @@ construction failures retain their classified behavior.
 ### Closed source-body alternative
 
 A local plan alone does not authorize a source-body replacement. P6 additionally
-publishes `CoroutineBodyPlan` when the selected root Sequence contains a straight ABI
+qualifies a private body nomination when the selected root Sequence contains a straight ABI
 entry prefix, that dispatch and the original common-tail controls. The alternative
 contains the original initial body followed by those same tail controls; it adds
 no execution copy. The initial failure check remains an ordinary instruction.
@@ -715,7 +723,7 @@ available. Resource and construction errors retain the ordinary classified stop.
 
 ### Ordinary-method suspend loop alternative
 
-P6 publishes `CoroutineLoopPlan` for an ordinary Object-returning method whose
+P6 qualifies a private loop nomination for an ordinary Object-returning method whose
 last declared parameter is Continuation and whose original dispatch has state
 zero, one positive resume state, and a closed invalid-state exception arm.
 The existing SCC product nominates the first cyclic node reached by the initial
@@ -739,7 +747,7 @@ it reconstructs no register state or SSA. Every normal merge assignment needs
 its resumed counterpart. Changed captures, foreign fields, resumed-only effects,
 copy gaps, and unmatched result delivery reject this alternative locally.
 
-The plan partitions every original node into initial work, repeated work, exit
+The private nomination partitions every original node into initial work, repeated work, exit
 work, the head predicate, or ABI attachments. It delivers original normal links,
 protocol operations, spill pairs, and ABI targets within the source body.
 P7 consumes this order without planning another loop; P9 renders it without
@@ -751,7 +759,7 @@ Normal requests run no independent output verifier or repeated SCC/dominance pas
 
 ### Multi-site continuation body
 
-`CoroutineFlowPlan` consumes the same P5 accesses, original P6 graph, shared SCC
+The multi-site nomination consumes the same P5 accesses, original P6 graph, shared SCC
 facts and selected region hierarchy. Its site records associate each positive
 dispatch state with one original call/marker pair, private resume corridor and
 the original normal/resume copy merge. The owning P6 construction MUST establish
@@ -770,7 +778,7 @@ alternative below; cycle shapes it cannot establish also retain the original
 layout. These alternatives are not whole-method output qualification or
 independent runtime verification.
 
-The complete alternative also supplies selected guard-control replacements,
+The owning nomination also supplies selected guard-control replacements,
 source completions after retiring the ABI dispatch scope, and explicit ABI
 link spellings. P6 MUST match a guard's original normal child and preserve all
 normal copies. A source completion naming a retired scope needs its established
@@ -780,8 +788,8 @@ If and the projected guard, or borrow case-body completion from the ABI layout.
 
 #### Closed cyclic source body
 
-When selected source content contains a cycle, the same `CoroutineFlowPlan`
-carries a `CoroutineCyclePlan` only if the shared SCC facts and selected region
+When selected source content contains a cycle, the multi-site nomination
+retains its original iteration correspondence only if the shared SCC facts and selected region
 hierarchy establish one closed head-tested loop. P6 MUST require one cyclic
 component among the selected source nodes, a unique initial corridor from the
 original case-zero entry to that component, and a header that is the component's

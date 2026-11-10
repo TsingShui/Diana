@@ -17,6 +17,8 @@ use crate::p5::{
 use crate::raw::ReferenceSlot;
 
 mod body;
+mod nomination;
+pub(in crate::p6) use nomination::*;
 mod facts;
 mod loop_body;
 mod multi_body;
@@ -26,12 +28,13 @@ pub(super) fn construct(
     f: &mut RegionFacts,
     graph: &Graph,
     structure: &super::dominance::Structure,
-) -> Result<(), RegionError> {
-    multi_body::construct(storage, f, graph, structure)?;
-    if f.coroutine_flow.is_some() {
-        return Ok(());
+) -> Result<Option<Nomination>, RegionError> {
+    if let Some(plan) = multi_body::construct(storage, f, graph, structure)? {
+        return Ok(Some(Nomination::Flow(plan)));
     }
-    loop_body::construct(storage, f, graph, structure)?;
+    if let Some(plan) = loop_body::construct(storage, f, graph, structure)? {
+        return Ok(Some(Nomination::Loop(plan)));
+    }
     let flow = storage.execution();
     let d = flow.declaration();
     if !units(d.name_units(), b"invokeSuspend")
@@ -45,7 +48,7 @@ pub(super) fn construct(
         || !matches!(flow.owner_facts().superclass(), crate::p0::Fact::Present(name)
             if units(name.units(), b"Lkotlin/coroutines/jvm/internal/SuspendLambda;"))
     {
-        return Ok(());
+        return Ok(None);
     }
     let this = storage
         .facts()
@@ -70,7 +73,7 @@ pub(super) fn construct(
             _ => None,
         });
     let (Some(this), Some(parameter)) = (this, parameter) else {
-        return Ok(());
+        return Ok(None);
     };
     let mut saw_dispatch = false;
     for region_index in 0..f.regions.len() {
@@ -362,7 +365,7 @@ pub(super) fn construct(
             flow.method_id().0
         );
     }
-    body::construct(storage, f, graph)
+    Ok(body::construct(storage, f, graph)?.map(Nomination::Body))
 }
 
 fn reject(storage: &StorageMethod<'_>, dispatch: RegionId, reason: &str) {

@@ -1,7 +1,9 @@
 //! Projects established protocol associations into the ordinary control grammar.
 //! Recognition stays in P6 suspension; this constructor runs no new graph solver.
 
+use super::super::suspension::Nomination;
 use super::*;
+use crate::p2::OpId;
 use crate::recovery::{BodyEnd, ControlRecord, SourceMode};
 
 fn nodes(f: &RegionFacts, source: &[NodeId]) -> Result<Vec<RegionId>, RegionError> {
@@ -64,7 +66,7 @@ fn cycle(
     body: Vec<RegionId>,
     tail: Vec<RegionId>,
     test: LoopCondition,
-) -> Result<RegionId, RegionError> {
+) -> Result<(RegionId, RegionId), RegionError> {
     let predicate_control = f.labels[test.node.0 as usize].owner;
     f.controls[predicate_control.0 as usize].end = Some(BodyEnd::None);
     f.controls[predicate_control.0 as usize].continuation = Some(Continuation::None);
@@ -90,7 +92,7 @@ fn cycle(
     for child in tail {
         push(&mut children, child)?;
     }
-    sequence(f, children)
+    Ok((sequence(f, children)?, loop_control))
 }
 fn leaf_end(f: &mut RegionFacts, node: NodeId, end: BodyEnd) {
     let id = f.labels[node.0 as usize].owner;
@@ -137,18 +139,43 @@ fn selected_nodes(f: &RegionFacts, root: RegionId) -> Result<Vec<NodeId>, Region
     Ok(result)
 }
 
+fn events(source: Vec<OpId>) -> Result<Vec<ProtocolEvent>, RegionError> {
+    let mut result = Vec::new();
+    for operation in source {
+        push(
+            &mut result,
+            ProtocolEvent {
+                operation,
+                role: ProtocolRole::Abi,
+            },
+        )?;
+    }
+    Ok(result)
+}
+
 pub(super) fn construct(
     storage: &StorageMethod<'_>,
     f: &mut RegionFacts,
     g: &Graph,
+    nomination: Option<Nomination>,
 ) -> Result<(), RegionError> {
-    let flow = f.coroutine_flow.take();
-    let repeated = f.coroutine_loop.take();
-    let single = f.coroutine_body.take();
-    let built = (|| {
-        let (source, abi, mut plan) = if let Some(p) = &flow {
+    let Some(nomination) = nomination else {
+        return Ok(());
+    };
+    let (
+        source,
+        abi,
+        calls,
+        operations,
+        abi_entries,
+        hidden_locals,
+        iteration,
+        forwarding,
+        entry_check,
+    ) = match nomination {
+        Nomination::Flow(p) => {
             let mut calls = Vec::new();
-            for s in &p.sites {
+            for s in p.sites {
                 push(
                     &mut calls,
                     ProtocolCall {
@@ -160,6 +187,8 @@ pub(super) fn construct(
                         normal: s.normal,
                         suspended: s.suspended,
                         publication: None,
+                        resume: s.resume,
+                        spills: s.spills,
                     },
                 )?;
             }
@@ -201,46 +230,44 @@ pub(super) fn construct(
             for &link in p.gotos.iter().chain(&p.abi_gotos) {
                 goto(f, link);
             }
-            let source = if let Some(c) = &p.cycle {
+            let (source, iteration) = if let Some(c) = p.cycle {
                 next(f, c.implicit_latch);
                 next(f, c.initial_header);
-                cycle(
-                    storage,
-                    f,
-                    g,
-                    super::super::build::copy(&c.initial)?,
-                    super::super::build::copy(&c.body)?,
-                    super::super::build::copy(&c.tail)?,
-                    c.condition,
-                )?
+                let (source, control) =
+                    cycle(storage, f, g, c.initial, c.body, c.tail, c.condition)?;
+                (
+                    source,
+                    Some(ProtocolIteration {
+                        control,
+                        condition: c.condition,
+                        implicit: Some((c.implicit_latch, c.initial_header)),
+                    }),
+                )
             } else {
-                sequence(f, super::super::build::copy(&p.source)?)?
+                (sequence(f, p.source)?, None)
             };
             (
                 source,
                 sequence(f, nodes(f, &p.abi)?)?,
-                ProtocolPlan {
-                    root: source,
-                    calls,
-                    operations: super::super::build::copy(&p.protocol_operations)?,
-                    source_nodes: super::super::build::copy(&p.source_nodes)?,
-                    abi_entries: super::super::build::copy(&p.abi_entries)?,
-                    hidden_locals: Vec::new(),
-                },
+                calls,
+                events(p.protocol_operations)?,
+                p.abi_entries,
+                Vec::new(),
+                iteration,
+                None,
+                p.entry_check,
             )
-        } else if let Some(p) = &repeated {
-            let guard_node = p.guard;
-            let terminal = f.nodes[guard_node.0 as usize].block;
-            let normal = p.normal;
-            let suspended = p.suspended;
+        }
+        Nomination::Loop(p) => {
+            let terminal = f.nodes[p.guard.0 as usize].block;
             leaf_end(
                 f,
-                guard_node,
+                p.guard,
                 BodyEnd::Annotated {
                     terminal,
                     mode: SourceMode::Origins,
-                    normal,
-                    suspended,
+                    normal: p.normal,
+                    suspended: p.suspended,
                 },
             );
             for &node in p.initial.iter().chain(&p.body).chain(&p.tail) {
@@ -257,7 +284,7 @@ pub(super) fn construct(
                     next(f, link);
                 }
             }
-            let source = cycle(
+            let (source, control) = cycle(
                 storage,
                 f,
                 g,
@@ -266,44 +293,52 @@ pub(super) fn construct(
                 nodes(f, &p.tail)?,
                 p.condition,
             )?;
-            let mut source_nodes = super::super::build::copy(&p.initial)?;
-            for &node in p
-                .body
-                .iter()
-                .chain(&p.tail)
-                .chain(std::iter::once(&p.condition.node))
-            {
-                push(&mut source_nodes, node)?;
+            let abi = sequence(f, nodes(f, &p.abi)?)?;
+            let calls = vec_one(ProtocolCall {
+                call: p.call,
+                continuation_argument: p.continuation_argument,
+                state: p.state,
+                guard: p.guard,
+                predicate: terminal,
+                normal: p.normal,
+                suspended: p.suspended,
+                publication: None,
+                resume: p.resume,
+                spills: p.spills,
+            })?;
+            let mut outside = p.initial;
+            for node in p.tail {
+                push(&mut outside, node)?;
             }
+            push(&mut outside, p.condition.node)?;
+            let forwarding = CopyInterval {
+                outside,
+                repeated: p.body,
+                links: p.normal_links,
+            };
             (
                 source,
-                sequence(f, nodes(f, &p.abi)?)?,
-                ProtocolPlan {
-                    root: source,
-                    calls: vec_one(ProtocolCall {
-                        call: p.call,
-                        continuation_argument: p.continuation_argument,
-                        state: p.state,
-                        guard: guard_node,
-                        predicate: terminal,
-                        normal,
-                        suspended,
-                        publication: None,
-                    })?,
-                    operations: super::super::build::copy(&p.protocol_operations)?,
-                    source_nodes,
-                    abi_entries: super::super::build::copy(&p.abi_entries)?,
-                    hidden_locals: Vec::new(),
-                },
+                abi,
+                calls,
+                events(p.protocol_operations)?,
+                p.abi_entries,
+                Vec::new(),
+                Some(ProtocolIteration {
+                    control,
+                    condition: p.condition,
+                    implicit: None,
+                }),
+                Some(forwarding),
+                p.entry_check,
             )
-        } else if let Some(p) = &single {
+        }
+        Nomination::Body(p) => {
             let s = *f
                 .suspensions
                 .first()
                 .ok_or(bug("closed protocol lost its call association"))?;
             guard(f, s.control, s.header, s.normal_body)?;
-            let mut source_only = vec_one(s.suspended_body)?;
-            f.controls[s.control.0 as usize].source_only = std::mem::take(&mut source_only).into();
+            f.controls[s.control.0 as usize].source_only = vec_one(s.suspended_body)?.into();
             let guard_node = g.terminal_node[s.predicate.0 as usize];
             leaf_end(
                 f,
@@ -317,8 +352,8 @@ pub(super) fn construct(
             );
             f.copies[s.normal_copy.0 as usize].owner = CopyOwner::Publication(s.call);
             next(f, s.normal);
-            f.controls[p.root.0 as usize].children = super::super::build::copy(&p.sequence)?.into();
-            let mut abi_children = super::super::build::copy(&p.prefix)?;
+            f.controls[p.root.0 as usize].children = p.sequence.into();
+            let mut abi_children = p.prefix;
             let decision = f.regions[p.dispatch.0 as usize]
                 .decision
                 .as_ref()
@@ -334,59 +369,62 @@ pub(super) fn construct(
             }
             push(&mut abi_children, p.resume)?;
             push(&mut abi_children, p.invalid)?;
-            let mut operations = Vec::new();
-            for op in &p.operations {
-                push(&mut operations, op.operation)?;
-            }
-            let source_nodes = selected_nodes(f, p.root)?;
+            let calls = vec_one(ProtocolCall {
+                call: s.call,
+                continuation_argument: s.continuation_argument,
+                state: s.state,
+                guard: guard_node,
+                predicate: s.predicate,
+                normal: s.normal,
+                suspended: s.suspended,
+                publication: Some((s.normal_copy, s.merged)),
+                resume: super::super::build::copy(f.members(p.resume)?)?,
+                spills: Vec::new(),
+            })?;
+            let entries = vec_one(
+                f.regions[p.initial.0 as usize]
+                    .entry
+                    .ok_or(bug("protocol initial body lost its entry"))?,
+            )?;
             (
                 p.root,
                 sequence(f, abi_children)?,
-                ProtocolPlan {
-                    root: p.root,
-                    calls: vec_one(ProtocolCall {
-                        call: s.call,
-                        continuation_argument: s.continuation_argument,
-                        state: s.state,
-                        guard: guard_node,
-                        predicate: s.predicate,
-                        normal: s.normal,
-                        suspended: s.suspended,
-                        publication: Some((s.normal_copy, s.merged)),
-                    })?,
-                    operations,
-                    source_nodes,
-                    abi_entries: vec_one(
-                        f.regions[p.initial.0 as usize]
-                            .entry
-                            .ok_or(bug("protocol initial body lost its entry"))?,
-                    )?,
-                    hidden_locals: super::super::build::copy(&p.implicit_locals)?,
-                },
+                calls,
+                p.operations,
+                entries,
+                p.implicit_locals,
+                None,
+                None,
+                p.entry_check,
             )
-        } else {
-            return Ok(());
-        };
-        let abi = scope(
-            f,
-            abi,
-            SourceMode::Abi,
-            "// Diana: ABI entry/reentry, resume and invalid-state paths",
-        )?;
-        let source = scope(
-            f,
-            source,
-            SourceMode::Code,
-            "// Diana: inferred suspend body; original ABI facts retained above",
-        )?;
-        let mut children = vec_one(abi)?;
-        push(&mut children, source)?;
-        plan.root = sequence(f, children)?;
-        f.protocol = Some(plan);
-        Ok(())
-    })();
-    f.coroutine_flow = flow;
-    f.coroutine_loop = repeated;
-    f.coroutine_body = single;
-    built
+        }
+    };
+    let source_nodes = selected_nodes(f, source)?;
+    let abi = scope(
+        f,
+        abi,
+        SourceMode::Abi,
+        "// Diana: ABI entry/reentry, resume and invalid-state paths",
+    )?;
+    let source = scope(
+        f,
+        source,
+        SourceMode::Code,
+        "// Diana: inferred suspend body; original ABI facts retained above",
+    )?;
+    let mut children = vec_one(abi)?;
+    push(&mut children, source)?;
+    let root = sequence(f, children)?;
+    f.protocol = Some(ProtocolPlan {
+        root,
+        calls,
+        operations,
+        source_nodes,
+        abi_entries,
+        hidden_locals,
+        iteration,
+        forwarding,
+        entry_check,
+    });
+    Ok(())
 }

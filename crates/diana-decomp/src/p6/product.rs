@@ -1054,7 +1054,8 @@ impl SuspensionPlan {
 /// Source-body order over an established suspension. ABI-only code remains
 /// explicitly attached, so it is neither treated as pure nor erased as dead code.
 #[derive(Clone, Copy, Debug)]
-pub enum CoroutineOperationRole {
+pub enum ProtocolRole {
+    Abi,
     Marker,
     LabelRead,
     Literal,
@@ -1063,266 +1064,9 @@ pub enum CoroutineOperationRole {
     InvalidState,
 }
 #[derive(Clone, Copy, Debug)]
-pub struct CoroutineOperation {
-    pub(super) operation: OpId,
-    pub(super) role: CoroutineOperationRole,
-}
-impl CoroutineOperation {
-    pub fn operation(&self) -> OpId {
-        self.operation
-    }
-    pub fn role(&self) -> CoroutineOperationRole {
-        self.role
-    }
-}
-#[derive(Debug)]
-pub struct CoroutineBodyPlan {
-    pub(super) root: RegionId,
-    pub(super) prefix: Vec<RegionId>,
-    pub(super) dispatch: RegionId,
-    pub(super) initial: RegionId,
-    pub(super) resume: RegionId,
-    pub(super) invalid: RegionId,
-    pub(super) entry_check: OpId,
-    pub(super) sequence: Vec<RegionId>,
-    pub(super) operations: Vec<CoroutineOperation>,
-    pub(super) implicit_locals: Vec<crate::p5::LocalId>,
-}
-/// A closed normal-run loop with one continuation reentry. The original node
-/// partition remains intact; this is a selected presentation over those nodes.
-#[derive(Debug)]
-pub struct CoroutineLoopPlan {
-    pub(super) initial: Vec<NodeId>,
-    pub(super) body: Vec<NodeId>,
-    pub(super) tail: Vec<NodeId>,
-    pub(super) abi: Vec<NodeId>,
-    pub(super) abi_entries: Vec<NodeId>,
-    pub(super) condition: LoopCondition,
-    pub(super) call: OpId,
-    pub(super) continuation_argument: u32,
-    pub(super) state: i32,
-    pub(super) guard: NodeId,
-    pub(super) normal: LinkId,
-    pub(super) suspended: LinkId,
-    pub(super) protocol_operations: Vec<OpId>,
-    pub(super) normal_links: Vec<LinkId>,
-    pub(super) spills: Vec<(OpId, OpId)>,
-}
-/// Source order selected from the existing hierarchy for a closed acyclic
-/// continuation protocol. Original controls and all ABI nodes remain owned.
-#[derive(Debug)]
-pub struct CoroutineFlowPlan {
-    pub(super) source: Vec<RegionId>,
-    pub(super) abi: Vec<NodeId>,
-    pub(super) source_nodes: Vec<NodeId>,
-    pub(super) sites: Vec<CoroutineSite>,
-    pub(super) protocol_operations: Vec<OpId>,
-    pub(super) gotos: Vec<LinkId>,
-    pub(super) abi_entries: Vec<NodeId>,
-    pub(super) guards: Vec<CoroutineGuardControl>,
-    pub(super) completions: Vec<(RegionId, Option<NodeId>)>,
-    pub(super) abi_gotos: Vec<LinkId>,
-    pub(super) retired_transfers: Vec<LinkId>,
-    pub(super) cycle: Option<CoroutineCyclePlan>,
-    pub(super) explicit_predicates: Vec<NodeId>,
-}
-#[derive(Debug)]
-pub struct CoroutineCyclePlan {
-    pub(super) header: NodeId,
-    pub(super) condition: LoopCondition,
-    pub(super) initial: Vec<RegionId>,
-    pub(super) body: Vec<RegionId>,
-    pub(super) tail: Vec<RegionId>,
-    pub(super) implicit_latch: LinkId,
-    pub(super) initial_header: LinkId,
-}
-impl CoroutineCyclePlan {
-    pub fn header(&self) -> NodeId {
-        self.header
-    }
-    pub fn condition(&self) -> LoopCondition {
-        self.condition
-    }
-    pub fn initial(&self) -> &[RegionId] {
-        &self.initial
-    }
-    pub fn body(&self) -> &[RegionId] {
-        &self.body
-    }
-    pub fn tail(&self) -> &[RegionId] {
-        &self.tail
-    }
-    pub fn implicit_latch(&self) -> LinkId {
-        self.implicit_latch
-    }
-    pub fn initial_header(&self) -> LinkId {
-        self.initial_header
-    }
-}
-#[derive(Clone, Copy, Debug)]
-pub struct CoroutineGuardControl {
-    pub(super) control: RegionId,
-    pub(super) header: RegionId,
-    pub(super) normal: RegionId,
-}
-impl CoroutineGuardControl {
-    pub fn control(&self) -> RegionId {
-        self.control
-    }
-    pub fn header(&self) -> RegionId {
-        self.header
-    }
-    pub fn normal(&self) -> RegionId {
-        self.normal
-    }
-}
-#[derive(Clone, Debug)]
-pub struct CoroutineSite {
-    pub(super) state: i32,
-    pub(super) call: OpId,
-    pub(super) continuation_argument: u32,
-    pub(super) guard: NodeId,
-    pub(super) normal: LinkId,
-    pub(super) suspended: LinkId,
-    pub(super) resume: Vec<NodeId>,
-    pub(super) spills: Vec<(OpId, OpId)>,
-}
-impl CoroutineFlowPlan {
-    pub fn cycle(&self) -> Option<&CoroutineCyclePlan> {
-        self.cycle.as_ref()
-    }
-    pub fn explicit_predicates(&self) -> &[NodeId] {
-        &self.explicit_predicates
-    }
-    pub fn guards(&self) -> &[CoroutineGuardControl] {
-        &self.guards
-    }
-    pub fn completions(&self) -> &[(RegionId, Option<NodeId>)] {
-        &self.completions
-    }
-    pub fn abi_gotos(&self) -> &[LinkId] {
-        &self.abi_gotos
-    }
-    pub fn retired_transfers(&self) -> &[LinkId] {
-        &self.retired_transfers
-    }
-    pub fn source(&self) -> &[RegionId] {
-        &self.source
-    }
-    pub fn abi(&self) -> &[NodeId] {
-        &self.abi
-    }
-    pub fn source_nodes(&self) -> &[NodeId] {
-        &self.source_nodes
-    }
-    pub fn sites(&self) -> &[CoroutineSite] {
-        &self.sites
-    }
-    pub fn protocol_operations(&self) -> &[OpId] {
-        &self.protocol_operations
-    }
-    pub fn gotos(&self) -> &[LinkId] {
-        &self.gotos
-    }
-    pub fn abi_entries(&self) -> &[NodeId] {
-        &self.abi_entries
-    }
-}
-impl CoroutineSite {
-    pub fn state(&self) -> i32 {
-        self.state
-    }
-    pub fn call(&self) -> OpId {
-        self.call
-    }
-    pub fn continuation_argument(&self) -> u32 {
-        self.continuation_argument
-    }
-    pub fn guard(&self) -> NodeId {
-        self.guard
-    }
-    pub fn normal(&self) -> LinkId {
-        self.normal
-    }
-    pub fn suspended(&self) -> LinkId {
-        self.suspended
-    }
-    pub fn resume(&self) -> &[NodeId] {
-        &self.resume
-    }
-    pub fn spills(&self) -> &[(OpId, OpId)] {
-        &self.spills
-    }
-}
-impl CoroutineLoopPlan {
-    pub fn initial(&self) -> &[NodeId] {
-        &self.initial
-    }
-    pub fn body(&self) -> &[NodeId] {
-        &self.body
-    }
-    pub fn tail(&self) -> &[NodeId] {
-        &self.tail
-    }
-    pub fn abi(&self) -> &[NodeId] {
-        &self.abi
-    }
-    pub fn abi_entries(&self) -> &[NodeId] {
-        &self.abi_entries
-    }
-    pub fn condition(&self) -> LoopCondition {
-        self.condition
-    }
-    pub fn call(&self) -> OpId {
-        self.call
-    }
-    pub fn continuation_argument(&self) -> u32 {
-        self.continuation_argument
-    }
-    pub fn state(&self) -> i32 {
-        self.state
-    }
-    pub fn protocol_operations(&self) -> &[OpId] {
-        &self.protocol_operations
-    }
-    pub fn normal_links(&self) -> &[LinkId] {
-        &self.normal_links
-    }
-    pub fn spills(&self) -> &[(OpId, OpId)] {
-        &self.spills
-    }
-}
-impl CoroutineBodyPlan {
-    pub fn root(&self) -> RegionId {
-        self.root
-    }
-    pub fn prefix(&self) -> &[RegionId] {
-        &self.prefix
-    }
-    pub fn dispatch(&self) -> RegionId {
-        self.dispatch
-    }
-    pub fn initial(&self) -> RegionId {
-        self.initial
-    }
-    pub fn resume(&self) -> RegionId {
-        self.resume
-    }
-    pub fn invalid(&self) -> RegionId {
-        self.invalid
-    }
-    pub fn entry_check(&self) -> OpId {
-        self.entry_check
-    }
-    pub fn sequence(&self) -> &[RegionId] {
-        &self.sequence
-    }
-    pub fn operations(&self) -> &[CoroutineOperation] {
-        &self.operations
-    }
-    pub fn implicit_locals(&self) -> &[crate::p5::LocalId] {
-        &self.implicit_locals
-    }
+pub struct ProtocolEvent {
+    pub operation: OpId,
+    pub role: ProtocolRole,
 }
 /// Lock emptiness is retained from the one owning lock-flow computation.
 /// Missing computation is not an empty lock stack.
@@ -1346,9 +1090,6 @@ pub struct RegionFacts {
     pub(super) protocol: Option<ProtocolPlan>,
     pub(super) lock_entries: LockEntries,
     pub(super) suspensions: Vec<SuspensionPlan>,
-    pub(super) coroutine_body: Option<CoroutineBodyPlan>,
-    pub(super) coroutine_loop: Option<CoroutineLoopPlan>,
-    pub(super) coroutine_flow: Option<CoroutineFlowPlan>,
     pub(super) nodes: Vec<Node>,
     pub(super) blocks: Vec<BlockPlan>,
     pub(super) links: Vec<NormalLink>,
@@ -1378,16 +1119,20 @@ pub struct RegionFacts {
 
 /// Protocol facts supplement the same control grammar. They do not carry a
 /// second loop/body/flow executable layout.
-pub(crate) struct ProtocolPlan {
+#[derive(Debug)]
+pub struct ProtocolPlan {
     pub root: RegionId,
+    pub entry_check: OpId,
     pub calls: Vec<ProtocolCall>,
-    pub operations: Vec<OpId>,
+    pub operations: Vec<ProtocolEvent>,
+    pub iteration: Option<ProtocolIteration>,
+    pub(crate) forwarding: Option<CopyInterval>,
     pub source_nodes: Vec<NodeId>,
     pub abi_entries: Vec<NodeId>,
-    pub hidden_locals: Vec<crate::p5::LocalId>,
+    pub(crate) hidden_locals: Vec<crate::p5::LocalId>,
 }
-#[derive(Clone, Copy)]
-pub(crate) struct ProtocolCall {
+#[derive(Debug)]
+pub struct ProtocolCall {
     pub call: OpId,
     pub continuation_argument: u32,
     pub state: i32,
@@ -1396,6 +1141,21 @@ pub(crate) struct ProtocolCall {
     pub normal: LinkId,
     pub suspended: LinkId,
     pub publication: Option<(PlanId, crate::p5::LocalId)>,
+    pub resume: Vec<NodeId>,
+    pub spills: Vec<(OpId, OpId)>,
+}
+/// The common loop's original correspondence, without another body program.
+#[derive(Debug)]
+pub struct ProtocolIteration {
+    pub control: RegionId,
+    pub condition: LoopCondition,
+    pub implicit: Option<(LinkId, LinkId)>,
+}
+#[derive(Debug)]
+pub(crate) struct CopyInterval {
+    pub outside: Vec<NodeId>,
+    pub repeated: Vec<NodeId>,
+    pub links: Vec<LinkId>,
 }
 impl RegionFacts {
     pub fn control_root(&self) -> Option<RegionId> {
@@ -1404,17 +1164,8 @@ impl RegionFacts {
     pub fn controls(&self) -> &[crate::recovery::ControlRecord] {
         &self.controls
     }
-    pub(crate) fn protocol(&self) -> Option<&ProtocolPlan> {
+    pub fn protocol(&self) -> Option<&ProtocolPlan> {
         self.protocol.as_ref()
-    }
-    pub fn coroutine_body(&self) -> Option<&CoroutineBodyPlan> {
-        self.coroutine_body.as_ref()
-    }
-    pub fn coroutine_loop(&self) -> Option<&CoroutineLoopPlan> {
-        self.coroutine_loop.as_ref()
-    }
-    pub fn coroutine_flow(&self) -> Option<&CoroutineFlowPlan> {
-        self.coroutine_flow.as_ref()
     }
     pub fn suspensions(&self) -> &[SuspensionPlan] {
         &self.suspensions
@@ -1424,9 +1175,6 @@ impl RegionFacts {
             controls: Vec::new(),
             protocol: None,
             suspensions: Vec::new(),
-            coroutine_body: None,
-            coroutine_loop: None,
-            coroutine_flow: None,
             lock_entries: LockEntries::Unestablished,
             nodes: Vec::new(),
             blocks: Vec::new(),

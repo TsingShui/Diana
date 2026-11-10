@@ -894,7 +894,7 @@ bits and an integral view. Other bit-pattern literals keep their supplied views.
 P7 consumes P6's complete common control records and established protocol
 associations. It keeps one `Control` arena and one `Protocol` metadata record,
 with calls, implicit continuation occurrences, ABI entries and selected copy
-forwarding. Body, single-site loop and multi-site recognition remain P6 facts;
+forwarding. Body, single-site loop and multi-site nominations remain private to P6;
 P7 publishes no separate executable body/loop/flow layout.
 
 Original controls retain source topology and semantic metadata. Selected children

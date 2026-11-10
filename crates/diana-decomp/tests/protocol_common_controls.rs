@@ -1,5 +1,5 @@
 //! A single reentry with effectful preparation and a branching construction tail.
-use diana_decomp::p7::{CopyEmission, EmissionLayout, SourceMode};
+use diana_decomp::p7::{CopyEmission, SourceMode};
 use diana_decomp::p9::Origin;
 #[path = "support/inspection.rs"]
 mod inspection;
@@ -12,42 +12,22 @@ fn protocol_scopes_share_one_control_arena_and_one_original_leaf_placement() {
         "invokeSuspend",
         "(Ljava/lang/Object;)Ljava/lang/Object;",
         |facts, code, rendered| {
-            let body = facts
-                .coroutine_body()
-                .expect("closed original-operation prefix");
-            assert_eq!(body.prefix().len(), 3);
+            assert!(facts.protocol().is_some());
             assert_ne!(facts.root(), facts.control_root());
             assert_eq!(code.root().unwrap().0, facts.control_root().unwrap().0);
             assert_eq!(code.controls().len(), facts.controls().len());
+            let leaves = inspection::protocol_leaves(code);
             let mut ownership = vec![0; facts.nodes().len()];
-            let mut work = vec![(code.root().unwrap(), SourceMode::Code)];
             let mut modes = [false; 3];
-            while let Some((id, mode)) = work.pop() {
-                let control = &code.controls()[id.0 as usize];
-                let mode = if let EmissionLayout::Scope { mode, .. } = control.layout {
-                    mode
-                } else {
-                    mode
-                };
+            for (node, mode) in leaves {
+                ownership[node.0 as usize] += 1;
                 modes[match mode {
                     SourceMode::Code => 0,
                     SourceMode::Abi => 1,
                     SourceMode::Origins => 2,
                 }] = true;
-                if let EmissionLayout::Block(node) = control.layout {
-                    ownership[node.0 as usize] += 1;
-                }
-                for &child in control.children() {
-                    work.push((child, mode));
-                }
-                for &child in &control.source_only {
-                    work.push((child, SourceMode::Origins));
-                }
             }
-            assert_eq!(
-                modes, [true; 3],
-                "source, ABI and origin roles use one grammar"
-            );
+            assert_eq!(modes, [true; 3]);
             assert_eq!(ownership, vec![1; facts.nodes().len()]);
             for operation in code.operations() {
                 assert_eq!(

@@ -74,3 +74,32 @@ pub(super) fn inspect(
     }
     check(expressed.inspection().facts(), code, &rendered);
 }
+
+/// Traverse the delivered static roles, including ABI and origin attachments.
+/// This independently checks ownership on fixtures; it runs no production solver.
+#[allow(dead_code)]
+pub(super) fn protocol_leaves(
+    code: &MethodCode,
+) -> Vec<(diana_decomp::p6::NodeId, diana_decomp::p7::SourceMode)> {
+    use diana_decomp::p7::{EmissionLayout, SourceMode};
+    let mut leaves = Vec::new();
+    let mut work = vec![(code.root().unwrap(), SourceMode::Code)];
+    while let Some((id, mode)) = work.pop() {
+        let control = &code.controls()[id.0 as usize];
+        let mode = if let EmissionLayout::Scope { mode, .. } = control.layout {
+            mode
+        } else {
+            mode
+        };
+        if let EmissionLayout::Block(node) = control.layout {
+            leaves.push((node, mode));
+        }
+        for &child in control.children() {
+            work.push((child, mode));
+        }
+        for &child in &control.source_only {
+            work.push((child, SourceMode::Origins));
+        }
+    }
+    leaves
+}

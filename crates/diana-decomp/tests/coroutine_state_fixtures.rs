@@ -62,7 +62,12 @@ fn branching_resume_sites_keep_the_invalid_default_out_of_case_zero() {
         "choose",
         "(ILkotlin/coroutines/Continuation;)Ljava/lang/Object;",
         |facts, code, rendered| {
-            assert!(facts.coroutine_loop().is_none());
+            assert!(
+                facts
+                    .protocol()
+                    .and_then(|p| p.iteration.as_ref())
+                    .is_none()
+            );
             assert_eq!(rendered.text().matches("SuspendBranch.load(").count(), 2);
             assert_eq!(rendered.text().matches("SuspendBranch.record(").count(), 2);
             assert!(rendered.text().contains("boxInt(-1)"));
@@ -98,7 +103,12 @@ fn resumed_failures_and_marker_returns_keep_distinct_cleanup_paths() {
         "guarded",
         "(ILkotlin/coroutines/Continuation;)Ljava/lang/Object;",
         |facts, code, rendered| {
-            assert!(facts.coroutine_loop().is_none());
+            assert!(
+                facts
+                    .protocol()
+                    .and_then(|p| p.iteration.as_ref())
+                    .is_none()
+            );
             assert!(code.emission().protocol().is_none());
             assert_eq!(rendered.text().matches("SuspendFinally.load(").count(), 2);
             assert_eq!(

@@ -16,30 +16,22 @@ fn executable(text: &str) -> String {
 }
 
 fn recovered(facts: &RegionFacts, code: &MethodCode, rendered: &Rendered) {
-    let plan = facts.coroutine_loop().expect("a closed normal-run loop");
+    let plan = facts.protocol().expect("a closed normal-run loop");
     let owned = code
         .emission()
         .protocol()
         .expect("the delivered final layout");
-    let nodes: Vec<_> = plan
-        .initial()
-        .iter()
-        .chain(plan.body())
-        .chain(plan.tail())
-        .chain(plan.abi())
-        .copied()
-        .chain(std::iter::once(plan.condition().node()))
-        .collect();
-    let mut unique = nodes.clone();
-    unique.sort_by_key(|n| n.0);
-    unique.dedup();
-    assert_eq!(nodes.len(), unique.len(), "one placement per original node");
+    let leaves = inspection::protocol_leaves(code);
+    let mut ownership = vec![0; facts.nodes().len()];
+    for &(node, _) in &leaves {
+        ownership[node.0 as usize] += 1;
+    }
     assert_eq!(
-        unique.len(),
-        facts.nodes().len(),
-        "no lost original content"
+        ownership,
+        vec![1; facts.nodes().len()],
+        "one placement per original leaf"
     );
-    for &(put, get) in plan.spills() {
+    for &(put, get) in &plan.calls[0].spills {
         let OpKind::Field {
             access: FieldAccess::Put,
             field: saved,
@@ -120,10 +112,8 @@ fn captured_expression_and_effects_stay_on_their_original_sides_of_suspension() 
             let load = source.find("SuspendLoop.load(").unwrap();
             let last_record = source.rfind("SuspendLoop.record(").unwrap();
             assert!(prepare < first_record && first_record < load && load < last_record);
-            let first_spill = facts
-                .coroutine_loop()
-                .unwrap()
-                .spills()
+            let first_spill = facts.protocol().unwrap().calls[0]
+                .spills
                 .iter()
                 .map(|&(put, _)| put)
                 .min_by_key(|op| op.0)
@@ -152,7 +142,7 @@ fn divergent_spills_and_resumed_effects_keep_available_explicit_code() {
             "(IILkotlin/coroutines/Continuation;)Ljava/lang/Object;",
             |facts, code, rendered| {
                 assert!(
-                    facts.coroutine_loop().is_none(),
+                    facts.protocol().is_none(),
                     "{name}: no source-body correspondence"
                 );
                 assert!(code.emission().protocol().is_none());

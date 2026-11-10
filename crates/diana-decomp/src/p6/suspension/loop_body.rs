@@ -9,14 +9,14 @@ pub(super) fn construct(
     f: &mut RegionFacts,
     g: &Graph,
     s: &super::super::dominance::Structure,
-) -> Result<(), RegionError> {
+) -> Result<Option<CoroutineLoopPlan>, RegionError> {
     let prototype = storage.execution().declaration().prototype_units();
     let suffix = b"Lkotlin/coroutines/Continuation;)Ljava/lang/Object;";
     if prototype.len() < suffix.len()
         || !units(&prototype[prototype.len() - suffix.len()..], suffix)
         || storage.execution().access_flags() & crate::substrate::flags::SYNCHRONIZED != 0
     {
-        return Ok(());
+        return Ok(None);
     }
     for index in 0..f.nodes.len() {
         let node = NodeId(super::super::build::id(index)?);
@@ -29,13 +29,12 @@ pub(super) fn construct(
         }
         match candidate(storage, f, g, s, node)? {
             Ok(plan) => {
-                f.coroutine_loop = Some(plan);
-                break;
+                return Ok(Some(plan));
             }
             Err(reason) => reject(storage, RegionId(index as u32), reason),
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 fn candidate(
@@ -647,6 +646,8 @@ fn candidate(
         tail,
         abi,
         abi_entries,
+        entry_check,
+        resume,
         condition: LoopCondition {
             node: header,
             repeat,

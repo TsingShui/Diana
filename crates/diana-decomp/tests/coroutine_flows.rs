@@ -20,16 +20,15 @@ fn two_sites_keep_the_original_negative_branch_and_call_order() {
         "choose",
         "(ILkotlin/coroutines/Continuation;)Ljava/lang/Object;",
         |facts, code, rendered| {
-            let plan = facts
-                .coroutine_flow()
-                .expect("closed multi-site source body");
+            let plan = facts.protocol().expect("closed multi-site source body");
             let flow = code.emission().protocol().unwrap();
             assert_eq!(flow.calls.len(), 2);
-            assert_eq!(
-                plan.source_nodes().len() + plan.abi().len(),
-                facts.nodes().len()
-            );
-            assert!(plan.source_nodes().iter().all(|n| !plan.abi().contains(n)));
+            let leaves = inspection::protocol_leaves(code);
+            let mut ownership = vec![0; facts.nodes().len()];
+            for &(node, _) in &leaves {
+                ownership[node.0 as usize] += 1;
+            }
+            assert_eq!(ownership, vec![1; facts.nodes().len()]);
             let source = executable(rendered.text());
             assert!(source.contains("suspend java.lang.Object choose(int"));
             assert!(!source.contains("switch ("));
@@ -39,18 +38,18 @@ fn two_sites_keep_the_original_negative_branch_and_call_order() {
             assert!(source.find("SuspendBranch.record(").unwrap() < source.find(" < 0)").unwrap());
             assert!(source.contains("Boxing.boxInt(-1)"));
             assert!(source.contains("var ") && source.contains(": kotlin.Int"));
-            for site in plan.sites() {
+            for site in &plan.calls {
                 let BlockEnd::Annotated {
                     terminal,
                     normal,
                     suspended,
                     ..
-                } = &code.emission().blocks()[site.guard().0 as usize].end
+                } = &code.emission().blocks()[site.guard.0 as usize].end
                 else {
                     panic!("guard owns original correspondence and the normal transfer");
                 };
-                assert_eq!(normal.0, site.normal().0);
-                assert_eq!(suspended.0, site.suspended().0);
+                assert_eq!(normal.0, site.normal.0);
+                assert_eq!(suspended.0, site.suspended.0);
                 assert_eq!(
                     rendered
                         .spans()
@@ -72,7 +71,8 @@ fn two_sites_keep_the_original_negative_branch_and_call_order() {
                     1
                 );
             }
-            for &op in plan.protocol_operations() {
+            for event in &plan.operations {
+                let op = event.operation;
                 let node = code.operations()[op.0 as usize].node;
                 if code.operations()[op.0 as usize].statement.is_some() {
                     assert!(code.emission().blocks()[node.0 as usize].actions.iter().any(|a|matches!(a,BodyAction::AbiOperation{operation,..}if *operation==op)));
@@ -90,14 +90,14 @@ fn three_sites_keep_two_captures_and_both_early_returns() {
         "walk",
         "(ILkotlin/coroutines/Continuation;)Ljava/lang/Object;",
         |facts, code, rendered| {
-            let plan = facts.coroutine_flow().unwrap();
-            assert_eq!(plan.sites().len(), 3);
+            let plan = facts.protocol().unwrap();
+            assert_eq!(plan.calls.len(), 3);
             assert_eq!(
-                plan.sites()
+                plan.calls
                     .iter()
-                    .find(|s| s.state() == 3)
+                    .find(|s| s.state == 3)
                     .unwrap()
-                    .spills()
+                    .spills
                     .len(),
                 2
             );
@@ -120,7 +120,7 @@ fn normal_only_effect_cannot_become_shared_source_work() {
         "normalOnly",
         "(ILkotlin/coroutines/Continuation;)Ljava/lang/Object;",
         |facts, code, rendered| {
-            assert!(facts.coroutine_flow().is_none());
+            assert!(facts.protocol().is_none());
             assert!(code.emission().protocol().is_none());
             assert!(rendered.text().contains("switch ("));
             assert!(rendered.text().contains("SuspendThree.record(777)"));
@@ -141,7 +141,7 @@ fn compiled_fetch_and_private_marker_returns_consume_selected_guard_owners() {
         "fetch",
         "(ILkotlin/coroutines/Continuation;)Ljava/lang/Object;",
         |facts, code, rendered| {
-            assert_eq!(facts.coroutine_flow().unwrap().sites().len(), 2);
+            assert_eq!(facts.protocol().unwrap().calls.len(), 2);
             assert_eq!(code.emission().protocol().unwrap().calls.len(), 2);
             let source = executable(rendered.text());
             assert!(source.contains("suspend java.lang.Object fetch("));
@@ -156,7 +156,7 @@ fn compiled_fetch_and_private_marker_returns_consume_selected_guard_owners() {
         "privateReturns",
         "(ILkotlin/coroutines/Continuation;)Ljava/lang/Object;",
         |facts, code, rendered| {
-            assert_eq!(facts.coroutine_flow().unwrap().sites().len(), 3);
+            assert_eq!(facts.protocol().unwrap().calls.len(), 3);
             assert_eq!(code.emission().protocol().unwrap().calls.len(), 3);
             assert_eq!(
                 executable(rendered.text())
@@ -166,8 +166,8 @@ fn compiled_fetch_and_private_marker_returns_consume_selected_guard_owners() {
             );
             assert!(!executable(rendered.text()).contains("switch ("));
             assert!(rendered.text().matches("// ABI: return ").count() >= 3);
-            for site in facts.coroutine_flow().unwrap().sites() {
-                for id in [site.normal(), site.suspended()] {
+            for site in &facts.protocol().unwrap().calls {
+                for id in [site.normal, site.suspended] {
                     let destination = code.transfers()[id.0 as usize].destination;
                     assert!(
                         rendered
@@ -188,9 +188,9 @@ fn sparse_non_monotone_states_do_not_reintroduce_dispatch_context() {
         "reorderedStates",
         "(ILkotlin/coroutines/Continuation;)Ljava/lang/Object;",
         |facts, code, rendered| {
-            let plan = facts.coroutine_flow().unwrap();
+            let plan = facts.protocol().unwrap();
             assert_eq!(
-                plan.sites().iter().map(|s| s.state()).collect::<Vec<_>>(),
+                plan.calls.iter().map(|s| s.state).collect::<Vec<_>>(),
                 [9, 2, 5]
             );
             assert_eq!(code.emission().protocol().unwrap().calls.len(), 3);
