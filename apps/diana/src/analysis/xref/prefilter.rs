@@ -22,6 +22,7 @@ const BITMAP_INDICES: usize = 1 << 16;
 /// `None` disables filtering (no resolved target, or an operand wider than 16 bits).
 pub(super) struct Prefilter {
     bits: Option<Vec<u64>>,
+    impossible: bool,
 }
 
 impl Prefilter {
@@ -34,7 +35,10 @@ impl Prefilter {
         // mentions it, so its operand set is far wider than one id space. Leave
         // that mode unfiltered.
         if typed_uses {
-            return Ok(Self { bits: None });
+            return Ok(Self {
+                bits: None,
+                impossible: false,
+            });
         }
         let mut ids = Vec::new();
         for target in targets {
@@ -101,8 +105,13 @@ impl Prefilter {
                 Target::Resource(_) | Target::Hierarchy { .. } => {}
             }
         }
+        // No resolved index leaves an all-zero table: no body can reference the
+        // target, so every decode is skipped.
         if ids.is_empty() {
-            return Ok(Self { bits: None });
+            return Ok(Self {
+                bits: None,
+                impossible: true,
+            });
         }
         let mut bits = Vec::new();
         bits.try_reserve_exact(BITMAP_INDICES / 64)
@@ -111,14 +120,24 @@ impl Prefilter {
         for id in ids {
             let Ok(value) = u16::try_from(id) else {
                 // A 32-bit operand cannot be answered by the 16-bit table.
-                return Ok(Self { bits: None });
+                return Ok(Self {
+                    bits: None,
+                    impossible: false,
+                });
             };
             bits[usize::from(value) >> 6] |= 1u64 << (value & 63);
         }
-        Ok(Self { bits: Some(bits) })
+        Ok(Self {
+            bits: Some(bits),
+            impossible: false,
+        })
     }
 
     /// Whether `code` can contain any target operand; `true` when filtering is off.
+    pub(super) fn impossible(&self) -> bool {
+        self.impossible
+    }
+
     pub(super) fn might_reference(&self, code: &[u8]) -> bool {
         let Some(bits) = &self.bits else {
             return true;

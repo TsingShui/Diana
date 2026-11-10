@@ -435,6 +435,31 @@ fn scan_class(
             emit,
         );
     }
+    // A pure string query reads code plus the two declaration records that can
+    // carry a string: static initial values and annotations.
+    let string_only = plan
+        .targets
+        .iter()
+        .all(|target| matches!(target, Target::String(_)));
+    if string_only {
+        let location = declarations::Location {
+            image,
+            logical,
+            class_def,
+            descriptor: copy(&class.descriptor.units()?)?,
+        };
+        if !prefilter.impossible() {
+            scan_code(index, class, &location, plan, prefilter, emit)?;
+        }
+        let declared = index.class_context(class_def).map_or(true, |context| {
+            context.annotations_offset.0 != 0 || matches!(context.values_offset, Ok(Some(_)))
+        });
+        if declared {
+            let facts = declarations::collect(index, class_def)?;
+            declarations::scan(&facts, &location, &plan.targets, plan.depth, emit)?;
+        }
+        return Ok(());
+    }
     // Method and field references live in code. Annotations are the only
     // declaration records that can name a member, so a class without an
     // annotation directory needs no class-data snapshot at all.
@@ -867,6 +892,9 @@ fn scan_code(
     prefilter: &prefilter::Prefilter,
     emit: &mut dyn FnMut(Event) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
+    if prefilter.impossible() {
+        return Ok(());
+    }
     let mut failure = None;
     let visited = class.visit_method_codes(|method_idx, access_flags, code_offset| {
         if failure.is_some() {
