@@ -741,7 +741,8 @@ fn query_command(
     let columns: &[&str] = match kind {
         QueryKind::Strings => &["at", "value"],
         QueryKind::Classes => &["at", "descriptor"],
-        _ => &["at"],
+        QueryKind::Methods | QueryKind::Fields => &["at", "member"],
+        QueryKind::Entries => &["at"],
     };
     let command = match kind {
         QueryKind::Classes => "classes",

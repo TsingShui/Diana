@@ -207,16 +207,49 @@ fn write_column(
         out.push(b'"');
     }
     match column {
-        "at" => write_locator(out, &row.at, mode),
+        "at" => write_locator(out, &row.at),
         "value" => match row.value {
             Some(value) => Ok(at::write_value(out, mode, value)?),
             None => Ok(()),
         },
         "descriptor" => match &row.at {
-            Locator::Class { descriptor, .. }
-            | Locator::Method { descriptor, .. }
-            | Locator::Field { descriptor, .. } => Ok(at::write_value(out, mode, *descriptor)?),
+            Locator::Class { descriptor, .. } => Ok(at::write_value(out, mode, *descriptor)?),
+            Locator::Method { descriptor, .. } | Locator::Field { descriptor, .. } => {
+                Ok(at::write_value(out, mode, *descriptor)?)
+            }
             Locator::String { .. } => Ok(()),
+        },
+        "member" => match &row.at {
+            Locator::Method {
+                descriptor,
+                name,
+                parameters,
+                returns,
+                ..
+            } => {
+                at::write_value(out, mode, *descriptor)?;
+                out.extend_from_slice(b"->");
+                at::write_value(out, mode, *name)?;
+                out.push(b'(');
+                for parameter in parameters.iter() {
+                    at::write_value(out, mode, *parameter)?;
+                }
+                out.push(b')');
+                Ok(at::write_value(out, mode, *returns)?)
+            }
+            Locator::Field {
+                descriptor,
+                name,
+                field_type,
+                ..
+            } => {
+                at::write_value(out, mode, *descriptor)?;
+                out.extend_from_slice(b"->");
+                at::write_value(out, mode, *name)?;
+                out.push(b':');
+                Ok(at::write_value(out, mode, *field_type)?)
+            }
+            Locator::Class { .. } | Locator::String { .. } => Ok(()),
         },
         _ => Ok(()),
     }?;
@@ -228,7 +261,7 @@ fn write_column(
 
 /// Writes the canonical locator: physical entry, logical DEX, original index and
 /// the verifiable original name.
-fn write_locator(out: &mut Vec<u8>, locator: &Locator<'_>, mode: Mode) -> Result<(), QueryError> {
+fn write_locator(out: &mut Vec<u8>, locator: &Locator<'_>) -> Result<(), QueryError> {
     match locator {
         Locator::Class {
             entry,
@@ -245,47 +278,26 @@ fn write_locator(out: &mut Vec<u8>, locator: &Locator<'_>, mode: Mode) -> Result
             logical,
             class_def,
             method,
-            descriptor,
-            name,
-            parameters,
-            returns,
+            ..
         } => {
             at::write_prefix(out, *entry, *logical);
             out.extend_from_slice(b":c");
             at::push_decimal(out, u64::from(*class_def));
             out.extend_from_slice(b":m");
             at::push_decimal(out, u64::from(*method));
-            out.extend_from_slice(b"::");
-            at::write_value(out, mode, *descriptor)?;
-            out.extend_from_slice(b"->");
-            at::write_value(out, mode, *name)?;
-            out.push(b'(');
-            for parameter in parameters.iter() {
-                at::write_value(out, mode, *parameter)?;
-            }
-            out.push(b')');
-            at::write_value(out, mode, *returns)?;
         }
         Locator::Field {
             entry,
             logical,
             class_def,
             field,
-            descriptor,
-            name,
-            field_type,
+            ..
         } => {
             at::write_prefix(out, *entry, *logical);
             out.extend_from_slice(b":c");
             at::push_decimal(out, u64::from(*class_def));
             out.extend_from_slice(b":f");
             at::push_decimal(out, u64::from(*field));
-            out.extend_from_slice(b"::");
-            at::write_value(out, mode, *descriptor)?;
-            out.extend_from_slice(b"->");
-            at::write_value(out, mode, *name)?;
-            out.push(b':');
-            at::write_value(out, mode, *field_type)?;
         }
         Locator::String {
             entry,
@@ -518,10 +530,11 @@ impl<'w> ChunkSink<'w> {
 
     fn finish(self) -> std::io::Result<()> {
         if self.format == Format::Json {
+            self.writer.write_all(b"]")?;
             if self.truncated {
                 self.writer.write_all(b",\"truncated\":true")?;
             }
-            self.writer.write_all(b"]}")?;
+            self.writer.write_all(b"}")?;
         }
         Ok(())
     }
@@ -532,7 +545,7 @@ impl<'w> ChunkSink<'w> {
 fn schema_version(command: &str) -> u8 {
     match command {
         "xref" | "resources" => 3,
-        "strings" => 2,
+        "strings" | "classes" | "methods" | "fields" => 2,
         _ => 1,
     }
 }
