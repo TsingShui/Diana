@@ -30,20 +30,6 @@ pub(super) fn construct(
     protocol_body::construct(storage, f, graph, structure)
 }
 
-fn reject(storage: &StorageMethod<'_>, dispatch: RegionId, reason: &str) {
-    if cfg!(feature = "trace-passes") {
-        let flow = storage.execution();
-        let key = flow.owner_facts().key();
-        eprintln!(
-            "[suspension] dex={} class={} method={} dispatch={} status=rejected reason={}",
-            key.dex.0,
-            key.class_def.0,
-            flow.method_id().0,
-            dispatch.0,
-            reason
-        );
-    }
-}
 fn units(value: &[u16], expected: &[u8]) -> bool {
     value
         .iter()

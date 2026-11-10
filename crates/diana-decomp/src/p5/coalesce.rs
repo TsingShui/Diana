@@ -279,15 +279,5 @@ pub(super) fn construct(typed: &TypedMethod<'_>, f: &mut StorageFacts) -> Result
         }
     }
     promotions.finish(f);
-    #[cfg(feature = "trace-passes")]
-    {
-        let key = typed.execution().owner_facts().key();
-        eprintln!(
-            "[storage] dex={} class={} method={} reused_locals={reused}",
-            key.dex.0,
-            key.class_def.0,
-            typed.execution().method_id().0
-        );
-    }
     Ok(())
 }

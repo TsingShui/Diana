@@ -28,17 +28,6 @@ pub(super) fn construct(
             for test in &plan.tests {
                 consumed[test.region.0 as usize] = true;
             }
-            if cfg!(feature = "trace-passes") {
-                let key = storage.execution().owner_facts().key();
-                eprintln!(
-                    "[decision] dex={} class={} method={} region={} layout=kotlin_when arms={}",
-                    key.dex.0,
-                    key.class_def.0,
-                    storage.execution().method_id().0,
-                    region.0,
-                    plan.tests.len()
-                );
-            }
             facts.regions[region.0 as usize].decision = Some(plan);
         }
         for &child in facts.regions[region.0 as usize].children.iter().rev() {

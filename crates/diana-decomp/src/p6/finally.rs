@@ -284,21 +284,6 @@ pub(super) fn construct(
         }
         p.members.sort_unstable();
         p.follow = matched.follow;
-        #[cfg(feature = "trace-passes")]
-        {
-            let key = storage.execution().owner_facts().key();
-            eprintln!(
-                "[finally] dex={} class={} method={} candidate={} matched_pairs={} predicates={} capture={} rethrows={}",
-                key.dex.0,
-                key.class_def.0,
-                storage.execution().method_id().0,
-                p.id.0,
-                matched.plan.operations.len(),
-                matched.plan.predicates.len(),
-                matched.plan.capture.0,
-                matched.plan.rethrows.len()
-            );
-        }
         p.finally = Some(matched.plan);
     }
     Ok(())

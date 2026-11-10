@@ -37,10 +37,9 @@ pub(super) fn construct(
             Ok(input) => input,
             Err(_) => continue,
         };
-        let node = input.entry;
         match candidate(storage, f, g, s, input)? {
             Ok(plan) => return Ok(Some(plan)),
-            Err(reason) => reject(storage, RegionId(node.0), reason),
+            Err(_) => {}
         }
     }
     Ok(None)
