@@ -34,6 +34,10 @@ impl MethodRecoveryFailure {
         }
     }
 
+    pub(crate) fn cause(&self) -> &str {
+        &self.cause
+    }
+
     pub(crate) fn summary(&self) -> String {
         format!(
             "Method could not be decompiled during {}: {}",
