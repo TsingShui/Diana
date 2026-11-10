@@ -115,9 +115,8 @@ impl<'a> DeclaredExceptionAnalysis<'a> {
         else {
             return local
                 .get(method)
-                .map(Vec::as_slice)
-                .unwrap_or_else(|| self.abi.method_exceptions(method))
-                .to_vec();
+                .cloned()
+                .unwrap_or_else(|| self.abi.method_exceptions(method));
         };
         signature
             .throws

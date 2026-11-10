@@ -640,7 +640,7 @@ pub(crate) struct JavaSourceAbi {
     generic_field_declarations:
         std::collections::BTreeMap<(String, ArgType), Vec<(ArgType, GenericFieldContract)>>,
     method_exceptions: std::collections::BTreeMap<MethodReference, Vec<ArgType>>,
-    platform_exceptions: std::sync::Arc<std::collections::BTreeMap<MethodReference, Vec<ArgType>>>,
+
     generic_methods: std::collections::BTreeMap<MethodReference, GenericMethodContract>,
     generic_method_declarations: std::collections::BTreeMap<
         (String, crate::ir::MethodDescriptor),
@@ -653,6 +653,28 @@ pub(crate) struct JavaSourceAbi {
     generic_hierarchy: Option<crate::analysis::method_override::GenericTypeHierarchy>,
     platform_generic_hierarchy: Option<crate::analysis::method_override::GenericTypeHierarchy>,
     platform_symbols: Option<std::sync::Arc<crate::platform_symbols::PlatformSymbolSet>>,
+}
+
+/// Declared exception clauses for one platform method, resolved on demand.
+fn platform_method_exceptions(
+    symbols: &crate::platform_symbols::PlatformSymbolSet,
+    method: &MethodReference,
+) -> Option<Vec<ArgType>> {
+    let ArgType::Object(owner) = &method.owner else {
+        return None;
+    };
+    let owner = format!("L{owner};");
+    let declaration = symbols
+        .resolve_method(&owner, &method.name, &method.descriptor.to_string())?
+        .1;
+    if declaration.exceptions.is_empty() {
+        return None;
+    }
+    declaration
+        .exceptions
+        .iter()
+        .map(|exception| exception.parse().ok())
+        .collect()
 }
 
 impl JavaSourceAbi {
@@ -766,8 +788,6 @@ impl JavaSourceAbi {
                 })
             })
             .collect();
-        let platform_exceptions =
-            crate::analysis::method_override::platform_exception_contracts().unwrap_or_default();
         let t = std::time::Instant::now();
         let generic_hierarchy =
             crate::analysis::method_override::GenericTypeHierarchy::from_classes(
@@ -940,7 +960,7 @@ impl JavaSourceAbi {
             field_types,
             generic_field_declarations,
             method_exceptions,
-            platform_exceptions,
+
             generic_methods,
             generic_method_declarations,
             function_object_types: std::collections::BTreeMap::new(),
@@ -1268,11 +1288,13 @@ impl JavaSourceAbi {
             .collect()
     }
 
-    pub(crate) fn method_exceptions(&self, method: &MethodReference) -> &[ArgType] {
-        self.method_exceptions
-            .get(method)
-            .or_else(|| self.platform_exceptions.get(method))
-            .map(Vec::as_slice)
+    pub(crate) fn method_exceptions(&self, method: &MethodReference) -> Vec<ArgType> {
+        if let Some(local) = self.method_exceptions.get(method) {
+            return local.clone();
+        }
+        self.platform_symbols
+            .as_ref()
+            .and_then(|symbols| platform_method_exceptions(symbols, method))
             .unwrap_or_default()
     }
 

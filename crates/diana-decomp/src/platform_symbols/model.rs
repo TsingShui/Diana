@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 use std::io;
 use std::path::Path;
+use std::sync::{Arc, OnceLock};
 
+use super::archive::SymbolArchive;
 use super::DexSymbolsCodec;
 
 /// Runtime family whose ABI a source artifact describes.
@@ -473,7 +475,12 @@ impl PlatformSymbolDatabase {
                     .map(|class| (descriptor.clone(), class))
             })
             .collect();
-        PlatformSymbolSet { target, classes }
+        PlatformSymbolSet {
+            target,
+            store: SymbolStore::Eager(Arc::new(classes)),
+            selected: Vec::new(),
+            slots: Box::new([]),
+        }
     }
 
     pub fn stats(&self) -> SymbolDatabaseStats {
@@ -493,7 +500,7 @@ impl PlatformSymbolDatabase {
         SymbolDatabaseStats {
             sources: self.sources.len(),
             class_variants,
-            selected_classes: self.select(self.default_target).classes.len(),
+            selected_classes: self.classes.len(),
             fields,
             methods,
         }
@@ -617,23 +624,113 @@ impl PlatformSymbolDatabase {
 }
 
 /// One immutable, target-selected symbol view used by analyses.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Class records are decoded on first use from the shared archive, so a request
+/// pays only for the descriptors it actually consults.
 pub struct PlatformSymbolSet {
     target: PlatformTarget,
-    classes: BTreeMap<String, PlatformClass>,
+    store: SymbolStore,
+    selected: Vec<u32>,
+    slots: Box<[OnceLock<Option<PlatformClass>>]>,
+}
+
+enum SymbolStore {
+    Archive(Arc<SymbolArchive>),
+    Eager(Arc<BTreeMap<String, PlatformClass>>),
+}
+
+impl std::fmt::Debug for PlatformSymbolSet {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PlatformSymbolSet")
+            .field("target", &self.target)
+            .field("stats", &self.stats())
+            .finish()
+    }
+}
+
+/// Index-level hierarchy facts, available without decoding class records.
+pub(crate) struct PlatformHierarchyEntry<'a> {
+    pub descriptor: &'a str,
+    pub super_class: Option<&'a str>,
+    pub interfaces: Vec<&'a str>,
+    pub access_flags: u32,
 }
 
 impl PlatformSymbolSet {
+    /// Opens a class-granular archive or a legacy eager database.
+    pub fn open(bytes: &[u8], target: Option<PlatformTarget>) -> io::Result<Self> {
+        if DexSymbolsCodec::version(bytes)? == DexSymbolsCodec::MAJOR {
+            let archive = Arc::new(SymbolArchive::open(bytes)?);
+            let target = target.unwrap_or_else(|| archive.default_target());
+            return Ok(Self::from_archive(archive, target));
+        }
+        let database = PlatformSymbolDatabase::from_bytes(bytes)?;
+        Ok(database.select(target.unwrap_or_else(|| database.default_target())))
+    }
+
+    fn from_archive(archive: Arc<SymbolArchive>, target: PlatformTarget) -> Self {
+        let selected = archive.select(target);
+        let slots = (0..selected.len()).map(|_| OnceLock::new()).collect();
+        Self {
+            target,
+            store: SymbolStore::Archive(archive),
+            selected,
+            slots,
+        }
+    }
+
     pub fn target(&self) -> PlatformTarget {
         self.target
     }
 
-    pub fn classes(&self) -> impl Iterator<Item = &PlatformClass> {
-        self.classes.values()
+    pub fn class(&self, descriptor: &str) -> Option<&PlatformClass> {
+        match &self.store {
+            SymbolStore::Eager(classes) => classes.get(descriptor),
+            SymbolStore::Archive(archive) => {
+                let position = self.position(descriptor)?;
+                self.slots[position]
+                    .get_or_init(|| archive.decode_record(self.selected[position]).ok())
+                    .as_ref()
+            }
+        }
     }
 
-    pub fn class(&self, descriptor: &str) -> Option<&PlatformClass> {
-        self.classes.get(descriptor)
+    fn position(&self, descriptor: &str) -> Option<usize> {
+        let SymbolStore::Archive(archive) = &self.store else {
+            return None;
+        };
+        self.selected
+            .binary_search_by(|record| archive.descriptor(*record).cmp(descriptor))
+            .ok()
+    }
+
+    pub(crate) fn hierarchy(&self) -> Vec<PlatformHierarchyEntry<'_>> {
+        match &self.store {
+            SymbolStore::Eager(classes) => classes
+                .values()
+                .map(|class| PlatformHierarchyEntry {
+                    descriptor: &class.descriptor,
+                    super_class: class.super_class.as_deref(),
+                    interfaces: class.interfaces.iter().map(String::as_str).collect(),
+                    access_flags: class.access_flags,
+                })
+                .collect(),
+            SymbolStore::Archive(archive) => self
+                .selected
+                .iter()
+                .map(|record| {
+                    let (descriptor, super_class, interfaces, access_flags) =
+                        archive.hierarchy(*record);
+                    PlatformHierarchyEntry {
+                        descriptor,
+                        super_class,
+                        interfaces,
+                        access_flags,
+                    }
+                })
+                .collect(),
+        }
     }
 
     pub fn is_subtype(&self, subtype: &str, supertype: &str) -> bool {
@@ -750,12 +847,15 @@ impl PlatformSymbolSet {
     }
 
     pub fn stats(&self) -> SymbolDatabaseStats {
-        SymbolDatabaseStats {
-            sources: 0,
-            class_variants: self.classes.len(),
-            selected_classes: self.classes.len(),
-            fields: self.classes.values().map(|class| class.fields.len()).sum(),
-            methods: self.classes.values().map(|class| class.methods.len()).sum(),
+        match &self.store {
+            SymbolStore::Archive(archive) => archive.stats(&self.selected),
+            SymbolStore::Eager(classes) => SymbolDatabaseStats {
+                sources: 0,
+                class_variants: classes.len(),
+                selected_classes: classes.len(),
+                fields: classes.values().map(|class| class.fields.len()).sum(),
+                methods: classes.values().map(|class| class.methods.len()).sum(),
+            },
         }
     }
 }
@@ -771,6 +871,6 @@ impl SymbolProvider for PlatformSymbolSet {
     }
 
     fn class(&self, descriptor: &str) -> Option<&PlatformClass> {
-        self.classes.get(descriptor)
+        PlatformSymbolSet::class(self, descriptor)
     }
 }

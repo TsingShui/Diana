@@ -1769,56 +1769,6 @@ fn platform_package(descriptor: &str) -> String {
         .unwrap_or_default()
 }
 
-pub(crate) fn platform_exception_contracts(
-) -> io::Result<Arc<BTreeMap<crate::ir::MethodReference, Vec<ArgType>>>> {
-    static CONTRACTS: OnceLock<Arc<BTreeMap<crate::ir::MethodReference, Vec<ArgType>>>> =
-        OnceLock::new();
-    if let Some(contracts) = CONTRACTS.get() {
-        return Ok(Arc::clone(contracts));
-    }
-    let platform = default_platform_symbols()?;
-    let contracts = Arc::new(
-        platform
-            .classes()
-            .flat_map(|class| {
-                class.methods.iter().filter_map(move |method| {
-                    (!method.exceptions.is_empty()).then(|| {
-                        let owner = class.descriptor.parse().ok()?;
-                        let descriptor = method.descriptor.parse().ok()?;
-                        let throws = method
-                            .exceptions
-                            .iter()
-                            .map(|exception| exception.parse())
-                            .collect::<Result<Vec<_>, _>>()
-                            .ok()?;
-                        Some((
-                            crate::ir::MethodReference {
-                                owner,
-                                name: method.name.clone(),
-                                descriptor,
-                            },
-                            throws,
-                        ))
-                    })?
-                })
-            })
-            .collect(),
-    );
-    match CONTRACTS.set(Arc::clone(&contracts)) {
-        Ok(()) => Ok(contracts),
-        Err(_) => CONTRACTS.get().map(Arc::clone).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::Other, "contract cache publication failed")
-        }),
-    }
-}
-
-pub(crate) fn preload_platform_symbols() -> OverrideResult<()> {
-    default_platform_symbols()?;
-    platform_hierarchy_index()?;
-    platform_exception_contracts()?;
-    Ok(())
-}
-
 fn platform_hierarchy_index() -> OverrideResult<Arc<ClassHierarchyIndex>> {
     static PLATFORM_HIERARCHY: OnceLock<Arc<ClassHierarchyIndex>> = OnceLock::new();
     PLATFORM_HIERARCHY
@@ -1828,24 +1778,25 @@ fn platform_hierarchy_index() -> OverrideResult<Arc<ClassHierarchyIndex>> {
         .unwrap_or_else(|| {
             let platform = default_platform_symbols()?;
             let mut index = ClassHierarchyIndex::default();
-            for class in platform.classes() {
-                let class_name = hierarchy_object_name(&class.descriptor)?;
-                let parents = class
+            for entry in platform.hierarchy() {
+                let class_name = hierarchy_object_name(entry.descriptor)?;
+                let parents = entry
                     .super_class
-                    .iter()
-                    .chain(&class.interfaces)
-                    .map(|parent| hierarchy_object_name(parent))
+                    .into_iter()
+                    .chain(entry.interfaces)
+                    .map(hierarchy_object_name)
                     .collect::<OverrideResult<Vec<_>>>()?;
                 index.add_declared_type(
                     class_name,
                     parents,
                     ReferenceTypeInfo {
-                        is_interface: class.access_flags & 0x0200 != 0,
-                        is_final: class.access_flags & 0x0010 != 0,
+                        is_interface: entry.access_flags & 0x0200 != 0,
+                        is_final: entry.access_flags & 0x0010 != 0,
                     },
                 );
             }
-            freeze_shared_hierarchy(&mut index);
+            // The platform layer answers distances lazily: freezing would build
+            // an ancestor map for every platform class on every request.
             let index = Arc::new(index);
             match PLATFORM_HIERARCHY.set(Arc::clone(&index)) {
                 Ok(()) => Ok(index),

@@ -12,55 +12,40 @@ use super::{
 pub struct DexSymbolsCodec;
 
 impl DexSymbolsCodec {
-    const MAGIC: &'static [u8; 8] = b"DXSYMS\0\x01";
-    const MAJOR: u16 = 2;
-    const MINOR: u16 = 0;
-    const FLAG_ZSTD: u32 = 1;
-    const NONE: u32 = u32::MAX;
-    const MAX_PAYLOAD: usize = 512 * 1024 * 1024;
-    const MAX_COUNT: usize = 16 * 1024 * 1024;
-
-    pub fn encode(database: &PlatformSymbolDatabase) -> io::Result<Vec<u8>> {
-        let strings = StringPool::build(database)?;
-        let mut payload = BinaryWriter::default();
-        payload.u8(database.default_target.family.code());
-        payload.u16(database.default_target.version);
-        strings.write(&mut payload)?;
-        payload.count(database.sources.len())?;
-        for source in &database.sources {
-            payload.u32(strings.id(&source.name)?);
-            payload.u8(source.family.code());
-            payload.i16(source.priority);
-        }
-        let variants = database.classes.values().map(Vec::len).sum::<usize>();
-        payload.count(variants)?;
-        for class in database.classes.values().flatten() {
-            Self::write_class(&mut payload, &strings, class)?;
-        }
-
-        let raw = payload.finish();
-        let checksum = crc32fast::hash(&raw);
-        let stored = zstd::stream::encode_all(Cursor::new(&raw), 8)?;
-        let mut output = BinaryWriter::default();
-        output.bytes(Self::MAGIC);
-        output.u16(Self::MAJOR);
-        output.u16(Self::MINOR);
-        output.u32(Self::FLAG_ZSTD);
-        output.u64(raw.len() as u64);
-        output.u64(stored.len() as u64);
-        output.u32(checksum);
-        output.bytes(&stored);
-        Ok(output.finish())
-    }
-
-    pub fn decode(bytes: &[u8]) -> io::Result<PlatformSymbolDatabase> {
+    /// The stored format version, read before choosing a decoding path.
+    pub fn version(bytes: &[u8]) -> io::Result<u16> {
         let mut header = BinaryReader::new(bytes);
         if header.bytes(Self::MAGIC.len())? != Self::MAGIC {
             return Err(invalid_data("invalid dexsym header"));
         }
-        let major = header.u16()?;
+        header.u16()
+    }
+
+    pub(super) const MAGIC: &'static [u8; 8] = b"DXSYMS\0\x01";
+    pub(super) const MAJOR: u16 = 3;
+    pub(super) const MINOR: u16 = 0;
+    pub(super) const FLAG_ZSTD: u32 = 1;
+    const NONE: u32 = u32::MAX;
+    pub(super) const MAX_PAYLOAD: usize = 512 * 1024 * 1024;
+    pub(super) const MAX_COUNT: usize = 16 * 1024 * 1024;
+
+    pub fn encode(database: &PlatformSymbolDatabase) -> io::Result<Vec<u8>> {
+        super::archive::encode(database)
+    }
+
+    pub fn decode(bytes: &[u8]) -> io::Result<PlatformSymbolDatabase> {
+        match Self::version(bytes)? {
+            Self::MAJOR => return super::archive::decode_all(bytes),
+            2 => {}
+            _ => return Err(invalid_data("unsupported dexsym format version")),
+        }
+        let mut header = BinaryReader::new(bytes);
+        if header.bytes(Self::MAGIC.len())? != Self::MAGIC {
+            return Err(invalid_data("invalid dexsym header"));
+        }
+        let _major = header.u16()?;
         let minor = header.u16()?;
-        if major != Self::MAJOR || minor > Self::MINOR {
+        if minor > Self::MINOR {
             return Err(invalid_data("unsupported dexsym format version"));
         }
         let flags = header.u32()?;
@@ -133,7 +118,7 @@ impl DexSymbolsCodec {
         })
     }
 
-    fn write_class(
+    pub(super) fn write_class(
         writer: &mut BinaryWriter,
         strings: &StringPool,
         class: &PlatformClass,
@@ -180,7 +165,7 @@ impl DexSymbolsCodec {
         Ok(())
     }
 
-    fn read_class(
+    pub(super) fn read_class(
         reader: &mut BinaryReader<'_>,
         strings: &StringPool,
         source_count: usize,
@@ -265,18 +250,17 @@ impl DexSymbolsCodec {
     }
 }
 
-struct StringPool {
+pub(super) struct StringPool {
     strings: Vec<String>,
     ids: BTreeMap<String, u32>,
 }
 
 impl StringPool {
-    fn build(database: &PlatformSymbolDatabase) -> io::Result<Self> {
+    pub(super) fn build_for<'a>(
+        classes: impl Iterator<Item = &'a PlatformClass>,
+    ) -> io::Result<Self> {
         let mut strings = BTreeSet::new();
-        for source in &database.sources {
-            strings.insert(source.name.clone());
-        }
-        for class in database.classes.values().flatten() {
+        for class in classes {
             strings.insert(class.descriptor.clone());
             strings.extend(class.super_class.iter().cloned());
             strings.extend(class.interfaces.iter().cloned());
@@ -372,7 +356,7 @@ impl StringPool {
         strings.insert(field.descriptor.clone());
     }
 
-    fn write(&self, writer: &mut BinaryWriter) -> io::Result<()> {
+    pub(super) fn write(&self, writer: &mut BinaryWriter) -> io::Result<()> {
         writer.count(self.strings.len())?;
         for value in &self.strings {
             writer.count(value.len())?;
@@ -381,7 +365,7 @@ impl StringPool {
         Ok(())
     }
 
-    fn read(reader: &mut BinaryReader<'_>) -> io::Result<Self> {
+    pub(super) fn read(reader: &mut BinaryReader<'_>) -> io::Result<Self> {
         let count = reader.count("string")?;
         let mut strings = Vec::with_capacity(count);
         for _ in 0..count {
@@ -416,44 +400,48 @@ impl StringPool {
 }
 
 #[derive(Default)]
-struct BinaryWriter {
+pub(super) struct BinaryWriter {
     bytes: Vec<u8>,
 }
 
 impl BinaryWriter {
-    fn finish(self) -> Vec<u8> {
+    pub(super) fn len(&self) -> u32 {
+        self.bytes.len() as u32
+    }
+
+    pub(super) fn finish(self) -> Vec<u8> {
         self.bytes
     }
 
-    fn bytes(&mut self, value: &[u8]) {
+    pub(super) fn bytes(&mut self, value: &[u8]) {
         self.bytes.extend_from_slice(value);
     }
 
-    fn u8(&mut self, value: u8) {
+    pub(super) fn u8(&mut self, value: u8) {
         self.bytes.push(value);
     }
 
-    fn u16(&mut self, value: u16) {
+    pub(super) fn u16(&mut self, value: u16) {
         self.bytes.extend_from_slice(&value.to_le_bytes());
     }
 
-    fn i16(&mut self, value: i16) {
+    pub(super) fn i16(&mut self, value: i16) {
         self.bytes.extend_from_slice(&value.to_le_bytes());
     }
 
-    fn u32(&mut self, value: u32) {
+    pub(super) fn u32(&mut self, value: u32) {
         self.bytes.extend_from_slice(&value.to_le_bytes());
     }
 
-    fn u64(&mut self, value: u64) {
+    pub(super) fn u64(&mut self, value: u64) {
         self.bytes.extend_from_slice(&value.to_le_bytes());
     }
 
-    fn i64(&mut self, value: i64) {
+    pub(super) fn i64(&mut self, value: i64) {
         self.bytes.extend_from_slice(&value.to_le_bytes());
     }
 
-    fn count(&mut self, value: usize) -> io::Result<()> {
+    pub(super) fn count(&mut self, value: usize) -> io::Result<()> {
         let value = u32::try_from(value)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "count exceeds u32"))?;
         self.u32(value);
@@ -628,17 +616,27 @@ impl BinaryWriter {
     }
 }
 
-struct BinaryReader<'a> {
+pub(super) struct BinaryReader<'a> {
     bytes: &'a [u8],
     offset: usize,
 }
 
 impl<'a> BinaryReader<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
+    pub(super) fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, offset: 0 }
     }
 
-    fn finish(&self) -> io::Result<()> {
+    pub(super) fn at(bytes: &'a [u8], offset: usize) -> io::Result<Self> {
+        if offset > bytes.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "truncated dexsym data",
+            ));
+        }
+        Ok(Self { bytes, offset })
+    }
+
+    pub(super) fn finish(&self) -> io::Result<()> {
         if self.offset == self.bytes.len() {
             Ok(())
         } else {
@@ -646,7 +644,7 @@ impl<'a> BinaryReader<'a> {
         }
     }
 
-    fn bytes(&mut self, len: usize) -> io::Result<&'a [u8]> {
+    pub(super) fn bytes(&mut self, len: usize) -> io::Result<&'a [u8]> {
         let end = self
             .offset
             .checked_add(len)
@@ -657,37 +655,37 @@ impl<'a> BinaryReader<'a> {
         Ok(bytes)
     }
 
-    fn array<const N: usize>(&mut self) -> io::Result<[u8; N]> {
+    pub(super) fn array<const N: usize>(&mut self) -> io::Result<[u8; N]> {
         self.bytes(N)?
             .try_into()
             .map_err(|_| invalid_data("invalid fixed-width value"))
     }
 
-    fn u8(&mut self) -> io::Result<u8> {
+    pub(super) fn u8(&mut self) -> io::Result<u8> {
         Ok(self.array::<1>()?[0])
     }
 
-    fn u16(&mut self) -> io::Result<u16> {
+    pub(super) fn u16(&mut self) -> io::Result<u16> {
         Ok(u16::from_le_bytes(self.array()?))
     }
 
-    fn i16(&mut self) -> io::Result<i16> {
+    pub(super) fn i16(&mut self) -> io::Result<i16> {
         Ok(i16::from_le_bytes(self.array()?))
     }
 
-    fn u32(&mut self) -> io::Result<u32> {
+    pub(super) fn u32(&mut self) -> io::Result<u32> {
         Ok(u32::from_le_bytes(self.array()?))
     }
 
-    fn u64(&mut self) -> io::Result<u64> {
+    pub(super) fn u64(&mut self) -> io::Result<u64> {
         Ok(u64::from_le_bytes(self.array()?))
     }
 
-    fn i64(&mut self) -> io::Result<i64> {
+    pub(super) fn i64(&mut self) -> io::Result<i64> {
         Ok(i64::from_le_bytes(self.array()?))
     }
 
-    fn count(&mut self, kind: &'static str) -> io::Result<usize> {
+    pub(super) fn count(&mut self, kind: &'static str) -> io::Result<usize> {
         let count = self.u32()? as usize;
         if count > DexSymbolsCodec::MAX_COUNT {
             return Err(io::Error::new(
@@ -698,7 +696,7 @@ impl<'a> BinaryReader<'a> {
         Ok(count)
     }
 
-    fn usize_from_u64(&mut self, kind: &'static str) -> io::Result<usize> {
+    pub(super) fn usize_from_u64(&mut self, kind: &'static str) -> io::Result<usize> {
         usize::try_from(self.u64()?).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -707,7 +705,7 @@ impl<'a> BinaryReader<'a> {
         })
     }
 
-    fn option_string(&mut self, strings: &StringPool) -> io::Result<Option<String>> {
+    pub(super) fn option_string(&mut self, strings: &StringPool) -> io::Result<Option<String>> {
         let id = self.u32()?;
         if id == DexSymbolsCodec::NONE {
             Ok(None)
@@ -716,7 +714,7 @@ impl<'a> BinaryReader<'a> {
         }
     }
 
-    fn string_list(&mut self, strings: &StringPool) -> io::Result<Vec<String>> {
+    pub(super) fn string_list(&mut self, strings: &StringPool) -> io::Result<Vec<String>> {
         let count = self.count("string list")?;
         let mut values = Vec::with_capacity(count);
         for _ in 0..count {
@@ -725,7 +723,10 @@ impl<'a> BinaryReader<'a> {
         Ok(values)
     }
 
-    fn annotations(&mut self, strings: &StringPool) -> io::Result<Vec<PlatformAnnotation>> {
+    pub(super) fn annotations(
+        &mut self,
+        strings: &StringPool,
+    ) -> io::Result<Vec<PlatformAnnotation>> {
         let count = self.count("annotation")?;
         let mut values = Vec::with_capacity(count);
         for _ in 0..count {
@@ -734,11 +735,11 @@ impl<'a> BinaryReader<'a> {
         Ok(values)
     }
 
-    fn annotation(&mut self, strings: &StringPool) -> io::Result<PlatformAnnotation> {
+    pub(super) fn annotation(&mut self, strings: &StringPool) -> io::Result<PlatformAnnotation> {
         self.annotation_at(strings, 0)
     }
 
-    fn annotation_at(
+    pub(super) fn annotation_at(
         &mut self,
         strings: &StringPool,
         depth: usize,
@@ -760,7 +761,7 @@ impl<'a> BinaryReader<'a> {
         })
     }
 
-    fn annotation_value(
+    pub(super) fn annotation_value(
         &mut self,
         strings: &StringPool,
         depth: usize,
@@ -799,7 +800,10 @@ impl<'a> BinaryReader<'a> {
         })
     }
 
-    fn field_reference(&mut self, strings: &StringPool) -> io::Result<PlatformFieldReference> {
+    pub(super) fn field_reference(
+        &mut self,
+        strings: &StringPool,
+    ) -> io::Result<PlatformFieldReference> {
         Ok(PlatformFieldReference {
             owner: strings.get(self.u32()?)?.to_string(),
             name: strings.get(self.u32()?)?.to_string(),
@@ -807,7 +811,10 @@ impl<'a> BinaryReader<'a> {
         })
     }
 
-    fn optional_constant(&mut self, strings: &StringPool) -> io::Result<Option<PlatformConstant>> {
+    pub(super) fn optional_constant(
+        &mut self,
+        strings: &StringPool,
+    ) -> io::Result<Option<PlatformConstant>> {
         match self.u8()? {
             0 => Ok(None),
             1 => self.constant(strings).map(Some),
@@ -815,7 +822,7 @@ impl<'a> BinaryReader<'a> {
         }
     }
 
-    fn constant(&mut self, strings: &StringPool) -> io::Result<PlatformConstant> {
+    pub(super) fn constant(&mut self, strings: &StringPool) -> io::Result<PlatformConstant> {
         Ok(match self.u8()? {
             0 => PlatformConstant::Integer(self.i64()?),
             1 => PlatformConstant::Float(self.u32()?),
@@ -825,7 +832,7 @@ impl<'a> BinaryReader<'a> {
         })
     }
 
-    fn constant_domain(
+    pub(super) fn constant_domain(
         &mut self,
         strings: &StringPool,
     ) -> io::Result<Option<PlatformConstantDomain>> {
@@ -861,6 +868,6 @@ impl<'a> BinaryReader<'a> {
     }
 }
 
-fn invalid_data(message: &'static str) -> io::Error {
+pub(super) fn invalid_data(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }

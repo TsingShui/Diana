@@ -157,3 +157,16 @@ fn dexsym_codec_is_deterministic_and_lossless() {
         decoded.to_bytes().expect("deterministic re-encode")
     );
 }
+
+/// Maintenance hook: rewrites the embedded resource when DEXSYM_REWRITE names
+/// its destination. The input is the resource compiled into this test binary.
+#[test]
+fn rewrite_embedded_symbols() {
+    let Some(path) = std::env::var_os("DEXSYM_REWRITE") else {
+        return;
+    };
+    let database = PlatformSymbolDatabase::from_bytes(EMBEDDED).expect("embedded platform symbols");
+    database
+        .write(path)
+        .expect("rewrite platform symbol database");
+}

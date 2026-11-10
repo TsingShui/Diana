@@ -8,6 +8,7 @@ use std::io;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
+mod archive;
 mod codec;
 mod model;
 
@@ -31,11 +32,11 @@ pub fn default_platform_symbols() -> io::Result<Arc<PlatformSymbolSet>> {
     if let Some(symbols) = DEFAULT.get() {
         return Ok(Arc::clone(symbols));
     }
-    let database = match std::env::var_os("DEXDEC_SYMBOLS") {
-        Some(path) => PlatformSymbolDatabase::read(Path::new(&path))?,
-        None => PlatformSymbolDatabase::from_bytes(EMBEDDED_SYMBOLS)?,
+    let bytes = match std::env::var_os("DEXDEC_SYMBOLS") {
+        Some(path) => std::fs::read(Path::new(&path))?,
+        None => EMBEDDED_SYMBOLS.to_vec(),
     };
-    let symbols = Arc::new(database.select(database.default_target()));
+    let symbols = Arc::new(PlatformSymbolSet::open(&bytes, None)?);
     match DEFAULT.set(Arc::clone(&symbols)) {
         Ok(()) => Ok(symbols),
         Err(_) => DEFAULT.get().map(Arc::clone).ok_or_else(|| {
