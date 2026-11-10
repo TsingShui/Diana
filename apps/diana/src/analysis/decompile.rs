@@ -1,7 +1,7 @@
 //! One validated selection to the same Engine execution's owned P9 publication.
 
 use diana_decomp::p0::{ClassFacts, Fact};
-use diana_decomp::p9::RenderOutcome;
+use diana_decomp::render::RenderOutcome;
 use diana_decomp::{
     ByteOffset, ClassKey, DexImage, Engine, ImageOrigin, InputId, MethodId, Request, RequestError,
 };

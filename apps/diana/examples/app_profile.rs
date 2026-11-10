@@ -73,8 +73,8 @@ fn main() {
         eprintln!(
             "class {class_def} {} {:.3}s",
             match &result.rendered {
-                diana_decomp::p9::RenderOutcome::Ready(_) => "rendered",
-                diana_decomp::p9::RenderOutcome::Stopped(_) => "render_stopped",
+                diana_decomp::render::RenderOutcome::Ready(_) => "rendered",
+                diana_decomp::render::RenderOutcome::Stopped(_) => "render_stopped",
             },
             started.elapsed().as_secs_f64()
         );

@@ -6,7 +6,7 @@ use diana::analysis::{
 };
 use diana_decomp::{
     ByteOffset, ClassDefId, ClassKey, DexId, DexImage, Engine, FailureKind, ImageOrigin, InputId,
-    Request, input::DexContainer, p9::RenderOutcome,
+    Request, input::DexContainer, render::RenderOutcome,
 };
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 

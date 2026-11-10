@@ -9,7 +9,7 @@ use crate::ir::analysis::ClassHierarchyIndex;
 use crate::ir::{AnalysisObserver, NullAnalysisObserver, CFG};
 use crate::p0::{ClassFacts, Fact};
 use crate::p1::DecodedMethod;
-use crate::p9::{RenderOutcome, Rendered};
+use crate::render::{RenderOutcome, Rendered};
 use crate::{ByteOffset, ClassKey, DexId, ImageFact, ImageOrigin, MethodId, RequestError};
 
 mod request;

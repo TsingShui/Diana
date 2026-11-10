@@ -3,7 +3,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use diana_decomp::p9::RenderOutcome;
+use diana_decomp::render::RenderOutcome;
 use serde::Serialize;
 
 use super::output::{Failure, Format, publish_with};

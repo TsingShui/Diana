@@ -1,6 +1,6 @@
 # 01 — Input and P1 original facts
 
-Code: `crates/diana-decomp/src/input/` and `src/p1/`. Application input/ZIP
+Code: `crates/diana-decomp/src/facts/input/` and `src/facts/p1/`. Application input/ZIP
 handling lives in `apps/diana/src/analysis/`. Ownership and stage boundaries are
 specified by [PIPELINE_DESIGN §§3–5.1](../PIPELINE_DESIGN.md).
 

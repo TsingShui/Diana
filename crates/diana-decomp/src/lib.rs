@@ -27,16 +27,14 @@ mod engine;
 pub mod frontend;
 pub mod ir;
 pub mod language;
-pub mod p9;
 pub mod platform_symbols;
 pub mod profiling;
+pub mod render;
 
-pub mod flow;
-pub mod input;
-pub mod p0;
-pub mod p1;
-pub mod pipeline;
-pub mod substrate;
+pub mod facts;
+
+pub use facts::flow::FlowError;
+pub use facts::{input, p0, p1, pipeline, substrate};
 
 pub mod raw {
     pub use crate::input::formats::{
@@ -49,7 +47,6 @@ pub mod raw {
     };
 }
 
-pub use flow::FlowError;
 pub use input::annotation_facts::{
     AnnotationExtent, AnnotationLocation, AnnotationParameterIndex, AnnotationPrefix,
     AnnotationRecord, AnnotationToken, AnnotationValue, AnnotationValueKind, OriginalAnnotations,
