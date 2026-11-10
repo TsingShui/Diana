@@ -96,6 +96,12 @@ enum Command {
         #[arg(long)]
         /// Workers for independent DEX images (default: available CPUs)
         jobs: Option<usize>,
+        #[arg(long, default_value_t = xref::DEFAULT_LIMIT, conflicts_with = "no_limit")]
+        /// Maximum rows to show; use --no-limit for every match
+        limit: usize,
+        #[arg(long, conflicts_with = "limit")]
+        /// Show every matching row without a display limit
+        no_limit: bool,
         #[arg(long, value_enum, default_value_t = Format::Text)]
         /// Presentation of the same result
         format: Format,
@@ -123,6 +129,12 @@ enum Command {
         #[arg(long)]
         /// Workers for independent DEX images (default: available CPUs)
         jobs: Option<usize>,
+        #[arg(long, default_value_t = xref::DEFAULT_LIMIT, conflicts_with = "no_limit")]
+        /// Maximum rows to show; use --no-limit for every match
+        limit: usize,
+        #[arg(long, conflicts_with = "limit")]
+        /// Show every matching row without a display limit
+        no_limit: bool,
         #[arg(long, value_enum, default_value_t = Format::Text)]
         /// Presentation of the same result
         format: Format,
@@ -148,6 +160,12 @@ enum Command {
         #[arg(long)]
         /// Workers for independent DEX images (default: available CPUs)
         jobs: Option<usize>,
+        #[arg(long, default_value_t = xref::DEFAULT_LIMIT, conflicts_with = "no_limit")]
+        /// Maximum rows to show; use --no-limit for every match
+        limit: usize,
+        #[arg(long, conflicts_with = "limit")]
+        /// Show every matching row without a display limit
+        no_limit: bool,
         #[arg(long, value_enum, default_value_t = Format::Text)]
         /// Presentation of the same result
         format: Format,
@@ -170,6 +188,12 @@ enum Command {
         #[arg(long)]
         /// Workers for independent DEX images (default: available CPUs)
         jobs: Option<usize>,
+        #[arg(long, default_value_t = xref::DEFAULT_LIMIT, conflicts_with = "no_limit")]
+        /// Maximum rows to show; use --no-limit for every match
+        limit: usize,
+        #[arg(long, conflicts_with = "limit")]
+        /// Show every matching row without a display limit
+        no_limit: bool,
         #[arg(long, value_enum, default_value_t = Format::Text)]
         /// Presentation of the same result
         format: Format,
@@ -446,6 +470,8 @@ pub fn run() -> std::process::ExitCode {
             subinterface,
             kind,
             jobs,
+            limit,
+            no_limit,
             format,
             output,
         } => query_command(
@@ -468,6 +494,7 @@ pub fn run() -> std::process::ExitCode {
             },
             format,
             output.as_deref(),
+            if no_limit { 0 } else { limit },
         ),
         Command::Fields {
             input,
@@ -475,6 +502,8 @@ pub fn run() -> std::process::ExitCode {
             matching,
             class,
             jobs,
+            limit,
+            no_limit,
             format,
             output,
         } => query_command(
@@ -489,6 +518,7 @@ pub fn run() -> std::process::ExitCode {
             },
             format,
             output.as_deref(),
+            if no_limit { 0 } else { limit },
         ),
         Command::Methods {
             input,
@@ -496,6 +526,8 @@ pub fn run() -> std::process::ExitCode {
             matching,
             class,
             jobs,
+            limit,
+            no_limit,
             format,
             output,
         } => query_command(
@@ -510,12 +542,15 @@ pub fn run() -> std::process::ExitCode {
             },
             format,
             output.as_deref(),
+            if no_limit { 0 } else { limit },
         ),
         Command::Strings {
             input,
             filter,
             matching,
             jobs,
+            limit,
+            no_limit,
             format,
             output,
         } => query_command(
@@ -530,6 +565,7 @@ pub fn run() -> std::process::ExitCode {
             },
             format,
             output.as_deref(),
+            if no_limit { 0 } else { limit },
         ),
     };
     match result {
@@ -559,6 +595,7 @@ fn entries(
             class: None,
             class_filter: Default::default(),
             jobs: 1,
+            limit: 0,
         },
     )
     .map_err(|error| Failure::query(error, 1))?;
@@ -594,6 +631,7 @@ fn entries(
                     },
                     &mut |chunk: Vec<u8>| sink.chunk(&chunk),
                 )
+                .map(|_| ())
                 .map_err(|error| Failure::query(error, 1))
         },
     )
@@ -675,6 +713,7 @@ fn query_command(
     args: QueryArgs,
     format: Format,
     output: Option<&std::path::Path>,
+    limit: usize,
 ) -> Result<(), Failure> {
     let filter = args.matching.filter(args.filter.as_deref())?;
     let scope = RequestScope::open(input, &options()).map_err(Failure::input)?;
@@ -695,6 +734,7 @@ fn query_command(
         class_filter: args.class_filter,
 
         jobs,
+        limit,
     };
     let query = Query::new(&scope, plan).map_err(|error| Failure::query(error, 1))?;
     let images = query.images().to_vec();
@@ -720,6 +760,12 @@ fn query_command(
                 },
                 &mut |chunk: Vec<u8>| sink.chunk(&chunk),
             )
+            .and_then(|truncated| {
+                if truncated {
+                    sink.truncated(limit)?;
+                }
+                Ok(())
+            })
             .map_err(|error| Failure::query(error, 1))
     })
 }

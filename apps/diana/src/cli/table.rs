@@ -424,6 +424,8 @@ pub(super) struct ChunkSink<'w> {
     /// The first write failure. It is sticky so a closed pipe is reported once,
     /// as the write error, instead of surfacing as a stopped query.
     failure: Option<std::io::Error>,
+    /// The display limit dropped matching rows.
+    truncated: bool,
 }
 
 impl<'w> ChunkSink<'w> {
@@ -440,6 +442,7 @@ impl<'w> ChunkSink<'w> {
             items_key,
             started: false,
             failure: None,
+            truncated: false,
         })
     }
 
@@ -494,8 +497,30 @@ impl<'w> ChunkSink<'w> {
         Ok(())
     }
 
+    /// Reports that the display limit hid matching rows.
+    pub(super) fn truncated(&mut self, limit: usize) -> Result<(), QueryError> {
+        match self.format {
+            Format::Text => {
+                let warning = format!(
+                    "//Diana Warn: Too much results, only show top {limit} , use --no-limit or --limit N\n"
+                );
+                self.writer.write_all(warning.as_bytes()).map_err(|error| {
+                    self.failure = Some(error);
+                    QueryError::WorkerLost
+                })
+            }
+            Format::Json => {
+                self.truncated = true;
+                Ok(())
+            }
+        }
+    }
+
     fn finish(self) -> std::io::Result<()> {
         if self.format == Format::Json {
+            if self.truncated {
+                self.writer.write_all(b",\"truncated\":true")?;
+            }
             self.writer.write_all(b"]}")?;
         }
         Ok(())

@@ -31,6 +31,7 @@ fn main() {
             class_filter: Default::default(),
 
             jobs: 1,
+            limit: 0,
         },
     )
     .expect("query");

@@ -135,6 +135,8 @@ pub struct QueryPlan {
     /// Direct hierarchy relations restricting `classes`.
     pub class_filter: super::dex::ClassFilter,
     pub jobs: usize,
+    /// Maximum rows to deliver; zero delivers every match.
+    pub limit: usize,
 }
 
 /// Prepared query: one scan delivers completion-order chunks, or globally ranked
@@ -147,6 +149,7 @@ pub struct Query<'a> {
     class: Option<Vec<u16>>,
     class_filter: super::dex::ClassFilter,
     jobs: usize,
+    limit: usize,
     entries: Option<&'a [EntryRecord]>,
 }
 
@@ -180,6 +183,7 @@ impl<'a> Query<'a> {
             class: plan.class,
             class_filter: plan.class_filter,
             jobs: plan.jobs,
+            limit: plan.limit,
             entries,
         })
     }
@@ -196,13 +200,16 @@ impl<'a> Query<'a> {
     /// the two is what keeps formatting off the single consumer thread; `first` says
     /// whether the row is the first of its chunk, which is where the JSON separator
     /// goes.
-    pub fn run<R, S>(&self, render: &R, sink: &mut S) -> Result<(), QueryError>
+    /// Runs the scan and reports whether the display limit dropped rows.
+    pub fn run<R, S>(&self, render: &R, sink: &mut S) -> Result<bool, QueryError>
     where
         R: for<'r> Fn(Row<'r>, &mut Vec<u8>, bool) -> Result<(), QueryError> + Sync,
         S: FnMut(Vec<u8>) -> Result<(), QueryError>,
     {
         let ranked = self.filter.as_ref().is_some_and(TextFilter::is_fuzzy);
         let mut collected = ranking::Collected::default();
+        let emitted = std::sync::atomic::AtomicUsize::new(0);
+        let truncated = std::sync::atomic::AtomicBool::new(false);
         if self.kind == QueryKind::Entries {
             let entries = self.entries.ok_or(QueryError::NotArchive)?;
             let mut buffer = ranking::Buffer::new(ranked);
@@ -221,12 +228,18 @@ impl<'a> Query<'a> {
                     };
                     row.relevance = selected.relevance;
                 }
-                buffer.push(Row::Entry(row), render, &mut |batch| {
-                    collected.accept(batch, sink)
-                })?;
+                buffer.push(
+                    Row::Entry(row),
+                    render,
+                    self.limit,
+                    &emitted,
+                    &truncated,
+                    &mut |batch| collected.accept(batch, sink),
+                )?;
             }
             buffer.flush(&mut |batch| collected.accept(batch, sink))?;
-            return collected.finish(sink);
+            collected.finish(sink)?;
+            return Ok(truncated.load(std::sync::atomic::Ordering::Relaxed));
         }
         let kind = self.kind;
         let mut work = Vec::new();
@@ -250,8 +263,9 @@ impl<'a> Query<'a> {
                 let class = self.class.as_deref();
                 let mut buffer = ranking::Buffer::new(ranked);
                 {
-                    let mut push =
-                        |row: Row<'_>| -> Result<(), QueryError> { buffer.push(row, render, emit) };
+                    let mut push = |row: Row<'_>| -> Result<(), QueryError> {
+                        buffer.push(row, render, self.limit, &emitted, &truncated, emit)
+                    };
                     // Declaration-only queries can finish before the code/map tail.
                     // No rows are emitted until the prefix contains the complete list.
                     let from_prefix = match kind {
@@ -300,7 +314,8 @@ impl<'a> Query<'a> {
         );
         let delivered = collected.finish(sink);
         scanned?;
-        delivered
+        delivered?;
+        Ok(truncated.load(std::sync::atomic::Ordering::Relaxed))
     }
 }
 

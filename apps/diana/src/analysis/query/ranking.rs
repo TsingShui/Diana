@@ -39,11 +39,18 @@ impl Buffer {
         &mut self,
         row: Row<'_>,
         render: &R,
+        limit: usize,
+        emitted: &std::sync::atomic::AtomicUsize,
+        truncated: &std::sync::atomic::AtomicBool,
         emit: &mut dyn FnMut(Batch) -> Result<(), QueryError>,
     ) -> Result<(), QueryError>
     where
         R: for<'r> Fn(Row<'r>, &mut Vec<u8>, bool) -> Result<(), QueryError>,
     {
+        if limit != 0 && emitted.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= limit {
+            truncated.store(true, std::sync::atomic::Ordering::Relaxed);
+            return Ok(());
+        }
         if self.ranked {
             let relevance = row.relevance().ok_or({
                 QueryError::Engine(diana_decomp::input::InputError::InternalInvariant(

@@ -244,6 +244,7 @@ pub fn build(
             class: None,
             class_filter: Default::default(),
             jobs: jobs.get(),
+            limit: 0,
         },
     )?;
     let mut shards = Vec::new();
