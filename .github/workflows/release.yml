@@ -157,7 +157,9 @@ jobs:
               exit 1
             fi
           else
-            gh release create "$TAG" --draft --verify-tag --target "$COMMIT" \
+            # The existing tag pins the release. An explicit target SHA can require
+            # extra workflow permissions if main's workflows change during the build.
+            gh release create "$TAG" --draft --verify-tag \
               --title "Diana $VERSION" --notes-file .github/release-notes.md
           fi
           gh release upload "$TAG" dist/* --clobber
