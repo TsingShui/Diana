@@ -12,6 +12,7 @@ pub(in crate::p6) enum Nomination {
 
 #[derive(Debug)]
 pub(in crate::p6) struct CoroutineBodyPlan {
+    pub(in crate::p6) site: SuspensionPlan,
     pub(in crate::p6) root: RegionId,
     pub(in crate::p6) prefix: Vec<RegionId>,
     pub(in crate::p6) dispatch: RegionId,
@@ -22,6 +23,32 @@ pub(in crate::p6) struct CoroutineBodyPlan {
     pub(in crate::p6) sequence: Vec<RegionId>,
     pub(in crate::p6) operations: Vec<ProtocolEvent>,
     pub(in crate::p6) implicit_locals: Vec<crate::p5::LocalId>,
+}
+
+/// Exact local correspondence used only while qualifying the closed body.
+/// The selected protocol retains its calls, copies and original controls.
+#[derive(Clone, Copy, Debug)]
+pub(in crate::p6) struct SuspensionPlan {
+    pub(in crate::p6) dispatch: RegionId,
+    pub(in crate::p6) control: RegionId,
+    pub(in crate::p6) header: RegionId,
+    pub(in crate::p6) normal_body: RegionId,
+    pub(in crate::p6) suspended_body: RegionId,
+    pub(in crate::p6) state: i32,
+    pub(in crate::p6) state_store: OpId,
+    pub(in crate::p6) call: OpId,
+    pub(in crate::p6) result: crate::p5::LocalId,
+    pub(in crate::p6) merged: crate::p5::LocalId,
+    pub(in crate::p6) continuation_argument: u32,
+    pub(in crate::p6) marker: crate::p5::LocalId,
+    pub(in crate::p6) predicate: crate::p2::BlockId,
+    pub(in crate::p6) normal: LinkId,
+    pub(in crate::p6) suspended: LinkId,
+    pub(in crate::p6) marker_return: crate::p2::BlockId,
+    pub(in crate::p6) normal_copy: crate::p5::PlanId,
+    pub(in crate::p6) resume: RegionId,
+    pub(in crate::p6) resume_check: OpId,
+    pub(in crate::p6) resume_copy: crate::p5::PlanId,
 }
 /// Source order selected from the existing hierarchy for a closed acyclic
 /// continuation protocol. Original controls and all ABI nodes remain owned.

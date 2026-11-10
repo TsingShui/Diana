@@ -894,7 +894,7 @@ bits and an integral view. Other bit-pattern literals keep their supplied views.
 P7 consumes P6's complete common control records and established protocol
 associations. It keeps one `Control` arena and one `Protocol` metadata record,
 with calls, implicit continuation occurrences, ABI entries and selected copy
-forwarding. Body, single-site loop and multi-site nominations remain private to P6;
+forwarding. SuspendLambda and ordinary continuation nominations remain private to P6;
 P7 publishes no separate executable body/loop/flow layout.
 
 Original controls retain source topology and semantic metadata. Selected children
@@ -910,8 +910,9 @@ A `Scope` names code, ABI or origin presentation. An annotated block completion
 retains its original terminal and marker edge and selects the supplied normal
 transfer. Ordinary Loop records retain their original predicate, continuation
 target and repeated/exit roles. P7 MUST NOT choose a latch, rematch a marker or
-retarget a resume corridor. A local `SuspensionPlan` without a closed source-body
-product leaves the original header, call, marker branch and dispatch available.
+retarget a resume corridor. An unqualified local suspension leaves the original
+header, call, marker branch and dispatch available without a second published
+site product. Accepted call/state/resume correspondence comes from `ProtocolPlan`.
 
 The original call remains at its statement with the same receiver, visible
 arguments, target, site and result-commit identity. Only its matched continuation

@@ -595,8 +595,8 @@ structure from the remaining replacement; the complete design is not accepted.
 | Local fixed points | Selected roots leave the active suffix; rejected condition proposals leave the product unchanged. | The P6 and P7 pipelines still run ordered passes. Neither stage has the complete dependency-driven local convergence specified by the design. |
 | Finalization | P9 consumes selected layouts and nested operations. Existing declaration and label passes remain. Loop/flow visibility shares one P7-owned observer query. | Protocol-specific traversal is removed. Copy forwarding and a single final declaration/label derivation still need replacement. |
 
-Against `f6e7893`, the current engine production tree has 67,002 physical Rust
-source lines, compared with 68,495 at the baseline: 1,493 fewer lines. This count
+Against `f6e7893`, the current engine production tree has 66,938 physical Rust
+source lines, compared with 68,495 at the baseline: 1,557 fewer lines. This count
 includes every `*.rs` file under `crates/diana-decomp/src/`, including shared
 helpers, comments and blank lines; tests and documentation are excluded. The
 small reduction does not establish the design's substantial size objective or
@@ -636,6 +636,22 @@ and source leaves are enumerated from that selected grammar. P7 consumes only
 the existing narrow forwarding interval; it cannot read a raw loop program.
 Protocol event records expose their original IDs and roles without per-form
 getter facades. RegionFacts construction remains sealed.
+
+Local SuspendLambda call correspondence now travels with its private body
+nomination and is consumed at grammar construction. The published
+`SuspensionPlan`, `RegionFacts::suspensions()` and duplicate shell projection are
+removed. P7 and the focused publication check consume the canonical call and
+protocol-event records. Original operations, links, copies and source controls
+remain inspectable even when a nomination is refused. This contracts the product
+interface; SuspendLambda and ordinary-method candidate recognition still differ.
+
+Against `7e90635`, this interface contraction removes 64 physical production
+Rust lines, including the private scratch record. The 44-test scoped nextest
+set, strict all-feature engine/example/relevant-test Clippy and debug inspection
+build pass. All canonical P6 products and full P9 class text/issues match for
+18 prepared Kotlin groups after excluding timings and the removed scratch-only
+inspection field. Their unchanged path reviews are reused. These are
+representation-compatibility observations; coroutine/VM execution remains unrun.
 
 The [outside-observer challenge](../../quality/fixtures/kotlin/protocol-candidate-lifetimes/README.md)
 adds an observed captured checksum after loop completion, including zero

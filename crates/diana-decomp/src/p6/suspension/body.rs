@@ -8,11 +8,12 @@ pub(super) fn construct(
     storage: &StorageMethod<'_>,
     f: &mut RegionFacts,
     graph: &Graph,
+    suspensions: &[SuspensionPlan],
 ) -> Result<Option<CoroutineBodyPlan>, RegionError> {
-    if f.suspensions.len() != 1 {
+    let [plan] = suspensions else {
         return Ok(None);
-    }
-    match candidate(storage, f, graph)? {
+    };
+    match candidate(storage, f, graph, *plan)? {
         Ok(body) => {
             if cfg!(feature = "trace-passes") {
                 let flow = storage.execution();
@@ -37,7 +38,7 @@ pub(super) fn construct(
                     key.dex.0,
                     key.class_def.0,
                     flow.method_id().0,
-                    f.suspensions[0].dispatch.0,
+                    plan.dispatch.0,
                     reason
                 );
             }
@@ -50,6 +51,7 @@ fn candidate(
     storage: &StorageMethod<'_>,
     f: &RegionFacts,
     graph: &Graph,
+    plan: SuspensionPlan,
 ) -> Result<Result<CoroutineBodyPlan, &'static str>, RegionError> {
     macro_rules! require {
         ($test:expr,$why:literal) => {
@@ -58,7 +60,6 @@ fn candidate(
             }
         };
     }
-    let plan = f.suspensions[0];
     let flow = storage.execution();
     let Some(root) = f.root else {
         return Ok(Err("body_root_unavailable"));
@@ -371,6 +372,7 @@ fn candidate(
         push(&mut sequence, body)?;
     }
     Ok(Ok(CoroutineBodyPlan {
+        site: plan,
         root,
         prefix: super::super::build::copy(prefix)?,
         dispatch: plan.dispatch,

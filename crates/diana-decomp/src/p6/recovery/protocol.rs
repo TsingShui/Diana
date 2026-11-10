@@ -259,10 +259,7 @@ pub(super) fn construct(
             )
         }
         Nomination::Body(p) => {
-            let s = *f
-                .suspensions
-                .first()
-                .ok_or(bug("closed protocol lost its call association"))?;
+            let s = p.site;
             guard(f, s.control, s.header, s.normal_body)?;
             f.controls[s.control.0 as usize].source_only = vec_one(s.suspended_body)?.into();
             let guard_node = g.terminal_node[s.predicate.0 as usize];

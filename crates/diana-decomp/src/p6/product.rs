@@ -966,93 +966,8 @@ pub enum PlanningIssue {
         reason: RecoveryReason,
     },
 }
-/// A local continuation protocol. The dispatch and resume/error bodies remain
-/// original code; only the selected call/marker/normal-copy position is combined.
-#[derive(Clone, Copy, Debug)]
-pub struct SuspensionPlan {
-    pub(super) dispatch: RegionId,
-    pub(super) control: RegionId,
-    pub(super) header: RegionId,
-    pub(super) normal_body: RegionId,
-    pub(super) suspended_body: RegionId,
-    pub(super) state: i32,
-    pub(super) state_store: OpId,
-    pub(super) call: OpId,
-    pub(super) result: crate::p5::LocalId,
-    pub(super) merged: crate::p5::LocalId,
-    pub(super) continuation_argument: u32,
-    pub(super) marker: crate::p5::LocalId,
-    pub(super) predicate: BlockId,
-    pub(super) normal: LinkId,
-    pub(super) suspended: LinkId,
-    pub(super) marker_return: BlockId,
-    pub(super) normal_copy: PlanId,
-    pub(super) resume: RegionId,
-    pub(super) resume_check: OpId,
-    pub(super) resume_link: LinkId,
-    pub(super) resume_copy: PlanId,
-}
-impl SuspensionPlan {
-    pub fn call(&self) -> OpId {
-        self.call
-    }
-    pub fn control(&self) -> RegionId {
-        self.control
-    }
-    pub fn header(&self) -> RegionId {
-        self.header
-    }
-    pub fn bodies(&self) -> [RegionId; 2] {
-        [self.normal_body, self.suspended_body]
-    }
-    pub fn dispatch(&self) -> RegionId {
-        self.dispatch
-    }
-    pub fn state(&self) -> i32 {
-        self.state
-    }
-    pub fn state_store(&self) -> OpId {
-        self.state_store
-    }
-    pub fn result(&self) -> crate::p5::LocalId {
-        self.result
-    }
-    pub fn merged(&self) -> crate::p5::LocalId {
-        self.merged
-    }
-    pub fn continuation_argument(&self) -> u32 {
-        self.continuation_argument
-    }
-    pub fn marker(&self) -> crate::p5::LocalId {
-        self.marker
-    }
-    pub fn predicate(&self) -> BlockId {
-        self.predicate
-    }
-    pub fn links(&self) -> [LinkId; 2] {
-        [self.normal, self.suspended]
-    }
-    pub fn marker_return(&self) -> BlockId {
-        self.marker_return
-    }
-    pub fn normal_copy(&self) -> PlanId {
-        self.normal_copy
-    }
-    pub fn resume(&self) -> RegionId {
-        self.resume
-    }
-    pub fn resume_check(&self) -> OpId {
-        self.resume_check
-    }
-    pub fn resume_link(&self) -> LinkId {
-        self.resume_link
-    }
-    pub fn resume_copy(&self) -> PlanId {
-        self.resume_copy
-    }
-}
-/// Source-body order over an established suspension. ABI-only code remains
-/// explicitly attached, so it is neither treated as pure nor erased as dead code.
+/// Original operation roles in the selected protocol. ABI-only operations
+/// remain attached with their effects and exception correspondence.
 #[derive(Clone, Copy, Debug)]
 pub enum ProtocolRole {
     Abi,
@@ -1089,7 +1004,6 @@ pub struct RegionFacts {
     pub(super) controls: Vec<crate::recovery::ControlRecord>,
     pub(super) protocol: Option<ProtocolPlan>,
     pub(super) lock_entries: LockEntries,
-    pub(super) suspensions: Vec<SuspensionPlan>,
     pub(super) nodes: Vec<Node>,
     pub(super) blocks: Vec<BlockPlan>,
     pub(super) links: Vec<NormalLink>,
@@ -1167,14 +1081,10 @@ impl RegionFacts {
     pub fn protocol(&self) -> Option<&ProtocolPlan> {
         self.protocol.as_ref()
     }
-    pub fn suspensions(&self) -> &[SuspensionPlan] {
-        &self.suspensions
-    }
     pub(super) fn empty() -> Self {
         Self {
             controls: Vec::new(),
             protocol: None,
-            suspensions: Vec::new(),
             lock_entries: LockEntries::Unestablished,
             nodes: Vec::new(),
             blocks: Vec::new(),

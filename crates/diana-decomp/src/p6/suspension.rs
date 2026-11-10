@@ -71,6 +71,7 @@ pub(super) fn construct(
     let (Some(this), Some(parameter)) = (this, parameter) else {
         return Ok(None);
     };
+    let mut suspensions = Vec::new();
     let mut saw_dispatch = false;
     for region_index in 0..f.regions.len() {
         let Some(decision) = f.regions[region_index].decision.as_ref() else {
@@ -331,7 +332,6 @@ pub(super) fn construct(
                 normal_copy,
                 resume,
                 resume_check,
-                resume_link: *resume_link,
                 resume_copy,
             };
             if cfg!(feature = "trace-passes") {
@@ -348,7 +348,7 @@ pub(super) fn construct(
                     resume_copy.0
                 );
             }
-            push(&mut f.suspensions, plan)?;
+            push(&mut suspensions, plan)?;
             break;
         }
     }
@@ -361,7 +361,7 @@ pub(super) fn construct(
             flow.method_id().0
         );
     }
-    Ok(body::construct(storage, f, graph)?.map(Nomination::Body))
+    Ok(body::construct(storage, f, graph, &suspensions)?.map(Nomination::Body))
 }
 
 fn reject(storage: &StorageMethod<'_>, dispatch: RegionId, reason: &str) {

@@ -657,7 +657,7 @@ one owner, not a separate copy in each arm.
 
 ## Local continuation suspension protocols
 
-After decision layout, P6 can publish a `SuspensionPlan` over an existing
+After decision layout, P6 can privately nominate a local suspension over an existing
 `invokeSuspend(Object): Object` member whose original superclass is
 `SuspendLambda`. This identity is only a candidate filter. P6 MUST also establish
 the label-field read, matching state store and continuation operand, original
@@ -681,16 +681,18 @@ result. P6 MUST require established method-local lock emptiness at the call,
 predicate, marker return and resume ingress. It MUST NOT rerun lock propagation.
 Unknown or held locks leave the original protocol explicit.
 
-The plan names the original dispatch, call, state write, result local, continuation
+The nomination names the original dispatch, call, state write, result local, continuation
 argument, marker, predicate, return, normal/resume links and copy plans. P6 keeps
 the dispatch, state stores, resume check, default/error arm and shared continuation
 as original code. It adds no state, dispatcher, SSA definition, tail copy or
-runtime helper. A mismatch leaves that local protocol explicit; resource and
+runtime helper. A closed body consumes this correspondence once into the common
+`ProtocolPlan`; `RegionFacts` does not publish another local-site record or getter.
+A mismatch leaves that local protocol explicit; resource and
 construction failures retain their classified behavior.
 
 ### Closed source-body alternative
 
-A local plan alone does not authorize a source-body replacement. P6 additionally
+A local nomination alone does not authorize a source-body replacement. P6 additionally
 qualifies a private body nomination when the selected root Sequence contains a straight ABI
 entry prefix, that dispatch and the original common-tail controls. The alternative
 contains the original initial body followed by those same tail controls; it adds
@@ -718,7 +720,7 @@ The alternative retains the initial ABI argument and every containing member.
 The prefix and resume/error bodies remain readable ABI-only attachments, with
 their original controls, instructions, references, sites and copies. The call
 still refers to its precise continuation operand and original callee binding.
-A missing prerequisite leaves the complete original layout and local facts
+A missing prerequisite leaves the complete original layout and original facts
 available. Resource and construction errors retain the ordinary classified stop.
 
 ## Ordinary continuation source bodies

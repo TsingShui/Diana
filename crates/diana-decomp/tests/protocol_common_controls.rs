@@ -53,19 +53,29 @@ fn result_publication_and_state_barrier_keep_the_shared_tail_after_success() {
         "invokeSuspend",
         "(Ljava/lang/Object;)Ljava/lang/Object;",
         |facts, code, rendered| {
-            let original = facts.suspensions()[0];
+            let plan = facts.protocol().unwrap();
+            let [original] = plan.calls.as_slice() else {
+                panic!("one original call association");
+            };
+            let (copy, destination) = original.publication.unwrap();
             let protocol = code.emission().protocol().unwrap();
             assert_eq!(protocol.calls.len(), 1);
-            assert_eq!(protocol.calls[0].call, original.call());
-            let operation = &code.operations()[original.call().0 as usize];
+            assert_eq!(protocol.calls[0].call, original.call);
+            let operation = &code.operations()[original.call.0 as usize];
             let publication = operation.publication.as_ref().unwrap();
-            assert_eq!(publication.destination.0, original.merged().0);
-            assert_eq!(publication.copy.0, original.normal_copy().0);
-            assert_eq!(publication.transfer.0, original.links()[0].0);
+            assert_eq!(publication.destination.0, destination.0);
+            assert_eq!(publication.copy.0, copy.0);
+            assert_eq!(publication.transfer.0, original.normal.0);
             assert_eq!(
                 code.copies()[publication.copy.0 as usize].emission,
-                CopyEmission::Publication(original.call())
+                CopyEmission::Publication(original.call)
             );
+            let state_store = plan
+                .operations
+                .iter()
+                .find(|event| matches!(event.role, diana_decomp::p6::ProtocolRole::PublishState))
+                .unwrap()
+                .operation;
             assert!(
                 code.emission()
                     .transfers()
@@ -78,7 +88,7 @@ fn result_publication_and_state_barrier_keep_the_shared_tail_after_success() {
                 .iter()
                 .find_map(|span| {
                     matches!(span.origin,
-                Origin::Operation { operation, .. } if operation == original.state_store())
+                Origin::Operation { operation, .. } if operation == state_store)
                     .then_some(span.start.0)
                 })
                 .unwrap();

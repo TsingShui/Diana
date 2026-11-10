@@ -1793,15 +1793,6 @@ fn region_json(method: diana_decomp::p7::MethodInspection<'_, '_>, details: bool
             "iteration":p.iteration.as_ref().map(|p|json!({"control":p.control.0,"condition":format!("{:?}",p.condition),"implicit":p.implicit.map(|(a,b)|[a.0,b.0])})),
             "calls":p.calls.iter().map(|s|json!({"call":s.call.0,"state":s.state,"guard":s.guard.0,"predicate":s.predicate.0,"continuation_argument":s.continuation_argument,"normal":s.normal.0,"suspended":s.suspended.0,"publication":s.publication.map(|(a,b)|[a.0,b.0]),"resume":s.resume.iter().map(|n|n.0).collect::<Vec<_>>(),"spills":s.spills.iter().map(|(a,b)|[a.0,b.0]).collect::<Vec<_>>() })).collect::<Vec<_>>()
         })));
-        result["suspensions"] = json!(f.suspensions().iter().map(|s| json!({
-            "dispatch":s.dispatch().0,"control":s.control().0,"state":s.state(),"call":s.call().0,
-            "state_store":s.state_store().0,"result":s.result().0,"merged":s.merged().0,
-            "continuation_argument":s.continuation_argument(),"marker":s.marker().0,
-            "predicate":s.predicate().0,"normal":s.links()[0].0,"suspended":s.links()[1].0,
-            "marker_return":s.marker_return().0,"normal_copy":s.normal_copy().0,
-            "resume":s.resume().0,"resume_check":s.resume_check().0,
-            "resume_link":s.resume_link().0,"resume_copy":s.resume_copy().0
-        })).collect::<Vec<_>>());
         result["conditions"] = json!(f.conditions().iter().map(|p| json!({
             "id": p.id().0,
             "tests": p.tests().iter().map(|t| json!({"predicate":t.predicate().0,"select":t.select().0,"other":t.other().0})).collect::<Vec<_>>(),
