@@ -28,9 +28,6 @@ impl SemanticVisitor for JavaInputVerifier {
             InsnType::MoveException => {
                 JavaLoweringError::UnrecoveredExceptionValue(instruction.offset)
             }
-            InsnType::MonitorEnter | InsnType::MonitorExit => {
-                JavaLoweringError::UnrecoveredMonitor(instruction.offset)
-            }
             InsnType::NewInstance => {
                 JavaLoweringError::UnrecoveredObjectInitialization(instruction.offset)
             }

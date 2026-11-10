@@ -1501,7 +1501,22 @@ impl DexJavaDialect {
                 Err(JavaLoweringError::UnrecoveredExceptionValue(insn.offset))
             }
             InsnType::MonitorEnter | InsnType::MonitorExit => {
-                Err(JavaLoweringError::UnrecoveredMonitor(insn.offset))
+                let lock = self.arg(
+                    insn.operands()
+                        .first()
+                        .ok_or(JavaLoweringError::MissingArgument(insn.insn_type))?,
+                )?;
+                Ok(JavaExpr::Call {
+                    receiver: None,
+                    owner: None,
+                    type_arguments: Vec::new(),
+                    method: JavaIdentifier::from_dex(if insn.insn_type == InsnType::MonitorEnter {
+                        "monitor_enter"
+                    } else {
+                        "monitor_exit"
+                    }),
+                    args: vec![lock],
+                })
             }
             InsnType::Arith => {
                 let operator = insn
@@ -4953,7 +4968,22 @@ impl JavaDialect for DexJavaDialect {
                 Err(JavaLoweringError::UnrecoveredExceptionValue(insn.offset))?
             }
             InsnType::MonitorEnter | InsnType::MonitorExit => {
-                Err(JavaLoweringError::UnrecoveredMonitor(insn.offset))?
+                let lock = self.arg(
+                    insn.operands()
+                        .first()
+                        .ok_or(JavaLoweringError::MissingArgument(insn.insn_type))?,
+                )?;
+                JavaStmt::Expression(JavaExpr::Call {
+                    receiver: None,
+                    owner: None,
+                    type_arguments: Vec::new(),
+                    method: JavaIdentifier::from_dex(if insn.insn_type == InsnType::MonitorEnter {
+                        "monitor_enter"
+                    } else {
+                        "monitor_exit"
+                    }),
+                    args: vec![lock],
+                })
             }
             _ => Err(JavaLoweringError::UnsupportedStatement(insn.insn_type))?,
             }
