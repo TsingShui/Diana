@@ -105,13 +105,6 @@ pub(super) fn compose(
         } else {
             RecoveryReason::Unstructured
         };
-        super::trace::graph(
-            part.entry,
-            &reason,
-            part.nodes.len(),
-            exported.len(),
-            roots.len(),
-        );
         if let Some(entry) = part.entry {
             push(&mut f.issues, PlanningIssue::Graph { entry, reason })?;
         }

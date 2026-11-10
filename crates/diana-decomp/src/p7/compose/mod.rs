@@ -1,7 +1,6 @@
 //! Orders the display passes over the established emission layout.
 //!
-//! Every pass consumes the same closed P7 product and reports what it changed;
-//! `trace` prints those reports when the `trace-passes` feature is enabled.
+//! Every pass consumes the same closed P7 product.
 
 mod access;
 mod adjacency;
@@ -26,7 +25,6 @@ mod scope_labels;
 mod scopes;
 mod sequence;
 mod stores;
-pub(super) mod trace;
 
 use super::build::{bug, filled};
 use super::*;

@@ -21,7 +21,6 @@ mod order;
 pub(super) mod parts;
 mod stack;
 mod switch;
-pub(super) mod trace;
 
 use parts::{Part, PartCompletion, contract};
 

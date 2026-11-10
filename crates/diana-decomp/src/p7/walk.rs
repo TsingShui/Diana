@@ -108,9 +108,14 @@ impl<'a> Roots<'a> {
             .ok_or(bug("expression roots lost their statement"))?;
         let root = &code.expressions[source.expression.0 as usize];
         Ok(Some(match root.kind {
-            ExprKind::Move { .. } | ExprKind::Initialize { .. } => Self::one(source.value(code)),
             ExprKind::FieldStore { .. } | ExprKind::ArrayStore { .. } => Self::children(code, root),
-            _ => return Ok(None),
+            ExprKind::Nop
+            | ExprKind::CheckCast { .. }
+            | ExprKind::FillArray { .. }
+            | ExprKind::Monitor { .. }
+            | ExprKind::CaptureException
+            | ExprKind::UnresolvedResult { .. } => return Ok(None),
+            _ => Self::one(source.expression),
         }))
     }
     pub fn terminal(

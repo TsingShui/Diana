@@ -14,7 +14,6 @@ use crate::p5::{LocalId, LocalKind, Materialization, StorageRead, StorageType};
 
 pub(super) fn construct(
     code: &mut MethodCode,
-    key: crate::MethodKey,
     adjacency: &super::adjacency::Adjacency,
     access: &LocalAccess,
 ) -> Result<(), ExpressionError> {
@@ -65,12 +64,12 @@ pub(super) fn construct(
         }
         let candidate = terminal_use(&Cover::new(code), node, &last, incoming, sibling, access);
         if let Some((producer, use_id, control)) = candidate {
-            install(code, producer, use_id, Some(control), key)?;
+            install(code, producer, use_id, Some(control))?;
         }
     }
     // Terminal placement supplies roots; the same ordered cover then prepares
     // all ordinary operands along established copy-free sibling portions.
-    ordinary_runs(code, key, adjacency, access)
+    ordinary_runs(code, adjacency, access)
 }
 
 fn construction_throw(
@@ -845,7 +844,6 @@ pub(super) fn place_check(
     operation: OpId,
     occurrence: ExprId,
     access: &LocalAccess,
-    key: crate::MethodKey,
 ) -> Result<bool, ExpressionError> {
     let Some(statement) = code
         .operations
@@ -879,7 +877,7 @@ pub(super) fn place_check(
     if code.evaluation(occurrence).is_some() {
         return Ok(false);
     }
-    install(code, producer, occurrence, None, key)?;
+    install(code, producer, occurrence, None)?;
     Ok(true)
 }
 
@@ -980,17 +978,15 @@ fn install(
     producer: Producer,
     use_id: ExprId,
     source_control: Option<ControlId>,
-    key: crate::MethodKey,
 ) -> Result<(), ExpressionError> {
     let evaluation = prepare_evaluation(&Cover::new(code), producer, use_id, source_control)?;
-    install_evaluation(code, use_id, evaluation, key)
+    install_evaluation(code, use_id, evaluation)
 }
 
 fn install_evaluation(
     code: &mut MethodCode,
     use_id: ExprId,
     evaluation: Evaluation,
-    key: crate::MethodKey,
 ) -> Result<(), ExpressionError> {
     if let Some(control) = evaluation.source_control {
         let deferred = code
@@ -1005,25 +1001,6 @@ fn install_evaluation(
     code.place_evaluation(use_id, evaluation)?;
     if let Some(control) = evaluation.source_control {
         code.emission.deferred_controls[control.0 as usize] = true;
-    }
-    let kind = match code.expressions[evaluation.expression.0 as usize].kind {
-        ExprKind::String(_) => Some("string"),
-        ExprKind::Compare {
-            op: crate::p2::CompareOp::CmpLong,
-            ..
-        } => Some("cmp_long"),
-        _ => None,
-    };
-    if let Some(kind) = kind {
-        super::trace::expression_selected(
-            key,
-            kind,
-            evaluation.operation,
-            code.operations[evaluation.operation.0 as usize]
-                .statement
-                .ok_or(bug("evaluation lost its statement"))?,
-            use_id,
-        );
     }
     Ok(())
 }
@@ -1043,7 +1020,6 @@ fn leaf(code: &Cover<'_>, id: ExprId) -> bool {
 /// facts prints the established explicit schedule instead.
 pub(super) fn conditions(
     code: &mut MethodCode,
-    key: crate::MethodKey,
     access: &LocalAccess,
 ) -> Result<(), ExpressionError> {
     let mut layouts = Vec::new();
@@ -1057,42 +1033,21 @@ pub(super) fn conditions(
     }
     for index in layouts {
         let choice = if access.complete {
-            compose(code, index, access, key)?
+            compose(code, index, access)?
         } else {
-            ConditionChoice::Explicit {
-                test: None,
-                statement: None,
-                why: "copy_dependency_unavailable",
-            }
+            ConditionChoice::Explicit
         };
-        let control = code.controls[index].id;
         match choice {
-            ConditionChoice::Compact { values, stores } => {
-                super::trace::condition_selected(key, control, values, stores);
-            }
-            ConditionChoice::Explicit {
-                test,
-                statement,
-                why,
-            } => {
-                explicit(code, index)?;
-                super::trace::condition_refused(key, control, test, statement, why);
-            }
+            ConditionChoice::Compact => {}
+            ConditionChoice::Explicit => explicit(code, index)?,
         }
     }
     Ok(())
 }
 
 enum ConditionChoice {
-    Compact {
-        values: usize,
-        stores: usize,
-    },
-    Explicit {
-        test: Option<usize>,
-        statement: Option<StatementId>,
-        why: &'static str,
-    },
+    Compact,
+    Explicit,
 }
 
 /// Sparse proposed execution ownership over the immutable current product.
@@ -1148,10 +1103,7 @@ impl std::ops::Deref for Cover<'_> {
     }
 }
 
-struct Unscheduled {
-    statement: Option<StatementId>,
-    why: &'static str,
-}
+struct Unscheduled;
 
 /// One test's prelude states its operands only as an ordered suffix of the run's
 /// statements. The suffix order must equal the terminal's operand order, because
@@ -1161,7 +1113,6 @@ fn compose(
     code: &mut MethodCode,
     index: usize,
     access: &LocalAccess,
-    key: crate::MethodKey,
 ) -> Result<ConditionChoice, ExpressionError> {
     let count = match &code.controls[index].layout {
         EmissionLayout::Condition { tests, .. } => tests.len(),
@@ -1171,16 +1122,7 @@ fn compose(
         let mut cover = Cover::new(code);
         let code = &mut cover;
         for position in 0..count {
-            let refuse = |why, statement| {
-                Ok((
-                    ConditionChoice::Explicit {
-                        test: Some(position),
-                        statement,
-                        why,
-                    },
-                    Vec::new(),
-                ))
-            };
+            let refuse = || Ok((ConditionChoice::Explicit, Vec::new()));
             let test = {
                 let EmissionLayout::Condition { tests, .. } = &code.controls[index].layout else {
                     return Err(bug("condition composition changed its layout"));
@@ -1188,13 +1130,13 @@ fn compose(
                 tests[position]
             };
             let Some(&control) = code.controls[index].source_children.get(position) else {
-                return refuse("test_control_unavailable", None);
+                return refuse();
             };
             let Some(nodes) = run_nodes(code, control)? else {
-                return refuse("test_run_not_flat_or_has_continuation", None);
+                return refuse();
             };
             let Some(predicate) = nodes.last().copied() else {
-                return refuse("test_run_empty", None);
+                return refuse();
             };
             if code.blocks[predicate.0 as usize].original_block != test.terminal
                 || !matches!(
@@ -1208,19 +1150,19 @@ fn compose(
                         || !transfers.contains(&test.when_false)
                 }
             {
-                return refuse("predicate_portion_or_original_edges", None);
+                return refuse();
             }
             let TerminalKind::If { condition, .. } = &code.terminals[test.terminal.0 as usize].kind
             else {
-                return refuse("predicate_not_if", None);
+                return refuse();
             };
             let phases = &code.emission.terminals[test.terminal.0 as usize];
             if !phases.before.is_empty() || !phases.snapshots.is_empty() || !phases.after.is_empty()
             {
-                return refuse("predicate_has_copy_or_snapshot_phase", None);
+                return refuse();
             }
             if code.terminals[test.terminal.0 as usize].site.is_some() {
-                return refuse("predicate_has_exception_site", None);
+                return refuse();
             }
             let (select, other) = if test.negate {
                 (test.when_false, test.when_true)
@@ -1228,14 +1170,14 @@ fn compose(
                 (test.when_true, test.when_false)
             };
             if !code.emission.transfers[select.0 as usize].copies.is_empty() {
-                return refuse("selected_edge_has_copy_bundle", None);
+                return refuse();
             }
             if !code.emission.transfers[other.0 as usize].copies.is_empty() {
                 if position + 1 != count {
-                    return refuse("intermediate_other_edge_has_copy_bundle", None);
+                    return refuse();
                 }
                 if !original_edge_copies(code, other)? {
-                    return refuse("final_other_copy_not_original_edge", None);
+                    return refuse();
                 }
             }
             let mut operands = Vec::new();
@@ -1255,19 +1197,13 @@ fn compose(
                         code.propose(producer, operand)?;
                     }
                 }
-                Err(reason) => return refuse(reason.why, reason.statement),
+                Err(_) => return refuse(),
             }
         }
-        Ok((
-            ConditionChoice::Compact {
-                values: 0,
-                stores: 0,
-            },
-            cover.work,
-        ))
+        Ok((ConditionChoice::Compact, cover.work))
     })();
     let (choice, work) = composed?;
-    if matches!(choice, ConditionChoice::Explicit { .. }) {
+    if matches!(choice, ConditionChoice::Explicit) {
         return Ok(choice);
     }
     // Install only after every test admits its whole schedule. A refused later
@@ -1289,26 +1225,8 @@ fn compose(
     {
         code.controls[control.0 as usize].continuation = None;
     }
-    let mut values = 0;
-    let mut stores = 0;
     for (operand, evaluation) in work {
-        install_evaluation(code, operand, evaluation, key)?;
-        match evaluation.result {
-            EvaluationResult::Value => values += 1,
-            EvaluationResult::Store(storage) => {
-                stores += 1;
-                super::trace::condition_store(
-                    key,
-                    code.controls[index].id,
-                    evaluation.operation,
-                    code.operations[evaluation.operation.0 as usize]
-                        .statement
-                        .ok_or(bug("condition evaluation lost its statement"))?,
-                    operand,
-                    storage,
-                );
-            }
-        }
+        install_evaluation(code, operand, evaluation)?;
     }
     let copy_else = match &code.controls[index].layout {
         EmissionLayout::Condition {
@@ -1318,7 +1236,6 @@ fn compose(
         } => !super::branches::copies_print_nothing(code, *fall),
         _ => false,
     };
-    let control_id = code.controls[index].id;
     if let EmissionLayout::Condition {
         tests, no, fall, ..
     } = &mut code.controls[index].layout
@@ -1343,18 +1260,9 @@ fn compose(
         }
         if copy_else {
             *no = ConditionElse::Copies;
-            for &copy in &code.emission.transfers[fall.0 as usize].copies {
-                super::trace::condition_copy_else(
-                    key,
-                    control_id,
-                    *fall,
-                    copy,
-                    code.copies[copy.0 as usize].steps.len(),
-                );
-            }
         }
     }
-    Ok(ConditionChoice::Compact { values, stores })
+    Ok(ConditionChoice::Compact)
 }
 
 /// The final other edge is selected only after every test declined the shared
@@ -1573,9 +1481,8 @@ fn cover_suffix(
         } else {
             UsePolicy::SingleRead
         };
-        let mut why = "producer_not_exact_consumer_read";
         let mut matched = None;
-        match producer_with_nested(
+        if let Ok(producer) = producer_with_nested(
             code,
             operation,
             statement,
@@ -1583,27 +1490,20 @@ fn cover_suffix(
             policy,
             !consumer.store(code),
         ) {
-            Ok(producer) => {
-                for (argument, &operand) in consumer.operands.iter().enumerate() {
-                    let argument =
-                        u32::try_from(argument).map_err(|_| bug("consumer argument overflow"))?;
-                    if !matches_use(code, producer, operand, consumer.site(argument)) {
-                        continue;
-                    }
-                    if !consumer.permits(code, producer, operand, argument) {
-                        why = "producer_consumer_role";
-                        continue;
-                    }
-                    if matched.is_some() {
-                        return Ok(Err(Unscheduled {
-                            statement: Some(statement),
-                            why: "producer_matches_multiple_operands",
-                        }));
-                    }
-                    matched = Some((producer, operand, argument));
+            for (argument, &operand) in consumer.operands.iter().enumerate() {
+                let argument =
+                    u32::try_from(argument).map_err(|_| bug("consumer argument overflow"))?;
+                if !matches_use(code, producer, operand, consumer.site(argument)) {
+                    continue;
                 }
+                if !consumer.permits(code, producer, operand, argument) {
+                    continue;
+                }
+                if matched.is_some() {
+                    return Ok(Err(Unscheduled));
+                }
+                matched = Some((producer, operand, argument));
             }
-            Err(reason) => why = reason,
         }
         let ordered =
             matched.is_some_and(|(_, _, argument)| last.is_none_or(|previous| argument < previous));
@@ -1611,14 +1511,7 @@ fn cover_suffix(
             if consumer.required()
                 || (matched.is_some() && matches!(consumer.target, CoverTarget::Terminal(..)))
             {
-                return Ok(Err(Unscheduled {
-                    statement: Some(statement),
-                    why: if matched.is_some() {
-                        "producer_order_differs_from_operands"
-                    } else {
-                        why
-                    },
-                }));
+                return Ok(Err(Unscheduled));
             }
             break;
         }
@@ -1721,16 +1614,10 @@ fn scheduled(
     skipped: bool,
 ) -> Result<Result<Vec<(Producer, ExprId)>, Unscheduled>, ExpressionError> {
     let Some(actions) = run_actions(code, nodes)? else {
-        return Ok(Err(Unscheduled {
-            statement: None,
-            why: "test_run_has_nonstatement_action",
-        }));
+        return Ok(Err(Unscheduled));
     };
     if !straight(code, nodes, skipped)? {
-        return Ok(Err(Unscheduled {
-            statement: None,
-            why: "test_run_not_straight_or_has_copy_bundle",
-        }));
+        return Ok(Err(Unscheduled));
     }
     cover_suffix(
         code,
@@ -1746,7 +1633,6 @@ fn scheduled(
 /// Only the already delivered copy-free sibling adjacency joins source portions.
 fn ordinary_runs(
     code: &mut MethodCode,
-    key: crate::MethodKey,
     adjacency: &super::adjacency::Adjacency,
     access: &LocalAccess,
 ) -> Result<(), ExpressionError> {
@@ -1803,7 +1689,7 @@ fn ordinary_runs(
             if carrier_node != Some(source.node) && !code.emission.deferred_control(owner) && last {
                 evaluation.source_control = Some(owner);
             }
-            install_evaluation(code, operand, evaluation, key)?;
+            install_evaluation(code, operand, evaluation)?;
         }
     }
     Ok(())

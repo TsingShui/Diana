@@ -60,19 +60,12 @@ enum Carried {
 /// reading the products. The driver records the first refusal and propagates an
 /// error.
 enum Stop {
-    Refuse(&'static str),
+    Refuse,
     Error(ExpressionError),
 }
 impl From<ExpressionError> for Stop {
     fn from(error: ExpressionError) -> Self {
         Stop::Error(error)
-    }
-}
-fn why_at(slots: &mut [Option<&'static str>], statement: StatementId, why: &'static str) {
-    if let Some(slot) = slots.get_mut(statement.0 as usize)
-        && slot.is_none()
-    {
-        *slot = Some(why);
     }
 }
 
@@ -86,12 +79,9 @@ pub(super) fn prepare(
 
 pub(super) fn construct(
     code: &mut MethodCode,
-    key: crate::MethodKey,
     adjacency: &super::adjacency::Adjacency,
     access: &LocalAccess,
 ) -> Result<(), ExpressionError> {
-    let mut why_slots: Vec<Option<&'static str>> =
-        super::super::build::filled(code.operations.len(), None)?;
     let mut found: Vec<(StatementId, InlineCheck)> = Vec::new();
     let protection = protected_contexts(code)?;
     let mut suspended: Vec<bool> = super::super::build::filled(code.operations.len(), false)?;
@@ -118,7 +108,7 @@ pub(super) fn construct(
             if code.nested_operation(operation) {
                 continue;
             }
-            let Some((storage, _)) = eligible_check(code, operation, statement, None) else {
+            let Some((storage, _)) = eligible_check(code, operation, statement) else {
                 continue;
             };
             let carrier = Carrier {
@@ -140,7 +130,7 @@ pub(super) fn construct(
                         break;
                     }
                     Ok(None) => {}
-                    Err(Stop::Refuse(why)) => why_at(&mut why_slots, statement, why),
+                    Err(Stop::Refuse) => {}
                     Err(Stop::Error(error)) => return Err(error),
                 }
             }
@@ -148,21 +138,14 @@ pub(super) fn construct(
                 match forward_operand(&carrier, statement, storage) {
                     Ok(Some(choice)) => selected = Some(choice),
                     Ok(None) => {}
-                    Err(Stop::Refuse(why)) => why_at(&mut why_slots, statement, why),
+                    Err(Stop::Refuse) => {}
                     Err(Stop::Error(error)) => return Err(error),
                 }
             }
             match selected {
                 Some(Carried::Operand(occurrence)) => {
-                    if super::expressions::place_check(code, operation, occurrence, access, key)? {
-                        claimed[statement.0 as usize] = true;
-                    } else {
-                        why_at(
-                            &mut why_slots,
-                            statement,
-                            "check_binding_cannot_cover_operand",
-                        );
-                    }
+                    claimed[statement.0 as usize] =
+                        super::expressions::place_check(code, operation, occurrence, access)?;
                 }
                 Some(Carried::At(check)) => {
                     claimed[statement.0 as usize] = true;
@@ -186,7 +169,6 @@ pub(super) fn construct(
             continue;
         }
         if !carries_check(code, access, statement, check.value, check.occurrence) {
-            why_at(&mut why_slots, statement, "carrier_value_state_changed");
             continue;
         }
         push(&mut kept, (statement, check))?;
@@ -219,24 +201,6 @@ pub(super) fn construct(
             });
         }
     }
-    // One line per check that keeps its own statement, with the first condition
-    // that stopped it. A check fused by any carrier is not reported.
-    if super::trace::ENABLED {
-        for (index, why) in why_slots.iter().enumerate() {
-            let Some(why) = why else { continue };
-            let statement = StatementId(u32::try_from(index).unwrap_or(u32::MAX));
-            if found.iter().any(|(check, _)| *check == statement)
-                || code.emission.omitted_check(statement).is_some()
-                || code.nested_operation(
-                    code.statement_operation(statement)
-                        .unwrap_or(OpId(u32::MAX)),
-                )
-            {
-                continue;
-            }
-            super::trace::cast_refused(key, statement, why);
-        }
-    }
     Ok(())
 }
 
@@ -260,8 +224,7 @@ fn redundant(
         let Some(statement) = operation.statement else {
             continue;
         };
-        let Some((value, reference)) = eligible_check(code, check.operation(), statement, None)
-        else {
+        let Some((value, reference)) = eligible_check(code, check.operation(), statement) else {
             continue;
         };
         let at = omitted
@@ -286,14 +249,7 @@ fn eligible_check(
     code: &MethodCode,
     operation: OpId,
     statement: StatementId,
-    why_slots: Option<&mut [Option<&'static str>]>,
 ) -> Option<(StorageId, ReferenceId)> {
-    let mut why_slots = why_slots;
-    let mut refuse = |why: &'static str| {
-        if let Some(slots) = why_slots.as_deref_mut() {
-            why_at(slots, statement, why);
-        }
-    };
     let s = code.statement(statement)?;
     // Only a real check-cast can be refused; every other statement simply has no
     // carrier question, so it is silent.
@@ -304,26 +260,19 @@ fn eligible_check(
         return None;
     };
     if !s.outputs.is_empty() {
-        refuse("check_has_output");
         return None;
     }
     let ExprKind::Read { storage, .. } = code.expressions.get(value.0 as usize)?.kind else {
-        refuse("value_not_a_read");
         return None;
     };
-    let Some(phases) = code.emission.operations.get(operation.0 as usize) else {
-        refuse("no_phase_record");
-        return None;
-    };
+    let phases = code.emission.operations.get(operation.0 as usize)?;
     if !phases.before.is_empty() || !phases.snapshots.is_empty() || !phases.after.is_empty() {
-        refuse("check_has_copy_phase");
         return None;
     }
     if s.sites
         .iter()
         .any(|&site| code.emission.site_annotation(site))
     {
-        refuse("check_site_is_printed");
         return None;
     }
     Some((storage, reference))
@@ -417,10 +366,10 @@ fn definition_carrier(
         statement: definition,
     } = previous
     else {
-        return Err(Stop::Refuse("definition_not_adjacent"));
+        return Err(Stop::Refuse);
     };
     if carrier.protection[previous_node] != carrier.protection[node] {
-        return Err(Stop::Refuse("definition_changes_protection"));
+        return Err(Stop::Refuse);
     }
     if code.nested_operation(definition_operation)
         || !matches!(
@@ -428,16 +377,16 @@ fn definition_carrier(
             Emission::Block { .. }
         )
     {
-        return Err(Stop::Refuse("definition_is_not_standalone"));
+        return Err(Stop::Refuse);
     }
     let phases = &code.emission.operations[definition_operation.0 as usize];
     if !phases.before.is_empty() || !phases.snapshots.is_empty() || !phases.after.is_empty() {
-        return Err(Stop::Refuse("definition_has_copy_phase"));
+        return Err(Stop::Refuse);
     }
     // The carrier is the definition, but the mapped check remains THIS original
     // check operation/PC, never the preceding store or invocation.
     let operation = carrier.operation;
-    let Some((_, reference)) = eligible_check(code, operation, statement, None) else {
+    let Some((_, reference)) = eligible_check(code, operation, statement) else {
         return Ok(None);
     };
     let mut stores = code.statements().filter(|s| {
@@ -450,7 +399,7 @@ fn definition_carrier(
     });
     let unique = stores.next().is_some_and(|s| s.id == definition) && stores.next().is_none();
     if !unique {
-        return Err(Stop::Refuse("definition_is_not_the_only_store"));
+        return Err(Stop::Refuse);
     }
     let defined = code
         .require_statement(definition)?
@@ -464,15 +413,15 @@ fn definition_carrier(
         })
         .map(|output| output.state());
     if defined.is_none() || checked_read(code, statement).map(|(_, state)| state) != defined {
-        return Err(Stop::Refuse("definition_state_differs"));
+        return Err(Stop::Refuse);
     }
     let Ok(ReferenceDeclaration::Type { type_use }) =
         &code.references[reference.0 as usize].declaration
     else {
-        return Err(Stop::Refuse("check_target_not_a_type"));
+        return Err(Stop::Refuse);
     };
     let Some(target) = code.types.get(type_use.0 as usize) else {
-        return Err(Stop::Refuse("check_target_lost_its_use"));
+        return Err(Stop::Refuse);
     };
     // Only the erased declaration narrows: a second, unrelated reference type
     // would replace a fact instead of recovering one.
@@ -490,7 +439,7 @@ fn definition_carrier(
             Some(LocalSpelling::Named(ty)) if object(&code.types[ty.0 as usize].units)
         );
     if !reference_type || !narrows || code.locals[storage.0 as usize].original.is_reused() {
-        return Err(Stop::Refuse("definition_type_does_not_narrow"));
+        return Err(Stop::Refuse);
     }
     let pc = code
         .operations
@@ -532,7 +481,7 @@ fn forward_operand(
     let mut remaining = code.emission.blocks.len();
     loop {
         if carrier.protection[node] != context {
-            return Err(Stop::Refuse("read_changes_protection"));
+            return Err(Stop::Refuse);
         }
         let block = &code.emission.blocks[node];
         if let Some(action) = block.actions.get(index) {
@@ -541,7 +490,7 @@ fn forward_operand(
                 statement: consumer,
             } = *action
             else {
-                return Err(Stop::Refuse("read_crosses_an_event"));
+                return Err(Stop::Refuse);
             };
             let source = &code.operations[operation.0 as usize];
             let phases = &code.emission.operations[operation.0 as usize];
@@ -549,7 +498,7 @@ fn forward_operand(
                 || carrier.suspended[consumer.0 as usize]
                 || !statement_keeps_protection(code, operation, carrier.protection, context)
             {
-                return Err(Stop::Refuse("read_has_phase_or_foreign_carrier"));
+                return Err(Stop::Refuse);
             }
             if let Some((_, occurrence)) = first_read(code, consumer, storage)?
                 && rendered_once(code, consumer, occurrence)?
@@ -562,14 +511,14 @@ fn forward_operand(
                 || !phases.snapshots.is_empty()
                 || !phases.after.is_empty()
             {
-                return Err(Stop::Refuse("read_crosses_an_effect"));
+                return Err(Stop::Refuse);
             }
             index += 1;
             continue;
         }
         let terminal = match block.end {
             BlockEnd::Annotated { .. } => {
-                return Err(Stop::Refuse("annotated_terminal_not_a_check_carrier"));
+                return Err(Stop::Refuse);
             }
             BlockEnd::Terminal(terminal) => Some(terminal),
             BlockEnd::None => match code.blocks[node].completion {
@@ -581,7 +530,7 @@ fn forward_operand(
         if let Some(terminal) = terminal {
             let phases = &code.emission.terminals[terminal.0 as usize];
             if !phases.before.is_empty() {
-                return Err(Stop::Refuse("terminal_has_before_copies"));
+                return Err(Stop::Refuse);
             }
             if let Some(occurrence) = first_terminal_read(code, terminal, storage)?
                 && occurrences(code, Roots::terminal(code, terminal)?, occurrence)? == 1
@@ -589,16 +538,16 @@ fn forward_operand(
             {
                 return Ok(Some(Carried::Operand(occurrence)));
             }
-            return Err(Stop::Refuse("terminal_has_no_available_checked_read"));
+            return Err(Stop::Refuse);
         }
         if block.actions.is_empty() && !carrier.adjacency.empty_is_quiet(node) {
-            return Err(Stop::Refuse("empty_portion_has_an_effect"));
+            return Err(Stop::Refuse);
         }
         let BlockEnd::Transfers(links) = &block.end else {
             return Ok(None);
         };
         let [link] = links.as_slice() else {
-            return Err(Stop::Refuse("read_crosses_a_selection"));
+            return Err(Stop::Refuse);
         };
         let original = &code.transfers[link.0 as usize];
         let transfer = &code.emission.transfers[link.0 as usize];
@@ -606,14 +555,14 @@ fn forward_operand(
             || !transfer.copies.is_empty()
             || !matches!(transfer.spelling, TransferSpelling::Fallthrough)
         {
-            return Err(Stop::Refuse("read_crosses_a_transfer_or_copy"));
+            return Err(Stop::Refuse);
         }
         let next = original.destination.0 as usize;
         if code.blocks[next].original_block != code.blocks[carrier.node].original_block
             || (carrier.adjacency.next_node(node) != Some(next)
                 && !code.emission.blocks[next].actions.is_empty())
         {
-            return Err(Stop::Refuse("read_is_not_in_the_supplied_run"));
+            return Err(Stop::Refuse);
         }
         remaining = remaining
             .checked_sub(1)
@@ -745,7 +694,7 @@ fn last_action_check(
     let BodyAction::Statement { operation, .. } = block.actions[carrier.index] else {
         return None;
     };
-    let (_, reference) = eligible_check(code, operation, statement, None)?;
+    let (_, reference) = eligible_check(code, operation, statement)?;
     Some((reference, carrier.node))
 }
 
@@ -768,20 +717,20 @@ fn copy_carrier(
     let BlockEnd::Transfers(transfers) = &block.end else {
         // A terminal evaluates its own operands and selects between its
         // original edges, so the check still precedes both outcomes.
-        return Err(Stop::Refuse("block_ends_in_a_terminal"));
+        return Err(Stop::Refuse);
     };
     let [transfer] = transfers.as_slice() else {
-        return Err(Stop::Refuse("block_has_two_transfers"));
+        return Err(Stop::Refuse);
     };
     let Some(planned) = code.emission.transfers.get(transfer.0 as usize) else {
         return Ok(None);
     };
     if matches!(planned.spelling, TransferSpelling::Selected) {
         // A selected arm prints this bundle for one outcome only.
-        return Err(Stop::Refuse("transfer_is_a_selected_arm"));
+        return Err(Stop::Refuse);
     }
     let [bundle] = planned.copies.as_slice() else {
-        return Err(Stop::Refuse("transfer_has_not_exactly_one_bundle"));
+        return Err(Stop::Refuse);
     };
     let Some(bundle) = code.copies.get(bundle.0 as usize) else {
         return Ok(None);
@@ -791,15 +740,15 @@ fn copy_carrier(
         ..
     } = bundle.location
     else {
-        return Err(Stop::Refuse("bundle_is_not_a_normal_edge_copy"));
+        return Err(Stop::Refuse);
     };
     // The bundle must be this transfer's own normal edge, not a copy another
     // composition step placed here from a different origin.
     if code.transfers.get(transfer.0 as usize).and_then(|t| t.edge) != Some(edge) {
-        return Err(Stop::Refuse("bundle_edge_is_not_this_transfer"));
+        return Err(Stop::Refuse);
     }
     if !matches!(bundle.emission, CopyEmission::Original) {
-        return Err(Stop::Refuse("bundle_was_relocated"));
+        return Err(Stop::Refuse);
     }
     let Some(CopyStatement::Assign {
         destination,
@@ -807,14 +756,14 @@ fn copy_carrier(
         ..
     }) = bundle.steps.first()
     else {
-        return Err(Stop::Refuse("first_copy_step_is_not_an_assignment"));
+        return Err(Stop::Refuse);
     };
     if *destination == storage {
         // The surviving assignment would look like the check wrote the local.
-        return Err(Stop::Refuse("copy_writes_the_checked_local"));
+        return Err(Stop::Refuse);
     }
     if !reads(code, *expression, storage) {
-        return Err(Stop::Refuse("copy_rhs_is_another_value"));
+        return Err(Stop::Refuse);
     }
     let carried = carried_check(
         code,
@@ -830,7 +779,7 @@ fn copy_carrier(
         *expression,
     )?;
     if !unclaimed_occurrence(carrier.found, &carried.1) {
-        return Err(Stop::Refuse("occurrence_claimed"));
+        return Err(Stop::Refuse);
     }
     Ok(Some(Carried::At(carried)))
 }
