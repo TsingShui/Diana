@@ -1,65 +1,45 @@
-## Diana CLI 0.2.3
+## Diana CLI 0.2.4
 
-A structural release: outline now answers call trees, locators are shorter, and
-listing commands stop flooding the terminal.
+This release improves cross-reference queries, class lookup, and multi-DEX call
+navigation.
 
-### Outline
+### Cross references
 
-- outline-class and outline-method publish a call tree built from P0
-  declarations and P1 invoke sites only; they no longer run the decompiler.
-- The class node starts with an imports child: a package tree whose leaves
-  aggregate every external type with the called methods and their counts.
-- Calls into the same DEX become tree nodes carrying their locator and expand to
-  --call-depth N or --expand-all. Repeated and cyclic methods become
-  "-> see #N" links; classes in another DEX of the same APK stay [other-dex]
-  leaves.
-- Nodes render descriptors as simple type names, for example
-  MainActivity.access$000(AmeSSActivity, Configuration) #11 [e1332:l0:c7448:m59042].
+- Code references are grouped by calling method and matched target rather than
+  emitting a row for each instruction. The reported use is the first matching
+  use in that method.
+- Type queries include direct code references, field types, and method return
+  types. Use `--parameter-types` to include method parameter declarations and
+  `--typed-uses` to include types referenced through member signatures.
+- Type queries no longer include superclass, interface, or annotation type
+  declarations. `impl` and `extend` remain available for hierarchy queries.
+- Reference scanning avoids unnecessary declaration and metadata decoding,
+  stores hits compactly, and encodes selected results in parallel.
 
-### Locators
+### Navigation and lookup
 
-- get-class, get-method and both outline commands accept index-only locators:
-  e<entry>:l<logical>:c<class> and ...:c<class>:m<method>. Follow-up commands
-  skip the APK-wide class scan.
-- classes publishes two columns, at and descriptor, in text and JSON.
-
-### Listing limits
-
-- classes, fields, methods and strings show at most 50 rows by default, matching
-  xref. --limit N changes the cap and --no-limit shows every match.
-- Text output ends with "//Diana Warn: Too much results, only show top N ...";
-  JSON carries "truncated": true.
-
-### Performance
-
-- The embedded platform ABI database decodes on demand from a class-granular
-  archive instead of decompressing and cloning the whole database per process.
-  On a 199 MB multi-DEX APK, get-class for a 155-method class dropped from
-  0.20-0.25 s / 433-442 MB to 0.07 s / 61 MB, with byte-identical output.
-
-### Tooling
-
-- The root help now describes what each command does and ends with examples plus
-  the locator hand-off between commands.
-- The CI clippy gates pass on the pinned 1.93 toolchain and on stable.
+- Outline follows calls across DEX images in the same input archive.
+- Method and field listings present the locator and member descriptor in
+  separate columns.
+- Name-based class and method lookup can use DEX prefixes without inflating
+  every complete DEX image.
 
 These archives contain the CLI executable and Apache-2.0 license. macOS and Linux
-use .tar.gz; Windows uses .zip. Linux binaries target musl.
+use `.tar.gz`; Windows uses `.zip`. Linux binaries target musl.
 
 ### Install
 
-Use the shell installer on macOS/Linux:
-
-    curl -fsSL https://raw.githubusercontent.com/TsingShui/Diana/diana-v0.2.3/install.sh -o install-diana.sh
-    sh install-diana.sh diana-v0.2.3
+```sh
+curl -fsSL https://raw.githubusercontent.com/TsingShui/Diana/diana-v0.2.4/install.sh -o install-diana.sh
+sh install-diana.sh diana-v0.2.4
+```
 
 Or build the released CLI with Rust 1.93+ and native build tools:
 
-    cargo install --git https://github.com/TsingShui/Diana.git --tag diana-v0.2.3 --locked diana
+```sh
+cargo install --git https://github.com/TsingShui/Diana.git --tag diana-v0.2.4 --locked diana
+```
 
-Windows users can extract diana.exe from the matching ZIP and add its directory
-to PATH.
-
-Outline expansion follows same-DEX calls only; it is not a runtime call graph.
+Windows users can extract `diana.exe` from the matching ZIP and add it to PATH.
 Java-like output does not promise compilable Java. The 0.2 series remains
 experimental.
