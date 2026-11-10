@@ -1329,6 +1329,7 @@ version = "1.0.2"
 dependencies = [
  "bitflags 2.13.2",
  "crc32fast",
+ "diana-facts",
  "mimalloc",
  "pretty_assertions",
  "rayon",

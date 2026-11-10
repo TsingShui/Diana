@@ -21,6 +21,7 @@ revision = "08ed478781ddddb16381c31b9cf6d8946fdf2919"
 # Vendored decompilation library; application and standalone tooling removed.
 
 [dependencies]
+diana-facts = { path = "../diana-facts" }
 rusty-dex = { path = "../rusty-dex", version = "0.2.0", default-features = false }
 mimalloc = "0.1"
 bitflags = "2"
