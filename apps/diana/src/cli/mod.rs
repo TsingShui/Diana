@@ -26,11 +26,28 @@ use crate::analysis::query::{ImageInfo, Query, QueryError, QueryKind, QueryPlan,
 use crate::analysis::request::RequestScope;
 use matching::MatchArgs;
 
+const EXAMPLES: &str = "Examples:
+  diana classes app.apk --filter MainActivity
+  diana get-class app.apk 'e0:l0:c123'
+  diana get-method app.apk 'e0:l0:c123:m45'
+  diana outline-class app.apk 'e0:l0:c123' --call-depth 2
+  diana xref app.apk string Authorization
+  diana manifest app.apk
+Copy classes.at into get-class; copy methods.at into get-method and outline-method.
+Locators name the entry and index, so follow-up commands skip the APK-wide scan.
+Outline expands same-DEX calls only; classes in other DEX files stay [other-dex] leaves.
+Java may contain explicit stubs for constructs the recovery cannot express.";
+
 use output::{Failure, Format, publish};
 use table::{Locator, QueryRow, RowFormat};
 
 #[derive(Parser)]
-#[command(name = "diana", about = "Native APK/DEX analysis", version)]
+#[command(
+    name = "diana",
+    about = "Analyze APK archives and standalone DEX files",
+    after_help = EXAMPLES,
+    version
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -38,7 +55,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// List physical archive entries
+    /// List the entries an archive holds, in central-directory order
     #[command(
         long_about = "Columns: name, compressed_size, uncompressed_size, compression. Physical records in directory order; numeric ZIP method, no label."
     )]
@@ -52,7 +69,7 @@ enum Command {
         /// Write the result to this file instead of stdout
         output: Option<PathBuf>,
     },
-    /// List class definitions
+    /// List classes defined across every DEX in an APK
     #[command(
         long_about = "Column: at. Restrict with --filter, --extends, --implements, --subinterface and --kind; hierarchy filters use direct edges only."
     )]
@@ -86,9 +103,9 @@ enum Command {
         /// Write the result to this file instead of stdout
         output: Option<PathBuf>,
     },
-    /// Show the code package hierarchy from original class definitions
+    /// Show the package hierarchy of defined classes
     Tree(tree::TreeArgs),
-    /// List defined fields
+    /// List every field the archive DEX files declare
     #[command(
         long_about = "Column: at. Only class_data definitions; --class selects the defining class exactly and --filter defaults to ranked case-insensitive fuzzy matching."
     )]
@@ -113,7 +130,7 @@ enum Command {
         /// Write the result to this file instead of stdout
         output: Option<PathBuf>,
     },
-    /// List defined methods
+    /// List defined methods, excluding reference-only method_ids entries
     #[command(
         long_about = "Column: at. Only class_data definitions, including abstract, native, constructor and clinit declarations."
     )]
@@ -138,7 +155,7 @@ enum Command {
         /// Write the result to this file instead of stdout
         output: Option<PathBuf>,
     },
-    /// List original string values
+    /// List every string in every root DEX of an archive
     #[command(
         long_about = "Columns: at, value. Original string_ids values; filtered searches default to ranked fuzzy matching. Find code reference sites with xref."
     )]
@@ -172,7 +189,7 @@ enum Command {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-    /// Decompile one class
+    /// Locate a class in an APK and decompile it
     #[command(
         long_about = "Displays the Engine/P9 Java-like text, including original members and local recovery gaps. JSON schema 4 carries the same text, source facts and byte spans."
     )]
@@ -191,7 +208,7 @@ enum Command {
         #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
         jobs: Option<u32>,
     },
-    /// Decompile one method
+    /// Decompile one method as Java, selected by its methods.at coordinate
     #[command(
         long_about = "Displays the selected original method through the shared Engine/P9 chain, without analyzing sibling methods."
     )]
@@ -207,11 +224,11 @@ enum Command {
         /// Write the result to this file instead of stdout
         output: Option<PathBuf>,
     },
-    /// Show all original class members with structured method outlines
+    /// Show one class call tree with aggregated imports
     OutlineClass(outline::ClassArgs),
-    /// Show one method's structure and optionally expand referenced calls
+    /// Show the call tree below one method
     OutlineMethod(outline::OutlineArgs),
-    /// Extract one physical entry
+    /// Write one original entry to -o; --raw keeps binary XML
     #[command(
         long_about = "Writes exactly one entry. A binary XML payload is decoded to text XML by default; --raw keeps the original payload. Publication is atomic."
     )]
@@ -239,7 +256,7 @@ enum Command {
         /// Exit non-zero when the delivered document is partial
         strict: bool,
     },
-    /// Find original reference sites and direct hierarchy relations
+    /// Find code references across every DEX in an APK
     #[command(
         long_about = "Columns: context, match, use. Kinds: string, type, method, field, impl, extend, resource. Defaults to ranked case-insensitive fuzzy matching; --substring, --regex and --exact select other modes. Canonical coordinates always select exact values."
     )]
