@@ -29,6 +29,7 @@ pub fn run(
     mode: MatchMode,
     recursive: bool,
     typed_uses: bool,
+    parameter_types: bool,
     method_relation: crate::analysis::xref::MethodRelation,
     class: Option<&str>,
     transitive: u32,
@@ -37,6 +38,9 @@ pub fn run(
     format: Format,
     output: Option<&Path>,
 ) -> Result<(), Failure> {
+    if parameter_types && kind != "type" {
+        return Err(invalid("--parameter-types requires the type kind"));
+    }
     if recursive && kind != "impl" && kind != "extend" {
         return Err(invalid("--recursive requires impl or extend"));
     }
@@ -128,6 +132,7 @@ pub fn run(
             depth: 1,
             jobs,
             typed_uses,
+            parameter_types,
             retain_payloads: transitive > 1,
         },
     )
@@ -157,6 +162,7 @@ pub fn run(
                     depth,
                     jobs,
                     typed_uses: false,
+                    parameter_types: false,
                     retain_payloads: true,
                 },
             )

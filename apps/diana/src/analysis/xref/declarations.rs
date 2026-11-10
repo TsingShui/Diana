@@ -678,6 +678,7 @@ pub(super) fn scan_type_declarations<'a>(
     location: &InputLocation<'a>,
     targets: &[Target],
     depth: u32,
+    parameter_types: bool,
     emit: &mut dyn FnMut(Event) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
     let mut failure = None;
@@ -746,15 +747,17 @@ pub(super) fn scan_type_declarations<'a>(
                 declaration.prototype.return_type,
                 || "return-type".to_owned(),
             )?;
-            for (ordinal, parameter) in declaration
-                .prototype
-                .parameter_descriptors()
-                .iter()
-                .enumerate()
-            {
-                emit_type_row(location, targets, depth, emit, site, *parameter, || {
-                    format!("parameter-type[{ordinal}]")
-                })?;
+            if parameter_types {
+                for (ordinal, parameter) in declaration
+                    .prototype
+                    .parameter_descriptors()
+                    .iter()
+                    .enumerate()
+                {
+                    emit_type_row(location, targets, depth, emit, site, *parameter, || {
+                        format!("parameter-type[{ordinal}]")
+                    })?;
+                }
             }
             Ok(())
         })();

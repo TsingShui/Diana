@@ -266,6 +266,8 @@ pub struct XrefPlan {
     /// default: a call site references its callee, not the types in its
     /// signature, and expanding them costs one row per call site.
     pub typed_uses: bool,
+    /// Include method parameter declarations in type searches.
+    pub parameter_types: bool,
     /// Keep inflated payloads for a later pass (transitive caller expansion).
     pub retain_payloads: bool,
 }
@@ -574,7 +576,14 @@ fn scan_class<'a>(
             class_def,
             descriptor: class.descriptor,
         };
-        declarations::scan_type_declarations(class, &location, &plan.targets, plan.depth, emit)?;
+        declarations::scan_type_declarations(
+            class,
+            &location,
+            &plan.targets,
+            plan.depth,
+            plan.parameter_types,
+            emit,
+        )?;
         return scan_code(index, class, &location, plan, prefilter, emit);
     }
     let facts = declarations::collect(index, class_def)?;

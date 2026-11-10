@@ -297,6 +297,9 @@ enum Command {
         /// Expand type matches through referenced member signatures
         #[arg(long)]
         typed_uses: bool,
+        /// Include method parameter type declarations in type queries
+        #[arg(long)]
+        parameter_types: bool,
         /// Method relationships instead of reference sites
         #[arg(long, value_enum, default_value_t = MethodRelationArg::References)]
         relation: MethodRelationArg,
@@ -430,6 +433,7 @@ pub fn run() -> std::process::ExitCode {
             target,
             recursive,
             typed_uses,
+            parameter_types,
             relation,
             matching,
             class,
@@ -446,6 +450,7 @@ pub fn run() -> std::process::ExitCode {
             matching.mode(),
             recursive,
             typed_uses,
+            parameter_types,
             match relation {
                 MethodRelationArg::References => crate::analysis::xref::MethodRelation::References,
                 MethodRelationArg::Implementations => {
