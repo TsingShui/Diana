@@ -38,5 +38,6 @@ impl Issue {
 #[derive(Clone, Debug)]
 pub enum Event {
     Row(XrefRow),
+    Code(super::code::Batch),
     Issue(Issue),
 }

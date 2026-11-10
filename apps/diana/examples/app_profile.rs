@@ -1,6 +1,6 @@
 //! Development profiling caller for the phase timeline.
 //!
-//! Usage: app_profile <input> <classes> [--once]
+//! Usage: app_profile <input> <classes>, or app_profile xref <ordinary CLI arguments>
 use std::time::Instant;
 
 use diana::analysis::decompile;
@@ -9,11 +9,17 @@ use diana::analysis::query::{Query, QueryKind, QueryPlan};
 use diana::analysis::request::RequestScope;
 use diana::analysis::selector::{ClassSelector, Selector};
 
-fn main() {
-    fastrace::set_reporter(
-        fastrace::collector::ConsoleReporter,
-        fastrace::collector::Config::default(),
-    );
+fn main() -> std::process::ExitCode {
+    fastrace::set_reporter(TimelineReporter, fastrace::collector::Config::default());
+    if std::env::args().nth(1).as_deref() == Some("xref") {
+        let root = fastrace::Span::root("profile", fastrace::collector::SpanContext::random());
+        let guard = root.set_local_parent();
+        let code = diana::cli::run();
+        drop(guard);
+        drop(root);
+        fastrace::flush();
+        return code;
+    }
     let mut args = std::env::args().skip(1);
     let input = args.next().expect("input");
     let count: usize = args.next().expect("classes").parse().expect("classes");
@@ -79,4 +85,24 @@ fn main() {
     drop(_guard);
     drop(root);
     fastrace::flush();
+    std::process::ExitCode::SUCCESS
+}
+
+struct TimelineReporter;
+
+impl fastrace::collector::Reporter for TimelineReporter {
+    fn report(&mut self, spans: Vec<fastrace::collector::SpanRecord>) {
+        for span in spans {
+            eprintln!(
+                "{}",
+                serde_json::json!({
+                    "span": span.name,
+                    "id": span.span_id.0,
+                    "parent": span.parent_id.0,
+                    "start_ns": span.begin_time_unix_ns,
+                    "duration_ns": span.duration_ns,
+                })
+            );
+        }
+    }
 }

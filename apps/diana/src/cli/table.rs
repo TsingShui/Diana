@@ -561,6 +561,11 @@ pub(super) struct RowSummary<'a> {
 pub(super) trait Cells {
     fn cells(&self) -> impl Iterator<Item = &str>;
 }
+impl<T: Cells> Cells for &T {
+    fn cells(&self) -> impl Iterator<Item = &str> {
+        (*self).cells()
+    }
+}
 impl Cells for Vec<String> {
     fn cells(&self) -> impl Iterator<Item = &str> {
         self.iter().map(String::as_str)
@@ -580,35 +585,48 @@ impl<R: Cells> serde::Serialize for ObjectRow<'_, R> {
         map.end()
     }
 }
-struct Items<'a, R> {
+struct Items<'a, I> {
     columns: &'a [&'a str],
-    rows: &'a [R],
+    rows: &'a I,
 }
-impl<R: Cells> serde::Serialize for Items<'_, R> {
+impl<I> serde::Serialize for Items<'_, I>
+where
+    I: Clone + IntoIterator,
+    I::Item: Cells,
+    I::IntoIter: ExactSizeIterator,
+{
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeSeq;
-        let mut rows = serializer.serialize_seq(Some(self.rows.len()))?;
-        for row in self.rows {
-            rows.serialize_element(&ObjectRow {
+        let rows = self.rows.clone().into_iter();
+        let mut sequence = serializer.serialize_seq(Some(rows.len()))?;
+        for row in rows {
+            sequence.serialize_element(&ObjectRow {
                 columns: self.columns,
-                row,
+                row: &row,
             })?;
         }
-        rows.end()
+        sequence.end()
     }
 }
 
 /// Renders the existing selection directly to the atomic sink. No JSON value tree
 /// or second full text buffer copies potentially large resource/metadata values.
-pub(super) fn publish_rows<R: Cells>(
-    rows: &[R],
+#[cfg_attr(feature = "perf", fastrace::trace(name = "query.publish"))]
+pub(super) fn publish_rows<I>(
+    rows: I,
     columns: &[&str],
     command: &str,
     format: Format,
     input: &Path,
     output: Option<&Path>,
     summary: RowSummary<'_>,
-) -> Result<(), Failure> {
+) -> Result<(), Failure>
+where
+    I: Clone + IntoIterator,
+    I::Item: Cells,
+    I::IntoIter: ExactSizeIterator,
+{
+    let shown = rows.clone().into_iter().len();
     for issue in summary.issues {
         eprintln!(
             "diana: warning: {}: {}: {}",
@@ -629,7 +647,7 @@ pub(super) fn publish_rows<R: Cells>(
                     .map_err(Failure::output)?;
                 }
                 write_cells(writer, columns.iter().copied()).map_err(Failure::output)?;
-                for row in rows {
+                for row in rows.clone() {
                     write_cells(writer, row.cells()).map_err(Failure::output)?;
                 }
             }
@@ -640,7 +658,13 @@ pub(super) fn publish_rows<R: Cells>(
                     let mut object = serde::Serializer::serialize_map(&mut serializer, Some(10))?;
                     object.serialize_entry("schema_version", &schema_version(command))?;
                     object.serialize_entry("command", command)?;
-                    object.serialize_entry("items", &Items { columns, rows })?;
+                    object.serialize_entry(
+                        "items",
+                        &Items {
+                            columns,
+                            rows: &rows,
+                        },
+                    )?;
                     object.serialize_entry(
                         "total",
                         &summary.issues.is_empty().then_some(summary.total),
@@ -648,8 +672,8 @@ pub(super) fn publish_rows<R: Cells>(
                     object.serialize_entry("recovered_total", &summary.total)?;
                     object.serialize_entry("complete", &summary.issues.is_empty())?;
                     object.serialize_entry("issues", summary.issues)?;
-                    object.serialize_entry("shown", &rows.len())?;
-                    object.serialize_entry("truncated", &(rows.len() < summary.total))?;
+                    object.serialize_entry("shown", &shown)?;
+                    object.serialize_entry("truncated", &(shown < summary.total))?;
                     object.serialize_entry("warnings", summary.warning.as_slice())?;
                     object.end()
                 })();

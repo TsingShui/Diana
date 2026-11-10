@@ -11,11 +11,15 @@ use crate::analysis::input::{InputError, InputOptions};
 use crate::analysis::query::QueryError;
 use crate::analysis::request::RequestScope;
 use crate::analysis::selector;
-use crate::analysis::xref::{Matched, Relation, Site, Target, TextMatch, Xref, XrefPlan, XrefRow};
+use crate::analysis::xref::{Matched, Relation, RowView, Site, Target, TextMatch, Xref, XrefPlan};
+
+mod rows;
+use rows::Rows;
 
 /// Default presentation cap, shared by text and JSON across all caller depths.
 pub(super) const DEFAULT_LIMIT: usize = 50;
 
+#[cfg_attr(feature = "perf", fastrace::trace(name = "xref.request"))]
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     input: &Path,
@@ -63,8 +67,11 @@ pub fn run(
         .transpose()
         .map_err(selection_failure)?
         .map(|selector| selector.descriptor);
-    let scope =
-        RequestScope::open(input, &InputOptions { allowed_root: None }).map_err(Failure::input)?;
+    let scope = {
+        #[cfg(feature = "perf")]
+        let _span = fastrace::local::LocalSpan::enter_with_local_parent("xref.open-input");
+        RequestScope::open(input, &InputOptions { allowed_root: None }).map_err(Failure::input)?
+    };
     let mut issues = Vec::new();
     let target = match target {
         QueryTarget::Resource(pattern) => {
@@ -125,16 +132,16 @@ pub fn run(
     )
     .map_err(query_failure)?;
     let images = first.images().to_vec();
-    let mut rows = Vec::new();
+    let mut rows = Rows::default();
     first
-        .run(&mut |event| collect_event(&mut rows, &mut issues, event))
+        .run(&mut |event| rows.collect(&mut issues, event))
         .map_err(query_failure)?;
     drop(first);
 
     // Only the initial references use the class restriction and query predicate.
     // Caller expansion always asks for complete original method identities.
     if transitive > 1 {
-        let mut frontier = caller_targets(&rows).map_err(query_failure)?;
+        let mut frontier = caller_targets(&rows, 0).map_err(query_failure)?;
         for depth in 2..=transitive {
             if frontier.is_empty() {
                 break;
@@ -153,17 +160,14 @@ pub fn run(
                 },
             )
             .map_err(query_failure)?;
-            let mut found = Vec::new();
-            scan.run(&mut |event| collect_event(&mut found, &mut issues, event))
+            let start = rows.len();
+            scan.run(&mut |event| rows.collect(&mut issues, event))
                 .map_err(query_failure)?;
             frontier = if depth < transitive {
-                caller_targets(&found).map_err(query_failure)?
+                caller_targets(&rows, start).map_err(query_failure)?
             } else {
                 Vec::new()
             };
-            rows.try_reserve(found.len())
-                .map_err(|error| Failure::input(InputError::Allocation(error)))?;
-            rows.extend(found);
         }
     }
     for issue in &mut issues {
@@ -184,11 +188,7 @@ pub fn run(
         }
     }
     if ranked {
-        rows.sort_unstable_by(|left, right| {
-            best_first(left.relevance, right.relevance)
-                .then_with(|| left.depth.cmp(&right.depth))
-                .then_with(|| row_order(left).cmp(&row_order(right)))
-        });
+        rows.rank().map_err(query_failure)?;
     }
     // Hidden rows still contribute to the next frontier and the exact total.
     let total = rows.len();
@@ -201,57 +201,57 @@ pub fn run(
     // A wide query repeats the same method locator, matched value and use label
     // across thousands of rows. Render each distinct one once and let every row
     // point at it, instead of formatting the whole line per site.
-    let shown_rows = &rows[..shown];
+    let shown_rows = rows.iter().take(shown);
     let mut contexts: std::collections::HashMap<ContextKey, u32> = std::collections::HashMap::new();
     let mut matches: std::collections::HashMap<&Matched, u32> = std::collections::HashMap::new();
     let mut uses: std::collections::HashMap<(&str, u32), u32> = std::collections::HashMap::new();
     let mut context_text: Vec<String> = Vec::new();
     let mut match_text: Vec<String> = Vec::new();
     let mut use_text: Vec<String> = Vec::new();
-    for row in shown_rows {
-        if let std::collections::hash_map::Entry::Vacant(entry) = contexts.entry(context_key(row)) {
-            let id = u32::try_from(context_text.len())
-                .map_err(|_| Failure::input(InputError::PlatformCapacity))?;
-            entry.insert(id);
-            context_text.push(render_context(row, &images));
-        }
-        if let std::collections::hash_map::Entry::Vacant(entry) = matches.entry(&row.matched) {
-            let id = u32::try_from(match_text.len())
-                .map_err(|_| Failure::input(InputError::PlatformCapacity))?;
-            entry.insert(id);
-            match_text.push(matched_text(&row.matched));
-        }
-        if let std::collections::hash_map::Entry::Vacant(entry) =
-            uses.entry((row.use_.as_str(), row.depth))
-        {
-            let id = u32::try_from(use_text.len())
-                .map_err(|_| Failure::input(InputError::PlatformCapacity))?;
-            entry.insert(id);
-            use_text.push(format!("{} depth {}", row.use_, row.depth));
+    {
+        #[cfg(feature = "perf")]
+        let _span = fastrace::local::LocalSpan::enter_with_local_parent("xref.render-identities");
+        for row in shown_rows.clone() {
+            if let std::collections::hash_map::Entry::Vacant(entry) =
+                contexts.entry(context_key(row))
+            {
+                let id = u32::try_from(context_text.len())
+                    .map_err(|_| Failure::input(InputError::PlatformCapacity))?;
+                entry.insert(id);
+                context_text.push(render_context(row, &images));
+            }
+            if let std::collections::hash_map::Entry::Vacant(entry) = matches.entry(row.matched) {
+                let id = u32::try_from(match_text.len())
+                    .map_err(|_| Failure::input(InputError::PlatformCapacity))?;
+                entry.insert(id);
+                match_text.push(matched_text(row.matched));
+            }
+            if let std::collections::hash_map::Entry::Vacant(entry) =
+                uses.entry((row.use_, row.depth))
+            {
+                let id = u32::try_from(use_text.len())
+                    .map_err(|_| Failure::input(InputError::PlatformCapacity))?;
+                entry.insert(id);
+                use_text.push(format!("{} depth {}", row.use_, row.depth));
+            }
         }
     }
-    let mut output_rows = Vec::new();
-    output_rows
-        .try_reserve_exact(shown)
-        .map_err(|error| Failure::input(InputError::Allocation(error)))?;
-    for row in shown_rows {
+    let output_rows = shown_rows.map(|row| {
         let locator = &context_text[contexts[&context_key(row)] as usize];
-        let context = match &row.site {
-            Site::Code { code_unit, .. } => {
-                std::borrow::Cow::Owned(format!("{locator}@cu:{code_unit:#06x}"))
-            }
+        let context = match row.code_unit {
+            Some(code_unit) => std::borrow::Cow::Owned(format!("{locator}@cu:{code_unit:#06x}")),
             _ => std::borrow::Cow::Borrowed(locator.as_str()),
         };
         let matched = &match_text[matches[&row.matched] as usize];
-        let use_ = &use_text[uses[&(row.use_.as_str(), row.depth)] as usize];
-        output_rows.push(OutputRow {
+        let use_ = &use_text[uses[&(row.use_, row.depth)] as usize];
+        OutputRow {
             context,
             matched,
             use_,
-        });
-    }
+        }
+    });
     publish_rows(
-        &output_rows,
+        output_rows,
         &["context", "match", "use"],
         "xref",
         format,
@@ -301,11 +301,11 @@ enum ContextKey {
     },
 }
 
-fn context_key(row: &XrefRow) -> ContextKey {
+fn context_key(row: RowView<'_>) -> ContextKey {
     let image = row.image.0;
     let logical = row.logical.0;
     let class_def = row.class_def.0;
-    match &row.site {
+    match row.site {
         Site::Class => ContextKey::Class {
             image,
             logical,
@@ -338,11 +338,11 @@ fn context_key(row: &XrefRow) -> ContextKey {
     }
 }
 
-fn render_context(row: &XrefRow, images: &[crate::analysis::query::ImageInfo]) -> String {
+fn render_context(row: RowView<'_>, images: &[crate::analysis::query::ImageInfo]) -> String {
     let image = &images[row.image.0];
     let entry = image.entry.map(|entry| entry.0);
-    match &row.site {
-        Site::Class => at::class(entry, row.logical.0, row.class_def.0, &row.class_descriptor),
+    match row.site {
+        Site::Class => at::class(entry, row.logical.0, row.class_def.0, row.class_descriptor),
         Site::UnknownField(id) => format!(
             "e{}:l{}:c{}:f{}",
             entry.unwrap_or(0),
@@ -366,7 +366,7 @@ fn render_context(row: &XrefRow, images: &[crate::analysis::query::ImageInfo]) -
             row.logical.0,
             row.class_def.0,
             field.0,
-            &row.class_descriptor,
+            row.class_descriptor,
             name,
             field_type,
         ),
@@ -379,7 +379,7 @@ fn render_context(row: &XrefRow, images: &[crate::analysis::query::ImageInfo]) -
             row.logical.0,
             row.class_def.0,
             method.0,
-            &row.class_descriptor,
+            row.class_descriptor,
             name,
             prototype,
         ),
@@ -393,15 +393,15 @@ fn render_context(row: &XrefRow, images: &[crate::analysis::query::ImageInfo]) -
             row.logical.0,
             row.class_def.0,
             method.0,
-            &row.class_descriptor,
+            row.class_descriptor,
             name,
             prototype,
         ),
     }
 }
 
-fn row_order(row: &XrefRow) -> (usize, u32, u32, u32, u32) {
-    let (method, code_unit) = match &row.site {
+fn row_order(row: RowView<'_>) -> (usize, u32, u32, u32, u32) {
+    let (method, code_unit) = match row.site {
         Site::Class => (0, 0),
         Site::UnknownField(id) => (id.0, 0),
         Site::UnknownMethod(id) => (id.0, 0),
@@ -416,7 +416,7 @@ fn row_order(row: &XrefRow) -> (usize, u32, u32, u32, u32) {
         row.logical.0,
         row.class_def.0,
         method,
-        code_unit,
+        row.code_unit.unwrap_or(code_unit),
     )
 }
 
@@ -426,30 +426,12 @@ enum QueryTarget {
     Pattern(Target),
 }
 
-fn collect_event(
-    rows: &mut Vec<XrefRow>,
-    issues: &mut Vec<crate::analysis::xref::Issue>,
-    event: crate::analysis::xref::Event,
-) -> Result<(), QueryError> {
-    match event {
-        crate::analysis::xref::Event::Row(row) => {
-            rows.try_reserve(1).map_err(InputError::Allocation)?;
-            rows.push(row);
-        }
-        crate::analysis::xref::Event::Issue(issue) => {
-            issues.try_reserve(1).map_err(InputError::Allocation)?;
-            issues.push(issue);
-        }
-    }
-    Ok(())
-}
-
-fn caller_targets(rows: &[XrefRow]) -> Result<Vec<Target>, QueryError> {
+fn caller_targets(rows: &Rows, start: usize) -> Result<Vec<Target>, QueryError> {
     let mut callers = Vec::new();
     callers
-        .try_reserve_exact(rows.len())
+        .try_reserve_exact(rows.len() - start)
         .map_err(InputError::Allocation)?;
-    for row in rows {
+    for row in rows.iter().skip(start) {
         if let Some(key) = row.caller_key() {
             callers.push((key, row));
         }

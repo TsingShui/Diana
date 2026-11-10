@@ -11,6 +11,7 @@ use super::input::InputError;
 use super::query::{ImageInfo, QueryError};
 use super::request::RequestScope;
 
+pub mod code;
 mod coordinate;
 mod declarations;
 mod delivery;
@@ -181,17 +182,51 @@ pub struct XrefRow {
 }
 
 impl XrefRow {
+    pub fn view(&self) -> RowView<'_> {
+        RowView {
+            image: self.image,
+            logical: self.logical,
+            class_def: self.class_def,
+            class_descriptor: &self.class_descriptor,
+            site: &self.site,
+            code_unit: match self.site {
+                Site::Code { code_unit, .. } => Some(code_unit),
+                _ => None,
+            },
+            depth: self.depth,
+            relevance: self.relevance,
+            use_: &self.use_,
+            matched: &self.matched,
+        }
+    }
+}
+
+/// A borrowed presentation of either a declaration or an integer code hit.
+#[derive(Clone, Copy)]
+pub struct RowView<'a> {
+    pub image: ImageIndex,
+    pub logical: LogicalDex,
+    pub class_def: ClassDefId,
+    pub class_descriptor: &'a [u16],
+    pub site: &'a Site,
+    pub code_unit: Option<u32>,
+    pub depth: u32,
+    pub relevance: Option<Relevance>,
+    pub use_: &'a str,
+    pub matched: &'a Matched,
+}
+
+impl<'a> RowView<'a> {
     /// Original caller key for deduplicating the next scan's targets, not rows.
-    pub fn caller_key(&self) -> Option<(&[u16], &[u16], &[u16])> {
-        match &self.site {
+    pub fn caller_key(&self) -> Option<(&'a [u16], &'a [u16], &'a [u16])> {
+        match self.site {
             Site::Code {
                 name, prototype, ..
-            } => Some((&self.class_descriptor, name, prototype)),
-            Site::Class
-            | Site::UnknownField(_)
-            | Site::UnknownMethod(_)
-            | Site::Field { .. }
-            | Site::Method { .. } => None,
+            }
+            | Site::Method {
+                name, prototype, ..
+            } if self.code_unit.is_some() => Some((self.class_descriptor, name, prototype)),
+            _ => None,
         }
     }
 
@@ -243,6 +278,7 @@ pub struct Xref<'a> {
 }
 
 impl<'a> Xref<'a> {
+    #[cfg_attr(feature = "perf", fastrace::trace(name = "xref.prepare"))]
     pub fn new(scope: &'a RequestScope, plan: XrefPlan) -> Result<Self, QueryError> {
         if plan.jobs == 0 {
             return Err(QueryError::InvalidJobs);
@@ -280,11 +316,19 @@ impl<'a> Xref<'a> {
         if self.plan.recursive || self.plan.method_relation != MethodRelation::References {
             return relations::run(self, sink);
         }
+        #[cfg(feature = "perf")]
+        let scan_span = fastrace::Span::enter_with_local_parent("xref.scan");
+        #[cfg(feature = "perf")]
+        let _scan_parent = scan_span.set_local_parent();
         super::runner::run(
             self.roots.len(),
             self.plan.jobs,
             Vec::new,
             |scratch: &mut Vec<u8>, ordinal, emit| {
+                #[cfg(feature = "perf")]
+                let image_span = fastrace::Span::enter_with_parent("xref.image", &scan_span);
+                #[cfg(feature = "perf")]
+                let _image_parent = image_span.set_local_parent();
                 let root = &self.roots[ordinal];
                 let stopped = std::cell::Cell::new(false);
                 let mut forward = |event| {
@@ -296,10 +340,14 @@ impl<'a> Xref<'a> {
                 };
                 // One pass reads every root once, so the payload lives in this
                 // worker's scratch instead of every root retaining its own.
-                let bytes = if self.plan.retain_payloads {
-                    root.bytes()
-                } else {
-                    root.bytes_into(scratch)
+                let bytes = {
+                    #[cfg(feature = "perf")]
+                    let _span = fastrace::local::LocalSpan::enter_with_local_parent("xref.inflate");
+                    if self.plan.retain_payloads {
+                        root.bytes()
+                    } else {
+                        root.bytes_into(scratch)
+                    }
                 };
                 let result = bytes.map_err(QueryError::from).and_then(|bytes| {
                     dex::visit_logical(bytes, |logical, index| {
@@ -326,6 +374,7 @@ impl<'a> Xref<'a> {
     }
 }
 
+#[cfg_attr(feature = "perf", fastrace::trace(name = "xref.logical-scan"))]
 fn scan_logical(
     index: &ProgramIndex<'_>,
     image: ImageIndex,
@@ -942,10 +991,14 @@ fn scan_code(
         return Ok(());
     }
     let mut failure = None;
+    let mut sites = Vec::new();
+    let mut batch = code::Builder::new(location, plan.depth)?;
     let visited = class.visit_method_codes(|method_idx, access_flags, code_offset| {
         if failure.is_some() {
             return Ok(());
         }
+        sites.clear();
+        let mut unavailable = None;
         let result = (|| -> Result<(), QueryError> {
             let Some(code_offset) = code_offset else {
                 return Ok(());
@@ -962,56 +1015,22 @@ fn scan_code(
             if !prefilter.might_reference(code) {
                 return Ok(());
             }
-            let reference = index.method_reference(method_idx)?;
-            let name = copy(&reference.declaration.name.units()?)?;
-            let prototype = declarations::prototype_units(&reference.declaration.prototype)?;
-            let mut emit_site = |code_unit: u32, mnemonic: &str, path: &str, facts| {
-                let Ok(facts) = facts else {
-                    return Ok(());
-                };
-                let Some((matched, selected)) = matched(facts, &plan.targets)? else {
-                    return Ok(());
-                };
-                emit(Event::Row(XrefRow {
-                    image: location.image,
-                    logical: location.logical,
-                    class_def: location.class_def,
-                    class_descriptor: copy(&location.descriptor)?,
-                    relevance: selected.relevance,
-                    site: Site::Code {
-                        method: method_idx,
-                        name: copy(&name)?,
-                        prototype: copy(&prototype)?,
-                        code_unit,
-                    },
-                    depth: plan.depth,
-                    use_: if path.is_empty() {
-                        mnemonic.to_owned()
-                    } else {
-                        format!("{mnemonic} → {path}")
-                    },
-                    matched,
-                }))?;
-                Ok(())
-            };
-            let direct = |path: &str| plan.typed_uses || path.is_empty();
-            if let Some(sites) = flat_sites(code, prefilter) {
-                for site in sites {
-                    let direct_proto = matches!(
-                        site.reference,
-                        diana_decomp::raw::OperandReference::Proto(_)
-                    );
-                    index.visit_reference_leaves::<QueryError>(site.reference, |path, facts| {
-                        if !direct_proto && !direct(path) {
-                            return Ok(());
-                        }
-                        emit_site(site.code_unit, site.mnemonic, path, facts)
-                    })?;
-                }
-                return Ok(());
+            if flat_sites(code, prefilter, &mut sites)? {
+                return batch.method(index, method_idx, &sites, plan);
             }
-            let mut stopped = None;
+            // A packed walk that encounters an unsupported encoding publishes
+            // nothing. The checked decoder owns the entire instruction stream.
+            sites.clear();
+            let mut recovered_end = range.start.0;
             let decoded = view.visit_instructions(|item| {
+                let words = match &item {
+                    diana_decomp::raw::RawCodeItem::Instruction(value) => value.words().len(),
+                    diana_decomp::raw::RawCodeItem::Payload(value) => value.words().len(),
+                };
+                recovered_end = words
+                    .checked_mul(2)
+                    .and_then(|bytes| recovered_end.checked_add(bytes))
+                    .ok_or(diana_decomp::input::MethodError::PlatformCapacity)?;
                 let diana_decomp::raw::RawCodeItem::Instruction(instruction) = item else {
                     return Ok(());
                 };
@@ -1025,44 +1044,40 @@ fn scan_code(
                     } else {
                         needs_direct(reference.target, &plan.targets)
                     };
-                    if !needed {
-                        continue;
-                    }
-                    let direct_proto = matches!(
-                        reference.target,
-                        diana_decomp::raw::OperandReference::Proto(_)
-                    );
-                    let produced = index.visit_reference_leaves::<QueryError>(
-                        reference.target,
-                        |path, facts| {
-                            if !direct_proto && !direct(path) {
-                                return Ok(());
-                            }
-                            emit_site(instruction.pc().0, spec.mnemonic, path, facts)
-                        },
-                    );
-                    if let Err(error) = produced {
-                        stopped = Some(error);
-                        return Err(diana_decomp::input::MethodError::InternalInvariant(
-                            "reference scan sink stopped",
-                        ));
+                    if needed {
+                        sites
+                            .try_reserve(1)
+                            .map_err(diana_decomp::input::MethodError::Allocation)?;
+                        sites.push(FlatSite {
+                            code_unit: instruction.pc().0,
+                            mnemonic: spec.mnemonic,
+                            reference: reference.target,
+                        });
                     }
                 }
                 Ok(())
             });
-            if let Some(error) = stopped {
-                return Err(error);
+            if decoded.is_err() {
+                unavailable = Some([recovered_end, range.end.0]);
             }
-            if let Err(error) = decoded {
-                return Err(QueryError::from(error));
-            }
-            Ok(())
+            batch.method(index, method_idx, &sites, plan)?;
+            decoded.map_err(QueryError::from)
         })();
-        if let Err(error) = result {
+        if let Err(error) = result
+            && let Err(error) = emit(Event::Issue(Issue::new(
+                format!("{}:m{}", location.context(), method_idx.0),
+                &error,
+                unavailable,
+            )))
+        {
             failure = Some(error);
         }
         Ok(())
     });
+    let batch = batch.finish();
+    if failure.is_none() && !batch.is_empty() {
+        emit(Event::Code(batch))?;
+    }
     if let Err(error) = visited {
         emit(Event::Issue(Issue::new(
             format!("{} methods", location.context()),
@@ -1082,14 +1097,20 @@ struct FlatSite {
     reference: diana_decomp::raw::OperandReference,
 }
 
-/// Walks one instruction stream with the packed opcode table and returns the
-/// operand references whose index the filter accepts. `None` means the body
+/// Walks one instruction stream with the packed opcode table and appends the
+/// operand references whose index the filter accepts. False means the body
 /// needs the checked decoder (payload layout, wide operands or unknown bytes).
-fn flat_sites(code: &[u8], prefilter: &prefilter::Prefilter) -> Option<Vec<FlatSite>> {
+///
+/// The caller clears and reuses the accumulator across method bodies. A false
+/// result leaves provisional hits that must be discarded before checked decoding.
+fn flat_sites(
+    code: &[u8],
+    prefilter: &prefilter::Prefilter,
+    sites: &mut Vec<FlatSite>,
+) -> Result<bool, QueryError> {
     use diana_decomp::raw::OperandReference;
     use diana_decomp::{FieldId, MethodId, StringId, TypeId};
     let table = diana_decomp::input::formats::opcode_scan_table();
-    let mut sites = Vec::new();
     let mut pc = 0usize;
     while pc + 2 <= code.len() {
         let opcode = code[pc];
@@ -1098,11 +1119,11 @@ fn flat_sites(code: &[u8], prefilter: &prefilter::Prefilter) -> Option<Vec<FlatS
             match first {
                 // Payload layout needs the checked decoder; one body with a
                 // switch or array payload keeps the original path.
-                0x0100 | 0x0200 | 0x0300 => return None,
+                0x0100 | 0x0200 | 0x0300 => return Ok(false),
                 _ => pc += 2,
             }
             if pc > code.len() {
-                return None;
+                return Ok(false);
             }
             continue;
         }
@@ -1112,17 +1133,20 @@ fn flat_sites(code: &[u8], prefilter: &prefilter::Prefilter) -> Option<Vec<FlatS
         // Two references, dynamic handles or unknown encodings need operands
         // the packed table cannot describe.
         if units == 0 || mask.count_ones() > 1 || mask & (32 | 64) != 0 {
-            return None;
+            return Ok(false);
         }
+        let Some(end) = pc.checked_add(units * 2).filter(|end| *end <= code.len()) else {
+            return Ok(false);
+        };
         if mask != 0 {
             let index = if opcode == 0x1b {
                 if pc + 6 > code.len() {
-                    return None;
+                    return Ok(false);
                 }
                 u32::from_le_bytes([code[pc + 2], code[pc + 3], code[pc + 4], code[pc + 5]])
             } else {
                 if pc + 4 > code.len() {
-                    return None;
+                    return Ok(false);
                 }
                 u32::from(u16::from_le_bytes([code[pc + 2], code[pc + 3]]))
             };
@@ -1132,19 +1156,25 @@ fn flat_sites(code: &[u8], prefilter: &prefilter::Prefilter) -> Option<Vec<FlatS
                     2 => OperandReference::Type(TypeId(index)),
                     4 => OperandReference::Field(FieldId(index)),
                     8 => OperandReference::Method(MethodId(index)),
-                    _ => return None,
+                    _ => return Ok(false),
                 };
-                let mnemonic = diana_decomp::input::formats::opcode_mnemonic(opcode)?;
+                let Some(mnemonic) = diana_decomp::input::formats::opcode_mnemonic(opcode) else {
+                    return Ok(false);
+                };
+                sites.try_reserve(1).map_err(InputError::Allocation)?;
                 sites.push(FlatSite {
-                    code_unit: u32::try_from(pc / 2).ok()?,
+                    code_unit: match u32::try_from(pc / 2) {
+                        Ok(code_unit) => code_unit,
+                        Err(_) => return Ok(false),
+                    },
                     mnemonic,
                     reference,
                 });
             }
         }
-        pc += units * 2;
+        pc = end;
     }
-    Some(sites)
+    Ok(pc == code.len())
 }
 
 fn copy(units: &[u16]) -> Result<Vec<u16>, QueryError> {

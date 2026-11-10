@@ -163,7 +163,12 @@ pub(super) fn visit_logical(
                 offset_byte: offset,
             }
         })?);
-        visit(logical, container.program(offset)?)?;
+        let index = {
+            #[cfg(feature = "perf")]
+            let _span = fastrace::local::LocalSpan::enter_with_local_parent("query.open-logical");
+            container.program(offset)?
+        };
+        visit(logical, index)?;
     }
     Ok(())
 }

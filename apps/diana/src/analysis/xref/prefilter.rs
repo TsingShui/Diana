@@ -26,6 +26,7 @@ pub(super) struct Prefilter {
 }
 
 impl Prefilter {
+    #[cfg_attr(feature = "perf", fastrace::trace(name = "xref.resolve-targets"))]
     pub(super) fn new(
         index: &ProgramIndex<'_>,
         targets: &[Target],
