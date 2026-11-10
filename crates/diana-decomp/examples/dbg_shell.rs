@@ -1784,8 +1784,9 @@ fn region_json(method: diana_decomp::p7::MethodInspection<'_, '_>, details: bool
         result["blocks"]=json!(f.blocks().iter().map(|b|json!({"id":b.block().0,"parts":b.parts().iter().map(|n|n.0).collect::<Vec<_>>()})).collect::<Vec<_>>());
         result["regions"]=json!(f.regions().iter().map(|r|json!({"id":r.id().0,"kind":format!("{:?}",r.kind()),"decision":r.decision(),"entry":r.entry().map(|n|n.0),"follow":r.follow().map(|n|n.0),"continuation":format!("{:?}",r.continuation()),"parent":f.parent(r.id()).map(|r|r.0),"children":r.children().iter().map(|r|r.0).collect::<Vec<_>>(),"nodes":f.region_nodes(r.id()).map(|nodes|nodes.iter().map(|n|n.0).collect::<Vec<_>>())})).collect::<Vec<_>>());
         result["controls"] = json!(f.controls());
+        result["control_root"] = json!(f.control_root());
         result["coroutine_body"] = json!(f.coroutine_body().map(|body| json!({
-            "root":body.root().0,"prefix":body.prefix().0,"dispatch":body.dispatch().0,
+            "root":body.root().0,"prefix":body.prefix().iter().map(|r|r.0).collect::<Vec<_>>(),"dispatch":body.dispatch().0,
             "initial":body.initial().0,"resume":body.resume().0,"invalid":body.invalid().0,
             "entry_check":body.entry_check().0,
             "sequence":body.sequence().iter().map(|r|r.0).collect::<Vec<_>>(),

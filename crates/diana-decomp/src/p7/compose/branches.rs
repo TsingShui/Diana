@@ -336,6 +336,7 @@ fn arm_prints_nothing(code: &MethodCode, id: TransferId, syntax_owned: bool) -> 
 
 fn display_empty_end(code: &MethodCode, end: &BlockEnd) -> bool {
     match end {
+        BlockEnd::Annotated { .. } => false,
         BlockEnd::None => true,
         BlockEnd::Transfers(transfers) => transfers
             .iter()

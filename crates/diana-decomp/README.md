@@ -588,28 +588,56 @@ structure from the remaining replacement; the complete design is not accepted.
 
 | Design area | Delivered | Remaining |
 |---|---|---|
-| Common control grammar | P6 delivers named `ControlLayout` roles; P7 keeps one selected `Control` arena; P9 consumes it. | Planning `RegionKind` and protocol-specific executable forms remain. Common leaf/reference mapping and protocol consolidation are incomplete. |
+| Common control grammar | P6 delivers named `ControlRecord` roles and source/ABI/origin scopes; P7 keeps one selected arena and protocol associations; P9 traverses the common root. | Planning `RegionKind` and raw recognition plans remain. Common leaf/reference mapping is incomplete. |
 | Fragment composition | One installer updates parents/current owners after reservation. Sequence ordering and successor-arm admission share one kernel; accepted interfaces reach commitment without another outlet scan. Nested scopes share active ancestor exclusions. One leaf permutation/ranges replaces owned descendant lists; whole-owner admission uses counts. | Per-family candidate/part walks and original semantic membership facts remain. General interface-based contraction and affected-neighbor scheduling are incomplete. |
-| Operation ownership | Operation records own body data; original coordinates replace the statement arena and reverse map. Nested `Evaluation`/`nested_at` identify one execution owner. Selected operation phases replace copied body phase lists. | Declaration/copy check attachments, protocol variants and other placement bookkeeping remain to be consolidated where their semantics permit. |
+| Operation ownership | Operation records own body data; original coordinates replace the statement arena and reverse map. Nested `Evaluation`/`nested_at` identify one execution owner. Selected operation phases replace copied body phase lists. | Declaration/copy check attachments, forwarding and other placement bookkeeping remain to be consolidated where their semantics permit. |
 | Expression covers | Ordinary and condition consumers share ordered suffix forests. Required checks use the same producer and installer. Statement, terminal and later-read check searches share one bounded cursor. | Dependency-driven reconsideration and broader cross-context cover obligations are incomplete. |
 | Local fixed points | Selected roots leave the active suffix; rejected condition proposals leave the product unchanged. | The P6 and P7 pipelines still run ordered passes. Neither stage has the complete dependency-driven local convergence specified by the design. |
-| Finalization | P9 consumes selected layouts and nested operations. Existing declaration and label passes remain. Loop/flow visibility shares one P7-owned observer query. | Protocol traversal, copy forwarding and a single final declaration/label derivation still need replacement. |
+| Finalization | P9 consumes selected layouts and nested operations. Existing declaration and label passes remain. Loop/flow visibility shares one P7-owned observer query. | Protocol-specific traversal is removed. Copy forwarding and a single final declaration/label derivation still need replacement. |
 
-Against `f6e7893`, the current engine production tree has 68,062 physical Rust
-source lines, compared with 68,495 at the baseline: 433 fewer lines. This count
+Against `f6e7893`, the current engine production tree has 67,954 physical Rust
+source lines, compared with 68,495 at the baseline: 541 fewer lines. This count
 includes every `*.rs` file under `crates/diana-decomp/src/`, including shared
 helpers, comments and blank lines; tests and documentation are excluded. The
 small reduction does not establish the design's substantial size objective or
 comparable recovery capability. Full replacement acceptance and a comparative
 recovery evaluation remain unrun.
 
+## Protocol controls and successful publication
+
+Closed single-body, single-site-loop and multi-site protocols share P6's ordinary
+Sequence/Loop/Scope grammar and one P7/P9 traversal. P7's former executable
+CoroutineBody/CoroutineLoop/CoroutineFlow/CoroutineCycle records and P9's special
+traversal events are removed. Protocol associations retain original call/state,
+ABI entries and copy forwarding. Successful result publication belongs to the
+operation; its original edge cannot execute that copy again.
+
+The [new challenge](../../quality/fixtures/kotlin/protocol-common-controls/README.md)
+combines effectful argument preparation, state publication, result merging and a
+branching observed-construction tail. At `5e01494`, the local call association is
+established but the source-body producer rejects its operation-partitioned prefix.
+The current producer consumes the exact straight prefix relation and recovers
+the body through ordinary controls. New product checks require one leaf placement,
+all original operation origins, one publication owner and the state-store barrier.
+Before/after inspection retains two code and four no-code members with no stops
+or rendering issues. Coroutine/VM behavior has LLM path review; execution is unrun.
+The replacement reduces production code by 108 lines from `5e01494`; its new P6
+representation accounts for part of the deleted P7/P9 code. The complete size,
+fixed-point and recovery objectives remain incomplete.
+
+Validation for this slice: 42 scoped nextest tests pass. Strict all-feature Clippy
+passes for the engine library, dbg_shell and those 13 test targets; formatting
+passes. The full historical test-target lint still has obsolete statement,
+composition and membership API consumers, deferred under the operator's structural
+migration scope. Its compilation is not reported as passing.
+
 ## Owned protocol reads and redundant-root normalization
 
 Loop and multi-site source visibility consume one query over owned P7 bodies,
 original read origins, construction arguments, terminals and edge copies. The
 separate upstream-use scans are removed. Assign and Save retain their actual
-storage observers. This does not yet replace protocol forwarding or executable
-layout variants.
+storage observers. Protocol forwarding remains selected metadata; executable forms now use common
+controls as described below.
 
 The [protocol challenge](../../quality/fixtures/kotlin/protocol-owned-reads/README.md)
 adds construction and observed fields after normal/resumed results. It exposed

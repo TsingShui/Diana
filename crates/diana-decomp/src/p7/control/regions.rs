@@ -197,37 +197,55 @@ fn decision(
 
 pub(super) fn construct(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> {
     let f = c.planned.facts();
-    for r in f.regions() {
-        let kind = kind(c, r)?;
-        let decision = decision(c, r.decision())?;
-        let source_continuation = continuation(c, r.continuation())?;
-        let continuation = source_continuation.completion();
-        let children: crate::recovery::SharedList<_> = ids(r.children(), |r| r)?.into();
-        let layout = f
-            .controls()
-            .get(r.id().0 as usize)
-            .ok_or(bug("control lost its P6 recovery structure"))?
-            .clone();
-        let entry = r.entry().map(|n| label(c, n)).transpose()?;
-        let follow = r.follow().map(|n| label(c, n)).transpose()?;
+    for (index, record) in f.controls().iter().enumerate() {
+        let source = record.source.map(|id| &f.regions()[id.0 as usize]);
+        let kind = if let Some(r) = source {
+            kind(c, r)?
+        } else if let EmissionLayout::Loop {
+            continue_target, ..
+        } = record.layout
+        {
+            ControlKind::Loop {
+                continue_target: label(c, continue_target)?,
+            }
+        } else {
+            ControlKind::Sequence
+        };
+        let decision = decision(c, source.and_then(|r| r.decision()))?;
+        let source_continuation = continuation(
+            c,
+            source.map_or(p6::Continuation::None, |r| r.continuation()),
+        )?;
+        let selected_continuation = record
+            .continuation
+            .map(|value| continuation(c, value))
+            .transpose()?;
+        let completion = selected_continuation
+            .as_ref()
+            .unwrap_or(&source_continuation)
+            .completion();
+        let source_children = ids(source.map_or(&[], |r| r.children()), |r| r)?.into();
+        let id = ControlId(super::super::build::id(index)?);
+        let entry = record.entry.map(|n| label(c, n)).transpose()?;
+        let follow = record.follow.map(|n| label(c, n)).transpose()?;
         push(
             &mut c.code.controls,
             Control {
                 decision,
-                id: ControlId(r.id().0),
+                id,
                 kind,
-                source_children: children.clone(),
-                children,
+                source_children,
+                children: record.children.clone(),
                 source_continuation,
-                label: crate::p7::references::text(format_args!("R{}", r.id().0))?,
+                label: crate::p7::references::text(format_args!("R{}", id.0))?,
                 label_required: true,
                 omitted: false,
                 transparent: false,
-                source_only: Vec::new(),
-                layout,
+                source_only: ids(&record.source_only, |r| r)?,
+                layout: record.layout.clone(),
                 entry,
                 follow,
-                continuation,
+                continuation: completion,
             },
         )?;
     }

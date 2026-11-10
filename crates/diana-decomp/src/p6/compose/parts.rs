@@ -7,12 +7,7 @@ use super::super::graph::Graph;
 use super::super::*;
 use crate::p5::StorageMethod;
 
-pub(super) fn copy<T: Copy>(source: &[T]) -> Result<Vec<T>, RegionError> {
-    let mut out = Vec::new();
-    crate::substrate::owned::reserve(&mut out, source.len())?;
-    out.extend_from_slice(source);
-    Ok(out)
-}
+pub(super) use crate::p6::build::copy;
 pub(super) fn mask(n: usize, nodes: &[NodeId]) -> Result<Vec<bool>, RegionError> {
     let mut out = filled(n, false)?;
     for p in nodes {

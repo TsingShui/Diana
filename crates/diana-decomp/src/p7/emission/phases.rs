@@ -62,7 +62,10 @@ pub(super) fn copies(
     edge_links: &[Option<TransferId>],
 ) -> Result<(), ExpressionError> {
     for bundle in &code.copies {
-        if matches!(bundle.emission, CopyEmission::Construction(_)) {
+        if matches!(
+            bundle.emission,
+            CopyEmission::Construction(_) | CopyEmission::Publication(_)
+        ) {
             continue;
         }
         let at = bundle.id;

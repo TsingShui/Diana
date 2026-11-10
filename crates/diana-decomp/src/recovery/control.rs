@@ -59,6 +59,13 @@ pub enum ConditionElse {
 pub enum ControlLayout {
     Block(crate::p6::NodeId),
     Sequence,
+    /// Source attachments use the ordinary child grammar. The mode changes
+    /// presentation only; an ABI/origin attachment is not another execution.
+    Scope {
+        body: ControlId,
+        mode: SourceMode,
+        heading: Option<&'static str>,
+    },
     If {
         header: ControlId,
         yes: ControlId,
@@ -81,12 +88,8 @@ pub enum ControlLayout {
     When {
         bodies: SharedList<ControlId>,
     },
-    /// The call statement owns the marker/normal-result protocol. The original
-    /// dispatch and resume bodies remain in their existing scopes.
-    Suspension {
-        plan: u32,
-    },
     Loop {
+        continue_target: crate::p6::NodeId,
         body: ControlId,
         placement: LoopPlacement,
     },
@@ -111,6 +114,42 @@ pub enum ControlLayout {
         acquire: OpId,
     },
     Graph,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+pub enum SourceMode {
+    Code,
+    Abi,
+    Origins,
+}
+
+/// P6 publishes complete original-operation leaves and selected child roles.
+/// `source` retains an existing semantic region; compounds need no new region
+/// recognizer or duplicate source-membership tree.
+#[derive(Clone, Debug, Serialize)]
+pub struct ControlRecord {
+    pub layout: ControlLayout,
+    pub children: SharedList<ControlId>,
+    pub source: Option<ControlId>,
+    pub source_only: SharedList<ControlId>,
+    pub end: Option<BodyEnd>,
+    pub continuation: Option<crate::p6::Continuation>,
+    pub entry: Option<crate::p6::NodeId>,
+    pub follow: Option<crate::p6::NodeId>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub enum BodyEnd {
+    None,
+    Terminal(BlockId),
+    /// Original terminal correspondence followed by the supplied normal edge.
+    /// P6 establishes the projection; P7/P9 do not rematch the protocol.
+    Annotated {
+        terminal: BlockId,
+        mode: SourceMode,
+        normal: TransferId,
+        suspended: TransferId,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]

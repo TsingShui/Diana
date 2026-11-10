@@ -99,7 +99,22 @@ impl Selection {
         for block in &code.emission.blocks {
             match &block.end {
                 BlockEnd::Terminal(block) => mark_terminal_targets(code, &mut self.labels, *block)?,
-                BlockEnd::None | BlockEnd::Transfers(_) => {}
+                BlockEnd::Annotated {
+                    mode: super::super::SourceMode::Abi,
+                    normal,
+                    suspended,
+                    ..
+                } => {
+                    mark_label(
+                        &mut self.labels,
+                        code.transfers[normal.0 as usize].destination,
+                    )?;
+                    mark_label(
+                        &mut self.labels,
+                        code.transfers[suspended.0 as usize].destination,
+                    )?;
+                }
+                BlockEnd::None | BlockEnd::Transfers(_) | BlockEnd::Annotated { .. } => {}
             }
         }
         for (index, block) in code.emission.blocks.iter_mut().enumerate() {

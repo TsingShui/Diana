@@ -17,12 +17,21 @@ and `execution()` provide the established facts needed by P7. Borrowed
 an owned predecessor or exposing another analysis entry. P6 MUST NOT use the
 retained SSA inspection view to reconstruct missing storage facts.
 
-`RegionFacts::controls()` delivers the common `ControlLayout` grammar with named
-child roles, original predicate edges and loop placement. P6 constructs it after
-its region and protocol planning. RegionId and LinkId remain the same structural
-coordinates in P7; no second ID domain or downstream role reconstruction is
-required. Shared immutable lists own their data and retain no predecessor lease.
-Original region records remain planning/source facts, not a second P9 layout.
+`RegionFacts::controls()` delivers common `ControlRecord` entries with named
+`ControlLayout` roles, original predicate edges, selected children and loop
+placement. Original records retain their semantic-region identity; appended
+Sequence, Loop and Scope records reference the same original leaves. The selected
+`control_root()` is distinct from the original region `root()` when a protocol
+projection adds compounds. Control and transfer IDs remain the same in P7;
+shared immutable lists retain no predecessor lease.
+
+P6 projects established protocol plans into this grammar. Scope modes distinguish
+source code, readable ABI attachments and zero-width origins. An annotated leaf
+completion retains its original terminal/marker correspondence and the supplied
+normal transfer. A qualified call's successful result copy has
+`CopyOwner::Publication(call)`; it cannot also execute on its original normal edge.
+Recognition, state/resume/spill correspondence and local refusal remain P6-owned.
+P7 MUST NOT rematch a marker guard or infer a missing loop/continuation role.
 
 The P5 execution graph has known operation boundaries, terminals and targets.
 Local storage gaps do not invalidate that graph. P6 records affected accesses and
@@ -674,7 +683,7 @@ construction failures retain their classified behavior.
 ### Closed source-body alternative
 
 A local plan alone does not authorize a source-body replacement. P6 additionally
-publishes `CoroutineBodyPlan` when the selected root Sequence consists of an ABI
+publishes `CoroutineBodyPlan` when the selected root Sequence contains a straight ABI
 entry prefix, that dispatch and the original common-tail controls. The alternative
 contains the original initial body followed by those same tail controls; it adds
 no execution copy. The initial failure check remains an ordinary instruction.
@@ -689,6 +698,13 @@ only normal entrance is its selected dispatch edge, and its only normal exit is
 the original suspension-result edge. Executable exceptional arrivals into hidden
 protocol content reject this alternative. Lock emptiness comes from the existing
 owning computation, not a second propagation.
+
+The prefix consists of complete selected original-operation portions in one
+original block. It starts at method entry, has no foreign arrivals or terminal,
+and each portion's sole copy-free outlet reaches the next portion or the first
+dispatch predicate. Its original operations are only the established marker,
+label read and materialized literals. P6 consumes this entry/completion relation;
+it does not require a former coarse Block or reconstruct instruction boundaries.
 
 The alternative retains the initial ABI argument and every containing member.
 The prefix and resume/error bodies remain readable ABI-only attachments, with

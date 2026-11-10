@@ -324,16 +324,7 @@ fn producer_with_nested(
         .operations
         .get(operation.0 as usize)
         .ok_or("producer_operation_unavailable")?;
-    if code.emission.suspension(operation).is_some()
-        || code
-            .emission
-            .coroutine_flow()
-            .is_some_and(|p| p.sites.iter().any(|p| p.call == operation))
-        || code
-            .emission
-            .coroutine_loop()
-            .is_some_and(|p| p.call == operation)
-    {
+    if code.emission.suspension(operation).is_some() {
         return Err("suspension_owns_its_result_and_route");
     }
     if code.nested_operation(operation)

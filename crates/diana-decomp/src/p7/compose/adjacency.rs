@@ -39,7 +39,11 @@ impl Adjacency {
                 .ok_or(bug("transfer names an unknown node"))?;
             *count = count.saturating_add(1).min(2);
         }
+        let parents = super::sequence::parents(code)?;
         for control in &code.controls {
+            if Some(control.id) != code.root && parents[control.id.0 as usize].is_none() {
+                continue;
+            }
             if matches!(
                 control.layout,
                 EmissionLayout::Sequence | EmissionLayout::Graph

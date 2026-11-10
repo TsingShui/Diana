@@ -488,33 +488,27 @@ ordinary origins in the ABI attachments. These products preserve original
 identities and uncertainty; they do not establish recovery of the whole original
 Kotlin class.
 
-A delivered `CoroutineLoop` prints its original initial nodes, one `while` with
-the supplied predicate, repeated nodes, and original exit nodes. P9 uses the
-ordinary block-control events, not a graph walk or another renderer. Its ABI node
-attachments retain original dispatch/resume/error statements and branch targets;
-short comments mark targets inside the source body. All original operations,
-controls, labels, expressions, copies, and transfers retain source mappings.
-The declaration adds `suspend` while retaining Java return/parameter syntax.
-Forwarded loop-copy steps print their supplied source names only in executable
-code; their original source reads and copy identities retain anchors. P9 MUST
-NOT establish forwarding, hide another argument, or reinterpret another copy.
+All closed protocol forms use the ordinary selected control stack. P9 traverses
+Sequence, Loop and Scope records from the delivered root; it builds no body,
+loop or flow traversal program. Scope restores the previous ABI/origin mode
+after its child. An annotated completion formats the original predicate and
+marker destination in the supplied mode, then emits only the selected normal
+transfer and its copies. Source code and original ABI dispatch/resume/error facts
+retain their distinct roles.
 
-An acyclic `CoroutineFlow` renders P6's existing source controls in supplied
-entry order. P9 does not choose branches or discover another body. Its guard
-comment states both original destinations, retains predicate/suspended-transfer
-origins, and precedes the original normal copy delivery. Target labels remain
-visible in source or ABI attachments. Source initializers use `var name: Type =
-value`; method declarations retain Java ABI types/parameters and inferred
-`suspend`. Header and initialized local types consume the same P8 facts, without
-new null checks or external declarations.
+A common Loop renders the supplied original head/tail predicate and its selected
+edge copies. Original latch and initial-header fallthrough comes from P6/P7;
+interior exits retain their supplied transfers to the original tail. ABI targets
+inside source code have correspondence comments. Source-only leaves and unused
+original containers retain their existing identities through origin emission.
+P9 MUST NOT infer a loop, hide another argument, establish copy forwarding or
+reconstruct a transfer from text adjacency.
 
-A cyclic `CoroutineFlow` prints its initial controls, one `while` with the
-delivered head predicate and its exit copies, the repeated controls, and then
-the tail controls. The original latch and initial-header links print as ordinary
-fallthrough. P9 does not invent a `break` for a repeated-body exit: a branch
-that leaves the selected cycle keeps the explicit transfer to its original tail
-label, and the shared exit keeps its original operations and return. ABI
-attachments, state stores and marker returns keep their comments and anchors.
+A selected successful result publication uses the ordinary statement assignment
+and origin functions. Its existing destination, copy, normal transfer and original
+copy-source read are supplied by P7. Original operation/result-commit facts remain
+mapped there. Protocol metadata supplies the inference note and ABI callee binding,
+not an additional assignment or control schedule.
 
 ## Spans
 

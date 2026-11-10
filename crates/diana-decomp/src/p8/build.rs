@@ -161,6 +161,7 @@ fn code_prints_nothing(code: &MethodCode) -> Result<bool, RequestError> {
                 }
                 match &block.end {
                     BlockEnd::None => {}
+                    BlockEnd::Annotated { .. } => return Ok(false),
                     BlockEnd::Terminal(terminal) => {
                         if !emission.omitted_return(*terminal) {
                             return Ok(false);

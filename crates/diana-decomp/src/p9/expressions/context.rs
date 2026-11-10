@@ -43,6 +43,9 @@ pub(in crate::p9) trait ExpressionSource {
     fn operation(&self, _id: crate::p2::OpId) -> Option<&Operation> {
         None
     }
+    fn result_publication(&self, _id: StatementId) -> Option<&ResultPublication> {
+        None
+    }
     fn evaluation(&self, _id: ExprId) -> Option<Evaluation> {
         None
     }
@@ -84,6 +87,12 @@ pub(in crate::p9) trait ExpressionSource {
     }
 }
 impl ExpressionSource for MethodCode {
+    fn result_publication(&self, id: StatementId) -> Option<&ResultPublication> {
+        self.operations()
+            .get(self.statement_operation(id)?.0 as usize)?
+            .publication
+            .as_ref()
+    }
     fn boolean_use(&self, id: ExprId) -> bool {
         self.emission().boolean_use(id)
     }
@@ -101,13 +110,13 @@ impl ExpressionSource for MethodCode {
     }
     fn forwarded_storage(&self, id: StorageId) -> StorageId {
         self.emission()
-            .coroutine_loop()
+            .protocol()
             .and_then(|p| p.forwarded_copies.iter().find(|p| p.destination == id))
             .map_or(id, |p| p.source)
     }
     fn forwarded_copy(&self, bundle: CopyPlanId, step: usize) -> Option<ExprId> {
         self.emission()
-            .coroutine_loop()?
+            .protocol()?
             .forwarded_copies
             .iter()
             .find(|p| p.bundle == bundle && p.step as usize == step)

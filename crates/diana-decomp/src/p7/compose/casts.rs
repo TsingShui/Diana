@@ -95,16 +95,10 @@ pub(super) fn construct(
     let mut found: Vec<(StatementId, InlineCheck)> = Vec::new();
     let protection = protected_contexts(code)?;
     let mut suspended: Vec<bool> = super::super::build::filled(code.operations.len(), false)?;
-    if let Some(flow) = code.emission.coroutine_flow() {
-        for site in &flow.sites {
+    if let Some(protocol) = code.emission.protocol() {
+        for site in &protocol.calls {
             suspended[site.statement.0 as usize] = true;
         }
-    }
-    if let Some(plan) = code.emission.coroutine_loop() {
-        suspended[plan.statement.0 as usize] = true;
-    }
-    for surface in code.emission.suspensions() {
-        suspended[surface.statement.0 as usize] = true;
     }
     let mut claimed: Vec<bool> = super::super::build::filled(code.operations.len(), false)?;
     // Each check consumes one owning declaration/copy location or one ordered
@@ -571,6 +565,9 @@ fn forward_operand(
             continue;
         }
         let terminal = match block.end {
+            BlockEnd::Annotated { .. } => {
+                return Err(Stop::Refuse("annotated_terminal_not_a_check_carrier"));
+            }
             BlockEnd::Terminal(terminal) => Some(terminal),
             BlockEnd::None => match code.blocks[node].completion {
                 BlockCompletion::Syntax { terminal, .. } => Some(terminal),

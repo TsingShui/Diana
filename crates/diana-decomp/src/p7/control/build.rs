@@ -12,6 +12,10 @@ pub(in crate::p7) fn construct(c: &mut Context<'_, '_>) -> Result<(), Expression
     protection::sites(c)?;
     protection::handlers(c)?;
     regions::construct(c)?;
-    c.code.root = c.planned.facts().root().map(|r| super::ControlId(r.0));
+    c.code.root = c
+        .planned
+        .facts()
+        .control_root()
+        .map(|r| super::ControlId(r.0));
     Ok(())
 }

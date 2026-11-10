@@ -27,14 +27,7 @@ fn transfer_exit(code: &MethodCode, id: TransferId) -> Option<TailExit> {
 /// stop before their own target, and protected/loop/branch containers are not
 /// transparent: their completion can still perform work or receive an arrival.
 pub(super) fn drop_completed_continuations(code: &mut MethodCode) -> Result<(), ExpressionError> {
-    let mut parent: Vec<Option<ControlId>> = filled(code.controls.len(), None)?;
-    for control in &code.controls {
-        for &child in &control.source_children {
-            *parent
-                .get_mut(child.0 as usize)
-                .ok_or(bug("control names an unknown child"))? = Some(control.id);
-        }
-    }
+    let parent = super::sequence::parents(code)?;
     let mut owner: Vec<Option<ControlId>> = filled(code.labels.len(), None)?;
     for label in &code.labels {
         *owner
@@ -162,6 +155,7 @@ fn linear_prefix(code: &MethodCode, block: &EmissionBlock) -> bool {
         )
     };
     match &block.end {
+        BlockEnd::Annotated { .. } => false,
         BlockEnd::None => true,
         BlockEnd::Transfers(transfers) => transfers.iter().all(|&id| fallthrough(id)),
         BlockEnd::Terminal(id)
@@ -177,15 +171,8 @@ fn linear_prefix(code: &MethodCode, block: &EmissionBlock) -> bool {
 }
 
 pub(super) fn collapse_planned_continuations(code: &mut MethodCode) -> Result<(), ExpressionError> {
-    let mut parent = filled(code.controls.len(), None)?;
+    let parent = super::sequence::parents(code)?;
     let mut buffer = filled(code.controls.len().max(3), ControlId(0))?;
-    for control in &code.controls {
-        for &child in &control.source_children {
-            *parent
-                .get_mut(child.0 as usize)
-                .ok_or(bug("control names an unknown child"))? = Some(control.id);
-        }
-    }
     for index in 0..code.controls.len() {
         let Some(ControlCompletion::Goto(label)) = code.controls[index].continuation else {
             continue;

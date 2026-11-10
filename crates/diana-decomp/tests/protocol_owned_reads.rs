@@ -52,7 +52,7 @@ fn retained_reads(code: &MethodCode, rendered: &Rendered) {
         {
             // The existing final protocol product still supplies selected copy
             // forwarding; original read origins keep the pre-selection storage.
-            if let Some(forward) = code.emission().coroutine_loop().and_then(|plan| {
+            if let Some(forward) = code.emission().protocol().and_then(|plan| {
                 plan.forwarded_copies
                     .iter()
                     .find(|copy| copy.destination == storage)
@@ -65,11 +65,7 @@ fn retained_reads(code: &MethodCode, rendered: &Rendered) {
             );
         }
     }
-    let continuation = if let Some(plan) = code.emission().coroutine_loop() {
-        plan.continuation
-    } else {
-        code.emission().coroutine_flow().unwrap().sites[0].continuation
-    };
+    let continuation = code.emission().protocol().unwrap().calls[0].continuation;
     let local = code.expressions()[continuation.0 as usize]
         .origin
         .as_ref()

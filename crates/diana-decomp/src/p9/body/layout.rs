@@ -76,7 +76,24 @@ impl Expressions<'_, '_> {
         }
         match &c.layout {
             EmissionLayout::Block(node) => self.block(*node)?,
-            EmissionLayout::Suspension { plan } => self.suspension_tail(*plan)?,
+            EmissionLayout::Scope {
+                body,
+                mode,
+                heading,
+            } => {
+                if let Some(heading) = heading {
+                    self.out.line(heading)?;
+                }
+                push(
+                    work,
+                    Event::Presentation {
+                        abi: self.out.abi_comment,
+                        origins: self.out.origin_only,
+                    },
+                )?;
+                self.source_mode(*mode);
+                push(work, Event::Control(*body))?;
+            }
             EmissionLayout::Sequence if !c.label_required => {
                 for &child in c.children().iter().rev() {
                     push(
@@ -124,7 +141,9 @@ impl Expressions<'_, '_> {
                 )?;
                 push(work, Event::Control(*header))?;
             }
-            EmissionLayout::Loop { body, placement } => {
+            EmissionLayout::Loop {
+                body, placement, ..
+            } => {
                 self.loop_layout(work, c, *body, placement)?;
             }
             EmissionLayout::When { .. } => self.decision(id, work)?,

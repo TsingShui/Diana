@@ -70,9 +70,16 @@ fn candidate(
             && source.continuation == Continuation::None,
         "body_requires_one_selected_root_sequence"
     );
+    let Some(dispatch_index) = source
+        .children
+        .iter()
+        .position(|&child| child == plan.dispatch)
+    else {
+        return Ok(Err("body_dispatch_is_not_a_root_child"));
+    };
     require!(
-        source.children[1] == plan.dispatch,
-        "body_dispatch_is_not_after_entry_prefix"
+        dispatch_index > 0 && dispatch_index + 1 < source.children.len(),
+        "body_requires_entry_prefix_and_tail"
     );
     let dispatch = &f.regions[plan.dispatch.0 as usize];
     let decision = dispatch
@@ -85,27 +92,50 @@ fn candidate(
         return Ok(Err("body_follow_unavailable"));
     };
     require!(
-        f.regions[source.children[2].0 as usize].entry == Some(follow),
+        f.regions[source.children[dispatch_index + 1].0 as usize].entry == Some(follow),
         "body_tail_does_not_start_at_original_merge"
     );
-    let prefix = source.children[0];
-    let RegionKind::Block(prefix_node) = f.regions[prefix.0 as usize].kind else {
-        return Ok(Err("body_entry_prefix_is_not_one_block"));
+    let prefix = &source.children[..dispatch_index];
+    let mut prefix_nodes = Vec::new();
+    for &control in prefix {
+        for &node in f.members(control)? {
+            push(&mut prefix_nodes, node)?;
+        }
+    }
+    let Some(&first) = prefix_nodes.first() else {
+        return Ok(Err("body_entry_prefix_is_empty"));
     };
     require!(
-        prefix_node == NodeId(0)
-            && !f.nodes[prefix_node.0 as usize].terminal
-            && graph.incoming[0].is_empty(),
+        first == NodeId(0) && graph.incoming[0].is_empty(),
         "body_entry_prefix_has_other_arrivals"
     );
-    let [entry_link] = graph.outgoing[prefix_node.0 as usize].as_slice() else {
-        return Ok(Err("body_entry_prefix_has_multiple_exits"));
-    };
-    require!(
-        f.links[entry_link.0 as usize].to == decision.tests[0].predicate
-            && f.link_plans[entry_link.0 as usize].copies.is_empty(),
-        "body_entry_prefix_does_not_enter_dispatch"
-    );
+    let block = f.nodes[first.0 as usize].block;
+    let mut previous = None;
+    for (index, &node) in prefix_nodes.iter().enumerate() {
+        require!(
+            !f.nodes[node.0 as usize].terminal && f.nodes[node.0 as usize].block == block,
+            "body_entry_prefix_is_not_a_straight_original_block"
+        );
+        if let Some(previous) = previous {
+            require!(
+                graph.incoming[node.0 as usize].as_slice() == [previous],
+                "body_entry_prefix_has_other_arrivals"
+            );
+        }
+        let [link] = graph.outgoing[node.0 as usize].as_slice() else {
+            return Ok(Err("body_entry_prefix_has_multiple_exits"));
+        };
+        let target = prefix_nodes
+            .get(index + 1)
+            .copied()
+            .unwrap_or(decision.tests[0].predicate);
+        require!(
+            f.links[link.0 as usize].to == target
+                && f.link_plans[link.0 as usize].copies.is_empty(),
+            "body_entry_prefix_does_not_enter_dispatch"
+        );
+        previous = Some(*link);
+    }
     require!(
         decision
             .tests
@@ -154,7 +184,11 @@ fn candidate(
         .ok_or(bug("suspension dispatch lost its selector"))?;
     let label_read =
         definition_op(storage, selector).ok_or(bug("suspension label lost its definition"))?;
-    let prefix_range = f.nodes[prefix_node.0 as usize].operations.clone();
+    let last = *prefix_nodes
+        .last()
+        .ok_or(bug("established prefix lost its last portion"))?;
+    let prefix_range =
+        f.nodes[first.0 as usize].operations.start..f.nodes[last.0 as usize].operations.end;
     require!(
         prefix_range.contains(&marker.0) && prefix_range.contains(&label_read.0),
         "body_marker_or_label_is_outside_entry_prefix"
@@ -266,7 +300,9 @@ fn candidate(
         "body_protocol_value_escapes_into_readable_code"
     );
     let mut protocol_nodes = filled(f.nodes.len(), false)?;
-    protocol_nodes[prefix_node.0 as usize] = true;
+    for &node in &prefix_nodes {
+        protocol_nodes[node.0 as usize] = true;
+    }
     for test in &decision.tests {
         protocol_nodes[test.predicate.0 as usize] = true;
     }
@@ -331,12 +367,12 @@ fn candidate(
     }
     let mut sequence = Vec::new();
     push(&mut sequence, initial)?;
-    for &body in &source.children[2..] {
+    for &body in &source.children[dispatch_index + 1..] {
         push(&mut sequence, body)?;
     }
     Ok(Ok(CoroutineBodyPlan {
         root,
-        prefix,
+        prefix: super::super::build::copy(prefix)?,
         dispatch: plan.dispatch,
         initial,
         invalid,

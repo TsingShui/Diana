@@ -78,3 +78,10 @@ pub(super) fn id(n: usize) -> Result<u32, RegionError> {
 pub(super) fn bug(s: &'static str) -> RegionError {
     RegionError::InternalInvariant(s)
 }
+
+pub(super) fn copy<T: Copy>(source: &[T]) -> Result<Vec<T>, RegionError> {
+    let mut out = Vec::new();
+    crate::substrate::owned::reserve(&mut out, source.len())?;
+    out.extend_from_slice(source);
+    Ok(out)
+}

@@ -214,6 +214,11 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
     }
 
     pub fn assignment(&mut self, s: &Statement) -> Result<(), RenderError> {
+        if let Some(publication) = self.code.result_publication(s.id) {
+            self.local(publication.destination)?;
+            self.out.put(" = ")?;
+            return Ok(());
+        }
         let deferred = self.deferred_publication(s);
         let mut first = true;
         for definition in &s.outputs {

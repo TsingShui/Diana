@@ -180,6 +180,30 @@ impl Expressions<'_, '_> {
         s: &Statement,
         start: TextOffset,
     ) -> Result<(), RenderError> {
+        if let Some(publication) = &original.publication {
+            self.out.span(
+                start,
+                Origin::Copy {
+                    method: self.method,
+                    copy: publication.copy,
+                },
+            )?;
+            self.out.span(
+                start,
+                Origin::Transfer {
+                    method: self.method,
+                    transfer: publication.transfer,
+                },
+            )?;
+            self.out.span(
+                self.out.position(),
+                Origin::Expression {
+                    method: self.method,
+                    expression: publication.source,
+                },
+            )?;
+        }
+
         self.out.span(
             start,
             Origin::Statement {

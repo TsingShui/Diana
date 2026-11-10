@@ -8,6 +8,8 @@ use crate::p2::{EdgeRole, NormalEdge};
 use crate::p5::StorageMethod;
 use crate::recovery::{ConditionElse, Finally, IfShape, LoopPlacement, Predicate};
 
+mod protocol;
+
 pub(super) fn construct(
     storage: &StorageMethod<'_>,
     facts: &mut RegionFacts,
@@ -15,9 +17,21 @@ pub(super) fn construct(
 ) -> Result<(), RegionError> {
     for region in &facts.regions {
         let layout = layout(storage, facts, graph, region)?;
-        push(&mut facts.controls, layout)?;
+        push(
+            &mut facts.controls,
+            crate::recovery::ControlRecord {
+                layout,
+                children: super::build::copy(&region.children)?.into(),
+                source: Some(region.id),
+                source_only: Vec::new().into(),
+                end: None,
+                continuation: None,
+                entry: region.entry,
+                follow: region.follow,
+            },
+        )?;
     }
-    Ok(())
+    protocol::construct(storage, facts, graph)
 }
 
 fn child(region: &Region, index: usize) -> Result<RegionId, RegionError> {
@@ -154,6 +168,7 @@ fn layout(
                 },
             };
             ControlLayout::Loop {
+                continue_target: facts.loops[id.0 as usize].continue_target(),
                 body: child(region, 0)?,
                 placement,
             }

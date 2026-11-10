@@ -6,14 +6,7 @@ use super::*;
 /// A break or continue whose target is already the innermost enclosing scope
 /// needs no label. The printed nesting then matches the original target.
 pub(super) fn unlabel_inner_scopes(code: &mut MethodCode) -> Result<(), ExpressionError> {
-    let mut parent: Vec<Option<ControlId>> = filled(code.controls.len(), None)?;
-    for control in &code.controls {
-        for &child in &control.source_children {
-            *parent
-                .get_mut(child.0 as usize)
-                .ok_or(bug("control names an unknown child"))? = Some(control.id);
-        }
-    }
+    let parent = super::sequence::parents(code)?;
     let mut owner: Vec<Option<ControlId>> = filled(code.labels.len(), None)?;
     for label in &code.labels {
         *owner

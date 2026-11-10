@@ -10,6 +10,7 @@ use serde::Serialize;
 pub enum CopyEmission {
     Original,
     Construction(ConstructionId),
+    Publication(crate::p2::OpId),
     SyncExit(ControlId),
 }
 #[derive(Debug, Serialize)]
@@ -86,6 +87,7 @@ pub(super) fn construct(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> 
             .ok_or(bug("copy lost its P6 emission owner"))?;
         let emission = match owner.owner {
             CopyOwner::Original => CopyEmission::Original,
+            CopyOwner::Publication(op) => CopyEmission::Publication(op),
             CopyOwner::Construction(g) => CopyEmission::Construction(ConstructionId(g.0)),
             CopyOwner::SynchronizedExit(s) => CopyEmission::SyncExit(
                 c.syncs[s.0 as usize].ok_or(bug("copy names an unselected synchronized scope"))?,

@@ -19,7 +19,7 @@ fn recovered(facts: &RegionFacts, code: &MethodCode, rendered: &Rendered) {
     let plan = facts.coroutine_loop().expect("a closed normal-run loop");
     let owned = code
         .emission()
-        .coroutine_loop()
+        .protocol()
         .expect("the delivered final layout");
     let nodes: Vec<_> = plan
         .initial()
@@ -88,11 +88,7 @@ fn private_suspend_call_restores_the_original_total_loop() {
         |facts, code, rendered| {
             recovered(facts, code, rendered);
             assert_eq!(
-                code.emission()
-                    .coroutine_loop()
-                    .unwrap()
-                    .forwarded_copies
-                    .len(),
+                code.emission().protocol().unwrap().forwarded_copies.len(),
                 3
             );
             let source = executable(rendered.text());
@@ -159,7 +155,7 @@ fn divergent_spills_and_resumed_effects_keep_available_explicit_code() {
                     facts.coroutine_loop().is_none(),
                     "{name}: no source-body correspondence"
                 );
-                assert!(code.emission().coroutine_loop().is_none());
+                assert!(code.emission().protocol().is_none());
                 assert!(rendered.text().contains("graph<Irreducible>"));
                 assert!(rendered.text().contains("SuspendLoop.load("));
                 assert!(rendered.text().contains("throwOnFailure("));

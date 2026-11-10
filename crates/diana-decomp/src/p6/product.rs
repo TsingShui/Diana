@@ -78,7 +78,7 @@ pub enum TerminalOwner {
     SwitchSelector(RegionId),
     SynchronizedExit(SyncId),
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, serde::Serialize, Eq, PartialEq)]
 pub enum Continuation {
     None,
     Parent,
@@ -398,6 +398,7 @@ impl EdgePlan {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CopyOwner {
     Original,
+    Publication(OpId),
     Construction(GroupId),
     SynchronizedExit(SyncId),
 }
@@ -1077,7 +1078,7 @@ impl CoroutineOperation {
 #[derive(Debug)]
 pub struct CoroutineBodyPlan {
     pub(super) root: RegionId,
-    pub(super) prefix: RegionId,
+    pub(super) prefix: Vec<RegionId>,
     pub(super) dispatch: RegionId,
     pub(super) initial: RegionId,
     pub(super) resume: RegionId,
@@ -1100,6 +1101,9 @@ pub struct CoroutineLoopPlan {
     pub(super) call: OpId,
     pub(super) continuation_argument: u32,
     pub(super) state: i32,
+    pub(super) guard: NodeId,
+    pub(super) normal: LinkId,
+    pub(super) suspended: LinkId,
     pub(super) protocol_operations: Vec<OpId>,
     pub(super) normal_links: Vec<LinkId>,
     pub(super) spills: Vec<(OpId, OpId)>,
@@ -1292,8 +1296,8 @@ impl CoroutineBodyPlan {
     pub fn root(&self) -> RegionId {
         self.root
     }
-    pub fn prefix(&self) -> RegionId {
-        self.prefix
+    pub fn prefix(&self) -> &[RegionId] {
+        &self.prefix
     }
     pub fn dispatch(&self) -> RegionId {
         self.dispatch
@@ -1338,7 +1342,8 @@ impl LockEntries {
     }
 }
 pub struct RegionFacts {
-    pub(super) controls: Vec<ControlLayout>,
+    pub(super) controls: Vec<crate::recovery::ControlRecord>,
+    pub(super) protocol: Option<ProtocolPlan>,
     pub(super) lock_entries: LockEntries,
     pub(super) suspensions: Vec<SuspensionPlan>,
     pub(super) coroutine_body: Option<CoroutineBodyPlan>,
@@ -1370,9 +1375,37 @@ pub struct RegionFacts {
     pub(super) operation_owners: Vec<OperationOwner>,
     pub(super) terminal_owners: Vec<TerminalOwner>,
 }
+
+/// Protocol facts supplement the same control grammar. They do not carry a
+/// second loop/body/flow executable layout.
+pub(crate) struct ProtocolPlan {
+    pub root: RegionId,
+    pub calls: Vec<ProtocolCall>,
+    pub operations: Vec<OpId>,
+    pub source_nodes: Vec<NodeId>,
+    pub abi_entries: Vec<NodeId>,
+    pub hidden_locals: Vec<crate::p5::LocalId>,
+}
+#[derive(Clone, Copy)]
+pub(crate) struct ProtocolCall {
+    pub call: OpId,
+    pub continuation_argument: u32,
+    pub state: i32,
+    pub guard: NodeId,
+    pub predicate: BlockId,
+    pub normal: LinkId,
+    pub suspended: LinkId,
+    pub publication: Option<(PlanId, crate::p5::LocalId)>,
+}
 impl RegionFacts {
-    pub fn controls(&self) -> &[ControlLayout] {
+    pub fn control_root(&self) -> Option<RegionId> {
+        self.protocol.as_ref().map(|p| p.root).or(self.root)
+    }
+    pub fn controls(&self) -> &[crate::recovery::ControlRecord] {
         &self.controls
+    }
+    pub(crate) fn protocol(&self) -> Option<&ProtocolPlan> {
+        self.protocol.as_ref()
     }
     pub fn coroutine_body(&self) -> Option<&CoroutineBodyPlan> {
         self.coroutine_body.as_ref()
@@ -1389,6 +1422,7 @@ impl RegionFacts {
     pub(super) fn empty() -> Self {
         Self {
             controls: Vec::new(),
+            protocol: None,
             suspensions: Vec::new(),
             coroutine_body: None,
             coroutine_loop: None,

@@ -160,7 +160,7 @@ impl Expressions<'_, '_> {
             && self
                 .code
                 .emission()
-                .coroutine_flow()
+                .protocol()
                 .is_some_and(|f| f.abi_entries.contains(&node))
         {
             self.out.indent()?;
@@ -230,16 +230,14 @@ impl Expressions<'_, '_> {
                 }
             }
         }
-        if let Some(site) = self
-            .code
-            .emission()
-            .coroutine_flow()
-            .and_then(|f| f.sites.iter().find(|p| p.guard == node))
-        {
-            return self.coroutine_guard(site);
-        }
         match &b.end {
             BlockEnd::None => Ok(()),
+            BlockEnd::Annotated {
+                terminal,
+                mode,
+                normal,
+                suspended,
+            } => self.annotated_terminal(*terminal, *mode, *normal, *suspended),
             BlockEnd::Terminal(t) => {
                 let previous = self.out.origin_only;
                 self.out.origin_only |= self.code.emission().origin_only_terminal(*t);

@@ -891,82 +891,56 @@ bits and an integral view. Other bit-pattern literals keep their supplied views.
 
 ## Suspension surfaces
 
-P7 installs a suspension surface only from P6's closed `CoroutineBodyPlan`,
-`CoroutineLoopPlan` or `CoroutineFlowPlan`. A flow may additionally carry
-P6's `CoroutineCyclePlan`.
+P7 consumes P6's complete common control records and established protocol
+associations. It keeps one `Control` arena and one `Protocol` metadata record,
+with calls, implicit continuation occurrences, ABI entries and selected copy
+forwarding. Body, single-site loop and multi-site recognition remain P6 facts;
+P7 publishes no separate executable body/loop/flow layout.
 
-`CoroutineFlow` consumes P6's existing source-control order, guard/call
-associations and ABI partition. A guard carries its original normal transfer:
-P9 comments the marker predicate at that source position, then executes the
-supplied copies. Shared and private marker returns remain original ABI nodes.
-Source/ABI controls use the ordinary traversal with disjoint control anchors.
-P7 MUST retain every projected call, continuation occurrence and state/spill
-barrier against generic expression or check relocation. It runs no register
-replay, region composition or upstream analysis.
-A cyclic flow keeps the same source/ABI partition. P7 installs the delivered
-header as the loop test, marks the implicit latch and initial-header links as
-fallthrough, and retains the original exit predicate copies. It MUST NOT choose
-a latch, retarget a transfer or move an interior resume corridor. Predicate
-blocks that P6 split at a partition boundary keep their original terminal and
-both display arms, so a repeated-body exit that leaves the selected cycle stays
-an explicit transfer to its original target.
+Original controls retain source topology and semantic metadata. Selected children
+follow P6's common grammar; appended compounds have no second source parent.
+Sequencing/label consumers construct their parent index from the selected root,
+not by treating every retained source container as an executable owner. Unselected
+original containers retain individual origin associations without executing their
+children. Allocation is fallible and traversal is iterative, bounded by the
+published static structure. A missing required coordinate retains the existing
+method-private construction stop, not a reconstruction retry.
 
-A local `SuspensionPlan` without that body product leaves the original header,
-call, marker branch and dispatch untouched. P7 MUST NOT discover a body from
-names, metadata or text, or walk a graph to find another tail.
+A `Scope` names code, ABI or origin presentation. An annotated block completion
+retains its original terminal and marker edge and selects the supplied normal
+transfer. Ordinary Loop records retain their original predicate, continuation
+target and repeated/exit roles. P7 MUST NOT choose a latch, rematch a marker or
+retarget a resume corridor. A local `SuspensionPlan` without a closed source-body
+product leaves the original header, call, marker branch and dispatch available.
 
-`CoroutineBody` owns the original ABI prefix, dispatch, resume/error controls
-and protocol operation roles. The root's selected child list uses P6's initial
-body and common-tail order; the source control tree remains original scope
-evidence. The member name, ABI argument, initial failure check, wrappers and
-class remain present. The original resume and invalid-state bodies are readable
-comment-only attachments, not a second executable schedule.
+The original call remains at its statement with the same receiver, visible
+arguments, target, site and result-commit identity. Only its matched continuation
+occurrence becomes implicit. `Operation::publication` names the existing successful
+result storage, copy, transfer and copy-source expression. Original output
+definitions remain provenance. `CopyEmission::Publication(call)` excludes that
+bundle from independently executed edge/body phases; the resume attachment keeps
+its original failure check and copy to the same storage.
 
-The call stays at its original statement with the same receiver, visible
-arguments, target, site and result-commit identity. Its one matched continuation
-read becomes implicit. Normal completion publishes the original normal-copy
-target; the original resume attachment retains its failure check and copy to
-that same target. The original call-result local and private protocol locals
-need no executable declaration, but remain owned source facts.
+Protocol state/spill events become ordered `BodyAction::AbiOperation` barriers.
+P7 MUST preserve their position when covering expressions or cast carriers. A
+producer before state publication cannot move into a call after it. A suspension
+cannot become another producer's nested evaluation, and a preceding cast cannot
+acquire its implicit continuation as a carrier. Code and ABI visibility consume
+the same owned observer query; construction arguments and selected copies retain
+their actual storage observers.
 
-The state-publication statement becomes `BodyAction::AbiOperation`, not a removed
-action. P7 MUST preserve it as an adjacency barrier: a receiver or argument
-producer before the write cannot move into the call after that write. Ordinary
-producer composition cannot move the suspension itself or replace its owned
-result/route. A preceding cast cannot acquire the implicit continuation occurrence
-as its carrier. Array and cast action filtering retain ABI operations.
+P7 can forward a loop-local normal copy only when every executable destination
+read follows it and precedes a source write in the same iteration. Outside reads,
+other destination writes, parallel saves, copy-carried checks and alias cycles
+reject forwarding. This existing per-copy proof consumes original P5 accesses
+and P6's supplied interval order; it is not register replay. `ProtocolCopy` keeps
+original step/storage/read identities. P9 consumes the chosen spelling without
+establishing another alias. ABI attachments keep original names and copies.
 
-Pair predicates retain an `EqualityKind` from their existing operand views.
-Reference equality is identity, not an inferred `equals` call. Only established
-integral views select primitive equality; missing or incompatible representations
-remain Unknown. P9 consumes this distinction without solving operand types.
-
-The suspension's marker predicate/return use `EmissionLayout::Suspension`; its
-children are not also printed as executable code and are not transparent jump
-entries. The original transfers, copies, terminals and scopes remain available.
-
-`CoroutineLoop` owns P6's initial/body/exit and ABI node orders and the supplied
-head predicate polarity. Original block controls still open and close through
-the ordinary emission traversal, including deferred expression-control origins.
-P7 MUST retain original operation and terminal phases and may select fallthrough
-only for P6's delivered normal-run links. ABI branches retain their explicit
-destinations. P7 delivers the original ABI targets inside the source order so
-P9 can show their correspondence without inventing labels or transfers.
-
-P7 can forward a loop-local normal copy to its original source storage when
-every executable destination read follows that copy and precedes any source
-write in the same iteration. Reads outside the repeated body, other destination
-writes, parallel saves, copy-carried checks, and alias cycles reject forwarding.
-This per-copy spelling proof consumes original P5 accesses and the selected
-order; it is not a method register tracker or execution replay. `CoroutineCopy`
-retains the copy step, source occurrence, and original storage identities.
-P9 omits only that store and uses the supplied source spelling on executable
-reads. ABI attachments retain the original copies and names. Original check
-carriers and effectful argument preparation remain at their existing positions.
-`kotlin_continuation_view` selects Kotlin body grammar only for this closed
-alternative. Its declaration keeps the existing signature format with an added
-`suspend` modifier, not a new signature style. It is not a claim that the original source lambda declaration or
-external callee implementation has been established.
+`kotlin_continuation_view` selects Kotlin body grammar for the closed alternative.
+The declaration retains its original signature style with an inferred `suspend`
+modifier. Reference predicate equality retains identity semantics; missing operand
+interpretation remains Unknown rather than adding `equals` or null checks.
 
 ## Failure and evidence
 

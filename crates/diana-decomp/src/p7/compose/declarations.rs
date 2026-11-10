@@ -84,10 +84,14 @@ impl Layout {
                 EmissionLayout::Graph => {
                     // Explicit entries and jumps do not establish lexical first assignment.
                 }
-                EmissionLayout::Suspension { .. } => {
-                    // The selected protocol surface prints no child declaration;
-                    // its call statement keeps its own ordinary block action.
+                EmissionLayout::Scope {
+                    body,
+                    mode: SourceMode::Code,
+                    ..
+                } => {
+                    push(&mut work, Event::Control(*body, scope, declarations))?;
                 }
+                EmissionLayout::Scope { .. } => {}
                 EmissionLayout::Sequence | EmissionLayout::Labelled => {
                     let nested = control.label_required
                         || matches!(control.layout, EmissionLayout::Labelled)
@@ -152,7 +156,9 @@ impl Layout {
                         }
                     }
                 }
-                EmissionLayout::Loop { body, placement } => match placement {
+                EmissionLayout::Loop {
+                    body, placement, ..
+                } => match placement {
                     LoopPlacement::Infinite => push(&mut work, Event::Nested(*body, declarations))?,
                     LoopPlacement::While { predicate, .. } => {
                         push(&mut work, Event::Nested(*body, declarations))?;

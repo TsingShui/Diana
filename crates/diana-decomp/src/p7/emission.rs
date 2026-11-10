@@ -45,6 +45,12 @@ pub enum BlockEnd {
     None,
     Terminal(BlockId),
     Transfers(Vec<TransferId>),
+    Annotated {
+        terminal: BlockId,
+        mode: SourceMode,
+        normal: TransferId,
+        suspended: TransferId,
+    },
 }
 /// The exact printed carrier scope that shows an original `check-cast` instead
 /// of its own statement. A check writes no register, so only a read of the
@@ -127,6 +133,7 @@ pub type PredicateEmission = crate::recovery::Predicate;
 pub type LoopPlacement = crate::recovery::LoopPlacement;
 pub type ConditionElse = crate::recovery::ConditionElse;
 pub type EmissionLayout = crate::recovery::ControlLayout;
+pub use crate::recovery::SourceMode;
 pub type FinallyEmission = crate::recovery::Finally;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -163,10 +170,9 @@ pub enum LocalSpelling {
 /// records remain evidence, not additional schedules to emit alongside this one.
 #[derive(Debug, Serialize)]
 pub struct EmissionPlan {
-    pub(super) suspensions: Vec<Suspension>,
-    pub(super) coroutine_body: Option<CoroutineBody>,
-    pub(super) coroutine_loop: Option<CoroutineLoop>,
-    pub(super) coroutine_flow: Option<CoroutineFlow>,
+    pub(super) protocol: Option<Protocol>,
+    /// Unselected original containers retain identities without executing children.
+    pub(super) control_origins: Vec<ControlId>,
     pub(super) local_types: Vec<LocalSpelling>,
     pub(super) boolean_uses: Vec<bool>,
     pub(super) boolean_locals: Vec<bool>,
@@ -260,52 +266,29 @@ impl EmissionPlan {
             .unwrap_or(false)
     }
     pub fn kotlin_continuation_view(&self) -> bool {
-        self.coroutine_body.is_some()
-            || self.coroutine_loop.is_some()
-            || self.coroutine_flow.is_some()
+        self.protocol.is_some()
     }
-    pub fn coroutine_body(&self) -> Option<&CoroutineBody> {
-        self.coroutine_body.as_ref()
-    }
-    pub fn coroutine_loop(&self) -> Option<&CoroutineLoop> {
-        self.coroutine_loop.as_ref()
-    }
-    pub fn coroutine_flow(&self) -> Option<&CoroutineFlow> {
-        self.coroutine_flow.as_ref()
+    pub fn protocol(&self) -> Option<&Protocol> {
+        self.protocol.as_ref()
     }
     pub fn implicit_continuation(&self, expression: ExprId) -> Option<(u32, ExprId)> {
-        self.suspension_call(expression)
+        self.protocol
+            .as_ref()?
+            .calls
+            .iter()
+            .find(|p| p.expression == expression)
             .map(|p| (p.continuation_argument, p.continuation))
-            .or_else(|| {
-                self.coroutine_loop
-                    .as_ref()
-                    .filter(|p| p.expression == expression)
-                    .map(|p| (p.continuation_argument, p.continuation))
-            })
-            .or_else(|| {
-                self.coroutine_flow
-                    .as_ref()?
-                    .sites
-                    .iter()
-                    .find(|p| p.expression == expression)
-                    .map(|p| (p.continuation_argument, p.continuation))
-            })
-    }
-    pub fn suspensions(&self) -> &[Suspension] {
-        &self.suspensions
     }
     pub fn suspension(&self, op: OpId) -> Option<&Suspension> {
-        self.suspensions.iter().find(|s| s.call == op)
+        self.protocol.as_ref()?.calls.iter().find(|p| p.call == op)
     }
-    pub fn suspension_call(&self, expression: ExprId) -> Option<&Suspension> {
-        self.suspensions.iter().find(|s| s.expression == expression)
+    pub fn control_origins(&self) -> &[ControlId] {
+        &self.control_origins
     }
     pub(super) fn empty() -> Self {
         Self {
-            suspensions: Vec::new(),
-            coroutine_body: None,
-            coroutine_loop: None,
-            coroutine_flow: None,
+            protocol: None,
+            control_origins: Vec::new(),
             local_types: Vec::new(),
             boolean_uses: Vec::new(),
             boolean_locals: Vec::new(),

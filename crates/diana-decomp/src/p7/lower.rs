@@ -449,6 +449,7 @@ pub(super) fn original_operations(c: &mut Context<'_, '_>) -> Result<(), Express
                 body: None,
                 emission: Emission::Block { node },
                 nested_at: None,
+                publication: None,
             },
         )?;
     }

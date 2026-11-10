@@ -23,8 +23,8 @@ fn two_sites_keep_the_original_negative_branch_and_call_order() {
             let plan = facts
                 .coroutine_flow()
                 .expect("closed multi-site source body");
-            let flow = code.emission().coroutine_flow().unwrap();
-            assert_eq!(flow.sites.len(), 2);
+            let flow = code.emission().protocol().unwrap();
+            assert_eq!(flow.calls.len(), 2);
             assert_eq!(
                 plan.source_nodes().len() + plan.abi().len(),
                 facts.nodes().len()
@@ -39,15 +39,38 @@ fn two_sites_keep_the_original_negative_branch_and_call_order() {
             assert!(source.find("SuspendBranch.record(").unwrap() < source.find(" < 0)").unwrap());
             assert!(source.contains("Boxing.boxInt(-1)"));
             assert!(source.contains("var ") && source.contains(": kotlin.Int"));
-            for site in &flow.sites {
-                let BlockEnd::Transfers(links) =
-                    &code.emission().blocks()[site.guard.0 as usize].end
+            for site in plan.sites() {
+                let BlockEnd::Annotated {
+                    terminal,
+                    normal,
+                    suspended,
+                    ..
+                } = &code.emission().blocks()[site.guard().0 as usize].end
                 else {
-                    panic!("guard owns one original normal transfer");
+                    panic!("guard owns original correspondence and the normal transfer");
                 };
-                assert_eq!(links.as_slice(), [site.normal]);
-                assert_eq!(rendered.spans().iter().filter(|s|matches!(s.origin,Origin::Terminal{block,..}if block==site.predicate)).count(),1);
-                assert_eq!(rendered.spans().iter().filter(|s|matches!(s.origin,Origin::Transfer{transfer,..}if transfer==site.normal)).count(),1);
+                assert_eq!(normal.0, site.normal().0);
+                assert_eq!(suspended.0, site.suspended().0);
+                assert_eq!(
+                    rendered
+                        .spans()
+                        .iter()
+                        .filter(
+                            |s| matches!(s.origin,Origin::Terminal{block,..}if block==*terminal)
+                        )
+                        .count(),
+                    1
+                );
+                assert_eq!(
+                    rendered
+                        .spans()
+                        .iter()
+                        .filter(
+                            |s| matches!(s.origin,Origin::Transfer{transfer,..}if transfer==*normal)
+                        )
+                        .count(),
+                    1
+                );
             }
             for &op in plan.protocol_operations() {
                 let node = code.operations()[op.0 as usize].node;
@@ -79,7 +102,7 @@ fn three_sites_keep_two_captures_and_both_early_returns() {
                 2
             );
             let source = executable(rendered.text());
-            assert!(code.emission().coroutine_flow().is_some());
+            assert!(code.emission().protocol().is_some());
             assert_eq!(source.matches("SuspendThree.load(").count(), 3);
             assert_eq!(source.matches("SuspendThree.record(").count(), 3);
             assert!(source.contains(" < 0)") && source.contains(" == 0)"));
@@ -98,7 +121,7 @@ fn normal_only_effect_cannot_become_shared_source_work() {
         "(ILkotlin/coroutines/Continuation;)Ljava/lang/Object;",
         |facts, code, rendered| {
             assert!(facts.coroutine_flow().is_none());
-            assert!(code.emission().coroutine_flow().is_none());
+            assert!(code.emission().protocol().is_none());
             assert!(rendered.text().contains("switch ("));
             assert!(rendered.text().contains("SuspendThree.record(777)"));
             assert!(
@@ -119,7 +142,7 @@ fn compiled_fetch_and_private_marker_returns_consume_selected_guard_owners() {
         "(ILkotlin/coroutines/Continuation;)Ljava/lang/Object;",
         |facts, code, rendered| {
             assert_eq!(facts.coroutine_flow().unwrap().sites().len(), 2);
-            assert_eq!(code.emission().coroutine_flow().unwrap().sites.len(), 2);
+            assert_eq!(code.emission().protocol().unwrap().calls.len(), 2);
             let source = executable(rendered.text());
             assert!(source.contains("suspend java.lang.Object fetch("));
             assert_eq!(source.matches("this.load(").count(), 2);
@@ -134,7 +157,7 @@ fn compiled_fetch_and_private_marker_returns_consume_selected_guard_owners() {
         "(ILkotlin/coroutines/Continuation;)Ljava/lang/Object;",
         |facts, code, rendered| {
             assert_eq!(facts.coroutine_flow().unwrap().sites().len(), 3);
-            assert_eq!(code.emission().coroutine_flow().unwrap().sites.len(), 3);
+            assert_eq!(code.emission().protocol().unwrap().calls.len(), 3);
             assert_eq!(
                 executable(rendered.text())
                     .matches("SuspendThree.load(")
@@ -143,8 +166,8 @@ fn compiled_fetch_and_private_marker_returns_consume_selected_guard_owners() {
             );
             assert!(!executable(rendered.text()).contains("switch ("));
             assert!(rendered.text().matches("// ABI: return ").count() >= 3);
-            for site in &code.emission().coroutine_flow().unwrap().sites {
-                for id in [site.normal, site.suspended] {
+            for site in facts.coroutine_flow().unwrap().sites() {
+                for id in [site.normal(), site.suspended()] {
                     let destination = code.transfers()[id.0 as usize].destination;
                     assert!(
                         rendered
@@ -170,7 +193,7 @@ fn sparse_non_monotone_states_do_not_reintroduce_dispatch_context() {
                 plan.sites().iter().map(|s| s.state()).collect::<Vec<_>>(),
                 [9, 2, 5]
             );
-            assert_eq!(code.emission().coroutine_flow().unwrap().sites.len(), 3);
+            assert_eq!(code.emission().protocol().unwrap().calls.len(), 3);
             let source = executable(rendered.text());
             assert_eq!(source.matches("SuspendThree.load(").count(), 3);
             assert!(

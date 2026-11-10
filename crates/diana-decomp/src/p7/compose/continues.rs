@@ -6,14 +6,7 @@ use super::*;
 /// A continue that ends the loop body means the same as reaching the body end:
 /// the predicate runs next. Copies attached to the transfer keep it explicit.
 pub(super) fn drop_trailing_continues(code: &mut MethodCode) -> Result<(), ExpressionError> {
-    let mut parent: Vec<Option<ControlId>> = filled(code.controls.len(), None)?;
-    for control in &code.controls {
-        for &child in &control.source_children {
-            *parent
-                .get_mut(child.0 as usize)
-                .ok_or(bug("control names an unknown child"))? = Some(control.id);
-        }
-    }
+    let parent = super::sequence::parents(code)?;
     let mut owner: Vec<Option<ControlId>> = filled(code.labels.len(), None)?;
     for label in &code.labels {
         *owner

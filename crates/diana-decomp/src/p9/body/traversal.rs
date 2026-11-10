@@ -17,150 +17,15 @@ impl Expressions<'_, '_> {
             self.out.put("\n")?;
         }
         let mut work = Vec::new();
-        if let Some(flow) = self.code.emission().coroutine_flow() {
-            push(&mut work, Event::CoroutineFlowControls)?;
-            if let Some(cycle) = &flow.cycle {
-                for &id in cycle.tail.iter().rev() {
-                    push(&mut work, Event::Control(id))?;
-                }
-                push(&mut work, Event::Close)?;
-                for &id in cycle.body.iter().rev() {
-                    push(&mut work, Event::Control(id))?;
-                }
-                push(&mut work, Event::CoroutineLoopHead(cycle.test))?;
-                push(
-                    &mut work,
-                    Event::Control(crate::p7::ControlId(cycle.header.0)),
-                )?;
-                for &id in cycle.initial.iter().rev() {
-                    push(&mut work, Event::Control(id))?;
-                }
-            } else {
-                for &id in flow.source.iter().rev() {
-                    push(&mut work, Event::Control(id))?;
-                }
-            }
-            push(&mut work, Event::AbiMode(false))?;
-            for &node in flow.abi.iter().rev() {
-                push(&mut work, Event::Control(crate::p7::ControlId(node.0)))?;
-            }
-            push(&mut work, Event::AbiMode(true))?;
-        } else if let Some(body) = self.code.emission().coroutine_loop() {
-            push(&mut work, Event::CoroutineControls)?;
-            for &node in body.tail.iter().rev() {
-                push(&mut work, Event::Control(crate::p7::ControlId(node.0)))?;
-                if body.abi_entries.contains(&node) {
-                    push(&mut work, Event::CoroutineEntry(node))?;
-                }
-            }
-            push(&mut work, Event::Close)?;
-            for &node in body.body.iter().rev() {
-                push(&mut work, Event::Control(crate::p7::ControlId(node.0)))?;
-                if body.abi_entries.contains(&node) {
-                    push(&mut work, Event::CoroutineEntry(node))?;
-                }
-            }
-            push(&mut work, Event::CoroutineLoopHead(body.test))?;
-            push(
-                &mut work,
-                Event::Control(crate::p7::ControlId(body.header.0)),
-            )?;
-            for &node in body.initial.iter().rev() {
-                push(&mut work, Event::Control(crate::p7::ControlId(node.0)))?;
-                if body.abi_entries.contains(&node) {
-                    push(&mut work, Event::CoroutineEntry(node))?;
-                }
-            }
-            push(&mut work, Event::AbiMode(false))?;
-            for &node in body.abi.iter().rev() {
-                push(&mut work, Event::Control(crate::p7::ControlId(node.0)))?;
-            }
-            push(&mut work, Event::AbiMode(true))?;
-        } else if let Some(root) = self.code.root() {
+        if let Some(root) = self.code.root() {
             push(&mut work, Event::Control(root))?;
-        }
-        if let Some(body) = self.code.emission().coroutine_body() {
-            push(&mut work, Event::EndAbi(body.initial))?;
-            push(&mut work, Event::Control(body.invalid))?;
-            push(
-                &mut work,
-                Event::BeginAbi("invalid-state arm", body.invalid),
-            )?;
-            push(&mut work, Event::Control(body.resume))?;
-            push(
-                &mut work,
-                Event::BeginAbi("resumed completion", body.resume),
-            )?;
-            push(&mut work, Event::AbiDispatch)?;
-            push(&mut work, Event::Control(body.prefix))?;
-            push(
-                &mut work,
-                Event::BeginAbi("entry/reentry prefix", body.prefix),
-            )?;
         }
         while let Some(event) = work.pop() {
             match event {
-                Event::AbiMode(abi) => {
-                    self.out.abi_comment = false;
-                    self.out.line(if abi {
-                        "// Diana: ABI entry/reentry, resume and invalid-state paths"
-                    } else {
-                        "// Diana: inferred suspend body; original ABI facts retained above"
-                    })?;
+                Event::Presentation { abi, origins } => {
                     self.out.abi_comment = abi;
+                    self.out.origin_only = origins;
                 }
-                Event::CoroutineLoopHead(test) => {
-                    self.out.mark_outline("loop");
-                    self.out.indent()?;
-                    self.out.put("while (")?;
-                    self.predicate(test)?;
-                    self.out.put(")")?;
-                    self.out.open()?;
-                }
-                Event::CoroutineControls => {
-                    let position = self.out.position();
-                    for control in self
-                        .code
-                        .controls()
-                        .iter()
-                        .filter(|c| !matches!(c.kind, crate::p7::ControlKind::Block { .. }))
-                    {
-                        self.out.span(
-                            position,
-                            super::super::Origin::Control {
-                                method: self.method,
-                                control: control.id,
-                            },
-                        )?;
-                    }
-                }
-                Event::CoroutineFlowControls => {
-                    let position = self.out.position();
-                    for &control in &self
-                        .code
-                        .emission()
-                        .coroutine_flow()
-                        .ok_or(RenderError::Invariant("flow anchors lost their plan"))?
-                        .anchors
-                    {
-                        self.out.span(
-                            position,
-                            super::super::Origin::Control {
-                                method: self.method,
-                                control,
-                            },
-                        )?;
-                    }
-                }
-                Event::CoroutineEntry(node) => {
-                    self.out.indent()?;
-                    self.out.put("// Diana: original ABI target ")?;
-                    self.label_name(crate::p7::LabelId(node.0))?;
-                    self.out.put("\n")?;
-                }
-                Event::BeginAbi(section, control) => self.begin_abi(section, control)?,
-                Event::EndAbi(initial) => self.end_abi(initial)?,
-                Event::AbiDispatch => self.abi_dispatch()?,
                 Event::OriginOnly(value) => self.out.origin_only = value,
                 Event::Finally => self.finally_header()?,
                 Event::Control(id) => self.control_event(&mut work, id, false)?,
@@ -196,6 +61,25 @@ impl Expressions<'_, '_> {
                 Event::Catch(id, index) => self.catch_header(id, index)?,
                 Event::Acquire(id, operation) => self.acquire_header(id, operation)?,
             }
+        }
+        for &id in self.code.emission().control_origins() {
+            let start = self.out.position();
+            if let Some(label) = self.code.controls()[id.0 as usize].entry {
+                self.out.span(
+                    start,
+                    super::super::Origin::Label {
+                        method: self.method,
+                        label,
+                    },
+                )?;
+            }
+            self.out.span(
+                start,
+                super::super::Origin::Control {
+                    method: self.method,
+                    control: id,
+                },
+            )?;
         }
         Ok(())
     }

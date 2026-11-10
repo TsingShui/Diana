@@ -284,6 +284,15 @@ pub struct Operation {
     pub emission: Emission,
     /// Sole selected nested execution owner; absence retains body placement.
     pub nested_at: Option<ExprId>,
+    /// Selected successful result publication; original definitions stay intact.
+    pub publication: Option<ResultPublication>,
+}
+#[derive(Debug, Serialize)]
+pub struct ResultPublication {
+    pub destination: StorageId,
+    pub copy: CopyPlanId,
+    pub transfer: TransferId,
+    pub source: ExprId,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]

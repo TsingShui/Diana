@@ -481,6 +481,9 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
                         Ok(None)
                     }
                     BlockEnd::None => Ok(None),
+                    BlockEnd::Annotated { .. } => {
+                        Err(Fault::Unsupported("protocol correspondence"))
+                    }
                 }
             }
             EmissionLayout::If {

@@ -49,6 +49,7 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
             placement: LoopPlacement::DoWhile {
                 predicate, test, ..
             },
+            ..
         } = code.controls[loop_id].layout
         else {
             continue;
@@ -377,7 +378,7 @@ pub(super) fn select_compact(code: &mut MethodCode) -> Result<(), ExpressionErro
                             matches!(transfer.spelling, TransferSpelling::Fallthrough)
                                 && transfer.copies.is_empty()
                         }),
-                        BlockEnd::Terminal(_) => false,
+                        BlockEnd::Terminal(_) | BlockEnd::Annotated { .. } => false,
                     };
                     if !end_empty {
                         empty = false;

@@ -9,7 +9,6 @@ use crate::p7::*;
 impl Expressions<'_, '_> {
     fn statement_content(
         &mut self,
-        op: OpId,
         s: &Statement,
         release: Option<ControlId>,
     ) -> Result<(), RenderError> {
@@ -29,9 +28,7 @@ impl Expressions<'_, '_> {
             self.out.put(")")?;
         } else {
             let statement = self.statement.replace(s.id);
-            let rendered = if let Some(plan) = self.code.emission().suspension(op) {
-                self.suspension_assignment(plan)
-            } else if self.code.emission().allocation_declaration(s.id) {
+            let rendered = if self.code.emission().allocation_declaration(s.id) {
                 self.allocation_declaration(s)
             } else {
                 self.assignment(s).and_then(|()| self.semantic(s))
@@ -43,12 +40,7 @@ impl Expressions<'_, '_> {
     }
 
     fn statement_notes(&mut self, op: OpId, s: &Statement) -> Result<(), RenderError> {
-        if let Some(site) = self
-            .code
-            .emission()
-            .coroutine_flow()
-            .and_then(|f| f.sites.iter().find(|p| p.call == op))
-        {
+        if let Some(site) = self.code.emission().suspension(op) {
             self.out.fmt(format_args!(
                 " // Diana: inferred suspension, resume state={}; ABI ",
                 site.state
@@ -57,31 +49,6 @@ impl Expressions<'_, '_> {
             let rendered = self.member(site.target, None, true);
             self.out.abi_comment = previous;
             rendered?;
-        }
-        if let Some(plan) = self
-            .code
-            .emission()
-            .coroutine_loop()
-            .filter(|p| p.call == op)
-        {
-            self.out.fmt(format_args!(
-                " // Diana: inferred suspension, resume state={}; ABI ",
-                plan.state
-            ))?;
-            let previous = std::mem::replace(&mut self.out.abi_comment, true);
-            let rendered = self.member(plan.target, None, true);
-            self.out.abi_comment = previous;
-            rendered?;
-        }
-        if let Some(plan) = self.code.emission().suspension(op) {
-            self.out.fmt(format_args!(
-                " // Diana: inferred suspension, continuation=this, resume state={}; ABI ",
-                plan.original.state()
-            ))?;
-            let previous = std::mem::replace(&mut self.out.abi_comment, true);
-            let binding = self.member(plan.target, None, true);
-            self.out.abi_comment = previous;
-            binding?;
         }
         if let Some(note) = self.generated_note(s) {
             self.out.put(" ")?;
@@ -154,7 +121,7 @@ impl Expressions<'_, '_> {
         if matches!(s.kind, StatementKind::Construction(_)) {
             self.copies(&phases.snapshots)?;
         }
-        self.statement_content(op, s, release)?;
+        self.statement_content(s, release)?;
         if !matches!(s.kind, StatementKind::Construction(_)) {
             self.phases(&phases.snapshots, "after_operands_before_effect")?;
         }

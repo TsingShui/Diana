@@ -201,7 +201,7 @@ fn candidate(
         at == header && body.len() + 1 == s.component.iter().filter(|&&c| c == component).count(),
         "loop_cycle_coverage"
     );
-    let (Some(guard), Some(suspended), Some(_normal)) = (guard, suspended, normal) else {
+    let (Some(guard), Some(suspended), Some(normal)) = (guard, suspended, normal) else {
         return Ok(Err("loop_suspension_guard_unavailable"));
     };
     let guard_block = f.nodes[guard.0 as usize].block;
@@ -661,6 +661,9 @@ fn candidate(
         )
         .map_err(|_| crate::RequestError::PlatformCapacity)?,
         state,
+        guard,
+        normal,
+        suspended,
         protocol_operations,
         normal_links,
         spills,

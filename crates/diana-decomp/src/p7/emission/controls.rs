@@ -109,7 +109,7 @@ pub(super) fn complete(
             EmissionLayout::Block(n) => match &plan.blocks[n.0 as usize].end {
                 BlockEnd::None => true,
                 BlockEnd::Transfers(ts) => ts.is_empty(),
-                BlockEnd::Terminal(_) => false,
+                BlockEnd::Terminal(_) | BlockEnd::Annotated { .. } => false,
             },
             _ => false,
         };

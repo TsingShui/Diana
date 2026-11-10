@@ -1,5 +1,5 @@
 //! Multi-site loop syntax consumes existing SCC and original transfer copies.
-use diana_decomp::p7::TransferSpelling;
+use diana_decomp::p7::{EmissionLayout, LoopPlacement, TransferSpelling};
 #[path = "support/inspection.rs"]
 mod inspection;
 use inspection::inspect;
@@ -23,19 +23,22 @@ fn two_reentries_recover_the_loop_and_keep_the_negative_exit() {
                 facts.coroutine_loop().is_none(),
                 "multi-site input must not use the single-site loop plan"
             );
-            assert!(code.emission().coroutine_loop().is_none());
             let plan = facts.coroutine_flow().unwrap();
             let cycle = plan.cycle().unwrap();
-            let owned = code
-                .emission()
-                .coroutine_flow()
-                .unwrap()
-                .cycle
-                .as_ref()
-                .unwrap();
+            let header = code
+                .controls()
+                .iter()
+                .find_map(|control| match control.layout {
+                    EmissionLayout::Loop {
+                        placement: LoopPlacement::While { predicate, .. },
+                        ..
+                    } => Some(predicate),
+                    _ => None,
+                })
+                .expect("ordinary loop control");
             assert_eq!(plan.sites().len(), 2);
             assert!(!cycle.body().is_empty());
-            assert_eq!(owned.header, cycle.header());
+            assert_eq!(header.0, cycle.header().0);
             assert!(matches!(
                 code.emission().transfers()[cycle.implicit_latch().0 as usize].spelling,
                 TransferSpelling::Fallthrough
@@ -76,7 +79,11 @@ fn checksum_captures_and_effects_stay_on_the_original_sides_of_suspension() {
                     .len()
                     >= 4
             );
-            assert!(code.emission().coroutine_flow().unwrap().cycle.is_some());
+            assert!(
+                code.controls()
+                    .iter()
+                    .any(|control| matches!(control.layout, EmissionLayout::Loop { .. }))
+            );
             let source = executable(rendered.text());
             assert!(
                 source.contains("while (")

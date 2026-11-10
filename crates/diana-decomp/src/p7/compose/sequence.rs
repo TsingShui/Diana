@@ -1,6 +1,7 @@
 //! How the selected layout prints one control after another.
 
 use super::super::*;
+use super::{bug, filled};
 
 /// Follow only layouts that print their established entry before any control
 /// action. Entering a loop, protected scope or graph can have different effects
@@ -30,10 +31,10 @@ pub(super) fn printed_entry_is(code: &MethodCode, mut current: ControlId, target
             | EmissionLayout::Condition { header, .. }
             | EmissionLayout::Switch { header, .. } => *header,
             EmissionLayout::Block(_)
+            | EmissionLayout::Scope { .. }
             | EmissionLayout::Labelled
             | EmissionLayout::Graph
             | EmissionLayout::When { .. }
-            | EmissionLayout::Suspension { .. }
             | EmissionLayout::Loop { .. }
             | EmissionLayout::Try { .. }
             | EmissionLayout::Synchronized { .. } => return false,
@@ -50,7 +51,7 @@ pub(super) fn printed_parts<'a>(
     buffer: &'a mut [ControlId],
 ) -> &'a [ControlId] {
     let parts: &[ControlId] = match &code.controls[control.0 as usize].layout {
-        EmissionLayout::Block(_) | EmissionLayout::Suspension { .. } => return &[],
+        EmissionLayout::Block(_) => return &[],
         EmissionLayout::Sequence | EmissionLayout::Labelled | EmissionLayout::Graph => {
             return code.controls[control.0 as usize].children();
         }
@@ -70,6 +71,7 @@ pub(super) fn printed_parts<'a>(
             }
             return &buffer[..2];
         }
+        EmissionLayout::Scope { body, .. } => std::slice::from_ref(body),
         EmissionLayout::When { bodies } => bodies,
         EmissionLayout::Loop { body, .. } => std::slice::from_ref(body),
         EmissionLayout::Switch { header, bodies, .. } => {
@@ -101,6 +103,7 @@ pub(super) fn printed_successor(
         if !matches!(
             layout,
             EmissionLayout::Sequence
+                | EmissionLayout::Scope { .. }
                 | EmissionLayout::Labelled
                 | EmissionLayout::Graph
                 | EmissionLayout::If { .. }
@@ -138,4 +141,31 @@ pub(super) fn contains(parent: &[Option<ControlId>], start: ControlId, target: C
         }
     }
     false
+}
+
+/// Selected static ownership is rooted in the delivered executable grammar.
+/// Original source parents describe provenance and cannot own appended compounds.
+/// This is a construction index, not another graph/dominance verification.
+pub(super) fn parents(code: &MethodCode) -> Result<Vec<Option<ControlId>>, ExpressionError> {
+    let mut parents = filled(code.controls.len(), None)?;
+    let mut work = Vec::new();
+    if let Some(root) = code.root {
+        crate::substrate::owned::push(&mut work, root)?;
+    }
+    while let Some(id) = work.pop() {
+        let control = code
+            .controls
+            .get(id.0 as usize)
+            .ok_or(bug("selected control is unavailable"))?;
+        for &child in control.children() {
+            let slot = parents
+                .get_mut(child.0 as usize)
+                .ok_or(bug("selected child is unavailable"))?;
+            if slot.replace(id).is_some() || Some(child) == code.root {
+                return Err(bug("selected control has multiple static owners"));
+            }
+            crate::substrate::owned::push(&mut work, child)?;
+        }
+    }
+    Ok(parents)
 }

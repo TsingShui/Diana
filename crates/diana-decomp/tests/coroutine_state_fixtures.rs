@@ -68,7 +68,7 @@ fn branching_resume_sites_keep_the_invalid_default_out_of_case_zero() {
             assert!(rendered.text().contains("boxInt(-1)"));
             dispatch_delivery(facts, code, rendered);
             let default = rendered.text().find("default:").unwrap();
-            if code.emission().coroutine_flow().is_some() {
+            if code.emission().protocol().is_some() {
                 // The source view retains an explicit ABI dispatch attachment,
                 // so its default still reaches the original throw, not case 0.
                 let target = code
@@ -99,7 +99,7 @@ fn resumed_failures_and_marker_returns_keep_distinct_cleanup_paths() {
         "(ILkotlin/coroutines/Continuation;)Ljava/lang/Object;",
         |facts, code, rendered| {
             assert!(facts.coroutine_loop().is_none());
-            assert!(code.emission().coroutine_loop().is_none());
+            assert!(code.emission().protocol().is_none());
             assert_eq!(rendered.text().matches("SuspendFinally.load(").count(), 2);
             assert_eq!(
                 rendered.text().matches("SuspendFinally.cleanup(").count(),
