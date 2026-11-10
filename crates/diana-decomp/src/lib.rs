@@ -1,5 +1,6 @@
 //! Native DEX analysis with caller-owned input and classified failures.
 
+mod backend;
 mod engine;
 pub(crate) use diana_facts::substrate;
 pub use diana_facts::{input, p0, p1};

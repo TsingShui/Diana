@@ -13,6 +13,7 @@ unsafe_code = "forbid"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(verus_keep_ghost)'] }
 
 [dependencies]
+dexdec = { path = "../dexdec", default-features = false }
 diana-facts = { path = "../diana-facts" }
 fastrace = { version = "0.7", optional = true }
 memchr = "2"

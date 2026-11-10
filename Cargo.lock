@@ -1338,6 +1338,7 @@ dependencies = [
 name = "diana-decomp"
 version = "0.0.0"
 dependencies = [
+ "dexdec",
  "diana-facts",
  "fastrace",
  "memchr",
