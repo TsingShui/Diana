@@ -9,6 +9,8 @@ name: Diana
 
 on:
   push:
+    branches:
+      - "**"
     paths:
       - "apps/diana/**"
       - "crates/diana-decomp/**"
