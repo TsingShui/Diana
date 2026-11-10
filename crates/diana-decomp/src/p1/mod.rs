@@ -3,12 +3,13 @@
 pub mod binding;
 mod decode;
 mod disassembly;
+mod ir;
 mod reference;
 mod structure;
 
 pub use disassembly::{
     ArrayPayload, DecodedInstruction, DecodedItem, DecodedMethod, DecodedOutcome, DecodedPayload,
-    DecodedReference, EntryLayout, EntryParameter, InvokeLayout,
+    DecodedReference, EntryLayout, EntryParameter, InvokeLayout, MethodIr,
 };
 pub use reference::{
     BootstrapDeclaration, BootstrapReferenceId, BootstrapToken, BootstrapValue,

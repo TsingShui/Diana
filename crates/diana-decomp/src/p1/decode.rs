@@ -63,25 +63,30 @@ impl<'a> ProgramIndex<'a> {
             Ok(declaration) => declaration,
             Err(error) => return outcome(code, items, error),
         };
+        let mut decoded = crate::input::ProgramIndex::assemble_decoded(
+            code,
+            layout,
+            protection,
+            items,
+            DecodedFacts {
+                owner: source.owner_context().clone(),
+                declaration,
+                access_flags: source.access_flags(),
+                entry,
+                annotations: source.annotations(),
+                metadata_issue: source.metadata().is_err(),
+                original_metadata: source.original_metadata().clone(),
+                metadata_error: source.metadata_error(),
+                reference_facts: references.facts,
+                issues: references.issues,
+            },
+        );
+        match super::ir::build(&decoded) {
+            Ok(ir) => decoded.set_ir(ir),
+            Err(error) => decoded.set_ir_error(error),
+        }
         Ok(DecodedOutcome {
-            decoded: Some(crate::input::ProgramIndex::assemble_decoded(
-                code,
-                layout,
-                protection,
-                items,
-                DecodedFacts {
-                    owner: source.owner_context().clone(),
-                    declaration,
-                    access_flags: source.access_flags(),
-                    entry,
-                    annotations: source.annotations(),
-                    metadata_issue: source.metadata().is_err(),
-                    original_metadata: source.original_metadata().clone(),
-                    metadata_error: source.metadata_error(),
-                    reference_facts: references.facts,
-                    issues: references.issues,
-                },
-            )),
+            decoded: Some(decoded),
             prefix: Vec::new(),
             error: None,
             source: None,

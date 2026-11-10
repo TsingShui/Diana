@@ -287,6 +287,47 @@ pub struct DecodedFacts<'a> {
 /// safely ranged is represented with its opcode, width, operands and reference
 /// domains. Branch, switch, handler and producer/result association is added by
 /// the owning P1 structural checks and P2; this product does not claim a CFG.
+/// Backend-ready instructions and handlers recovered from the same P1 facts.
+///
+/// References are already resolved, invoke arguments already grouped by the
+/// checked layout and lambda call sites already attached. Downstream stages
+/// consume this product directly; they do not re-decode the method.
+#[derive(Debug)]
+pub struct MethodIr {
+    instructions: Vec<crate::ir::InsnNode>,
+    handlers: Vec<crate::ir::ExceptionHandler>,
+    registers: u32,
+    ins: u32,
+}
+
+impl MethodIr {
+    pub fn new(
+        instructions: Vec<crate::ir::InsnNode>,
+        handlers: Vec<crate::ir::ExceptionHandler>,
+        registers: u32,
+        ins: u32,
+    ) -> Self {
+        Self {
+            instructions,
+            handlers,
+            registers,
+            ins,
+        }
+    }
+    pub fn instructions(&self) -> &[crate::ir::InsnNode] {
+        &self.instructions
+    }
+    pub fn handlers(&self) -> &[crate::ir::ExceptionHandler] {
+        &self.handlers
+    }
+    pub fn registers(&self) -> u32 {
+        self.registers
+    }
+    pub fn ins(&self) -> u32 {
+        self.ins
+    }
+}
+
 pub struct DecodedMethod<'a> {
     source: RawMethodView<'a>,
     layout: CheckedMethodLayout<'a>,
@@ -304,6 +345,8 @@ pub struct DecodedMethod<'a> {
     /// Checked target declarations for every original operand reference.
     reference_facts: Vec<ReferenceFactEntry<'a>>,
     issues: Vec<(CodeUnitOffset, MethodError)>,
+    ir: Option<MethodIr>,
+    ir_error: Option<std::sync::Arc<str>>,
     registers_size: u16,
     ins_size: u16,
     outs_size: u16,
@@ -354,6 +397,21 @@ impl<'a> DecodedMethod<'a> {
     }
     pub fn metadata_error(&self) -> Option<&std::sync::Arc<RequestError>> {
         self.metadata_error.as_ref()
+    }
+    /// Backend-ready instructions and handlers, when P1 could assemble them.
+    pub fn ir(&self) -> Option<&MethodIr> {
+        self.ir.as_ref()
+    }
+    /// Why the backend-ready product is unavailable, without widening the
+    /// decoded facts that remain published.
+    pub fn ir_error(&self) -> Option<&str> {
+        self.ir_error.as_deref()
+    }
+    pub(crate) fn set_ir(&mut self, ir: MethodIr) {
+        self.ir = Some(ir);
+    }
+    pub(crate) fn set_ir_error(&mut self, error: String) {
+        self.ir_error = Some(std::sync::Arc::from(error));
     }
     /// The original method access word.
     pub fn access_flags(&self) -> u32 {
@@ -751,6 +809,8 @@ impl<'a> ProgramIndex<'a> {
             metadata_error: facts.metadata_error,
             reference_facts: facts.reference_facts,
             issues: facts.issues,
+            ir: None,
+            ir_error: None,
             registers_size: source.registers_size(),
             ins_size: source.ins_size(),
             outs_size: source.outs_size(),
