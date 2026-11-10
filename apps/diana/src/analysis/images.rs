@@ -175,46 +175,15 @@ impl<'a> ImageSet<'a> {
                 // A damaged root is reported through its own row so the failure
                 // that surfaces is still the lowest physical ordinal's, not
                 // whichever worker happened to finish first.
-                let row = (|| -> Result<ScannedRoot, ImageError> {
+                let row = {
                     let root = &roots[ordinal];
                     let selector = selector.filter(|_| named[ordinal]);
-                    if indexed {
-                        return if retain {
-                            scan_whole(root, scratch, selector, true)
-                        } else {
-                            scan_declarations(root, scratch, selector)
-                        };
-                    }
-                    let bytes = if retain {
-                        root.bytes()?
+                    if retain || !indexed && selector.is_none() {
+                        scan_whole(root, scratch, selector, retain, indexed)
                     } else {
-                        root.bytes_into(scratch)?
-                    };
-                    let container = DexContainer::open(bytes)?;
-                    let headers = container.logical_headers()?;
-                    let mut hits = Vec::new();
-                    if let Some(selector) = selector {
-                        hits.try_reserve_exact(headers.len())
-                            .map_err(InputError::Allocation)?;
-                        for (logical, header) in headers.iter().enumerate() {
-                            let selected = selector
-                                .logical
-                                .is_none_or(|wanted| u32::try_from(logical) == Ok(wanted));
-                            let hit = if selected {
-                                scan_image(&container.program(*header)?, selector)
-                            } else {
-                                Ok(None)
-                            };
-                            hits.push(hit);
-                        }
+                        scan_declarations(root, scratch, selector, indexed)
                     }
-                    Ok(ScannedRoot {
-                        headers,
-                        hits,
-                        classes: Vec::new(),
-                        entry: root.entry().map(|record| record.index()),
-                    })
-                })();
+                };
                 emit((ordinal, row))?;
                 Ok(())
             },
@@ -413,7 +382,7 @@ fn scan_image(
     )))
 }
 
-/// Reads one root's declarations for the whole-input index.
+/// Reads one root's declarations for selection and, when requested, the index.
 ///
 /// A class list needs the header, three id tables and the descriptor strings, so a
 /// declaration prefix answers it without inflating the code and map tail. Chained
@@ -422,10 +391,11 @@ fn scan_declarations(
     root: &DexRoot<'_>,
     scratch: &mut Vec<u8>,
     selector: Option<&ClassSelector>,
+    indexed: bool,
 ) -> Result<ScannedRoot, ImageError> {
-    match scan_prefix(root, scratch, selector)? {
+    match scan_prefix(root, scratch, selector, indexed)? {
         Some(row) => Ok(row),
-        None => scan_whole(root, scratch, selector, false),
+        None => scan_whole(root, scratch, selector, false, indexed),
     }
 }
 
@@ -436,6 +406,7 @@ fn scan_whole(
     scratch: &mut Vec<u8>,
     selector: Option<&ClassSelector>,
     retain: bool,
+    indexed: bool,
 ) -> Result<ScannedRoot, ImageError> {
     let bytes = if retain {
         root.bytes()?
@@ -446,34 +417,49 @@ fn scan_whole(
     let headers = container.logical_headers()?;
     let mut classes = Vec::new();
     let mut hits = Vec::new();
-    classes
-        .try_reserve_exact(headers.len())
-        .map_err(InputError::Allocation)?;
-    hits.try_reserve_exact(headers.len())
-        .map_err(InputError::Allocation)?;
-    for (logical, header) in headers.iter().enumerate() {
-        let program = container.program(*header)?;
-        let mut declared = Vec::new();
-        declared
-            .try_reserve_exact(usize::try_from(program.class_count()).unwrap_or(0))
+    if indexed {
+        classes
+            .try_reserve_exact(headers.len())
             .map_err(InputError::Allocation)?;
-        for ordinal in 0..program.class_count() {
-            let class_def = ClassDefId(ordinal);
-            let view = program.class(class_def)?;
-            declared.push((
-                class_def,
-                Engine::class_descriptor_hash(&view.descriptor.utf8_lossy()?),
-            ));
-        }
-        classes.push(declared);
-        let selected = selector.is_some_and(|selector| {
+    }
+    if indexed || selector.is_some() {
+        hits.try_reserve_exact(headers.len())
+            .map_err(InputError::Allocation)?;
+    }
+    for (logical, header) in headers.iter().enumerate() {
+        let selected = selector.filter(|selector| {
             selector
                 .logical
                 .is_none_or(|wanted| u32::try_from(logical) == Ok(wanted))
         });
-        hits.push(match (selector, selected) {
-            (Some(selector), true) => scan_image(&program, selector),
-            _ => Ok(None),
+        if !indexed && selected.is_none() {
+            if selector.is_some() {
+                hits.push(Ok(None));
+            }
+            continue;
+        }
+        let program = container.program(*header)?;
+        if indexed {
+            let mut declared = Vec::new();
+            declared
+                .try_reserve_exact(
+                    usize::try_from(program.class_count())
+                        .map_err(|_| InputError::PlatformCapacity)?,
+                )
+                .map_err(InputError::Allocation)?;
+            for ordinal in 0..program.class_count() {
+                let class_def = ClassDefId(ordinal);
+                let view = program.class(class_def)?;
+                declared.push((
+                    class_def,
+                    Engine::class_descriptor_hash(&view.descriptor.utf8_lossy()?),
+                ));
+            }
+            classes.push(declared);
+        }
+        hits.push(match selected {
+            Some(selector) => scan_image(&program, selector),
+            None => Ok(None),
         });
     }
     Ok(ScannedRoot {
@@ -490,6 +476,7 @@ fn scan_prefix(
     root: &DexRoot<'_>,
     scratch: &mut Vec<u8>,
     selector: Option<&ClassSelector>,
+    indexed: bool,
 ) -> Result<Option<ScannedRoot>, ImageError> {
     let mut reader = root.prefix_reader(scratch)?;
     let mut aim = 0x70usize;
@@ -510,14 +497,16 @@ fn scan_prefix(
             PrefixClasses::Whole => return Ok(None),
             PrefixClasses::Ready(classes) => {
                 let mut declared = Vec::new();
-                declared
-                    .try_reserve_exact(classes.len())
-                    .map_err(InputError::Allocation)?;
-                for class in &classes {
-                    declared.push((
-                        class.class_def,
-                        Engine::class_descriptor_hash(&class.descriptor.utf8_lossy()?),
-                    ));
+                if indexed {
+                    declared
+                        .try_reserve_exact(classes.len())
+                        .map_err(InputError::Allocation)?;
+                    for class in &classes {
+                        declared.push((
+                            class.class_def,
+                            Engine::class_descriptor_hash(&class.descriptor.utf8_lossy()?),
+                        ));
+                    }
                 }
                 let hit = match selector {
                     Some(selector) if selector.logical.is_none_or(|wanted| wanted == 0) => {
@@ -528,7 +517,7 @@ fn scan_prefix(
                 return Ok(Some(ScannedRoot {
                     headers: vec![ByteOffset(0)],
                     hits: vec![hit],
-                    classes: vec![declared],
+                    classes: if indexed { vec![declared] } else { Vec::new() },
                     entry: root.entry().map(|record| record.index()),
                 }));
             }
