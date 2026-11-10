@@ -1,6 +1,6 @@
 use super::catalog::ProgramIndex;
 use super::strings::TypeShape;
-use super::{Cursor, DexString, InputError, InputProblem, file_offset, malformed};
+use super::{file_offset, malformed, Cursor, DexString, InputError, InputProblem};
 
 use crate::{
     ByteLength, ByteOffset, ByteRange, CodeUnitCount, CodeUnitOffset, RegisterWordCount, TypeId,

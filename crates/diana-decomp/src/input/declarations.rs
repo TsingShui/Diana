@@ -1,8 +1,8 @@
 use super::class_locations::ClassLocations;
-use super::header::{SUPPORTED_MAP_KINDS, map_kind};
+use super::header::{map_kind, SUPPORTED_MAP_KINDS};
 use super::strings::{DexString, TypeShape};
 use super::{
-    Cursor, DexContainer, DexHeader, InputError, InputProblem, count_usize, file_offset, malformed,
+    count_usize, file_offset, malformed, Cursor, DexContainer, DexHeader, InputError, InputProblem,
 };
 use crate::{ByteOffset, ClassDefId, FieldId, MethodId, ProtoId, StringId, TypeId};
 

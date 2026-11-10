@@ -1,5 +1,5 @@
 use super::strings::TypeShape;
-use super::{Cursor, InputError, InputProblem, MethodError, ProgramIndex, malformed};
+use super::{malformed, Cursor, InputError, InputProblem, MethodError, ProgramIndex};
 
 use crate::raw::OperandReference;
 use crate::{ByteLength, ByteOffset, ByteRange, FieldId, MethodId, StringId, TypeId};

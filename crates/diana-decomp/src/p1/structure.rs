@@ -2,14 +2,14 @@ use std::collections::TryReserveError;
 
 use thiserror::Error;
 
+use super::binding::{check_producer, InvokeIssue, ResultKind};
 use super::InvokeLayout;
-use super::binding::{InvokeIssue, ResultKind, check_producer};
-use crate::input::formats::{FlowKind, RegisterShape, RegisterWidth, ResultRole, wide_word};
+use crate::input::formats::{wide_word, FlowKind, RegisterShape, RegisterWidth, ResultRole};
 use crate::input::operands::{RawOperands, RegisterEncoding};
 use crate::input::{Cursor, InputError, ProgramIndex, RawMethodView};
 use crate::raw::{
-    Format, InsnLayout, LayoutKind, OpcodeSpec, OperandReference, RawDecodeError,
-    instruction_layout,
+    instruction_layout, Format, InsnLayout, LayoutKind, OpcodeSpec, OperandReference,
+    RawDecodeError,
 };
 use crate::{ByteLength, CodeUnitCount, CodeUnitOffset, FailureKind};
 

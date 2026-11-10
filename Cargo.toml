@@ -4,7 +4,6 @@ members = [
     "apps/diana",
     "apps/diana-gui",
     "crates/diana-decomp",
-    "crates/diana-facts",
 ]
 default-members = ["apps/diana", "crates/diana-decomp"]
 # Shared package fields for the workspace crates.

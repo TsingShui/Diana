@@ -1,5 +1,5 @@
 use super::values::{EncodedKind, EncodedValues, ValueStep};
-use super::{InputError, InputProblem, MethodError, ProgramIndex, Prototype, malformed};
+use super::{malformed, InputError, InputProblem, MethodError, ProgramIndex, Prototype};
 
 use crate::raw::OperandReference;
 use crate::{ByteLength, ByteOffset, CallSiteId, FieldId, MethodHandleId, MethodId, ProtoId};

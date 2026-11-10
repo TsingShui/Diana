@@ -1,10 +1,10 @@
 use super::code::read_code;
 use super::declarations::{LocalDeclarations, Section, TableKey};
-use super::header::{SUPPORTED_MAP_KINDS, map_kind};
+use super::header::{map_kind, SUPPORTED_MAP_KINDS};
 use super::strings::{DexString, TypeShape};
 use super::{
-    Cursor, DexContainer, DexHeader, InputError, InputProblem, checked_range, count_usize,
-    file_offset, malformed,
+    checked_range, count_usize, file_offset, malformed, Cursor, DexContainer, DexHeader,
+    InputError, InputProblem,
 };
 
 use crate::{

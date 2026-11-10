@@ -6,7 +6,7 @@ pub enum NameForm {
     Original,
 }
 pub fn name_form(units: &[u16]) -> NameForm {
-    use unicode_general_category::{GeneralCategory as C, get_general_category as category};
+    use unicode_general_category::{get_general_category as category, GeneralCategory as C};
     let start = |c: char| {
         matches!(
             category(c),

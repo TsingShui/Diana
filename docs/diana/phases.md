@@ -1,16 +1,15 @@
 # Diana phases
 
 The approved architecture is [PIPELINE_DESIGN](PIPELINE_DESIGN.md). The application
-owns files/APKs and lends DEX bytes to the native engine. The active path is P0/P1
-facts in `crates/diana-facts/`, followed by the recovery backend in
-`crates/diana-decomp/`. The P2–P9 rows below describe the archived staged
+owns files/APKs and lends DEX bytes to the native engine. The active path is the
+reader, P0/P1 facts and recovery backend inside `crates/diana-decomp/`. The P2–P9 rows below describe the archived staged
 implementation under `ref-old-impl/v2/`, not active modules.
 
 | Stage | Location | Product and responsibility |
 |---|---|---|
-| P0 | `crates/diana-facts/src/p0/` | `ClassFacts`: original declarations, four-group directory, static preparation and metadata facts; the class declaration is shared as an immutable `OwnerFacts` handle. |
-| Method reader | `crates/diana-facts/src/input/` | `MethodSource`: bound P0 method entry, safely located code and independent metadata state. |
-| P1 | `crates/diana-facts/src/p1/` | `DecodedMethod`: complete instruction/payload facts, entry/reference layouts and original structural associations. |
+| P0 | `crates/diana-decomp/src/p0/` | `ClassFacts`: original declarations, four-group directory, static preparation and metadata facts; the class declaration is shared as an immutable `OwnerFacts` handle. |
+| Method reader | `crates/diana-decomp/src/input/` | `MethodSource`: bound P0 method entry, safely located code and independent metadata state. |
+| P1 | `crates/diana-decomp/src/p1/` | `DecodedMethod`: complete instruction/payload facts, entry/reference layouts and original structural associations. |
 | P2 | `ref-old-impl/v2/crates/diana-decomp/src/p2/` | `FlowMethod`: ordered operations/terminals, explicit completion rules, normal/exception transfers, exits and source coverage. |
 | P3 | `ref-old-impl/v2/crates/diana-decomp/src/p3/` | `SsaMethod`: exact-slot states, LT dominators, live-pruned IDF Phis, definitions/uses, availability and original state-position mappings. |
 | P4 | `ref-old-impl/v2/crates/diana-decomp/src/p4/` | `TypedMethod`: value facts, per-use interpretations, Phi incoming adaptations and position-related initialization. |

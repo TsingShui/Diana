@@ -1,7 +1,7 @@
-use super::MethodError;
 use super::values::EncodedValues;
+use super::MethodError;
 use super::{
-    ClassView, Cursor, InputError, InputProblem, ProgramIndex, count_usize, file_offset, malformed,
+    count_usize, file_offset, malformed, ClassView, Cursor, InputError, InputProblem, ProgramIndex,
 };
 
 use crate::{ByteLength, ByteOffset, ByteRange, FieldId, MethodId, TypeId};

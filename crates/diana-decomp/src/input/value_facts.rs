@@ -2,7 +2,7 @@
 //! reuses the checked declaration reader, never interprets method instructions.
 use super::{InputError, ProgramIndex, Prototype};
 use crate::substrate::owned::{copy_units, push};
-use crate::{RequestError, TypeId, raw::OperandReference};
+use crate::{raw::OperandReference, RequestError, TypeId};
 
 #[derive(Debug)]
 pub struct ValueType {

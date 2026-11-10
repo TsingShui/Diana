@@ -1,7 +1,7 @@
 use super::values::EncodedValues;
 use super::{
-    Cursor, InputError, InputProblem, MethodBody, MethodError, ProgramIndex, RawMethodView,
-    file_offset, malformed,
+    file_offset, malformed, Cursor, InputError, InputProblem, MethodBody, MethodError,
+    ProgramIndex, RawMethodView,
 };
 
 use crate::{ByteLength, ByteOffset, ByteRange, ClassDefId, MethodId, RequestError};

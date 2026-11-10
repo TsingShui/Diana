@@ -1,5 +1,5 @@
-use crate::FailureKind;
 use crate::input::{InputError, MethodError};
+use crate::FailureKind;
 use std::collections::TryReserveError;
 use thiserror::Error;
 

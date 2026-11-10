@@ -1,5 +1,5 @@
 use super::formats::{
-    Format, InsnLayout, LayoutKind, LayoutProblem, RawDecodeError, wide_word, word,
+    wide_word, word, Format, InsnLayout, LayoutKind, LayoutProblem, RawDecodeError,
 };
 use super::{MethodError, RawMethodView};
 use crate::{ByteLength, CodeUnitDelta, CodeUnitOffset, RegisterId};

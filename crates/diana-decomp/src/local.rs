@@ -7,14 +7,12 @@ use crate::frontend::{
     ClassNode, DexValue, EnclosingInfo, FieldInfo, FieldNode, InnerClassInfo, MethodInfo,
     MethodNode,
 };
-use crate::ir::{ArgType, FieldReference, MethodDescriptor, MethodReference, Utf16String};
-use diana_facts::input::annotation_facts::{
+use crate::input::annotation_facts::{
     AnnotationRecord, AnnotationToken, AnnotationValueKind, OriginalAnnotations,
 };
-use diana_facts::input::value_facts::{
-    ValueDeclaration, ValueMember, ValuePrototype, ValueReference,
-};
-use diana_facts::p0::{ClassFacts, Fact, InitialValue, ScalarValue};
+use crate::input::value_facts::{ValueDeclaration, ValueMember, ValuePrototype, ValueReference};
+use crate::ir::{ArgType, FieldReference, MethodDescriptor, MethodReference, Utf16String};
+use crate::p0::{ClassFacts, Fact, InitialValue, ScalarValue};
 
 /// Build the frontend class node the recovery backend expects from the original
 /// class facts. Fields the facts do not carry stay empty rather than inferred.
@@ -115,14 +113,14 @@ fn apply_annotations(node: &mut ClassNode, facts: &ClassFacts) {
             continue;
         };
         match record.location() {
-            diana_facts::AnnotationLocation::Class => class_annotations.push(annotation),
-            diana_facts::AnnotationLocation::Field(id) => {
+            crate::AnnotationLocation::Class => class_annotations.push(annotation),
+            crate::AnnotationLocation::Field(id) => {
                 field_annotations.entry(id.0).or_default().push(annotation)
             }
-            diana_facts::AnnotationLocation::Method(id) => {
+            crate::AnnotationLocation::Method(id) => {
                 method_annotations.entry(id.0).or_default().push(annotation)
             }
-            diana_facts::AnnotationLocation::Parameter { method, parameter } => {
+            crate::AnnotationLocation::Parameter { method, parameter } => {
                 parameter_annotations
                     .entry(method.0)
                     .or_default()
@@ -226,7 +224,7 @@ fn annotation_elements(
 fn annotation_value(
     tokens: &[AnnotationToken],
     position: &mut usize,
-    value: &diana_facts::AnnotationValue,
+    value: &crate::AnnotationValue,
     references: &[ValueReference],
     depth: usize,
 ) -> Option<DexValue> {
@@ -288,7 +286,7 @@ fn annotation_value(
 }
 
 fn reference(
-    declaration: &Result<ValueDeclaration, diana_facts::input::InputError>,
+    declaration: &Result<ValueDeclaration, crate::input::InputError>,
     tag: u8,
 ) -> DexValue {
     let Ok(declaration) = declaration else {

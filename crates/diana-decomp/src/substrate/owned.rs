@@ -1,5 +1,5 @@
-use crate::RequestError;
 use crate::input::{DexString, Prototype};
+use crate::RequestError;
 
 pub fn reserve<T>(values: &mut Vec<T>, additional: usize) -> Result<(), RequestError> {
     let needed = values

@@ -7,7 +7,7 @@ gates.
 
 [PIPELINE_DESIGN](PIPELINE_DESIGN.md) remains the approved architecture for the
 complete P0–P9 product chain. The active backend is `crates/diana-decomp/`, a fork
-of dexdec that consumes P0/P1 facts from `diana-facts` and returns Java-like text.
+of dexdec that owns the DEX reader plus P0/P1 facts and returns Java-like text.
 The staged P2–P9 implementation is archived under `ref-old-impl/v2/` and is not
 part of the active build.
 

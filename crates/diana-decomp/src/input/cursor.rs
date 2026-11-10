@@ -1,4 +1,4 @@
-use super::{InputError, InputProblem, malformed};
+use super::{malformed, InputError, InputProblem};
 use crate::{ByteLength, ByteOffset, ByteRange};
 
 /// Checks count multiplication and end addition before borrowing an input range.

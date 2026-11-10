@@ -20,8 +20,8 @@
 
 use super::strings::TypeShape;
 use super::{
-    Cursor, DexString, InputError, InputProblem, UnsupportedInput, count_usize, file_offset,
-    malformed,
+    count_usize, file_offset, malformed, Cursor, DexString, InputError, InputProblem,
+    UnsupportedInput,
 };
 use crate::{ByteLength, ByteOffset, ClassDefId, StringId, TypeId};
 
@@ -168,11 +168,13 @@ fn string_item(bytes: &[u8], header: &Header, id: StringId) -> Result<ByteOffset
     let record_at = ByteOffset(offset.0 + count_usize(id.0, offset)? * 4);
     let mut record = Cursor::at(bytes, record_at)?;
     let data_at = file_offset(record.read_u32()?, record_at)?;
-    let data_end = header.data.0.0 + header.data.1;
+    let data_end = header.data.0 .0 + header.data.1;
     if data_at < header.data.0 || data_at.0 >= data_end {
         return Err(malformed(InputProblem::InvalidReference, data_at));
     }
-    if header.link.1 != 0 && data_at >= header.link.0 && data_at.0 < header.link.0.0 + header.link.1
+    if header.link.1 != 0
+        && data_at >= header.link.0
+        && data_at.0 < header.link.0 .0 + header.link.1
     {
         return Err(malformed(InputProblem::OverlappingSections, data_at));
     }
@@ -180,9 +182,9 @@ fn string_item(bytes: &[u8], header: &Header, id: StringId) -> Result<ByteOffset
 }
 
 fn string_end(bytes: &[u8], header: &Header, data_at: ByteOffset) -> ByteOffset {
-    let mut end = bytes.len().min(header.data.0.0 + header.data.1);
+    let mut end = bytes.len().min(header.data.0 .0 + header.data.1);
     if data_at < header.link.0 {
-        end = end.min(header.link.0.0);
+        end = end.min(header.link.0 .0);
     }
     ByteOffset(end)
 }
@@ -409,5 +411,9 @@ fn next_request(want: usize, accepted: usize, declared: usize) -> usize {
         .saturating_add(STRING_SLACK)
         .max(accepted.saturating_mul(2))
         .min(declared);
-    if target > accepted { target } else { declared }
+    if target > accepted {
+        target
+    } else {
+        declared
+    }
 }

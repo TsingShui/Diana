@@ -1,4 +1,4 @@
-use crate::input::{MethodSource, ProgramIndex, RawPrintable, strings::TypeShape};
+use crate::input::{strings::TypeShape, MethodSource, ProgramIndex, RawPrintable};
 use crate::raw::OperandReference;
 use crate::substrate::flags::STATIC;
 use crate::substrate::owned::push;
@@ -7,9 +7,9 @@ use crate::{CodeUnitOffset, RegisterId, RequestError, TypeId};
 
 use super::disassembly::DecodedFacts;
 use super::reference::{
-    BootstrapDeclaration, BootstrapReferenceId, BootstrapToken, BootstrapValue,
+    type_form, BootstrapDeclaration, BootstrapReferenceId, BootstrapToken, BootstrapValue,
     CheckedBootstrapFact, CheckedMemberFact, CheckedMethodHandleFact, CheckedPrototype,
-    CheckedReferenceFact, ReferenceFactEntry, type_form,
+    CheckedReferenceFact, ReferenceFactEntry,
 };
 use super::{DecodedOutcome, EntryLayout, EntryParameter, MethodError, MethodProblem};
 

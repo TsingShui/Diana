@@ -1,6 +1,6 @@
 use std::fmt;
 
-use super::{Cursor, InputError, InputProblem, malformed};
+use super::{malformed, Cursor, InputError, InputProblem};
 
 use crate::{ByteOffset, Utf16Count, Utf16Offset};
 
@@ -531,10 +531,10 @@ fn validate_name_units(mut reader: Units<'_>, syntax: NameSyntax) -> Result<(), 
     // validated without decoding a unit per character. Names and descriptors are
     // almost always ASCII and this check runs once per declaration.
     let payload = reader.bytes.get(reader.position..reader.end);
-    if let Some(payload) = payload
-        && payload.is_ascii()
-    {
-        return validate_name_bytes(payload, syntax, reader.position);
+    if let Some(payload) = payload {
+        if payload.is_ascii() {
+            return validate_name_bytes(payload, syntax, reader.position);
+        }
     }
     let mut component = false;
     while let Some(unit) = reader.next()? {

@@ -1,5 +1,5 @@
-use super::ProgramIndex;
 use super::values::{EncodedKind, ValueStep};
+use super::ProgramIndex;
 
 use crate::substrate::owned::{copy_units, push, reserve};
 use crate::{ByteOffset, ByteRange, ClassKey, RequestError, StringId, TypeId};
@@ -290,12 +290,12 @@ fn read_set(
             }
             Ok(())
         })();
-        if let Err(error) = &body
-            && hard(error)
-        {
-            return Err(body.err().ok_or(RequestError::InternalInvariant(
-                "annotation body lost failure",
-            ))?);
+        if let Err(error) = &body {
+            if hard(error) {
+                return Err(body.err().ok_or(RequestError::InternalInvariant(
+                    "annotation body lost failure",
+                ))?);
+            }
         }
         let range = ByteRange {
             start: offset,
@@ -336,7 +336,7 @@ fn read_members<'a>(
     kind: AssociationKind,
     facts: &mut OriginalAnnotations,
 ) -> Result<(), RequestError> {
-    use super::annotations::{AnnotationMembers, AnnotationOwner, association};
+    use super::annotations::{association, AnnotationMembers, AnnotationOwner};
     if records.remaining_byte().0 == 0 {
         return Ok(());
     }

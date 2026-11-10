@@ -1,5 +1,5 @@
 use super::declarations::LocalDeclarations;
-use super::{InputError, InputProblem, malformed};
+use super::{malformed, InputError, InputProblem};
 
 use crate::{ClassDefId, TypeId};
 

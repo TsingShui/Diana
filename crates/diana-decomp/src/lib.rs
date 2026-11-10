@@ -33,22 +33,40 @@ pub mod p9;
 pub mod platform_symbols;
 pub mod profiling;
 
-pub use diana_facts::raw;
-pub use diana_facts::{input, p0, p1};
-pub use diana_facts::{
+pub mod flow;
+pub mod input;
+pub mod p0;
+pub mod p1;
+pub mod pipeline;
+pub mod substrate;
+
+pub mod raw {
+    pub use crate::input::formats::{
+        instruction_layout, DexVersion, Format, IndexedRef, InsnLayout, LayoutKind, LayoutProblem,
+        OpcodeSpec, OperandReference, RawDecodeError, ReferenceKind, ReferenceSlot,
+    };
+    pub use crate::input::operands::{
+        ArrayElements, RawArrayElement, RawCodeItem, RawInstruction, RawLiteral, RawOperands,
+        RawPayload, RawRegisters, RawSwitchCase, RegisterIter, SwitchCases,
+    };
+}
+
+pub use flow::FlowError;
+pub use input::annotation_facts::{
     AnnotationExtent, AnnotationLocation, AnnotationParameterIndex, AnnotationPrefix,
     AnnotationRecord, AnnotationToken, AnnotationValue, AnnotationValueKind, OriginalAnnotations,
 };
-pub use diana_facts::{
+pub use pipeline::diagnostics::{DiagnosticCode, FailureKind};
+pub use pipeline::request::RequestError;
+pub use substrate::fields::{FieldStorage, StaticFieldOrdinal};
+pub use substrate::ids::{
     ByteLength, ByteOffset, ByteRange, CallSiteId, ClassDefId, ClassKey, CodeUnitCount,
     CodeUnitDelta, CodeUnitOffset, DexId, DiagnosticId, FieldId, InputId, MethodHandleId, MethodId,
     MethodKey, ProtoId, RegisterId, RegisterWordCount, SourceByteOffset, StringId, TypeId,
     Utf16Count, Utf16Offset,
 };
-pub use diana_facts::{
-    Diagnostic, DiagnosticCause, DiagnosticCode, FailureKind, FieldStorage, ImageFact, ImageOrigin,
-    RegisterSlot, RequestError, SlotWidth, StaticFieldOrdinal,
-};
+pub use substrate::report::{Diagnostic, DiagnosticCause, ImageFact, ImageOrigin};
+pub use substrate::slots::{RegisterSlot, SlotWidth};
 
 // Engine facade over original facts and the recovery backend.
 pub use engine::{

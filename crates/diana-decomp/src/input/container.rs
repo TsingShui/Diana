@@ -1,7 +1,7 @@
 use super::formats::DexVersion;
 use super::{
-    Cursor, InputError, InputProblem, ProgramIndex, UnsupportedInput, checked_range, file_length,
-    file_offset, malformed,
+    checked_range, file_length, file_offset, malformed, Cursor, InputError, InputProblem,
+    ProgramIndex, UnsupportedInput,
 };
 
 use crate::{ByteLength, ByteOffset, ByteRange};

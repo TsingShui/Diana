@@ -34,11 +34,11 @@ pub use catalog::{
 };
 pub use code::{CatchTypeFact, MethodBody, RawMethodView};
 pub use container::DexContainer;
-pub use cursor::{Cursor, checked_range};
+pub use cursor::{checked_range, Cursor};
 pub use declarations::{LocalDeclarations, LocalParent};
-pub use error::{InputError, InputProblem, UnsupportedInput};
 use error::{count_usize, file_length, file_offset, malformed};
-pub use header::{DexHeader, TableSection, read_header};
+pub use error::{InputError, InputProblem, UnsupportedInput};
+pub use header::{read_header, DexHeader, TableSection};
 pub use method::{CheckedAnnotations, MethodSource, RawPrintable};
 pub use prefix::{DeclaredClass, PrefixClasses};
 pub use strings::DexString;

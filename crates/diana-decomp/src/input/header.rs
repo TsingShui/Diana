@@ -1,7 +1,7 @@
 use super::formats::DexVersion;
 use super::{
-    Cursor, DexContainer, InputError, InputProblem, UnsupportedInput, checked_range, count_usize,
-    file_offset, malformed,
+    checked_range, count_usize, file_offset, malformed, Cursor, DexContainer, InputError,
+    InputProblem, UnsupportedInput,
 };
 
 use crate::{ByteLength, ByteOffset, ByteRange};
@@ -150,14 +150,7 @@ pub(super) fn read_member_header(
         &tables,
     )?;
     check_fixed_overlap(&tables, link_byte_range, Some(map_byte_range))?;
-    let [
-        string_ids,
-        type_ids,
-        proto_ids,
-        field_ids,
-        method_ids,
-        class_defs,
-    ] = tables;
+    let [string_ids, type_ids, proto_ids, field_ids, method_ids, class_defs] = tables;
     Ok(DexHeader {
         version: container.version,
         header_offset,

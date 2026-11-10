@@ -3,7 +3,7 @@ static INVALID_INVOKE_CAUSE: MethodError =
     MethodError::InternalInvariant("invoke lost its original reference failure");
 use super::{CheckedMethodLayout, MethodError};
 use crate::input::formats::{DexVersion, FlowKind, InsnLayout, LayoutKind, OpcodeSpec};
-use crate::input::operands::{RawOperands, instruction_operands};
+use crate::input::operands::{instruction_operands, RawOperands};
 use crate::input::protection::CheckedProtection;
 use crate::input::{ProgramIndex, RawMethodView};
 use crate::raw::{OperandReference, ReferenceKind, ReferenceSlot};
