@@ -1,7 +1,7 @@
 //! One validated selection to the same Engine execution's owned P9 publication.
 
 use diana_decomp::p0::{ClassFacts, Fact};
-use diana_decomp::render::RenderOutcome;
+use diana_decomp::render::Rendered;
 use diana_decomp::{
     ByteOffset, ClassKey, DexImage, Engine, ImageOrigin, InputId, MethodId, Request, RequestError,
 };
@@ -57,13 +57,13 @@ fn byte_offset<S: serde::Serializer>(
     offset.0.serialize(serializer)
 }
 
-/// Owns the original selection and P9 result, including a classified render stop.
+/// Owns the original selection and rendered result.
 /// Neither product borrows the input lease or Engine.
 #[derive(Serialize)]
 pub struct Decompiled {
     pub selection: Selection,
     #[serde(rename = "result")]
-    pub rendered: RenderOutcome,
+    pub rendered: Rendered,
 }
 
 /// Runs the shared Engine chain with one method worker.

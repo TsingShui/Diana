@@ -3,7 +3,6 @@
 use std::io::Write;
 use std::path::Path;
 
-use diana_decomp::render::RenderOutcome;
 use serde::Serialize;
 
 use super::output::{Failure, Format, publish_with};
@@ -56,22 +55,17 @@ pub fn run(
             message: error.to_string(),
         })?;
     publish_with(output, input, |mut writer| match format {
-        Format::Text => match &decompiled.rendered {
-            RenderOutcome::Ready(ready) => ready.write_text(&mut writer).map_err(|error| Failure {
+        Format::Text => decompiled
+            .rendered
+            .write_text(&mut writer)
+            .map_err(|error| Failure {
                 code: 1,
                 message: error.to_string(),
             }),
-            RenderOutcome::Stopped(stop) => writer
-                .write_all(stop.text_prefix().as_bytes())
-                .map_err(|error| Failure {
-                    code: 1,
-                    message: format!("text output failed: {error}"),
-                }),
-        },
         Format::Json => serde_json::to_writer(
             writer,
             &Publication {
-                schema_version: 3,
+                schema_version: 4,
                 command,
                 analysis: &decompiled,
             },
@@ -81,15 +75,5 @@ pub fn run(
             message: format!("JSON output failed: {error}"),
         }),
     })?;
-    match &decompiled.rendered {
-        RenderOutcome::Ready(_) => Ok(()),
-        RenderOutcome::Stopped(stop) => Err(Failure {
-            code: 1,
-            message: format!(
-                "rendering stopped ({:?}); output is an incomplete prefix: {}",
-                stop.error().kind(),
-                stop.error()
-            ),
-        }),
-    }
+    Ok(())
 }

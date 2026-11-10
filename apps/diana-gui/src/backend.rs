@@ -6,7 +6,7 @@ use diana::analysis::{
 };
 use diana_decomp::{
     ByteOffset, ClassDefId, ClassKey, DexId, DexImage, Engine, FailureKind, ImageOrigin, InputId,
-    Request, input::DexContainer, render::RenderOutcome,
+    Request, input::DexContainer,
 };
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
@@ -429,23 +429,7 @@ pub fn decompile(
             method: None,
         })
         .map_err(|error| error.to_string())?;
-    match result.rendered {
-        RenderOutcome::Ready(value) => {
-            let mut text = value.text().to_owned();
-            for issue in value.issues() {
-                text.push_str(&format!(
-                    "\n/* {:?}: {} ({:?}) */",
-                    issue.kind, issue.detail, issue.cause
-                ));
-            }
-            Ok(text)
-        }
-        RenderOutcome::Stopped(value) => Ok(format!(
-            "{}\n\n/* Rendering stopped: {} */",
-            value.text_prefix(),
-            value.error()
-        )),
-    }
+    Ok(result.rendered.text().to_owned())
 }
 
 pub fn inspect_library(

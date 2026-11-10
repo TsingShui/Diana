@@ -9,7 +9,7 @@ use crate::ir::analysis::ClassHierarchyIndex;
 use crate::ir::{AnalysisObserver, NullAnalysisObserver, CFG};
 use crate::p0::{ClassFacts, Fact};
 use crate::p1::DecodedMethod;
-use crate::render::{RenderOutcome, Rendered};
+use crate::render::Rendered;
 use crate::{ByteOffset, ClassKey, DexId, ImageFact, ImageOrigin, MethodId, RequestError};
 
 mod request;
@@ -54,11 +54,11 @@ pub struct MethodSource {
 pub struct ClassAnalysis {
     pub image: ImageFact,
     pub facts: Arc<ClassFacts>,
-    pub rendered: RenderOutcome,
+    pub rendered: Rendered,
 }
 
 pub struct SingleMethodAnalysis {
-    pub rendered: RenderOutcome,
+    pub rendered: Rendered,
 }
 
 struct ClassOutput {
@@ -352,7 +352,7 @@ impl<'a> Engine<'a> {
         let image = self.image(class.dex).ok_or(RequestError::UnknownDex)?;
         let facts = image.index.class_facts_cached(class.class_def)?;
         let source = self.class_source(request)?;
-        let rendered = RenderOutcome::Ready(Rendered::external(class, source.text, facts.clone()));
+        let rendered = Rendered::external(class, source.text, facts.clone());
         Ok(ClassAnalysis {
             image: ImageFact {
                 dex: class.dex,
@@ -386,7 +386,7 @@ impl<'a> Engine<'a> {
             }),
         })?;
         Ok(SingleMethodAnalysis {
-            rendered: RenderOutcome::Ready(Rendered::external(class, source.text, facts)),
+            rendered: Rendered::external(class, source.text, facts),
         })
     }
 }

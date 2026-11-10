@@ -174,7 +174,7 @@ enum Command {
     },
     /// Decompile one class
     #[command(
-        long_about = "Displays the Engine/P9 Java-like text, including original members and local recovery gaps. JSON schema 3 carries the same text, source facts and byte spans."
+        long_about = "Displays the Engine/P9 Java-like text, including original members and local recovery gaps. JSON schema 4 carries the same text, source facts and byte spans."
     )]
     GetClass {
         /// Input file (APK, ZIP or bare DEX)

@@ -72,10 +72,7 @@ fn main() {
         let result = decompile::run(&scope, &selector).expect("decompile");
         eprintln!(
             "class {class_def} {} {:.3}s",
-            match &result.rendered {
-                diana_decomp::render::RenderOutcome::Ready(_) => "rendered",
-                diana_decomp::render::RenderOutcome::Stopped(_) => "render_stopped",
-            },
+            "rendered",
             started.elapsed().as_secs_f64()
         );
     }

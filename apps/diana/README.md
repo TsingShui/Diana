@@ -50,7 +50,7 @@ matching modes retain completion order.
 | `xref` | `context, match, use` |
 | `resources` | `context, id, name, config, value` |
 | `manifest` | XML, or JSON with `status, xml, warnings` |
-| `get-class`, `get-method` | Backend Java-like text, or JSON schema 3 |
+| `get-class`, `get-method` | Backend Java-like text, or JSON schema 4 |
 | `outline-class`, `outline-method` | Structured tree with call links, or JSON schema 1 |
 | `extract` | One output file |
 
@@ -360,30 +360,22 @@ Available expressions, original members, explicit operations and local recovery
 gaps remain visible. Java legality or compilability is not an output gate.
 Diagnostics are not hidden behind a verbosity flag.
 
-Schema 3 has these top-level fields:
+Schema 4 has these top-level fields:
 
-- `schema_version: 3` and `command: "get-class" | "get-method"`.
+- `schema_version: 4` and `command: "get-class" | "get-method"`.
 - `selection`: physical `entry` (`null` for bare DEX), `logical` header
   ordinal, container-relative byte `header_offset`, Engine `class` key,
   optional `method` ID, `class_at` and optional `method_at`.
-- `result`: the native P9 `{kind, product}` publication. A `ready` product
-  contains `class, notation, source, text, spans, issues`.
+- `result`: the rendered publication with `class, notation, text`.
 
-`product.text` is byte-for-byte the text presentation. Spans are half-open UTF-8
-byte ranges within that text, not offsets into JSON. The frozen `source` keeps
-the same P8/P7 products and original facts, including original UTF-16 units,
-stopped members and retained bytes. Inspection-formatted diagnostic fields are
-not an alternate executable representation. JSON serialization does not run
-another renderer or choose a different recovery mode.
+`result.text` is byte-for-byte the text presentation. Local member failures
+remain content of that publication. A shared rendering failure is returned as a
+request error; an unfinished prefix is never reported as a successful complete
+result.
 
-`ready` describes publication completion, not semantic verification. Local
-member failures remain content of that publication. A shared rendering failure
-retains P9's `stopped` product: JSON includes its source, error and text prefix;
-text writes that same prefix. Both report the concrete stop on stderr and exit 1.
-An unfinished prefix is never reported as a successful complete result.
-
-The old schema 2, Java/Mixed status projections, whole-class method-text slicing,
-`--verbose` diagnostic gate and declaration-catalog adapter are removed.
+The old schema 3 `{kind, product}` wrapper, schema 2, Java/Mixed status
+projections, whole-class method-text slicing, `--verbose` diagnostic gate and
+declaration-catalog adapter are removed.
 
 ## Query and manifest output
 

@@ -191,12 +191,7 @@ pub fn run(
 }
 
 fn publication_facts(publication: &Decompiled) -> &diana_decomp::p0::ClassFacts {
-    match &publication.rendered {
-        diana_decomp::render::RenderOutcome::Ready(rendered) => match rendered.source() {
-            diana_decomp::render::SourceProduct::External(external) => &external.facts,
-        },
-        diana_decomp::render::RenderOutcome::Stopped(stopped) => match stopped.source() {
-            diana_decomp::render::SourceProduct::External(external) => &external.facts,
-        },
+    match publication.rendered.source() {
+        diana_decomp::render::SourceProduct::External(external) => &external.facts,
     }
 }
