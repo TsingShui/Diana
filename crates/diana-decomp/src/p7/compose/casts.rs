@@ -681,7 +681,9 @@ fn first_read(
     statement: StatementId,
     storage: StorageId,
 ) -> Result<Option<(StatementId, ExprId)>, ExpressionError> {
-    let roots = Roots::one(code.require_statement(statement)?.expression);
+    let Some(roots) = Roots::statement(code, statement)? else {
+        return Ok(None);
+    };
     Ok(first_available_read(code, roots, storage)?.map(|occurrence| (statement, occurrence)))
 }
 
@@ -870,7 +872,9 @@ fn rendered_once(
     {
         return Ok(false);
     }
-    let roots = Roots::one(code.require_statement(statement)?.expression);
+    let Some(roots) = Roots::statement(code, statement)? else {
+        return Ok(false);
+    };
     Ok(occurrences(code, roots, occurrence)? == 1)
 }
 

@@ -95,6 +95,24 @@ impl<'a> Roots<'a> {
         }
         roots
     }
+    /// Operands a statement root contributes, in original evaluation order.
+    /// A moving or initializing root contributes its value; a store contributes
+    /// its receiver/index/value sequence. Roots without readable operands have
+    /// no carrier question.
+    pub fn statement(
+        code: &'a MethodCode,
+        statement: StatementId,
+    ) -> Result<Option<Self>, ExpressionError> {
+        let source = code
+            .statement(statement)
+            .ok_or(bug("expression roots lost their statement"))?;
+        let root = &code.expressions[source.expression.0 as usize];
+        Ok(Some(match root.kind {
+            ExprKind::Move { .. } | ExprKind::Initialize { .. } => Self::one(source.value(code)),
+            ExprKind::FieldStore { .. } | ExprKind::ArrayStore { .. } => Self::children(code, root),
+            _ => return Ok(None),
+        }))
+    }
     pub fn terminal(
         code: &'a MethodCode,
         block: crate::p2::BlockId,
