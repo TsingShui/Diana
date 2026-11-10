@@ -72,7 +72,7 @@ impl LocalAccess {
         let Some(statement) = code.statement(statement) else {
             return false;
         };
-        let StatementKind::Move { expression, .. } = statement.kind else {
+        let ExprKind::Move { expression, .. } = *statement.operator(code) else {
             return false;
         };
         matches!(statement.outputs.as_slice(), [output]

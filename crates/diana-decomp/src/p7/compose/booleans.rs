@@ -144,9 +144,7 @@ pub(super) fn construct(
         {
             continue;
         }
-        let StatementKind::Evaluate { expression } = statement.kind else {
-            continue;
-        };
+        let expression = statement.expression;
         let natural_boolean = match &code.expressions[expression.0 as usize].kind {
             ExprKind::Call(call) => matches!(&code.references[call.target.0 as usize].declaration,
                 Ok(ReferenceDeclaration::Member(MemberDeclaration::Method { prototype, .. })) if boolean_type(code, prototype.returns)),

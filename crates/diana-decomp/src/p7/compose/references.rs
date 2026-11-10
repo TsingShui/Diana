@@ -281,11 +281,11 @@ pub(super) fn field_owners(code: &mut MethodCode) -> Result<(), ExpressionError>
         }
     }
     for statement in code.statements() {
-        if let StatementKind::FieldStore {
+        if let ExprKind::FieldStore {
             reference,
             receiver: Some(receiver),
             ..
-        } = statement.kind
+        } = *statement.operator(code)
         {
             select(reference, receiver);
         }

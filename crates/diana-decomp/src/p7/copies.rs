@@ -170,14 +170,8 @@ pub(super) fn construct(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> 
                 .operations()
                 .get(prepared.operation.0 as usize)
                 .ok_or(bug("prepared construction argument lost its operation"))?;
-            let kind = super::lower::semantic(c, source, &inputs)?;
-            let expression = match &kind {
-                StatementKind::Evaluate { expression } | StatementKind::Move { expression, .. } => {
-                    *expression
-                }
-                _ => return Err(bug("prepared construction argument is not an expression")),
-            };
-            let statement = c.statement(kind, prepared.operation, inputs)?;
+            let expression = super::lower::semantic(c, source, &inputs)?;
+            let statement = c.statement(expression, prepared.operation, inputs)?;
             push(&mut lowered, (prepared, statement, expression))?;
         }
         let mut prepared_arguments = Vec::new();
@@ -234,13 +228,11 @@ pub(super) fn construct(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> 
             },
             None,
         )?;
-        let statement = c.statement(
-            StatementKind::Construction(at),
-            group.allocation(),
-            Arguments::Known(Vec::new()),
-        )?;
+        let statement =
+            c.statement(expression, group.allocation(), Arguments::Known(Vec::new()))?;
         let sites = std::mem::take(&mut c.group_sites[group.id().0 as usize]);
         c.code.statement_mut(statement)?.sites = sites;
+        c.code.statement_mut(statement)?.construction = Some(at);
         let mut publications = Vec::new();
         for p in group.publications() {
             push(

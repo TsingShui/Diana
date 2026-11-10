@@ -1975,6 +1975,16 @@ fn expression_counts(counts: &mut BTreeMap<String, u64>, result: &diana_decomp::
     }
     for e in code.expressions() {
         let key = match &e.kind {
+            ExprKind::Nop => "nop_roots",
+            ExprKind::Move { .. } => "move_roots",
+            ExprKind::FieldStore { .. } => "field_stores",
+            ExprKind::ArrayStore { .. } => "array_stores",
+            ExprKind::CheckCast { .. } => "casts",
+            ExprKind::FillArray { .. } => "fill_arrays",
+            ExprKind::Monitor { .. } => "monitors",
+            ExprKind::CaptureException => "capture_exceptions",
+            ExprKind::Initialize { .. } => "initializations",
+            ExprKind::UnresolvedResult { .. } => "unresolved_results",
             ExprKind::Read { .. } | ExprKind::Snapshot { .. } => "reads",
             ExprKind::Literal { .. } => "literals",
             ExprKind::Unavailable { .. } => "unavailable_reads",

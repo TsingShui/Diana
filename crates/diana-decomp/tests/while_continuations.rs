@@ -37,13 +37,15 @@ fn three_nested_loops_keep_the_private_outer_continue_tail() {
             let link = facts.links()[exit.0 as usize];
             assert!(facts.regions().iter().any(|r| {
                 matches!(r.kind(), RegionKind::If { .. })
-                    && r.nodes().contains(&link.from())
-                    && r.nodes().contains(&link.to())
+                    && facts.region_nodes(r.id()).unwrap().contains(&link.from())
+                    && facts.region_nodes(r.id()).unwrap().contains(&link.to())
                     && r.follow() == Some(inner.continue_target())
-                    && outer
-                        .latches()
-                        .iter()
-                        .any(|l| r.nodes().contains(&facts.links()[l.0 as usize].from()))
+                    && outer.latches().iter().any(|l| {
+                        facts
+                            .region_nodes(r.id())
+                            .unwrap()
+                            .contains(&facts.links()[l.0 as usize].from())
+                    })
             }));
             assert!(rendered.text().contains("continue R"));
             assert!(!rendered.text().contains("goto "));

@@ -104,7 +104,7 @@ impl Model {
         }
     }
     fn expression(&mut self, code: &MethodCode, id: ExprId) -> Result<Value, Failure> {
-        if let Some(composed) = code.emission().composed_use(id) {
+        if let Some(composed) = code.evaluation(id) {
             return self.expression(code, composed.expression);
         }
         match &code.expressions()[id.0 as usize].kind {
@@ -269,16 +269,12 @@ impl Model {
         Ok(())
     }
     fn statement(&mut self, code: &MethodCode, id: StatementId) -> Result<(), Failure> {
-        let statement = &code.statements()[id.0 as usize];
-        let value = match statement.kind {
-            StatementKind::Evaluate { expression } | StatementKind::Move { expression, .. } => {
-                self.expression(code, expression)?
-            }
-            StatementKind::CaptureException => {
-                Value::Ref(self.pending.ok_or(Failure::Unsupported)?)
-            }
-            StatementKind::Nop => return Ok(()),
-            _ => return Err(Failure::Unsupported),
+        let statement = &code.statement(id).unwrap();
+        let value = match code.statement_kind(id).ok_or(Failure::Unsupported)? {
+            ExprKind::Nop => return Ok(()),
+            ExprKind::CaptureException => Value::Ref(self.pending.ok_or(Failure::Unsupported)?),
+            ExprKind::Move { .. } => self.expression(code, statement.value(code))?,
+            _ => self.expression(code, statement.expression)?,
         };
         for output in &statement.outputs {
             match output.materialization() {
@@ -313,8 +309,8 @@ impl Model {
                 BodyAction::Statement {
                     operation,
                     statement,
-                } if !code.emission().origin_only_operation(operation)
-                    && !code.emission().composed_operation(operation) =>
+                } if !code.origin_only_operation(operation)
+                    && !code.nested_operation(operation) =>
                 {
                     let phases = &code.emission().operations()[operation.0 as usize];
                     self.copies(code, &phases.before)?;
@@ -328,13 +324,13 @@ impl Model {
                     operation,
                     statement,
                     ..
-                } if !code.emission().origin_only_operation(operation) => {
-                    let StatementKind::Monitor { lock, .. } =
-                        code.statements()[statement.0 as usize].kind
+                } if !code.origin_only_operation(operation) => {
+                    let ExprKind::Monitor { lock, .. } =
+                        code.statement_kind(statement).ok_or(Failure::Unsupported)?
                     else {
                         return Err(Failure::Unsupported);
                     };
-                    let lock = Self::reference(self.expression(code, lock)?)?;
+                    let lock = Self::reference(self.expression(code, *lock)?)?;
                     self.release(lock)?;
                 }
                 BodyAction::Receive { handler } => {
@@ -376,6 +372,7 @@ impl Model {
                     _ => Err(Failure::Unsupported),
                 }
             }
+            BlockEnd::Annotated { .. } => Err(Failure::Unsupported),
         }
     }
     fn control(&mut self, code: &MethodCode, id: ControlId) -> Result<Outcome, Failure> {

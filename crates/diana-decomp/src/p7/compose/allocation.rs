@@ -13,9 +13,7 @@ pub(super) fn allocation_declarations(code: &mut MethodCode) -> Result<(), Expre
         let Some(statement) = operation.body.as_ref() else {
             continue;
         };
-        let StatementKind::Evaluate { expression } = statement.kind else {
-            continue;
-        };
+        let expression = statement.expression;
         if !matches!(
             code.expressions.get(expression.0 as usize).map(|e| &e.kind),
             Some(ExprKind::AllocateInstance { .. })

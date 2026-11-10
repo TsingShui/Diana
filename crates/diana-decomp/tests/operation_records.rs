@@ -1,6 +1,6 @@
 //! Independent helper/lock scenarios for composite/operation-records.
 
-use diana_decomp::p7::{InitializationSyntax, MethodCode, StatementKind};
+use diana_decomp::p7::{ExprKind, InitializationSyntax, MethodCode};
 use diana_decomp::p9::{Origin, Rendered};
 #[path = "support/inspection.rs"]
 mod inspection;
@@ -201,8 +201,8 @@ fn super_delegation_still_precedes_the_constructor_body() {
         |_, code, rendered| {
             origins(code, rendered);
             assert!(code.statements().any(|body| matches!(
-                body.kind,
-                StatementKind::Initialize {
+                body.operator(code),
+                ExprKind::Initialize {
                     syntax: InitializationSyntax::Super,
                     ..
                 }

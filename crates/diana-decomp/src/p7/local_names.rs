@@ -141,10 +141,7 @@ fn candidate(
         let Some(statement) = operation.statement else {
             return Ok(None);
         };
-        let StatementKind::Evaluate { expression } = code.require_statement(statement)?.kind else {
-            return Ok(None);
-        };
-        expression
+        code.require_statement(statement)?.expression
     };
     let units = match &code.expressions[expression.0 as usize].kind {
         ExprKind::Field {

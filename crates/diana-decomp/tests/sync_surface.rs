@@ -298,7 +298,7 @@ fn extra_work_changed_error_multiple_returns_and_unknown_lock_keep_explicit_even
                     code.operations()
                         .iter()
                         .filter(|op| matches!(op.original, OpKind::Monitor { enter: false }))
-                        .all(|op| !code.emission().origin_only_operation(op.source))
+                        .all(|op| !code.origin_only_operation(op.source))
                 );
                 match name {
                     "extra" => assert!(rendered.text().contains("note(")),

@@ -122,7 +122,7 @@ fn body_return_preparation_is_not_confused_with_the_first_cleanup_add() {
                     })
                 })
                 .expect("original body-return add belongs before cleanup");
-            let definition = &code.statements()[body_add.statement.unwrap().0 as usize].outputs[0];
+            let definition = &code.statement(body_add.statement.unwrap()).unwrap().outputs[0];
             let Materialization::Store(local) = definition.materialization() else {
                 panic!("saved return materialization");
             };

@@ -5,7 +5,7 @@ use diana_decomp::p5::{Materialization, ThrowSite};
 use diana_decomp::p6::{RegionFacts, RegionKind};
 use diana_decomp::p7::{
     CopyStatement, ExceptionSyntax, ExprId, ExprKind, HandlerCapture, MemberDeclaration,
-    MethodCode, ReferenceDeclaration, StatementKind,
+    MethodCode, ReferenceDeclaration,
 };
 use diana_decomp::p9::Origin;
 
@@ -18,12 +18,7 @@ fn calls(code: &MethodCode, name: &str) -> Vec<OpId> {
         .iter()
         .filter_map(|operation| {
             let statement = operation.statement?;
-            let StatementKind::Evaluate { expression } =
-                code.statements()[statement.0 as usize].kind
-            else {
-                return None;
-            };
-            let ExprKind::Call(call) = &code.expressions()[expression.0 as usize].kind else {
+            let ExprKind::Call(call) = code.statement(statement)?.operator(code) else {
                 return None;
             };
             match &code.references()[call.target.0 as usize].declaration {
@@ -79,7 +74,7 @@ fn committed_handle(code: &MethodCode, operation: OpId) -> diana_decomp::p5::Loc
         .statement
         .unwrap();
     let Materialization::Store(local) =
-        code.statements()[statement.0 as usize].outputs[0].materialization()
+        code.statement(statement).unwrap().outputs[0].materialization()
     else {
         panic!("the original normal acquisition commit")
     };
@@ -496,12 +491,7 @@ fn resource_outlets_do_not_acquire_the_outer_io_recovery_or_replace_the_primary(
                 .unwrap()
                 .statement
                 .unwrap();
-            let StatementKind::Evaluate { expression } =
-                code.statements()[statement.0 as usize].kind
-            else {
-                panic!("suppression call")
-            };
-            let ExprKind::Call(call) = &code.expressions()[expression.0 as usize].kind else {
+            let ExprKind::Call(call) = code.statement(statement).unwrap().operator(code) else {
                 panic!("suppression call")
             };
             let diana_decomp::p7::Arguments::Known(arguments) = &call.arguments else {

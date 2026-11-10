@@ -197,20 +197,16 @@ pub(super) fn semantic(
     c: &mut Context<'_, '_>,
     op: &p2::Operation,
     args: &Arguments,
-) -> Result<StatementKind, ExpressionError> {
+) -> Result<ExprId, ExpressionError> {
     let at = op.id();
     let expr = match op.kind() {
-        OpKind::Nop => return Ok(StatementKind::Nop),
-        OpKind::Move { kind } => {
-            return Ok(StatementKind::Move {
-                kind: *kind,
-                expression: c.argument(args, 0)?,
-            });
-        }
+        OpKind::Nop => ExprKind::Nop,
+        OpKind::Move { kind } => ExprKind::Move {
+            kind: *kind,
+            expression: c.argument(args, 0)?,
+        },
         OpKind::Const { bits, width } => {
-            return Ok(StatementKind::Evaluate {
-                expression: c.definition_literal(at, *bits, *width)?,
-            });
+            return c.definition_literal(at, *bits, *width);
         }
         OpKind::ConstString { .. } => ExprKind::String(c.first_reference(at)?),
         OpKind::ConstClass { .. } => ExprKind::Class(c.first_reference(at)?),
@@ -260,17 +256,15 @@ pub(super) fn semantic(
                         Some(c.argument(args, 0)?)
                     },
                 },
-                FieldAccess::Put => {
-                    return Ok(StatementKind::FieldStore {
-                        reference,
-                        receiver: if *static_field {
-                            None
-                        } else {
-                            Some(c.argument(args, 1)?)
-                        },
-                        value: c.argument(args, 0)?,
-                    });
-                }
+                FieldAccess::Put => ExprKind::FieldStore {
+                    reference,
+                    receiver: if *static_field {
+                        None
+                    } else {
+                        Some(c.argument(args, 1)?)
+                    },
+                    value: c.argument(args, 0)?,
+                },
             }
         }
         OpKind::Array { access, kind } => match access {
@@ -279,22 +273,19 @@ pub(super) fn semantic(
                 index: c.argument(args, 1)?,
                 kind: *kind,
             },
-            ArrayAccess::Put => {
-                return Ok(StatementKind::ArrayStore {
-                    array: c.argument(args, 1)?,
-                    index: c.argument(args, 2)?,
-                    value: c.argument(args, 0)?,
-                    kind: *kind,
-                });
-            }
+            ArrayAccess::Put => ExprKind::ArrayStore {
+                array: c.argument(args, 1)?,
+                index: c.argument(args, 2)?,
+                value: c.argument(args, 0)?,
+                kind: *kind,
+            },
         },
         OpKind::ArrayLength => ExprKind::ArrayLength(c.argument(args, 0)?),
-        OpKind::Cast { .. } => {
-            return Ok(StatementKind::CheckCast {
-                value: c.argument(args, 0)?,
-                reference: c.first_reference(at)?,
-            });
-        }
+        OpKind::Cast { .. } => ExprKind::CheckCast {
+            value: c.argument(args, 0)?,
+            reference: c.first_reference(at)?,
+            syntax: CastSyntax::Check,
+        },
         OpKind::InstanceOf { .. } => ExprKind::InstanceOf {
             value: c.argument(args, 0)?,
             reference: c.first_reference(at)?,
@@ -346,10 +337,10 @@ pub(super) fn semantic(
                     element,
                 },
             )?;
-            return Ok(StatementKind::FillArray {
+            ExprKind::FillArray {
                 array: c.argument(args, 0)?,
                 payload,
-            });
+            }
         }
         OpKind::Invoke { kind, .. } | OpKind::UnresolvedInvoke { kind, .. } => {
             let call = call(c, at, *kind, args)?;
@@ -399,28 +390,25 @@ pub(super) fn semantic(
                 } else {
                     InitializationSyntax::Explicit
                 };
-                return Ok(StatementKind::Initialize {
-                    expression,
-                    syntax,
-                    relation,
-                });
+                return c.expression(
+                    ExprKind::Initialize {
+                        expression,
+                        syntax,
+                        relation,
+                    },
+                    None,
+                );
             }
-            return Ok(StatementKind::Evaluate { expression });
+            return Ok(expression);
         }
-        OpKind::UnresolvedResult { width } => {
-            return Ok(StatementKind::UnresolvedResult { width: *width });
-        }
-        OpKind::Monitor { enter } => {
-            return Ok(StatementKind::Monitor {
-                enter: *enter,
-                lock: c.argument(args, 0)?,
-            });
-        }
-        OpKind::MoveException => return Ok(StatementKind::CaptureException),
+        OpKind::UnresolvedResult { width } => ExprKind::UnresolvedResult { width: *width },
+        OpKind::Monitor { enter } => ExprKind::Monitor {
+            enter: *enter,
+            lock: c.argument(args, 0)?,
+        },
+        OpKind::MoveException => ExprKind::CaptureException,
     };
-    Ok(StatementKind::Evaluate {
-        expression: c.expression(expr, None)?,
-    })
+    c.expression(expr, None)
 }
 pub(super) fn original_operations(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> {
     let flow = c.planned.execution();

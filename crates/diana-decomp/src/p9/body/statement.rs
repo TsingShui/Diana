@@ -21,10 +21,10 @@ impl Expressions<'_, '_> {
                 self.out.put(&control.label)?;
             }
             self.out.put("(")?;
-            let StatementKind::Monitor { lock, .. } = s.kind else {
+            let Some(ExprKind::Monitor { lock, .. }) = self.code.statement_kind(s.id) else {
                 return Err(RenderError::Invariant("release syntax lost its monitor"));
             };
-            self.operand(lock)?;
+            self.operand(*lock)?;
             self.out.put(")")?;
         } else {
             let statement = self.statement.replace(s.id);
@@ -66,20 +66,11 @@ impl Expressions<'_, '_> {
     /// A trailing note for a statement printed in Diana syntax rather than Java.
     /// It names the original instruction and the one fact the form hides.
     pub(super) fn generated_note(&self, s: &Statement) -> Option<&'static str> {
-        match &s.kind {
-            StatementKind::CheckCast { .. } => Some("// Diana: check-cast, value not reassigned"),
-            StatementKind::CaptureException => Some("// Diana: move-exception, caught throwable"),
-            StatementKind::Initialize {
-                syntax: InitializationSyntax::Explicit,
-                ..
-            } => None,
-            StatementKind::Move { expression, .. } | StatementKind::Evaluate { expression } => {
-                match &self.code.expressions().get(expression.0 as usize)?.kind {
-                    ExprKind::AllocateInstance { .. } => {
-                        Some("// Diana: new-instance, object exists before its constructor")
-                    }
-                    _ => None,
-                }
+        match self.code.statement_kind(s.id)? {
+            ExprKind::CheckCast { .. } => Some("// Diana: check-cast, value not reassigned"),
+            ExprKind::CaptureException => Some("// Diana: move-exception, caught throwable"),
+            ExprKind::AllocateInstance { .. } => {
+                Some("// Diana: new-instance, object exists before its constructor")
             }
             _ => None,
         }
@@ -118,11 +109,11 @@ impl Expressions<'_, '_> {
             self.out.put(" ")?;
         }
         let start = self.out.position();
-        if matches!(s.kind, StatementKind::Construction(_)) {
+        if s.construction.is_some() {
             self.copies(&phases.snapshots)?;
         }
         self.statement_content(s, release)?;
-        if !matches!(s.kind, StatementKind::Construction(_)) {
+        if !s.construction.is_some() {
             self.phases(&phases.snapshots, "after_operands_before_effect")?;
         }
         self.sites(&s.sites, start)?;
@@ -140,11 +131,7 @@ impl Expressions<'_, '_> {
     /// original allocation runs. The constructor call stays at its own position,
     /// so the object is never claimed to be initialized here.
     pub(super) fn allocation_declaration(&mut self, s: &Statement) -> Result<(), RenderError> {
-        let StatementKind::Evaluate { expression } = s.kind else {
-            return Err(RenderError::Invariant(
-                "allocation declaration lost its evaluate statement",
-            ));
-        };
+        let expression = s.expression;
         let ExprKind::AllocateInstance { reference } = self
             .code
             .expressions()

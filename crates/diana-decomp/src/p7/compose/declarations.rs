@@ -398,7 +398,7 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
         let local = match output.materialization() {
             Materialization::Store(local) => StorageId(local.0),
             Materialization::Deferred { local, .. } => {
-                let StatementKind::Construction(group) = statement.kind else {
+                let Some(group) = statement.construction else {
                     continue;
                 };
                 let [publication] = code.constructions[group.0 as usize].publications.as_slice()
@@ -412,11 +412,17 @@ pub(super) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
             }
             _ => continue,
         };
-        if !matches!(
-            statement.kind,
-            StatementKind::Move { .. }
-                | StatementKind::Evaluate { .. }
-                | StatementKind::Construction(_)
+        if matches!(
+            *statement.operator(code),
+            ExprKind::Nop
+                | ExprKind::FieldStore { .. }
+                | ExprKind::ArrayStore { .. }
+                | ExprKind::CheckCast { .. }
+                | ExprKind::FillArray { .. }
+                | ExprKind::Monitor { .. }
+                | ExprKind::CaptureException
+                | ExprKind::Initialize { .. }
+                | ExprKind::UnresolvedResult { .. }
         ) || code.emission.allocation_declaration(statement.id)
         {
             continue;

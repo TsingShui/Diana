@@ -197,9 +197,7 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
     /// ordinary assignment: Java assigns the local only after `new` completes, so
     /// no separate success marker is needed.
     fn deferred_publication(&self, s: &Statement) -> Option<StorageId> {
-        let StatementKind::Construction(group) = s.kind else {
-            return None;
-        };
+        let group = s.construction?;
         let group = self.code.constructions().get(group.0 as usize)?;
         let [publication] = group.publications.as_slice() else {
             return None;
@@ -266,24 +264,43 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
     }
 
     pub fn semantic(&mut self, s: &Statement) -> Result<(), RenderError> {
-        match &s.kind {
-            StatementKind::Nop => self.out.put("nop")?,
-            StatementKind::Move { expression, .. } | StatementKind::Evaluate { expression } => {
-                self.definition_expression(s.id, *expression)?
+        if let Some(group) = s.construction {
+            let g = &self.code.constructions()[group.0 as usize];
+            self.expr(s.expression)?;
+            if self.deferred_publication(s).is_none() {
+                self.out.put(" [on_success publish (")?;
+                for (i, p) in g.publications.iter().enumerate() {
+                    if i > 0 {
+                        self.out.put(", ")?;
+                    }
+                    self.local(p.destination)?;
+                }
+                self.out.put(")]")?;
             }
-            StatementKind::FieldStore {
+            return Ok(());
+        }
+        let kind = self
+            .code
+            .statement_kind(s.id)
+            .ok_or(RenderError::Invariant("operation lost its syntax root"))?;
+        match kind {
+            ExprKind::Nop => self.out.put("nop")?,
+            ExprKind::Move { expression, .. } => self.definition_expression(s.id, *expression)?,
+            ExprKind::FieldStore {
                 reference,
                 receiver,
                 value,
             } => self.field_store(s.id, *reference, *receiver, *value)?,
-            StatementKind::ArrayStore {
+            ExprKind::ArrayStore {
                 array,
                 index,
                 value,
                 kind,
             } => self.array_store(s.id, *array, *index, *value, *kind)?,
-            StatementKind::CheckCast { value, reference } => self.check_cast(*value, *reference)?,
-            StatementKind::FillArray { array, payload } => {
+            ExprKind::CheckCast {
+                value, reference, ..
+            } => self.check_cast(*value, *reference)?,
+            ExprKind::FillArray { array, payload } => {
                 self.out.put("fill_array ")?;
                 self.operand(*array)?;
                 let p = &self.code.payloads()[payload.0 as usize];
@@ -299,7 +316,7 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
                 }
                 self.out.put("]")?;
             }
-            StatementKind::Monitor { enter, lock } => {
+            ExprKind::Monitor { enter, lock } => {
                 self.out.put(if *enter {
                     "monitor_enter "
                 } else {
@@ -307,29 +324,16 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
                 })?;
                 self.operand(*lock)?;
             }
-            StatementKind::CaptureException => self.out.put("capture_exception")?,
-            StatementKind::Initialize {
+            ExprKind::CaptureException => self.out.put("capture_exception")?,
+            ExprKind::Initialize {
                 expression,
                 syntax,
                 relation,
             } => self.initialization(*expression, syntax, relation)?,
-            StatementKind::UnresolvedResult { width } => self
+            ExprKind::UnresolvedResult { width } => self
                 .out
                 .fmt(format_args!("unavailable_result<{width:?}>"))?,
-            StatementKind::Construction(group) => {
-                let g = &self.code.constructions()[group.0 as usize];
-                self.expr(g.expression)?;
-                if self.deferred_publication(s).is_none() {
-                    self.out.put(" [on_success publish (")?;
-                    for (i, p) in g.publications.iter().enumerate() {
-                        if i > 0 {
-                            self.out.put(", ")?;
-                        }
-                        self.local(p.destination)?;
-                    }
-                    self.out.put(")]")?;
-                }
-            }
+            _ => self.definition_expression(s.id, s.expression)?,
         }
         Ok(())
     }

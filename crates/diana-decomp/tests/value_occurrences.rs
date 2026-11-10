@@ -43,9 +43,9 @@ impl Execute<'_> {
             .fuel
             .checked_sub(1)
             .ok_or(Fault::Unchecked("test budget"))?;
-        if let Some(composed) = self.code.emission().composed_use(id) {
+        if let Some(composed) = self.code.evaluation(id) {
             let value = self.expression(composed.expression)?;
-            if let ComposedResult::Store(local) = composed.result {
+            if let EvaluationResult::Store(local) = composed.result {
                 self.locals[local.0 as usize] = Some(value);
             }
             return Ok(value);
@@ -149,8 +149,8 @@ impl Execute<'_> {
                     else {
                         return Err(Fault::Unchecked("action"));
                     };
-                    if self.code.emission().origin_only_operation(operation)
-                        || self.code.emission().composed_operation(operation)
+                    if self.code.origin_only_operation(operation)
+                        || self.code.nested_operation(operation)
                         || self.code.emission().omitted_literal(statement)
                         || self.code.emission().omitted_nop(statement)
                     {
@@ -163,13 +163,8 @@ impl Execute<'_> {
                     {
                         return Err(Fault::Unchecked("operation phases"));
                     }
-                    let statement = &self.code.statements()[statement.0 as usize];
-                    let (StatementKind::Move { expression, .. }
-                    | StatementKind::Evaluate { expression }) = statement.kind
-                    else {
-                        return Err(Fault::Unchecked("statement"));
-                    };
-                    let value = self.expression(expression)?;
+                    let statement = self.code.statement(statement).unwrap();
+                    let value = self.expression(statement.value(self.code))?;
                     for output in &statement.outputs {
                         if let Materialization::Store(local) = output.materialization() {
                             self.locals[local.0 as usize] = Some(value);
@@ -208,6 +203,7 @@ impl Execute<'_> {
                             _ => return Err(Fault::Unchecked("terminal")),
                         }
                     }
+                    BlockEnd::Annotated { .. } => return Err(Fault::Unchecked("annotated end")),
                 }
             }
             _ => return Err(Fault::Unchecked("control")),
@@ -371,7 +367,14 @@ fn checked_reads_keep_the_original_cast_and_call_order() {
         "checked",
         "(Ljava/lang/Object;)I",
         |_, code, rendered| {
-            assert_eq!(code.emission().inline_checks().len(), 1);
+            assert_eq!(
+                code.expressions()
+                    .iter()
+                    .filter(|expression| matches!(expression.kind, ExprKind::CheckCast { .. }))
+                    .count(),
+                1,
+                "one original check-cast"
+            );
             assert!(rendered.text().contains("String) "));
             assert!(
                 rendered.text().find("identity(p0)").unwrap()
@@ -444,7 +447,7 @@ fn the_protected_result_keeps_a_declaration_covering_its_outer_read() {
                 .filter(|op| matches!(op.original, OpKind::Invoke { .. }))
                 .collect::<Vec<_>>();
             assert_eq!(calls.len(), 2);
-            let output = &code.statements()[calls[1].statement.unwrap().0 as usize].outputs[0];
+            let output = &code.statement(calls[1].statement.unwrap()).unwrap().outputs[0];
             let Materialization::Store(local) = output.materialization() else {
                 panic!("original result storage")
             };

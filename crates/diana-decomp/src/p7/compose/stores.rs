@@ -25,9 +25,9 @@ pub(super) fn natural_stores(code: &mut MethodCode) -> Result<(), ExpressionErro
                     )
                 )
         };
-        natural[statement.id.0 as usize] = match &statement.kind {
-            StatementKind::FieldStore { receiver, .. } => receiver.is_none_or(plain),
-            StatementKind::ArrayStore { array, index, .. } => plain(*array) && plain(*index),
+        natural[statement.id.0 as usize] = match statement.operator(code) {
+            ExprKind::FieldStore { receiver, .. } => receiver.is_none_or(plain),
+            ExprKind::ArrayStore { array, index, .. } => plain(*array) && plain(*index),
             _ => continue,
         };
     }

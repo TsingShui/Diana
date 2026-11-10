@@ -2,7 +2,7 @@
 
 use super::{EmissionPlan, EvaluationPhases, IfDisplay, LocalSpelling};
 use crate::p7::build::{filled, push};
-use crate::p7::{ExpressionError, LocalDeclaration, MethodCode, StatementKind, TypeUse};
+use crate::p7::{ExprKind, ExpressionError, LocalDeclaration, MethodCode, TypeUse};
 
 pub(super) fn plan(code: &MethodCode) -> Result<EmissionPlan, ExpressionError> {
     let mut plan = EmissionPlan::empty();
@@ -17,7 +17,7 @@ pub(super) fn plan(code: &MethodCode) -> Result<EmissionPlan, ExpressionError> {
     plan.omitted_literals = filled(code.operations.len(), false)?;
     plan.omitted_nops = filled(code.operations.len(), false)?;
     for statement in code.statements() {
-        if matches!(statement.kind, StatementKind::Nop) {
+        if matches!(*statement.operator(code), ExprKind::Nop) {
             plan.omitted_nops[statement.id.0 as usize] = true;
         }
     }

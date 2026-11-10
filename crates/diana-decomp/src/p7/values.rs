@@ -164,6 +164,7 @@ impl<'f, 'a> Context<'f, 'a> {
                 kind,
                 origin,
                 evaluation: None,
+                operation: None,
             },
         )?;
         Ok(at)
@@ -339,7 +340,7 @@ impl<'f, 'a> Context<'f, 'a> {
     }
     pub fn statement(
         &mut self,
-        kind: StatementKind,
+        expression: ExprId,
         op: OpId,
         inputs: Arguments,
     ) -> Result<StatementId, ExpressionError> {
@@ -354,6 +355,7 @@ impl<'f, 'a> Context<'f, 'a> {
             push(&mut sites, site)?;
         }
         let at = StatementId(op.0);
+        self.code.expressions[expression.0 as usize].operation = Some(op);
         let operation = self
             .code
             .operations
@@ -364,7 +366,8 @@ impl<'f, 'a> Context<'f, 'a> {
         }
         operation.body = Some(Statement {
             id: at,
-            kind,
+            expression,
+            construction: None,
             outputs,
             inputs,
             sites,

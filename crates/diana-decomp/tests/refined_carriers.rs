@@ -1,7 +1,7 @@
 //! Adjacent readable carriers retain their original checks and ordering.
 
 use diana_decomp::p2::{OpId, OpKind};
-use diana_decomp::p7::{CheckCarrier, MethodCode};
+use diana_decomp::p7::{CastSyntax, ExprKind, MethodCode};
 use diana_decomp::p9::{Origin, Rendered};
 
 #[path = "support/inspection.rs"]
@@ -37,19 +37,18 @@ fn an_initializer_carrier_names_the_check_not_the_preceding_call() {
         "(Ljava/lang/Object;)I",
         |_, code, rendered| {
             let original = check(code);
-            let [carried] = code.emission().inline_checks() else {
-                panic!("one initializer check");
-            };
-            assert!(matches!(carried.carrier, CheckCarrier::Definition(_)));
-            assert_eq!(carried.operation, original);
-            assert_eq!(
-                carried.pc,
-                code.operations()
-                    .iter()
-                    .find(|op| op.source == original)
-                    .unwrap()
-                    .pc
-            );
+            let carried = code
+                .expressions()
+                .iter()
+                .find(|expression| expression.operation == Some(original))
+                .expect("the check keeps one owning syntax root");
+            assert!(matches!(
+                carried.kind,
+                ExprKind::CheckCast {
+                    syntax: CastSyntax::Value,
+                    ..
+                }
+            ));
             let (start, end) = operation_range(rendered, original);
             assert!(start < end);
         },

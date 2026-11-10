@@ -279,12 +279,12 @@ fn the_flattened_body_declaration_keeps_its_original_initializer_position() {
                 .iter()
                 .find_map(|op| {
                     if !matches!(op.original, diana_decomp::p2::OpKind::Invoke { .. })
-                        || code.emission().composed_operation(op.source)
+                        || code.nested_operation(op.source)
                     {
                         return None;
                     }
                     let id = op.statement?;
-                    let [definition] = code.statements()[id.0 as usize].outputs.as_slice() else {
+                    let [definition] = code.statement(id).unwrap().outputs.as_slice() else {
                         return None;
                     };
                     let diana_decomp::p5::Materialization::Store(local) =

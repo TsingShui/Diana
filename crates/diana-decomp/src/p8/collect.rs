@@ -556,7 +556,7 @@ fn delegation_owner_not_printed(code: &crate::p7::MethodCode, ty: &crate::p7::Ty
     use crate::p4::{SignaturePart, TypeOrigin};
     use crate::p7::{
         Bootstrap, BootstrapLiteral, ExprKind, InitializationSyntax, MemberDeclaration,
-        Qualification, ReferenceDeclaration, StatementKind, TypeSource as MethodTypeSource,
+        Qualification, ReferenceDeclaration, TypeSource as MethodTypeSource,
     };
 
     let (pc, slot) = match &ty.source {
@@ -629,14 +629,14 @@ fn delegation_owner_not_printed(code: &crate::p7::MethodCode, ty: &crate::p7::Ty
     };
     let mut delegations = 0usize;
     for statement in code.statements() {
-        match &statement.kind {
-            StatementKind::Initialize {
+        match code.statement_kind(statement.id) {
+            Some(ExprKind::Initialize {
                 expression: id,
                 syntax: InitializationSyntax::This | InitializationSyntax::Super,
                 ..
-            } if *id == expression => delegations += 1,
-            StatementKind::FieldStore { reference, .. }
-            | StatementKind::CheckCast { reference, .. }
+            }) if *id == expression => delegations += 1,
+            Some(ExprKind::FieldStore { reference, .. })
+            | Some(ExprKind::CheckCast { reference, .. })
                 if *reference == target =>
             {
                 return false;
@@ -835,12 +835,12 @@ pub(super) fn collect<'a>(
             let delegation = code.complete.filter(|method| {
                 method.statements().any(|statement| {
                     matches!(
-                        statement.kind,
-                        crate::p7::StatementKind::Initialize {
+                        method.statement_kind(statement.id),
+                        Some(crate::p7::ExprKind::Initialize {
                             syntax: crate::p7::InitializationSyntax::This
                                 | crate::p7::InitializationSyntax::Super,
                             ..
-                        }
+                        })
                     )
                 })
             });

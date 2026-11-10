@@ -3,7 +3,7 @@
 //! succeeds. Errors retain the existing P7 classification and partial facts.
 
 use super::{EmissionPlan, blocks, controls, initialize, phases};
-use crate::p7::{ExprKind, ExpressionError, MethodCode, StatementKind};
+use crate::p7::{ExprKind, ExpressionError, MethodCode};
 
 pub(in crate::p7) fn construct(code: &mut MethodCode) -> Result<(), ExpressionError> {
     let mut plan = initialize::plan(code)?;
@@ -28,7 +28,7 @@ fn identity_moves(code: &MethodCode, plan: &mut EmissionPlan) {
         let Some(s) = code.statement(statement) else {
             continue;
         };
-        let StatementKind::Move { expression, .. } = s.kind else {
+        let ExprKind::Move { expression, .. } = *s.operator(code) else {
             continue;
         };
         let [definition] = s.outputs.as_slice() else {

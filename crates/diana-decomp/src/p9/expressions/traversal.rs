@@ -182,6 +182,32 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
         let value_start = self.out.position();
         match &e.kind {
             ExprKind::Read { storage, .. } => self.read_event(work, id, *storage, value_start)?,
+            ExprKind::Move { expression, .. } => {
+                push_event(work, ExprEvent::Expression(*expression, true))?
+            }
+            ExprKind::CheckCast {
+                value,
+                reference,
+                syntax,
+            } => {
+                if *syntax == CastSyntax::Value && self.kotlin_notation() {
+                    self.out.put("(")?;
+                    push_event(work, ExprEvent::Text(")"))?;
+                    push_event(work, ExprEvent::KotlinCastReference(*reference))?;
+                    push_event(work, ExprEvent::Text(" as "))?;
+                    push_event(work, ExprEvent::Expression(*value, true))?;
+                } else if *syntax == CastSyntax::Value {
+                    self.out.put("((")?;
+                    self.reference(*reference)?;
+                    self.out.put(") ")?;
+                    push_event(work, ExprEvent::Text(")"))?;
+                    push_event(work, ExprEvent::Expression(*value, true))?;
+                } else {
+                    return Err(RenderError::Invariant(
+                        "standalone check-cast used as an expression",
+                    ));
+                }
+            }
             ExprKind::Snapshot { storage } => self.local(*storage)?,
             ExprKind::Literal { bits, view } => {
                 if self.code.boolean_use(id) {
@@ -274,6 +300,18 @@ impl<S: ExpressionSource> Expressions<'_, '_, S> {
                 push_event(work, ExprEvent::Initializer(*reference, *constructor))?;
                 push_event(work, ExprEvent::Text(")"))?;
                 self.known_argument_events(work, arguments)?;
+            }
+            ExprKind::Nop
+            | ExprKind::FieldStore { .. }
+            | ExprKind::ArrayStore { .. }
+            | ExprKind::FillArray { .. }
+            | ExprKind::Monitor { .. }
+            | ExprKind::CaptureException
+            | ExprKind::Initialize { .. }
+            | ExprKind::UnresolvedResult { .. } => {
+                return Err(RenderError::Invariant(
+                    "statement-only root used as a value",
+                ));
             }
         }
         Ok(())

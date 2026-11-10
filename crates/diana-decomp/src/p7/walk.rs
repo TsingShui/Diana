@@ -22,13 +22,23 @@ impl<'a> Roots<'a> {
             .flatten()
             .chain(self.tail.iter().copied())
     }
-    fn children(kind: &'a ExprKind) -> Self {
+    fn children(code: &'a MethodCode, expression: &'a Expression) -> Self {
         let mut roots = Self {
             head: [None; 3],
             tail: &[],
         };
+        let kind = &expression.kind;
         match kind {
-            ExprKind::Unary { value, .. }
+            ExprKind::Move {
+                expression: value, ..
+            }
+            | ExprKind::Initialize {
+                expression: value, ..
+            }
+            | ExprKind::CheckCast { value, .. }
+            | ExprKind::Monitor { lock: value, .. }
+            | ExprKind::FillArray { array: value, .. }
+            | ExprKind::Unary { value, .. }
             | ExprKind::ArrayLength(value)
             | ExprKind::InstanceOf { value, .. } => roots.head[0] = Some(*value),
             ExprKind::Binary { left, right, .. }
@@ -42,6 +52,33 @@ impl<'a> Roots<'a> {
                 roots.head[1] = Some(*right);
             }
             ExprKind::Field { receiver, .. } => roots.head[0] = *receiver,
+            ExprKind::FieldStore {
+                receiver, value, ..
+            } => {
+                let natural = expression
+                    .operation
+                    .is_some_and(|op| code.emission.natural_store(StatementId(op.0)));
+                roots.head = if natural {
+                    [*receiver, Some(*value), None]
+                } else {
+                    [Some(*value), *receiver, None]
+                };
+            }
+            ExprKind::ArrayStore {
+                array,
+                index,
+                value,
+                ..
+            } => {
+                let natural = expression
+                    .operation
+                    .is_some_and(|op| code.emission.natural_store(StatementId(op.0)));
+                roots.head = if natural {
+                    [Some(*array), Some(*index), Some(*value)]
+                } else {
+                    [Some(*value), Some(*array), Some(*index)]
+                };
+            }
             ExprKind::NewArray { length, .. } => roots.head[0] = Some(*length),
             ExprKind::Call(call) => {
                 roots.head[0] = call.receiver;
@@ -57,46 +94,6 @@ impl<'a> Roots<'a> {
             _ => {}
         }
         roots
-    }
-    pub fn statement(
-        code: &'a MethodCode,
-        statement: StatementId,
-    ) -> Result<Option<Self>, ExpressionError> {
-        let source = code
-            .statement(statement)
-            .ok_or(bug("expression roots lost their statement"))?;
-        let mut roots = Self {
-            head: [None; 3],
-            tail: &[],
-        };
-        match &source.kind {
-            StatementKind::Move { expression, .. }
-            | StatementKind::Evaluate { expression }
-            | StatementKind::Initialize { expression, .. } => roots.head[0] = Some(*expression),
-            StatementKind::FieldStore {
-                receiver, value, ..
-            } => {
-                roots.head = if code.emission.natural_store(statement) {
-                    [*receiver, Some(*value), None]
-                } else {
-                    [Some(*value), *receiver, None]
-                };
-            }
-            StatementKind::ArrayStore {
-                array,
-                index,
-                value,
-                ..
-            } => {
-                roots.head = if code.emission.natural_store(statement) {
-                    [Some(*array), Some(*index), Some(*value)]
-                } else {
-                    [Some(*value), Some(*array), Some(*index)]
-                };
-            }
-            _ => return Ok(None),
-        }
-        Ok(Some(roots))
     }
     pub fn terminal(
         code: &'a MethodCode,
@@ -171,7 +168,7 @@ impl Walk {
             return Ok(Some(Event::Nested(id)));
         }
         push(&mut self.work, Event::End(id))?;
-        for child in Roots::children(&expression.kind).iter().rev() {
+        for child in Roots::children(code, expression).iter().rev() {
             push(&mut self.work, Event::Enter(child))?;
         }
         Ok(Some(event))

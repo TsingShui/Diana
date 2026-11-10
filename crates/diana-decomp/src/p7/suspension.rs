@@ -42,10 +42,7 @@ pub(super) fn construct(c: &mut Context<'_, '_>) -> Result<(), ExpressionError> 
         let statement = operation
             .statement
             .ok_or(bug("protocol call lost its statement"))?;
-        let StatementKind::Evaluate { expression } = c.code.require_statement(statement)?.kind
-        else {
-            return Err(bug("protocol call lost its evaluation"));
-        };
+        let expression = c.code.require_statement(statement)?.expression;
         let ExprKind::Call(source) = &c.code.expressions[expression.0 as usize].kind else {
             return Err(bug("protocol call lost its established invoke"));
         };
@@ -294,13 +291,10 @@ fn visible_storage(
             }
             let Some(id) = source.statement else { continue };
             let statement = code.require_statement(id)?;
-            let implicit = match statement.kind {
-                StatementKind::Evaluate { expression } => code
-                    .emission
-                    .implicit_continuation(expression)
-                    .map(|(_, id)| id),
-                _ => None,
-            };
+            let implicit = code
+                .emission
+                .implicit_continuation(statement.expression)
+                .map(|(_, id)| id);
             if let Arguments::Known(inputs) = &statement.inputs {
                 for &expression in inputs {
                     if implicit != Some(expression)
@@ -313,7 +307,7 @@ fn visible_storage(
                     }
                 }
             }
-            if let StatementKind::Construction(group) = statement.kind {
+            if let Some(group) = statement.construction {
                 for &source in &code.constructions[group.0 as usize].arguments {
                     mark(source.local());
                 }

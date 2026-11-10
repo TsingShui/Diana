@@ -50,7 +50,7 @@ fn nested_private_throw_keeps_both_original_heads_inside_one_finally() {
                         .regions()
                         .iter()
                         .any(|r| matches!(r.kind(), RegionKind::If { .. })
-                            && r.nodes().contains(&link.to()))
+                            && facts.region_nodes(r.id()).unwrap().contains(&link.to()))
                 );
             }
             assert_eq!(loops::updates_once(facts, code, rendered).len(), 2);

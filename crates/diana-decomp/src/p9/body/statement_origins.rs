@@ -15,17 +15,13 @@ impl Expressions<'_, '_> {
         // Every use prints the literal itself, so this statement states
         // nothing; its original facts keep zero-length anchors here.
         let position = self.out.position();
-        if let StatementKind::Move { expression, .. } | StatementKind::Evaluate { expression } =
-            s.kind
-        {
-            self.out.span(
-                position,
-                Origin::Expression {
-                    method: self.method,
-                    expression,
-                },
-            )?;
-        }
+        self.out.span(
+            position,
+            Origin::Expression {
+                method: self.method,
+                expression: s.expression,
+            },
+        )?;
         self.out.span(
             position,
             Origin::Statement {
@@ -102,7 +98,10 @@ impl Expressions<'_, '_> {
         // name keep zero-length anchors here; its phases and definitions
         // were empty by admission.
         let position = self.out.position();
-        let StatementKind::CheckCast { value, reference } = s.kind else {
+        let Some(&ExprKind::CheckCast {
+            value, reference, ..
+        }) = self.code.statement_kind(s.id)
+        else {
             return Err(RenderError::Invariant(
                 "omitted check lost its original check-cast kind",
             ));
@@ -211,7 +210,7 @@ impl Expressions<'_, '_> {
                 statement: s.id,
             },
         )?;
-        if let StatementKind::Construction(g) = s.kind {
+        if let Some(g) = s.construction {
             let group = &self.code.constructions()[g.0 as usize];
             for &member in &group.members {
                 if group

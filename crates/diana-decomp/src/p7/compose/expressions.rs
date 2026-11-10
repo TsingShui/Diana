@@ -89,9 +89,7 @@ fn construction_throw(
     else {
         return None;
     };
-    let StatementKind::Construction(id) = code.statement(statement)?.kind else {
-        return None;
-    };
+    let id = code.statement(statement)?.construction?;
     let group = code.constructions.get(id.0 as usize)?;
     let source = code.operations.get(operation.0 as usize)?;
     if group.initialization != operation
@@ -349,10 +347,11 @@ fn producer_with_nested(
     let statement_ref = code
         .statement(statement)
         .ok_or("producer_statement_unavailable")?;
-    if let StatementKind::CheckCast {
+    if let ExprKind::CheckCast {
         value: expression,
         reference,
-    } = statement_ref.kind
+        ..
+    } = *statement_ref.operator(code)
     {
         if code.emission.omitted_check(statement).is_some()
             || !statement_ref.outputs.is_empty()
@@ -414,7 +413,7 @@ fn producer_with_nested(
         return Ok(Producer {
             operation,
             statement,
-            expression,
+            expression: statement_ref.expression,
             local,
             destination,
             value,
@@ -425,10 +424,9 @@ fn producer_with_nested(
             result: EvaluationResult::Value,
         });
     }
-    let (expression, moving) = match statement_ref.kind {
-        StatementKind::Evaluate { expression } => (expression, false),
-        StatementKind::Move { expression, .. } => (expression, true),
-        _ => return Err("producer_statement_kind"),
+    let (expression, moving) = match *statement_ref.operator(code) {
+        ExprKind::Move { .. } => (statement_ref.expression, true),
+        _ => (statement_ref.expression, false),
     };
     if statement_ref.outputs.len() != 1 {
         return Err("producer_not_one_definition");
@@ -437,9 +435,14 @@ fn producer_with_nested(
     let Materialization::Store(destination) = definition.materialization() else {
         return Err("producer_not_a_local_store");
     };
+    let value_expression = if moving {
+        statement_ref.value(code)
+    } else {
+        expression
+    };
     let expr = code
         .expressions
-        .get(expression.0 as usize)
+        .get(value_expression.0 as usize)
         .ok_or("producer_expression_unavailable")?;
     // Calls commit at their delivered move-result; adjacency below keeps that
     // commit before the branch, and install retains its result_pc origin.
@@ -611,7 +614,7 @@ fn producer_with_nested(
     Ok(Producer {
         operation,
         statement,
-        expression,
+        expression: value_expression,
         local,
         destination,
         value,
@@ -1494,8 +1497,8 @@ impl Consumer<'_> {
     }
     fn store(&self, code: &Cover<'_>) -> bool {
         matches!(self.target, CoverTarget::Operation(_, statement)
-            if code.statement(statement).is_some_and(|body| matches!(body.kind,
-                StatementKind::FieldStore { .. } | StatementKind::ArrayStore { .. })))
+            if code.statement(statement).is_some_and(|body| matches!(body.operator(code),
+                ExprKind::FieldStore { .. } | ExprKind::ArrayStore { .. })))
     }
     fn permits(
         &self,
@@ -1525,8 +1528,7 @@ impl Consumer<'_> {
         let Some(statement) = code.statement(statement) else {
             return false;
         };
-        if let StatementKind::Evaluate { expression } = statement.kind
-            && let ExprKind::Call(call) = &code.expressions[expression.0 as usize].kind
+        if let ExprKind::Call(call) = statement.operator(code)
             && let Some(ConcatOutcome::Inferred(plan)) = call.concatenation()
         {
             return string && plan.permits_string_composition(operand);
@@ -1565,7 +1567,7 @@ fn cover_suffix(
         }
         let policy = if consumer.required()
             || matches!(consumer.target,
-            CoverTarget::Operation(_, statement) if matches!(code.require_statement(statement)?.kind, StatementKind::CheckCast { .. }))
+            CoverTarget::Operation(_, statement) if matches!(*code.require_statement(statement)?.operator(code), ExprKind::CheckCast { .. }))
         {
             UsePolicy::PreserveStore
         } else {
@@ -1640,16 +1642,19 @@ fn cover_operations(
             continue;
         }
         let source = &code.require_statement(statement)?;
-        if matches!(
-            source.kind,
-            StatementKind::Move { .. }
-                | StatementKind::Evaluate { .. }
-                | StatementKind::FieldStore { .. }
-                | StatementKind::ArrayStore { .. }
-                | StatementKind::CheckCast { .. }
-        ) && code.emission.operations[operation.0 as usize]
-            .before
-            .is_empty()
+        if source.construction.is_none()
+            && !matches!(
+                *source.operator(code),
+                ExprKind::Nop
+                    | ExprKind::Monitor { .. }
+                    | ExprKind::CaptureException
+                    | ExprKind::FillArray { .. }
+                    | ExprKind::Initialize { .. }
+                    | ExprKind::UnresolvedResult { .. }
+            )
+            && code.emission.operations[operation.0 as usize]
+                .before
+                .is_empty()
             && let Arguments::Known(operands) = &source.inputs
         {
             let consumer = Consumer {

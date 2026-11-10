@@ -100,7 +100,7 @@ fn caught_argument_chains_retain_all_protected_sites_and_the_actual_catch() {
         "()Lfixture/Point;",
         |_, code, rendered| {
             let group = selected(code, rendered, 6);
-            let sites = &code.statements()[group.statement.0 as usize].sites;
+            let sites = &code.statement(group.statement).unwrap().sites;
             assert_eq!(
                 sites.len(),
                 8,
@@ -148,9 +148,9 @@ fn protected_exception_construction_composes_into_its_original_throw() {
             "(I)V",
             |_, code, rendered| {
                 let group = selected(code, rendered, count);
-                assert!(code.emission().composed_operation(group.initialization));
+                assert!(code.nested_operation(group.initialization));
                 assert_eq!(rendered.text().matches("throw new ").count(), 1);
-                let sites = &code.statements()[group.statement.0 as usize].sites;
+                let sites = &code.statement(group.statement).unwrap().sites;
                 let natural = sites.iter().all(|id| {
                     matches!(code.sites()[id.0 as usize].syntax, ExceptionSyntax::Natural)
                 });
@@ -177,7 +177,7 @@ struct ArgumentsModel {
 }
 impl ArgumentsModel {
     fn evaluate(&mut self, code: &MethodCode, id: ExprId) -> Result<i32, Fault> {
-        if let Some(composed) = code.emission().composed_use(id) {
+        if let Some(composed) = code.evaluation(id) {
             return self.evaluate(code, composed.expression);
         }
         match &code.expressions()[id.0 as usize].kind {

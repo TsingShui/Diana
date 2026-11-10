@@ -44,7 +44,7 @@ fn case_breaks_keep_their_original_transfer_but_no_second_action() {
                         _ => None,
                     },
                     BlockEnd::Transfers(t) => t.last().copied(),
-                    BlockEnd::None => None,
+                    BlockEnd::Annotated { .. } | BlockEnd::None => None,
                 };
                 let Some(t) = transfer else { continue };
                 if matches!(

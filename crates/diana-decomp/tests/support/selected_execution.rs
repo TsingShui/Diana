@@ -108,8 +108,8 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
                 .statement
                 .ok_or(Fault::Unsupported("nested statement"))?;
             let value = self.expression(evaluation.expression)?;
-            let value = match self.code.statement(statement).unwrap().kind {
-                StatementKind::CheckCast { reference, .. } => self.cast(value, reference)?,
+            let value = match self.code.statement(statement).unwrap().operator(self.code) {
+                ExprKind::CheckCast { reference, .. } => self.cast(value, *reference)?,
                 _ => value,
             };
             if let EvaluationResult::Store(local) = evaluation.result {
@@ -118,6 +118,12 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
             return Ok(value);
         }
         match &expression.kind {
+            ExprKind::CheckCast {
+                value, reference, ..
+            } => {
+                let value = self.expression(*value)?;
+                Ok(self.cast(value, *reference)?)
+            }
             ExprKind::Read { storage, .. } | ExprKind::Snapshot { storage } => {
                 self.locals[storage.0 as usize].ok_or(Fault::MissingValue(*storage))
             }
@@ -256,11 +262,8 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
         // This subset admits snapshots only before calls with plain operands.
         // Acting operands require capture/continuation support not modeled here.
         if !phases.snapshots.is_empty() {
-            let StatementKind::Evaluate { expression } = statement.kind else {
+            let Some(ExprKind::Call(call)) = self.code.statement_kind(id) else {
                 return Err(Fault::Unsupported("snapshot statement"));
-            };
-            let ExprKind::Call(call) = &self.code.expressions()[expression.0 as usize].kind else {
-                return Err(Fault::Unsupported("snapshot effect"));
             };
             let Arguments::Known(arguments) = &call.arguments else {
                 return Err(Fault::Unsupported("snapshot arguments"));
@@ -282,30 +285,28 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
             }
             self.copies(&phases.snapshots)?;
         }
-        let value = match statement.kind {
-            StatementKind::Move { expression, .. } | StatementKind::Evaluate { expression } => {
-                let value = self.expression(expression)?;
+        let value = match self
+            .code
+            .statement_kind(id)
+            .ok_or(Fault::Unsupported("statement"))?
+        {
+            ExprKind::CheckCast {
+                value, reference, ..
+            } => {
+                let (value, reference) = (*value, *reference);
+                let value = self.expression(value)?;
+                self.cast(value, reference)?;
+                Value::Unit
+            }
+            ExprKind::CaptureException => Value::Reference(Reference::Object(u32::MAX)),
+            _ => {
+                let value = self.expression(statement.value(self.code))?;
                 if let Some(check) = self.code.emission().definition_check(id) {
                     self.cast(value, check.reference)?
                 } else {
                     value
                 }
             }
-            StatementKind::CheckCast { value, reference } => {
-                let value = self.expression(value)?;
-                self.cast(value, reference)?;
-                Value::Unit
-            }
-            StatementKind::CaptureException => Value::Reference(Reference::Object(u32::MAX)),
-            StatementKind::Construction(group) => {
-                let construction = &self.code.constructions()[group.0 as usize];
-                let value = self.expression(construction.expression)?;
-                for publication in &construction.publications {
-                    self.locals[publication.destination.0 as usize] = Some(value);
-                }
-                value
-            }
-            _ => return Err(Fault::Unsupported("statement")),
         };
         for output in &statement.outputs {
             match output.materialization() {
@@ -586,7 +587,7 @@ impl<'a, F: FnMut(&str, &[Value]) -> Result<Value, Fault>> Executor<'a, F> {
                             .ok_or(Fault::Unsupported("acquire body"))?,
                     )
                     .unwrap();
-                let StatementKind::Monitor { enter: true, lock } = statement.kind else {
+                let ExprKind::Monitor { enter: true, lock } = *statement.operator(self.code) else {
                     return Err(Fault::Unsupported("acquire semantics"));
                 };
                 let value = self.expression(lock)?;

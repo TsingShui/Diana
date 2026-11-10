@@ -139,7 +139,7 @@ fn initializer_before_switch(code: &MethodCode, rendered: &Rendered) {
         .iter()
         .find(|op| matches!(op.original, OpKind::Const { bits: 0, .. }))
         .unwrap();
-    let statement = &code.statements()[operation.statement.unwrap().0 as usize];
+    let statement = &code.statement(operation.statement.unwrap()).unwrap();
     assert!(
         statement
             .outputs
@@ -268,7 +268,9 @@ fn mixed_literal_interpretations_are_not_conflated() {
             bits, view: Interpretation::Literal { family: Family::Float, .. }
         } if bits.value == 0x3f800000))
         );
-        let first = &code.statements()[code.operations()[0].statement.unwrap().0 as usize];
+        let first = &code
+            .statement(code.operations()[0].statement.unwrap())
+            .unwrap();
         assert!(
             first
                 .outputs

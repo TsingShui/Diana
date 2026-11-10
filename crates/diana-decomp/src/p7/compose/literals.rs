@@ -13,12 +13,7 @@ pub(super) fn omit_materialized_literals(code: &mut MethodCode) -> Result<(), Ex
         let Some(statement) = operation.body.as_ref() else {
             continue;
         };
-        let expression = match statement.kind {
-            StatementKind::Move { expression, .. } | StatementKind::Evaluate { expression } => {
-                expression
-            }
-            _ => continue,
-        };
+        let expression = statement.value(code);
         if !statement.sites.is_empty() {
             continue;
         }

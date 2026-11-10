@@ -3,9 +3,7 @@
 use diana_decomp::p2::{OpId, OpKind};
 use diana_decomp::p5::ThrowSite;
 use diana_decomp::p6::{CatchTarget, EdgeRoute, ExceptionDelivery, RegionFacts, RegionKind};
-use diana_decomp::p7::{
-    ExprKind, MemberDeclaration, MethodCode, ReferenceDeclaration, StatementKind,
-};
+use diana_decomp::p7::{ExprKind, MemberDeclaration, MethodCode, ReferenceDeclaration};
 
 #[path = "support/inspection.rs"]
 mod inspection;
@@ -16,12 +14,7 @@ fn call(code: &MethodCode, name: &str) -> OpId {
         .iter()
         .find_map(|operation| {
             let statement = operation.statement?;
-            let StatementKind::Evaluate { expression } =
-                code.statements()[statement.0 as usize].kind
-            else {
-                return None;
-            };
-            let ExprKind::Call(call) = &code.expressions()[expression.0 as usize].kind else {
+            let ExprKind::Call(call) = code.statement(statement)?.operator(code) else {
                 return None;
             };
             match &code.references()[call.target.0 as usize].declaration {

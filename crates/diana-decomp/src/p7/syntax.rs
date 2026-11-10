@@ -43,6 +43,8 @@ pub struct Expression {
     pub origin: Option<ReadOrigin>,
     /// Selected execution edge; `kind` and `origin` retain the consumed read.
     pub evaluation: Option<Evaluation>,
+    /// Original operation whose selected syntax starts at this root.
+    pub operation: Option<OpId>,
 }
 #[derive(Clone, Copy, Debug, Serialize)]
 pub enum EvaluationResult {
@@ -112,6 +114,48 @@ impl Call {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExprKind {
+    Nop,
+    Move {
+        #[serde(serialize_with = "super::debug")]
+        kind: crate::p2::MoveKind,
+        expression: ExprId,
+    },
+    FieldStore {
+        reference: ReferenceId,
+        receiver: Option<ExprId>,
+        value: ExprId,
+    },
+    ArrayStore {
+        array: ExprId,
+        index: ExprId,
+        value: ExprId,
+        #[serde(serialize_with = "super::debug")]
+        kind: ValueKind,
+    },
+    CheckCast {
+        value: ExprId,
+        reference: ReferenceId,
+        syntax: CastSyntax,
+    },
+    FillArray {
+        array: ExprId,
+        payload: PayloadId,
+    },
+    Monitor {
+        enter: bool,
+        lock: ExprId,
+    },
+    CaptureException,
+    Initialize {
+        expression: ExprId,
+        syntax: InitializationSyntax,
+        #[serde(serialize_with = "super::debug")]
+        relation: crate::p4::ConstructorRelation,
+    },
+    UnresolvedResult {
+        #[serde(serialize_with = "super::debug")]
+        width: crate::SlotWidth,
+    },
     Read {
         storage: StorageId,
         #[serde(serialize_with = "super::debug")]
@@ -186,68 +230,41 @@ pub enum ExprKind {
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub enum CastSyntax {
+    Check,
+    Value,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum InitializationSyntax {
     This,
     Super,
     Explicit,
 }
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StatementKind {
-    Nop,
-    Move {
-        #[serde(serialize_with = "super::debug")]
-        kind: crate::p2::MoveKind,
-        expression: ExprId,
-    },
-    Evaluate {
-        expression: ExprId,
-    },
-    FieldStore {
-        reference: ReferenceId,
-        receiver: Option<ExprId>,
-        value: ExprId,
-    },
-    ArrayStore {
-        array: ExprId,
-        index: ExprId,
-        value: ExprId,
-        #[serde(serialize_with = "super::debug")]
-        kind: ValueKind,
-    },
-    CheckCast {
-        value: ExprId,
-        reference: ReferenceId,
-    },
-    FillArray {
-        array: ExprId,
-        payload: PayloadId,
-    },
-    Monitor {
-        enter: bool,
-        lock: ExprId,
-    },
-    CaptureException,
-    Initialize {
-        expression: ExprId,
-        syntax: InitializationSyntax,
-        #[serde(serialize_with = "super::debug")]
-        relation: crate::p4::ConstructorRelation,
-    },
-    UnresolvedResult {
-        #[serde(serialize_with = "super::debug")]
-        width: crate::SlotWidth,
-    },
-    Construction(ConstructionId),
-}
-#[derive(Debug, Serialize)]
 pub struct Statement {
     pub id: StatementId,
-    pub kind: StatementKind,
+    /// One syntax root for standalone or nested execution.
+    pub expression: ExprId,
+    /// Established construction correspondence; this does not execute a second root.
+    pub construction: Option<ConstructionId>,
     #[serde(serialize_with = "super::debug")]
     pub outputs: Vec<DefinitionPlan>,
     pub inputs: Arguments,
     pub sites: Vec<SiteId>,
+}
+impl Statement {
+    /// Syntax at the statement's single root; the arena is owned by `MethodCode`.
+    pub fn operator<'a>(&self, code: &'a super::MethodCode) -> &'a ExprKind {
+        &code.expressions[self.expression.0 as usize].kind
+    }
+    /// Operand a moving root contributes, or the root itself.
+    pub fn value(&self, code: &super::MethodCode) -> ExprId {
+        match *self.operator(code) {
+            ExprKind::Move { expression, .. } => expression,
+            _ => self.expression,
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]

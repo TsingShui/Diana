@@ -297,7 +297,10 @@ fn eligible_check(
     let s = code.statement(statement)?;
     // Only a real check-cast can be refused; every other statement simply has no
     // carrier question, so it is silent.
-    let StatementKind::CheckCast { value, reference } = s.kind else {
+    let ExprKind::CheckCast {
+        value, reference, ..
+    } = *s.operator(code)
+    else {
         return None;
     };
     if !s.outputs.is_empty() {
@@ -337,7 +340,7 @@ fn checked_read(
     code: &MethodCode,
     statement: StatementId,
 ) -> Option<(crate::p3::ValueId, crate::p3::StateId)> {
-    let StatementKind::CheckCast { value, .. } = code.statement(statement)?.kind else {
+    let ExprKind::CheckCast { value, .. } = *code.statement(statement)?.operator(code) else {
         return None;
     };
     read_of(code, value)
@@ -494,8 +497,8 @@ fn definition_carrier(
         .get(operation.0 as usize)
         .ok_or(bug("check-cast lost its operation"))?
         .pc;
-    let occurrence = match code.require_statement(statement)?.kind {
-        StatementKind::CheckCast { value, .. } => value,
+    let occurrence = match *code.require_statement(statement)?.operator(code) {
+        ExprKind::CheckCast { value, .. } => value,
         _ => return Err(Stop::Error(bug("definition carrier lost its check"))),
     };
     Ok(Some(Carried::Declare {
@@ -678,9 +681,7 @@ fn first_read(
     statement: StatementId,
     storage: StorageId,
 ) -> Result<Option<(StatementId, ExprId)>, ExpressionError> {
-    let Some(roots) = Roots::statement(code, statement)? else {
-        return Ok(None);
-    };
+    let roots = Roots::one(code.require_statement(statement)?.expression);
     Ok(first_available_read(code, roots, storage)?.map(|occurrence| (statement, occurrence)))
 }
 
@@ -869,9 +870,7 @@ fn rendered_once(
     {
         return Ok(false);
     }
-    let Some(roots) = Roots::statement(code, statement)? else {
-        return Ok(false);
-    };
+    let roots = Roots::one(code.require_statement(statement)?.expression);
     Ok(occurrences(code, roots, occurrence)? == 1)
 }
 

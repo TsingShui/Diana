@@ -1,9 +1,7 @@
 //! Selected ownership and refused joint forests use the ordinary Engine entry.
 //! Inputs and independent scenarios: atoms/joint-expression-cover/README.md.
 
-use diana_decomp::p7::{
-    ExprId, ExprKind, MemberDeclaration, MethodCode, ReferenceDeclaration, StatementKind,
-};
+use diana_decomp::p7::{ExprId, ExprKind, MemberDeclaration, MethodCode, ReferenceDeclaration};
 use diana_decomp::p9::{Origin, Rendered};
 
 #[path = "support/inspection.rs"]
@@ -21,12 +19,7 @@ fn ownership(code: &MethodCode, rendered: &Rendered) {
             "retain the original exact read"
         );
         let statement = operation.statement.expect("original producer statement");
-        let source_expression = match code.statement(statement).unwrap().kind {
-            StatementKind::Move { expression, .. } | StatementKind::Evaluate { expression } => {
-                expression
-            }
-            _ => panic!("fixture producers are ordinary value operations"),
-        };
+        let source_expression = code.statement(statement).unwrap().value(code);
         assert_eq!(evaluation.expression, source_expression);
         for origin in [
             Origin::Operation {
@@ -127,15 +120,9 @@ fn refusing_the_condition_keeps_the_whole_effect_schedule() {
             assert!(first < second && second < mark && pair < mark);
             let statement = code
                 .statements()
-                .find(|statement| {
-                    matches!(statement.kind, StatementKind::Evaluate { expression }
-                    if call_name(code, expression).as_deref() == Some("pair"))
-                })
+                .find(|statement| call_name(code, statement.expression).as_deref() == Some("pair"))
                 .unwrap();
-            let StatementKind::Evaluate { expression } = statement.kind else {
-                unreachable!()
-            };
-            let (result, events) = replay(code, 0, None, Some(expression));
+            let (result, events) = replay(code, 0, None, Some(statement.expression));
             assert_eq!(result, Ok(1112));
             assert_eq!(
                 events,

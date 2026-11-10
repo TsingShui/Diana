@@ -88,7 +88,8 @@ pub(super) fn construct(
 ) -> Result<ControlKind, ExpressionError> {
     let f = c.planned.facts();
     let acquire = statement(c, p.enter())?;
-    let StatementKind::Monitor { enter: true, lock } = c.code.require_statement(acquire)?.kind
+    let ExprKind::Monitor { enter: true, lock } =
+        *c.code.require_statement(acquire)?.operator(c.code)
     else {
         return Err(bug("synchronized acquire lost its monitor expression"));
     };

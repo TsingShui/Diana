@@ -37,7 +37,7 @@ pub(in crate::p9) trait ExpressionSource {
     fn forwarded_copy(&self, _bundle: CopyPlanId, _step: usize) -> Option<ExprId> {
         None
     }
-    fn statement_kind(&self, _id: StatementId) -> Option<&StatementKind> {
+    fn statement_kind(&self, _id: StatementId) -> Option<&ExprKind> {
         None
     }
     fn operation(&self, _id: crate::p2::OpId) -> Option<&Operation> {
@@ -146,8 +146,8 @@ impl ExpressionSource for MethodCode {
     fn copies(&self) -> &[CopyBundle] {
         self.copies()
     }
-    fn statement_kind(&self, id: StatementId) -> Option<&StatementKind> {
-        self.statement(id).map(|statement| &statement.kind)
+    fn statement_kind(&self, id: StatementId) -> Option<&ExprKind> {
+        self.statement_kind(id)
     }
     fn operation(&self, id: crate::p2::OpId) -> Option<&Operation> {
         self.operations().get(id.0 as usize)
@@ -177,9 +177,7 @@ impl ExpressionSource for MethodCode {
             .map_or(&[], |statement| statement.sites.as_slice())
     }
     fn statement_construction(&self, statement: StatementId) -> Option<&Construction> {
-        let StatementKind::Construction(id) = self.statement(statement)?.kind else {
-            return None;
-        };
+        let id = self.statement(statement)?.construction?;
         self.constructions().get(id.0 as usize)
     }
     fn operation_pc(&self, operation: crate::p2::OpId) -> Option<crate::CodeUnitOffset> {

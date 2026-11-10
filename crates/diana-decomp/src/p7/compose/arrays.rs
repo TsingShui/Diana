@@ -86,9 +86,7 @@ pub(super) fn array_literal(
         return None;
     }
     let allocation = code.statement(allocation)?;
-    let StatementKind::Evaluate { expression } = allocation.kind else {
-        return None;
-    };
+    let expression = allocation.expression;
     let ExprKind::NewArray { reference, length } =
         code.expressions.get(expression.0 as usize)?.kind
     else {
@@ -122,10 +120,10 @@ pub(super) fn array_literal(
     // printed exception marker and no copy phase of its own. A site that prints no
     // text states a route already visible in the enclosing chains and catches.
     let fill_statement = code.statement(fill)?;
-    let StatementKind::FillArray {
+    let ExprKind::FillArray {
         array,
         payload: payload_id,
-    } = fill_statement.kind
+    } = *fill_statement.operator(code)
     else {
         return None;
     };

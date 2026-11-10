@@ -47,25 +47,33 @@ fn the_original_nested_switch_owns_its_case_loop_but_not_the_two_shared_tails() 
             let (id, bodies, cases) = groups(code);
             let region = &facts.regions()[id.0 as usize];
             let follow = region.follow().unwrap();
-            assert!(!region.nodes().contains(&follow));
+            assert!(!facts.region_nodes(region.id()).unwrap().contains(&follow));
             let body = &facts.regions()[bodies[key(code, cases, 1)].0 as usize];
             let inner = facts
                 .loops()
                 .iter()
                 .min_by_key(|p| p.members().len())
                 .unwrap();
-            assert!(inner.members().iter().all(|n| body.nodes().contains(n)));
+            assert!(
+                inner
+                    .members()
+                    .iter()
+                    .all(|n| facts.region_nodes(body.id()).unwrap().contains(n))
+            );
             assert_eq!(loops::updates_once(facts, code, rendered).len(), 2);
             assert_eq!(cases.iter().map(Vec::len).sum::<usize>(), 4);
             let bypass = &facts.regions()[bodies[key(code, cases, 2)].0 as usize];
             let target = facts
                 .links()
                 .iter()
-                .find(|l| bypass.nodes().contains(&l.from()) && !bypass.nodes().contains(&l.to()))
+                .find(|l| {
+                    facts.region_nodes(bypass.id()).unwrap().contains(&l.from())
+                        && !facts.region_nodes(bypass.id()).unwrap().contains(&l.to())
+                })
                 .unwrap()
                 .to();
             assert_ne!(target, follow);
-            assert!(!region.nodes().contains(&target));
+            assert!(!facts.region_nodes(region.id()).unwrap().contains(&target));
             assert!(rendered.text().contains("break R"));
             assert!(!rendered.text().contains("default: goto"));
             assert_eq!(rendered.text().matches(".state = 2").count(), 1);
@@ -93,22 +101,28 @@ fn a_case_local_recovering_try_and_loop_stay_whole_under_outer_finally() {
                 inner
                     .lexical_members()
                     .iter()
-                    .all(|n| case.nodes().contains(n))
+                    .all(|n| facts.region_nodes(case.id()).unwrap().contains(n))
             );
             let typed = facts
                 .tries()
                 .iter()
                 .find(|p| p.finally().is_none())
                 .unwrap();
-            assert!(typed.members().iter().all(|n| case.nodes().contains(n)));
+            assert!(
+                typed
+                    .members()
+                    .iter()
+                    .all(|n| facts.region_nodes(case.id()).unwrap().contains(n))
+            );
             let cleanup = facts
                 .tries()
                 .iter()
                 .find(|p| p.finally().is_some())
                 .unwrap();
             assert!(
-                facts.regions()[id.0 as usize]
-                    .nodes()
+                facts
+                    .region_nodes(id)
+                    .unwrap()
                     .iter()
                     .all(|n| cleanup.body().contains(n))
             );
@@ -141,7 +155,7 @@ fn direct_tail_entry_copies_execute_once_and_other_cases_bypass_them() {
             let (id, bodies, cases) = groups(code);
             let direct = key(code, cases, 3);
             let body = &facts.regions()[bodies[direct].0 as usize];
-            assert!(body.nodes().is_empty());
+            assert!(facts.region_nodes(body.id()).unwrap().is_empty());
             let target = body.follow().unwrap();
             assert_ne!(Some(target), facts.regions()[id.0 as usize].follow());
             let [arm] = cases[direct].as_slice() else {
@@ -172,7 +186,9 @@ fn direct_tail_entry_copies_execute_once_and_other_cases_bypass_them() {
             let link = facts
                 .links()
                 .iter()
-                .find(|l| other.nodes().contains(&l.from()) && l.to() == target)
+                .find(|l| {
+                    facts.region_nodes(other.id()).unwrap().contains(&l.from()) && l.to() == target
+                })
                 .unwrap();
             assert!(
                 matches!(code.emission().transfers()[link.id().0 as usize].spelling, TransferSpelling::Goto(label) if code.labels()[label.0 as usize].node == target)
@@ -198,7 +214,7 @@ fn an_empty_false_child_with_executable_copies_keeps_its_else_phase() {
                     _ => None,
                 })
                 .unwrap();
-            assert!(facts.regions()[no.0 as usize].nodes().is_empty());
+            assert!(facts.region_nodes(no).unwrap().is_empty());
             assert_eq!(
                 code.emission().if_display(test.terminal),
                 diana_decomp::p7::IfDisplay::Both

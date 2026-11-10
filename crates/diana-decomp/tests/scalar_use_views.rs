@@ -234,10 +234,7 @@ fn a_view_encloses_a_composed_producer_once_without_extending_its_operation_span
         "(I)I",
         |_, code, rendered| {
             let id = argument(code, "record", &["C"], 0);
-            let composition = code
-                .emission()
-                .composed_use(id)
-                .expect("original adjacent producer");
+            let composition = code.evaluation(id).expect("original adjacent producer");
             let producer = text(rendered, composition.expression);
             assert!(producer.contains("unit("));
             assert!(!producer.contains("via char"));
@@ -342,12 +339,7 @@ fn call_operation(code: &MethodCode, name: &str) -> diana_decomp::p2::OpId {
         let Some(statement) = operation.statement else {
             continue;
         };
-        let diana_decomp::p7::StatementKind::Evaluate { expression } =
-            code.statements()[statement.0 as usize].kind
-        else {
-            continue;
-        };
-        let ExprKind::Call(call) = &code.expressions()[expression.0 as usize].kind else {
+        let ExprKind::Call(call) = code.statement(statement).unwrap().operator(code) else {
             continue;
         };
         if let Ok(ReferenceDeclaration::Member(MemberDeclaration::Method {
@@ -397,7 +389,7 @@ fn response_failures_snapshot_null_before_acquisition_and_the_handle_after_it() 
                 .statement
                 .unwrap();
             let diana_decomp::p5::Materialization::Store(handle) =
-                code.statements()[statement.0 as usize].outputs[0].materialization()
+                code.statement(statement).unwrap().outputs[0].materialization()
             else {
                 panic!("handle commit")
             };

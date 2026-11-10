@@ -16,7 +16,7 @@ pub(super) fn lock_anchors(code: &MethodCode, rendered: &Rendered) {
                 })
                 .collect();
             assert_eq!(spans.len(), 1, "one original acquisition/release anchor");
-            let implicit = code.emission().origin_only_operation(op.source);
+            let implicit = code.origin_only_operation(op.source);
             assert_eq!(spans[0].start.0 < spans[0].end.0, !implicit);
             if implicit {
                 assert!(code.controls().iter().any(|control| matches!(&control.kind,

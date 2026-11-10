@@ -68,7 +68,7 @@ fn add(left: Value, right: Value) -> Result<Value, &'static str> {
     }
 }
 fn value(code: &MethodCode, id: ExprId, parameters: &[Value]) -> Result<Value, &'static str> {
-    if let Some(composed) = code.emission().composed_use(id) {
+    if let Some(composed) = code.evaluation(id) {
         return value(code, composed.expression, parameters);
     }
     match &code.expressions()[id.0 as usize].kind {
@@ -291,11 +291,7 @@ fn captured_helpers_are_not_relocated_into_concat_operands() {
                 })
                 .collect();
             assert_eq!(helpers.len(), 2);
-            assert!(
-                helpers
-                    .iter()
-                    .all(|op| !code.emission().composed_operation(op.source))
-            );
+            assert!(helpers.iter().all(|op| !code.nested_operation(op.source)));
             let text = rendered.text();
             assert!(
                 text.find("ConcatCapture.read(0, p0)").unwrap()

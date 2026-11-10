@@ -179,6 +179,13 @@ impl MethodCode {
         }
         expression.evaluation = Some(evaluation);
         operation.nested_at = Some(id);
+        if let Some(Expression {
+            kind: ExprKind::CheckCast { syntax, .. },
+            ..
+        }) = self.expressions.get_mut(evaluation.expression.0 as usize)
+        {
+            *syntax = CastSyntax::Value;
+        }
         Ok(())
     }
     pub fn origin_only_operation(&self, op: crate::p2::OpId) -> bool {
@@ -219,6 +226,12 @@ impl MethodCode {
     pub fn statement(&self, id: StatementId) -> Option<&Statement> {
         self.operations.get(id.0 as usize)?.body.as_ref()
     }
+    pub fn statement_kind(&self, id: StatementId) -> Option<&ExprKind> {
+        let root = self.statement(id)?.expression;
+        self.expressions
+            .get(root.0 as usize)
+            .map(|expression| &expression.kind)
+    }
     pub(super) fn require_statement(&self, id: StatementId) -> Result<&Statement, ExpressionError> {
         self.statement(id)
             .ok_or(build::bug("operation lost its owned statement body"))
@@ -234,11 +247,10 @@ impl MethodCode {
     }
     pub fn statement_operation(&self, id: StatementId) -> Option<crate::p2::OpId> {
         let body = self.statement(id)?;
-        Some(match body.kind {
-            StatementKind::Construction(group) => {
-                self.constructions.get(group.0 as usize)?.initialization
-            }
-            _ => crate::p2::OpId(id.0),
+        Some(if let Some(group) = body.construction {
+            self.constructions.get(group.0 as usize)?.initialization
+        } else {
+            crate::p2::OpId(id.0)
         })
     }
     pub fn operations(&self) -> &[Operation] {
