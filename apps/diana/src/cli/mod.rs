@@ -294,6 +294,9 @@ enum Command {
         /// Include indirect impl/extend relationships
         #[arg(long)]
         recursive: bool,
+        /// Expand type matches through referenced member signatures
+        #[arg(long)]
+        typed_uses: bool,
         /// Method relationships instead of reference sites
         #[arg(long, value_enum, default_value_t = MethodRelationArg::References)]
         relation: MethodRelationArg,
@@ -426,6 +429,7 @@ pub fn run() -> std::process::ExitCode {
             kind,
             target,
             recursive,
+            typed_uses,
             relation,
             matching,
             class,
@@ -441,6 +445,7 @@ pub fn run() -> std::process::ExitCode {
             &target,
             matching.mode(),
             recursive,
+            typed_uses,
             match relation {
                 MethodRelationArg::References => crate::analysis::xref::MethodRelation::References,
                 MethodRelationArg::Implementations => {

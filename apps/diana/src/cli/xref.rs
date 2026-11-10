@@ -23,6 +23,7 @@ pub fn run(
     target: &str,
     mode: MatchMode,
     recursive: bool,
+    typed_uses: bool,
     method_relation: crate::analysis::xref::MethodRelation,
     class: Option<&str>,
     transitive: u32,
@@ -118,6 +119,8 @@ pub fn run(
             class,
             depth: 1,
             jobs,
+            typed_uses,
+            retain_payloads: transitive > 1,
         },
     )
     .map_err(query_failure)?;
@@ -145,6 +148,8 @@ pub fn run(
                     class: None,
                     depth,
                     jobs,
+                    typed_uses: false,
+                    retain_payloads: true,
                 },
             )
             .map_err(query_failure)?;

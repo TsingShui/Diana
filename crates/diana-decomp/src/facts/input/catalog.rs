@@ -209,6 +209,21 @@ impl<'a> ProgramIndex<'a> {
         self.header.string_ids.count
     }
 
+    /// Number of original ``type_ids`` entries.
+    pub fn type_ids_len(&self) -> u32 {
+        self.header.type_ids.count
+    }
+
+    /// Number of original ``field_ids`` entries.
+    pub fn field_ids_len(&self) -> u32 {
+        self.header.field_ids.count
+    }
+
+    /// Number of original ``method_ids`` entries.
+    pub fn method_ids_len(&self) -> u32 {
+        self.header.method_ids.count
+    }
+
     /// Visits original class_def identities independently. Malformed class
     /// metadata is delivered locally; resource failures stop the request.
     pub fn visit_classes(

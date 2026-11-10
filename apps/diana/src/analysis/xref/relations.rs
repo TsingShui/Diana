@@ -95,6 +95,9 @@ impl Graph {
             children: HashMap::new(),
             gaps: HashSet::new(),
         };
+        // One pass over declarations: the payload lives in this scratch instead
+        // of every root retaining its own.
+        let mut scratch = Vec::new();
         for (image, root) in query.roots.iter().enumerate() {
             let stopped = std::cell::Cell::new(false);
             let mut forward = |event| {
@@ -104,167 +107,171 @@ impl Graph {
                 }
                 result
             };
-            let result = root.bytes().map_err(QueryError::from).and_then(|bytes| {
-                dex::visit_logical(bytes, |logical, index| {
-                    for ordinal in 0..index.class_count() {
-                        let class_def = diana_decomp::ClassDefId(ordinal);
-                        let facts = match declarations::collect(&index, class_def) {
-                            Ok(facts) => facts,
-                            Err(error) => {
-                                forward(Event::Issue(Issue::new(
-                                    format!("image:{image}:l{}:c{ordinal}", logical.0),
-                                    &error,
-                                    None,
-                                )))?;
-                                continue;
-                            }
-                        };
-                        let location = Location {
-                            image: dex::ImageIndex(image),
-                            logical,
-                            class_def,
-                            descriptor: copy(facts.descriptor().units())?,
-                        };
-                        let mut parents = Vec::new();
-                        match facts.superclass() {
-                            Fact::Present(value) => push(
-                                &mut parents,
-                                Edge {
-                                    descriptor: copy(value.units())?,
-                                    interface: false,
-                                },
-                            )?,
-                            Fact::Unavailable(error) => forward(Event::Issue(
-                                Issue::from_request(location.context(), error),
-                            ))?,
-                            Fact::NotRead => forward(Event::Issue(Issue::unknown(
-                                location.context(),
-                                "superclass not read",
-                            )))?,
-                            Fact::Absent => (),
-                        }
-                        match facts.interfaces() {
-                            Fact::Present(values) => {
-                                for value in values {
-                                    match &value.descriptor {
-                                        Fact::Present(value) => push(
-                                            &mut parents,
-                                            Edge {
-                                                descriptor: copy(value.units())?,
-                                                interface: true,
-                                            },
-                                        )?,
-                                        Fact::Unavailable(error) => forward(Event::Issue(
-                                            Issue::from_request(location.context(), error),
-                                        ))?,
-                                        _ => forward(Event::Issue(Issue::unknown(
-                                            location.context(),
-                                            "interface descriptor unavailable",
-                                        )))?,
-                                    }
-                                }
-                            }
-                            Fact::Unavailable(error) => forward(Event::Issue(
-                                Issue::from_request(location.context(), error),
-                            ))?,
-                            Fact::NotRead => forward(Event::Issue(Issue::unknown(
-                                location.context(),
-                                "interface list not read",
-                            )))?,
-                            Fact::Absent => (),
-                        }
-                        let owner = graph.nodes.len();
-                        if query.plan.method_relation != MethodRelation::References {
-                            if let Some(error) = facts.methods_issue() {
-                                forward(Event::Issue(Issue::from_request(
-                                    location.context(),
-                                    error,
-                                )))?;
-                            }
-                            for method in facts.methods() {
-                                let declaration = match method.declaration() {
-                                    Fact::Present(value) => value,
-                                    Fact::Unavailable(error) => {
-                                        forward(Event::Issue(Issue::from_request(
-                                            format!(
-                                                "{}:m{}",
-                                                location.context(),
-                                                method.method().0
-                                            ),
-                                            error,
-                                        )))?;
-                                        continue;
-                                    }
-                                    _ => {
-                                        forward(Event::Issue(Issue::unknown(
-                                            format!(
-                                                "{}:m{}",
-                                                location.context(),
-                                                method.method().0
-                                            ),
-                                            "method declaration unavailable",
-                                        )))?;
-                                        continue;
-                                    }
-                                };
-                                let flags = method.access_flags().raw();
-                                if flags & (0x2 | 0x8) != 0
-                                    || declaration.name_units().first() == Some(&u16::from(b'<'))
-                                {
+            let result = root
+                .bytes_into(&mut scratch)
+                .map_err(QueryError::from)
+                .and_then(|bytes| {
+                    dex::visit_logical(bytes, |logical, index| {
+                        for ordinal in 0..index.class_count() {
+                            let class_def = diana_decomp::ClassDefId(ordinal);
+                            let facts = match declarations::collect(&index, class_def) {
+                                Ok(facts) => facts,
+                                Err(error) => {
+                                    forward(Event::Issue(Issue::new(
+                                        format!("image:{image}:l{}:c{ordinal}", logical.0),
+                                        &error,
+                                        None,
+                                    )))?;
                                     continue;
                                 }
-                                let mut parameters = Vec::new();
-                                parameters
-                                    .try_reserve_exact(declaration.parameter_types.len())
-                                    .map_err(InputError::Allocation)?;
-                                for parameter in &declaration.parameter_types {
-                                    parameters.push(copy(parameter.units())?);
-                                }
-                                push(
-                                    &mut graph.methods,
-                                    Method {
-                                        owner,
-                                        id: method.method(),
-                                        flags,
-                                        signature: Signature {
-                                            name: copy(declaration.name_units())?,
-                                            prototype: copy(declaration.prototype_units())?,
-                                            parameters,
-                                            returns: copy(declaration.return_type.units())?,
-                                        },
+                            };
+                            let location = Location {
+                                image: dex::ImageIndex(image),
+                                logical,
+                                class_def,
+                                descriptor: copy(facts.descriptor().units())?,
+                            };
+                            let mut parents = Vec::new();
+                            match facts.superclass() {
+                                Fact::Present(value) => push(
+                                    &mut parents,
+                                    Edge {
+                                        descriptor: copy(value.units())?,
+                                        interface: false,
                                     },
+                                )?,
+                                Fact::Unavailable(error) => forward(Event::Issue(
+                                    Issue::from_request(location.context(), error),
+                                ))?,
+                                Fact::NotRead => forward(Event::Issue(Issue::unknown(
+                                    location.context(),
+                                    "superclass not read",
+                                )))?,
+                                Fact::Absent => (),
+                            }
+                            match facts.interfaces() {
+                                Fact::Present(values) => {
+                                    for value in values {
+                                        match &value.descriptor {
+                                            Fact::Present(value) => push(
+                                                &mut parents,
+                                                Edge {
+                                                    descriptor: copy(value.units())?,
+                                                    interface: true,
+                                                },
+                                            )?,
+                                            Fact::Unavailable(error) => forward(Event::Issue(
+                                                Issue::from_request(location.context(), error),
+                                            ))?,
+                                            _ => forward(Event::Issue(Issue::unknown(
+                                                location.context(),
+                                                "interface descriptor unavailable",
+                                            )))?,
+                                        }
+                                    }
+                                }
+                                Fact::Unavailable(error) => forward(Event::Issue(
+                                    Issue::from_request(location.context(), error),
+                                ))?,
+                                Fact::NotRead => forward(Event::Issue(Issue::unknown(
+                                    location.context(),
+                                    "interface list not read",
+                                )))?,
+                                Fact::Absent => (),
+                            }
+                            let owner = graph.nodes.len();
+                            if query.plan.method_relation != MethodRelation::References {
+                                if let Some(error) = facts.methods_issue() {
+                                    forward(Event::Issue(Issue::from_request(
+                                        location.context(),
+                                        error,
+                                    )))?;
+                                }
+                                for method in facts.methods() {
+                                    let declaration = match method.declaration() {
+                                        Fact::Present(value) => value,
+                                        Fact::Unavailable(error) => {
+                                            forward(Event::Issue(Issue::from_request(
+                                                format!(
+                                                    "{}:m{}",
+                                                    location.context(),
+                                                    method.method().0
+                                                ),
+                                                error,
+                                            )))?;
+                                            continue;
+                                        }
+                                        _ => {
+                                            forward(Event::Issue(Issue::unknown(
+                                                format!(
+                                                    "{}:m{}",
+                                                    location.context(),
+                                                    method.method().0
+                                                ),
+                                                "method declaration unavailable",
+                                            )))?;
+                                            continue;
+                                        }
+                                    };
+                                    let flags = method.access_flags().raw();
+                                    if flags & (0x2 | 0x8) != 0
+                                        || declaration.name_units().first()
+                                            == Some(&u16::from(b'<'))
+                                    {
+                                        continue;
+                                    }
+                                    let mut parameters = Vec::new();
+                                    parameters
+                                        .try_reserve_exact(declaration.parameter_types.len())
+                                        .map_err(InputError::Allocation)?;
+                                    for parameter in &declaration.parameter_types {
+                                        parameters.push(copy(parameter.units())?);
+                                    }
+                                    push(
+                                        &mut graph.methods,
+                                        Method {
+                                            owner,
+                                            id: method.method(),
+                                            flags,
+                                            signature: Signature {
+                                                name: copy(declaration.name_units())?,
+                                                prototype: copy(declaration.prototype_units())?,
+                                                parameters,
+                                                returns: copy(declaration.return_type.units())?,
+                                            },
+                                        },
+                                    )?;
+                                }
+                            }
+                            graph.names.try_reserve(1).map_err(InputError::Allocation)?;
+                            push(
+                                graph.names.entry(copy(&location.descriptor)?).or_default(),
+                                owner,
+                            )?;
+                            for edge in &parents {
+                                graph
+                                    .children
+                                    .try_reserve(1)
+                                    .map_err(InputError::Allocation)?;
+                                push(
+                                    graph.children.entry(copy(&edge.descriptor)?).or_default(),
+                                    (owner, edge.interface),
                                 )?;
                             }
-                        }
-                        graph.names.try_reserve(1).map_err(InputError::Allocation)?;
-                        push(
-                            graph.names.entry(copy(&location.descriptor)?).or_default(),
-                            owner,
-                        )?;
-                        for edge in &parents {
-                            graph
-                                .children
-                                .try_reserve(1)
-                                .map_err(InputError::Allocation)?;
                             push(
-                                graph.children.entry(copy(&edge.descriptor)?).or_default(),
-                                (owner, edge.interface),
+                                &mut graph.nodes,
+                                Node {
+                                    location,
+                                    flags: facts.access_flags().raw(),
+                                    parents,
+                                },
                             )?;
+                            // P0 metadata/preparation and unneeded directories are dropped
+                            // here. The graph retains only the facts its queries consume.
                         }
-                        push(
-                            &mut graph.nodes,
-                            Node {
-                                location,
-                                flags: facts.access_flags().raw(),
-                                parents,
-                            },
-                        )?;
-                        // P0 metadata/preparation and unneeded directories are dropped
-                        // here. The graph retains only the facts its queries consume.
-                    }
-                    Ok(())
-                })
-            });
+                        Ok(())
+                    })
+                });
             if let Err(error) = result {
                 if stopped.get() {
                     return Err(error);

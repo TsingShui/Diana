@@ -14,6 +14,7 @@ use super::request::RequestScope;
 mod coordinate;
 mod declarations;
 mod delivery;
+mod prefilter;
 mod relations;
 pub use coordinate::resolve_coordinate;
 pub use delivery::{Event, Issue};
@@ -226,6 +227,12 @@ pub struct XrefPlan {
     pub class: Option<Vec<u16>>,
     pub depth: u32,
     pub jobs: usize,
+    /// Expand type matches through the signatures of referenced members. Off by
+    /// default: a call site references its callee, not the types in its
+    /// signature, and expanding them costs one row per call site.
+    pub typed_uses: bool,
+    /// Keep inflated payloads for a later pass (transitive caller expansion).
+    pub retain_payloads: bool,
 }
 
 /// Prepared reference scan over the root images of one leased input.
@@ -276,8 +283,8 @@ impl<'a> Xref<'a> {
         super::runner::run(
             self.roots.len(),
             self.plan.jobs,
-            || (),
-            |(), ordinal, emit| {
+            Vec::new,
+            |scratch: &mut Vec<u8>, ordinal, emit| {
                 let root = &self.roots[ordinal];
                 let stopped = std::cell::Cell::new(false);
                 let mut forward = |event| {
@@ -287,7 +294,14 @@ impl<'a> Xref<'a> {
                     }
                     result
                 };
-                let result = root.bytes().map_err(QueryError::from).and_then(|bytes| {
+                // One pass reads every root once, so the payload lives in this
+                // worker's scratch instead of every root retaining its own.
+                let bytes = if self.plan.retain_payloads {
+                    root.bytes()
+                } else {
+                    root.bytes_into(scratch)
+                };
+                let result = bytes.map_err(QueryError::from).and_then(|bytes| {
                     dex::visit_logical(bytes, |logical, index| {
                         scan_logical(
                             &index,
@@ -327,11 +341,21 @@ fn scan_logical(
         }
         result
     };
+    let prefilter = prefilter::Prefilter::new(index, &plan.targets, plan.typed_uses)?;
     let mut failure = None;
     let result = index.visit_classes(|class_def, class| {
         let context = format!("image:{}:l{}:c{}", image.0, logical.0, class_def.0);
         let result = class.map_err(QueryError::from).and_then(|class| {
-            scan_class(index, &class, image, logical, class_def, plan, &mut forward)
+            scan_class(
+                index,
+                &class,
+                image,
+                logical,
+                class_def,
+                plan,
+                &prefilter,
+                &mut forward,
+            )
         });
         if let Err(error) = result {
             if !stopped.get() {
@@ -370,12 +394,69 @@ fn scan_class(
     logical: LogicalDex,
     class_def: ClassDefId,
     plan: &XrefPlan,
+    prefilter: &prefilter::Prefilter,
     emit: &mut dyn FnMut(Event) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
     if let Some(target) = plan.class.as_deref()
         && !class.descriptor.matches(target)?
     {
         return Ok(());
+    }
+    // Hierarchy questions read class_def only: no class data, no member
+    // declarations and no code.
+    if plan
+        .targets
+        .iter()
+        .all(|target| matches!(target, Target::Hierarchy { .. }))
+    {
+        let location = declarations::Location {
+            image,
+            logical,
+            class_def,
+            descriptor: copy(&class.descriptor.units()?)?,
+        };
+        let hierarchy = match class.hierarchy() {
+            Ok(hierarchy) => hierarchy,
+            Err(error) => {
+                emit(Event::Issue(Issue::new(
+                    location.context(),
+                    &QueryError::from(error),
+                    None,
+                )))?;
+                return Ok(());
+            }
+        };
+        return emit_hierarchy(
+            class.access_flags,
+            hierarchy.superclass.as_ref(),
+            &hierarchy.interfaces,
+            &location,
+            plan,
+            emit,
+        );
+    }
+    // A pure type query needs signatures, not a class-data snapshot.
+    if !plan.typed_uses
+        && plan
+            .targets
+            .iter()
+            .all(|target| matches!(target, Target::Type(_)))
+    {
+        let location = declarations::Location {
+            image,
+            logical,
+            class_def,
+            descriptor: copy(&class.descriptor.units()?)?,
+        };
+        declarations::scan_type_declarations(
+            index,
+            class,
+            &location,
+            &plan.targets,
+            plan.depth,
+            emit,
+        )?;
+        return scan_type_code(index, class, &location, plan, prefilter, emit);
     }
     let facts = declarations::collect(index, class_def)?;
     let class_descriptor = copy(facts.descriptor().units())?;
@@ -515,6 +596,13 @@ fn scan_class(
                 diana_decomp::input::RawPrintable::Declaration => return Ok(()),
             };
             let range = view.instruction_byte_range();
+            // A body without any target operand byte cannot reference the
+            // target; skip its decode entirely.
+            if let Some(code) = view.source_bytes().get(range.start.0..range.end.0)
+                && !prefilter.might_reference(code)
+            {
+                return Ok(());
+            }
             let mut sites = Vec::new();
             let mut recovered_end = range.start.0;
             let mut literals = Vec::new();
@@ -567,7 +655,12 @@ fn scan_class(
                     }
                 }
                 for reference in layout.references().into_iter().flatten() {
-                    if !needs_reference(reference.target, &plan.targets) {
+                    let needed = if plan.typed_uses {
+                        needs_reference(reference.target, &plan.targets)
+                    } else {
+                        needs_direct(reference.target, &plan.targets)
+                    };
+                    if !needed {
                         continue;
                     }
                     sites
@@ -583,7 +676,14 @@ fn scan_class(
             let name = copy(declaration.name_units())?;
             let prototype = copy(declaration.prototype_units())?;
             for (code_unit, mnemonic, reference) in sites {
+                // A prototype operand names its types directly; every other
+                // derived leaf belongs to typed-use expansion.
+                let direct = plan.typed_uses
+                    || matches!(reference, diana_decomp::raw::OperandReference::Proto(_));
                 index.visit_reference_leaves::<QueryError>(reference, |path, facts| {
+                    if !direct && !path.is_empty() {
+                        return Ok(());
+                    }
                     let found = facts
                         .map_err(QueryError::from)
                         .and_then(|facts| matched(facts, &plan.targets));
@@ -688,6 +788,170 @@ fn scan_class(
     Ok(())
 }
 
+/// Emits direct hierarchy relations from `class_def` alone.
+fn emit_hierarchy(
+    access_flags: u32,
+    superclass: Option<&diana_decomp::input::DexString<'_>>,
+    interfaces: &[diana_decomp::input::DexString<'_>],
+    location: &declarations::Location,
+    plan: &XrefPlan,
+    emit: &mut dyn FnMut(Event) -> Result<(), QueryError>,
+) -> Result<(), QueryError> {
+    for target in &plan.targets {
+        let Target::Hierarchy { relation, target } = target else {
+            continue;
+        };
+        let label = match relation {
+            Relation::Extend => "extends",
+            Relation::Impl if access_flags & 0x200 != 0 => "extends-interface",
+            Relation::Impl => "implements",
+        };
+        let mut emit_one = |value: &diana_decomp::input::DexString<'_>| -> Result<(), QueryError> {
+            let units = value.units()?;
+            let Some(selected) = target.evaluate_units(&units)? else {
+                return Ok(());
+            };
+            emit(location.row(
+                Site::Class,
+                Matched::Type(copy(&units)?),
+                selected,
+                label.to_owned(),
+                plan.depth,
+            )?)?;
+            Ok(())
+        };
+        match relation {
+            Relation::Extend => {
+                if let Some(value) = superclass {
+                    emit_one(value)?;
+                }
+            }
+            Relation::Impl => {
+                for value in interfaces {
+                    emit_one(value)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Direct type references in method bodies for a pure type query.
+fn scan_type_code(
+    index: &ProgramIndex<'_>,
+    class: &ClassView<'_, '_>,
+    location: &declarations::Location,
+    plan: &XrefPlan,
+    prefilter: &prefilter::Prefilter,
+    emit: &mut dyn FnMut(Event) -> Result<(), QueryError>,
+) -> Result<(), QueryError> {
+    let mut failure = None;
+    let visited = class.visit_methods(|method| {
+        if failure.is_some() {
+            return Ok(());
+        }
+        let result = (|| -> Result<(), QueryError> {
+            let diana_decomp::input::MethodBody::Code(view) = method.body? else {
+                return Ok(());
+            };
+            let range = view.instruction_byte_range();
+            if let Some(code) = view.source_bytes().get(range.start.0..range.end.0)
+                && !prefilter.might_reference(code)
+            {
+                return Ok(());
+            }
+            let Ok(declaration) = method.declaration else {
+                return Ok(());
+            };
+            let name = copy(&declaration.name.units()?)?;
+            let prototype = declarations::prototype_units(&declaration.prototype)?;
+            let mut stopped = None;
+            let decoded = view.visit_instructions(|item| {
+                let diana_decomp::raw::RawCodeItem::Instruction(instruction) = item else {
+                    return Ok(());
+                };
+                let layout = instruction.layout();
+                let LayoutKind::Instruction(spec) = layout.kind() else {
+                    return Ok(());
+                };
+                for reference in layout.references().into_iter().flatten() {
+                    if !needs_direct(reference.target, &plan.targets) {
+                        continue;
+                    }
+                    let direct = matches!(
+                        reference.target,
+                        diana_decomp::raw::OperandReference::Proto(_)
+                    );
+                    let produced = index.visit_reference_leaves::<QueryError>(
+                        reference.target,
+                        |path, facts| {
+                            if !direct && !path.is_empty() {
+                                return Ok(());
+                            }
+                            let Ok(facts) = facts else {
+                                return Ok(());
+                            };
+                            let Some((matched, selected)) = matched(facts, &plan.targets)? else {
+                                return Ok(());
+                            };
+                            emit(Event::Row(XrefRow {
+                                image: location.image,
+                                logical: location.logical,
+                                class_def: location.class_def,
+                                class_descriptor: copy(&location.descriptor)?,
+                                relevance: selected.relevance,
+                                site: Site::Code {
+                                    method: method.method_idx,
+                                    name: copy(&name)?,
+                                    prototype: copy(&prototype)?,
+                                    code_unit: instruction.pc().0,
+                                },
+                                depth: plan.depth,
+                                use_: if path.is_empty() {
+                                    spec.mnemonic.to_owned()
+                                } else {
+                                    format!("{} → {path}", spec.mnemonic)
+                                },
+                                matched,
+                            }))?;
+                            Ok(())
+                        },
+                    );
+                    if let Err(error) = produced {
+                        stopped = Some(error);
+                        return Err(diana_decomp::input::MethodError::InternalInvariant(
+                            "type scan sink stopped",
+                        ));
+                    }
+                }
+                Ok(())
+            });
+            if let Some(error) = stopped {
+                return Err(error);
+            }
+            if let Err(error) = decoded {
+                return Err(QueryError::from(error));
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            failure = Some(error);
+        }
+        Ok(())
+    });
+    if let Err(error) = visited {
+        emit(Event::Issue(Issue::new(
+            format!("{} methods", location.context()),
+            &QueryError::from(error),
+            None,
+        )))?;
+    }
+    match failure {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
 fn copy(units: &[u16]) -> Result<Vec<u16>, QueryError> {
     let mut owned = Vec::new();
     append(&mut owned, units)?;
@@ -710,6 +974,25 @@ fn prototype_units(prototype: &Prototype<'_, '_>) -> Result<Vec<u16>, QueryError
     append(&mut units, &[u16::from(b')')])?;
     append(&mut units, &prototype.return_type.units()?)?;
     Ok(units)
+}
+
+/// Whether this operand kind is the target kind itself. Derived type uses
+/// (member owner/parameter/return/field types) stay behind `--typed-uses`.
+pub(super) fn needs_direct(
+    reference: diana_decomp::raw::OperandReference,
+    targets: &[Target],
+) -> bool {
+    use diana_decomp::raw::OperandReference as Ref;
+    targets.iter().any(|target| match (reference, target) {
+        (_, Target::Resource(_) | Target::Hierarchy { .. }) => false,
+        (Ref::CallSite(_), _) => true,
+        (Ref::String(_), Target::String(_)) => true,
+        (Ref::Type(_) | Ref::Proto(_), Target::Type(_)) => true,
+        (Ref::Method(_), Target::Method { .. }) => true,
+        (Ref::Field(_), Target::Field { .. }) => true,
+        (Ref::MethodHandle(_), Target::Method { .. } | Target::Field { .. }) => true,
+        _ => false,
+    })
 }
 
 pub(super) fn needs_reference(
