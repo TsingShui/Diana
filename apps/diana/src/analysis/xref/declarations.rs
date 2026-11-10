@@ -1,3 +1,6 @@
+use diana_decomp::input::Cursor;
+use diana_decomp::input::annotations::{AnnotationMembers, AnnotationOwner, association};
+use diana_decomp::input::values::{EncodedKind, EncodedValue, EncodedValues, ValueStep};
 use diana_decomp::input::{
     ProgramIndex,
     value_facts::{ValueDeclaration, ValueMember, ValuePrototype},
@@ -900,4 +903,305 @@ fn allocation_error() -> diana_decomp::input::InputError {
     diana_decomp::input::InputError::Allocation {
         offset_byte: diana_decomp::ByteOffset(0),
     }
+}
+
+/// Member rows that live outside code.
+///
+/// An annotation value or a static initial value can carry an encoded
+/// reference to a field, a method or a method handle. Reading those values
+/// directly keeps a member query from building a full class snapshot, which
+/// parses every declaration, annotation and method body view in the class.
+pub(super) fn scan_member_values<'a>(
+    index: &ProgramIndex<'a>,
+    class: &diana_decomp::input::ClassView<'_, 'a>,
+    location: &Location,
+    targets: &[Target],
+    depth: u32,
+    emit: &mut dyn FnMut(Event) -> Result<(), QueryError>,
+) -> Result<(), QueryError> {
+    let context = index.class_context(location.class_def)?;
+    if context.annotations_offset.0 == 0 {
+        return Ok(());
+    }
+    let directory = index.annotation_directory(context.annotations_offset)?;
+    let mut scan = MemberScan {
+        index,
+        location,
+        targets,
+        depth,
+        emit,
+        stopped: false,
+    };
+    scan.annotation_set(directory.class, &Site::Class, "annotation")?;
+    scan.member_annotations(class, directory.fields, false)?;
+    scan.member_annotations(class, directory.methods, true)?;
+    scan.parameter_annotations(class, directory.parameters)?;
+    if let Ok(Some(offset)) = context.values_offset {
+        scan.static_values(class, offset)?;
+    }
+    Ok(())
+}
+
+struct MemberScan<'i, 'a, 'e> {
+    index: &'i ProgramIndex<'a>,
+    location: &'e Location,
+    targets: &'e [Target],
+    depth: u32,
+    emit: &'e mut dyn FnMut(Event) -> Result<(), QueryError>,
+    stopped: bool,
+}
+
+impl<'i, 'a> MemberScan<'i, 'a, '_> {
+    fn row(
+        &mut self,
+        site: &Site,
+        matched: Matched,
+        selected: FilterMatch,
+        use_: &str,
+    ) -> Result<(), QueryError> {
+        let event = self.location.row(
+            site.try_copy()?,
+            matched,
+            selected,
+            use_.to_owned(),
+            self.depth,
+        )?;
+        let result = (self.emit)(event);
+        if result.is_err() {
+            self.stopped = true;
+        }
+        result
+    }
+
+    fn issue(&mut self, scope: &str, error: &QueryError) -> Result<(), QueryError> {
+        let event = Event::Issue(Issue::new(
+            format!("{} {scope}", self.location.context()),
+            error,
+            None,
+        ));
+        let result = (self.emit)(event);
+        if result.is_err() {
+            self.stopped = true;
+        }
+        result
+    }
+
+    fn annotation_set(
+        &mut self,
+        offset: diana_decomp::ByteOffset,
+        site: &Site,
+        use_: &str,
+    ) -> Result<(), QueryError> {
+        if offset.0 == 0 {
+            return Ok(());
+        }
+        let mut offsets = self.index.annotation_offsets(0x1003, offset)?;
+        let mut last = None;
+        while offsets.remaining_byte().0 != 0 {
+            let (_at, _visibility, _type_id, mut values) =
+                self.index.next_annotation(&mut offsets, &mut last)?;
+            self.values(&mut values, site, use_)?;
+        }
+        Ok(())
+    }
+
+    fn values(
+        &mut self,
+        values: &mut EncodedValues<'a>,
+        site: &Site,
+        use_: &str,
+    ) -> Result<(), QueryError> {
+        while let Some(step) = values.next(self.index)? {
+            let ValueStep::Value(value) = step else {
+                continue;
+            };
+            self.value(&value, site, use_)?;
+        }
+        Ok(())
+    }
+
+    /// One encoded value: only original member references can answer a member
+    /// query, and every leaf keeps its original path.
+    fn value(
+        &mut self,
+        value: &EncodedValue<'a>,
+        site: &Site,
+        use_: &str,
+    ) -> Result<(), QueryError> {
+        let EncodedKind::Reference(reference) = value.kind else {
+            return Ok(());
+        };
+        if !super::needs_reference(reference, self.targets) {
+            return Ok(());
+        }
+        let index = self.index;
+        index.visit_reference_leaves::<QueryError>(reference, |path, facts| {
+            let facts = match facts {
+                Ok(facts) => facts,
+                Err(error) => {
+                    return self.issue(
+                        &format!("{site:?} {use_} reference"),
+                        &QueryError::from(error),
+                    );
+                }
+            };
+            let Some((matched, selected)) = super::matched(facts, self.targets)? else {
+                return Ok(());
+            };
+            let label = match reference {
+                diana_decomp::raw::OperandReference::MethodHandle(_) => {
+                    format!("{use_} method-handle")
+                }
+                _ if path.is_empty() => use_.to_owned(),
+                _ => format!("{use_} → {path}"),
+            };
+            self.row(site, matched, selected, &label)
+        })
+    }
+
+    fn member_annotations(
+        &mut self,
+        class: &diana_decomp::input::ClassView<'_, 'a>,
+        mut records: Cursor<'a>,
+        method: bool,
+    ) -> Result<(), QueryError> {
+        if records.remaining_byte().0 == 0 {
+            return Ok(());
+        }
+        let index = self.index;
+        let mut members = AnnotationMembers::open(index, class, method)?;
+        let mut last = None;
+        while records.remaining_byte().0 != 0 {
+            let (owner, offset, _parameters) =
+                association(index, class, &mut members, &mut records, &mut last, method)?;
+            let site = match owner {
+                AnnotationOwner::Field(id) => field_site_at(index, id)?,
+                AnnotationOwner::Method(id) => method_site_at(index, id)?,
+            };
+            self.annotation_set(offset, &site, "annotation")?;
+        }
+        Ok(())
+    }
+
+    fn parameter_annotations(
+        &mut self,
+        class: &diana_decomp::input::ClassView<'_, 'a>,
+        mut records: Cursor<'a>,
+    ) -> Result<(), QueryError> {
+        if records.remaining_byte().0 == 0 {
+            return Ok(());
+        }
+        let index = self.index;
+        let mut members = AnnotationMembers::open(index, class, true)?;
+        let mut last = None;
+        while records.remaining_byte().0 != 0 {
+            let (owner, offset, parameters) =
+                association(index, class, &mut members, &mut records, &mut last, true)?;
+            let AnnotationOwner::Method(id) = owner else {
+                return Err(QueryError::Engine(
+                    diana_decomp::input::InputError::InternalInvariant(
+                        "parameter annotation mapped to a field",
+                    ),
+                ));
+            };
+            let site = method_site_at(index, id)?;
+            let mut references = index.annotation_parameters(offset, parameters)?;
+            for parameter in 0..parameters {
+                let value = references.read_u32()?;
+                let offset = diana_decomp::ByteOffset(usize::try_from(value).map_err(|_| {
+                    diana_decomp::input::InputError::PlatformCapacity {
+                        offset_byte: diana_decomp::ByteOffset(0),
+                    }
+                })?);
+                self.annotation_set(offset, &site, &format!("annotation parameter[{parameter}]"))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Static initial values are encoded in class-data order, one root value
+    /// per static field; nested containers keep their root field.
+    fn static_values(
+        &mut self,
+        class: &diana_decomp::input::ClassView<'_, 'a>,
+        offset: diana_decomp::ByteOffset,
+    ) -> Result<(), QueryError> {
+        let mut fields = Vec::new();
+        class.visit_fields(|field| {
+            if let diana_decomp::input::FieldStorage::Static { ordinal } = field.storage {
+                fields
+                    .try_reserve(1)
+                    .map_err(|_| diana_decomp::input::InputError::Allocation {
+                        offset_byte: diana_decomp::ByteOffset(0),
+                    })?;
+                fields.push((ordinal, field.field_idx));
+            }
+            Ok(())
+        })?;
+        if fields.is_empty() {
+            return Ok(());
+        }
+        let count = u32::try_from(fields.len()).map_err(|_| {
+            diana_decomp::input::InputError::PlatformCapacity {
+                offset_byte: diana_decomp::ByteOffset(0),
+            }
+        })?;
+        let mut values = EncodedValues::open(self.index, offset, Some(count))?;
+        let mut site = None;
+        let mut depth = 0usize;
+        while let Some(step) = values.next(self.index)? {
+            match step {
+                ValueStep::EndContainer => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        site = None;
+                    }
+                }
+                ValueStep::Value(value) => {
+                    if depth == 0 {
+                        site = match fields.get(value.ordinal.0 as usize) {
+                            Some((_, field)) => Some(field_site_at(self.index, *field)?),
+                            None => None,
+                        };
+                    }
+                    let Some(current) = site.as_ref() else {
+                        continue;
+                    };
+                    self.value(&value, current, "static-value")?;
+                    if matches!(
+                        value.kind,
+                        EncodedKind::Array { .. } | EncodedKind::Annotation { .. }
+                    ) {
+                        depth = depth.saturating_add(1);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn field_site_at(index: &ProgramIndex<'_>, id: diana_decomp::FieldId) -> Result<Site, QueryError> {
+    Ok(match index.field_reference(id) {
+        Ok(reference) => Site::Field {
+            field: id,
+            name: copy(&reference.declaration.name.units()?)?,
+            field_type: copy(&reference.declaration.field_type.units()?)?,
+        },
+        Err(_) => Site::UnknownField(id),
+    })
+}
+
+fn method_site_at(
+    index: &ProgramIndex<'_>,
+    id: diana_decomp::MethodId,
+) -> Result<Site, QueryError> {
+    Ok(match index.method_reference(id) {
+        Ok(reference) => Site::Method {
+            method: id,
+            name: copy(&reference.declaration.name.units()?)?,
+            prototype: prototype_units(&reference.declaration.prototype)?,
+        },
+        Err(_) => Site::UnknownMethod(id),
+    })
 }

@@ -387,9 +387,9 @@ fn scan_logical(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn scan_class(
-    index: &ProgramIndex<'_>,
-    class: &ClassView<'_, '_>,
+fn scan_class<'a>(
+    index: &ProgramIndex<'a>,
+    class: &ClassView<'_, 'a>,
     image: ImageIndex,
     logical: LogicalDex,
     class_def: ClassDefId,
@@ -460,23 +460,48 @@ fn scan_class(
         }
         return Ok(());
     }
-    // Method and field references live in code. Annotations are the only
-    // declaration records that can name a member, so a class without an
-    // annotation directory needs no class-data snapshot at all.
+    // Method and field references live in code. Annotations and static
+    // initial values can also name a member through an encoded reference, so
+    // read those values directly; a full class snapshot would parse every
+    // declaration in the class for a handful of references.
     let member_only = plan
         .targets
         .iter()
         .all(|target| matches!(target, Target::Method { .. } | Target::Field { .. }));
-    let annotated = index
-        .class_context(class_def)
-        .map_or(true, |context| context.annotations_offset.0 != 0);
-    if member_only && !annotated {
+    if member_only {
         let location = declarations::Location {
             image,
             logical,
             class_def,
             descriptor: copy(&class.descriptor.units()?)?,
         };
+        {
+            let stopped = std::cell::Cell::new(false);
+            let mut forward = |event| {
+                let result = emit(event);
+                if result.is_err() {
+                    stopped.set(true);
+                }
+                result
+            };
+            if let Err(error) = declarations::scan_member_values(
+                index,
+                class,
+                &location,
+                &plan.targets,
+                plan.depth,
+                &mut forward,
+            ) {
+                if stopped.get() {
+                    return Err(error);
+                }
+                forward(Event::Issue(Issue::new(
+                    format!("{} declaration metadata", location.context()),
+                    &error,
+                    None,
+                )))?;
+            }
+        }
         return scan_code(index, class, &location, plan, prefilter, emit);
     }
     // A pure type query needs signatures, not a class-data snapshot.
