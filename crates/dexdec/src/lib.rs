@@ -33,7 +33,10 @@ pub mod platform_symbols;
 pub mod profiling;
 
 // Recovery entry: original facts in, source text out.
-pub use api::{decode_method_code, decompile_method, resolve_symbols, MethodOptions};
+pub use api::{
+    decompile_class, decompile_method, ClassInput, ClassOutput, MethodInput, MethodOptions,
+    MethodOutcome,
+};
 pub use frontend::{ClassNode, DexError, DexResult, MethodCode, MethodNode};
 pub use local::LocalSymbols;
 pub use platform_symbols::{
