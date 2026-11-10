@@ -51,3 +51,32 @@ fn the_backend_recovers_a_class_from_original_facts() {
     assert!(source.text.contains("add"), "{}", source.text);
     assert!(source.methods.iter().all(|method| method.failure.is_none()));
 }
+
+#[test]
+fn the_backend_keeps_try_ranges_from_original_facts() {
+    let bytes = fixture("exceptions/exception-one-catch");
+    let index = diana_decomp::input::ProgramIndex::open(&bytes).unwrap();
+    let engine = Engine::open(vec![DexImage {
+        bytes: &bytes,
+        header_offset: ByteOffset(0),
+        origin: ImageOrigin { input: InputId(0) },
+    }])
+    .unwrap();
+    let mut saw_try = false;
+    for ordinal in 0..index.class_count() {
+        let class = ClassDefId(ordinal);
+        let source = engine
+            .class_source(Request {
+                class: ClassKey {
+                    dex: DexId(0),
+                    class_def: class,
+                },
+                method: None,
+            })
+            .unwrap();
+        if source.text.contains("catch") || source.text.contains("finally") {
+            saw_try = true;
+        }
+    }
+    assert!(saw_try, "backend produced no handler structure");
+}

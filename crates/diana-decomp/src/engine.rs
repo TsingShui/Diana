@@ -560,7 +560,10 @@ impl Engine<'_> {
             });
             inputs.push(dexdec::MethodInput {
                 method,
-                code: crate::backend::dexdec::method_code(view),
+                code: crate::backend::dexdec::method_code(
+                    view,
+                    crate::backend::dexdec::tries(&image.index, &decoded),
+                ),
                 symbols: crate::backend::dexdec::symbols(&image.index, &decoded),
             });
         }

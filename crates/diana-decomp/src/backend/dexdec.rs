@@ -7,6 +7,7 @@ use crate::input::{ProgramIndex, RawMethodView};
 use crate::p0::ClassFacts;
 use crate::p1::DecodedMethod;
 use crate::raw::OperandReference;
+use dexdec::frontend::{ExceptionHandler, TryCatchBlock};
 use dexdec::{ClassNode, LocalSymbols, MethodCode};
 
 /// Assemble the backend's class node from P0 class facts.
@@ -14,8 +15,8 @@ pub fn class_node(facts: &ClassFacts) -> Option<ClassNode> {
     dexdec::local::class_node(facts)
 }
 
-/// Copy one method's original instruction stream and register counts.
-pub fn method_code(view: &RawMethodView<'_>) -> MethodCode {
+/// Copy one method's original instruction stream, register counts and try ranges.
+pub fn method_code(view: &RawMethodView<'_>, tries: Vec<TryCatchBlock>) -> MethodCode {
     let bytes = view.instructions();
     let mut insns = Vec::with_capacity(bytes.len() / 2);
     for pair in bytes.chunks_exact(2) {
@@ -26,7 +27,7 @@ pub fn method_code(view: &RawMethodView<'_>) -> MethodCode {
         ins_size: view.ins_size(),
         outs_size: view.outs_size(),
         insns,
-        tries: Vec::new(),
+        tries,
         debug_info: None,
     }
 }
@@ -126,4 +127,40 @@ pub fn symbols(index: &ProgramIndex<'_>, method: &DecodedMethod<'_>) -> LocalSym
         }
     }
     symbols
+}
+
+/// Original try ranges and their handler chains, in code units.
+pub fn tries(index: &ProgramIndex<'_>, method: &DecodedMethod<'_>) -> Vec<TryCatchBlock> {
+    let boundaries: Vec<u32> = method.try_boundaries().collect();
+    let mut blocks = Vec::new();
+    for pair in boundaries.chunks_exact(2) {
+        let (start, end) = (pair[0], pair[1]);
+        let clauses = method
+            .catch_clauses_at(crate::CodeUnitOffset(start))
+            .unwrap_or_default();
+        let mut handlers = Vec::new();
+        for (exception, target) in clauses {
+            let handler = match exception {
+                Some(id) => {
+                    let parsed = index
+                        .type_descriptor(crate::TypeId(id))
+                        .ok()
+                        .and_then(|(text, _)| text.utf8_lossy().ok().map(|t| t.into_owned()))
+                        .and_then(|text| text.parse::<dexdec::ArgType>().ok());
+                    match parsed {
+                        Some(ty) => ExceptionHandler::typed(ty, target),
+                        None => ExceptionHandler::catch_all(target),
+                    }
+                }
+                None => ExceptionHandler::catch_all(target),
+            };
+            handlers.push(handler);
+        }
+        blocks.push(TryCatchBlock {
+            start_addr: start,
+            end_addr: end,
+            handlers,
+        });
+    }
+    blocks
 }
