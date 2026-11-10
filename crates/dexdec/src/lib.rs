@@ -1,6 +1,6 @@
 //! Dex Decompiler Core Library
 //!
-//! This library provides DEX file parsing and decompilation capabilities.
+//! This library recovers source text from original class, method and CFG facts.
 //!
 //! ## Architecture
 //!
@@ -17,7 +17,7 @@
 //!
 //! - `ir` - Intermediate Representation (types, args, instructions, blocks, CFG, passes, exception)
 //! - `decoder` - Dalvik bytecode decoder
-//! - `frontend` - DEX file parsing and class/method structures
+//! - `frontend` - class, method and field node structures
 //! - `api` - High-level decompilation API
 //! - `analysis` - Value, type, hierarchy, and language-backend analyses
 //! - `language` - Typed target-language ASTs and printers
@@ -32,17 +32,10 @@ pub mod local;
 pub mod platform_symbols;
 pub mod profiling;
 
-// Re-export main types for convenience
-#[cfg(feature = "kotlin")]
-pub use api::kotlin_source_path;
-pub use api::{
-    decode_method, java_source_path, load_dex, source_path, ArchiveCatalog, ArchiveMemberCatalog,
-    BatchSummary, ClassBatch, ClassFailure, ClassKind, ClassOutline, ClassSelector, ClassSummary,
-    DecodedMethod, DecompileError, DecompileOptions, Decompiler, DecompilerContext, FieldOutline,
-    MemberKind, MemberSummary, MemberVisitor, MethodOutline, MethodOutput, MethodRequest,
-    ReferenceLocation, ReferenceResults, ReferenceTarget, SourceLanguage, SourceUnit,
-};
-pub use frontend::{ClassNode, DexError, DexFileReader, DexResult, MethodCode, MethodNode};
+// Recovery entry: original facts in, source text out.
+pub use api::{decode_method_code, decompile_method, resolve_symbols, MethodOptions};
+pub use frontend::{ClassNode, DexError, DexResult, MethodCode, MethodNode};
+pub use local::LocalSymbols;
 pub use platform_symbols::{
     default_platform_symbols, PlatformAnnotation, PlatformAnnotationValue, PlatformClass,
     PlatformConstant, PlatformConstantDomain, PlatformConstantKind, PlatformConstantMember,

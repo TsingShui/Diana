@@ -26,7 +26,7 @@
 mod access_info;
 mod analysis_diagnostic;
 mod class_node;
-mod dex_reader;
+mod error;
 mod field_node;
 #[cfg(feature = "kotlin")]
 pub mod kotlin_metadata;
@@ -36,7 +36,7 @@ mod method_node;
 pub use access_info::*;
 pub use analysis_diagnostic::*;
 pub use class_node::*;
-pub use dex_reader::*;
+pub use error::*;
 pub use field_node::*;
 pub use metadata::*;
 pub use method_node::*;

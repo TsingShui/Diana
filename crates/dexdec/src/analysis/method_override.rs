@@ -6,7 +6,7 @@ use std::sync::{Arc, OnceLock, RwLock};
 use rayon::prelude::*;
 
 use crate::frontend::{
-    AccessInfo, AnalysisDiagnostic, AnalysisLocation, ClassNode, DexFileReader, MethodNode,
+    AccessInfo, AnalysisDiagnostic, AnalysisLocation, ClassNode, MethodNode,
     MethodOverrideSemantics, MethodReference,
 };
 use crate::ir::analysis::{ClassHierarchyIndex, ReferenceTypeInfo};
@@ -162,16 +162,6 @@ pub(crate) trait OverrideAnalysisTarget {
 
 pub(crate) trait LoadedOverrideAnalysisTarget {
     fn loaded_override_classes(&self) -> Vec<ClassDetails>;
-}
-
-impl LoadedOverrideAnalysisTarget for DexFileReader {
-    fn loaded_override_classes(&self) -> Vec<ClassDetails> {
-        let classes = self
-            .classes()
-            .filter_map(|class| MetadataDecoder::default().class(class).ok())
-            .collect();
-        classes
-    }
 }
 
 pub(crate) struct MethodOverrideAnalyzer<'a, H> {
@@ -722,10 +712,6 @@ pub(crate) struct LoadedClassHierarchy {
 }
 
 impl LoadedClassHierarchy {
-    fn decode(reader: &DexFileReader) -> OverrideResult<(Self, Vec<AnalysisDiagnostic>)> {
-        Self::decode_classes(reader.classes())
-    }
-
     fn decode_classes<'a>(
         classes: impl IntoIterator<Item = &'a ClassNode>,
     ) -> OverrideResult<(Self, Vec<AnalysisDiagnostic>)> {
@@ -1873,31 +1859,6 @@ fn platform_hierarchy_index() -> OverrideResult<Arc<ClassHierarchyIndex>> {
         })
 }
 
-pub(crate) fn type_hierarchy_index(reader: &DexFileReader) -> OverrideResult<ClassHierarchyIndex> {
-    let platform = platform_hierarchy_index()?;
-    let mut index = ClassHierarchyIndex::layered(platform);
-    let declarations = reader
-        .hierarchy_declarations()
-        .map(|(class, superclass, interfaces, access)| {
-            Ok((
-                hierarchy_object_name(class)?,
-                superclass
-                    .into_iter()
-                    .chain(interfaces.iter().map(String::as_str))
-                    .map(hierarchy_object_name)
-                    .collect::<OverrideResult<Vec<_>>>()?,
-                ReferenceTypeInfo {
-                    is_interface: access.is_interface(),
-                    is_final: access.is_final(),
-                },
-            ))
-        })
-        .collect::<OverrideResult<Vec<_>>>()?;
-    index.extend_declared_types(declarations);
-    freeze_shared_hierarchy(&mut index);
-    Ok(index)
-}
-
 fn freeze_shared_hierarchy(index: &mut ClassHierarchyIndex) {
     // DEXDEC_HIERARCHY_LAZY=1 skips precomputation. Read at OnceLock fill and
     // each type_hierarchy_index call.
@@ -1929,23 +1890,6 @@ fn hierarchy_object_name(descriptor: &str) -> OverrideResult<String> {
 impl ClassHierarchy for PlatformClassSet {
     fn class_details(&self, ty: &ArgType) -> Option<Arc<ClassDetails>> {
         PlatformClassSet::class_details(self, ty)
-    }
-}
-
-impl OverrideAnalysisTarget for DexFileReader {
-    fn set_method_override(
-        &mut self,
-        declaring_class: &str,
-        method_short_id: &str,
-        semantics: Option<MethodOverrideSemantics>,
-    ) {
-        let Some(class) = self.get_class_mut(declaring_class) else {
-            return;
-        };
-        let Some(method) = class.find_method_mut(method_short_id) else {
-            return;
-        };
-        method.override_semantics = semantics;
     }
 }
 
@@ -2101,23 +2045,40 @@ impl MetadataDecoder {
     }
 }
 
-pub fn analyze_loaded_method_overrides(reader: &mut DexFileReader) -> OverrideResult<()> {
-    let (loaded, diagnostics) = crate::profile_scope!(
-        "override.loaded_hierarchy",
-        LoadedClassHierarchy::decode(reader)
-    )?;
-    let hierarchy = crate::profile_scope!(
-        "override.composite_hierarchy",
-        CompositeClassHierarchy::from_loaded(loaded)
-    )?;
-    crate::profile_scope!(
-        "override.method_analysis",
-        MethodOverrideAnalyzer::new(&hierarchy).analyze_loaded(reader)
-    )?;
-    reader.replace_analysis_diagnostics(diagnostics);
-    Ok(())
-}
-
 #[cfg(test)]
 #[path = "method_override/tests.rs"]
 mod tests;
+
+/// Build the recovery hierarchy from the supplied class declarations.
+pub(crate) fn type_hierarchy_from_classes(
+    classes: &[&crate::frontend::ClassNode],
+) -> ClassHierarchyIndex {
+    let mut index = match platform_hierarchy_index() {
+        Ok(platform) => ClassHierarchyIndex::layered(platform),
+        Err(_) => ClassHierarchyIndex::default(),
+    };
+    let declarations = classes
+        .iter()
+        .filter_map(|class| {
+            let name = hierarchy_object_name(&class.info.type_descriptor).ok()?;
+            let mut parents = Vec::new();
+            if let Some(super_class) = &class.super_class {
+                parents.push(hierarchy_object_name(&super_class.to_string()).ok()?);
+            }
+            for interface in &class.interfaces {
+                parents.push(hierarchy_object_name(&interface.to_string()).ok()?);
+            }
+            Some((
+                name,
+                parents,
+                ReferenceTypeInfo {
+                    is_interface: class.access_flags.is_interface(),
+                    is_final: class.access_flags.is_final(),
+                },
+            ))
+        })
+        .collect::<Vec<_>>();
+    index.extend_declared_types(declarations);
+    freeze_shared_hierarchy(&mut index);
+    index
+}

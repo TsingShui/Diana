@@ -27,6 +27,19 @@ vendor/dexdec/Cargo.toml -p dexdec` verifies the fork on its own.
   next sync can be reviewed as a diff rather than a merge.
 - Upstream is vendored, not published: a defect found here is fixed here.
 
+## Local fork state
+
+The fork keeps only the recovery backend: `decoder`, `ir`, `analysis`,
+`language` and `platform_symbols`, plus the plain `ClassNode`, `MethodNode`,
+`FieldNode`, `MethodCode` and annotation data structures.
+
+The whole-image frontend is removed: `DexFileReader`, the DEX parser, metadata
+conversion, the archive catalog, the reference queries and the `Decompiler`
+orchestration no longer exist, and `rusty-dex` is no longer a dependency. The
+public entry is `decode_method_code`, `resolve_symbols` and `decompile_method`:
+the caller supplies class declarations, a method and its CFG, and receives source
+text.
+
 ## Cost
 
 216,641 physical Rust lines across 308 files (16 MB of source). The core parses

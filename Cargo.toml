@@ -6,7 +6,6 @@ members = [
     "crates/diana-decomp",
     "crates/diana-facts",
     "crates/dexdec",
-    "crates/rusty-dex",
 ]
 default-members = ["apps/diana", "crates/diana-decomp"]
 # The forked decompiler core inherits only these three fields, so its own files

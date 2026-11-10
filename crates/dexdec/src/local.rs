@@ -6,7 +6,6 @@
 //! same identities directly, so the recovery pipeline does not have to re-parse
 //! the image for a local request.
 
-use crate::frontend::DexFileReader;
 use std::collections::HashMap;
 
 /// Resolved pool entries the IR needs while its instructions are still indexed.
@@ -15,27 +14,6 @@ pub trait SymbolSource {
     fn field(&self, index: u32) -> Option<&str>;
     fn ty(&self, index: u32) -> Option<&str>;
     fn string(&self, index: u32) -> Option<&[u16]>;
-}
-
-/// The whole-image reader bound to one DEX image.
-pub struct ReaderSymbols<'a> {
-    pub reader: &'a DexFileReader,
-    pub dex: usize,
-}
-
-impl SymbolSource for ReaderSymbols<'_> {
-    fn method(&self, index: u32) -> Option<&str> {
-        self.reader.get_method(self.dex, index)
-    }
-    fn field(&self, index: u32) -> Option<&str> {
-        self.reader.get_field(self.dex, index)
-    }
-    fn ty(&self, index: u32) -> Option<&str> {
-        self.reader.get_type(self.dex, index)
-    }
-    fn string(&self, index: u32) -> Option<&[u16]> {
-        self.reader.get_string(self.dex, index).map(|s| s.utf16())
-    }
 }
 
 /// Identities a caller already resolved for one method's pool indices.
