@@ -16,6 +16,15 @@ pub struct ReferenceTypeInfo {
     pub is_final: bool,
 }
 
+/// Ancestor facts supplied lazily by an external symbol store.
+///
+/// A layered index asks this source only for classes it does not declare, so
+/// platform hierarchies never need to be materialised up front.
+pub trait HierarchySource: Send + Sync + std::fmt::Debug {
+    fn parents(&self, class: &str) -> Option<Vec<String>>;
+    fn reference_type(&self, class: &str) -> Option<ReferenceTypeInfo>;
+}
+
 pub trait TypeHierarchy: Send + Sync {
     fn subtype_relation(&self, value: &str, expected: &str) -> SubtypeRelation;
 
@@ -48,6 +57,7 @@ pub struct ClassHierarchyIndex {
     parents: HashMap<String, BTreeSet<String>>,
     reference_types: HashMap<String, ReferenceTypeInfo>,
     base: Option<Arc<ClassHierarchyIndex>>,
+    source: Option<Arc<dyn HierarchySource>>,
     distances: DistanceTable,
     frozen_required: bool,
 }
@@ -58,6 +68,7 @@ impl Clone for ClassHierarchyIndex {
             parents: self.parents.clone(),
             reference_types: self.reference_types.clone(),
             base: self.base.clone(),
+            source: self.source.clone(),
             distances: match &self.distances {
                 DistanceTable::Frozen(map) => DistanceTable::Frozen(Arc::clone(map)),
                 DistanceTable::Building(cache) => {
@@ -75,6 +86,19 @@ impl ClassHierarchyIndex {
             parents: HashMap::new(),
             reference_types: HashMap::new(),
             base: Some(base),
+            source: None,
+            distances: DistanceTable::default(),
+            frozen_required: false,
+        }
+    }
+
+    /// Answers unknown classes through an external ancestor source.
+    pub fn with_source(source: Arc<dyn HierarchySource>) -> Self {
+        Self {
+            parents: HashMap::new(),
+            reference_types: HashMap::new(),
+            base: None,
+            source: Some(source),
             distances: DistanceTable::default(),
             frozen_required: false,
         }
@@ -208,11 +232,11 @@ impl ClassHierarchyIndex {
         let mut pending = VecDeque::from([(start.to_string(), 0)]);
         while let Some((class, distance)) = pending.pop_front() {
             for parent in self.direct_parents(&class) {
-                if distances.contains_key(parent) {
+                if distances.contains_key(&parent) {
                     continue;
                 }
                 distances.insert(parent.clone(), distance + 1);
-                pending.push_back((parent.clone(), distance + 1));
+                pending.push_back((parent, distance + 1));
             }
         }
         distances
@@ -263,14 +287,22 @@ impl ClassHierarchyIndex {
         }
     }
 
-    fn direct_parents<'a>(&'a self, class: &str) -> impl Iterator<Item = &'a String> {
-        self.parent_set(class).into_iter().flatten()
+    fn direct_parents(&self, class: &str) -> impl Iterator<Item = String> {
+        self.parents_of(class).into_iter().flatten()
     }
 
-    fn parent_set(&self, class: &str) -> Option<&BTreeSet<String>> {
-        self.parents
-            .get(class)
-            .or_else(|| self.base.as_deref().and_then(|base| base.parent_set(class)))
+    fn parents_of(&self, class: &str) -> Option<Vec<String>> {
+        if let Some(parents) = self.parents.get(class) {
+            return Some(parents.iter().cloned().collect());
+        }
+        if let Some(base) = &self.base {
+            if let Some(parents) = base.parents_of(class) {
+                return Some(parents);
+            }
+        }
+        self.source
+            .as_ref()
+            .and_then(|source| source.parents(class))
     }
 
     fn reference_type(&self, class: &str) -> Option<ReferenceTypeInfo> {
@@ -278,6 +310,11 @@ impl ClassHierarchyIndex {
             self.base
                 .as_deref()
                 .and_then(|base| base.reference_type(class))
+                .or_else(|| {
+                    self.source
+                        .as_ref()
+                        .and_then(|source| source.reference_type(class))
+                })
         })
     }
 }
@@ -309,20 +346,20 @@ impl TypeHierarchy for ClassHierarchyIndex {
             return SubtypeRelation::Yes;
         }
         let mut visited = BTreeSet::new();
-        let mut pending = VecDeque::from([value]);
+        let mut pending = VecDeque::from([value.to_string()]);
         let mut incomplete = false;
         while let Some(class) = pending.pop_front() {
-            if !visited.insert(class) {
+            if !visited.insert(class.clone()) {
                 continue;
             }
-            let Some(parents) = self.parent_set(class) else {
+            let Some(parents) = self.parents_of(&class) else {
                 incomplete = true;
                 continue;
             };
-            if parents.contains(expected) {
+            if parents.iter().any(|parent| parent == expected) {
                 return SubtypeRelation::Yes;
             }
-            pending.extend(parents.iter().map(String::as_str));
+            pending.extend(parents);
         }
         if incomplete {
             SubtypeRelation::Unknown

@@ -32,11 +32,10 @@ pub fn default_platform_symbols() -> io::Result<Arc<PlatformSymbolSet>> {
     if let Some(symbols) = DEFAULT.get() {
         return Ok(Arc::clone(symbols));
     }
-    let bytes = match std::env::var_os("DEXDEC_SYMBOLS") {
-        Some(path) => std::fs::read(Path::new(&path))?,
-        None => EMBEDDED_SYMBOLS.to_vec(),
-    };
-    let symbols = Arc::new(PlatformSymbolSet::open(&bytes, None)?);
+    let symbols = Arc::new(match std::env::var_os("DEXDEC_SYMBOLS") {
+        Some(path) => PlatformSymbolSet::open_owned(std::fs::read(Path::new(&path))?, None)?,
+        None => PlatformSymbolSet::open_static(EMBEDDED_SYMBOLS, None)?,
+    });
     match DEFAULT.set(Arc::clone(&symbols)) {
         Ok(()) => Ok(symbols),
         Err(_) => DEFAULT.get().map(Arc::clone).ok_or_else(|| {

@@ -47,8 +47,8 @@ pub use ssa::{
 };
 pub use termination::MethodTermination;
 pub use types::{
-    ClassHierarchyIndex, ReferenceTypeInfo, SourceTypeEnvironment, SsaTypeEnvironment,
-    SubtypeRelation, TypeConstraintError, TypeHierarchy, TypeSolver,
+    ClassHierarchyIndex, HierarchySource, ReferenceTypeInfo, SourceTypeEnvironment,
+    SsaTypeEnvironment, SubtypeRelation, TypeConstraintError, TypeHierarchy, TypeSolver,
 };
 pub use value_origins::SsaOrigins;
 pub use variable_semantics::{

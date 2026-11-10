@@ -20,7 +20,9 @@ use crate::ir::{
 use constraints::TypeConstraintGraph;
 use lattice::TypeLattice;
 
-pub use hierarchy::{ClassHierarchyIndex, ReferenceTypeInfo, SubtypeRelation, TypeHierarchy};
+pub use hierarchy::{
+    ClassHierarchyIndex, HierarchySource, ReferenceTypeInfo, SubtypeRelation, TypeHierarchy,
+};
 
 #[derive(Debug, Clone)]
 pub enum TypeConstraintError {

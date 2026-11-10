@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::io;
 use std::path::Path;
@@ -660,12 +661,26 @@ pub(crate) struct PlatformHierarchyEntry<'a> {
 impl PlatformSymbolSet {
     /// Opens a class-granular archive or a legacy eager database.
     pub fn open(bytes: &[u8], target: Option<PlatformTarget>) -> io::Result<Self> {
-        if DexSymbolsCodec::version(bytes)? == DexSymbolsCodec::MAJOR {
+        Self::open_owned(bytes.to_vec(), target)
+    }
+
+    /// Opens an embedded archive without copying its bytes.
+    pub fn open_static(bytes: &'static [u8], target: Option<PlatformTarget>) -> io::Result<Self> {
+        Self::open_cow(Cow::Borrowed(bytes), target)
+    }
+
+    /// Opens an archive whose bytes the caller already owns.
+    pub fn open_owned(bytes: Vec<u8>, target: Option<PlatformTarget>) -> io::Result<Self> {
+        Self::open_cow(Cow::Owned(bytes), target)
+    }
+
+    fn open_cow(bytes: Cow<'static, [u8]>, target: Option<PlatformTarget>) -> io::Result<Self> {
+        if DexSymbolsCodec::version(&bytes)? == DexSymbolsCodec::MAJOR {
             let archive = Arc::new(SymbolArchive::open(bytes)?);
             let target = target.unwrap_or_else(|| archive.default_target());
             return Ok(Self::from_archive(archive, target));
         }
-        let database = PlatformSymbolDatabase::from_bytes(bytes)?;
+        let database = PlatformSymbolDatabase::from_bytes(&bytes)?;
         Ok(database.select(target.unwrap_or_else(|| database.default_target())))
     }
 
@@ -705,49 +720,54 @@ impl PlatformSymbolSet {
             .ok()
     }
 
-    pub(crate) fn hierarchy(&self) -> Vec<PlatformHierarchyEntry<'_>> {
+    pub(crate) fn hierarchy_of(&self, class: &str) -> Option<PlatformHierarchyEntry<'_>> {
+        let descriptor = format!("L{class};");
         match &self.store {
-            SymbolStore::Eager(classes) => classes
-                .values()
-                .map(|class| PlatformHierarchyEntry {
+            SymbolStore::Eager(classes) => {
+                let class = classes.get(&descriptor)?;
+                Some(PlatformHierarchyEntry {
                     descriptor: &class.descriptor,
                     super_class: class.super_class.as_deref(),
                     interfaces: class.interfaces.iter().map(String::as_str).collect(),
                     access_flags: class.access_flags,
                 })
-                .collect(),
-            SymbolStore::Archive(archive) => self
-                .selected
-                .iter()
-                .map(|record| {
-                    let (descriptor, super_class, interfaces, access_flags) =
-                        archive.hierarchy(*record);
-                    PlatformHierarchyEntry {
-                        descriptor,
-                        super_class,
-                        interfaces,
-                        access_flags,
-                    }
+            }
+            SymbolStore::Archive(archive) => {
+                let position = self.position(&descriptor)?;
+                let (descriptor, super_class, interfaces, access_flags) =
+                    archive.hierarchy(self.selected[position]);
+                Some(PlatformHierarchyEntry {
+                    descriptor,
+                    super_class,
+                    interfaces,
+                    access_flags,
                 })
-                .collect(),
+            }
         }
     }
 
+    /// Walks index-level parents, so a subtype question never decodes a class.
     pub fn is_subtype(&self, subtype: &str, supertype: &str) -> bool {
-        let mut pending = std::collections::VecDeque::from([subtype]);
+        let mut pending = std::collections::VecDeque::from([subtype.to_string()]);
         let mut seen = std::collections::BTreeSet::new();
         while let Some(candidate) = pending.pop_front() {
             if candidate == supertype {
                 return true;
             }
-            if !seen.insert(candidate) {
+            if !seen.insert(candidate.clone()) {
                 continue;
             }
-            let Some(class) = self.class(candidate) else {
+            let Some(name) = candidate
+                .strip_prefix('L')
+                .and_then(|value| value.strip_suffix(';'))
+            else {
                 continue;
             };
-            pending.extend(class.super_class.iter().map(String::as_str));
-            pending.extend(class.interfaces.iter().map(String::as_str));
+            let Some(entry) = self.hierarchy_of(name) else {
+                continue;
+            };
+            pending.extend(entry.super_class.map(str::to_string));
+            pending.extend(entry.interfaces.iter().map(|parent| parent.to_string()));
         }
         false
     }

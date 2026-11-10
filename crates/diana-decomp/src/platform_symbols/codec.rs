@@ -626,6 +626,10 @@ impl<'a> BinaryReader<'a> {
         Self { bytes, offset: 0 }
     }
 
+    pub(super) fn position(&self) -> usize {
+        self.offset
+    }
+
     pub(super) fn at(bytes: &'a [u8], offset: usize) -> io::Result<Self> {
         if offset > bytes.len() {
             return Err(io::Error::new(

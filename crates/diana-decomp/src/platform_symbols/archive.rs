@@ -4,6 +4,7 @@
 //! only a compact descriptor index resident and decompresses one block of class
 //! records on demand. Version 2 files remain readable through the eager codec.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::io::{self, Cursor};
 use std::sync::{Arc, Mutex};
@@ -70,10 +71,24 @@ pub(super) struct ArchiveRecord {
 pub(super) struct ArchiveIndex {
     pub(super) default_target: PlatformTarget,
     pub(super) sources: Vec<SymbolSource>,
-    pub(super) strings: Vec<u8>,
+    /// The decoded index frame; descriptor spans address its string region.
+    raw: Vec<u8>,
+    strings: Span,
     pub(super) records: Vec<ArchiveRecord>,
     pub(super) interfaces: Vec<Span>,
     pub(super) block_lens: Vec<u32>,
+}
+
+impl ArchiveIndex {
+    fn string(&self, span: Span) -> io::Result<&str> {
+        let base = self.strings.offset as usize + span.offset as usize;
+        let end = base
+            .checked_add(span.len as usize)
+            .filter(|end| *end <= self.raw.len())
+            .ok_or_else(|| invalid_data("dexsym string span exceeds the pool"))?;
+        std::str::from_utf8(&self.raw[base..end])
+            .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))
+    }
 }
 
 struct DecodedBlock {
@@ -84,14 +99,15 @@ struct DecodedBlock {
 /// One immutable archive of class records plus its resident index.
 pub(crate) struct SymbolArchive {
     index: ArchiveIndex,
-    blocks: Vec<u8>,
+    bytes: Cow<'static, [u8]>,
+    blocks: Span,
     block_offsets: Vec<u32>,
     cache: Mutex<Vec<(u32, Arc<DecodedBlock>)>>,
 }
 
 impl SymbolArchive {
-    pub(crate) fn open(bytes: &[u8]) -> io::Result<Self> {
-        let mut reader = BinaryReader::new(bytes);
+    pub(crate) fn open(bytes: Cow<'static, [u8]>) -> io::Result<Self> {
+        let mut reader = BinaryReader::new(&bytes);
         if reader.bytes(DexSymbolsCodec::MAGIC.len())? != DexSymbolsCodec::MAGIC {
             return Err(invalid_data("invalid dexsym header"));
         }
@@ -121,10 +137,19 @@ impl SymbolArchive {
         if crc32fast::hash(&decoded) != index_checksum {
             return Err(invalid_data("dexsym index checksum mismatch"));
         }
-        let index = read_index(&decoded)?;
-        let blocks = reader.bytes(blocks_len)?.to_vec();
+        let blocks = Span {
+            offset: u32::try_from(reader.position())
+                .map_err(|_| invalid_data("dexsym blocks exceed the payload"))?,
+            len: u32::try_from(blocks_len)
+                .map_err(|_| invalid_data("dexsym blocks exceed the payload"))?,
+        };
+        let index = read_index(decoded)?;
+        reader.bytes(blocks_len)?;
         reader.finish()?;
-        if crc32fast::hash(&blocks) != blocks_checksum {
+        let block_bytes = bytes
+            .get(blocks.offset as usize..blocks.offset as usize + blocks.len as usize)
+            .ok_or_else(|| invalid_data("dexsym blocks exceed the payload"))?;
+        if crc32fast::hash(block_bytes) != blocks_checksum {
             return Err(invalid_data("dexsym block checksum mismatch"));
         }
         let mut block_offsets = Vec::with_capacity(index.block_lens.len());
@@ -135,11 +160,12 @@ impl SymbolArchive {
                 .checked_add(*len as usize)
                 .ok_or_else(|| invalid_data("dexsym block offsets overflow"))?;
         }
-        if offset != blocks.len() {
+        if offset != blocks_len {
             return Err(invalid_data("dexsym block lengths contradict the payload"));
         }
         Ok(Self {
             index,
+            bytes,
             blocks,
             block_offsets,
             cache: Mutex::new(Vec::new()),
@@ -155,9 +181,8 @@ impl SymbolArchive {
     }
 
     pub(crate) fn descriptor(&self, record: u32) -> &str {
-        self.index.records[record as usize]
-            .descriptor
-            .bytes(&self.index.strings)
+        self.index
+            .string(self.index.records[record as usize].descriptor)
             .unwrap_or_default()
     }
 
@@ -169,12 +194,12 @@ impl SymbolArchive {
                     .index
                     .interfaces
                     .get(entry.interface_start as usize + index)?;
-                span.bytes(&self.index.strings).ok()
+                self.index.string(span).ok()
             })
             .collect();
         let super_class = entry
             .super_class
-            .and_then(|span| span.bytes(&self.index.strings).ok());
+            .and_then(|span| self.index.string(span).ok());
         (
             self.descriptor(record),
             super_class,
@@ -270,8 +295,9 @@ impl SymbolArchive {
             .get(id as usize)
             .ok_or_else(|| invalid_data("dexsym block index is out of range"))?
             as usize;
+        let start = self.blocks.offset as usize + start;
         let stored = self
-            .blocks
+            .bytes
             .get(start..start + len)
             .ok_or_else(|| invalid_data("dexsym block exceeds the payload"))?;
         let raw = zstd::stream::decode_all(Cursor::new(stored))?;
@@ -305,8 +331,8 @@ impl SymbolArchive {
     }
 }
 
-fn read_index(bytes: &[u8]) -> io::Result<ArchiveIndex> {
-    let mut reader = BinaryReader::new(bytes);
+fn read_index(raw: Vec<u8>) -> io::Result<ArchiveIndex> {
+    let mut reader = BinaryReader::new(&raw);
     let default_target = PlatformTarget {
         family: PlatformFamily::from_code(reader.u8()?)?,
         version: reader.u16()?,
@@ -325,7 +351,14 @@ fn read_index(bytes: &[u8]) -> io::Result<ArchiveIndex> {
         });
     }
     let strings_len = reader.count("string byte")?;
-    let strings = reader.bytes(strings_len)?.to_vec();
+    let strings_offset = reader.position();
+    reader.bytes(strings_len)?;
+    let strings = Span {
+        offset: u32::try_from(strings_offset)
+            .map_err(|_| invalid_data("dexsym strings exceed the payload"))?,
+        len: u32::try_from(strings_len)
+            .map_err(|_| invalid_data("dexsym strings exceed the payload"))?,
+    };
     let record_count = reader.count("record")?;
     let mut records = Vec::with_capacity(record_count);
     for _ in 0..record_count {
@@ -380,6 +413,7 @@ fn read_index(bytes: &[u8]) -> io::Result<ArchiveIndex> {
     Ok(ArchiveIndex {
         default_target,
         sources,
+        raw,
         strings,
         records,
         interfaces,
@@ -387,21 +421,28 @@ fn read_index(bytes: &[u8]) -> io::Result<ArchiveIndex> {
     })
 }
 
-fn write_index(index: &ArchiveIndex) -> io::Result<Vec<u8>> {
+fn write_index(
+    default_target: PlatformTarget,
+    sources: &[SymbolSource],
+    strings: &[u8],
+    records: &[ArchiveRecord],
+    interfaces: &[Span],
+    block_lens: &[u32],
+) -> io::Result<Vec<u8>> {
     let mut writer = BinaryWriter::default();
-    writer.u8(index.default_target.family.code());
-    writer.u16(index.default_target.version);
-    writer.count(index.sources.len())?;
-    for source in &index.sources {
+    writer.u8(default_target.family.code());
+    writer.u16(default_target.version);
+    writer.count(sources.len())?;
+    for source in sources {
         writer.count(source.name.len())?;
         writer.bytes(source.name.as_bytes());
         writer.u8(source.family.code());
         writer.i16(source.priority);
     }
-    writer.count(index.strings.len())?;
-    writer.bytes(&index.strings);
-    writer.count(index.records.len())?;
-    for record in &index.records {
+    writer.count(strings.len())?;
+    writer.bytes(strings);
+    writer.count(records.len())?;
+    for record in records {
         record.descriptor.write(&mut writer);
         writer.u32(record.source);
         writer.u16(record.availability.since);
@@ -421,12 +462,12 @@ fn write_index(index: &ArchiveIndex) -> io::Result<Vec<u8>> {
         writer.u32(record.fields);
         writer.u32(record.methods);
     }
-    writer.count(index.interfaces.len())?;
-    for span in &index.interfaces {
+    writer.count(interfaces.len())?;
+    for span in interfaces {
         span.write(&mut writer);
     }
-    writer.count(index.block_lens.len())?;
-    for len in &index.block_lens {
+    writer.count(block_lens.len())?;
+    for len in block_lens {
         writer.u32(*len);
     }
     Ok(writer.finish())
@@ -434,7 +475,7 @@ fn write_index(index: &ArchiveIndex) -> io::Result<Vec<u8>> {
 
 /// Decodes every record into the eager representation used by tooling and tests.
 pub(super) fn decode_all(bytes: &[u8]) -> io::Result<PlatformSymbolDatabase> {
-    let archive = SymbolArchive::open(bytes)?;
+    let archive = SymbolArchive::open(Cow::Owned(bytes.to_vec()))?;
     let mut classes: BTreeMap<String, Vec<PlatformClass>> = BTreeMap::new();
     for record in 0..archive.index.records.len() as u32 {
         let class = archive.decode_record(record)?;
@@ -512,15 +553,14 @@ pub(super) fn encode(database: &PlatformSymbolDatabase) -> io::Result<Vec<u8>> {
         }
     }
 
-    let index = ArchiveIndex {
-        default_target: database.default_target,
-        sources: database.sources.clone(),
-        strings: strings.bytes,
-        records,
-        interfaces,
-        block_lens,
-    };
-    let index_raw = write_index(&index)?;
+    let index_raw = write_index(
+        database.default_target,
+        &database.sources,
+        &strings.bytes,
+        &records,
+        &interfaces,
+        &block_lens,
+    )?;
     let index_stored = zstd::stream::encode_all(Cursor::new(&index_raw), 8)?;
     let blocks = stored_blocks.concat();
 

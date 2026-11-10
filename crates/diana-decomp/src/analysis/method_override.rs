@@ -1769,45 +1769,29 @@ fn platform_package(descriptor: &str) -> String {
         .unwrap_or_default()
 }
 
-fn platform_hierarchy_index() -> OverrideResult<Arc<ClassHierarchyIndex>> {
-    static PLATFORM_HIERARCHY: OnceLock<Arc<ClassHierarchyIndex>> = OnceLock::new();
-    PLATFORM_HIERARCHY
-        .get()
-        .map(Arc::clone)
-        .map(Ok)
-        .unwrap_or_else(|| {
-            let platform = default_platform_symbols()?;
-            let mut index = ClassHierarchyIndex::default();
-            for entry in platform.hierarchy() {
-                let class_name = hierarchy_object_name(entry.descriptor)?;
-                let parents = entry
-                    .super_class
-                    .into_iter()
-                    .chain(entry.interfaces)
-                    .map(hierarchy_object_name)
-                    .collect::<OverrideResult<Vec<_>>>()?;
-                index.add_declared_type(
-                    class_name,
-                    parents,
-                    ReferenceTypeInfo {
-                        is_interface: entry.access_flags & 0x0200 != 0,
-                        is_final: entry.access_flags & 0x0010 != 0,
-                    },
-                );
-            }
-            // The platform layer answers distances lazily: freezing would build
-            // an ancestor map for every platform class on every request.
-            let index = Arc::new(index);
-            match PLATFORM_HIERARCHY.set(Arc::clone(&index)) {
-                Ok(()) => Ok(index),
-                Err(_) => PLATFORM_HIERARCHY.get().map(Arc::clone).ok_or_else(|| {
-                    OverrideAnalysisError::PlatformSymbols(io::Error::new(
-                        io::ErrorKind::Other,
-                        "hierarchy cache publication failed",
-                    ))
-                }),
-            }
+impl crate::ir::analysis::HierarchySource for PlatformSymbolSet {
+    fn parents(&self, class: &str) -> Option<Vec<String>> {
+        let entry = self.hierarchy_of(class)?;
+        let mut parents = Vec::with_capacity(1 + entry.interfaces.len());
+        if let Some(super_class) = entry.super_class {
+            parents.push(super_class.to_string());
+        }
+        parents.extend(
+            entry
+                .interfaces
+                .iter()
+                .map(|interface| interface.to_string()),
+        );
+        Some(parents)
+    }
+
+    fn reference_type(&self, class: &str) -> Option<ReferenceTypeInfo> {
+        let entry = self.hierarchy_of(class)?;
+        Some(ReferenceTypeInfo {
+            is_interface: entry.access_flags & 0x0200 != 0,
+            is_final: entry.access_flags & 0x0010 != 0,
         })
+    }
 }
 
 fn freeze_shared_hierarchy(index: &mut ClassHierarchyIndex) {
@@ -2004,8 +1988,8 @@ mod tests;
 pub(crate) fn type_hierarchy_from_classes(
     classes: &[&crate::frontend::ClassNode],
 ) -> ClassHierarchyIndex {
-    let mut index = match platform_hierarchy_index() {
-        Ok(platform) => ClassHierarchyIndex::layered(platform),
+    let mut index = match default_platform_symbols() {
+        Ok(platform) => ClassHierarchyIndex::with_source(platform),
         Err(_) => ClassHierarchyIndex::default(),
     };
     let declarations = classes
