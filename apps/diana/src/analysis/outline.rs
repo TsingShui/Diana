@@ -1,31 +1,34 @@
-//! Original-member outline over the backend publication.
-//!
-//! The backend does not expose the old P2/P8/P9 plan graph. This migration keeps
-//! the stable outline document and original member locators, while call
-//! expansion remains an explicit later capability.
+//! Call-tree outline over the Engine's P0 declarations and P1 invoke sites.
 
-use super::{
-    at,
-    decompile::{self, Decompiled},
-    request::RequestScope,
-    selector::Selector,
-};
+use diana_decomp::outline::{OutlineDepth, OutlineKind, OutlineMember};
 use diana_decomp::p0::Fact;
+use diana_decomp::{ClassKey, DexImage, Engine, ImageOrigin, InputId, RequestError};
 use serde::Serialize;
+
+use super::at;
+use super::decompile::{self, DecompileError, Selection};
+use super::images::ImageSet;
+use super::request::RequestScope;
+use super::selector::{Selector, SelectorError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum OutlineError {
     #[error(transparent)]
-    Decompile(#[from] decompile::DecompileError),
+    Decompile(#[from] DecompileError),
+    #[error(transparent)]
+    Request(#[from] RequestError),
 }
+
 impl OutlineError {
     pub fn code(&self) -> u8 {
         match self {
             Self::Decompile(error) => error.code(),
+            Self::Request(_) => 1,
         }
     }
 }
 
+/// Requested call-tree depth.
 #[derive(Clone, Copy)]
 pub enum Expansion {
     Depth(usize),
@@ -39,29 +42,6 @@ pub struct Node {
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source: Option<SourceRange>,
-}
-
-#[derive(Serialize)]
-pub struct SourceRange {
-    pub publication: usize,
-    pub start: usize,
-    pub end: usize,
-}
-
-#[derive(Serialize)]
-pub struct Call {
-    pub node: usize,
-    pub caller: usize,
-    pub pc: u32,
-    pub dispatch: &'static str,
-    pub origin_only: bool,
-    pub abi_attachment: bool,
-    pub target: Option<String>,
-    pub body: Option<usize>,
-    pub state: &'static str,
-    pub uncertainty: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -73,125 +53,136 @@ pub struct Issue {
 #[derive(Serialize)]
 pub struct Document {
     pub root: usize,
-    pub complete: bool,
     pub nodes: Vec<Node>,
-    pub calls: Vec<Call>,
     pub issues: Vec<Issue>,
-    pub publications: Vec<Decompiled>,
 }
 
 pub fn run(
     scope: &RequestScope,
     selector: &Selector,
-    _expansion: Expansion,
+    expansion: Expansion,
     jobs: usize,
 ) -> Result<Document, OutlineError> {
-    let publication = decompile::run_with_jobs(scope, selector, jobs)?;
-    let selection = &publication.selection;
-    let facts = publication_facts(&publication);
-    let mut nodes = Vec::new();
-    nodes.push(Node {
-        parent: None,
-        kind: "class",
-        text: selection.class_at.clone(),
-        at: Some(selection.class_at.clone()),
-        source: None,
-    });
-    let mut issues = Vec::new();
-    for entry in facts.methods() {
-        match entry.declaration() {
-            Fact::Present(declaration) => {
-                let name = declaration.name_units();
-                let prototype = declaration.prototype_units();
-                let method = entry.method().0;
-                let at = at::method(
-                    selection.entry,
-                    selection.logical.0,
-                    selection.class.class_def.0,
-                    method,
-                    facts.descriptor().units(),
-                    name,
-                    prototype,
-                );
-                nodes.push(Node {
-                    parent: Some(0),
-                    kind: "method",
-                    text: at
-                        .rsplit_once("::")
-                        .map_or(at.clone(), |(_, tail)| tail.to_owned()),
-                    at: Some(at),
-                    source: None,
-                });
-            }
-            Fact::Unavailable(error) => issues.push(Issue {
-                at: Some(selection.class_at.clone()),
-                detail: format!(
-                    "method#{} declaration unavailable: {error}",
-                    entry.method().0
+    let class_selector = match selector {
+        Selector::Class(class) => class,
+        Selector::Method(method) => &method.class,
+        Selector::Field(_) | Selector::String(_) => {
+            return Err(OutlineError::Decompile(DecompileError::Selector(
+                SelectorError::Syntax("this command selects a class or a method"),
+            )));
+        }
+    };
+    let (images, resolved) = ImageSet::resolve(scope, class_selector, super::image_jobs())
+        .map_err(DecompileError::from)?;
+    let selected = images.selection(&resolved);
+    let mut dex_images = Vec::new();
+    dex_images
+        .try_reserve(images.images().len())
+        .map_err(|_| RequestError::PlatformCapacity)?;
+    for image in images.images() {
+        dex_images.push(DexImage {
+            bytes: images.bytes(image).map_err(DecompileError::from)?,
+            header_offset: image.header_offset,
+            origin: ImageOrigin {
+                input: InputId(
+                    u64::try_from(image.entry.map_or(0, |entry| entry.0))
+                        .map_err(|_| RequestError::PlatformCapacity)?,
                 ),
-            }),
-            Fact::Absent | Fact::NotRead => issues.push(Issue {
-                at: Some(selection.class_at.clone()),
-                detail: format!("method#{} declaration was not delivered", entry.method().0),
-            }),
-        }
-    }
-    for entry in facts.fields() {
-        match entry.declaration() {
-            Fact::Present(declaration) => {
-                let at = at::field(
-                    selection.entry,
-                    selection.logical.0,
-                    selection.class.class_def.0,
-                    entry.field().0,
-                    facts.descriptor().units(),
-                    declaration.name.units(),
-                    declaration.descriptor.units(),
-                );
-                nodes.push(Node {
-                    parent: Some(0),
-                    kind: "field",
-                    text: at
-                        .rsplit_once("::")
-                        .map_or(at.clone(), |(_, tail)| tail.to_owned()),
-                    at: Some(at),
-                    source: None,
-                });
-            }
-            Fact::Unavailable(error) => issues.push(Issue {
-                at: Some(selection.class_at.clone()),
-                detail: format!("field#{} declaration unavailable: {error}", entry.field().0),
-            }),
-            Fact::Absent | Fact::NotRead => issues.push(Issue {
-                at: Some(selection.class_at.clone()),
-                detail: format!("field#{} declaration was not delivered", entry.field().0),
-            }),
-        }
-    }
-    if let Some(error) = facts.methods_issue() {
-        issues.push(Issue {
-            at: Some(selection.class_at.clone()),
-            detail: format!("method directory is incomplete: {error}"),
+            },
         });
     }
-    if let Some(error) = facts.fields_issue() {
-        issues.push(Issue {
-            at: Some(selection.class_at.clone()),
-            detail: format!("field directory is incomplete: {error}"),
+    let engine = Engine::open(dex_images)
+        .map_err(DecompileError::from)?
+        .with_method_jobs(jobs);
+    let class = ClassKey {
+        dex: selected.image.dex,
+        class_def: selected.class_def,
+    };
+    let method = match selector {
+        Selector::Method(method_selector) => {
+            let facts = engine.class_facts(class)?;
+            Some(decompile::select_method(&facts, method_selector)?)
+        }
+        _ => None,
+    };
+    let depth = match expansion {
+        Expansion::All => OutlineDepth::All,
+        Expansion::Depth(0) => OutlineDepth::Members,
+        Expansion::Depth(levels) => {
+            OutlineDepth::Levels(u32::try_from(levels).map_err(|_| RequestError::PlatformCapacity)?)
+        }
+    };
+    let entry = selected.image.entry.map(|entry| entry.0);
+    let selection = Selection {
+        entry,
+        logical: selected.image.logical,
+        header_offset: selected.image.header_offset,
+        class,
+        method,
+        class_at: at::class(
+            entry,
+            selected.image.logical.0,
+            class.class_def.0,
+            &selected.descriptor,
+        ),
+        method_at: None,
+    };
+    let outline = engine.outline(class, method, depth)?;
+    let mut nodes = Vec::with_capacity(outline.nodes.len());
+    for node in outline.nodes {
+        let at = match (node.kind, node.member) {
+            (OutlineKind::Class, _) => Some(selection.class_at.clone()),
+            (_, Some(member)) => locator(&engine, &images, member).ok(),
+            _ => None,
+        };
+        nodes.push(Node {
+            parent: node.parent,
+            kind: node.kind.as_str(),
+            text: node.text,
+            at,
         });
     }
     Ok(Document {
-        root: 0,
-        complete: issues.is_empty(),
+        root: outline.root,
         nodes,
-        calls: Vec::new(),
-        issues,
-        publications: vec![publication],
+        issues: outline
+            .issues
+            .into_iter()
+            .map(|issue| Issue {
+                at: None,
+                detail: issue.detail,
+            })
+            .collect(),
     })
 }
 
-fn publication_facts(publication: &Decompiled) -> &diana_decomp::p0::ClassFacts {
-    match publication.rendered.source() {
-        diana_decomp::render::SourceProduct::External(external) => &external.facts,
-    }
+fn locator(
+    engine: &Engine<'_>,
+    images: &ImageSet<'_>,
+    member: OutlineMember,
+) -> Result<String, RequestError> {
+    let facts = engine.class_facts(member.class)?;
+    let image = images
+        .images()
+        .get(member.class.dex.0 as usize)
+        .ok_or(RequestError::UnknownDex)?;
+    let entry = facts
+        .method_entry(member.method)
+        .ok_or(RequestError::InternalInvariant(
+            "outline member declaration was not delivered",
+        ))?;
+    let Fact::Present(declaration) = entry.declaration() else {
+        return Err(RequestError::InternalInvariant(
+            "outline member declaration is unavailable",
+        ));
+    };
+    Ok(at::method(
+        image.entry.map(|entry| entry.0),
+        image.logical.0,
+        member.class.class_def.0,
+        member.method.0,
+        facts.descriptor().units(),
+        declaration.name_units(),
+        declaration.prototype_units(),
+    ))
 }

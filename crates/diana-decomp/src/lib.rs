@@ -27,6 +27,7 @@ mod engine;
 pub mod frontend;
 pub mod ir;
 pub mod language;
+pub mod outline;
 pub mod platform_symbols;
 pub mod profiling;
 pub mod render;
@@ -67,6 +68,9 @@ pub use substrate::slots::{RegisterSlot, SlotWidth};
 pub use engine::{
     ClassAnalysis, ClassSource, DexImage, Engine, MethodSelector, MethodSource, Request,
     SingleMethodAnalysis,
+};
+pub use outline::{
+    OutlineDepth, OutlineDocument, OutlineIssue, OutlineKind, OutlineMember, OutlineNode,
 };
 
 pub use frontend::{ClassNode, DexError, DexResult, MethodNode};

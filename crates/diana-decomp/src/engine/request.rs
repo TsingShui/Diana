@@ -29,7 +29,7 @@ impl<'a> IndexedImage<'a> {
         })
     }
 
-    fn classes_by_descriptor(&self) -> &HashMap<String, crate::ClassDefId> {
+    pub(super) fn classes_by_descriptor(&self) -> &HashMap<String, crate::ClassDefId> {
         self.classes_by_descriptor.get_or_init(|| {
             let mut classes = HashMap::new();
             for ordinal in 0..self.index.class_count() {

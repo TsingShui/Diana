@@ -79,7 +79,7 @@ fn run(args: OutlineArgs, class: bool, jobs: usize) -> Result<(), Failure> {
             Format::Json => serde_json::to_writer(
                 writer,
                 &Publication {
-                    schema_version: 1,
+                    schema_version: 2,
                     command: if class {
                         "outline-class"
                     } else {
@@ -94,7 +94,7 @@ fn run(args: OutlineArgs, class: bool, jobs: usize) -> Result<(), Failure> {
             }),
         }
     })?;
-    if !document.complete {
+    if !document.issues.is_empty() {
         return Err(Failure {
             code: 1,
             message: "outline contains local unavailability; recovered content was published"
@@ -126,14 +126,6 @@ fn write_text(writer: &mut dyn Write, document: &Document) -> Result<(), Failure
             children.push(id);
         }
     }
-    let mut calls = Vec::new();
-    calls
-        .try_reserve_exact(document.nodes.len())
-        .map_err(allocation)?;
-    calls.resize(document.nodes.len(), None);
-    for call in &document.calls {
-        calls[call.node] = Some(call);
-    }
     let mut work = Vec::new();
     work.try_reserve(1).map_err(allocation)?;
     work.push((document.root, 0usize, true));
@@ -143,43 +135,27 @@ fn write_text(writer: &mut dyn Write, document: &Document) -> Result<(), Failure
         if depth > 0 {
             for &more in continuation.iter().take(depth - 1) {
                 writer
-                    .write_all(if more { "│  ".as_bytes() } else { b"   " })
+                    .write_all(if more {
+                        "\u{2502}  ".as_bytes()
+                    } else {
+                        b"   "
+                    })
                     .map_err(Failure::output)?;
             }
             writer
                 .write_all(if last {
-                    "└─ ".as_bytes()
+                    "\u{2514}\u{2500} ".as_bytes()
                 } else {
-                    "├─ ".as_bytes()
+                    "\u{251c}\u{2500} ".as_bytes()
                 })
                 .map_err(Failure::output)?;
         }
         write!(writer, "{}", node.text).map_err(Failure::output)?;
-        if node.kind == "method" || node.kind == "class" {
+        if node.kind == "class" || node.kind == "method" || node.kind == "call" {
             write!(writer, " #{id}").map_err(Failure::output)?;
         }
         if let Some(at) = &node.at {
             write!(writer, " [{at}]").map_err(Failure::output)?;
-        }
-        if let Some(call) = calls[id] {
-            write!(writer, " [{:?}; {}", call.dispatch, call.state).map_err(Failure::output)?;
-            if call.origin_only {
-                writer
-                    .write_all(b"; origin-only attachment, not another execution")
-                    .map_err(Failure::output)?;
-            }
-            if call.abi_attachment {
-                writer
-                    .write_all(b"; ABI attachment")
-                    .map_err(Failure::output)?;
-            }
-            if let Some(body) = call.body {
-                write!(writer, " → #{body}").map_err(Failure::output)?;
-            }
-            if let Some(uncertainty) = call.uncertainty {
-                write!(writer, "; {uncertainty}").map_err(Failure::output)?;
-            }
-            writer.write_all(b"]").map_err(Failure::output)?;
         }
         writer.write_all(b"\n").map_err(Failure::output)?;
         continuation.truncate(depth.saturating_sub(1));
@@ -197,11 +173,7 @@ fn write_text(writer: &mut dyn Write, document: &Document) -> Result<(), Failure
         }
     }
     for issue in &document.issues {
-        write!(writer, "! ").map_err(Failure::output)?;
-        if let Some(at) = &issue.at {
-            write!(writer, "{at}: ").map_err(Failure::output)?;
-        }
-        writeln!(writer, "{}", issue.detail).map_err(Failure::output)?;
+        writeln!(writer, "! {}", issue.detail).map_err(Failure::output)?;
     }
     Ok(())
 }

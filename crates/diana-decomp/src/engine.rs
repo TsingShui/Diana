@@ -10,8 +10,11 @@ use crate::ir::{AnalysisObserver, NullAnalysisObserver, CFG};
 use crate::p0::{ClassFacts, Fact};
 use crate::p1::DecodedMethod;
 use crate::render::Rendered;
-use crate::{ByteOffset, ClassKey, DexId, ImageFact, ImageOrigin, MethodId, RequestError};
+use crate::{
+    ByteOffset, ClassDefId, ClassKey, DexId, ImageFact, ImageOrigin, MethodId, RequestError,
+};
 
+mod outline;
 mod request;
 
 use request::{BackendInput, IndexedImage, MethodFacts};
@@ -36,6 +39,9 @@ pub struct Request {
 pub struct Engine<'a> {
     images: Vec<IndexedImage<'a>>,
     jobs: Option<usize>,
+    /// Descriptor hash to packed (image position, class_def) for cross-image
+    /// outline resolution. Built once on first use.
+    locations: std::sync::OnceLock<std::collections::HashMap<u64, u32>>,
 }
 
 pub struct ClassSource {
@@ -301,6 +307,7 @@ impl<'a> Engine<'a> {
         Ok(Self {
             images: indexed,
             jobs: None,
+            locations: std::sync::OnceLock::new(),
         })
     }
 
@@ -312,11 +319,82 @@ impl<'a> Engine<'a> {
                 offset_byte: image.header_offset,
             })?;
         images.push(IndexedImage::open(image, dex)?);
-        Ok(Self { images, jobs: None })
+        Ok(Self {
+            images,
+            jobs: None,
+            locations: std::sync::OnceLock::new(),
+        })
     }
 
-    fn image(&self, dex: DexId) -> Option<&IndexedImage<'a>> {
+    pub(in crate::engine) fn image(&self, dex: DexId) -> Option<&IndexedImage<'a>> {
         self.images.iter().find(|image| image.dex == dex)
+    }
+
+    pub(in crate::engine) fn image_at(&self, position: usize) -> Option<&IndexedImage<'a>> {
+        self.images.get(position)
+    }
+
+    /// Locates a class definition across every opened image.
+    ///
+    /// The index keeps one descriptor hash per class instead of the descriptor
+    /// strings, so a whole-APK lookup costs a few megabytes rather than a
+    /// second copy of every class name.
+    pub(in crate::engine) fn class_location(
+        &self,
+        descriptor: &str,
+    ) -> Option<(usize, ClassDefId)> {
+        let hash = descriptor_hash(descriptor);
+        let locations = self.locations.get_or_init(|| {
+            let mut locations = std::collections::HashMap::new();
+            for (position, image) in self.images.iter().enumerate() {
+                let position = match u32::try_from(position) {
+                    Ok(position) => position,
+                    Err(_) => break,
+                };
+                for ordinal in 0..image.index.class_count() {
+                    let key = ClassDefId(ordinal);
+                    let Ok(view) = image.index.class(key) else {
+                        continue;
+                    };
+                    let Ok(text) = view.descriptor.utf8_lossy() else {
+                        continue;
+                    };
+                    locations
+                        .entry(descriptor_hash(&text))
+                        .or_insert((position << 24) | (key.0 & 0x00ff_ffff));
+                }
+            }
+            locations
+        });
+        if let Some(packed) = locations.get(&hash).copied() {
+            let position = (packed >> 24) as usize;
+            let class_def = ClassDefId(packed & 0x00ff_ffff);
+            if let Some(found) = self.verified_location(position, class_def, descriptor) {
+                return Some(found);
+            }
+        }
+        // A hash collision or a packed overflow falls back to the exact scan.
+        for (position, image) in self.images.iter().enumerate() {
+            for ordinal in 0..image.index.class_count() {
+                let key = ClassDefId(ordinal);
+                if self.verified_location(position, key, descriptor).is_some() {
+                    return Some((position, key));
+                }
+            }
+        }
+        None
+    }
+
+    fn verified_location(
+        &self,
+        position: usize,
+        class_def: ClassDefId,
+        descriptor: &str,
+    ) -> Option<(usize, ClassDefId)> {
+        let image = self.images.get(position)?;
+        let view = image.index.class(class_def).ok()?;
+        let text = view.descriptor.utf8_lossy().ok()?;
+        (text == descriptor).then_some((position, class_def))
     }
 
     pub fn class_facts(&self, class: ClassKey) -> Result<Arc<ClassFacts>, RequestError> {
@@ -364,6 +442,19 @@ impl<'a> Engine<'a> {
         })
     }
 
+    /// Builds the call-tree outline for one class or one of its methods.
+    ///
+    /// The outline reads P0 declarations and P1 invoke sites only; it never
+    /// runs lowering or rendering.
+    pub fn outline(
+        &self,
+        class: ClassKey,
+        method: Option<MethodId>,
+        depth: crate::outline::OutlineDepth,
+    ) -> Result<crate::outline::OutlineDocument, RequestError> {
+        outline::outline(self, class, method, depth)
+    }
+
     pub fn analyze_method(
         &self,
         class: ClassKey,
@@ -389,4 +480,11 @@ impl<'a> Engine<'a> {
             rendered: Rendered::external(class, source.text, facts),
         })
     }
+}
+
+fn descriptor_hash(descriptor: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    descriptor.hash(&mut hasher);
+    hasher.finish()
 }
