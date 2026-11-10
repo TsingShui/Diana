@@ -614,6 +614,22 @@ impl<'a> ProgramIndex<'a> {
         Ok(Some(offset))
     }
 
+    /// Original name_idx of one method id, without resolving its owner or
+    /// prototype. Name filters use this to reject most entries without building
+    /// a member declaration.
+    pub fn method_name_idx(&self, id: MethodId) -> Result<StringId, InputError> {
+        let mut record = self.table(TableKey::Method(id))?;
+        record.skip(1, crate::ByteLength(4))?;
+        Ok(StringId(record.read_u32()?))
+    }
+
+    /// Original name_idx of one field id, without resolving its owner or type.
+    pub fn field_name_idx(&self, id: FieldId) -> Result<StringId, InputError> {
+        let mut record = self.table(TableKey::Field(id))?;
+        record.skip(1, crate::ByteLength(4))?;
+        Ok(StringId(record.read_u32()?))
+    }
+
     pub fn method_reference(&self, id: MethodId) -> Result<MethodReference<'_, 'a>, InputError> {
         let mut record = self.table(TableKey::Method(id))?;
         let owner_idx = TypeId(u32::from(record.read_u16()?));

@@ -65,12 +65,15 @@ impl Prefilter {
                     prototype,
                     ..
                 } => {
+                    // Name strings first: an entry whose name_idx is not one of
+                    // them cannot match, so its declaration is never built.
+                    let names = matching_strings(index, name)?;
                     for id in 0..index.method_ids_len() {
-                        let reference = index.method_reference(MethodId(id))?;
-                        if filter::select(owner.as_ref(), reference.owner)?.is_none() {
+                        if !names.contains(&index.method_name_idx(MethodId(id))?.0) {
                             continue;
                         }
-                        if name.evaluate(reference.declaration.name)?.is_none() {
+                        let reference = index.method_reference(MethodId(id))?;
+                        if filter::select(owner.as_ref(), reference.owner)?.is_none() {
                             continue;
                         }
                         if let Some(signature) = prototype
@@ -86,12 +89,13 @@ impl Prefilter {
                     name,
                     field_type,
                 } => {
+                    let names = matching_strings(index, name)?;
                     for id in 0..index.field_ids_len() {
-                        let reference = index.field_reference(FieldId(id))?;
-                        if filter::select(owner.as_ref(), reference.owner)?.is_none() {
+                        if !names.contains(&index.field_name_idx(FieldId(id))?.0) {
                             continue;
                         }
-                        if name.evaluate(reference.declaration.name)?.is_none() {
+                        let reference = index.field_reference(FieldId(id))?;
+                        if filter::select(owner.as_ref(), reference.owner)?.is_none() {
                             continue;
                         }
                         if let Some(field_type) = field_type
@@ -154,6 +158,21 @@ impl Prefilter {
         }
         false
     }
+}
+
+/// String ids whose value the name filter accepts.
+fn matching_strings(
+    index: &ProgramIndex<'_>,
+    name: &super::TextMatch,
+) -> Result<std::collections::HashSet<u32>, QueryError> {
+    let mut ids = std::collections::HashSet::new();
+    for id in 0..index.string_ids_len() {
+        let value = index.string(StringId(id))?;
+        if name.evaluate(value)?.is_some() {
+            ids.insert(id);
+        }
+    }
+    Ok(ids)
 }
 
 fn allocation_error() -> diana_decomp::input::InputError {
