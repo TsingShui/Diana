@@ -670,9 +670,9 @@ pub(super) fn scan_type_declarations<'a>(
                     targets,
                     depth,
                     emit,
-                    Site::Class,
-                    &superclass.units()?,
-                    "superclass-type",
+                    || Ok(Site::Class),
+                    superclass,
+                    || "superclass-type".to_owned(),
                 )?;
             }
             for interface in &hierarchy.interfaces {
@@ -681,9 +681,9 @@ pub(super) fn scan_type_declarations<'a>(
                     targets,
                     depth,
                     emit,
-                    Site::Class,
-                    &interface.units()?,
-                    "interface-type",
+                    || Ok(Site::Class),
+                    *interface,
+                    || "interface-type".to_owned(),
                 )?;
             }
         }
@@ -703,20 +703,20 @@ pub(super) fn scan_type_declarations<'a>(
                 Ok(declaration) => declaration,
                 Err(_) => return Ok(()),
             };
-            let field_type = declaration.field_type.units()?;
-            let site = Site::Field {
-                field: field.field_idx,
-                name: copy(&declaration.name.units()?)?,
-                field_type: copy(&field_type)?,
-            };
             emit_type_row(
                 location,
                 targets,
                 depth,
                 emit,
-                site,
-                &field_type,
-                "field-type",
+                || {
+                    Ok(Site::Field {
+                        field: field.field_idx,
+                        name: declaration.name.units()?,
+                        field_type: declaration.field_type.units()?,
+                    })
+                },
+                declaration.field_type,
+                || "field-type".to_owned(),
             )
         })();
         if let Err(error) = result {
@@ -743,21 +743,21 @@ pub(super) fn scan_type_declarations<'a>(
             let Ok(declaration) = declaration else {
                 return Ok(());
             };
-            let name = copy(&declaration.name.units()?)?;
-            let prototype = prototype_units(&declaration.prototype)?;
-            let site = Site::Method {
-                method: method_idx,
-                name,
-                prototype,
+            let site = || {
+                Ok(Site::Method {
+                    method: method_idx,
+                    name: declaration.name.units()?,
+                    prototype: prototype_units(&declaration.prototype)?,
+                })
             };
             emit_type_row(
                 location,
                 targets,
                 depth,
                 emit,
-                site.clone(),
-                &declaration.prototype.return_type.units()?,
-                "return-type",
+                site,
+                declaration.prototype.return_type,
+                || "return-type".to_owned(),
             )?;
             for (ordinal, parameter) in declaration
                 .prototype
@@ -765,15 +765,9 @@ pub(super) fn scan_type_declarations<'a>(
                 .iter()
                 .enumerate()
             {
-                emit_type_row(
-                    location,
-                    targets,
-                    depth,
-                    emit,
-                    site.clone(),
-                    &parameter.units()?,
-                    &format!("parameter-type[{ordinal}]"),
-                )?;
+                emit_type_row(location, targets, depth, emit, site, *parameter, || {
+                    format!("parameter-type[{ordinal}]")
+                })?;
             }
             Ok(())
         })();
@@ -804,25 +798,24 @@ fn emit_type_row(
     targets: &[Target],
     depth: u32,
     emit: &mut dyn FnMut(Event) -> Result<(), QueryError>,
-    site: Site,
-    units: &[u16],
-    use_: &str,
+    site: impl FnOnce() -> Result<Site, QueryError>,
+    value: diana_decomp::input::DexString<'_>,
+    use_: impl FnOnce() -> String,
 ) -> Result<(), QueryError> {
     for target in targets {
         let Target::Type(filter) = target else {
             continue;
         };
-        let Some(selected) = filter.evaluate_units(units)? else {
+        let Some(selected) = filter.evaluate(value)? else {
             continue;
         };
-        emit(location.row(
-            site,
-            Matched::Type(copy(units)?),
+        return emit(location.row(
+            site()?,
+            Matched::Type(value.units()?),
             selected,
-            use_.to_owned(),
+            use_(),
             depth,
-        )?)?;
-        break;
+        )?);
     }
     Ok(())
 }
@@ -879,6 +872,9 @@ pub(super) fn scan_declared_values<'a>(
         depth,
         emit,
         stopped: false,
+        type_query: targets
+            .iter()
+            .any(|target| matches!(target, Target::Type(_))),
     };
     if annotated {
         let directory = index.annotation_directory(context.annotations_offset)?;
@@ -900,6 +896,7 @@ struct MemberScan<'i, 'a, 'e> {
     depth: u32,
     emit: &'e mut dyn FnMut(Event) -> Result<(), QueryError>,
     stopped: bool,
+    type_query: bool,
 }
 
 impl<'i, 'a> MemberScan<'i, 'a, '_> {
@@ -951,27 +948,30 @@ impl<'i, 'a> MemberScan<'i, 'a, '_> {
         while offsets.remaining_byte().0 != 0 {
             let (_at, _visibility, type_id, mut values) =
                 self.index.next_annotation(&mut offsets, &mut last)?;
-            let descriptor = self.index.type_name(type_id)?;
-            self.typed(
-                site,
-                &descriptor.units()?,
-                &format!("{use_} annotation-type"),
-            )?;
+            if self.type_query {
+                let descriptor = self.index.type_name(type_id)?;
+                self.typed(site, descriptor, || format!("{use_} annotation-type"))?;
+            }
             self.values(&mut values, site, use_)?;
         }
         Ok(())
     }
 
     /// One declaration type row when the target filter selects it.
-    fn typed(&mut self, site: &Site, units: &[u16], use_: &str) -> Result<(), QueryError> {
+    fn typed(
+        &mut self,
+        site: &Site,
+        value: diana_decomp::input::DexString<'_>,
+        use_: impl FnOnce() -> String,
+    ) -> Result<(), QueryError> {
         for target in self.targets {
             let Target::Type(filter) = target else {
                 continue;
             };
-            let Some(selected) = filter.evaluate_units(units)? else {
+            let Some(selected) = filter.evaluate(value)? else {
                 continue;
             };
-            return self.row(site, Matched::Type(copy(units)?), selected, use_);
+            return self.row(site, Matched::Type(value.units()?), selected, &use_());
         }
         Ok(())
     }
@@ -1000,12 +1000,11 @@ impl<'i, 'a> MemberScan<'i, 'a, '_> {
         use_: &str,
     ) -> Result<(), QueryError> {
         if let EncodedKind::Annotation { type_id, .. } = value.kind {
-            let descriptor = self.index.type_name(type_id)?;
-            return self.typed(
-                site,
-                &descriptor.units()?,
-                &format!("{use_} annotation-type"),
-            );
+            if self.type_query {
+                let descriptor = self.index.type_name(type_id)?;
+                self.typed(site, descriptor, || format!("{use_} annotation-type"))?;
+            }
+            return Ok(());
         }
         let EncodedKind::Reference(reference) = value.kind else {
             return Ok(());

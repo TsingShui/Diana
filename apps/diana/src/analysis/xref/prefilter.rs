@@ -23,6 +23,7 @@ const BITMAP_INDICES: usize = 1 << 16;
 pub(super) struct Prefilter {
     bits: Option<Vec<u64>>,
     impossible: bool,
+    kinds: u16,
 }
 
 impl Prefilter {
@@ -32,6 +33,17 @@ impl Prefilter {
         targets: &[Target],
         typed_uses: bool,
     ) -> Result<Self, QueryError> {
+        let kinds = targets.iter().fold(0, |kinds, target| {
+            kinds
+                | match target {
+                    Target::String(_) => 1,
+                    Target::Type(_) if typed_uses => 2 | 4 | 8 | 16,
+                    Target::Type(_) => 2 | 16,
+                    Target::Method { .. } => 8,
+                    Target::Field { .. } => 4,
+                    Target::Resource(_) | Target::Hierarchy { .. } => 0,
+                }
+        });
         // Typed-use expansion matches a type through every member signature that
         // mentions it, so its operand set is far wider than one id space. Leave
         // that mode unfiltered.
@@ -39,6 +51,7 @@ impl Prefilter {
             return Ok(Self {
                 bits: None,
                 impossible: false,
+                kinds,
             });
         }
         let mut ids = Vec::new();
@@ -116,6 +129,7 @@ impl Prefilter {
             return Ok(Self {
                 bits: None,
                 impossible: true,
+                kinds,
             });
         }
         let mut bits = Vec::new();
@@ -128,6 +142,7 @@ impl Prefilter {
                 return Ok(Self {
                     bits: None,
                     impossible: false,
+                    kinds,
                 });
             };
             bits[usize::from(value) >> 6] |= 1u64 << (value & 63);
@@ -135,7 +150,12 @@ impl Prefilter {
         Ok(Self {
             bits: Some(bits),
             impossible: false,
+            kinds,
         })
+    }
+
+    pub(super) fn accepts_kind(&self, mask: u16) -> bool {
+        self.kinds & mask != 0
     }
 
     /// Whether `index` is one of the resolved targets; `true` when filtering is off.

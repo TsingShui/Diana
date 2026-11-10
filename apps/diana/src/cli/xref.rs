@@ -4,7 +4,7 @@ use std::path::Path;
 
 use super::matching;
 use super::output::{Failure, Format};
-use super::table::{RowSummary, publish_rows};
+use super::table::{RowSummary, publish_encoded};
 use crate::analysis::at;
 use crate::analysis::filter::{MatchMode, best_first};
 use crate::analysis::input::{InputError, InputOptions};
@@ -13,6 +13,7 @@ use crate::analysis::request::RequestScope;
 use crate::analysis::selector;
 use crate::analysis::xref::{Matched, Relation, RowView, Site, Target, TextMatch, Xref, XrefPlan};
 
+mod render;
 mod rows;
 use rows::Rows;
 
@@ -198,60 +199,8 @@ pub fn run(
             "//Diana Warn: Too much results, only show top {shown} , use --no-limit or --limit N"
         )
     });
-    // A wide query repeats the same method locator, matched value and use label
-    // across thousands of rows. Render each distinct one once and let every row
-    // point at it, instead of formatting the whole line per site.
-    let shown_rows = rows.iter().take(shown);
-    let mut contexts: std::collections::HashMap<ContextKey, u32> = std::collections::HashMap::new();
-    let mut matches: std::collections::HashMap<&Matched, u32> = std::collections::HashMap::new();
-    let mut uses: std::collections::HashMap<(&str, u32), u32> = std::collections::HashMap::new();
-    let mut context_text: Vec<String> = Vec::new();
-    let mut match_text: Vec<String> = Vec::new();
-    let mut use_text: Vec<String> = Vec::new();
-    {
-        #[cfg(feature = "perf")]
-        let _span = fastrace::local::LocalSpan::enter_with_local_parent("xref.render-identities");
-        for row in shown_rows.clone() {
-            if let std::collections::hash_map::Entry::Vacant(entry) =
-                contexts.entry(context_key(row))
-            {
-                let id = u32::try_from(context_text.len())
-                    .map_err(|_| Failure::input(InputError::PlatformCapacity))?;
-                entry.insert(id);
-                context_text.push(render_context(row, &images));
-            }
-            if let std::collections::hash_map::Entry::Vacant(entry) = matches.entry(row.matched) {
-                let id = u32::try_from(match_text.len())
-                    .map_err(|_| Failure::input(InputError::PlatformCapacity))?;
-                entry.insert(id);
-                match_text.push(matched_text(row.matched));
-            }
-            if let std::collections::hash_map::Entry::Vacant(entry) =
-                uses.entry((row.use_, row.depth))
-            {
-                let id = u32::try_from(use_text.len())
-                    .map_err(|_| Failure::input(InputError::PlatformCapacity))?;
-                entry.insert(id);
-                use_text.push(format!("{} depth {}", row.use_, row.depth));
-            }
-        }
-    }
-    let output_rows = shown_rows.map(|row| {
-        let locator = &context_text[contexts[&context_key(row)] as usize];
-        let context = match row.code_unit {
-            Some(code_unit) => std::borrow::Cow::Owned(format!("{locator}@cu:{code_unit:#06x}")),
-            _ => std::borrow::Cow::Borrowed(locator.as_str()),
-        };
-        let matched = &match_text[matches[&row.matched] as usize];
-        let use_ = &use_text[uses[&(row.use_, row.depth)] as usize];
-        OutputRow {
-            context,
-            matched,
-            use_,
-        }
-    });
-    publish_rows(
-        output_rows,
+    publish_encoded(
+        shown,
         &["context", "match", "use"],
         "xref",
         format,
@@ -262,21 +211,8 @@ pub fn run(
             warning: warning.as_deref(),
             issues: &issues,
         },
+        |writer| render::write(&rows, shown, &images, jobs, format, writer),
     )
-}
-
-/// One rendered row: the locator is shared, while a code site appends its own
-/// offset. Match and use strings are shared tables.
-struct OutputRow<'a> {
-    context: std::borrow::Cow<'a, str>,
-    matched: &'a str,
-    use_: &'a str,
-}
-
-impl crate::cli::table::Cells for OutputRow<'_> {
-    fn cells(&self) -> impl Iterator<Item = &str> {
-        [self.context.as_ref(), self.matched, self.use_].into_iter()
-    }
 }
 
 /// Identity behind one rendered locator: the class, or one member of it.

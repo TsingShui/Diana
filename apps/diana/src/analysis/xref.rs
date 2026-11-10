@@ -1003,13 +1003,7 @@ fn scan_code(
             let Some(code_offset) = code_offset else {
                 return Ok(());
             };
-            let diana_decomp::input::MethodBody::Code(view) =
-                index.method_body(Some(code_offset), method_idx, access_flags)?
-            else {
-                return Ok(());
-            };
-            let range = view.instruction_byte_range();
-            let Some(code) = view.source_bytes().get(range.start.0..range.end.0) else {
+            let Some(code) = index.method_instructions(Some(code_offset), access_flags)? else {
                 return Ok(());
             };
             if !prefilter.might_reference(code) {
@@ -1018,6 +1012,12 @@ fn scan_code(
             if flat_sites(code, prefilter, &mut sites)? {
                 return batch.method(index, method_idx, &sites, plan);
             }
+            let diana_decomp::input::MethodBody::Code(view) =
+                index.method_body(Some(code_offset), method_idx, access_flags)?
+            else {
+                return Ok(());
+            };
+            let range = view.instruction_byte_range();
             // A packed walk that encounters an unsupported encoding publishes
             // nothing. The checked decoder owns the entire instruction stream.
             sites.clear();
@@ -1099,7 +1099,7 @@ struct FlatSite {
 
 /// Walks one instruction stream with the packed opcode table and appends the
 /// operand references whose index the filter accepts. False means the body
-/// needs the checked decoder (payload layout, wide operands or unknown bytes).
+/// needs the checked decoder (unsupported layouts, wide operands or unknown bytes).
 ///
 /// The caller clears and reuses the accumulator across method bodies. A false
 /// result leaves provisional hits that must be discarded before checked decoding.
@@ -1116,15 +1116,17 @@ fn flat_sites(
         let opcode = code[pc];
         let first = u16::from_le_bytes([code[pc], code[pc + 1]]);
         if opcode == 0 {
-            match first {
-                // Payload layout needs the checked decoder; one body with a
-                // switch or array payload keeps the original path.
-                0x0100 | 0x0200 | 0x0300 => return Ok(false),
-                _ => pc += 2,
+            if first == 0 {
+                pc += 2;
+                continue;
             }
-            if pc > code.len() {
+            let Some(width) = payload_bytes(code, pc, first) else {
                 return Ok(false);
-            }
+            };
+            let Some(end) = pc.checked_add(width).filter(|end| *end <= code.len()) else {
+                return Ok(false);
+            };
+            pc = end;
             continue;
         }
         let info = table[usize::from(opcode)];
@@ -1138,7 +1140,7 @@ fn flat_sites(
         let Some(end) = pc.checked_add(units * 2).filter(|end| *end <= code.len()) else {
             return Ok(false);
         };
-        if mask != 0 {
+        if mask != 0 && prefilter.accepts_kind(mask) {
             let index = if opcode == 0x1b {
                 if pc + 6 > code.len() {
                     return Ok(false);
@@ -1175,6 +1177,32 @@ fn flat_sites(
         pc = end;
     }
     Ok(pc == code.len())
+}
+
+/// Data payloads contain no pool references. Establish their complete byte
+/// extent before skipping; unsupported or truncated layouts use the checked walk.
+fn payload_bytes(code: &[u8], pc: usize, ident: u16) -> Option<usize> {
+    if !pc.is_multiple_of(4) {
+        return None;
+    }
+    let header = code.get(pc..pc.checked_add(4)?)?;
+    let size = usize::from(u16::from_le_bytes([header[2], header[3]]));
+    match ident {
+        0x0100 => size.checked_mul(4)?.checked_add(8),
+        0x0200 => size.checked_mul(8)?.checked_add(4),
+        0x0300 => {
+            if !matches!(size, 1 | 2 | 4 | 8) {
+                return None;
+            }
+            let count = code.get(pc.checked_add(4)?..pc.checked_add(8)?)?;
+            let count =
+                usize::try_from(u32::from_le_bytes([count[0], count[1], count[2], count[3]]))
+                    .ok()?;
+            let bytes = size.checked_mul(count)?;
+            bytes.checked_add(bytes % 2)?.checked_add(8)
+        }
+        _ => None,
+    }
 }
 
 fn copy(units: &[u16]) -> Result<Vec<u16>, QueryError> {

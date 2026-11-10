@@ -32,6 +32,13 @@ impl Rows {
         self.order.iter().map(|id| self.row(*id))
     }
 
+    pub fn range(
+        &self,
+        range: std::ops::Range<usize>,
+    ) -> impl ExactSizeIterator<Item = RowView<'_>> {
+        self.order[range].iter().map(|id| self.row(*id))
+    }
+
     #[cfg_attr(feature = "perf", fastrace::trace(name = "xref.rank"))]
     pub fn rank(&mut self) -> Result<(), QueryError> {
         use crate::analysis::filter::best_first;

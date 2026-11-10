@@ -100,6 +100,20 @@ impl<'a> RawMethodView<'a> {
 }
 
 impl<'a> ProgramIndex<'a> {
+    /// Instruction-only query facts. The common header reader checks code-item
+    /// admission, register sizes and the instruction extent. Catch/debug items
+    /// are outside this view; consumers needing them use `method_body`.
+    pub fn method_instructions(
+        &self,
+        code_offset: Option<ByteOffset>,
+        access_flags: u32,
+    ) -> Result<Option<&'a [u8]>, InputError> {
+        Ok(
+            read_instruction_header(self, code_offset, access_flags, None)?
+                .map(|header| &self.bytes[header.instructions.as_range()]),
+        )
+    }
+
     /// Reads one original code item without resolving its declaration.
     pub fn method_body(
         &self,
@@ -111,18 +125,29 @@ impl<'a> ProgramIndex<'a> {
     }
 }
 
-pub(super) fn read_code<'a>(
+struct InstructionHeader<'a> {
+    offset: ByteOffset,
+    registers_size: u16,
+    ins_size: u16,
+    outs_size: u16,
+    tries_size: u16,
+    debug_offset: ByteOffset,
+    code_units: CodeUnitCount,
+    instructions: ByteRange,
+    cursor: Cursor<'a>,
+}
+
+fn read_instruction_header<'a>(
     index: &ProgramIndex<'a>,
     code_offset: Option<ByteOffset>,
-    method_id: crate::MethodId,
     access_flags: u32,
     expected_words: Option<RegisterWordCount>,
-) -> Result<MethodBody<'a>, InputError> {
+) -> Result<Option<InstructionHeader<'a>>, InputError> {
     let offset = match (
         code_offset,
         access_flags & (crate::substrate::flags::NATIVE | crate::substrate::flags::ABSTRACT) != 0,
     ) {
-        (None, true) => return Ok(MethodBody::DeclarationOnly),
+        (None, true) => return Ok(None),
         (Some(offset), false) => offset,
         (None, false) => return Err(malformed(InputProblem::InvalidCode, ByteOffset(0))),
         (Some(offset), true) => return Err(malformed(InputProblem::InvalidCode, offset)),
@@ -146,6 +171,40 @@ pub(super) fn read_code<'a>(
             ByteOffset(offset.0 + 2),
         ));
     }
+    Ok(Some(InstructionHeader {
+        offset,
+        registers_size,
+        ins_size,
+        outs_size,
+        tries_size,
+        debug_offset,
+        code_units,
+        instructions,
+        cursor,
+    }))
+}
+
+pub(super) fn read_code<'a>(
+    index: &ProgramIndex<'a>,
+    code_offset: Option<ByteOffset>,
+    method_id: crate::MethodId,
+    access_flags: u32,
+    expected_words: Option<RegisterWordCount>,
+) -> Result<MethodBody<'a>, InputError> {
+    let Some(InstructionHeader {
+        offset,
+        registers_size,
+        ins_size,
+        outs_size,
+        tries_size,
+        debug_offset,
+        code_units,
+        instructions,
+        mut cursor,
+    }) = read_instruction_header(index, code_offset, access_flags, expected_words)?
+    else {
+        return Ok(MethodBody::DeclarationOnly);
+    };
     if debug_offset != ByteOffset(0) {
         index.item(0x2003, debug_offset)?;
     }
@@ -179,7 +238,7 @@ pub(super) fn read_code<'a>(
         instructions: &index.bytes[instructions.as_range()],
         instruction_byte_range: ByteRange {
             start: ByteOffset(offset.0 + 16),
-            end: ByteOffset(offset.0 + 16 + byte_length.0),
+            end: instructions.end,
         },
         code_byte_range: ByteRange {
             start: offset,

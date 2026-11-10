@@ -585,33 +585,8 @@ impl<R: Cells> serde::Serialize for ObjectRow<'_, R> {
         map.end()
     }
 }
-struct Items<'a, I> {
-    columns: &'a [&'a str],
-    rows: &'a I,
-}
-impl<I> serde::Serialize for Items<'_, I>
-where
-    I: Clone + IntoIterator,
-    I::Item: Cells,
-    I::IntoIter: ExactSizeIterator,
-{
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeSeq;
-        let rows = self.rows.clone().into_iter();
-        let mut sequence = serializer.serialize_seq(Some(rows.len()))?;
-        for row in rows {
-            sequence.serialize_element(&ObjectRow {
-                columns: self.columns,
-                row: &row,
-            })?;
-        }
-        sequence.end()
-    }
-}
-
 /// Renders the existing selection directly to the atomic sink. No JSON value tree
 /// or second full text buffer copies potentially large resource/metadata values.
-#[cfg_attr(feature = "perf", fastrace::trace(name = "query.publish"))]
 pub(super) fn publish_rows<I>(
     rows: I,
     columns: &[&str],
@@ -627,6 +602,45 @@ where
     I::IntoIter: ExactSizeIterator,
 {
     let shown = rows.clone().into_iter().len();
+    publish_encoded(
+        shown,
+        columns,
+        command,
+        format,
+        input,
+        output,
+        summary,
+        |writer| {
+            for (index, row) in rows.into_iter().enumerate() {
+                match format {
+                    Format::Text => write_cells(writer, row.cells()).map_err(Failure::output)?,
+                    Format::Json => {
+                        if index != 0 {
+                            writer.write_all(b",").map_err(Failure::output)?;
+                        }
+                        serde_json::to_writer(&mut *writer, &ObjectRow { columns, row: &row })
+                            .map_err(|error| Failure::output(std::io::Error::other(error)))?;
+                    }
+                }
+            }
+            Ok(())
+        },
+    )
+}
+
+/// The envelope owns counts, warnings and atomic publication; workers supply only
+/// encoded rows in the already selected order.
+#[cfg_attr(feature = "perf", fastrace::trace(name = "query.publish"))]
+pub(super) fn publish_encoded(
+    shown: usize,
+    columns: &[&str],
+    command: &str,
+    format: Format,
+    input: &Path,
+    output: Option<&Path>,
+    summary: RowSummary<'_>,
+    rows: impl FnOnce(&mut dyn Write) -> Result<(), Failure>,
+) -> Result<(), Failure> {
     for issue in summary.issues {
         eprintln!(
             "diana: warning: {}: {}: {}",
@@ -647,42 +661,86 @@ where
                     .map_err(Failure::output)?;
                 }
                 write_cells(writer, columns.iter().copied()).map_err(Failure::output)?;
-                for row in rows.clone() {
-                    write_cells(writer, row.cells()).map_err(Failure::output)?;
-                }
             }
             Format::Json => {
-                let write = (|| -> Result<(), serde_json::Error> {
-                    use serde::ser::SerializeMap;
-                    let mut serializer = serde_json::Serializer::new(&mut *writer);
-                    let mut object = serde::Serializer::serialize_map(&mut serializer, Some(10))?;
-                    object.serialize_entry("schema_version", &schema_version(command))?;
-                    object.serialize_entry("command", command)?;
-                    object.serialize_entry(
-                        "items",
-                        &Items {
-                            columns,
-                            rows: &rows,
-                        },
-                    )?;
-                    object.serialize_entry(
-                        "total",
-                        &summary.issues.is_empty().then_some(summary.total),
-                    )?;
-                    object.serialize_entry("recovered_total", &summary.total)?;
-                    object.serialize_entry("complete", &summary.issues.is_empty())?;
-                    object.serialize_entry("issues", summary.issues)?;
-                    object.serialize_entry("shown", &shown)?;
-                    object.serialize_entry("truncated", &(shown < summary.total))?;
-                    object.serialize_entry("warnings", summary.warning.as_slice())?;
-                    object.end()
-                })();
-                write.map_err(|error| Failure::output(std::io::Error::other(error)))?;
+                write!(
+                    writer,
+                    "{{\"schema_version\":{},\"command\":",
+                    schema_version(command)
+                )
+                .map_err(Failure::output)?;
+                serde_json::to_writer(&mut *writer, command)
+                    .map_err(|error| Failure::output(std::io::Error::other(error)))?;
+                writer.write_all(b",\"items\":[").map_err(Failure::output)?;
             }
+        }
+        rows(writer)?;
+        if format == Format::Json {
+            let complete = summary.issues.is_empty();
+            writer.write_all(b"],\"total\":").map_err(Failure::output)?;
+            if complete {
+                write!(writer, "{}", summary.total).map_err(Failure::output)?;
+            } else {
+                writer.write_all(b"null").map_err(Failure::output)?;
+            }
+            write!(
+                writer,
+                ",\"recovered_total\":{},\"complete\":{complete},\"issues\":",
+                summary.total
+            )
+            .map_err(Failure::output)?;
+            serde_json::to_writer(&mut *writer, summary.issues)
+                .map_err(|error| Failure::output(std::io::Error::other(error)))?;
+            write!(
+                writer,
+                ",\"shown\":{shown},\"truncated\":{},\"warnings\":",
+                shown < summary.total
+            )
+            .map_err(Failure::output)?;
+            serde_json::to_writer(&mut *writer, summary.warning.as_slice())
+                .map_err(|error| Failure::output(std::io::Error::other(error)))?;
+            writer.write_all(b"}").map_err(Failure::output)?;
         }
         Ok(())
     })
 }
+
+/// Encodes a reusable cell once, reserving its exact escaped length fallibly.
+pub(super) fn encode_cell(value: &str, format: Format) -> Result<Vec<u8>, Failure> {
+    let mut len = if format == Format::Json { 2usize } else { 0 };
+    for byte in value.bytes() {
+        let width = match (format, byte) {
+            (Format::Json, b'"' | b'\\' | 0x08 | 0x09 | 0x0a | 0x0c | 0x0d) => 2,
+            (Format::Json, 0..=0x1f) => 6,
+            (Format::Text, b'\\' | b'\t' | b'\r' | b'\n' | 0) => 2,
+            _ => 1,
+        };
+        len = len
+            .checked_add(width)
+            .ok_or_else(|| Failure::input(crate::analysis::input::InputError::PlatformCapacity))?;
+    }
+    let mut encoded = Vec::new();
+    encoded
+        .try_reserve_exact(len)
+        .map_err(|error| Failure::input(crate::analysis::input::InputError::Allocation(error)))?;
+    match format {
+        Format::Json => write_json_string(&mut encoded, value),
+        Format::Text => {
+            for byte in value.bytes() {
+                match byte {
+                    b'\\' => encoded.extend_from_slice(b"\\\\"),
+                    b'\t' => encoded.extend_from_slice(b"\\t"),
+                    b'\r' => encoded.extend_from_slice(b"\\r"),
+                    b'\n' => encoded.extend_from_slice(b"\\n"),
+                    0 => encoded.extend_from_slice(b"\\0"),
+                    _ => encoded.push(byte),
+                }
+            }
+        }
+    }
+    Ok(encoded)
+}
+
 fn write_cells<'a>(
     writer: &mut dyn Write,
     cells: impl Iterator<Item = &'a str>,
