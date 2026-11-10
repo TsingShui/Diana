@@ -5,7 +5,7 @@
 //! instruction list and exception handlers the recovery backend consumes, so
 //! the engine performs no second decode or symbol mapping.
 
-use crate::frontend::{ExceptionHandler, TryCatchBlock};
+use crate::ir::ExceptionHandler;
 use crate::ir::{
     FieldReference, InsnArg, InsnNode, InsnType, InvokeType, LambdaSite, MemberReference,
     MethodDescriptor, MethodReference,
@@ -18,31 +18,25 @@ use crate::{CodeUnitOffset, TypeId};
 
 use super::MethodIr;
 
+mod decode;
+
 /// Build the backend-ready instruction list and handlers from the published P1
 /// facts. Failures are retained as an explicit product gap instead of widening
 /// the method result.
 pub(super) fn build(facts: &DecodedMethod<'_>) -> Result<MethodIr, String> {
-    let source = facts.source();
-    let bytes = source.instructions();
-    let mut insns = Vec::with_capacity(bytes.len() / 2);
-    for pair in bytes.chunks_exact(2) {
-        insns.push(u16::from_le_bytes([pair[0], pair[1]]));
+    let mut instructions = Vec::new();
+    for item in facts.instructions() {
+        if let Some(mut instruction) = decode::decode(facts, item) {
+            instruction.set_offset(item.pc().0);
+            instructions.push(instruction);
+        }
     }
-    let tries = tries(facts);
-    let result = crate::decoder::method_decoder::MethodDecoder::from_parts(
-        &insns,
-        &tries,
-        source.registers_size(),
-        source.ins_size(),
-    )
-    .decode();
-    let mut instructions = result.insns;
     resolve_symbols(facts, &mut instructions)?;
     Ok(MethodIr::new(
         instructions,
-        result.handlers,
-        result.registers,
-        result.ins,
+        handlers(facts),
+        u32::from(facts.source().registers_size()),
+        u32::from(facts.source().ins_size()),
     ))
 }
 
@@ -335,35 +329,25 @@ fn apply_invoke_return_type(insn: &mut InsnNode, method: &MethodReference) {
     }
 }
 
-fn tries(facts: &DecodedMethod<'_>) -> Vec<TryCatchBlock> {
+fn handlers(facts: &DecodedMethod<'_>) -> Vec<ExceptionHandler> {
     let boundaries: Vec<u32> = facts.try_boundaries().collect();
-    let mut blocks = Vec::new();
+    let mut handlers = Vec::new();
     for pair in boundaries.chunks_exact(2) {
         let (start, end) = (pair[0], pair[1]);
         let clauses = facts
             .catch_clauses_at(CodeUnitOffset(start))
             .unwrap_or_default();
-        let mut handlers = Vec::new();
         for (exception, target) in clauses {
-            let handler = match exception {
+            let catch_type = match exception {
                 Some(id) => facts
                     .catch_type(TypeId(id))
                     .and_then(|fact| fact.descriptor().ok())
                     .and_then(|text| text.utf8_lossy().ok())
-                    .and_then(|text| text.parse::<crate::ir::ArgType>().ok())
-                    .map_or_else(
-                        || ExceptionHandler::catch_all(target),
-                        |ty| ExceptionHandler::typed(ty, target),
-                    ),
-                None => ExceptionHandler::catch_all(target),
+                    .and_then(|text| text.parse::<crate::ir::ArgType>().ok()),
+                None => None,
             };
-            handlers.push(handler);
+            handlers.push(ExceptionHandler::new(start, end, target, catch_type));
         }
-        blocks.push(TryCatchBlock {
-            start_addr: start,
-            end_addr: end,
-            handlers,
-        });
     }
-    blocks
+    handlers
 }
