@@ -1,0 +1,43 @@
+//! An allocation publishes its type and local where it happens.
+
+use super::super::*;
+use super::*;
+
+/// A new-instance statement that publishes its own storage states the allocation
+/// at that position: the object exists and its constructor has not run. Printing
+/// it as `T local` keeps the original allocation point; the constructor call keeps
+/// its own statement and position. Only a directly published allocation
+/// qualifies, so a discarded or aliased allocation keeps its expression form.
+pub(super) fn allocation_declarations(code: &mut MethodCode) -> Result<(), ExpressionError> {
+    for operation in &code.operations {
+        let Some(statement) = operation.body.as_ref() else {
+            continue;
+        };
+        let expression = statement.expression;
+        if !matches!(
+            code.expressions.get(expression.0 as usize).map(|e| &e.kind),
+            Some(ExprKind::AllocateInstance { .. })
+        ) {
+            continue;
+        }
+        let [output] = statement.outputs.as_slice() else {
+            continue;
+        };
+        let local = match output.materialization() {
+            crate::p5::Materialization::Store(local)
+            | crate::p5::Materialization::AllocationCarrier(local) => local,
+            _ => continue,
+        };
+        code.emission
+            .placements
+            .get_mut(statement.id.0 as usize)
+            .ok_or(bug("allocation names an unknown statement"))?
+            .allocation_declaration = true;
+        *code
+            .emission
+            .allocation_locals
+            .get_mut(local.0 as usize)
+            .ok_or(bug("allocation names an unknown local"))? = true;
+    }
+    Ok(())
+}
