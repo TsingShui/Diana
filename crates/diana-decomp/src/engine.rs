@@ -282,17 +282,20 @@ fn apply_invoke_return_type(insn: &mut crate::ir::InsnNode, method: &crate::ir::
     }
 }
 
-struct MethodInput<'a> {
-    pub method: MethodNode,
-    pub facts: DecodedMethod<'a>,
+enum MethodFacts<'a> {
+    Decoded(DecodedMethod<'a>),
+    Failed { method: MethodId, failure: String },
 }
 
-struct ClassInput<'a> {
-    pub class: ClassNode,
-    pub methods: Vec<MethodInput<'a>>,
+/// One complete P0/P1 delivery for a backend class request.
+struct BackendInput<'a> {
+    class: Arc<ClassFacts>,
+    related: Vec<Arc<ClassFacts>>,
+    methods: Vec<MethodFacts<'a>>,
 }
 
 struct MethodOutcome {
+    pub method: MethodId,
     pub name: String,
     pub descriptor: String,
     pub failure: Option<String>,
@@ -303,40 +306,92 @@ struct ClassOutput {
     pub methods: Vec<MethodOutcome>,
 }
 
-fn decompile_class<'a>(
-    declarations: &[&ClassNode],
-    input: ClassInput<'a>,
-) -> Result<ClassOutput, DexError> {
+fn decompile_class<'a>(input: BackendInput<'a>) -> Result<ClassOutput, DexError> {
     use rayon::prelude::*;
 
-    let ClassInput { class, methods } = input;
-    let mut prepared: Vec<(
-        String,
-        String,
-        Option<String>,
-        Option<crate::analysis::ClassMethodInput>,
-    )> = methods
+    let class = crate::local::class_node(&input.class)
+        .ok_or_else(|| DexError::Backend("class node assembly failed".to_owned()))?;
+    let mut related_nodes = Vec::new();
+    related_nodes
+        .try_reserve_exact(input.related.len())
+        .map_err(|_| DexError::Backend("related class allocation failed".to_owned()))?;
+    for facts in &input.related {
+        if let Some(node) = crate::local::class_node(facts) {
+            related_nodes.push(node);
+        }
+    }
+    let mut declarations: Vec<&ClassNode> = Vec::new();
+    declarations
+        .try_reserve_exact(related_nodes.len() + 1)
+        .map_err(|_| DexError::Backend("declaration allocation failed".to_owned()))?;
+    declarations.push(&class);
+    declarations.extend(related_nodes.iter());
+
+    let prepared: Vec<(MethodOutcome, Option<crate::analysis::ClassMethodInput>)> = input
+        .methods
         .into_par_iter()
-        .map(|MethodInput { method, facts }| {
+        .map(|facts| {
+            let method_id = match &facts {
+                MethodFacts::Decoded(facts) => facts.method_id(),
+                MethodFacts::Failed { method, .. } => *method,
+            };
+            let Some(method) = class
+                .methods()
+                .iter()
+                .find(|method| method.id == method_id.0)
+                .cloned()
+            else {
+                return (
+                    MethodOutcome {
+                        method: method_id,
+                        name: format!("method#{}", method_id.0),
+                        descriptor: String::new(),
+                        failure: Some("class node method is missing".to_owned()),
+                    },
+                    None,
+                );
+            };
             let name = method.info.name.clone();
             let descriptor = method.info.descriptor().to_string();
-            let recovered = decode_decoded_method(&method, &facts);
-            match recovered {
-                Ok(cfg) => (
-                    name,
-                    descriptor,
-                    None,
-                    Some(crate::analysis::ClassMethodInput::decoded(method, cfg)),
-                ),
-                Err(error) => (
-                    name,
-                    descriptor,
-                    Some(error.to_string()),
+            match facts {
+                MethodFacts::Decoded(facts) => match decode_decoded_method(&method, &facts) {
+                    Ok(cfg) => (
+                        MethodOutcome {
+                            method: method_id,
+                            name,
+                            descriptor,
+                            failure: None,
+                        },
+                        Some(crate::analysis::ClassMethodInput::decoded(method, cfg)),
+                    ),
+                    Err(error) => (
+                        MethodOutcome {
+                            method: method_id,
+                            name,
+                            descriptor,
+                            failure: Some(error.to_string()),
+                        },
+                        Some(crate::analysis::ClassMethodInput::failed(
+                            method,
+                            crate::analysis::MethodRecoveryFailure::new(
+                                crate::analysis::MethodRecoveryStage::Decode,
+                                error,
+                            ),
+                        )),
+                    ),
+                },
+                MethodFacts::Failed { failure, .. } => (
+                    MethodOutcome {
+                        method: method_id,
+                        name,
+                        descriptor,
+                        failure: Some(failure.clone()),
+                    },
                     Some(crate::analysis::ClassMethodInput::failed(
                         method,
                         crate::analysis::MethodRecoveryFailure::new(
                             crate::analysis::MethodRecoveryStage::Decode,
-                            error,
+                            failure,
                         ),
                     )),
                 ),
@@ -345,21 +400,22 @@ fn decompile_class<'a>(
         .collect();
     let outcomes = prepared
         .iter()
-        .map(|(name, descriptor, failure, _)| MethodOutcome {
-            name: name.clone(),
-            descriptor: descriptor.clone(),
-            failure: failure.clone(),
+        .map(|(outcome, _)| MethodOutcome {
+            method: outcome.method,
+            name: outcome.name.clone(),
+            descriptor: outcome.descriptor.clone(),
+            failure: outcome.failure.clone(),
         })
         .collect();
     let mut inputs: Vec<crate::analysis::ClassMethodInput> = prepared
-        .drain(..)
-        .filter_map(|(_, _, _, input)| input)
+        .into_iter()
+        .filter_map(|(_, input)| input)
         .collect();
     let observer: Arc<dyn AnalysisObserver> = Arc::new(NullAnalysisObserver);
     let source =
         JavaDecompiler::new(JavaDecompilerConfig::default().with_preserved_dex_names(true))
-            .with_shared_type_hierarchy(hierarchy(declarations))
-            .with_source_abi(java_abi(declarations))
+            .with_shared_type_hierarchy(hierarchy(&declarations))
+            .with_source_abi(java_abi(&declarations))
             .with_analysis_observer(observer)
             .generate_class_with_nested(&class, &mut inputs, Vec::new())
             .map_err(|error| DexError::Backend(error.to_string()))?;
@@ -433,11 +489,7 @@ impl<'a> Engine<'a> {
             .image(request.class.dex)
             .ok_or(RequestError::UnknownDex)?;
         let facts = image.index.class_facts_cached(request.class.class_def)?;
-        let node = crate::local::class_node(&facts).ok_or(RequestError::InternalInvariant(
-            "class node assembly failed",
-        ))?;
-        let mut methods = Vec::new();
-        let mut inputs = Vec::new();
+        let mut method_facts = Vec::new();
         for entry in facts.methods() {
             let id = entry.method();
             if let Some(selector) = &request.method {
@@ -446,39 +498,40 @@ impl<'a> Engine<'a> {
                     continue;
                 }
             }
-            let Ok(source) = image.index.method_source(&facts, id) else {
-                continue;
+            let source = match image.index.method_source(&facts, id) {
+                Ok(source) => source,
+                Err(error) => {
+                    method_facts.push(MethodFacts::Failed {
+                        method: id,
+                        failure: error.to_string(),
+                    });
+                    continue;
+                }
             };
             if !matches!(source.raw(), crate::input::RawPrintable::Method(_)) {
                 continue;
             }
-            let Ok(decoded) = image.index.decode_method_source(&source) else {
-                continue;
+            let decoded = match image.index.decode_method_source(&source) {
+                Ok(decoded) => decoded,
+                Err(error) => {
+                    method_facts.push(MethodFacts::Failed {
+                        method: id,
+                        failure: error.to_string(),
+                    });
+                    continue;
+                }
             };
-            let Some(decoded) = decoded.decoded else {
-                continue;
-            };
-            let Some(method) = node
-                .methods()
-                .iter()
-                .find(|method| method.id == id.0)
-                .cloned()
-            else {
-                continue;
-            };
-            methods.push(MethodSource {
-                method: id,
-                name: method.info.name.encode_utf16().collect(),
-                prototype: method.info.descriptor().encode_utf16().collect(),
-                failure: None,
-            });
-            inputs.push(MethodInput {
-                method,
-                facts: decoded,
-            });
+            match decoded.decoded {
+                Some(decoded) => method_facts.push(MethodFacts::Decoded(decoded)),
+                None => method_facts.push(MethodFacts::Failed {
+                    method: id,
+                    failure: decoded
+                        .error
+                        .map_or_else(|| "method decoding stopped".to_owned(), |e| e.to_string()),
+                }),
+            }
         }
 
-        let declaration_copy = node.clone();
         let mut related = Vec::new();
         let mut wanted = Vec::new();
         if let Fact::Present(super_class) = facts.superclass() {
@@ -505,37 +558,32 @@ impl<'a> Engine<'a> {
                     continue;
                 };
                 if text == descriptor {
-                    if let Some(node) = crate::local::class_node(&other) {
-                        related.push(node);
-                    }
+                    related.push(other);
                     break;
                 }
             }
         }
 
-        let mut declarations: Vec<&crate::ClassNode> = vec![&declaration_copy];
-        declarations.extend(related.iter());
-        let output = decompile_class(
-            &declarations,
-            ClassInput {
-                class: node,
-                methods: inputs,
-            },
-        )
+        let output = decompile_class(BackendInput {
+            class: facts,
+            related,
+            methods: method_facts,
+        })
         .map_err(|error| {
             RequestError::InternalInvariant(Box::leak(
                 format!("backend failed: {error}").into_boxed_str(),
             ))
         })?;
-        for outcome in &output.methods {
-            if let Some(failure) = &outcome.failure {
-                if let Some(method) = methods.iter_mut().find(|method| {
-                    String::from_utf16(&method.name).ok().as_deref() == Some(outcome.name.as_str())
-                }) {
-                    method.failure = Some(failure.clone());
-                }
-            }
-        }
+        let methods = output
+            .methods
+            .into_iter()
+            .map(|outcome| MethodSource {
+                method: outcome.method,
+                name: outcome.name.encode_utf16().collect(),
+                prototype: outcome.descriptor.encode_utf16().collect(),
+                failure: outcome.failure,
+            })
+            .collect();
         Ok(ClassSource {
             class: request.class,
             text: output.source,
