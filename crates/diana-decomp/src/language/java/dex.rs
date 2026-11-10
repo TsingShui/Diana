@@ -1947,7 +1947,7 @@ impl DexJavaDialect {
         let method = Self::method(operation.payload.reference.as_deref()).ok()?;
         let contract = self.generic_methods.get(method)?.clone();
         let invoke_type = operation.payload.invoke_type?;
-        let is_static = invoke_type == InvokeType::Static;
+        let is_static = !invoke_type.has_receiver();
         let mut solver = self.solver(&contract.owner, &contract.signature.type_parameters);
         if !is_static {
             if let Some(receiver) = operation.operands().first() {
@@ -1985,7 +1985,11 @@ impl DexJavaDialect {
         contract: &GenericMethodContract,
         expected: Option<&JavaType>,
     ) -> Option<JavaType> {
-        if operation.payload.invoke_type == Some(InvokeType::Static) {
+        if operation
+            .payload
+            .invoke_type
+            .is_some_and(|kind| !kind.has_receiver())
+        {
             return None;
         }
         let mut solver = self.solver(&contract.owner, &contract.signature.type_parameters);
@@ -2091,7 +2095,7 @@ impl DexJavaDialect {
                 instruction: insn.insn_type,
                 field: "invoke_type",
             })?;
-        let is_static = invoke_type == InvokeType::Static;
+        let is_static = !invoke_type.has_receiver();
         let contract = self.generic_methods.get(method).cloned();
         let mut constraints = contract
             .as_ref()
@@ -2120,7 +2124,7 @@ impl DexJavaDialect {
                 .zip(
                     insn.operands()
                         .iter()
-                        .skip(usize::from(invoke_type != InvokeType::Static)),
+                        .skip(usize::from(invoke_type.has_receiver())),
                 )
             {
                 if let Some(actual) = self.generic_inference_argument_source_type(actual, erased) {
@@ -2133,7 +2137,7 @@ impl DexJavaDialect {
             for (formal, actual) in contract.signature.parameter_types.iter().zip(
                 insn.operands()
                     .iter()
-                    .skip(usize::from(invoke_type != InvokeType::Static)),
+                    .skip(usize::from(invoke_type.has_receiver())),
             ) {
                 let SemanticExpression::Operation(operation) = actual else {
                     continue;
@@ -2233,7 +2237,7 @@ impl DexJavaDialect {
             .zip(
                 insn.operands()
                     .iter()
-                    .skip(usize::from(invoke_type != InvokeType::Static)),
+                    .skip(usize::from(invoke_type.has_receiver())),
             )
             .enumerate()
             .map(|(index, (erased, actual))| {
@@ -2270,7 +2274,7 @@ impl DexJavaDialect {
         let invocation_arguments = insn
             .operands()
             .iter()
-            .skip(usize::from(invoke_type != InvokeType::Static))
+            .skip(usize::from(invoke_type.has_receiver()))
             .collect::<Vec<_>>();
         let unchecked_arguments = contract
             .as_ref()
@@ -2351,7 +2355,7 @@ impl DexJavaDialect {
         };
         drop(constraints);
         let receiver = match invoke_type {
-            InvokeType::Static => None,
+            kind if !kind.has_receiver() => None,
             InvokeType::Super => Some(Box::new(JavaExpr::Super)),
             _ => {
                 let receiver = insn
@@ -3592,7 +3596,7 @@ impl DexJavaDialect {
         let Some(invoke_type) = operation.payload.invoke_type else {
             return false;
         };
-        let is_static = invoke_type == InvokeType::Static;
+        let is_static = !invoke_type.has_receiver();
         let mut constraints = self.solver(&contract.owner, &contract.signature.type_parameters);
         if !is_static {
             if let Some(receiver) = operation.operands().first() {

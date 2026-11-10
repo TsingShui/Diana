@@ -4595,7 +4595,11 @@ impl<'a> SourceTypeFlow<'a> {
         operation: &SemanticOperation,
         contract: &GenericMethodContract,
     ) -> Option<JavaType> {
-        if operation.payload.invoke_type == Some(crate::ir::InvokeType::Static) {
+        if operation
+            .payload
+            .invoke_type
+            .is_some_and(|kind| !kind.has_receiver())
+        {
             return None;
         }
         let method = match operation.payload.reference.as_deref()? {
@@ -5725,7 +5729,10 @@ impl<'a> SourceTypeFlow<'a> {
     }
 
     fn operand_receiver(operation: &SemanticOperation) -> bool {
-        operation.payload.invoke_type != Some(crate::ir::InvokeType::Static)
+        operation
+            .payload
+            .invoke_type
+            .is_some_and(crate::ir::InvokeType::has_receiver)
     }
 
     fn source_receiver(operation: &SemanticOperation) -> bool {

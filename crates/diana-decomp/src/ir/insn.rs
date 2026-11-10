@@ -287,6 +287,16 @@ pub enum InvokeType {
     Custom,
 }
 
+impl InvokeType {
+    /// Whether the first encoded operand is an invocation receiver.
+    ///
+    /// `invoke-custom` carries only call-site arguments; its first operand is a
+    /// normal argument even though the call is not statically dispatched.
+    pub fn has_receiver(self) -> bool {
+        !matches!(self, Self::Static | Self::Custom)
+    }
+}
+
 /// Comparison bias for floating-point/long comparisons
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CmpBias {

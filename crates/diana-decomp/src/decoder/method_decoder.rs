@@ -125,6 +125,12 @@ mod opcode {
     pub const INVOKE_DIRECT_RANGE: u8 = 0x76;
     pub const INVOKE_STATIC_RANGE: u8 = 0x77;
     pub const INVOKE_INTERFACE_RANGE: u8 = 0x78;
+    pub const INVOKE_POLYMORPHIC: u8 = 0xfa;
+    pub const INVOKE_POLYMORPHIC_RANGE: u8 = 0xfb;
+    pub const INVOKE_CUSTOM: u8 = 0xfc;
+    pub const INVOKE_CUSTOM_RANGE: u8 = 0xfd;
+    pub const CONST_METHOD_HANDLE: u8 = 0xfe;
+    pub const CONST_METHOD_TYPE: u8 = 0xff;
     pub const NEG_INT: u8 = 0x7b;
     pub const NOT_INT: u8 = 0x7c;
     pub const NEG_LONG: u8 = 0x7d;
@@ -632,6 +638,16 @@ impl<'a> MethodDecoder<'a> {
             // Invoke
             INVOKE_VIRTUAL..=INVOKE_INTERFACE => self.decode_invoke(pc, op, false),
             INVOKE_VIRTUAL_RANGE..=INVOKE_INTERFACE_RANGE => self.decode_invoke(pc, op, true),
+            INVOKE_POLYMORPHIC => self.decode_dynamic_invoke(pc, InvokeType::Polymorphic, false),
+            INVOKE_POLYMORPHIC_RANGE => {
+                self.decode_dynamic_invoke(pc, InvokeType::Polymorphic, true)
+            }
+            INVOKE_CUSTOM => self.decode_dynamic_invoke(pc, InvokeType::Custom, false),
+            INVOKE_CUSTOM_RANGE => self.decode_dynamic_invoke(pc, InvokeType::Custom, true),
+            // Constant method handles and types carry a register definition the
+            // current IR has no value model for. Keep the decoded width so the
+            // stream stays aligned; the value remains an explicit gap.
+            CONST_METHOD_HANDLE | CONST_METHOD_TYPE => Some(InsnNode::nop()),
 
             // Unary
             NEG_INT..=INT_TO_SHORT => self.decode_unary(pc, op),
@@ -893,6 +909,46 @@ impl<'a> MethodDecoder<'a> {
         };
 
         Some(InsnNode::invoke(invoke_type, method_idx, args))
+    }
+
+    /// Decode `invoke-polymorphic` and `invoke-custom` families. Both carry a
+    /// leading reference index plus a call-site or prototype index in the next
+    /// code unit.
+    fn decode_dynamic_invoke(
+        &self,
+        pc: usize,
+        invoke_type: InvokeType,
+        is_range: bool,
+    ) -> Option<InsnNode> {
+        let word = self.insns[pc];
+        let reference_idx = self.word_at(pc + 1) as u32;
+        // 45cc/4rcc carry a prototype between the reference index and the
+        // register list; 35c/3rc put registers directly after the index.
+        let register_word = if invoke_type == InvokeType::Polymorphic {
+            self.word_at(pc + 3)
+        } else {
+            self.word_at(pc + 2)
+        };
+        let args = if is_range {
+            let count = ((word >> 8) & 0xff) as u16;
+            let start = register_word;
+            (0..count)
+                .map(|i| InsnArg::Reg(RegisterArg::new((start + i) as RegNum, ArgType::unknown())))
+                .collect()
+        } else {
+            let count = ((word >> 12) & 0xf) as usize;
+            let c = register_word & 0xf;
+            let d = (register_word >> 4) & 0xf;
+            let e = (register_word >> 8) & 0xf;
+            let f = (register_word >> 12) & 0xf;
+            let g = (word >> 8) & 0xf;
+            let all = [c, d, e, f, g];
+            all[..count]
+                .iter()
+                .map(|&r| InsnArg::Reg(RegisterArg::new(r as RegNum, ArgType::unknown())))
+                .collect()
+        };
+        Some(InsnNode::invoke(invoke_type, reference_idx, args))
     }
 
     // Decode unary operation
@@ -1176,7 +1232,13 @@ fn instruction_length(op: u8, insns: &[u16]) -> usize {
         | FILLED_NEW_ARRAY
         | FILLED_NEW_ARRAY_RANGE
         | INVOKE_VIRTUAL..=INVOKE_INTERFACE
-        | INVOKE_VIRTUAL_RANGE..=INVOKE_INTERFACE_RANGE => 3,
+        | INVOKE_VIRTUAL_RANGE..=INVOKE_INTERFACE_RANGE
+        | INVOKE_CUSTOM
+        | INVOKE_CUSTOM_RANGE => 3,
+
+        INVOKE_POLYMORPHIC | INVOKE_POLYMORPHIC_RANGE => 4,
+
+        CONST_METHOD_HANDLE | CONST_METHOD_TYPE => 2,
 
         CONST_WIDE => 5,
 

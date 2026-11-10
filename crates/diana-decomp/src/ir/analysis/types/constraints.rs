@@ -316,7 +316,7 @@ impl TypeConstraintGraph {
             .payload
             .invoke_type
             .ok_or(TypeConstraintError::MissingInvokeType(instruction.offset))?;
-        let is_static = invoke_type == InvokeType::Static;
+        let is_static = !invoke_type.has_receiver();
         let expected = method.descriptor.parameters.len() + usize::from(!is_static);
         if instruction.args.len() != expected {
             return Err(TypeConstraintError::InvokeArity {

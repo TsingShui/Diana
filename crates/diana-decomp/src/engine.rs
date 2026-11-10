@@ -10,7 +10,9 @@ use crate::input::{DexContainer, InputError, InputProblem, ProgramIndex};
 use crate::ir::analysis::ClassHierarchyIndex;
 use crate::ir::{AnalysisObserver, NullAnalysisObserver, CFG};
 use crate::p0::{ClassFacts, Fact};
-use crate::p1::{CheckedPrototype, CheckedReferenceFact, DecodedMethod};
+use crate::p1::{
+    CheckedBootstrapFact, CheckedMemberFact, CheckedPrototype, CheckedReferenceFact, DecodedMethod,
+};
 use crate::p9::{RenderOutcome, Rendered};
 use crate::{ByteOffset, ClassKey, DexId, ImageFact, ImageOrigin, MethodId, RequestError};
 
@@ -114,6 +116,79 @@ fn resolve_symbols(facts: &DecodedMethod<'_>, ir: &mut CFG) -> DexResult<()> {
     for block in ir.blocks.values_mut() {
         for insn in &mut block.insns {
             let pc = crate::CodeUnitOffset(insn.offset);
+            if insn.insn_type == crate::ir::InsnType::Invoke {
+                match insn.payload.invoke_type {
+                    Some(crate::ir::InvokeType::Polymorphic) => {
+                        let fact = reference(facts, pc)?;
+                        let CheckedReferenceFact::Method { owner, name, .. } = fact else {
+                            return Err(DexError::Backend(format!(
+                                "polymorphic invoke at {pc:?} has another kind"
+                            )));
+                        };
+                        let proto = reference_slot(facts, pc, crate::raw::ReferenceSlot::Second)?;
+                        let CheckedReferenceFact::Proto { prototype } = proto else {
+                            return Err(DexError::Backend(format!(
+                                "polymorphic invoke at {pc:?} has no checked prototype"
+                            )));
+                        };
+                        let method = crate::ir::MethodReference {
+                            owner: descriptor(*owner)?,
+                            name: text(*name)?,
+                            descriptor: prototype_descriptor(prototype)?,
+                        };
+                        apply_invoke_return_type(insn, &method);
+                        regroup_invoke_args(insn, facts, pc, &method.descriptor)?;
+                        insn.payload.reference =
+                            Some(Box::new(crate::ir::MemberReference::Method(method)));
+                        continue;
+                    }
+                    Some(crate::ir::InvokeType::Custom) => {
+                        let fact = reference(facts, pc)?;
+                        let CheckedReferenceFact::CallSite {
+                            prototype,
+                            handle,
+                            declarations,
+                            ..
+                        } = fact
+                        else {
+                            return Err(DexError::Backend(format!(
+                                "custom invoke at {pc:?} has another kind"
+                            )));
+                        };
+                        let mut bootstrap = None;
+                        for declaration in declarations {
+                            if declaration.reference != handle.member() {
+                                continue;
+                            }
+                            if let CheckedBootstrapFact::Member(CheckedMemberFact::Method {
+                                owner,
+                                name,
+                                ..
+                            }) = &declaration.fact
+                            {
+                                bootstrap = Some((*owner, *name));
+                            }
+                            break;
+                        }
+                        let Some((owner, name)) = bootstrap else {
+                            return Err(DexError::Backend(format!(
+                                "custom invoke at {pc:?} has no bootstrap method declaration"
+                            )));
+                        };
+                        let method = crate::ir::MethodReference {
+                            owner: descriptor(owner)?,
+                            name: text(name)?,
+                            descriptor: prototype_descriptor(prototype)?,
+                        };
+                        apply_invoke_return_type(insn, &method);
+                        regroup_invoke_args(insn, facts, pc, &method.descriptor)?;
+                        insn.payload.reference =
+                            Some(Box::new(crate::ir::MemberReference::Method(method)));
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
             if insn.payload.method_index.is_some() {
                 let fact = reference(facts, pc)?;
                 let CheckedReferenceFact::Method {
@@ -133,6 +208,7 @@ fn resolve_symbols(facts: &DecodedMethod<'_>, ir: &mut CFG) -> DexResult<()> {
                     descriptor: prototype_descriptor(prototype)?,
                 };
                 apply_invoke_return_type(insn, &method);
+                regroup_invoke_args(insn, facts, pc, &method.descriptor)?;
                 insn.payload.reference = Some(Box::new(crate::ir::MemberReference::Method(method)));
             }
             if insn.payload.field_index.is_some() {
@@ -182,12 +258,59 @@ fn resolve_symbols(facts: &DecodedMethod<'_>, ir: &mut CFG) -> DexResult<()> {
     Ok(())
 }
 
+/// Collapse the flat encoded register list into one IR operand per declared
+/// parameter, using P1's checked layout. A wide parameter keeps its first
+/// register and drops the high half; the register type comes from the checked
+/// prototype instead of a later guess.
+fn regroup_invoke_args(
+    insn: &mut crate::ir::InsnNode,
+    facts: &DecodedMethod<'_>,
+    pc: crate::CodeUnitOffset,
+    descriptor: &crate::ir::MethodDescriptor,
+) -> DexResult<()> {
+    let Some(Ok(layout)) = facts.invoke_layout_at(pc) else {
+        return Ok(());
+    };
+    let mut words = insn.args.iter().cloned();
+    let mut args = Vec::new();
+    args.try_reserve_exact(usize::from(layout.has_receiver()) + layout.arguments().len())
+        .map_err(|_| DexError::Backend("invoke argument allocation failed".to_owned()))?;
+    if layout.has_receiver() {
+        let receiver = words
+            .next()
+            .ok_or_else(|| DexError::Backend(format!("invoke at {pc:?} lost its receiver")))?;
+        args.push(receiver);
+    }
+    for (width, parameter) in layout.arguments().iter().zip(&descriptor.parameters) {
+        let Some(crate::ir::InsnArg::Reg(mut register)) = words.next() else {
+            return Err(DexError::Backend(format!(
+                "invoke at {pc:?} lost a declared argument"
+            )));
+        };
+        register.ty = parameter.clone();
+        args.push(crate::ir::InsnArg::Reg(register));
+        if width.words() == 2 {
+            words.next();
+        }
+    }
+    insn.args = args;
+    Ok(())
+}
+
 fn reference<'a>(
     facts: &'a DecodedMethod<'_>,
     pc: crate::CodeUnitOffset,
 ) -> DexResult<&'a CheckedReferenceFact<'a>> {
+    reference_slot(facts, pc, crate::raw::ReferenceSlot::First)
+}
+
+fn reference_slot<'a>(
+    facts: &'a DecodedMethod<'_>,
+    pc: crate::CodeUnitOffset,
+    slot: crate::raw::ReferenceSlot,
+) -> DexResult<&'a CheckedReferenceFact<'a>> {
     facts
-        .reference_fact(pc, crate::raw::ReferenceSlot::First)
+        .reference_fact(pc, slot)
         .ok_or_else(|| DexError::Backend(format!("missing reference fact at {pc:?}")))?
         .map_err(|error| DexError::Backend(error.to_string()))
 }

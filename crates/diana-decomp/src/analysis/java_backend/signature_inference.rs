@@ -155,7 +155,10 @@ impl<'a> SourceSignatureInference<'a> {
                         instruction.payload.reference.as_deref()
                     {
                         let skip_receiver = usize::from(
-                            instruction.payload.invoke_type != Some(InvokeType::Static),
+                            instruction
+                                .payload
+                                .invoke_type
+                                .is_some_and(InvokeType::has_receiver),
                         );
                         let arguments = instruction.args.iter().skip(skip_receiver);
                         let hierarchy = self.hierarchy;
