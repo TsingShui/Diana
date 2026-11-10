@@ -648,6 +648,16 @@ fn scan_class<'a>(
             None,
         )))?;
     }
+    // Bodies are scanned from the class-data method list, the same walk the
+    // declaration-only paths use; only resource literals still need the
+    // fact-side method loop.
+    if !plan
+        .targets
+        .iter()
+        .any(|target| matches!(target, Target::Resource(_)))
+    {
+        return scan_code(index, class, &location, plan, prefilter, emit);
+    }
     let mut failure = None;
     for method in facts.methods() {
         let scope = format!(
@@ -1010,7 +1020,12 @@ fn scan_code(
                     return Ok(());
                 };
                 for reference in layout.references().into_iter().flatten() {
-                    if !needs_direct(reference.target, &plan.targets) {
+                    let needed = if plan.typed_uses {
+                        needs_reference(reference.target, &plan.targets)
+                    } else {
+                        needs_direct(reference.target, &plan.targets)
+                    };
+                    if !needed {
                         continue;
                     }
                     let direct_proto = matches!(
