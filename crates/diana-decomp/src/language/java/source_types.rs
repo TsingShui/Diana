@@ -14,7 +14,7 @@ use crate::ir::{
     SemanticStatement, SemanticStatementKind, SemanticVisitor,
 };
 
-use super::{JavaClassType, JavaClassTypeSegment, JavaIdentifier, JavaType, JavaTypeArgument};
+use super::{JavaClassType, JavaIdentifier, JavaType, JavaTypeArgument};
 
 /// Function-object identities visible to Java body lowering.
 ///
@@ -5482,7 +5482,7 @@ impl<'a> SourceTypeFlow<'a> {
         let MemberReference::Method(method) = operation.payload.reference.as_deref()? else {
             return None;
         };
-        let Some((mut solver, arguments, contract)) = self.invocation_solver(operation) else {
+        let Some((solver, arguments, contract)) = self.invocation_solver(operation) else {
             return self.resolved_type(&method.descriptor.return_type);
         };
         let return_depends_on_type_variables =

@@ -7,7 +7,6 @@
 //! - Debug information
 
 use super::{AccessInfo, AnnotationNode};
-use crate::ir::cfg::CFG;
 use crate::ir::generic_types::MethodSignature;
 use crate::ir::ty::ArgType;
 

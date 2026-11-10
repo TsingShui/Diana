@@ -15,6 +15,7 @@
 //! - `bool_expr` - Boolean expressions for reaching conditions
 //! - `bdd` - BDD utilities for boolean equivalence
 
+#![allow(dead_code)]
 pub mod analysis;
 pub mod arg;
 pub mod bdd;
@@ -64,9 +65,7 @@ pub use passes::{Pass, PassResult, PruneUnreachable, ValidateCFG};
 pub use splitter::Splitter;
 
 // Exception handling
-pub(crate) use exception::{
-    disable_trivial_early_returns, is_straight_line, trivial_early_returns,
-};
+pub(crate) use exception::trivial_early_returns;
 pub use exception::{
     CatchHandler, ExceptionAnalysis, ExceptionAnalyzer, ExceptionInvariantError, HandlerKind,
     TryRegion,

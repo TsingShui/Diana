@@ -364,8 +364,6 @@ impl VariableRoleAnalysis for StructuralVariableRoleAnalysis {
                     | VariableEdgeKind::Lock
                     | VariableEdgeKind::LoopIndex
                     | VariableEdgeKind::LoopBound
-                    | VariableEdgeKind::LoopValue
-                    | VariableEdgeKind::RecurrenceStep
                     | VariableEdgeKind::Operand(_)
                     | VariableEdgeKind::ArrayValue
                     | VariableEdgeKind::FieldValue

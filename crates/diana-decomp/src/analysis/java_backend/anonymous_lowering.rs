@@ -1491,7 +1491,7 @@ impl<'a> FunctionCallSite<'a> {
         }
     }
 
-    fn rebuild(self, mut expression: JavaExpr) -> JavaExpr {
+    fn rebuild(self, expression: JavaExpr) -> JavaExpr {
         FunctionReturnConversion::convert(expression, &self.conversions)
     }
 

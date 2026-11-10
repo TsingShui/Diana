@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::ir::{
     analysis::{SsaClasses, SsaValueGraph, SsaVar},
     ArgType, ArithOp, IfOp, InsnArg, InsnNode, InsnType, InstructionTree, InstructionVisitor,
-    InvokeType, MemberReference, RegisterArg, CFG,
+    MemberReference, RegisterArg, CFG,
 };
 
 use super::TypeConstraintError;

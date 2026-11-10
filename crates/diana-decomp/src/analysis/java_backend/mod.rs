@@ -39,8 +39,6 @@ pub use constants::JavaConstantError;
 pub use type_names::JavaTypeNameError;
 
 pub(crate) use java_model::{FunctionObjectClass, JavaSourceAbi};
-pub(crate) use signature_inference::SourceSignatureInference;
-pub(crate) use type_ownership::NestedTypeOwnership;
 
 /// Configuration for Java decompilation.
 #[derive(Debug, Clone)]

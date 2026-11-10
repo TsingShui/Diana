@@ -658,7 +658,7 @@ pub(crate) struct JavaSourceAbi {
 impl JavaSourceAbi {
     pub(crate) fn analyze<'a>(
         classes: impl IntoIterator<Item = &'a ClassNode>,
-        mut function_signature: impl FnMut(&MethodReference) -> (Vec<Option<ArgType>>, Option<ArgType>),
+        function_signature: impl FnMut(&MethodReference) -> (Vec<Option<ArgType>>, Option<ArgType>),
     ) -> Self {
         Self::analyze_with_hierarchy(classes, function_signature, None)
     }

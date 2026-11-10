@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 pub(crate) mod jadx_local_names;
 #[path = "java_backend/mod.rs"]
 pub(crate) mod java_backend;

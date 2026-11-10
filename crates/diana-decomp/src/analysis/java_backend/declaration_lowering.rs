@@ -857,7 +857,7 @@ impl<'a> JavaTypeLowering<'a> {
             }
             methods.push(lowered);
         }
-        let mut fields = crate::profile_scope!("java_backend.lower.fields", {
+        let fields = crate::profile_scope!("java_backend.lower.fields", {
             class
                 .fields
                 .iter()

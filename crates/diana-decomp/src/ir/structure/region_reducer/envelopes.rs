@@ -392,8 +392,8 @@ impl<'a> ExceptionEnvelopeCanonicalizer<'a> {
             SemanticNode::Try {
                 region,
                 body,
-                catches,
-                finally,
+                catches: _,
+                finally: _,
             } if region == target => self.strip(*body, target)?,
             SemanticNode::Sequence(children) => SemanticNode::sequence(
                 children

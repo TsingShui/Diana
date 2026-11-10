@@ -3,6 +3,7 @@
 //! Platform symbols are immutable facts obtained from class files. They
 //! constrain type and source recovery but never infer control-flow meaning.
 
+#![allow(dead_code)]
 use std::io;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
