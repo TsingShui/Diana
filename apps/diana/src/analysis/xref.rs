@@ -882,8 +882,10 @@ fn emit_hierarchy(
 
 /// Direct references in method bodies, without a class-data snapshot.
 ///
-/// Method identities and code offsets come from one class-data walk; a name and
-/// prototype are resolved only for a body that survives the byte filter.
+/// Method identities and code offsets come from one class-data walk. A body is
+/// read only when its bytes contain a target operand, and its instructions are
+/// walked with a packed width/kind table; encodings that need operand expansion
+/// fall back to the checked decoder.
 fn scan_code(
     index: &ProgramIndex<'_>,
     class: &ClassView<'_, '_>,
@@ -910,14 +912,60 @@ fn scan_code(
                 return Ok(());
             };
             let range = view.instruction_byte_range();
-            if let Some(code) = view.source_bytes().get(range.start.0..range.end.0)
-                && !prefilter.might_reference(code)
-            {
+            let Some(code) = view.source_bytes().get(range.start.0..range.end.0) else {
+                return Ok(());
+            };
+            if !prefilter.might_reference(code) {
                 return Ok(());
             }
             let reference = index.method_reference(method_idx)?;
             let name = copy(&reference.declaration.name.units()?)?;
             let prototype = declarations::prototype_units(&reference.declaration.prototype)?;
+            let mut emit_site = |code_unit: u32, mnemonic: &str, path: &str, facts| {
+                let Ok(facts) = facts else {
+                    return Ok(());
+                };
+                let Some((matched, selected)) = matched(facts, &plan.targets)? else {
+                    return Ok(());
+                };
+                emit(Event::Row(XrefRow {
+                    image: location.image,
+                    logical: location.logical,
+                    class_def: location.class_def,
+                    class_descriptor: copy(&location.descriptor)?,
+                    relevance: selected.relevance,
+                    site: Site::Code {
+                        method: method_idx,
+                        name: copy(&name)?,
+                        prototype: copy(&prototype)?,
+                        code_unit,
+                    },
+                    depth: plan.depth,
+                    use_: if path.is_empty() {
+                        mnemonic.to_owned()
+                    } else {
+                        format!("{mnemonic} → {path}")
+                    },
+                    matched,
+                }))?;
+                Ok(())
+            };
+            let direct = |path: &str| plan.typed_uses || path.is_empty();
+            if let Some(sites) = flat_sites(code, prefilter) {
+                for site in sites {
+                    let direct_proto = matches!(
+                        site.reference,
+                        diana_decomp::raw::OperandReference::Proto(_)
+                    );
+                    index.visit_reference_leaves::<QueryError>(site.reference, |path, facts| {
+                        if !direct_proto && !direct(path) {
+                            return Ok(());
+                        }
+                        emit_site(site.code_unit, site.mnemonic, path, facts)
+                    })?;
+                }
+                return Ok(());
+            }
             let mut stopped = None;
             let decoded = view.visit_instructions(|item| {
                 let diana_decomp::raw::RawCodeItem::Instruction(instruction) = item else {
@@ -931,43 +979,17 @@ fn scan_code(
                     if !needs_direct(reference.target, &plan.targets) {
                         continue;
                     }
-                    let direct = matches!(
+                    let direct_proto = matches!(
                         reference.target,
                         diana_decomp::raw::OperandReference::Proto(_)
                     );
                     let produced = index.visit_reference_leaves::<QueryError>(
                         reference.target,
                         |path, facts| {
-                            if !direct && !path.is_empty() {
+                            if !direct_proto && !direct(path) {
                                 return Ok(());
                             }
-                            let Ok(facts) = facts else {
-                                return Ok(());
-                            };
-                            let Some((matched, selected)) = matched(facts, &plan.targets)? else {
-                                return Ok(());
-                            };
-                            emit(Event::Row(XrefRow {
-                                image: location.image,
-                                logical: location.logical,
-                                class_def: location.class_def,
-                                class_descriptor: copy(&location.descriptor)?,
-                                relevance: selected.relevance,
-                                site: Site::Code {
-                                    method: method_idx,
-                                    name: copy(&name)?,
-                                    prototype: copy(&prototype)?,
-                                    code_unit: instruction.pc().0,
-                                },
-                                depth: plan.depth,
-                                use_: if path.is_empty() {
-                                    spec.mnemonic.to_owned()
-                                } else {
-                                    format!("{} → {path}", spec.mnemonic)
-                                },
-                                matched,
-                            }))?;
-                            Ok(())
+                            emit_site(instruction.pc().0, spec.mnemonic, path, facts)
                         },
                     );
                     if let Err(error) = produced {
@@ -1003,6 +1025,77 @@ fn scan_code(
         Some(error) => Err(error),
         None => Ok(()),
     }
+}
+
+struct FlatSite {
+    code_unit: u32,
+    mnemonic: &'static str,
+    reference: diana_decomp::raw::OperandReference,
+}
+
+/// Walks one instruction stream with the packed opcode table and returns the
+/// operand references whose index the filter accepts. `None` means the body
+/// needs the checked decoder (payload layout, wide operands or unknown bytes).
+fn flat_sites(code: &[u8], prefilter: &prefilter::Prefilter) -> Option<Vec<FlatSite>> {
+    use diana_decomp::raw::OperandReference;
+    use diana_decomp::{FieldId, MethodId, StringId, TypeId};
+    let table = diana_decomp::input::formats::opcode_scan_table();
+    let mut sites = Vec::new();
+    let mut pc = 0usize;
+    while pc + 2 <= code.len() {
+        let opcode = code[pc];
+        let first = u16::from_le_bytes([code[pc], code[pc + 1]]);
+        if opcode == 0 {
+            match first {
+                // Payload layout needs the checked decoder; one body with a
+                // switch or array payload keeps the original path.
+                0x0100 | 0x0200 | 0x0300 => return None,
+                _ => pc += 2,
+            }
+            if pc > code.len() {
+                return None;
+            }
+            continue;
+        }
+        let info = table[usize::from(opcode)];
+        let units = usize::from(info & 0xff);
+        let mask = info >> 8;
+        // Two references, dynamic handles or unknown encodings need operands
+        // the packed table cannot describe.
+        if units == 0 || mask.count_ones() > 1 || mask & (32 | 64) != 0 {
+            return None;
+        }
+        if mask != 0 {
+            let index = if opcode == 0x1b {
+                if pc + 6 > code.len() {
+                    return None;
+                }
+                u32::from_le_bytes([code[pc + 2], code[pc + 3], code[pc + 4], code[pc + 5]])
+            } else {
+                if pc + 4 > code.len() {
+                    return None;
+                }
+                u32::from(u16::from_le_bytes([code[pc + 2], code[pc + 3]]))
+            };
+            if prefilter.contains(index) {
+                let reference = match mask {
+                    1 => OperandReference::String(StringId(index)),
+                    2 => OperandReference::Type(TypeId(index)),
+                    4 => OperandReference::Field(FieldId(index)),
+                    8 => OperandReference::Method(MethodId(index)),
+                    _ => return None,
+                };
+                let mnemonic = diana_decomp::input::formats::opcode_mnemonic(opcode)?;
+                sites.push(FlatSite {
+                    code_unit: u32::try_from(pc / 2).ok()?,
+                    mnemonic,
+                    reference,
+                });
+            }
+        }
+        pc += units * 2;
+    }
+    Some(sites)
 }
 
 fn copy(units: &[u16]) -> Result<Vec<u16>, QueryError> {

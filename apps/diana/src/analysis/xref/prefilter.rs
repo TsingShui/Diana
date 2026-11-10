@@ -137,6 +137,17 @@ impl Prefilter {
         })
     }
 
+    /// Whether `index` is one of the resolved targets; `true` when filtering is off.
+    pub(super) fn contains(&self, index: u32) -> bool {
+        let Some(bits) = &self.bits else {
+            return true;
+        };
+        let Ok(value) = u16::try_from(index) else {
+            return true;
+        };
+        bits[usize::from(value) >> 6] >> (value & 63) & 1 != 0
+    }
+
     /// Whether `code` can contain any target operand; `true` when filtering is off.
     pub(super) fn impossible(&self) -> bool {
         self.impossible

@@ -419,6 +419,41 @@ pub fn encoding_head(
     Ok(EncodingHead::Instruction(spec))
 }
 
+/// Packed scan facts per opcode: the low byte is the width in code units, the
+/// high byte is the reference-kind mask. Payload idents keep a zero width and
+/// are skipped by the caller.
+pub fn opcode_scan_table() -> &'static [u16; 256] {
+    static TABLE: std::sync::OnceLock<[u16; 256]> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut table = [0u16; 256];
+        for opcode in 0..=255u8 {
+            let Some(spec) = opcode_spec(opcode) else {
+                continue;
+            };
+            let width = u16::try_from(spec.format.width().0).unwrap_or(0);
+            let mut mask = 0u16;
+            for reference in spec.references.iter().flatten() {
+                mask |= match reference {
+                    ReferenceKind::String => 1,
+                    ReferenceKind::Type => 2,
+                    ReferenceKind::Field => 4,
+                    ReferenceKind::Method => 8,
+                    ReferenceKind::Proto => 16,
+                    ReferenceKind::CallSite => 32,
+                    ReferenceKind::MethodHandle => 64,
+                };
+            }
+            table[usize::from(opcode)] = (mask << 8) | width;
+        }
+        table
+    })
+}
+
+/// Original mnemonic of one opcode.
+pub fn opcode_mnemonic(opcode: u8) -> Option<&'static str> {
+    opcode_spec(opcode).map(|spec| spec.mnemonic)
+}
+
 pub(super) fn opcode_spec(opcode: u8) -> Option<OpcodeSpec> {
     use Format::*;
     use ReferenceKind as R;
