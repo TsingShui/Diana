@@ -878,7 +878,7 @@ pub(super) fn scan_declared_values<'a>(
     };
     if annotated {
         let directory = index.annotation_directory(context.annotations_offset)?;
-        scan.annotation_set(directory.class, &Site::Class, "annotation")?;
+        scan.annotation_set(directory.class, None, "annotation")?;
         scan.member_annotations(class, directory.fields, false)?;
         scan.member_annotations(class, directory.methods, true)?;
         scan.parameter_annotations(class, directory.parameters)?;
@@ -902,18 +902,19 @@ struct MemberScan<'i, 'a, 'e> {
 impl<'i, 'a> MemberScan<'i, 'a, '_> {
     fn row(
         &mut self,
-        site: &Site,
+        owner: Option<&AnnotationOwner>,
         matched: Matched,
         selected: FilterMatch,
         use_: &str,
     ) -> Result<(), QueryError> {
-        let event = self.location.row(
-            site.try_copy()?,
-            matched,
-            selected,
-            use_.to_owned(),
-            self.depth,
-        )?;
+        let site = match owner {
+            None => Site::Class,
+            Some(AnnotationOwner::Field(id)) => field_site_at(self.index, *id)?,
+            Some(AnnotationOwner::Method(id)) => method_site_at(self.index, *id)?,
+        };
+        let event = self
+            .location
+            .row(site, matched, selected, use_.to_owned(), self.depth)?;
         let result = (self.emit)(event);
         if result.is_err() {
             self.stopped = true;
@@ -937,7 +938,7 @@ impl<'i, 'a> MemberScan<'i, 'a, '_> {
     fn annotation_set(
         &mut self,
         offset: diana_decomp::ByteOffset,
-        site: &Site,
+        owner: Option<&AnnotationOwner>,
         use_: &str,
     ) -> Result<(), QueryError> {
         if offset.0 == 0 {
@@ -950,9 +951,9 @@ impl<'i, 'a> MemberScan<'i, 'a, '_> {
                 self.index.next_annotation(&mut offsets, &mut last)?;
             if self.type_query {
                 let descriptor = self.index.type_name(type_id)?;
-                self.typed(site, descriptor, || format!("{use_} annotation-type"))?;
+                self.typed(owner, descriptor, || format!("{use_} annotation-type"))?;
             }
-            self.values(&mut values, site, use_)?;
+            self.values(&mut values, owner, use_)?;
         }
         Ok(())
     }
@@ -960,7 +961,7 @@ impl<'i, 'a> MemberScan<'i, 'a, '_> {
     /// One declaration type row when the target filter selects it.
     fn typed(
         &mut self,
-        site: &Site,
+        owner: Option<&AnnotationOwner>,
         value: diana_decomp::input::DexString<'_>,
         use_: impl FnOnce() -> String,
     ) -> Result<(), QueryError> {
@@ -971,7 +972,7 @@ impl<'i, 'a> MemberScan<'i, 'a, '_> {
             let Some(selected) = filter.evaluate(value)? else {
                 continue;
             };
-            return self.row(site, Matched::Type(value.units()?), selected, &use_());
+            return self.row(owner, Matched::Type(value.units()?), selected, &use_());
         }
         Ok(())
     }
@@ -979,14 +980,14 @@ impl<'i, 'a> MemberScan<'i, 'a, '_> {
     fn values(
         &mut self,
         values: &mut EncodedValues<'a>,
-        site: &Site,
+        owner: Option<&AnnotationOwner>,
         use_: &str,
     ) -> Result<(), QueryError> {
         while let Some(step) = values.next(self.index)? {
             let ValueStep::Value(value) = step else {
                 continue;
             };
-            self.value(&value, site, use_)?;
+            self.value(&value, owner, use_)?;
         }
         Ok(())
     }
@@ -996,13 +997,13 @@ impl<'i, 'a> MemberScan<'i, 'a, '_> {
     fn value(
         &mut self,
         value: &EncodedValue<'a>,
-        site: &Site,
+        owner: Option<&AnnotationOwner>,
         use_: &str,
     ) -> Result<(), QueryError> {
         if let EncodedKind::Annotation { type_id, .. } = value.kind {
             if self.type_query {
                 let descriptor = self.index.type_name(type_id)?;
-                self.typed(site, descriptor, || format!("{use_} annotation-type"))?;
+                self.typed(owner, descriptor, || format!("{use_} annotation-type"))?;
             }
             return Ok(());
         }
@@ -1017,8 +1018,13 @@ impl<'i, 'a> MemberScan<'i, 'a, '_> {
             let facts = match facts {
                 Ok(facts) => facts,
                 Err(error) => {
+                    let context = match owner {
+                        None => "class".to_owned(),
+                        Some(AnnotationOwner::Field(id)) => format!("field:{}", id.0),
+                        Some(AnnotationOwner::Method(id)) => format!("method:{}", id.0),
+                    };
                     return self.issue(
-                        &format!("{site:?} {use_} reference"),
+                        &format!("{context} {use_} reference"),
                         &QueryError::from(error),
                     );
                 }
@@ -1033,7 +1039,7 @@ impl<'i, 'a> MemberScan<'i, 'a, '_> {
                 _ if path.is_empty() => use_.to_owned(),
                 _ => format!("{use_} → {path}"),
             };
-            self.row(site, matched, selected, &label)
+            self.row(owner, matched, selected, &label)
         })
     }
 
@@ -1052,11 +1058,7 @@ impl<'i, 'a> MemberScan<'i, 'a, '_> {
         while records.remaining_byte().0 != 0 {
             let (owner, offset, _parameters) =
                 association(index, class, &mut members, &mut records, &mut last, method)?;
-            let site = match owner {
-                AnnotationOwner::Field(id) => field_site_at(index, id)?,
-                AnnotationOwner::Method(id) => method_site_at(index, id)?,
-            };
-            self.annotation_set(offset, &site, "annotation")?;
+            self.annotation_set(offset, Some(&owner), "annotation")?;
         }
         Ok(())
     }
@@ -1082,7 +1084,7 @@ impl<'i, 'a> MemberScan<'i, 'a, '_> {
                     ),
                 ));
             };
-            let site = method_site_at(index, id)?;
+            let owner = AnnotationOwner::Method(id);
             let mut references = index.annotation_parameters(offset, parameters)?;
             for parameter in 0..parameters {
                 let value = references.read_u32()?;
@@ -1091,7 +1093,11 @@ impl<'i, 'a> MemberScan<'i, 'a, '_> {
                         offset_byte: diana_decomp::ByteOffset(0),
                     }
                 })?);
-                self.annotation_set(offset, &site, &format!("annotation parameter[{parameter}]"))?;
+                self.annotation_set(
+                    offset,
+                    Some(&owner),
+                    &format!("annotation parameter[{parameter}]"),
+                )?;
             }
         }
         Ok(())
@@ -1125,27 +1131,26 @@ impl<'i, 'a> MemberScan<'i, 'a, '_> {
             }
         })?;
         let mut values = EncodedValues::open(self.index, offset, Some(count))?;
-        let mut site = None;
+        let mut owner = None;
         let mut depth = 0usize;
         while let Some(step) = values.next(self.index)? {
             match step {
                 ValueStep::EndContainer => {
                     depth = depth.saturating_sub(1);
                     if depth == 0 {
-                        site = None;
+                        owner = None;
                     }
                 }
                 ValueStep::Value(value) => {
                     if depth == 0 {
-                        site = match fields.get(value.ordinal.0 as usize) {
-                            Some((_, field)) => Some(field_site_at(self.index, *field)?),
-                            None => None,
-                        };
+                        owner = fields
+                            .get(value.ordinal.0 as usize)
+                            .map(|(_, field)| AnnotationOwner::Field(*field));
                     }
-                    let Some(current) = site.as_ref() else {
+                    let Some(current) = owner.as_ref() else {
                         continue;
                     };
-                    self.value(&value, current, "static-value")?;
+                    self.value(&value, Some(current), "static-value")?;
                     if matches!(
                         value.kind,
                         EncodedKind::Array { .. } | EncodedKind::Annotation { .. }
