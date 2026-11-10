@@ -1,10 +1,19 @@
 [workspace]
 resolver = "3"
-members = ["apps/diana", "apps/diana-gui", "crates/diana-decomp"]
+members = [
+    "apps/diana",
+    "apps/diana-gui",
+    "crates/diana-decomp",
+    "crates/dexdec",
+    "crates/rusty-dex",
+]
 default-members = ["apps/diana", "crates/diana-decomp"]
-# The vendored decompiler core keeps its own workspace so upstream files stay
-# comparable with the source revision recorded in vendor/dexdec/VENDOR.md.
-exclude = ["vendor/dexdec"]
+# The forked decompiler core inherits only these three fields, so its own files
+# stay comparable with the upstream revision in crates/dexdec/UPSTREAM.md.
+[workspace.package]
+version = "1.0.2"
+edition = "2021"
+license = "Apache-2.0"
 
 [profile.release]
 lto = "thin"
