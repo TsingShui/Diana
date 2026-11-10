@@ -596,13 +596,25 @@ structure from the remaining replacement; the complete design is not accepted.
 | Local fixed points | Selected roots leave the active suffix; rejected condition proposals leave the product unchanged. | The P6 and P7 pipelines still run ordered passes. Neither stage has the complete dependency-driven local convergence specified by the design. |
 | Finalization | P9 consumes selected layouts and nested operations. Existing declaration and label passes remain. Loop/flow visibility shares one P7-owned observer query. | Protocol-specific traversal is removed. Copy forwarding and a single final declaration/label derivation still need replacement. |
 
-Against `f6e7893`, the current engine production tree has 66,336 physical Rust
-source lines, compared with 68,495 at the baseline: 2,159 fewer lines. This count
-includes every `*.rs` file under `crates/diana-decomp/src/`, including shared
-helpers, comments and blank lines; tests and documentation are excluded. The
+Against `f6e7893`, the current engine production tree has 66,361 physical Rust
+source lines, compared with 68,495 at the baseline: 2,134 fewer lines. Within the
+design's own P6/P7/P9 scope the tree has 34,297 lines against 36,635 at that
+baseline: 2,338 fewer. This count includes every `*.rs` file under
+`crates/diana-decomp/src/`, including test-only `#[cfg(test)]` modules, shared
+helpers, comments and blank lines; `tests/` and documentation are excluded. The
 small reduction does not establish the design's substantial size objective or
 comparable recovery capability. Full replacement acceptance and a comparative
 recovery evaluation remain unrun.
+
+P7 now keeps one syntax arena. A statement owns an expression root in the same
+arena as nested evaluation, so the separate statement syntax enum, the statement
+root query and the duplicated cast wrapper in the reader are gone. Statement-only
+operators are ordinary expression kinds; a cast records whether it prints as a
+standalone check or is carried into a value. Verified by the engine suite and by
+identical P9 text and P7 counts against `94db9ee` for all 114 non-Kotlin fixture
+DEXes. AntennaPod `classes2.dex` keeps its folded check carriers; declaration
+placement and a few deferred copies still differ from that baseline and were not
+reviewed.
 
 ## Shared continuation protocol recognition
 
