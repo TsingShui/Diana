@@ -623,7 +623,41 @@ impl Engine<'_> {
             });
         }
         let declaration_copy = node.clone();
-        let declarations = [&declaration_copy];
+        let mut related = Vec::new();
+        let mut wanted: Vec<String> = Vec::new();
+        if let crate::p0::Fact::Present(super_class) = facts.superclass() {
+            if let Ok(text) = String::from_utf16(super_class.units()) {
+                wanted.push(text);
+            }
+        }
+        if let crate::p0::Fact::Present(interfaces) = facts.interfaces() {
+            for interface in interfaces {
+                if let crate::p0::Fact::Present(descriptor) = &interface.descriptor {
+                    if let Ok(text) = String::from_utf16(descriptor.units()) {
+                        wanted.push(text);
+                    }
+                }
+            }
+        }
+        for descriptor in wanted {
+            for ordinal in 0..image.index.class_count() {
+                let key = crate::ClassDefId(ordinal);
+                let Ok(other) = image.index.class_facts_cached(key) else {
+                    continue;
+                };
+                let Ok(text) = String::from_utf16(other.descriptor().units()) else {
+                    continue;
+                };
+                if text == descriptor {
+                    if let Some(node) = crate::backend::dexdec::class_node(&other) {
+                        related.push(node);
+                    }
+                    break;
+                }
+            }
+        }
+        let mut declarations: Vec<&dexdec::ClassNode> = vec![&declaration_copy];
+        declarations.extend(related.iter());
         let output = dexdec::decompile_class(
             &declarations,
             dexdec::ClassInput {
