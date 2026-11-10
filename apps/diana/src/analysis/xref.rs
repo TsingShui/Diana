@@ -435,6 +435,25 @@ fn scan_class(
             emit,
         );
     }
+    // Method and field references live in code. Annotations are the only
+    // declaration records that can name a member, so a class without an
+    // annotation directory needs no class-data snapshot at all.
+    let member_only = plan
+        .targets
+        .iter()
+        .all(|target| matches!(target, Target::Method { .. } | Target::Field { .. }));
+    let annotated = index
+        .class_context(class_def)
+        .map_or(true, |context| context.annotations_offset.0 != 0);
+    if member_only && !annotated {
+        let location = declarations::Location {
+            image,
+            logical,
+            class_def,
+            descriptor: copy(&class.descriptor.units()?)?,
+        };
+        return scan_code(index, class, &location, plan, prefilter, emit);
+    }
     // A pure type query needs signatures, not a class-data snapshot.
     if !plan.typed_uses
         && plan
@@ -456,7 +475,7 @@ fn scan_class(
             plan.depth,
             emit,
         )?;
-        return scan_type_code(index, class, &location, plan, prefilter, emit);
+        return scan_code(index, class, &location, plan, prefilter, emit);
     }
     let facts = declarations::collect(index, class_def)?;
     let class_descriptor = copy(facts.descriptor().units())?;
@@ -836,8 +855,8 @@ fn emit_hierarchy(
     Ok(())
 }
 
-/// Direct type references in method bodies for a pure type query.
-fn scan_type_code(
+/// Direct references in method bodies, without a class-data snapshot.
+fn scan_code(
     index: &ProgramIndex<'_>,
     class: &ClassView<'_, '_>,
     location: &declarations::Location,
