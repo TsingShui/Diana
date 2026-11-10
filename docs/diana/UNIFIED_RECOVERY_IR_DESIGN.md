@@ -58,8 +58,7 @@ Arm     = original edge + edge copies + body + completion
 ~~~
 
 An If names its predicate and true/false arms. A Loop names its original test,
-body, repeat/exit transfers and continue target. Loop forms are while, do-while
-and while-true. A Switch names its original cases, default and shared bodies.
+body, repeat/exit transfers and continue target. Loop forms are while, do-while, while-true, traditional for and enhanced-for. A Switch names its original cases, default and shared bodies.
 Try and Synchronized retain their original handler/cleanup/lock correspondence.
 Graph uses the same bodies, leaves and transfers; it is not another method route.
 

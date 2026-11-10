@@ -205,11 +205,11 @@ different graph or infer that a route is empty. A terminal whose
 route prints no words keeps both its Transfer and Terminal anchors, including
 zero-step copy bundles, and leaves no indentation in the text.
 
-Loop placement prints only the delivered `while`, `do-while` or
-`while (true)`. Updates remain ordinary body statements with their original
-operation/statement/expression origins. P9 has no for header, update owner or
-origin-only update subtree. It prints the supplied original goto or scoped
-completion without discovering an update or changing the continue target.
+Loop placement prints the delivered `while`, `do-while`, `while (true)`, `for` or
+enhanced-for form. A delivered for header may own only its supplied initializer,
+update/iterator operation and origins; other updates remain ordinary body statements.
+P9 does not discover a header operation, duplicate an update or change a continue
+target. It prints the supplied original goto or scoped completion.
 Nonprinting selected-edge copy bundles keep their anchors without adding a blank
 line at an If/Else arm header.
 

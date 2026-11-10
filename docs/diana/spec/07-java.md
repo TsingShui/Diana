@@ -666,10 +666,11 @@ their owner, so a header cannot jump past its own test or monitor acquisition.
 Loop-condition edge copies stay inside that test's selected-edge clauses; they
 are not appended after a loop. `LoopPlacement` distinguishes infinite, head-test,
 tail-test forms, and records when an empty predicate can use a compact form.
-P7 MUST NOT select for/enhanced-for syntax or a header-owned update. Original
-initialization and updates remain ordinary statements. A body-update target
-retains its explicit transfer when it is not the actual while head or do-while
-predicate; no compatibility schedule or duplicated update replaces it.
+P7 MAY select for/enhanced-for syntax or a header-owned update when the delivered
+initializer, update/iterator operation, effect order and continuation targets are
+preserved exactly. Otherwise initialization and updates remain ordinary statements;
+a body-update target retains its explicit transfer when it is not the actual header
+or loop predicate. No compatibility schedule or duplicated update replaces it.
 
 A noncompact head test retains its original evaluation and explicit exiting
 test at the body's start under `while (true)`. An assignment before the first
@@ -880,7 +881,7 @@ continuation or deferred composition, and has one unnamed printed child; P9
 then prints that child without the scope's own braces. The original control,
 labels and transfers remain in the product, including a bare `break` whose
 stored target is the transparent scope. A loop condition becomes ordinary
-`while`/`do-while` when its delivered evaluation subtree has no remaining prelude
+`while`/`do-while`/`for` when its delivered evaluation subtree has no remaining prelude
 work after shared adjacent-expression composition. Terminal phases still constrain
 compactness; selected-edge copies retain their original repeat/exit clauses.
 Otherwise the existing explicit test retains all prelude and edge obligations.

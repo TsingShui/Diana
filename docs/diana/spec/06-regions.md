@@ -466,8 +466,8 @@ The head evaluation and repeated body are distinct children. A head-loop continu
 returns to the original evaluation entry, including its operations, not merely to
 the terminal portion. If the head candidate fails, P6 retains the existing tail
 candidate or Infinite form. A genuine tail test keeps its original predicate and
-continue target at the tail. Traditional for, enhanced for and for-each are not
-region forms. An evaluation prelude that cannot compose into a compact expression
+continue target at the tail. Traditional for, enhanced for and for-each are presentation forms
+layered on the same loop region, not separate region forms. An evaluation prelude that cannot compose into a compact expression
 keeps the existing explicit predicate-phase notation.
 
 Private parts distinguish `Ordinary` completion from `LoopBody(LoopId)`.
@@ -518,11 +518,13 @@ header. Ordinary normal-dominance loops retain their existing construction.
 
 ### Loop forms and original continuations
 
-P6 supplies only head-tested, tail-tested and unbounded loops, displayed as
+P6 supplies head-tested, tail-tested and unbounded loops, displayed as
 `while`, `do-while` and `while (true)`. The
-[approved loop contract](../PIPELINE_DESIGN.md#563-loop-expression-while-and-do-while)
-excludes traditional/enhanced for reconstruction. No initializer/update product,
-extra update child or header-owned assignment is constructed.
+[approved loop contract](../PIPELINE_DESIGN.md#563-loop-expression-while-do-while-and-for-forms)
+permits traditional/enhanced-for presentation when the delivered initializer,
+update/iterator operation and edge-copy positions remain exact. A header-owned
+initializer/update is constructed only with those original facts; otherwise the
+operations remain body statements.
 
 Original updates remain ordinary body operations, with their original reads,
 effects, copies and protection. A head-tested continue targets the established

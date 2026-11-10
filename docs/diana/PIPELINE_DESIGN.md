@@ -1590,11 +1590,12 @@ helper. A switch from the original DEX, including a flattened switch produced by
 obfuscator, is still recovered normally; "no generated dispatcher" must not be read as
 deleting original dispatch behaviour.
 
-#### 5.6.3 Loop expression: while and do-while
+#### 5.6.3 Loop expression: while, do-while and for forms
 
-A natural loop chooses only while(condition), do-while or while(true) with exits judged at
-their original positions. P6/P7 MUST NOT recover the traditional for, the enhanced for or
-for-each, and create no dedicated For/ForEach region.
+A natural loop may choose while(condition), do-while, while(true), traditional for or
+enhanced-for/for-each with exits judged at their original positions. A for-family header
+may own an original initializer, update or iterator operation only when the delivered
+operations, effect order and edge-copy positions are preserved.
 
 A head condition suits while and a tail condition suits do-while; the form may be used only
 when the evaluation count, original operations and edge-copy positions can all be
@@ -1602,8 +1603,9 @@ preserved. An established loop whose condition cannot be hoisted safely uses whi
 and judges at the original position instead of moving the tail condition to the first
 entry.
 
-The for family is not recovered, which changes only expression and deletes no original
-initialization, update, iterator call or array access. continue and the back edge still
+For-family presentation changes only expression form and deletes no original
+initialization, update, iterator call or array access. If a header cannot preserve those
+operations, retain them as ordinary body statements. continue and the back edge still
 execute the corresponding update, condition evaluation and edge copies, and a do-while
 continue must reach the correct tail test. A condition exit's normal continuation binds
 that original edge's actual target and must not be replaced by a common post-dominating
