@@ -18,12 +18,11 @@
 //! - `ir` - Intermediate Representation (types, args, instructions, blocks, CFG, passes, exception)
 //! - `decoder` - Dalvik bytecode decoder
 //! - `frontend` - class, method and field node structures
-//! - `api` - High-level decompilation API
 //! - `analysis` - Value, type, hierarchy, and language-backend analyses
+//! - `engine` - The single public decompilation entry.
 //! - `language` - Typed target-language ASTs and printers
 
 pub mod analysis;
-pub mod api;
 mod backend;
 pub mod decoder;
 mod engine;
@@ -58,11 +57,6 @@ pub use engine::{
     SingleMethodAnalysis,
 };
 
-// Recovery entry: original facts in, source text out.
-pub use api::{
-    decompile_class, decompile_method, ClassInput, ClassOutput, MethodInput, MethodOptions,
-    MethodOutcome,
-};
 pub use frontend::{ClassNode, DexError, DexResult, MethodCode, MethodNode};
 pub use local::LocalSymbols;
 pub use platform_symbols::{
@@ -80,8 +74,3 @@ pub use ir::{Pass, PassResult, Splitter};
 
 // Exception analysis
 pub use ir::{CatchHandler, ExceptionAnalysis, TryRegion};
-
-// Analysis and code generation
-pub use analysis::{JavaDecompiler, JavaDecompilerConfig, JavaDecompilerError};
-#[cfg(feature = "kotlin")]
-pub use analysis::{KotlinDecompiler, KotlinDecompilerConfig, KotlinDecompilerError};

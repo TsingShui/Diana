@@ -1,9 +1,9 @@
 pub(crate) mod jadx_local_names;
 #[path = "java_backend/mod.rs"]
-pub mod java_backend;
+pub(crate) mod java_backend;
 #[cfg(feature = "kotlin")]
 #[path = "kotlin_backend/mod.rs"]
-pub mod kotlin_backend;
+pub(crate) mod kotlin_backend;
 mod method_input;
 pub mod method_override;
 mod name_recovery;
@@ -14,10 +14,6 @@ pub(crate) use method_input::{ClassMethodInput, MethodRecoveryFailure, MethodRec
 pub(crate) use name_recovery::{RelationalNameInference, TypedConstantNameInference};
 
 pub use semantic_transform::SemanticTransform;
-
-pub use java_backend::{JavaDecompiler, JavaDecompilerConfig, JavaDecompilerError};
-#[cfg(feature = "kotlin")]
-pub use kotlin_backend::{KotlinDecompiler, KotlinDecompilerConfig, KotlinDecompilerError};
 
 pub(crate) struct NestedClassInput {
     pub class: crate::frontend::ClassNode,

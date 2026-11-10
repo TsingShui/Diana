@@ -9,4 +9,4 @@ Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
 
 The fork keeps the recovery backend and consumes caller-supplied class,
 method, instruction, try-range and local-symbol facts. It does not parse or
-own a DEX image.
+own a DEX image. The public decompilation entry is `Engine` in `src/engine.rs`.
