@@ -19,7 +19,7 @@ pub(super) fn construct(
     for index in 0..f.nodes.len() {
         let node = NodeId(super::super::build::id(index)?);
         if !f.nodes[index].terminal
-            || g.outgoing[index].len() < 4
+            || g.outgoing[index].len() < 3
             || !matches!(
                 storage.execution().blocks()[f.nodes[index].block.0 as usize].terminal(),
                 Some(Terminal::Switch { .. })
@@ -959,9 +959,19 @@ fn candidate(
             push(&mut retired_transfers, link.id)?;
         }
     }
+    let forwarding = if sites.len() == 1 {
+        if let Some(cycle) = &cycle {
+            linear_interval(f, g, &source_mask, cycle.condition, &sites)?
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     Ok(Ok(CoroutineFlowPlan {
         source,
         entry_check,
+        forwarding,
         abi,
         sites,
         protocol_operations: protocol,
@@ -973,6 +983,49 @@ fn candidate(
         retired_transfers,
         cycle,
         explicit_predicates,
+    }))
+}
+
+/// An alias interval needs one linear normal cycle and one suspension phase.
+/// Follow the supplied site normal edge; every other repeated portion needs a
+/// sole outlet. Additional branch/phase choices retain explicit copies.
+/// Each original node enters once, so neither cycles nor input depth can hang.
+fn linear_interval(
+    f: &RegionFacts,
+    g: &Graph,
+    source: &[bool],
+    condition: LoopCondition,
+    sites: &[CoroutineSite],
+) -> Result<Option<CopyInterval>, RegionError> {
+    let mut seen = super::super::build::filled(f.nodes.len(), false)?;
+    let mut repeated = Vec::new();
+    let mut links = Vec::new();
+    let mut at = f.links[condition.repeat.0 as usize].to;
+    while at != condition.node {
+        if !source[at.0 as usize] || std::mem::replace(&mut seen[at.0 as usize], true) {
+            return Ok(None);
+        }
+        push(&mut repeated, at)?;
+        let link = if let Some(site) = sites.iter().find(|site| site.guard == at) {
+            site.normal
+        } else if let [link] = g.outgoing[at.0 as usize].as_slice() {
+            *link
+        } else {
+            return Ok(None);
+        };
+        push(&mut links, link)?;
+        at = f.links[link.0 as usize].to;
+    }
+    let mut outside = Vec::new();
+    for node in &f.nodes {
+        if source[node.id.0 as usize] && !seen[node.id.0 as usize] {
+            push(&mut outside, node.id)?;
+        }
+    }
+    Ok(Some(CopyInterval {
+        outside,
+        repeated,
+        links,
     }))
 }
 

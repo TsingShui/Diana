@@ -595,13 +595,37 @@ structure from the remaining replacement; the complete design is not accepted.
 | Local fixed points | Selected roots leave the active suffix; rejected condition proposals leave the product unchanged. | The P6 and P7 pipelines still run ordered passes. Neither stage has the complete dependency-driven local convergence specified by the design. |
 | Finalization | P9 consumes selected layouts and nested operations. Existing declaration and label passes remain. Loop/flow visibility shares one P7-owned observer query. | Protocol-specific traversal is removed. Copy forwarding and a single final declaration/label derivation still need replacement. |
 
-Against `f6e7893`, the current engine production tree has 67,835 physical Rust
-source lines, compared with 68,495 at the baseline: 660 fewer lines. This count
+Against `f6e7893`, the current engine production tree has 67,002 physical Rust
+source lines, compared with 68,495 at the baseline: 1,493 fewer lines. This count
 includes every `*.rs` file under `crates/diana-decomp/src/`, including shared
 helpers, comments and blank lines; tests and documentation are excluded. The
 small reduction does not establish the design's substantial size objective or
 comparable recovery capability. Full replacement acceptance and a comparative
 recovery evaluation remain unrun.
+
+## Shared ordinary protocol recognition
+
+Single-site and multi-site ordinary methods now use one site/copy correspondence
+producer and one source selection. The separate single-site loop recognizer,
+nomination and grammar conversion are removed. The common cyclic selection
+retains original latch/predicate roles and the linear single-phase interval needed
+by existing copy forwarding; extra choices keep explicit copies.
+
+The [single-site challenge](../../quality/fixtures/kotlin/protocol-single-site-core/README.md)
+adds effectful preparation, a saved seed, a negative result guard and an observed
+construction to an acyclic body. At `429998c` it retains explicit state dispatch;
+the common producer recovers its logical suspend body without another handler.
+Before/after inspection of all 18 prepared Kotlin groups keeps construction and
+rendering failure counts unchanged. Four previously selected single-site loops
+remain selected through the shared producer; their executable text is identical.
+Marker correspondence moves to its original source position in ABI comments.
+
+This replacement removes 833 physical production Rust lines from `429998c`,
+including all added helpers. The 44-test scoped nextest set and strict all-feature engine/example/relevant-test
+Clippy pass; formatting passes. Coroutine/VM
+execution remains unrun; original/new path reviews and product checks are separate
+from executed behavioral proof. General fixed-point contraction and the complete
+size/recovery objectives remain incomplete.
 
 ## Consumed protocol nominations
 

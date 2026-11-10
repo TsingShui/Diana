@@ -20,7 +20,6 @@ mod body;
 mod nomination;
 pub(in crate::p6) use nomination::*;
 mod facts;
-mod loop_body;
 mod multi_body;
 
 pub(super) fn construct(
@@ -31,9 +30,6 @@ pub(super) fn construct(
 ) -> Result<Option<Nomination>, RegionError> {
     if let Some(plan) = multi_body::construct(storage, f, graph, structure)? {
         return Ok(Some(Nomination::Flow(plan)));
-    }
-    if let Some(plan) = loop_body::construct(storage, f, graph, structure)? {
-        return Ok(Some(Nomination::Loop(plan)));
     }
     let flow = storage.execution();
     let d = flow.declaration();

@@ -2,9 +2,11 @@
 //! none is stored in a published RegionFacts or consumed downstream.
 use super::*;
 
+// One fixed-size construction scratch value; boxing would add an infallible
+// allocation without reducing input-dependent storage or traversal depth.
+#[allow(clippy::large_enum_variant)]
 pub(in crate::p6) enum Nomination {
     Body(CoroutineBodyPlan),
-    Loop(CoroutineLoopPlan),
     Flow(CoroutineFlowPlan),
 }
 
@@ -21,34 +23,13 @@ pub(in crate::p6) struct CoroutineBodyPlan {
     pub(in crate::p6) operations: Vec<ProtocolEvent>,
     pub(in crate::p6) implicit_locals: Vec<crate::p5::LocalId>,
 }
-/// A closed normal-run loop with one continuation reentry. The original node
-/// partition remains intact; this is a selected presentation over those nodes.
-#[derive(Debug)]
-pub(in crate::p6) struct CoroutineLoopPlan {
-    pub(in crate::p6) initial: Vec<NodeId>,
-    pub(in crate::p6) body: Vec<NodeId>,
-    pub(in crate::p6) tail: Vec<NodeId>,
-    pub(in crate::p6) abi: Vec<NodeId>,
-    pub(in crate::p6) abi_entries: Vec<NodeId>,
-    pub(in crate::p6) condition: LoopCondition,
-    pub(in crate::p6) entry_check: OpId,
-    pub(in crate::p6) resume: Vec<NodeId>,
-    pub(in crate::p6) call: OpId,
-    pub(in crate::p6) continuation_argument: u32,
-    pub(in crate::p6) state: i32,
-    pub(in crate::p6) guard: NodeId,
-    pub(in crate::p6) normal: LinkId,
-    pub(in crate::p6) suspended: LinkId,
-    pub(in crate::p6) protocol_operations: Vec<OpId>,
-    pub(in crate::p6) normal_links: Vec<LinkId>,
-    pub(in crate::p6) spills: Vec<(OpId, OpId)>,
-}
 /// Source order selected from the existing hierarchy for a closed acyclic
 /// continuation protocol. Original controls and all ABI nodes remain owned.
 #[derive(Debug)]
 pub(in crate::p6) struct CoroutineFlowPlan {
     pub(in crate::p6) source: Vec<RegionId>,
     pub(in crate::p6) entry_check: OpId,
+    pub(in crate::p6) forwarding: Option<CopyInterval>,
     pub(in crate::p6) abi: Vec<NodeId>,
     pub(in crate::p6) sites: Vec<CoroutineSite>,
     pub(in crate::p6) protocol_operations: Vec<OpId>,
