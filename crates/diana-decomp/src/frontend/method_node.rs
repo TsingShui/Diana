@@ -97,49 +97,6 @@ impl MethodInfo {
     }
 }
 
-/// Try-catch block information
-#[derive(Debug, Clone)]
-pub struct TryCatchBlock {
-    /// Start instruction offset
-    pub start_addr: u32,
-    /// End instruction offset (exclusive)
-    pub end_addr: u32,
-    /// List of exception handlers
-    pub handlers: Vec<ExceptionHandler>,
-}
-
-/// Single exception handler
-#[derive(Debug, Clone)]
-pub struct ExceptionHandler {
-    /// Exception type (None for catch-all)
-    pub exception_type: Option<crate::ir::ArgType>,
-    /// Handler instruction offset
-    pub handler_addr: u32,
-}
-
-impl ExceptionHandler {
-    /// Create handler for specific exception type
-    pub fn typed(exception_type: crate::ir::ArgType, handler_addr: u32) -> Self {
-        Self {
-            exception_type: Some(exception_type),
-            handler_addr,
-        }
-    }
-
-    /// Create catch-all handler
-    pub fn catch_all(handler_addr: u32) -> Self {
-        Self {
-            exception_type: None,
-            handler_addr,
-        }
-    }
-
-    /// Check if this is a catch-all handler
-    pub fn is_catch_all(&self) -> bool {
-        self.exception_type.is_none()
-    }
-}
-
 /// Debug information for a method
 #[derive(Debug, Clone, Default)]
 pub struct DebugInfo {
@@ -166,30 +123,6 @@ pub struct LocalVarInfo {
     pub register: u32,
 }
 
-/// Method code data from DEX file
-#[derive(Debug, Clone)]
-pub struct MethodCode {
-    /// Number of registers used by this code
-    pub registers_size: u16,
-    /// Number of words of incoming arguments
-    pub ins_size: u16,
-    /// Number of words of outgoing arguments
-    pub outs_size: u16,
-    /// Raw instructions (u16 words)
-    pub insns: Vec<u16>,
-    /// Try-catch blocks
-    pub tries: Vec<TryCatchBlock>,
-    /// Debug information
-    pub debug_info: Option<DebugInfo>,
-}
-
-impl MethodCode {
-    /// Get first register used for arguments
-    pub fn args_start_reg(&self) -> u16 {
-        self.registers_size - self.ins_size
-    }
-}
-
 /// Method node - represents a method in a class
 #[derive(Debug)]
 pub struct MethodNode {
@@ -199,8 +132,6 @@ pub struct MethodNode {
     pub info: MethodInfo,
     /// Access flags
     pub access_flags: AccessInfo,
-    /// Code data (None for abstract/native methods)
-    pub code: Option<MethodCode>,
     /// Checked exceptions declared through dalvik.annotation.Throws.
     pub throws: Vec<ArgType>,
     /// JVM generic signature recovered from the
@@ -212,10 +143,6 @@ pub struct MethodNode {
     pub parameter_annotations: Vec<Vec<AnnotationNode>>,
     /// Semantic override relationship synthesized from class hierarchy.
     pub override_semantics: Option<MethodOverrideSemantics>,
-    /// Decoded IR (lazily computed)
-    ir: Option<CFG>,
-    /// Whether method has been loaded
-    loaded: bool,
 }
 
 impl MethodNode {
@@ -225,14 +152,11 @@ impl MethodNode {
             id,
             info,
             access_flags,
-            code: None,
             throws: Vec::new(),
             signature: None,
             annotations: Vec::new(),
             parameter_annotations: Vec::new(),
             override_semantics: None,
-            ir: None,
-            loaded: false,
         }
     }
 
@@ -245,12 +169,6 @@ impl MethodNode {
     /// Attach a recovered JVM generic signature.
     pub fn with_signature(mut self, signature: Option<String>) -> Self {
         self.signature = signature;
-        self
-    }
-
-    /// Create method node with code
-    pub fn with_code(mut self, code: MethodCode) -> Self {
-        self.code = Some(code);
         self
     }
 
@@ -314,60 +232,6 @@ impl MethodNode {
         self.info.is_class_init()
     }
 
-    /// Check if method has code
-    #[inline]
-    pub fn has_code(&self) -> bool {
-        self.code.is_some()
-    }
-
-    /// Check if method is loaded
-    #[inline]
-    pub fn is_loaded(&self) -> bool {
-        self.loaded
-    }
-
-    /// Get code reference
-    pub fn code(&self) -> Option<&MethodCode> {
-        self.code.as_ref()
-    }
-
-    /// Get mutable code reference
-    pub fn code_mut(&mut self) -> Option<&mut MethodCode> {
-        self.code.as_mut()
-    }
-
-    /// Get IR if decoded
-    pub fn ir(&self) -> Option<&CFG> {
-        self.ir.as_ref()
-    }
-
-    /// Set IR
-    pub fn set_ir(&mut self, ir: CFG) {
-        self.ir = Some(ir);
-        self.loaded = true;
-    }
-
-    /// Take IR (moves ownership)
-    pub fn take_ir(&mut self) -> Option<CFG> {
-        self.ir.take()
-    }
-
-    /// Clear loaded data
-    pub fn unload(&mut self) {
-        self.ir = None;
-        self.loaded = false;
-    }
-
-    /// Get number of registers
-    pub fn registers_count(&self) -> u16 {
-        self.code.as_ref().map(|c| c.registers_size).unwrap_or(0)
-    }
-
-    /// Get first argument register
-    pub fn args_start_reg(&self) -> u16 {
-        self.code.as_ref().map(|c| c.args_start_reg()).unwrap_or(0)
-    }
-
     /// Count total arguments (including 'this' for instance methods)
     pub fn args_count(&self) -> usize {
         let explicit_args: usize = self
@@ -411,14 +275,11 @@ impl Clone for MethodNode {
             id: self.id,
             info: self.info.clone(),
             access_flags: self.access_flags,
-            code: self.code.clone(),
             throws: self.throws.clone(),
             signature: self.signature.clone(),
             annotations: self.annotations.clone(),
             parameter_annotations: self.parameter_annotations.clone(),
             override_semantics: self.override_semantics.clone(),
-            ir: None, // Don't clone IR
-            loaded: false,
         }
     }
 }

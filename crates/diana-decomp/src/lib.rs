@@ -69,7 +69,7 @@ pub use engine::{
     SingleMethodAnalysis,
 };
 
-pub use frontend::{ClassNode, DexError, DexResult, MethodCode, MethodNode};
+pub use frontend::{ClassNode, DexError, DexResult, MethodNode};
 pub use platform_symbols::{
     default_platform_symbols, PlatformAnnotation, PlatformAnnotationValue, PlatformClass,
     PlatformConstant, PlatformConstantDomain, PlatformConstantKind, PlatformConstantMember,

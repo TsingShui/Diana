@@ -14,8 +14,7 @@ categories = ["development-tools"]
 unsafe_code = "forbid"
 
 [features]
-default = ["kotlin"]
-kotlin = []
+default = []
 perf = []
 
 

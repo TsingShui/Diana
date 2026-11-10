@@ -633,7 +633,7 @@ impl JavaMethodDeclaration {
             annotations: method.annotations.clone(),
             override_semantics: method.override_semantics.clone(),
             is_interface_default: class.is_interface()
-                && method.code().is_some()
+                && !method.access_flags.is_abstract()
                 && !method.access_flags.is_static(),
             modifiers: method_modifiers(&method.access_flags, kind, class.is_interface()),
             access_flags: method.access_flags,

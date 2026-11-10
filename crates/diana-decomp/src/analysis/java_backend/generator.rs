@@ -607,7 +607,7 @@ fn method_type_uses(method: &JavaMethodModel) -> Vec<crate::ir::ty::ArgType> {
 mod tests {
     use super::*;
     use crate::analysis::{ClassMethodInput, MethodRecoveryFailure, MethodRecoveryStage};
-    use crate::frontend::{AccessInfo, ClassInfo, MethodCode, MethodInfo};
+    use crate::frontend::{AccessInfo, ClassInfo, MethodInfo};
     use crate::ir::ArgType;
 
     #[test]
@@ -624,15 +624,7 @@ mod tests {
                 ArgType::INT,
             ),
             AccessInfo::for_method(0x0009),
-        )
-        .with_code(MethodCode {
-            registers_size: 0,
-            ins_size: 0,
-            outs_size: 0,
-            insns: Vec::new(),
-            tries: Vec::new(),
-            debug_info: None,
-        });
+        );
         class.add_method(method.clone());
         let mut methods = vec![ClassMethodInput::failed(
             method,

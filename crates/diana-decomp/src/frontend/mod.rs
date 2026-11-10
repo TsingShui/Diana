@@ -28,8 +28,6 @@ mod analysis_diagnostic;
 mod class_node;
 mod error;
 mod field_node;
-#[cfg(feature = "kotlin")]
-pub mod kotlin_metadata;
 mod metadata;
 mod method_node;
 

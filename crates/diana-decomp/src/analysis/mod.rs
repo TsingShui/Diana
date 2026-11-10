@@ -1,9 +1,6 @@
 pub(crate) mod jadx_local_names;
 #[path = "java_backend/mod.rs"]
 pub(crate) mod java_backend;
-#[cfg(feature = "kotlin")]
-#[path = "kotlin_backend/mod.rs"]
-pub(crate) mod kotlin_backend;
 mod method_input;
 pub mod method_override;
 mod name_recovery;
