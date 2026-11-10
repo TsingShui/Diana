@@ -654,9 +654,9 @@ fn borrowed_error(error: &diana_decomp::RequestError) -> QueryError {
 /// Reads `class_def`, the field and method headers, and annotation types only:
 /// no class-data snapshot, no initial values, no code. The rows are the same
 /// ones [`scan`] produces for a type target.
-pub(super) fn scan_type_declarations(
-    index: &ProgramIndex<'_>,
-    class: &diana_decomp::input::ClassView<'_, '_>,
+pub(super) fn scan_type_declarations<'a>(
+    index: &ProgramIndex<'a>,
+    class: &diana_decomp::input::ClassView<'_, 'a>,
     location: &Location,
     targets: &[Target],
     depth: u32,
@@ -792,65 +792,10 @@ pub(super) fn scan_type_declarations(
     if let Some(error) = failure {
         return Err(error);
     }
-    let Ok(context) = index.class_context(location.class_def) else {
-        return Ok(());
-    };
-    if context.annotations_offset.0 == 0 {
-        return Ok(());
-    }
-    let Ok(read) = diana_decomp::input::annotation_facts::collect(
-        index,
-        ClassKey {
-            dex: DexId(0),
-            class_def: location.class_def,
-        },
-    ) else {
-        return Ok(());
-    };
-    if let Some(issue) = read.issue {
-        emit(Event::Issue(Issue::from_request(
-            location.context(),
-            &issue,
-        )))?;
-    }
-    for record in read.facts.records() {
-        let site = match record.location() {
-            diana_decomp::AnnotationLocation::Class => Site::Class,
-            diana_decomp::AnnotationLocation::Field(id) => {
-                let reference = index.field_reference(diana_decomp::FieldId(id.0))?;
-                Site::Field {
-                    field: id,
-                    name: copy(&reference.declaration.name.units()?)?,
-                    field_type: copy(&reference.declaration.field_type.units()?)?,
-                }
-            }
-            diana_decomp::AnnotationLocation::Method(id)
-            | diana_decomp::AnnotationLocation::Parameter { method: id, .. } => {
-                let reference = index.method_reference(diana_decomp::MethodId(id.0))?;
-                Site::Method {
-                    method: id,
-                    name: copy(&reference.declaration.name.units()?)?,
-                    prototype: prototype_units(&reference.declaration.prototype)?,
-                }
-            }
-        };
-        let use_ = match record.location() {
-            diana_decomp::AnnotationLocation::Parameter { parameter, .. } => {
-                format!("annotation parameter[{}] annotation-type", parameter.0)
-            }
-            _ => "annotation annotation-type".to_owned(),
-        };
-        emit_type_row(
-            location,
-            targets,
-            depth,
-            emit,
-            site,
-            record.descriptor(),
-            &use_,
-        )?;
-    }
-    Ok(())
+    // Annotation types come from the same encoded-value walk the reference
+    // queries use; a full annotation snapshot would also decode every string,
+    // number and nested value in the record.
+    scan_declared_values(index, class, location, targets, depth, false, emit)
 }
 
 /// One declaration type row when the target filter selects it.
@@ -905,25 +850,28 @@ fn allocation_error() -> diana_decomp::input::InputError {
     }
 }
 
-/// Member rows that live outside code.
+/// Declaration rows that live outside code.
 ///
 /// An annotation value or a static initial value can carry an encoded
-/// reference to a field, a method or a method handle. Reading those values
-/// directly keeps a member query from building a full class snapshot, which
-/// parses every declaration, annotation and method body view in the class.
-pub(super) fn scan_member_values<'a>(
+/// reference to a string, a field, a method or a method handle. Reading those
+/// values directly keeps a reference query from building a full class
+/// snapshot, which parses every declaration, annotation and body view in the
+/// class.
+pub(super) fn scan_declared_values<'a>(
     index: &ProgramIndex<'a>,
     class: &diana_decomp::input::ClassView<'_, 'a>,
     location: &Location,
     targets: &[Target],
     depth: u32,
+    include_values: bool,
     emit: &mut dyn FnMut(Event) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
     let context = index.class_context(location.class_def)?;
-    if context.annotations_offset.0 == 0 {
+    let annotated = context.annotations_offset.0 != 0;
+    let values = include_values && matches!(context.values_offset, Ok(Some(_)));
+    if !annotated && !values {
         return Ok(());
     }
-    let directory = index.annotation_directory(context.annotations_offset)?;
     let mut scan = MemberScan {
         index,
         location,
@@ -932,10 +880,13 @@ pub(super) fn scan_member_values<'a>(
         emit,
         stopped: false,
     };
-    scan.annotation_set(directory.class, &Site::Class, "annotation")?;
-    scan.member_annotations(class, directory.fields, false)?;
-    scan.member_annotations(class, directory.methods, true)?;
-    scan.parameter_annotations(class, directory.parameters)?;
+    if annotated {
+        let directory = index.annotation_directory(context.annotations_offset)?;
+        scan.annotation_set(directory.class, &Site::Class, "annotation")?;
+        scan.member_annotations(class, directory.fields, false)?;
+        scan.member_annotations(class, directory.methods, true)?;
+        scan.parameter_annotations(class, directory.parameters)?;
+    }
     if let Ok(Some(offset)) = context.values_offset {
         scan.static_values(class, offset)?;
     }
@@ -998,9 +949,29 @@ impl<'i, 'a> MemberScan<'i, 'a, '_> {
         let mut offsets = self.index.annotation_offsets(0x1003, offset)?;
         let mut last = None;
         while offsets.remaining_byte().0 != 0 {
-            let (_at, _visibility, _type_id, mut values) =
+            let (_at, _visibility, type_id, mut values) =
                 self.index.next_annotation(&mut offsets, &mut last)?;
+            let descriptor = self.index.type_name(type_id)?;
+            self.typed(
+                site,
+                &descriptor.units()?,
+                &format!("{use_} annotation-type"),
+            )?;
             self.values(&mut values, site, use_)?;
+        }
+        Ok(())
+    }
+
+    /// One declaration type row when the target filter selects it.
+    fn typed(&mut self, site: &Site, units: &[u16], use_: &str) -> Result<(), QueryError> {
+        for target in self.targets {
+            let Target::Type(filter) = target else {
+                continue;
+            };
+            let Some(selected) = filter.evaluate_units(units)? else {
+                continue;
+            };
+            return self.row(site, Matched::Type(copy(units)?), selected, use_);
         }
         Ok(())
     }
@@ -1028,6 +999,14 @@ impl<'i, 'a> MemberScan<'i, 'a, '_> {
         site: &Site,
         use_: &str,
     ) -> Result<(), QueryError> {
+        if let EncodedKind::Annotation { type_id, .. } = value.kind {
+            let descriptor = self.index.type_name(type_id)?;
+            return self.typed(
+                site,
+                &descriptor.units()?,
+                &format!("{use_} annotation-type"),
+            );
+        }
         let EncodedKind::Reference(reference) = value.kind else {
             return Ok(());
         };

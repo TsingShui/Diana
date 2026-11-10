@@ -451,12 +451,20 @@ fn scan_class<'a>(
         if !prefilter.impossible() {
             scan_code(index, class, &location, plan, prefilter, emit)?;
         }
-        let declared = index.class_context(class_def).map_or(true, |context| {
-            context.annotations_offset.0 != 0 || matches!(context.values_offset, Ok(Some(_)))
-        });
-        if declared {
-            let facts = declarations::collect(index, class_def)?;
-            declarations::scan(&facts, &location, &plan.targets, plan.depth, emit)?;
+        if let Err(error) = declarations::scan_declared_values(
+            index,
+            class,
+            &location,
+            &plan.targets,
+            plan.depth,
+            true,
+            emit,
+        ) {
+            emit(Event::Issue(Issue::new(
+                format!("{} declaration metadata", location.context()),
+                &error,
+                None,
+            )))?;
         }
         return Ok(());
     }
@@ -484,12 +492,13 @@ fn scan_class<'a>(
                 }
                 result
             };
-            if let Err(error) = declarations::scan_member_values(
+            if let Err(error) = declarations::scan_declared_values(
                 index,
                 class,
                 &location,
                 &plan.targets,
                 plan.depth,
+                true,
                 &mut forward,
             ) {
                 if stopped.get() {
