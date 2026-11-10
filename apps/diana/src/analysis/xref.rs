@@ -563,11 +563,10 @@ fn scan_class<'a>(
         return scan_code(index, class, &location, plan, prefilter, emit);
     }
     // A pure type query needs signatures, not a class-data snapshot.
-    if !plan.typed_uses
-        && plan
-            .targets
-            .iter()
-            .all(|target| matches!(target, Target::Type(_)))
+    if plan
+        .targets
+        .iter()
+        .all(|target| matches!(target, Target::Type(_)))
     {
         let location = declarations::Location {
             image,
@@ -575,14 +574,7 @@ fn scan_class<'a>(
             class_def,
             descriptor: class.descriptor,
         };
-        declarations::scan_type_declarations(
-            index,
-            class,
-            &location,
-            &plan.targets,
-            plan.depth,
-            emit,
-        )?;
+        declarations::scan_type_declarations(class, &location, &plan.targets, plan.depth, emit)?;
         return scan_code(index, class, &location, plan, prefilter, emit);
     }
     let facts = declarations::collect(index, class_def)?;

@@ -140,7 +140,7 @@ impl<'a> Encoder<'a> {
                 out.push(b',');
             }
             out.extend_from_slice(b"{\"context\":");
-            if let Some(offset) = row.code_unit {
+            if let (Matched::Resource { .. }, Some(offset)) = (row.matched, row.code_unit) {
                 // The cached JSON string includes its quotes. The offset is
                 // ASCII, so it can be appended before the closing quote.
                 out.extend_from_slice(&context[..context.len() - 1]);
@@ -155,7 +155,7 @@ impl<'a> Encoder<'a> {
             out.push(b'}');
         } else {
             out.extend_from_slice(context);
-            if let Some(offset) = row.code_unit {
+            if let (Matched::Resource { .. }, Some(offset)) = (row.matched, row.code_unit) {
                 write!(out, "@cu:{offset:#06x}").map_err(Failure::output)?;
             }
             out.push(b'\t');

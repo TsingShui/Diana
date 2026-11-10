@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
 
 use diana_decomp::input::ProgramIndex;
@@ -30,7 +31,7 @@ struct Reference {
     use_: String,
 }
 
-/// Hits retain instruction order, including repeated references in one method.
+/// Hits retain the first occurrence of each referenced target in each method.
 /// Identity tables are owned so workers can release their input scratch buffers.
 #[derive(Clone, Debug)]
 pub struct Batch {
@@ -107,6 +108,9 @@ impl<'a> Builder<'a> {
         plan: &XrefPlan,
     ) -> Result<(), QueryError> {
         let mut context = None;
+        // Store indices rather than cloning potentially large target identities.
+        // The full identity comparison also handles hash collisions.
+        let mut seen: HashMap<u64, Vec<usize>> = HashMap::new();
         for site in sites {
             let (kind, id) = reference_key(site.reference);
             let key = (kind, id, site.mnemonic);
@@ -150,35 +154,50 @@ impl<'a> Builder<'a> {
             if references.is_empty() {
                 continue;
             }
-            let context = match context {
-                Some(id) => id,
-                None => {
-                    let reference = index.method_reference(method)?;
-                    if self.batch.contexts.is_empty() {
-                        self.batch.descriptor = self.descriptor.units()?;
-                    }
-                    let id = ContextId(
-                        u32::try_from(self.batch.contexts.len())
-                            .map_err(|_| InputError::PlatformCapacity)?,
-                    );
-                    self.batch
-                        .contexts
-                        .try_reserve(1)
-                        .map_err(InputError::Allocation)?;
-                    self.batch.contexts.push(Site::Method {
-                        method,
-                        name: reference.declaration.name.units()?,
-                        prototype: prototype_units(&reference.declaration.prototype)?,
-                    });
-                    context = Some(id);
-                    id
-                }
-            };
-            self.batch
-                .hits
-                .try_reserve(references.len())
-                .map_err(InputError::Allocation)?;
             for reference in references {
+                let mut hasher = DefaultHasher::new();
+                self.batch.references[reference].matched.hash(&mut hasher);
+                let hash = hasher.finish();
+                if seen.get(&hash).is_some_and(|indices| {
+                    indices.iter().any(|&index| {
+                        self.batch.references[index].matched
+                            == self.batch.references[reference].matched
+                    })
+                }) {
+                    continue;
+                }
+                seen.try_reserve(1).map_err(InputError::Allocation)?;
+                let indices = seen.entry(hash).or_default();
+                indices.try_reserve(1).map_err(InputError::Allocation)?;
+                indices.push(reference);
+                let context = match context {
+                    Some(id) => id,
+                    None => {
+                        let reference = index.method_reference(method)?;
+                        if self.batch.contexts.is_empty() {
+                            self.batch.descriptor = self.descriptor.units()?;
+                        }
+                        let id = ContextId(
+                            u32::try_from(self.batch.contexts.len())
+                                .map_err(|_| InputError::PlatformCapacity)?,
+                        );
+                        self.batch
+                            .contexts
+                            .try_reserve(1)
+                            .map_err(InputError::Allocation)?;
+                        self.batch.contexts.push(Site::Method {
+                            method,
+                            name: reference.declaration.name.units()?,
+                            prototype: prototype_units(&reference.declaration.prototype)?,
+                        });
+                        context = Some(id);
+                        id
+                    }
+                };
+                self.batch
+                    .hits
+                    .try_reserve(1)
+                    .map_err(InputError::Allocation)?;
                 self.batch.hits.push(Hit {
                     context,
                     reference: ReferenceId(

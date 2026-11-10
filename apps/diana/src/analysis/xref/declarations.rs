@@ -672,48 +672,14 @@ fn borrowed_error(error: &diana_decomp::RequestError) -> QueryError {
 
 /// Declaration signature rows for a pure type query.
 ///
-/// Reads `class_def`, the field and method headers, and annotation types only:
-/// no class-data snapshot, no initial values, no code. The rows are the same
-/// ones [`scan`] produces for a type target.
+/// Reads field and method signatures without constructing a class snapshot.
 pub(super) fn scan_type_declarations<'a>(
-    index: &ProgramIndex<'a>,
     class: &diana_decomp::input::ClassView<'_, 'a>,
     location: &InputLocation<'a>,
     targets: &[Target],
     depth: u32,
     emit: &mut dyn FnMut(Event) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
-    match class.hierarchy() {
-        Ok(hierarchy) => {
-            if let Some(superclass) = hierarchy.superclass {
-                emit_type_row(
-                    location,
-                    targets,
-                    depth,
-                    emit,
-                    || Ok(Site::Class),
-                    superclass,
-                    || "superclass-type".to_owned(),
-                )?;
-            }
-            for interface in &hierarchy.interfaces {
-                emit_type_row(
-                    location,
-                    targets,
-                    depth,
-                    emit,
-                    || Ok(Site::Class),
-                    *interface,
-                    || "interface-type".to_owned(),
-                )?;
-            }
-        }
-        Err(error) => emit(Event::Issue(Issue::new(
-            location.context(),
-            &QueryError::from(error),
-            None,
-        )))?,
-    }
     let mut failure = None;
     let visited = class.visit_fields(|field| {
         if failure.is_some() {
@@ -807,10 +773,7 @@ pub(super) fn scan_type_declarations<'a>(
     if let Some(error) = failure {
         return Err(error);
     }
-    // Annotation types come from the same encoded-value walk the reference
-    // queries use; a full annotation snapshot would also decode every string,
-    // number and nested value in the record.
-    scan_declared_values(index, class, location, targets, depth, false, emit)
+    Ok(())
 }
 
 /// One declaration type row when the target filter selects it.
