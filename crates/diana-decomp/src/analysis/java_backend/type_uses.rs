@@ -107,6 +107,7 @@ impl JavaMethodTypeUses {
             ClassTypeUses::collect_type_parameter_bounds(&signature.type_parameters, types);
         }
         if let Some(body) = &method.body {
+            types.extend(body.lambda_reference_types());
             types.extend(body.type_uses().cloned());
         }
     }

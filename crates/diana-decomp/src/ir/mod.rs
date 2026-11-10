@@ -39,7 +39,7 @@ pub mod utf16;
 pub use arg::{InsnArg, LiteralArg, RegNum, RegisterArg};
 pub use insn::{
     ArithOp, CmpBias, IfOp, InsnNode, InsnPayload, InsnType, InstructionEquivalence, InstructionId,
-    InvokeType, UnaryOp,
+    InvokeType, LambdaSite, UnaryOp,
 };
 pub use instruction_tree::{
     InstructionTransform, InstructionTree, InstructionTreeError, InstructionVisitor,

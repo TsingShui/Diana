@@ -385,6 +385,18 @@ impl InstructionEquivalence for InsnNode {
             && self.payload.switch_default.is_some() == other.payload.switch_default.is_some()
             && self.payload.bool_expr == other.payload.bool_expr
             && self.payload.edge_copy == other.payload.edge_copy
+            && match (&self.payload.lambda, &other.payload.lambda) {
+                (Some(left), Some(right)) => {
+                    left.interface == right.interface
+                        && left.sam_name == right.sam_name
+                        && left.sam_descriptor == right.sam_descriptor
+                        && left.implementation == right.implementation
+                        && left.implementation_static == right.implementation_static
+                        && left.implementation_constructor == right.implementation_constructor
+                }
+                (None, None) => true,
+                _ => false,
+            }
     }
 }
 
@@ -499,6 +511,21 @@ impl FillArrayData {
     }
 }
 
+/// A checked `LambdaMetafactory` call site attached to `invoke-custom`.
+///
+/// The interface and SAM facts come from the call-site prototype; the
+/// implementation comes from the bootstrap method handle. Captured values stay
+/// in the invoke operands in their original order.
+#[derive(Debug, Clone)]
+pub struct LambdaSite {
+    pub interface: ArgType,
+    pub sam_name: String,
+    pub sam_descriptor: crate::ir::MethodDescriptor,
+    pub implementation: crate::ir::MethodReference,
+    pub implementation_static: bool,
+    pub implementation_constructor: bool,
+}
+
 /// Additional instruction-specific data
 #[derive(Debug, Clone, Default)]
 pub struct InsnPayload {
@@ -590,6 +617,9 @@ pub struct InsnPayload {
 
     /// Ordered assignment produced while eliminating a parallel Phi copy.
     pub edge_copy: bool,
+
+    /// Recovered `LambdaMetafactory` call-site facts for `invoke-custom`.
+    pub lambda: Option<Box<LambdaSite>>,
 }
 
 impl InsnNode {

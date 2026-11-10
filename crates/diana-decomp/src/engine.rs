@@ -12,7 +12,8 @@ use crate::ir::analysis::ClassHierarchyIndex;
 use crate::ir::{AnalysisObserver, NullAnalysisObserver, CFG};
 use crate::p0::{ClassFacts, Fact};
 use crate::p1::{
-    CheckedBootstrapFact, CheckedMemberFact, CheckedPrototype, CheckedReferenceFact, DecodedMethod,
+    BootstrapDeclaration, CheckedBootstrapFact, CheckedMemberFact, CheckedMethodHandleFact,
+    CheckedPrototype, CheckedReferenceFact, DecodedMethod,
 };
 use crate::p9::{RenderOutcome, Rendered};
 use crate::{ByteOffset, ClassKey, DexId, ImageFact, ImageOrigin, MethodId, RequestError};
@@ -166,6 +167,7 @@ fn resolve_symbols(facts: &DecodedMethod<'_>, ir: &mut CFG) -> DexResult<()> {
                     Some(crate::ir::InvokeType::Custom) => {
                         let fact = reference(facts, pc)?;
                         let CheckedReferenceFact::CallSite {
+                            name: sam_name,
                             prototype,
                             handle,
                             declarations,
@@ -196,9 +198,22 @@ fn resolve_symbols(facts: &DecodedMethod<'_>, ir: &mut CFG) -> DexResult<()> {
                                 "custom invoke at {pc:?} has no bootstrap method declaration"
                             )));
                         };
+                        let bootstrap_owner = text(owner)?;
+                        let bootstrap_name = text(name)?;
+
+                        let bootstrap_owner_name = bootstrap_owner
+                            .strip_prefix('L')
+                            .and_then(|owner| owner.strip_suffix(';'))
+                            .unwrap_or(&bootstrap_owner);
+                        if bootstrap_owner_name == "java/lang/invoke/LambdaMetafactory"
+                            && matches!(bootstrap_name.as_str(), "metafactory" | "altMetafactory")
+                        {
+                            insn.payload.lambda =
+                                lambda_site(*sam_name, prototype, declarations)?.map(Box::new);
+                        }
                         let method = crate::ir::MethodReference {
                             owner: descriptor(owner)?,
-                            name: text(name)?,
+                            name: bootstrap_name,
                             descriptor: prototype_descriptor(prototype)?,
                         };
                         apply_invoke_return_type(insn, &method);
@@ -277,6 +292,61 @@ fn resolve_symbols(facts: &DecodedMethod<'_>, ir: &mut CFG) -> DexResult<()> {
         }
     }
     Ok(())
+}
+
+/// Recover the `LambdaMetafactory` bootstrap arguments that describe a SAM
+/// implementation. The first two prototypes are the SAM and instantiated
+/// signatures; the first method handle is the implementation.
+fn lambda_site<'a>(
+    sam_name: crate::input::DexString<'a>,
+    interface: &CheckedPrototype<'a>,
+    declarations: &[BootstrapDeclaration<'a>],
+) -> DexResult<Option<crate::ir::LambdaSite>> {
+    let mut sam = None;
+    let mut implementation = None;
+    let mut prototypes = 0usize;
+    for declaration in declarations {
+        match &declaration.fact {
+            CheckedBootstrapFact::Proto { prototype } => {
+                if prototypes == 0 {
+                    sam = Some(prototype);
+                }
+                prototypes += 1;
+            }
+            CheckedBootstrapFact::MethodHandle {
+                handle,
+                member:
+                    CheckedMemberFact::Method {
+                        owner,
+                        name,
+                        prototype,
+                        ..
+                    },
+            } if implementation.is_none() => {
+                implementation = Some((handle, *owner, *name, prototype));
+            }
+            _ => {}
+        }
+    }
+    let (Some(sam), Some((handle, owner, name, implementation_prototype))) = (sam, implementation)
+    else {
+        return Ok(None);
+    };
+    let interface = descriptor(interface.return_type())?;
+    Ok(Some(crate::ir::LambdaSite {
+        interface,
+        sam_name: text(sam_name)?,
+        sam_descriptor: prototype_descriptor(sam)?,
+        implementation: crate::ir::MethodReference {
+            owner: descriptor(owner)?,
+            name: text(name)?,
+            descriptor: prototype_descriptor(implementation_prototype)?,
+        },
+        // DEX method-handle kinds: 0x04 invoke-static, 0x05 invoke-instance,
+        // 0x06 invoke-constructor, 0x07 invoke-direct, 0x08 invoke-interface.
+        implementation_static: handle.kind() == 4,
+        implementation_constructor: handle.kind() == 6,
+    }))
 }
 
 /// Collapse the flat encoded register list into one IR operand per declared

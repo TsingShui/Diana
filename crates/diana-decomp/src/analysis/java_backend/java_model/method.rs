@@ -158,6 +158,14 @@ impl JavaMethodBody {
         collector.static_owners
     }
 
+    pub(in crate::analysis::java_backend) fn lambda_reference_types(
+        &self,
+    ) -> std::collections::BTreeSet<ArgType> {
+        let mut collector = MemberReferenceCollector::default();
+        crate::ir::SemanticVisitor::visit_node(&mut collector, self.semantic.body());
+        collector.lambda_types
+    }
+
     pub(in crate::analysis::java_backend) fn outer_instance_field(
         &self,
     ) -> Option<(&crate::ir::FieldReference, &ArgType)> {
@@ -378,10 +386,16 @@ struct MemberReferenceCollector {
     methods: std::collections::BTreeSet<crate::ir::MethodReference>,
     fields: std::collections::BTreeSet<crate::ir::FieldReference>,
     static_owners: std::collections::BTreeSet<ArgType>,
+    lambda_types: std::collections::BTreeSet<ArgType>,
 }
 
 impl crate::ir::SemanticVisitor for MemberReferenceCollector {
     fn enter_operation(&mut self, operation: &crate::ir::SemanticOperation) {
+        if let Some(lambda) = operation.payload.lambda.as_deref() {
+            self.lambda_types.insert(lambda.interface.clone());
+            self.lambda_types
+                .insert(lambda.implementation.owner.clone());
+        }
         match operation.payload.reference.as_deref() {
             Some(crate::ir::MemberReference::Method(method)) => {
                 if operation.payload.invoke_type == Some(crate::ir::InvokeType::Static) {

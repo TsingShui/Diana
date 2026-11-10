@@ -2082,11 +2082,71 @@ impl DexJavaDialect {
         solver.assume_raw_owner_if_unbound(owner_signature);
     }
 
+    /// Recover a `LambdaMetafactory` call site as a Java method reference when
+    /// the implementation, captures and SAM signature have that exact shape.
+    /// Synthetic lambda bodies stay on the explicit call-site presentation.
+    fn lambda_method_reference(
+        &mut self,
+        insn: &SemanticOperation,
+        lambda: &crate::ir::LambdaSite,
+    ) -> Result<Option<JavaExpr>, JavaLoweringError> {
+        if lambda.implementation.name.starts_with("lambda$") {
+            return Ok(None);
+        }
+        let operands = insn.operands();
+        let parameters = &lambda.sam_descriptor.parameters;
+        let implementation_parameters = &lambda.implementation.descriptor.parameters;
+        let owner = |owner: &ArgType| {
+            let ArgType::Object(name) = owner else {
+                return JavaIdentifier::from_dex("Object");
+            };
+            let simple = name.rsplit('/').next().unwrap_or(name);
+            let simple = simple.rsplit('$').next().unwrap_or(simple);
+            JavaIdentifier::from_dex(simple)
+        };
+        if lambda.implementation_constructor {
+            if !operands.is_empty() || implementation_parameters.len() != parameters.len() {
+                return Ok(None);
+            }
+            return Ok(Some(JavaExpr::MethodReference {
+                receiver: Box::new(JavaExpr::Name(owner(&lambda.implementation.owner))),
+                method: JavaIdentifier::from_dex("new"),
+            }));
+        }
+        if lambda.implementation_static {
+            if !operands.is_empty() || implementation_parameters.len() != parameters.len() {
+                return Ok(None);
+            }
+            return Ok(Some(JavaExpr::MethodReference {
+                receiver: Box::new(JavaExpr::Name(owner(&lambda.implementation.owner))),
+                method: JavaIdentifier::from_dex(&lambda.implementation.name),
+            }));
+        }
+        let receiver = match operands {
+            [receiver] if implementation_parameters.len() == parameters.len() => {
+                self.arg(receiver)?
+            }
+            [] if implementation_parameters.len() + 1 == parameters.len() => {
+                JavaExpr::Name(owner(&lambda.implementation.owner))
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(JavaExpr::MethodReference {
+            receiver: Box::new(receiver),
+            method: JavaIdentifier::from_dex(&lambda.implementation.name),
+        }))
+    }
+
     fn invoke(
         &mut self,
         insn: &SemanticOperation,
         expected_source_type: Option<&JavaType>,
     ) -> Result<JavaExpr, JavaLoweringError> {
+        if let Some(lambda) = insn.payload.lambda.as_deref() {
+            if let Some(expression) = self.lambda_method_reference(insn, lambda)? {
+                return Ok(expression);
+            }
+        }
         let method = Self::method(insn.payload.reference.as_deref())?;
         let invoke_type = insn
             .payload
