@@ -495,3 +495,103 @@ fn method_source(display: &crate::p8::MethodDisplayOutcome) -> crate::p9::Source
 fn same_bytes(left: &[u8], right: &[u8]) -> bool {
     std::ptr::eq(left, right) || left == right
 }
+
+/// Source text recovered by the pluggable backend for one class request.
+pub struct ClassSource {
+    pub class: ClassKey,
+    pub text: String,
+    pub methods: Vec<MethodSource>,
+}
+
+/// One method's outcome inside a backend class request.
+pub struct MethodSource {
+    pub method: MethodId,
+    pub name: Vec<u16>,
+    pub prototype: Vec<u16>,
+    /// Present when this method alone could not be recovered.
+    pub failure: Option<String>,
+}
+
+impl Engine<'_> {
+    /// Recover one class through the backend from the original P0/P1 facts.
+    pub fn class_source(&self, request: Request) -> Result<ClassSource, RequestError> {
+        let image = self
+            .image(request.class.dex)
+            .ok_or(RequestError::UnknownDex)?;
+        let facts = image.index.class_facts_cached(request.class.class_def)?;
+        let node = crate::backend::dexdec::class_node(&facts).ok_or(
+            RequestError::InternalInvariant("class node assembly failed"),
+        )?;
+        let mut methods = Vec::new();
+        let mut inputs = Vec::new();
+        for entry in facts.methods() {
+            let id = entry.method();
+            if let Some(selector) = &request.method {
+                let selected = facts.resolve_method(&selector.name, &selector.prototype)?;
+                if selected != id {
+                    continue;
+                }
+            }
+            let Ok(source) = image.index.method_source(&facts, id) else {
+                continue;
+            };
+            let crate::input::RawPrintable::Method(view) = source.raw() else {
+                continue;
+            };
+            let Ok(decoded) = image.index.decode_method_source(&source) else {
+                continue;
+            };
+            let Some(decoded) = decoded.decoded else {
+                continue;
+            };
+            let Some(method) = node
+                .methods()
+                .iter()
+                .find(|method| method.id == id.0)
+                .cloned()
+            else {
+                continue;
+            };
+            methods.push(MethodSource {
+                method: id,
+                name: method.info.name.encode_utf16().collect(),
+                prototype: method.info.descriptor().encode_utf16().collect(),
+                failure: None,
+            });
+            inputs.push(dexdec::MethodInput {
+                method,
+                code: crate::backend::dexdec::method_code(view),
+                symbols: crate::backend::dexdec::symbols(&image.index, &decoded),
+            });
+        }
+        let declaration_copy = node.clone();
+        let declarations = [&declaration_copy];
+        let output = dexdec::decompile_class(
+            &declarations,
+            dexdec::ClassInput {
+                class: node,
+                methods: inputs,
+            },
+            &dexdec::MethodOptions::default(),
+        )
+        .map_err(|error| {
+            RequestError::InternalInvariant(Box::leak(
+                format!("backend failed: {error}").into_boxed_str(),
+            ))
+        })?;
+        for outcome in &output.methods {
+            if let Some(failure) = &outcome.failure {
+                if let Some(method) = methods.iter_mut().find(|method| {
+                    String::from_utf16(&method.name).ok().as_deref() == Some(outcome.name.as_str())
+                }) {
+                    method.failure = Some(failure.clone());
+                }
+            }
+        }
+        Ok(ClassSource {
+            class: request.class,
+            text: output.source,
+            methods,
+        })
+    }
+}
