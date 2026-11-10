@@ -27,8 +27,8 @@ pub mod api;
 pub mod decoder;
 pub mod frontend;
 pub mod ir;
-pub mod local;
 pub mod language;
+pub mod local;
 pub mod platform_symbols;
 pub mod profiling;
 
@@ -36,25 +36,24 @@ pub mod profiling;
 #[cfg(feature = "kotlin")]
 pub use api::kotlin_source_path;
 pub use api::{
-    ArchiveCatalog, ArchiveMemberCatalog, BatchSummary, ClassBatch, ClassFailure, ClassKind,
-    ClassOutline, ClassSelector, ClassSummary, DecodedMethod, DecompileError, DecompileOptions,
-    Decompiler, DecompilerContext, FieldOutline, MemberKind, MemberSummary, MemberVisitor,
-    MethodOutline, MethodOutput, MethodRequest, ReferenceLocation, ReferenceResults,
-    ReferenceTarget, SourceLanguage, SourceUnit, decode_method, java_source_path, load_dex,
-    source_path,
+    decode_method, java_source_path, load_dex, source_path, ArchiveCatalog, ArchiveMemberCatalog,
+    BatchSummary, ClassBatch, ClassFailure, ClassKind, ClassOutline, ClassSelector, ClassSummary,
+    DecodedMethod, DecompileError, DecompileOptions, Decompiler, DecompilerContext, FieldOutline,
+    MemberKind, MemberSummary, MemberVisitor, MethodOutline, MethodOutput, MethodRequest,
+    ReferenceLocation, ReferenceResults, ReferenceTarget, SourceLanguage, SourceUnit,
 };
 pub use frontend::{ClassNode, DexError, DexFileReader, DexResult, MethodCode, MethodNode};
 pub use platform_symbols::{
-    PlatformAnnotation, PlatformAnnotationValue, PlatformClass, PlatformConstant,
-    PlatformConstantDomain, PlatformConstantKind, PlatformConstantMember, PlatformFamily,
-    PlatformField, PlatformFieldReference, PlatformMethod, PlatformSymbolDatabase,
+    default_platform_symbols, PlatformAnnotation, PlatformAnnotationValue, PlatformClass,
+    PlatformConstant, PlatformConstantDomain, PlatformConstantKind, PlatformConstantMember,
+    PlatformFamily, PlatformField, PlatformFieldReference, PlatformMethod, PlatformSymbolDatabase,
     PlatformSymbolSet, PlatformTarget, SymbolAvailability, SymbolDatabaseStats, SymbolProvider,
-    SymbolSource, default_platform_symbols,
+    SymbolSource,
 };
 
 // IR types
 pub use ir::{ArgType, InsnArg, InsnNode, InsnType, RegisterArg};
-pub use ir::{Block, BlockId, CFG, EdgeKind, ExceptionHandler};
+pub use ir::{Block, BlockId, EdgeKind, ExceptionHandler, CFG};
 pub use ir::{Pass, PassResult, Splitter};
 
 // Exception analysis

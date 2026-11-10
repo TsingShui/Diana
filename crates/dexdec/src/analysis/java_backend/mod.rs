@@ -29,10 +29,10 @@ use std::sync::Arc;
 
 use crate::analysis::value_recovery::ValueRecoveryError;
 use crate::ir::{
-    ExceptionInvariantError, RegionInvariantError, SemanticInvariantError,
     analysis::{ClassHierarchyIndex, SourceVariableError, SsaInvariantError, TypeConstraintError},
     passes::CfgPipelineError,
     structure::StructureError,
+    ExceptionInvariantError, RegionInvariantError, SemanticInvariantError,
 };
 use crate::language::java::{JavaLoweringError, JavaPrintError};
 pub use constants::JavaConstantError;

@@ -1,9 +1,5 @@
 mod operation;
 
-use std::collections::TryReserveError;
-
-use thiserror::Error;
-
 use super::transfer::*;
 use super::{
     ArrayAccess, BinaryForm, BinaryOp, Block, BlockId, BranchOp, CommitRule, CompareOp, Coverage,
@@ -17,41 +13,9 @@ use crate::raw::OperandReference;
 use crate::raw::RawLiteral;
 use crate::substrate::owned::push;
 use crate::substrate::slots::{RegisterSlot, SlotWidth};
-use crate::{CodeUnitOffset, FailureKind, RegisterId, RequestError, TypeId};
+use crate::{CodeUnitOffset, RegisterId, RequestError, TypeId};
 
-#[derive(Debug, Error)]
-pub enum FlowError {
-    #[error("flow allocation failed: {0}")]
-    Allocation(#[source] TryReserveError),
-    #[error("flow capacity is not representable on this platform")]
-    PlatformCapacity,
-    #[error("unsupported flow at {pc:?} opcode 0x{opcode:02x}: {reason}")]
-    Unsupported {
-        pc: CodeUnitOffset,
-        opcode: u8,
-        reason: &'static str,
-    },
-    #[cfg(test)]
-    #[error("P2 correspondence failed at {pc:?}: {obligation}")]
-    Correspondence {
-        pc: CodeUnitOffset,
-        obligation: &'static str,
-    },
-    #[error("BUG: {0}")]
-    InternalInvariant(&'static str),
-}
-
-impl FlowError {
-    pub fn kind(&self) -> FailureKind {
-        match self {
-            Self::Allocation(_) | Self::PlatformCapacity => FailureKind::ResourceExhausted,
-            Self::Unsupported { .. } => FailureKind::Unsupported,
-            Self::InternalInvariant(_) => FailureKind::InternalInvariant,
-            #[cfg(test)]
-            Self::Correspondence { .. } => FailureKind::InternalInvariant,
-        }
-    }
-}
+pub use diana_facts::FlowError;
 
 pub(crate) fn request_error(error: RequestError) -> FlowError {
     match error {

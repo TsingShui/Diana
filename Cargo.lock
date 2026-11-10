@@ -1358,7 +1358,20 @@ dependencies = [
 name = "diana-decomp"
 version = "0.0.0"
 dependencies = [
+ "diana-facts",
  "fastrace",
+ "memchr",
+ "rayon",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "unicode-general-category",
+]
+
+[[package]]
+name = "diana-facts"
+version = "0.0.0"
+dependencies = [
  "memchr",
  "rayon",
  "serde",

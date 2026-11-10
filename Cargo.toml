@@ -4,6 +4,7 @@ members = [
     "apps/diana",
     "apps/diana-gui",
     "crates/diana-decomp",
+    "crates/diana-facts",
     "crates/dexdec",
     "crates/rusty-dex",
 ]

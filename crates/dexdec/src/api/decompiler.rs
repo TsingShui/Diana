@@ -14,9 +14,9 @@ use crate::analysis::kotlin_backend::KotlinSourceAbi;
 use crate::analysis::{JavaDecompiler, JavaDecompilerConfig};
 #[cfg(feature = "kotlin")]
 use crate::analysis::{KotlinDecompiler, KotlinDecompilerConfig};
-use crate::frontend::DexFileReader;
 #[cfg(feature = "kotlin")]
 use crate::frontend::kotlin_metadata::KotlinMetadata;
+use crate::frontend::DexFileReader;
 use crate::ir::analysis::ClassHierarchyIndex;
 use crate::ir::{AnalysisObserver, NullAnalysisObserver};
 use crate::language::java::JavaIdentifier;

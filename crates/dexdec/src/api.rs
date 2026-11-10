@@ -22,11 +22,11 @@ use crate::decoder::method_decoder::MethodDecoder;
 use crate::frontend::{ClassNode, DexFileReader, DexResult, MethodCode};
 use crate::ir::splitter::Splitter;
 use crate::ir::{
-    FieldReference, MemberReference, MethodReference, Utf16String,
     arg::InsnArg,
-    cfg::{CFG, MethodContext},
+    cfg::{MethodContext, CFG},
     insn::{InsnNode, InsnType, InvokeType},
     ty::{ArgType, MethodDescriptor},
+    FieldReference, MemberReference, MethodReference, Utf16String,
 };
 
 #[cfg(feature = "kotlin")]
@@ -45,8 +45,8 @@ pub use catalog::{
 #[cfg(feature = "kotlin")]
 pub use decompiler::kotlin_source_path;
 pub use decompiler::{
-    BatchSummary, ClassBatch, ClassFailure, ClassSelector, DecompileOptions, Decompiler,
-    MethodOutput, MethodRequest, SourceLanguage, SourceUnit, java_source_path, source_path,
+    java_source_path, source_path, BatchSummary, ClassBatch, ClassFailure, ClassSelector,
+    DecompileOptions, Decompiler, MethodOutput, MethodRequest, SourceLanguage, SourceUnit,
 };
 
 pub(crate) struct ClassRenderInput {
@@ -2067,7 +2067,11 @@ fn apply_invoke_return_type(insn: &mut InsnNode, method: &MethodReference) {
 }
 
 fn type_slots(ty: &ArgType) -> usize {
-    if ty.is_wide() { 2 } else { 1 }
+    if ty.is_wide() {
+        2
+    } else {
+        1
+    }
 }
 
 fn set_arg_type(arg: &mut InsnArg, ty: ArgType) {

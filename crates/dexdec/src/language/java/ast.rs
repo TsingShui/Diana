@@ -1009,7 +1009,7 @@ pub struct JavaMethodBody {
 
 #[cfg(test)]
 mod tests {
-    use super::{JavaIdentifier, JavaNameScope, with_preserved_dex_names};
+    use super::{with_preserved_dex_names, JavaIdentifier, JavaNameScope};
 
     #[test]
     fn invalid_dex_identifiers_drop_illegal_characters_like_jadx() {

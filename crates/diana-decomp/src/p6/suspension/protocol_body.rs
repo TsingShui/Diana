@@ -37,9 +37,8 @@ pub(super) fn construct(
             Ok(input) => input,
             Err(_) => continue,
         };
-        match candidate(storage, f, g, s, input)? {
-            Ok(plan) => return Ok(Some(plan)),
-            Err(_) => {}
+        if let Ok(plan) = candidate(storage, f, g, s, input)? {
+            return Ok(Some(plan));
         }
     }
     Ok(None)
