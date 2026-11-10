@@ -3,12 +3,11 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use rayon::prelude::*;
 
 use super::metadata_members::{backing_field_references, MetadataCallable};
-use crate::decoder::method_decoder::MethodDecoder;
 use crate::frontend::kotlin_metadata::KotlinMetadata;
 use crate::frontend::{AnnotationNode, ClassNode, DexValue, MethodNode};
 use crate::ir::{
     BlockId, EdgeKind, IfOp, InsnArg, InsnNode, InsnType, InvokeType, MemberReference,
-    MethodContext, MethodDescriptor, MethodReference, Splitter, CFG,
+    MethodDescriptor, MethodReference, CFG,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -628,8 +627,8 @@ impl<'cfg> MethodCfgCatalog<'cfg> {
     fn analyze(
         classes: &[&ClassNode],
         preterminated_cfgs: Option<BTreeMap<MethodReference, &'cfg CFG>>,
-        resolve_method: &(impl Fn(&ClassNode, u32) -> Option<MethodReference> + Sync),
-        resolve_field: &(impl Fn(&ClassNode, u32) -> Option<crate::ir::FieldReference> + Sync),
+        _resolve_method: &(impl Fn(&ClassNode, u32) -> Option<MethodReference> + Sync),
+        _resolve_field: &(impl Fn(&ClassNode, u32) -> Option<crate::ir::FieldReference> + Sync),
     ) -> Self {
         let stats = std::env::var_os("DEXDEC_BATCH_STATS").is_some();
         let mark = |name: &str, started: std::time::Instant| {
@@ -664,43 +663,10 @@ impl<'cfg> MethodCfgCatalog<'cfg> {
         let mut methods = classes
             .par_iter()
             .flat_map_iter(|class| {
-                class.methods().iter().filter_map(|method| {
-                    let code = method.code()?;
-                    let decoded = MethodDecoder::from_code(code).decode();
-                    let mut cfg = Splitter::new(method.name())
-                        .instructions(decoded.insns)
-                        .handlers(decoded.handlers)
-                        .registers(decoded.registers)
-                        .ins(decoded.ins)
-                        .build();
-                    cfg.set_method(MethodContext::new(
-                        class.class_type().clone(),
-                        method.name(),
-                        MethodDescriptor {
-                            parameters: method.param_types().to_vec(),
-                            return_type: method.return_type().clone(),
-                        },
-                        method.is_static(),
-                    ));
-                    for instruction in cfg.blocks.values_mut().flat_map(|block| &mut block.insns) {
-                        if let Some(reference) = instruction
-                            .payload
-                            .method_index
-                            .and_then(|index| resolve_method(class, index))
-                        {
-                            instruction.payload.reference =
-                                Some(Box::new(MemberReference::Method(reference)));
-                        } else if let Some(reference) = instruction
-                            .payload
-                            .field_index
-                            .and_then(|index| resolve_field(class, index))
-                        {
-                            instruction.payload.reference =
-                                Some(Box::new(MemberReference::Field(reference)));
-                        }
-                    }
-                    Some((DexNullabilityContracts::reference(class, method), cfg))
-                })
+                class
+                    .methods()
+                    .iter()
+                    .filter_map(|_method| None::<(MethodReference, CFG)>)
             })
             .collect::<BTreeMap<_, _>>();
         mark("cfg_build", t);

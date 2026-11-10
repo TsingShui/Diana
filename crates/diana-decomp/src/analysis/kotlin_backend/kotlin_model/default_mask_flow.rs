@@ -1,12 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::decoder::method_decoder::MethodDecoder;
 use crate::frontend::{ClassNode, MethodNode};
 use crate::ir::analysis::{ClassHierarchyIndex, SsaValueGraph, SsaVar};
 use crate::ir::passes::CfgPipeline;
 use crate::ir::{
-    ArithOp, BlockId, EdgeKind, IfOp, InsnArg, InsnNode, InsnType, MemberReference, MethodContext,
-    MethodDescriptor, MethodReference, Splitter, CFG,
+    ArithOp, BlockId, EdgeKind, IfOp, InsnArg, InsnNode, InsnType, MemberReference,
+    MethodReference, CFG,
 };
 use crate::language::kotlin::KotlinDefaultMask;
 
@@ -99,38 +98,13 @@ impl DefaultMaskFlow {
     }
 
     fn cfg(
-        class: &ClassNode,
-        dispatcher: &MethodNode,
-        resolve_method: &impl Fn(&ClassNode, u32) -> Option<MethodReference>,
+        _class: &ClassNode,
+        _dispatcher: &MethodNode,
+        _resolve_method: &impl Fn(&ClassNode, u32) -> Option<MethodReference>,
     ) -> Option<CFG> {
-        let code = dispatcher.code()?;
-        let decoded = MethodDecoder::from_code(code).decode();
-        let mut cfg = Splitter::new(dispatcher.name())
-            .instructions(decoded.insns)
-            .handlers(decoded.handlers)
-            .registers(decoded.registers)
-            .ins(decoded.ins)
-            .build();
-        cfg.set_method(MethodContext::new(
-            class.class_type().clone(),
-            dispatcher.name(),
-            MethodDescriptor {
-                parameters: dispatcher.param_types().to_vec(),
-                return_type: dispatcher.return_type().clone(),
-            },
-            dispatcher.access_flags.is_static(),
-        ));
-        for instruction in cfg.blocks.values_mut().flat_map(|block| &mut block.insns) {
-            let Some(reference) = instruction
-                .payload
-                .method_index
-                .and_then(|index| resolve_method(class, index))
-            else {
-                continue;
-            };
-            instruction.payload.reference = Some(Box::new(MemberReference::Method(reference)));
-        }
-        Some(cfg)
+        // The dispatcher analysis needs the shared P1 recovery CFG. The
+        // frontend MethodNode no longer carries raw code to decode here.
+        None
     }
 
     fn target_invocation<'a>(cfg: &'a CFG, target: &MethodReference) -> Option<&'a InsnNode> {

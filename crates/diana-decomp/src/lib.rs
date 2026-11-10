@@ -23,7 +23,6 @@
 //! - `language` - Typed target-language ASTs and printers
 
 pub mod analysis;
-pub mod decoder;
 mod engine;
 pub mod frontend;
 pub mod ir;
