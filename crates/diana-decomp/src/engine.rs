@@ -63,6 +63,7 @@ impl<'a> IndexedImage<'a> {
 
 pub struct Engine<'a> {
     images: Vec<IndexedImage<'a>>,
+    jobs: Option<usize>,
 }
 
 pub struct ClassSource {
@@ -531,79 +532,91 @@ struct ClassParts {
 fn build_method_inputs<'a>(
     class: &ClassNode,
     methods: Vec<MethodFacts<'a>>,
+    jobs: Option<usize>,
 ) -> Result<(Vec<crate::analysis::ClassMethodInput>, Vec<MethodOutcome>), DexError> {
     use rayon::prelude::*;
 
-    let prepared: Vec<(MethodOutcome, Option<crate::analysis::ClassMethodInput>)> = methods
-        .into_par_iter()
-        .map(|facts| {
-            let method_id = match &facts {
-                MethodFacts::Decoded(facts) => facts.method_id(),
-                MethodFacts::Failed { method, .. } => *method,
-            };
-            let Some(method) = class
-                .methods()
-                .iter()
-                .find(|method| method.id == method_id.0)
-                .cloned()
-            else {
-                return (
-                    MethodOutcome {
-                        method: method_id,
-                        name: format!("method#{}", method_id.0),
-                        descriptor: String::new(),
-                        failure: Some("class node method is missing".to_owned()),
-                    },
-                    None,
-                );
-            };
-            let name = method.info.name.clone();
-            let descriptor = method.info.descriptor().to_string();
-            match facts {
-                MethodFacts::Decoded(facts) => match decode_decoded_method(&method, &facts) {
-                    Ok(cfg) => (
-                        MethodOutcome {
-                            method: method_id,
-                            name,
-                            descriptor,
-                            failure: None,
-                        },
-                        Some(crate::analysis::ClassMethodInput::decoded(method, cfg)),
-                    ),
-                    Err(error) => (
-                        MethodOutcome {
-                            method: method_id,
-                            name,
-                            descriptor,
-                            failure: Some(error.to_string()),
-                        },
-                        Some(crate::analysis::ClassMethodInput::failed(
-                            method,
-                            crate::analysis::MethodRecoveryFailure::new(
-                                crate::analysis::MethodRecoveryStage::Decode,
-                                error,
-                            ),
-                        )),
-                    ),
+    let prepare = |facts| {
+        let method_id = match &facts {
+            MethodFacts::Decoded(facts) => facts.method_id(),
+            MethodFacts::Failed { method, .. } => *method,
+        };
+        let Some(method) = class
+            .methods()
+            .iter()
+            .find(|method| method.id == method_id.0)
+            .cloned()
+        else {
+            return (
+                MethodOutcome {
+                    method: method_id,
+                    name: format!("method#{}", method_id.0),
+                    descriptor: String::new(),
+                    failure: Some("class node method is missing".to_owned()),
                 },
-                MethodFacts::Failed { failure, .. } => (
+                None,
+            );
+        };
+        let name = method.info.name.clone();
+        let descriptor = method.info.descriptor().to_string();
+        match facts {
+            MethodFacts::Decoded(facts) => match decode_decoded_method(&method, &facts) {
+                Ok(cfg) => (
                     MethodOutcome {
                         method: method_id,
                         name,
                         descriptor,
-                        failure: Some(failure.clone()),
+                        failure: None,
+                    },
+                    Some(crate::analysis::ClassMethodInput::decoded(method, cfg)),
+                ),
+                Err(error) => (
+                    MethodOutcome {
+                        method: method_id,
+                        name,
+                        descriptor,
+                        failure: Some(error.to_string()),
                     },
                     Some(crate::analysis::ClassMethodInput::failed(
                         method,
                         crate::analysis::MethodRecoveryFailure::new(
                             crate::analysis::MethodRecoveryStage::Decode,
-                            failure,
+                            error,
                         ),
                     )),
                 ),
+            },
+            MethodFacts::Failed { failure, .. } => (
+                MethodOutcome {
+                    method: method_id,
+                    name,
+                    descriptor,
+                    failure: Some(failure.clone()),
+                },
+                Some(crate::analysis::ClassMethodInput::failed(
+                    method,
+                    crate::analysis::MethodRecoveryFailure::new(
+                        crate::analysis::MethodRecoveryStage::Decode,
+                        failure,
+                    ),
+                )),
+            ),
+        }
+    };
+    let prepared: Vec<(MethodOutcome, Option<crate::analysis::ClassMethodInput>)> =
+        if jobs == Some(1) {
+            methods.into_iter().map(prepare).collect()
+        } else {
+            match jobs.and_then(|jobs| {
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(jobs)
+                    .build()
+                    .ok()
+            }) {
+                Some(pool) => pool.install(|| methods.into_par_iter().map(prepare).collect()),
+                None => methods.into_par_iter().map(prepare).collect(),
             }
-        })
-        .collect();
+        };
     let outcomes = prepared
         .iter()
         .map(|(outcome, _)| MethodOutcome {
@@ -620,16 +633,19 @@ fn build_method_inputs<'a>(
     Ok((inputs, outcomes))
 }
 
-fn build_class_parts<'a>(input: BackendInput<'a>) -> Result<ClassParts, DexError> {
+fn build_class_parts<'a>(
+    input: BackendInput<'a>,
+    jobs: Option<usize>,
+) -> Result<ClassParts, DexError> {
     let class = crate::local::class_node(&input.class)
         .ok_or_else(|| DexError::Backend("class node assembly failed".to_owned()))?;
-    let (methods, outcomes) = build_method_inputs(&class, input.methods)?;
+    let (methods, outcomes) = build_method_inputs(&class, input.methods, jobs)?;
     let mut nested = Vec::new();
     nested
         .try_reserve_exact(input.nested.len())
         .map_err(|_| DexError::Backend("nested class allocation failed".to_owned()))?;
     for child in input.nested {
-        let parts = build_class_parts(child)?;
+        let parts = build_class_parts(child, jobs)?;
         nested.push(crate::analysis::NestedClassInput {
             class: parts.class,
             methods: parts.methods,
@@ -654,9 +670,12 @@ fn collect_nested_declarations<'a>(
     }
 }
 
-fn decompile_class<'a>(input: BackendInput<'a>) -> Result<ClassOutput, DexError> {
+fn decompile_class<'a>(
+    input: BackendInput<'a>,
+    jobs: Option<usize>,
+) -> Result<ClassOutput, DexError> {
     let related = input.related.clone();
-    let parts = build_class_parts(input)?;
+    let parts = build_class_parts(input, jobs)?;
     let mut related_nodes = Vec::new();
     related_nodes
         .try_reserve_exact(related.len())
@@ -691,7 +710,8 @@ fn decompile_class<'a>(input: BackendInput<'a>) -> Result<ClassOutput, DexError>
 }
 
 impl<'a> Engine<'a> {
-    pub fn with_method_jobs(self, _jobs: usize) -> Self {
+    pub fn with_method_jobs(mut self, jobs: usize) -> Self {
+        self.jobs = Some(jobs.max(1));
         self
     }
 
@@ -728,7 +748,10 @@ impl<'a> Engine<'a> {
                 classes_by_descriptor: OnceLock::new(),
             });
         }
-        Ok(Self { images: indexed })
+        Ok(Self {
+            images: indexed,
+            jobs: None,
+        })
     }
 
     pub fn focus(image: DexImage<'a>, dex: DexId) -> Result<Self, InputError> {
@@ -746,7 +769,7 @@ impl<'a> Engine<'a> {
             dex,
             classes_by_descriptor: OnceLock::new(),
         });
-        Ok(Self { images })
+        Ok(Self { images, jobs: None })
     }
 
     fn image(&self, dex: DexId) -> Option<&IndexedImage<'a>> {
@@ -892,7 +915,7 @@ impl<'a> Engine<'a> {
             request.method.as_ref(),
             request.method.is_none(),
         )?;
-        let output = decompile_class(input).map_err(|error| {
+        let output = decompile_class(input, self.jobs).map_err(|error| {
             RequestError::InternalInvariant(Box::leak(
                 format!("backend failed: {error}").into_boxed_str(),
             ))
