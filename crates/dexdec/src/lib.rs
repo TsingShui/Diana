@@ -27,6 +27,7 @@ pub mod api;
 pub mod decoder;
 pub mod frontend;
 pub mod ir;
+pub mod local;
 pub mod language;
 pub mod platform_symbols;
 pub mod profiling;
