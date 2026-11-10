@@ -1,18 +1,10 @@
 //! Projects established protocol associations into the ordinary control grammar.
 //! Recognition stays in P6 suspension; this constructor runs no new graph solver.
 
-use super::super::suspension::Nomination;
+use super::super::suspension::ProtocolNomination;
 use super::*;
-use crate::p2::OpId;
 use crate::recovery::{BodyEnd, ControlRecord, SourceMode};
 
-fn nodes(f: &RegionFacts, source: &[NodeId]) -> Result<Vec<RegionId>, RegionError> {
-    let mut result = Vec::new();
-    for &node in source {
-        push(&mut result, f.labels[node.0 as usize].owner)?;
-    }
-    Ok(result)
-}
 fn sequence(f: &mut RegionFacts, children: Vec<RegionId>) -> Result<RegionId, RegionError> {
     append(f, ControlLayout::Sequence, children)
 }
@@ -121,6 +113,17 @@ fn guard(
     Ok(())
 }
 
+fn private_marker(f: &RegionFacts, calls: &[ProtocolCall], site: &ProtocolCall) -> bool {
+    site.publication.is_some()
+        && calls
+            .iter()
+            .filter(|call| {
+                f.links[call.suspended.0 as usize].to == f.links[site.suspended.0 as usize].to
+            })
+            .count()
+            == 1
+}
+
 /// Leaves follow the selected static ownership, never the original root's ABI
 /// membership. The installed grammar is finite; records name earlier children.
 fn selected_nodes(f: &RegionFacts, root: RegionId) -> Result<Vec<NodeId>, RegionError> {
@@ -139,189 +142,107 @@ fn selected_nodes(f: &RegionFacts, root: RegionId) -> Result<Vec<NodeId>, Region
     Ok(result)
 }
 
-fn events(source: Vec<OpId>) -> Result<Vec<ProtocolEvent>, RegionError> {
-    let mut result = Vec::new();
-    for operation in source {
-        push(
-            &mut result,
-            ProtocolEvent {
-                operation,
-                role: ProtocolRole::Abi,
-            },
-        )?;
-    }
-    Ok(result)
-}
-
 pub(super) fn construct(
     storage: &StorageMethod<'_>,
     f: &mut RegionFacts,
     g: &Graph,
-    nomination: Option<Nomination>,
+    nomination: Option<ProtocolNomination>,
 ) -> Result<(), RegionError> {
-    let Some(nomination) = nomination else {
+    let Some(p) = nomination else {
         return Ok(());
     };
-    let (
-        source,
-        abi,
-        calls,
-        operations,
-        abi_entries,
-        hidden_locals,
-        iteration,
-        forwarding,
-        entry_check,
-    ) = match nomination {
-        Nomination::Flow(p) => {
-            let mut calls = Vec::new();
-            for s in p.sites {
-                push(
-                    &mut calls,
-                    ProtocolCall {
-                        call: s.call,
-                        continuation_argument: s.continuation_argument,
-                        state: s.state,
-                        guard: s.guard,
-                        predicate: f.nodes[s.guard.0 as usize].block,
-                        normal: s.normal,
-                        suspended: s.suspended,
-                        publication: None,
-                        resume: s.resume,
-                        spills: s.spills,
-                    },
-                )?;
-            }
-            for guard_plan in &p.guards {
-                guard(f, guard_plan.control, guard_plan.header, guard_plan.normal)?;
-            }
-            for s in &calls {
-                leaf_end(
-                    f,
-                    s.guard,
-                    BodyEnd::Annotated {
-                        terminal: s.predicate,
-                        mode: SourceMode::Abi,
-                        normal: s.normal,
-                        suspended: s.suspended,
-                    },
-                );
-                next(f, s.normal);
-            }
-            for &node in p.abi.iter().chain(&p.explicit_predicates) {
-                if f.nodes[node.0 as usize].terminal {
-                    leaf_end(f, node, BodyEnd::Terminal(f.nodes[node.0 as usize].block));
-                }
-            }
-            for &(id, target) in &p.completions {
-                f.controls[id.0 as usize].continuation =
-                    Some(target.map_or(Continuation::None, |node| {
-                        Continuation::Goto(LabelId(node.0))
-                    }));
-            }
-            for &link in &p.retired_transfers {
-                next(f, link);
-            }
-            for &node in &p.abi {
-                for &link in &g.outgoing[node.0 as usize] {
-                    next(f, link);
-                }
-            }
-            for &link in p.gotos.iter().chain(&p.abi_gotos) {
-                goto(f, link);
-            }
-            let (source, iteration) = if let Some(c) = p.cycle {
-                next(f, c.implicit_latch);
-                next(f, c.initial_header);
-                let (source, control) =
-                    cycle(storage, f, g, c.initial, c.body, c.tail, c.condition)?;
-                (
-                    source,
-                    Some(ProtocolIteration {
-                        control,
-                        condition: c.condition,
-                        implicit: Some((c.implicit_latch, c.initial_header)),
-                    }),
-                )
-            } else {
-                (sequence(f, p.source)?, None)
-            };
-            (
-                source,
-                sequence(f, nodes(f, &p.abi)?)?,
-                calls,
-                events(p.protocol_operations)?,
-                p.abi_entries,
-                Vec::new(),
-                iteration,
-                p.forwarding,
-                p.entry_check,
-            )
-        }
-        Nomination::Body(p) => {
-            let s = p.site;
-            guard(f, s.control, s.header, s.normal_body)?;
-            f.controls[s.control.0 as usize].source_only = vec_one(s.suspended_body)?.into();
-            let guard_node = g.terminal_node[s.predicate.0 as usize];
-            leaf_end(
-                f,
-                guard_node,
-                BodyEnd::Annotated {
-                    terminal: s.predicate,
-                    mode: SourceMode::Origins,
-                    normal: s.normal,
-                    suspended: s.suspended,
-                },
-            );
-            f.copies[s.normal_copy.0 as usize].owner = CopyOwner::Publication(s.call);
-            next(f, s.normal);
-            f.controls[p.root.0 as usize].children = p.sequence.into();
-            let mut abi_children = p.prefix;
-            let decision = f.regions[p.dispatch.0 as usize]
-                .decision
-                .as_ref()
-                .ok_or(bug("protocol dispatch lost its established tests"))?;
-            let mut headers = Vec::new();
-            for test in &decision.tests {
-                push(&mut headers, (test.header, test.predicate))?;
-            }
-            for (header, node) in headers {
-                push(&mut abi_children, header)?;
-                leaf_end(f, node, BodyEnd::Terminal(f.nodes[node.0 as usize].block));
-                f.controls[header.0 as usize].continuation = Some(Continuation::None);
-            }
-            push(&mut abi_children, p.resume)?;
-            push(&mut abi_children, p.invalid)?;
-            let calls = vec_one(ProtocolCall {
+    let mut calls = Vec::new();
+    for s in p.sites {
+        push(
+            &mut calls,
+            ProtocolCall {
                 call: s.call,
                 continuation_argument: s.continuation_argument,
                 state: s.state,
-                guard: guard_node,
-                predicate: s.predicate,
+                guard: s.guard,
+                predicate: f.nodes[s.guard.0 as usize].block,
                 normal: s.normal,
                 suspended: s.suspended,
-                publication: Some((s.normal_copy, s.merged)),
-                resume: super::super::build::copy(f.members(p.resume)?)?,
-                spills: Vec::new(),
-            })?;
-            let entries = vec_one(
-                f.regions[p.initial.0 as usize]
-                    .entry
-                    .ok_or(bug("protocol initial body lost its entry"))?,
-            )?;
-            (
-                p.root,
-                sequence(f, abi_children)?,
-                calls,
-                p.operations,
-                entries,
-                p.implicit_locals,
-                None,
-                None,
-                p.entry_check,
-            )
+                publication: s.publication,
+                resume: s.resume,
+                spills: s.spills,
+            },
+        )?;
+    }
+    for guard_plan in &p.guards {
+        guard(f, guard_plan.control, guard_plan.header, guard_plan.normal)?;
+    }
+    for s in &calls {
+        if let Some((copy, _)) = s.publication {
+            f.copies[copy.0 as usize].owner = CopyOwner::Publication(s.call);
         }
+        if private_marker(f, &calls, s) {
+            let marker = f.labels[f.links[s.suspended.0 as usize].to.0 as usize].owner;
+            let header = f.labels[s.guard.0 as usize].owner;
+            f.controls[header.0 as usize].source_only = vec_one(marker)?.into();
+        }
+        leaf_end(
+            f,
+            s.guard,
+            BodyEnd::Annotated {
+                terminal: s.predicate,
+                mode: if private_marker(f, &calls, s) {
+                    SourceMode::Origins
+                } else {
+                    SourceMode::Abi
+                },
+                normal: s.normal,
+                suspended: s.suspended,
+            },
+        );
+        next(f, s.normal);
+    }
+    for &node in p.abi.iter().chain(&p.explicit_predicates) {
+        if f.nodes[node.0 as usize].terminal {
+            leaf_end(f, node, BodyEnd::Terminal(f.nodes[node.0 as usize].block));
+        }
+    }
+    for &(id, target) in &p.completions {
+        f.controls[id.0 as usize].continuation = Some(target.map_or(Continuation::None, |node| {
+            Continuation::Goto(LabelId(node.0))
+        }));
+    }
+    for &link in &p.retired_transfers {
+        next(f, link);
+    }
+    for &node in &p.abi {
+        for &link in &g.outgoing[node.0 as usize] {
+            next(f, link);
+        }
+    }
+    for &link in p.gotos.iter().chain(&p.abi_gotos) {
+        goto(f, link);
+    }
+    let (source, iteration) = if let Some(c) = p.cycle {
+        next(f, c.implicit_latch);
+        next(f, c.initial_header);
+        let (source, control) = cycle(storage, f, g, c.initial, c.body, c.tail, c.condition)?;
+        (
+            source,
+            Some(ProtocolIteration {
+                control,
+                condition: c.condition,
+                implicit: Some((c.implicit_latch, c.initial_header)),
+            }),
+        )
+    } else {
+        (sequence(f, p.source)?, None)
     };
+    let mut abi = Vec::new();
+    for &node in &p.abi {
+        if !calls
+            .iter()
+            .any(|s| private_marker(f, &calls, s) && f.links[s.suspended.0 as usize].to == node)
+        {
+            push(&mut abi, f.labels[node.0 as usize].owner)?;
+        }
+    }
+    let abi = sequence(f, abi)?;
     let source_nodes = selected_nodes(f, source)?;
     let abi = scope(
         f,
@@ -341,13 +262,13 @@ pub(super) fn construct(
     f.protocol = Some(ProtocolPlan {
         root,
         calls,
-        operations,
+        operations: p.operations,
         source_nodes,
-        abi_entries,
-        hidden_locals,
+        abi_entries: p.abi_entries,
+        hidden_locals: p.hidden_locals,
         iteration,
-        forwarding,
-        entry_check,
+        forwarding: p.forwarding,
+        entry_check: p.entry_check,
     });
     Ok(())
 }

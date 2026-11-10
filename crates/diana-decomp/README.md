@@ -216,15 +216,16 @@ original call with a local presentation-unavailable reason. Recipe tags and
 static String/integral/boolean/char constants are interpreted from owned facts.
 The presentation is not proof of runtime linkage or library behavior.
 
-A closed single-suspension SuspendLambda entry can now select a Kotlin-style
-suspend body: its initial work, suspended result and original common tail form
-one sequence. The declaration retains its original format and adds only a
-`suspend` modifier. Original ABI entry/reentry, resume checks/copies, state publication
-and invalid-state errors remain readable attachments with source mappings. The
-callee binding and continuation identity stay explicit, and suspension is marked
-as an inference. ABI parameters and wrapper members remain; original source-lambda
-signatures, multi-suspension spills and source exception recovery are not established
-by this view. Missing prerequisites retain the original method layout.
+SuspendLambda and ordinary continuation entries now use one P6 site/copy
+correspondence and one source selection. Original comparison or switch dispatch
+is independent of field or parameter resume input. Several SuspendLambda sites,
+captured fields, shared marker returns and an early result exit can select the
+same Kotlin-style source body. The original signature gains only `suspend`;
+ABI parameters, wrapper members, state publication, resume/error paths and their
+source mappings remain. Calls retain their original binding and precise implicit
+continuation occurrence. Resume-only effects, mismatched spills and unavailable
+input associations keep the original readable layout. Protected source protocol
+recovery and original source-lambda signatures remain unestablished.
 
 Ordinary suspend methods with one closed head-tested loop and one resume state
 also have a Kotlin-style body view. It restores `while`, suppresses the matched
@@ -595,37 +596,46 @@ structure from the remaining replacement; the complete design is not accepted.
 | Local fixed points | Selected roots leave the active suffix; rejected condition proposals leave the product unchanged. | The P6 and P7 pipelines still run ordered passes. Neither stage has the complete dependency-driven local convergence specified by the design. |
 | Finalization | P9 consumes selected layouts and nested operations. Existing declaration and label passes remain. Loop/flow visibility shares one P7-owned observer query. | Protocol-specific traversal is removed. Copy forwarding and a single final declaration/label derivation still need replacement. |
 
-Against `f6e7893`, the current engine production tree has 66,938 physical Rust
-source lines, compared with 68,495 at the baseline: 1,557 fewer lines. This count
+Against `f6e7893`, the current engine production tree has 66,336 physical Rust
+source lines, compared with 68,495 at the baseline: 2,159 fewer lines. This count
 includes every `*.rs` file under `crates/diana-decomp/src/`, including shared
 helpers, comments and blank lines; tests and documentation are excluded. The
 small reduction does not establish the design's substantial size objective or
 comparable recovery capability. Full replacement acceptance and a comparative
 recovery evaluation remain unrun.
 
-## Shared ordinary protocol recognition
+## Shared continuation protocol recognition
 
-Single-site and multi-site ordinary methods now use one site/copy correspondence
-producer and one source selection. The separate single-site loop recognizer,
-nomination and grammar conversion are removed. The common cyclic selection
-retains original latch/predicate roles and the linear single-phase interval needed
-by existing copy forwarding; extra choices keep explicit copies.
+One original-input association normalizes comparison/switch dispatch independently
+of parameter/field resume input. Its exact comparison query is shared with P6
+decision presentation; it does not require a selected whole DecisionPlan.
+Single-site, multi-site, ordinary and SuspendLambda entries then use one
+site/copy correspondence and one source-control selection. The separate local
+SuspendLambda matcher, closed Body recognizer, Body nomination, local site type
+and Body grammar conversion are removed. Common cyclic selection retains the
+original latch/predicate and linear forwarding interval; additional choices keep
+explicit copies.
 
-The [single-site challenge](../../quality/fixtures/kotlin/protocol-single-site-core/README.md)
-adds effectful preparation, a saved seed, a negative result guard and an observed
-construction to an acyclic body. At `429998c` it retains explicit state dispatch;
-the common producer recovers its logical suspend body without another handler.
-Before/after inspection of all 18 prepared Kotlin groups keeps construction and
-rendering failure counts unchanged. Four previously selected single-site loops
-remain selected through the shared producer; their executable text is identical.
-Marker correspondence moves to its original source position in ABI comments.
+The [entry-association challenge](../../quality/fixtures/kotlin/protocol-entry-associations/README.md)
+adds captured state, two reentries, reversed marker comparison, a negative result
+exit and shared marker return. Its captureless variants use two successful
+publications and comparison/sparse-switch dispatch. All three gain source bodies
+against `a5e8fa6`; a resume-only effect keeps its complete original explicit member.
+Every source/ABI/origin leaf remains owned once. The written reviews record
+initial/resumed effects, capture values, helper/Number faults and original invalid
+states. Coroutine/VM execution remains unrun.
 
-This replacement removes 833 physical production Rust lines from `429998c`,
-including all added helpers. The 44-test scoped nextest set and strict all-feature engine/example/relevant-test
-Clippy pass; formatting passes. Coroutine/VM
-execution remains unrun; original/new path reviews and product checks are separate
-from executed behavioral proof. General fixed-point contraction and the complete
-size/recovery objectives remain incomplete.
+The replacement removes 602 physical production Rust lines against `a5e8fa6`,
+including all shared helpers. The final 47-test scoped nextest set, strict
+all-feature engine/example/relevant-test Clippy and debug inspection build pass.
+Fresh before/after inspection of all 19 prepared Kotlin groups reports no new P6
+construction or P9 rendering failures. Seventeen groups retain identical full
+class text/issues. The original single-site Body gains explicit ABI target labels
+and source-ordered ABI routing; its executable statements remain unchanged.
+The new challenge gains the three source bodies above and retains its negative
+member's text exactly. Full historical test API adaptation remains deferred.
+General dependency-driven contraction and the complete size/recovery objectives
+remain incomplete.
 
 ## Consumed protocol nominations
 
@@ -637,36 +647,18 @@ the existing narrow forwarding interval; it cannot read a raw loop program.
 Protocol event records expose their original IDs and roles without per-form
 getter facades. RegionFacts construction remains sealed.
 
-Local SuspendLambda call correspondence now travels with its private body
-nomination and is consumed at grammar construction. The published
-`SuspensionPlan`, `RegionFacts::suspensions()` and duplicate shell projection are
-removed. P7 and the focused publication check consume the canonical call and
-protocol-event records. Original operations, links, copies and source controls
-remain inspectable even when a nomination is refused. This contracts the product
-interface; SuspendLambda and ordinary-method candidate recognition still differ.
-
-Against `7e90635`, this interface contraction removes 64 physical production
-Rust lines, including the private scratch record. The 44-test scoped nextest
-set, strict all-feature engine/example/relevant-test Clippy and debug inspection
-build pass. All canonical P6 products and full P9 class text/issues match for
-18 prepared Kotlin groups after excluding timings and the removed scratch-only
-inspection field. Their unchanged path reviews are reused. These are
-representation-compatibility observations; coroutine/VM execution remains unrun.
+All input forms now carry their established site correspondence in one private
+ProtocolNomination, consumed at common grammar construction. RegionFacts exposes
+one ProtocolPlan alongside original operations, links, copies and source controls.
+Its owning constructors remain sealed; rejected candidates do not create partial
+protocol products. P7 and shell inspection consume the canonical call and event
+records rather than a second local-site API.
 
 The [outside-observer challenge](../../quality/fixtures/kotlin/protocol-candidate-lifetimes/README.md)
-adds an observed captured checksum after loop completion, including zero
-iterations. Copy forwarding keeps that storage; canonical call correspondence
-retains the actual resume corridor and original spill fields. Baseline `f565f88`
-and this replacement produce identical class text for that input and six relevant
-protocol fixture groups, with no construction or rendering failures. These are
-compatibility observations and path reviews, not executed coroutine/VM behavior.
-The published duplicate representations and their conversion copies are removed.
-Physical production source is 119 lines smaller than `f565f88`, counting the
-private nomination module and all shared helpers. The larger size, convergence
-and comparative-recovery objectives remain incomplete. Validation for this
-representation slice: 43 scoped nextest tests, strict all-feature engine/example/
-relevant-test Clippy, formatting and desensitization pass. Historical test API
-adaptation and coroutine/VM execution remain deferred/unrun.
+retains its observed checksum after loop completion, including zero iterations.
+Canonical call correspondence retains actual resume corridors and original spill
+fields. The current scoped checks cover these facts and ordinary/SuspendLambda
+publication ownership together. No raw nomination program is exposed to P7.
 
 ## Protocol controls and successful publication
 

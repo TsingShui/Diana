@@ -1,4 +1,6 @@
-//! Closed acyclic ordinary continuation bodies over existing P5/P6 products.
+//! One site/copy correspondence and selected control projection over normalized
+//! continuation inputs. Both entry encodings consume the same P5/P6 facts.
+use super::association::{self, Dispatch, ResumeInput};
 use super::facts::*;
 use super::*;
 use crate::p2::{EdgeRole, NormalEdge, ValueKind};
@@ -8,29 +10,36 @@ pub(super) fn construct(
     f: &mut RegionFacts,
     g: &Graph,
     s: &super::super::dominance::Structure,
-) -> Result<Option<CoroutineFlowPlan>, RegionError> {
-    let prototype = storage.execution().declaration().prototype_units();
-    let suffix = b"Lkotlin/coroutines/Continuation;)Ljava/lang/Object;";
-    if prototype.len() < suffix.len()
-        || !units(&prototype[prototype.len() - suffix.len()..], suffix)
-    {
+) -> Result<Option<ProtocolNomination>, RegionError> {
+    let Some(entry_kind) = association::entry(storage) else {
         return Ok(None);
-    }
-    for index in 0..f.nodes.len() {
-        let node = NodeId(super::super::build::id(index)?);
-        if !f.nodes[index].terminal
-            || g.outgoing[index].len() < 3
-            || !matches!(
-                storage.execution().blocks()[f.nodes[index].block.0 as usize].terminal(),
+    };
+    let mut candidates = Vec::new();
+    for node in &f.nodes {
+        if !node.terminal {
+            continue;
+        }
+        if g.outgoing[node.id.0 as usize].len() >= 3
+            && matches!(
+                storage.execution().blocks()[node.block.0 as usize].terminal(),
                 Some(Terminal::Switch { .. })
             )
         {
-            continue;
+            push(&mut candidates, Dispatch::Switch(node.id))?;
+        } else if super::super::decision_layout::comparison(storage, node.block)
+            .is_some_and(|(_, _, key, _)| key == 0)
+        {
+            push(&mut candidates, Dispatch::Comparisons(node.id))?;
         }
-        match candidate(storage, f, g, s, node)? {
-            Ok(plan) => {
-                return Ok(Some(plan));
-            }
+    }
+    for dispatch in candidates {
+        let input = match association::construct(storage, f, g, dispatch, entry_kind)? {
+            Ok(input) => input,
+            Err(_) => continue,
+        };
+        let node = input.entry;
+        match candidate(storage, f, g, s, input)? {
+            Ok(plan) => return Ok(Some(plan)),
             Err(reason) => reject(storage, RegionId(node.0), reason),
         }
     }
@@ -42,8 +51,8 @@ fn candidate(
     f: &RegionFacts,
     g: &Graph,
     s: &super::super::dominance::Structure,
-    dispatch: NodeId,
-) -> Result<Result<CoroutineFlowPlan, &'static str>, RegionError> {
+    input: association::Input,
+) -> Result<Result<ProtocolNomination, &'static str>, RegionError> {
     macro_rules! need {
         ($test:expr,$why:literal) => {
             if !$test {
@@ -52,113 +61,31 @@ fn candidate(
         };
     }
     let flow = storage.execution();
+    let association::Input {
+        entry: dispatch,
+        dispatch: dispatch_nodes,
+        initial,
+        invalid,
+        states,
+        label,
+        continuation,
+        result,
+        resume,
+        marker,
+        marker_op,
+        selector_op,
+    } = input;
     need!(
-        f.nodes.iter().all(|n| f.lock_entries.empty_at(n.id))
-            && flow.access_flags() & crate::substrate::flags::SYNCHRONIZED == 0,
-        "flow_lock_boundary"
+        flow.access_flags() & crate::substrate::flags::SYNCHRONIZED == 0,
+        "protocol_synchronized_entry"
     );
-    need!(
-        g.exceptions
-            .iter()
-            .flatten()
-            .all(|&e| !Graph::exception_possible(f, e)
-                || Graph::exception_target(f, storage, e).is_none()),
-        "flow_protection_not_established"
-    );
-    let mut initial = None;
-    let mut invalid = None;
-    let mut states = Vec::new();
-    for &link in &g.outgoing[dispatch.0 as usize] {
-        need!(
-            f.link_plans[link.0 as usize].copies.is_empty(),
-            "flow_dispatch_copy"
-        );
-        let LinkOrigin::Edge(edge) = f.links[link.0 as usize].origin else {
-            return Ok(Err("flow_dispatch_origin"));
-        };
-        match flow.edges()[edge.0 as usize].role() {
-            EdgeRole::Normal(NormalEdge::SwitchCase { key: 0, .. }) => initial = Some(link),
-            EdgeRole::Normal(NormalEdge::SwitchCase { key, .. }) if key > 0 => {
-                let Ok(state) = i32::try_from(key) else {
-                    return Ok(Err("flow_state_range"));
-                };
-                push(&mut states, (state, link))?;
-            }
-            EdgeRole::Normal(NormalEdge::SwitchDefault) => invalid = Some(link),
-            _ => return Ok(Err("flow_dispatch_state")),
-        }
-    }
-    let (Some(initial), Some(invalid)) = (initial, invalid) else {
-        return Ok(Err("flow_dispatch_roles"));
+    let result_op = match resume {
+        ResumeInput::Parameter => None,
+        ResumeInput::Field(op) => Some(op),
     };
-    let Some([selector]) = storage
-        .facts()
-        .terminal_uses(f.nodes[dispatch.0 as usize].block)
-    else {
-        return Ok(Err("flow_selector"));
-    };
-    let Some(selector_op) = selector.read().ok().and_then(|r| definition(storage, r)) else {
-        return Ok(Err("flow_selector_definition"));
-    };
-    let Some((label, continuation)) = field_get(storage, selector_op)? else {
-        return Ok(Err("flow_label"));
-    };
-    need!(
-        field_named(storage, selector_op, b"label", b"I")?,
-        "flow_label_identity"
-    );
-    let mut result_op = None;
-    let mut marker = None;
-    for op in flow
-        .operations()
-        .iter()
-        .take(f.nodes[dispatch.0 as usize].operations.start as usize)
-    {
-        if field_get(storage, op.id())?.is_some_and(|(_, r)| r == continuation)
-            && field_named(storage, op.id(), b"result", b"Ljava/lang/Object;")?
-        {
-            result_op = Some(op.id());
-        }
-        if let Some(defs) = storage.facts().operation_definitions(op.id()) {
-            for d in defs {
-                if let Materialization::Store(local) = d.materialization()
-                    && marker_source(storage, local)?
-                {
-                    marker = Some((local, op.id()));
-                }
-            }
-        }
-    }
-    let (Some(result_op), Some((marker, marker_op))) = (result_op, marker) else {
-        return Ok(Err("flow_prefix_values"));
-    };
-    let Some(result) = storage
-        .facts()
-        .operation_definitions(result_op)
-        .and_then(|d| d.first())
-        .and_then(|d| match d.materialization() {
-            Materialization::Store(l) => Some(l),
-            _ => None,
-        })
-    else {
-        return Ok(Err("flow_result_storage"));
-    };
-    need!(
-        prefix_protocol(
-            storage,
-            f,
-            dispatch,
-            continuation,
-            label,
-            result_op,
-            selector_op,
-            marker
-        )?,
-        "flow_prefix_protocol"
-    );
     need!(
         invariant_local(storage, marker, Some(marker_op), None)
-            && invariant_local(storage, result, Some(result_op), None)
+            && invariant_local(storage, result, result_op, None)
             && invariant_local(
                 storage,
                 continuation,
@@ -175,7 +102,7 @@ fn candidate(
         return Ok(Err("flow_invalid_corridor"));
     };
     need!(
-        super::body::invalid_nodes(storage, f, g, &invalid_nodes, Some(invalid_start), invalid)?
+        super::invalid::invalid_nodes(storage, f, g, &invalid_nodes, Some(invalid_start), invalid)?
             .is_ok(),
         "flow_invalid_arm"
     );
@@ -315,6 +242,7 @@ fn candidate(
                 suspended,
                 resume: Vec::new(),
                 spills: Vec::new(),
+                publication: None,
             },
         )?;
         let _ = resume_link;
@@ -380,7 +308,9 @@ fn candidate(
         entry_at = f.links[link.0 as usize].to;
     }
     need!(found_entry, "flow_entry_check_not_reached");
-    push(&mut protocol, entry_check)?;
+    if matches!(resume, ResumeInput::Field(_)) {
+        push(&mut protocol, entry_check)?;
+    }
     for site in &mut sites {
         need!(source_mask[site.guard.0 as usize], "flow_unreachable_site");
         let resume_link = states
@@ -600,6 +530,21 @@ fn candidate(
             "flow_unmatched_merge_copy"
         );
     }
+    let mut hidden_locals = Vec::new();
+    if matches!(resume, ResumeInput::Parameter) {
+        push(&mut hidden_locals, marker)?;
+        for site in &mut sites {
+            if let Some((copy, destination, read)) = edge_copy(storage, f, site.normal)
+                && definition(storage, read) == Some(site.call)
+                && private_result(storage, read, f.nodes[site.guard.0 as usize].block, copy)
+            {
+                site.publication = Some((copy, destination));
+                if let Some(local) = read.local() {
+                    push(&mut hidden_locals, local)?;
+                }
+            }
+        }
+    }
     let mut abi = Vec::new();
     let mut source_nodes = Vec::new();
     for node in &f.nodes {
@@ -607,7 +552,8 @@ fn candidate(
             push(&mut source_nodes, node.id)?;
         } else {
             need!(
-                node.id.0 <= dispatch.0
+                node.id.0 < dispatch.0
+                    || dispatch_nodes.contains(&node.id)
                     || invalid_nodes.contains(&node.id)
                     || suspended_nodes.contains(&node.id)
                     || sites.iter().any(|p| p.resume.contains(&node.id)),
@@ -624,11 +570,39 @@ fn candidate(
             );
         }
     }
-    for op in flow.operations() {
+    for &node in &abi {
         need!(
-            plain_operation(storage, f, op.id()) && inputs(storage, op.id()).is_some(),
-            "flow_operation_gap_or_phase"
+            f.nodes[node.0 as usize].reachable && f.lock_entries.empty_at(node),
+            "protocol_abi_lock_boundary"
         );
+    }
+    for site in &sites {
+        need!(
+            f.lock_entries.empty_at(site.guard)
+                && f.lock_entries.empty_at(g.op_node[site.call.0 as usize]),
+            "protocol_call_lock_boundary"
+        );
+    }
+    need!(
+        g.exceptions
+            .iter()
+            .flatten()
+            .all(|&e| !Graph::exception_possible(f, e)
+                || Graph::exception_target(f, storage, e)
+                    .is_none_or(|node| source_mask[node.0 as usize]
+                        && !sites.iter().any(|site| site.guard == node))),
+        "protocol_foreign_exceptional_arrival"
+    );
+    for op in flow.operations() {
+        if !source_mask[g.op_node[op.id().0 as usize].0 as usize]
+            || protocol.contains(&op.id())
+            || sites.iter().any(|site| site.call == op.id())
+        {
+            need!(
+                plain_operation(storage, f, op.id()) && inputs(storage, op.id()).is_some(),
+                "flow_operation_gap_or_phase"
+            );
+        }
     }
     need!(
         closed_values(
@@ -638,7 +612,7 @@ fn candidate(
             &protocol,
             &sites,
             dispatch,
-            (continuation, marker, result)
+            (continuation, marker, result, resume),
         ),
         "flow_protocol_escape"
     );
@@ -720,20 +694,41 @@ fn candidate(
                 }
             }
         }
-        let Ok((mut initial_roots, mut e0)) =
-            select(f, root, &initial_mask, &source_mask, &sites, dispatch, true)?
+        let Ok((mut initial_roots, mut e0)) = select(
+            f,
+            root,
+            &initial_mask,
+            &source_mask,
+            &sites,
+            &dispatch_nodes,
+            true,
+        )?
         else {
             return Ok(Err("cycle_initial_owner"));
         };
         explicit_predicates.append(&mut e0);
-        let Ok((mut body_roots, mut e1)) =
-            select(f, root, &body_mask, &source_mask, &sites, dispatch, true)?
+        let Ok((mut body_roots, mut e1)) = select(
+            f,
+            root,
+            &body_mask,
+            &source_mask,
+            &sites,
+            &dispatch_nodes,
+            true,
+        )?
         else {
             return Ok(Err("cycle_body_owner"));
         };
         explicit_predicates.append(&mut e1);
-        let Ok((mut tail_roots, mut e2)) =
-            select(f, root, &tail_mask, &source_mask, &sites, dispatch, true)?
+        let Ok((mut tail_roots, mut e2)) = select(
+            f,
+            root,
+            &tail_mask,
+            &source_mask,
+            &sites,
+            &dispatch_nodes,
+            true,
+        )?
         else {
             return Ok(Err("cycle_tail_owner"));
         };
@@ -792,8 +787,15 @@ fn candidate(
             }),
         )
     } else {
-        let Ok((mut roots, explicit)) =
-            select(f, root, &source_mask, &source_mask, &sites, dispatch, false)?
+        let Ok((mut roots, explicit)) = select(
+            f,
+            root,
+            &source_mask,
+            &source_mask,
+            &sites,
+            &dispatch_nodes,
+            false,
+        )?
         else {
             return Ok(Err("flow_mixed_control_owner"));
         };
@@ -968,13 +970,47 @@ fn candidate(
     } else {
         None
     };
-    Ok(Ok(CoroutineFlowPlan {
+    let mut operations = Vec::new();
+    for operation in protocol {
+        let role = if sites
+            .iter()
+            .any(|site| site.call.0.checked_sub(1) == Some(operation.0))
+        {
+            ProtocolRole::PublishState
+        } else {
+            ProtocolRole::Abi
+        };
+        push(&mut operations, ProtocolEvent { operation, role })?;
+    }
+    if matches!(resume, ResumeInput::Parameter) {
+        for &node in &abi {
+            for index in f.nodes[node.0 as usize].operations.clone() {
+                let operation = OpId(index);
+                let role = if operation == marker_op {
+                    ProtocolRole::Marker
+                } else if operation == selector_op {
+                    ProtocolRole::LabelRead
+                } else if node.0 < dispatch.0 {
+                    ProtocolRole::Literal
+                } else if invalid_nodes.contains(&node) {
+                    ProtocolRole::InvalidState
+                } else if failure_check(storage, operation, result)? {
+                    ProtocolRole::ResumeCheck
+                } else {
+                    ProtocolRole::Abi
+                };
+                push(&mut operations, ProtocolEvent { operation, role })?;
+            }
+        }
+    }
+    Ok(Ok(ProtocolNomination {
         source,
         entry_check,
         forwarding,
         abi,
         sites,
-        protocol_operations: protocol,
+        operations,
+        hidden_locals,
         gotos,
         abi_entries,
         guards,
@@ -1060,7 +1096,7 @@ fn select(
     mask: &[bool],
     source: &[bool],
     sites: &[CoroutineSite],
-    dispatch: NodeId,
+    dispatch: &[NodeId],
     partition: bool,
 ) -> Result<Result<SelectedControls, ()>, RegionError> {
     let mut work = Vec::new();
@@ -1085,7 +1121,11 @@ fn select(
                 .is_some_and(|n| sites.iter().any(|s| s.guard == n));
         let partial_if = partition && matches!(region.kind, RegionKind::If { .. });
         if !(matches!(region.kind, RegionKind::Sequence | RegionKind::Graph { .. })
-            || (matches!(region.kind, RegionKind::Switch { .. }) && region.entry == Some(dispatch))
+            || (region.entry.is_some_and(|n| dispatch.contains(&n))
+                && (matches!(
+                    region.kind,
+                    RegionKind::Switch { .. } | RegionKind::If { .. }
+                ) || region.decision.is_some()))
             || guard
             || partial_if)
         {
@@ -1111,11 +1151,11 @@ fn closed_values(
     protocol: &[OpId],
     sites: &[CoroutineSite],
     dispatch: NodeId,
-    values: (LocalId, LocalId, LocalId),
+    values: (LocalId, LocalId, LocalId, ResumeInput),
 ) -> bool {
-    let (continuation, marker, result) = values;
+    let (continuation, marker, result, resume) = values;
     let private = |local| {
-        local==continuation || storage.facts().definitions().iter().any(|d|d.operation().0<f.nodes[dispatch.0 as usize].operations.start && matches!(d.materialization(),Materialization::Store(l)|Materialization::Deferred{local:l,..} if l==local))
+        (local==continuation && matches!(resume, ResumeInput::Field(_))) || storage.facts().definitions().iter().any(|d|d.operation().0<f.nodes[dispatch.0 as usize].operations.start && matches!(d.materialization(),Materialization::Store(l)|Materialization::Deferred{local:l,..} if l==local))
     };
     for &node in nodes {
         for index in f.nodes[node.0 as usize].operations.clone() {

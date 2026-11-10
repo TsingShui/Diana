@@ -655,129 +655,121 @@ alternative. P7 MUST consume this
 choice rather than infer fallthrough from source layout. Public follow content has
 one owner, not a separate copy in each arm.
 
-## Local continuation suspension protocols
+## Continuation protocols over common controls
 
-After decision layout, P6 can privately nominate a local suspension over an existing
-`invokeSuspend(Object): Object` member whose original superclass is
-`SuspendLambda`. This identity is only a candidate filter. P6 MUST also establish
-the label-field read, matching state store and continuation operand, original
-call result commit, marker comparison and private marker-return arm. The other
-original edge and the matching resume arm each copy their established result into
-the same existing local at the same original follow.
+P6 uses one protocol-input association, one site/copy correspondence and one
+source-control selection. The candidate declaration has a final Continuation
+parameter and Object return, or is the original nonstatic
+`SuspendLambda.invokeSuspend(Object): Object` member. Names and signatures are
+candidate filters; P6 also requires the original label, marker, call, result,
+resume and storage relationships below. No external declarations are consulted.
 
-The supported interface has initial and resume integer cases, a resume body
-containing its original `throwOnFailure` call, and one original assignment on each
-result edge. P6 MUST require exact storage states and occurrences, no other
-consumer of the call-result local, no intervening call-to-predicate operation,
-no local exception handler or copy/snapshot phase on the call or resume check,
-and no foreign normal or executable exceptional entrance into the hidden protocol
-portions. A target's complete original method reference must end in Continuation
-and return Object. That signature and the observed protocol infer suspension at
-this call site; they do not establish an external callee implementation.
+### Normalized input associations
 
-The owning lock-flow pass retains private node-entry emptiness from its existing
-fixed point. An explicit no-monitor result is distinct from an unestablished
-result. P6 MUST require established method-local lock emptiness at the call,
-predicate, marker return and resume ingress. It MUST NOT rerun lock propagation.
-Unknown or held locks leave the original protocol explicit.
+State dispatch consumes original normal edges: state zero, positive reentry
+states and default. A Switch supplies those edge roles directly. A comparison
+chain supplies equality-selected and remaining edges from P6's existing exact
+integer-comparison query, shared with decision presentation. The selector is the
+same original LocalId/ValueId/StateId throughout the chain. Each predicate has
+no operations or terminal copy/throw phase, each subsequent predicate has only
+its original remaining-edge entrance, keys are distinct, and every selected and
+remaining edge is copy-free. A cyclic or unavailable comparison refuses only
+this association. P6 does not require a natural DecisionPlan before recognizing
+these original dispatch facts or run another graph/SSA analysis to obtain them.
 
-The nomination names the original dispatch, call, state write, result local, continuation
-argument, marker, predicate, return, normal/resume links and copy plans. P6 keeps
-the dispatch, state stores, resume check, default/error arm and shared continuation
-as original code. It adds no state, dispatcher, SSA definition, tail copy or
-runtime helper. A closed body consumes this correspondence once into the common
-`ProtocolPlan`; `RegionFacts` does not publish another local-site record or getter.
-A mismatch leaves that local protocol explicit; resource and
-construction failures retain their classified behavior.
+The label is an available original instance-field read with the established
+name and integer type. Ordinary methods obtain the resume input from the same
+continuation's original result field. Their prefix retains its original
+continuation selection/allocation/initialization and label adjustment operations.
+SuspendLambda obtains the continuation from the original `this` parameter and
+the resume input from parameter zero; its label reference names the original
+owner. Its prefix is one straight original block from method entry to the first
+predicate, with no foreign arrivals or copies. It contains only the established
+marker, label read and literal definitions. Neither input form fabricates a
+result operation or replaces a missing field/parameter with a default.
 
-### Closed source-body alternative
+These associations retain exact input identities; they do not infer a runtime
+helper implementation. Marker/result/continuation identities must not be
+reassigned by unrelated definitions or copy destinations. Field and parameter
+entries feed the same downstream nomination rather than different execution
+languages or complete-method recognizers.
 
-A local nomination alone does not authorize a source-body replacement. P6 additionally
-qualifies a private body nomination when the selected root Sequence contains a straight ABI
-entry prefix, that dispatch and the original common-tail controls. The alternative
-contains the original initial body followed by those same tail controls; it adds
-no execution copy. The initial failure check remains an ordinary instruction.
+### Shared site and resume correspondence
 
-P6 MUST account for the prefix's marker/label reads and literal definitions, state
-publication, original resume body and closed invalid-state exception construction.
-Their exact operations, effects and exceptions remain protocol attachments; P6
-MUST NOT declare these calls pure or infer their implementations. An original
-instruction-use issue on a protocol operation rejects the source-body alternative. P6 MUST establish
-that their private locals do not escape into readable code. The initial body's
-only normal entrance is its selected dispatch edge, and its only normal exit is
-the original suspension-result edge. Executable exceptional arrivals into hidden
-protocol content reject this alternative. Lock emptiness comes from the existing
-owning computation, not a second propagation.
+Each positive state matches one original call with the exact continuation as
+its final occurrence and a complete original method reference ending in
+Continuation and returning Object. Its committed reference result is compared
+with the established marker through Eq/Ne in either operand order. The predicate
+is adjacent to the original call portion and has no operations or foreign normal
+entrance. Its marker edge reaches an operation-free marker return; every normal
+entrance to a shared marker return belongs to one of the nominated sites.
 
-The prefix consists of complete selected original-operation portions in one
-original block. It starts at method entry, has no foreign arrivals or terminal,
-and each portion's sole copy-free outlet reaches the next portion or the first
-dispatch predicate. Its original operations are only the established marker,
-label read and materialized literals. P6 consumes this entry/completion relation;
-it does not require a former coarse Block or reconstruct instruction boundaries.
+A private resume corridor starts on that state's dispatch edge and reaches the
+same original source merge as the call's normal completion. Every intervening
+normal portion contains only permitted moves. Resume portions restore the
+matching saved fields before their original failure check. Exact P5
+normal/resume assignments must establish the same result and capture values at
+the same destinations. Missing copies, unmatched fields, narrow conversions,
+resume-only effects and foreign arrivals keep the original available layout.
+Normal and resume copies keep their original identities and states; equal
+storage or field names alone do not establish correspondence.
 
-The alternative retains the initial ABI argument and every containing member.
-The prefix and resume/error bodies remain readable ABI-only attachments, with
-their original controls, instructions, references, sites and copies. The call
-still refers to its precise continuation operand and original callee binding.
-A missing prerequisite leaves the complete original layout and original facts
-available. Resource and construction errors retain the ordinary classified stop.
+The candidate uses established method-local lock emptiness at the calls,
+predicates and hidden ABI portions. It does not rerun lock propagation. ABI,
+state/spill and call operations must retain available operands, no executable
+local handler and no copy/snapshot phase that the projection cannot state.
+Executable exceptional arrivals into hidden ABI or marker predicates refuse
+this projection. Original source operations and their established protection
+remain at their original controls; unrelated source gaps are not hidden or made
+into a whole-method failure merely to qualify a protocol.
 
-## Ordinary continuation source bodies
+### Selected controls and execution ownership
 
-One ordinary-method protocol nomination handles one or several positive reentry
-states. It consumes the original state-zero/default dispatch, P5 uses/copies and
-P6 graph/SCC facts. A method's declared last parameter is Continuation and its
-return is Object; these are candidate constraints, not callee implementation
-facts. Each site must establish its state store, exact continuation occurrence,
-reference marker comparison, private marker return and normal/resumed result
-and spill correspondence. Source code retains its original calls and arguments.
+Source selection consumes the existing P6 hierarchy and original graph/SCC
+facts. It retains whole source controls and opens only sequences, explicit graphs,
+nominated dispatch controls and matched marker guards as necessary. The selected
+source content has one static owner. Every unmatched entrance, target and normal
+copy remains explicit; no join, dispatcher, body clone or replacement SSA value
+is generated. A partially intersected unrelated control refuses the source view.
+Acyclic and admitted cyclic content use this same selection.
 
-The same source selection admits an acyclic body or the closed cyclic alternative
-below. Site count does not select another loop recognizer or execution grammar.
-Unknown/held locks, executable handlers, missing phases or operands, incompatible
-field conversions, unmatched normal/resumed copies and foreign entrances retain
-the original available layout. No SCC/dominance pass or register replay is rerun.
+A single original result assignment can become an operation-owned successful
+publication when exact binding and private-observer conditions admit it. That
+copy cannot also execute on the selected edge or body. Other normal copies retain
+explicit execution. A private marker return can retain its individual origin
+attachment; a marker shared by several sites stays in the single ABI body even
+when every call has a successful publication. Its content is never attached to
+several source controls.
 
-A single-phase cyclic nomination can deliver a forwarding interval when its
-normal run is linear. The original repeat edge starts the interval; each matched
-marker guard supplies its normal edge, and every other repeated portion has a
-sole outlet. Each original node is visited at most once before returning to the
-established header. Extra branches or suspension phases retain explicit copies.
-The interval's outside set includes the original source header, initial and tail
-observers. P7 still requires its original per-copy observer conditions; no alias
-is inferred from equal names or storage alone.
+The initial parameter failure check remains an ordinary source instruction.
+Field-input initialization, original resume checks, state/spill publication and
+invalid-state construction remain ordered ABI attachments. These operations
+retain their original effects, exception and source correspondence; they are not
+declared pure or dead. The original parameters and wrapper members remain
+available. A failed nomination leaves the original readable method; resource and
+construction errors keep their existing classified local scope.
 
-### Shared site and source correspondence
+The owning nomination supplies guard replacements, source completions after
+retiring ABI dispatch scopes, and concrete ABI transfers. A completion naming a
+retired scope requires its actual source follow. P7 consumes the common
+`ProtocolPlan` and `ControlRecord` products once and cannot rematch a guard,
+borrow an ABI case completion for source code or choose another latch. P9
+traverses that delivered schedule without analysis.
 
-The ordinary protocol nomination consumes the same P5 accesses, original P6 graph, shared SCC
-facts and selected region hierarchy. Its site records associate each positive
-dispatch state with one original call/marker pair, private resume corridor and
-the original normal/resume copy merge. The owning P6 construction MUST establish
-that saved fields carry the same available values as normal completion and that
-private protocol values do not escape. Narrow field conversions and missing copy
-facts keep their dependents explicit.
+Each original comparison or resume node enters its bounded walk once; cycles
+and input depth cannot hang. Candidate vectors are bounded by original
+node/region counts and use fallible allocation. Private nominations are consumed
+at common grammar construction rather than stored in published RegionFacts.
 
-The plan selects existing source controls and prunes only established protocol
-guards. It does not invoke composition, rebuild SSA or run dominance again.
-Source control order, original targets and transfer copies remain delivered
-facts. P7 lowers protocol terminal comments and the normal selected transfer at
-the original guard position; P9 consumes that schedule without analysis.
-Unmatched fields/effects, executable handlers or incomplete control ownership
-retain the original readable layout. A cyclic source body uses the closed
-alternative below; cycle shapes it cannot establish also retain the original
-layout. These alternatives are not whole-method output qualification or
-independent runtime verification.
+A single-phase cyclic nomination can supply a forwarding interval when its
+normal run is linear. The original repeat edge starts the interval; each marker
+guard supplies its normal edge and every other repeated portion has a sole
+outlet. The interval's outside set includes original header, initial and tail
+observers. Additional branches or phases retain explicit copies. P7 still
+requires the original per-copy observer conditions and never infers an alias
+from equal names or storage alone.
 
-The owning nomination also supplies selected guard-control replacements,
-source completions after retiring the ABI dispatch scope, and explicit ABI
-link spellings. P6 MUST match a guard's original normal child and preserve all
-normal copies. A source completion naming a retired scope needs its established
-source follow; it cannot become an unqualified break outside the old switch.
-P7 consumes these products together. It MUST NOT keep both the original marker
-If and the projected guard, or borrow case-body completion from the ABI layout.
-
-#### Closed cyclic source body
+### Closed cyclic source body
 
 When selected source content contains a cycle, the ordinary protocol nomination
 retains its original iteration correspondence only if the shared SCC facts and selected region

@@ -170,11 +170,14 @@ fn alternative(
     Ok(None)
 }
 
-type Selector = (crate::p5::LocalId, crate::p3::ValueId, crate::p3::StateId);
-type Comparison = (Selector, u32, i32, bool);
+pub(super) type Selector = (crate::p5::LocalId, crate::p3::ValueId, crate::p3::StateId);
+pub(super) type Comparison = (Selector, u32, i32, bool);
 
 /// Storage identity includes the original value and state, not a matching name.
-fn comparison(storage: &StorageMethod<'_>, block: crate::p2::BlockId) -> Option<Comparison> {
+pub(super) fn comparison(
+    storage: &StorageMethod<'_>,
+    block: crate::p2::BlockId,
+) -> Option<Comparison> {
     let flow = storage.execution();
     let Terminal::Branch { op, .. } = flow.blocks()[block.0 as usize].terminal()? else {
         return None;

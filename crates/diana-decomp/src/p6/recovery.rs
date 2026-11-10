@@ -14,7 +14,7 @@ pub(super) fn construct(
     storage: &StorageMethod<'_>,
     facts: &mut RegionFacts,
     graph: &Graph,
-    nomination: Option<super::suspension::Nomination>,
+    nomination: Option<super::suspension::ProtocolNomination>,
 ) -> Result<(), RegionError> {
     for region in &facts.regions {
         let layout = layout(storage, facts, graph, region)?;
