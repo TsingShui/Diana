@@ -1,6 +1,7 @@
 //! Engine facade over P0 class facts and P1 decoded methods.
 
-use std::sync::Arc;
+use std::collections::{BTreeSet, HashMap};
+use std::sync::{Arc, OnceLock};
 
 use crate::analysis::java_backend::{JavaDecompiler, JavaDecompilerConfig};
 use crate::frontend::{
@@ -37,6 +38,26 @@ struct IndexedImage<'a> {
     image: DexImage<'a>,
     index: ProgramIndex<'a>,
     dex: DexId,
+    classes_by_descriptor: OnceLock<HashMap<String, crate::ClassDefId>>,
+}
+
+impl<'a> IndexedImage<'a> {
+    fn classes_by_descriptor(&self) -> &HashMap<String, crate::ClassDefId> {
+        self.classes_by_descriptor.get_or_init(|| {
+            let mut classes = HashMap::new();
+            for ordinal in 0..self.index.class_count() {
+                let key = crate::ClassDefId(ordinal);
+                let Ok(view) = self.index.class(key) else {
+                    continue;
+                };
+                let Ok(descriptor) = view.descriptor.utf8_lossy() else {
+                    continue;
+                };
+                classes.insert(descriptor.into_owned(), key);
+            }
+            classes
+        })
+    }
 }
 
 pub struct Engine<'a> {
@@ -630,7 +651,12 @@ impl<'a> Engine<'a> {
                 );
             let container = DexContainer::open(image.bytes)?;
             let index = container.program(image.header_offset)?.with_dex(dex);
-            indexed.push(IndexedImage { image, index, dex });
+            indexed.push(IndexedImage {
+                image,
+                index,
+                dex,
+                classes_by_descriptor: OnceLock::new(),
+            });
         }
         Ok(Self { images: indexed })
     }
@@ -644,7 +670,12 @@ impl<'a> Engine<'a> {
             .map_err(|_| InputError::Allocation {
                 offset_byte: image.header_offset,
             })?;
-        images.push(IndexedImage { image, index, dex });
+        images.push(IndexedImage {
+            image,
+            index,
+            dex,
+            classes_by_descriptor: OnceLock::new(),
+        });
         Ok(Self { images })
     }
 
@@ -708,35 +739,38 @@ impl<'a> Engine<'a> {
             }
         }
 
+        let classes = image.classes_by_descriptor();
         let mut related = Vec::new();
-        let mut wanted = Vec::new();
-        if let Fact::Present(super_class) = facts.superclass() {
-            if let Ok(text) = String::from_utf16(super_class.units()) {
-                wanted.push(text);
+        let mut visited = BTreeSet::new();
+        visited.insert(class_def);
+        let mut frontier = vec![facts.clone()];
+        while let Some(current) = frontier.pop() {
+            let mut wanted = Vec::new();
+            if let Fact::Present(super_class) = current.superclass() {
+                wanted.push(super_class);
             }
-        }
-        if let Fact::Present(interfaces) = facts.interfaces() {
-            for interface in interfaces {
-                if let Fact::Present(descriptor) = &interface.descriptor {
-                    if let Ok(text) = String::from_utf16(descriptor.units()) {
-                        wanted.push(text);
+            if let Fact::Present(interfaces) = current.interfaces() {
+                for interface in interfaces {
+                    if let Fact::Present(descriptor) = &interface.descriptor {
+                        wanted.push(descriptor);
                     }
                 }
             }
-        }
-        for descriptor in wanted {
-            for ordinal in 0..image.index.class_count() {
-                let key = crate::ClassDefId(ordinal);
+            for descriptor in wanted {
+                let Ok(text) = String::from_utf16(descriptor.units()) else {
+                    continue;
+                };
+                let Some(&key) = classes.get(&text) else {
+                    continue;
+                };
+                if !visited.insert(key) {
+                    continue;
+                }
                 let Ok(other) = image.index.class_facts_cached(key) else {
                     continue;
                 };
-                let Ok(text) = String::from_utf16(other.descriptor().units()) else {
-                    continue;
-                };
-                if text == descriptor {
-                    related.push(other);
-                    break;
-                }
+                frontier.push(other.clone());
+                related.push(other);
             }
         }
 
@@ -749,17 +783,11 @@ impl<'a> Engine<'a> {
             };
             let base = current.strip_suffix(';').unwrap_or(&current);
             let prefix = format!("{base}$");
-            for ordinal in 0..image.index.class_count() {
-                let key = crate::ClassDefId(ordinal);
-                if key == class_def {
+            let mut children = Vec::new();
+            for (descriptor, key) in classes {
+                if *key == class_def {
                     continue;
                 }
-                let Ok(other) = image.index.class_facts_cached(key) else {
-                    continue;
-                };
-                let Ok(descriptor) = String::from_utf16(other.descriptor().units()) else {
-                    continue;
-                };
                 let Some(rest) = descriptor.strip_prefix(&prefix) else {
                     continue;
                 };
@@ -767,6 +795,10 @@ impl<'a> Engine<'a> {
                 if name.contains('$') {
                     continue;
                 }
+                children.push(*key);
+            }
+            children.sort_unstable();
+            for key in children {
                 nested.push(self.backend_input(image, key, None, true)?);
             }
         }
