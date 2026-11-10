@@ -856,6 +856,9 @@ fn emit_hierarchy(
 }
 
 /// Direct references in method bodies, without a class-data snapshot.
+///
+/// Method identities and code offsets come from one class-data walk; a name and
+/// prototype are resolved only for a body that survives the byte filter.
 fn scan_code(
     index: &ProgramIndex<'_>,
     class: &ClassView<'_, '_>,
@@ -865,12 +868,17 @@ fn scan_code(
     emit: &mut dyn FnMut(Event) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
     let mut failure = None;
-    let visited = class.visit_methods(|method| {
+    let visited = class.visit_method_codes(|method_idx, access_flags, code_offset| {
         if failure.is_some() {
             return Ok(());
         }
         let result = (|| -> Result<(), QueryError> {
-            let diana_decomp::input::MethodBody::Code(view) = method.body? else {
+            let Some(code_offset) = code_offset else {
+                return Ok(());
+            };
+            let diana_decomp::input::MethodBody::Code(view) =
+                index.method_body(Some(code_offset), method_idx, access_flags)?
+            else {
                 return Ok(());
             };
             let range = view.instruction_byte_range();
@@ -879,11 +887,9 @@ fn scan_code(
             {
                 return Ok(());
             }
-            let Ok(declaration) = method.declaration else {
-                return Ok(());
-            };
-            let name = copy(&declaration.name.units()?)?;
-            let prototype = declarations::prototype_units(&declaration.prototype)?;
+            let reference = index.method_reference(method_idx)?;
+            let name = copy(&reference.declaration.name.units()?)?;
+            let prototype = declarations::prototype_units(&reference.declaration.prototype)?;
             let mut stopped = None;
             let decoded = view.visit_instructions(|item| {
                 let diana_decomp::raw::RawCodeItem::Instruction(instruction) = item else {
@@ -920,7 +926,7 @@ fn scan_code(
                                 class_descriptor: copy(&location.descriptor)?,
                                 relevance: selected.relevance,
                                 site: Site::Code {
-                                    method: method.method_idx,
+                                    method: method_idx,
                                     name: copy(&name)?,
                                     prototype: copy(&prototype)?,
                                     code_unit: instruction.pc().0,
@@ -939,7 +945,7 @@ fn scan_code(
                     if let Err(error) = produced {
                         stopped = Some(error);
                         return Err(diana_decomp::input::MethodError::InternalInvariant(
-                            "type scan sink stopped",
+                            "reference scan sink stopped",
                         ));
                     }
                 }

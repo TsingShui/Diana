@@ -99,6 +99,18 @@ impl<'a> RawMethodView<'a> {
     }
 }
 
+impl<'a> ProgramIndex<'a> {
+    /// Reads one original code item without resolving its declaration.
+    pub fn method_body(
+        &self,
+        code_offset: Option<ByteOffset>,
+        method: crate::MethodId,
+        access_flags: u32,
+    ) -> Result<MethodBody<'a>, InputError> {
+        read_code(self, code_offset, method, access_flags, None)
+    }
+}
+
 pub(super) fn read_code<'a>(
     index: &ProgramIndex<'a>,
     code_offset: Option<ByteOffset>,

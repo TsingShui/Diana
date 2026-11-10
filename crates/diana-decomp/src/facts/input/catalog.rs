@@ -901,6 +901,8 @@ pub enum MemberSelection<'f, 'a> {
     /// Every field and method header in original group order, without reading code.
     AllMembers,
     Fields,
+    /// Method identities and code offsets only: no declaration, no code read.
+    MethodCodes,
 }
 
 pub enum MemberEntry<'i, 'a> {
@@ -912,6 +914,11 @@ pub enum MemberEntry<'i, 'a> {
         group: MethodGroup,
         code_offset: Option<ByteOffset>,
         declaration: Result<MethodDeclaration<'i, 'a>, InputError>,
+    },
+    MethodCode {
+        method_idx: MethodId,
+        access_flags: u32,
+        code_offset: Option<ByteOffset>,
     },
 }
 
@@ -993,9 +1000,11 @@ impl<'i, 'a> ClassView<'i, 'a> {
                     Ok(declaration) => visit(method_idx, access_flags, Ok(&declaration)),
                     Err(error) => visit(method_idx, access_flags, Err(error)),
                 },
-                MemberEntry::Method(_) => Err(InputError::InternalInvariant(
-                    "code visitation reached a header-only selection",
-                )),
+                MemberEntry::Method(_) | MemberEntry::MethodCode { .. } => {
+                    Err(InputError::InternalInvariant(
+                        "code visitation reached a header-only selection",
+                    ))
+                }
             },
         )
     }
@@ -1009,8 +1018,27 @@ impl<'i, 'a> ClassView<'i, 'a> {
         self.visit_members_with(MemberSelection::AllMethods, |entry| match entry {
             MemberEntry::Method(method) => visit(method),
             MemberEntry::Field(_) => Ok(()),
-            MemberEntry::MethodHeader { .. } => Err(InputError::InternalInvariant(
-                "header-only selection reached code visitation",
+            MemberEntry::MethodHeader { .. } | MemberEntry::MethodCode { .. } => Err(
+                InputError::InternalInvariant("header-only selection reached code visitation"),
+            ),
+        })
+    }
+
+    /// Visits each method identity and code offset without resolving its
+    /// declaration. Reference scans use this to skip bodies before paying for
+    /// names and prototypes.
+    pub fn visit_method_codes(
+        &self,
+        mut visit: impl FnMut(crate::MethodId, u32, Option<ByteOffset>) -> Result<(), InputError>,
+    ) -> Result<(), InputError> {
+        self.visit_members_with(MemberSelection::MethodCodes, |entry| match entry {
+            MemberEntry::MethodCode {
+                method_idx,
+                access_flags,
+                code_offset,
+            } => visit(method_idx, access_flags, code_offset),
+            _ => Err(InputError::InternalInvariant(
+                "method-code traversal delivered another entry",
             )),
         })
     }
@@ -1133,7 +1161,9 @@ impl<'i, 'a> ClassView<'i, 'a> {
                         EncodedMember::Field => {
                             if matches!(
                                 selection,
-                                MemberSelection::AllMethods | MemberSelection::MethodHeaders(_)
+                                MemberSelection::AllMethods
+                                    | MemberSelection::MethodHeaders(_)
+                                    | MemberSelection::MethodCodes
                             ) {
                                 continue;
                             }
@@ -1157,6 +1187,19 @@ impl<'i, 'a> ClassView<'i, 'a> {
                             }))?;
                         }
                         EncodedMember::Method { code_offset } => {
+                            if matches!(selection, MemberSelection::MethodCodes) {
+                                let group_slot = match kind {
+                                    MemberKind::Field => group,
+                                    MemberKind::Method => group + 2,
+                                };
+                                delivered[group_slot] = delivered[group_slot].saturating_add(1);
+                                visit(MemberEntry::MethodCode {
+                                    method_idx: MethodId(index),
+                                    access_flags,
+                                    code_offset,
+                                })?;
+                                continue;
+                            }
                             let declaration = match &mut selection {
                                 MemberSelection::MethodHeaders(Some(accept)) => {
                                     local(self.index.method_declaration_if(

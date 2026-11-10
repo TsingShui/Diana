@@ -457,9 +457,11 @@ pub fn collect(index: &ProgramIndex<'_>, owner: ClassKey) -> Result<ClassFacts, 
                     },
                 )
             }
-            MemberEntry::Method(_) => Err(RequestError::InternalInvariant(
-                "P0 header traversal acquired another member entry",
-            )),
+            MemberEntry::Method(_) | MemberEntry::MethodCode { .. } => {
+                Err(RequestError::InternalInvariant(
+                    "P0 header traversal acquired another member entry",
+                ))
+            }
         })?;
     let mut fields_issue = if walk.delivered[0] == walk.shape.static_fields
         && walk.delivered[1] == walk.shape.instance_fields
