@@ -616,6 +616,7 @@ impl JavaAstNormalizer {
 
     fn pure_condition(expression: &JavaExpr) -> bool {
         match expression {
+            JavaExpr::Allocate(_) | JavaExpr::DirectInit { .. } => false,
             JavaExpr::This
             | JavaExpr::QualifiedThis(_)
             | JavaExpr::Super
@@ -802,6 +803,7 @@ impl ConditionalResultJoin {
         let mut pending = vec![expression];
         while let Some(expression) = pending.pop() {
             match expression {
+                JavaExpr::Allocate(_) | JavaExpr::DirectInit { .. } => return false,
                 JavaExpr::This
                 | JavaExpr::QualifiedThis(_)
                 | JavaExpr::Super
@@ -1474,6 +1476,7 @@ impl TerminalBranchLinearizer {
                 protected_completes && finally_completes
             }
             JavaStmt::Empty
+            | JavaStmt::RecoveryFailure(_)
             | JavaStmt::Variable { .. }
             | JavaStmt::Expression(_)
             | JavaStmt::ConstructorInvocation { .. }
@@ -1565,6 +1568,7 @@ impl TerminalBranchLinearizer {
                     }
                 }
                 JavaStmt::Empty
+                | JavaStmt::RecoveryFailure(_)
                 | JavaStmt::Variable { .. }
                 | JavaStmt::Expression(_)
                 | JavaStmt::ConstructorInvocation { .. }
@@ -1623,6 +1627,7 @@ impl TerminalBranchLinearizer {
                 1 + branches.map(Self::nesting_depth).max().unwrap_or_default()
             }
             JavaStmt::Empty
+            | JavaStmt::RecoveryFailure(_)
             | JavaStmt::Variable { .. }
             | JavaStmt::Expression(_)
             | JavaStmt::ConstructorInvocation { .. }
@@ -1640,7 +1645,7 @@ impl TerminalBranchLinearizer {
 
     fn statement_cost(statement: &JavaStmt) -> usize {
         match statement {
-            JavaStmt::Empty => 0,
+            JavaStmt::Empty | JavaStmt::RecoveryFailure(_) => 0,
             JavaStmt::Variable { value, .. } => {
                 1 + value.as_ref().map(JavaExpr::cost).unwrap_or_default()
             }

@@ -1,11 +1,11 @@
-//! Deliver the same Engine/P9 publication in either presentation.
+//! Deliver the same Engine publication in either presentation.
 
 use std::path::Path;
 
 use serde::Serialize;
 
 use super::output::{Failure, Format, publish_with};
-use crate::analysis::decompile::{self, Decompiled};
+use crate::analysis::decompile::{self, DecompileIssue, Decompiled};
 use crate::analysis::request::RequestScope;
 use crate::analysis::selector::{self, Selector};
 
@@ -13,6 +13,8 @@ pub enum Kind {
     Class { jobs: u32 },
     Method,
 }
+
+const SCHEMA_VERSION: u32 = 5;
 
 #[derive(Serialize)]
 struct Publication<'a> {
@@ -57,6 +59,7 @@ pub fn run(
             code: error.code(),
             message: error.to_string(),
         })?;
+    let incomplete = incomplete_failure(&decompiled.issues);
     let result = {
         #[cfg(feature = "perf")]
         let _timer = crate::analysis::perf::Timer::new(&crate::analysis::perf::PUBLISH_NS);
@@ -71,7 +74,7 @@ pub fn run(
             Format::Json => serde_json::to_writer(
                 writer,
                 &Publication {
-                    schema_version: 4,
+                    schema_version: SCHEMA_VERSION,
                     command,
                     analysis: &decompiled,
                 },
@@ -87,5 +90,21 @@ pub fn run(
         crate::analysis::perf::add_elapsed(&crate::analysis::perf::REQUEST_NS, request_started);
         crate::analysis::perf::print(command);
     }
-    result
+    match result {
+        Ok(()) => incomplete.map_or(Ok(()), Err),
+        Err(error) => Err(error),
+    }
+}
+
+fn incomplete_failure(issues: &[DecompileIssue]) -> Option<Failure> {
+    issues.first().map(|issue| Failure {
+        code: 1,
+        message: format!(
+            "semantic recovery incomplete for {} method(s): {}{}: {}",
+            issues.len(),
+            issue.name,
+            issue.prototype,
+            issue.reason
+        ),
+    })
 }

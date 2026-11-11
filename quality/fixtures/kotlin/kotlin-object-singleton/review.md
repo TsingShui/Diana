@@ -8,7 +8,21 @@ object singleton and companion object. The Kotlin source is the semantic referen
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 - Selector: `Lfixture/Counter;`
 
-## Current verdict — round 1, 2026-11-08
+## Current verdict: companion string preparation
+
+Compared the same prepared DEX on `b5eb94d` and the recovery-fixes candidate.
+Only Case.PREFIX changes: the candidate retains Kotlin's `case:` preparation
+instead of null. Counter and all method bodies remain byte-for-byte unchanged;
+the bounded prior judgments below are reused for unchanged content. This is LLM
+semantic review, not an executed Kotlin/ART behavioral check.
+
+### Semantics
+
+| Subject | Judgment and reasoning |
+|---|---|
+| `Case.PREFIX` | Agreement: Kotlin declares the constant `case:`. The field now retains that value without adding an initializer call or altering companion creation. |
+
+## Prior verdict — round 1, 2026-11-08
 
 ### Semantics
 

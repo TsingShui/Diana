@@ -1857,6 +1857,7 @@ impl ConstructorSyntaxRecovery {
         in_loop: bool,
     ) -> bool {
         match statement {
+            JavaStmt::RecoveryFailure(_) => false,
             JavaStmt::Empty => true,
             JavaStmt::Block(statements) => {
                 let mut nested = scope.clone();
@@ -1995,6 +1996,7 @@ impl ConstructorSyntaxRecovery {
 
     fn static_expression(expression: &JavaExpr, scope: &BTreeSet<JavaIdentifier>) -> bool {
         match expression {
+            JavaExpr::Allocate(_) | JavaExpr::DirectInit { .. } => false,
             JavaExpr::Name(name) => scope.contains(name),
             JavaExpr::Literal(_) | JavaExpr::ClassLiteral(_) | JavaExpr::StaticField { .. } => true,
             JavaExpr::Field { owner, .. } => Self::static_expression(owner, scope),
@@ -4065,6 +4067,11 @@ impl ExpressionNames {
         let mut pending = vec![expression];
         while let Some(expression) = pending.pop() {
             match expression {
+                JavaExpr::Allocate(_) => {}
+                JavaExpr::DirectInit { receiver, args, .. } => {
+                    pending.extend(args.iter().rev());
+                    pending.push(receiver);
+                }
                 JavaExpr::Name(name) => {
                     names.insert(name.clone());
                 }
@@ -4184,6 +4191,13 @@ impl ImmediateExpressionUses {
 
     fn expression(expression: &JavaExpr, uses: &mut BTreeMap<JavaIdentifier, usize>) {
         match expression {
+            JavaExpr::Allocate(_) => {}
+            JavaExpr::DirectInit { receiver, args, .. } => {
+                Self::expression(receiver, uses);
+                for argument in args {
+                    Self::expression(argument, uses);
+                }
+            }
             JavaExpr::Name(name) => *uses.entry(name.clone()).or_default() += 1,
             JavaExpr::This
             | JavaExpr::QualifiedThis(_)

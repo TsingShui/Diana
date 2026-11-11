@@ -355,6 +355,11 @@ impl EnumDeclarationRecovery {
         let mut pending = vec![expression];
         while let Some(expression) = pending.pop() {
             match expression {
+                JavaExpr::Allocate(_) => {}
+                JavaExpr::DirectInit { receiver, args, .. } => {
+                    pending.extend(args);
+                    pending.push(receiver);
+                }
                 JavaExpr::Name(name) => {
                     names.insert(name.clone());
                 }

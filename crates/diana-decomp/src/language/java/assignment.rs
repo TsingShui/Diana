@@ -40,6 +40,10 @@ struct RewriteResult {
 impl KnownValues {
     fn rewrite(&mut self, statement: &mut JavaStmt) -> RewriteResult {
         match statement {
+            JavaStmt::RecoveryFailure(_) => {
+                self.values.clear();
+                Self::complete(false)
+            }
             JavaStmt::Empty => Self::complete(false),
             JavaStmt::Block(statements) => self.sequence(statements),
             JavaStmt::Variable { name, value, .. } => {
@@ -371,6 +375,7 @@ impl JavaAstRewriter for StatementWrites {
             }
             JavaStmt::Assign { target, .. } => self.record_target(target),
             JavaStmt::Empty
+            | JavaStmt::RecoveryFailure(_)
             | JavaStmt::Block(_)
             | JavaStmt::Labeled { .. }
             | JavaStmt::Expression(_)
@@ -439,6 +444,7 @@ impl Declarations {
                     }
                 }
                 JavaStmt::Empty
+                | JavaStmt::RecoveryFailure(_)
                 | JavaStmt::Expression(_)
                 | JavaStmt::ConstructorInvocation { .. }
                 | JavaStmt::Assign { .. }
@@ -512,6 +518,10 @@ impl AssignmentAnalysis {
 
     fn statement(&mut self, statement: &JavaStmt, mut flow: Flow) -> Flow {
         match statement {
+            JavaStmt::RecoveryFailure(_) => {
+                flow.assigned.clear();
+                flow
+            }
             JavaStmt::Empty => flow,
             JavaStmt::Block(statements) => self.sequence(statements, flow),
             JavaStmt::Labeled { body, .. } => {
@@ -684,6 +694,11 @@ impl AssignmentAnalysis {
 
     fn expression(&mut self, expression: &JavaExpr, assigned: &mut BTreeSet<JavaIdentifier>) {
         match expression {
+            JavaExpr::Allocate(_) => {}
+            JavaExpr::DirectInit { receiver, args, .. } => {
+                self.expression(receiver, assigned);
+                self.expressions(args, assigned);
+            }
             JavaExpr::This
             | JavaExpr::QualifiedThis(_)
             | JavaExpr::Super
@@ -866,6 +881,7 @@ impl AssignmentAnalysis {
                 }
             }
             JavaStmt::Empty
+            | JavaStmt::RecoveryFailure(_)
             | JavaStmt::Variable { .. }
             | JavaStmt::Expression(_)
             | JavaStmt::ConstructorInvocation { .. }

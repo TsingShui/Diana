@@ -215,7 +215,7 @@ enum Command {
     },
     /// Locate a class in an APK and decompile it
     #[command(
-        long_about = "Displays the Engine/P9 Java-like text, including original members and local recovery gaps. JSON schema 4 carries the same text, source facts and byte spans."
+        long_about = "Displays the Engine/P9 Java-like text, including original members and local recovery gaps. JSON schema 5 carries the same text, source facts, byte spans and method-local issues."
     )]
     GetClass {
         /// Input file (APK, ZIP or bare DEX)

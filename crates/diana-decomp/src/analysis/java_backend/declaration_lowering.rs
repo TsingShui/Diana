@@ -3,9 +3,9 @@ use crate::ir::generic_types::{ClassSignature, JvmTypeSignature, MethodSignature
 use crate::ir::ty::ArgType;
 use crate::language::java::{
     JavaAnnotation, JavaClassName, JavaClassType, JavaCompilationUnit, JavaExpr,
-    JavaFieldDeclaration, JavaFieldSymbol, JavaIdentifier, JavaLiteral, JavaMemberNames,
-    JavaMethodBody, JavaMethodDeclaration, JavaMethodDeclarationKind, JavaMethodParameter,
-    JavaMethodSymbol, JavaModifier, JavaStmt, JavaType, JavaTypeArgument, JavaTypeDeclaration,
+    JavaFieldDeclaration, JavaFieldSymbol, JavaIdentifier, JavaMemberNames, JavaMethodBody,
+    JavaMethodDeclaration, JavaMethodDeclarationKind, JavaMethodParameter, JavaMethodSymbol,
+    JavaModifier, JavaStmt, JavaType, JavaTypeArgument, JavaTypeDeclaration,
     JavaTypeDeclarationKind, JavaTypeParameter, SourceObjectTypes,
 };
 
@@ -827,7 +827,11 @@ impl<'a> JavaTypeLowering<'a> {
                     failure.observe(
                         self.observer.as_ref(),
                         &class_name,
-                        method.declaration.name.as_str(),
+                        match method.declaration.kind {
+                            MethodModelKind::Constructor => "<init>",
+                            MethodModelKind::ClassInitializer => "<clinit>",
+                            MethodModelKind::Method => method.declaration.name.original_name(),
+                        },
                         &descriptor,
                     );
                     let failed = method.clone().with_failure(failure);
@@ -1394,15 +1398,7 @@ impl<'a> JavaTypeLowering<'a> {
 
     fn failure_body(failure: &MethodRecoveryFailure) -> JavaMethodBody {
         JavaMethodBody {
-            root: JavaStmt::Block(vec![JavaStmt::Throw(JavaExpr::New {
-                enclosing: None,
-                ty: JavaType::source_class("UnsupportedOperationException"),
-                target_type: None,
-                args: vec![JavaExpr::Literal(JavaLiteral::String(
-                    failure.summary().into(),
-                ))],
-                anonymous_body: None,
-            })]),
+            root: JavaStmt::Block(vec![JavaStmt::RecoveryFailure(failure.summary())]),
         }
     }
 
@@ -1767,6 +1763,7 @@ impl MergedThrowableRethrow {
                 }
             }
             JavaStmt::Empty
+            | JavaStmt::RecoveryFailure(_)
             | JavaStmt::Variable { .. }
             | JavaStmt::Expression(_)
             | JavaStmt::ConstructorInvocation { .. }
@@ -1818,6 +1815,7 @@ impl MergedThrowableRethrow {
                 }
             }
             JavaStmt::Empty
+            | JavaStmt::RecoveryFailure(_)
             | JavaStmt::Variable { .. }
             | JavaStmt::Expression(_)
             | JavaStmt::ConstructorInvocation { .. }

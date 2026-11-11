@@ -899,6 +899,7 @@ impl ExpressionParameters {
         let mut pending = vec![expression];
         while let Some(expression) = pending.pop() {
             match expression {
+                JavaExpr::Allocate(_) | JavaExpr::DirectInit { .. } => return false,
                 JavaExpr::Name(name) => {
                     let Some(count) = uses.get_mut(name) else {
                         return false;

@@ -27,6 +27,15 @@ pub trait JavaAstRewriter {
 
     fn rewrite_expression(&mut self, expression: JavaExpr) -> JavaExpr {
         let expression = match expression {
+            JavaExpr::DirectInit {
+                receiver,
+                target,
+                args,
+            } => JavaExpr::DirectInit {
+                receiver: Box::new(self.rewrite_expression(*receiver)),
+                target,
+                args: self.rewrite_expressions(args),
+            },
             JavaExpr::Field { owner, name } => JavaExpr::Field {
                 owner: Box::new(self.rewrite_expression(*owner)),
                 name,

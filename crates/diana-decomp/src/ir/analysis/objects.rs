@@ -16,6 +16,7 @@ pub struct ObjectInitialization {
     pub aliases: BTreeSet<SsaVar>,
     pub value: SsaVar,
     pub ty: crate::ir::ArgType,
+    pub mergeable: bool,
     pub allocation_exception_handlers: Vec<crate::ir::BlockId>,
 }
 
@@ -227,22 +228,11 @@ impl ObjectInitializations {
                 .ok_or(ObjectInitializationError::MissingAllocationType(
                     *allocation,
                 ))?;
-            for (_, _, method) in constructors {
-                let compatible_owner = match (allocation_type.as_object(), method.owner.as_object())
-                {
-                    (Some(allocated), Some(constructed)) => {
-                        hierarchy.is_subtype(allocated, constructed)
-                    }
-                    _ => allocation_type == &method.owner,
-                };
-                if !compatible_owner {
-                    return Err(ObjectInitializationError::ConstructorTypeMismatch {
-                        allocation: *allocation,
-                        allocated: allocation_type.clone(),
-                        constructed: method.owner.clone(),
-                    });
-                }
-            }
+            // Different owners require separate allocation and direct-call
+            // operations; emitting `new T(...)` would change the call target.
+            let mergeable = constructors
+                .iter()
+                .all(|(_, _, method)| allocation_type == &method.owner);
             let object_aliases = aliases
                 .group(class)
                 .cloned()
@@ -274,6 +264,7 @@ impl ObjectInitializations {
             let allocation_exception_handlers =
                 Self::allocation_exception_handlers(cfg, *allocation, &constructor_positions);
             entries.push(ObjectInitialization {
+                mergeable,
                 allocation: *allocation,
                 constructors: constructor_positions,
                 aliases: object_aliases,
@@ -520,11 +511,6 @@ pub enum ObjectInitializationError {
     },
     MissingConstructor(InsnPosition),
     MissingAllocationType(InsnPosition),
-    ConstructorTypeMismatch {
-        allocation: InsnPosition,
-        allocated: crate::ir::ArgType,
-        constructed: crate::ir::ArgType,
-    },
     ConstructorNotDominated {
         allocation: InsnPosition,
         constructor: InsnPosition,
@@ -557,14 +543,6 @@ impl std::fmt::Display for ObjectInitializationError {
             Self::MissingAllocationType(position) => {
                 write!(formatter, "allocation at {position:?} has no class type")
             }
-            Self::ConstructorTypeMismatch {
-                allocation,
-                allocated,
-                constructed,
-            } => write!(
-                formatter,
-                "allocation at {allocation:?} creates {allocated}, constructor initializes {constructed}"
-            ),
             Self::ConstructorNotDominated {
                 allocation,
                 constructor,

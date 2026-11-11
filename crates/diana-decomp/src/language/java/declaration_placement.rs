@@ -102,7 +102,10 @@ impl LexicalReferenceAnalysis {
     fn statement(&mut self, statement: &JavaStmt, scope: ScopeId, index: usize) {
         let site = self.site(scope, index);
         match statement {
-            JavaStmt::Empty | JavaStmt::Break(_) | JavaStmt::Continue(_) => {}
+            JavaStmt::Empty
+            | JavaStmt::RecoveryFailure(_)
+            | JavaStmt::Break(_)
+            | JavaStmt::Continue(_) => {}
             JavaStmt::Block(statements) => self.child_block(statements, scope, index),
             JavaStmt::Labeled { body, .. } => self.body(body, scope, index),
             JavaStmt::Variable { value, .. } => self.optional_expression(value.as_ref(), site),
@@ -251,6 +254,11 @@ impl LexicalReferenceAnalysis {
         let mut pending = vec![root];
         while let Some(expression) = pending.pop() {
             match expression {
+                JavaExpr::Allocate(_) => {}
+                JavaExpr::DirectInit { receiver, args, .. } => {
+                    pending.extend(args.iter().rev());
+                    pending.push(receiver);
+                }
                 JavaExpr::This
                 | JavaExpr::QualifiedThis(_)
                 | JavaExpr::Super
@@ -502,6 +510,7 @@ impl DeclarationRewriter {
                 }
             }
             JavaStmt::Empty
+            | JavaStmt::RecoveryFailure(_)
             | JavaStmt::Variable { .. }
             | JavaStmt::Expression(_)
             | JavaStmt::ConstructorInvocation { .. }
@@ -612,6 +621,11 @@ impl ExpressionNames {
         let mut pending = vec![root];
         while let Some(expression) = pending.pop() {
             match expression {
+                JavaExpr::Allocate(_) => {}
+                JavaExpr::DirectInit { receiver, args, .. } => {
+                    pending.extend(args.iter().rev());
+                    pending.push(receiver);
+                }
                 JavaExpr::Name(name) if name == expected => return true,
                 JavaExpr::This
                 | JavaExpr::QualifiedThis(_)

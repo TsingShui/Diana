@@ -6,7 +6,7 @@ use super::{
 
 use crate::{ByteLength, ByteOffset, ByteRange};
 
-pub(super) const SUPPORTED_MAP_KINDS: usize = 20;
+pub(super) const SUPPORTED_MAP_KINDS: usize = 21;
 const TABLE_STRIDES: [ByteLength; 6] = [
     ByteLength(4),
     ByteLength(4),
@@ -368,6 +368,9 @@ pub(super) fn map_kind(kind: u16) -> Option<(u32, usize)> {
                 1
             },
         ),
+        // Platform hidden-API metadata is opaque to recovery. Its map entry
+        // still uses the shared alignment, uniqueness and range checks.
+        0xF000 => (20, 4),
         _ => return None,
     };
     Some((1 << bit, alignment))

@@ -12,7 +12,7 @@ use crate::input::annotation_facts::{
 };
 use crate::input::value_facts::{ValueDeclaration, ValueMember, ValuePrototype, ValueReference};
 use crate::ir::{ArgType, FieldReference, MethodDescriptor, MethodReference, Utf16String};
-use crate::p0::{ClassFacts, Fact, InitialValue, ScalarValue};
+use crate::p0::{ClassFacts, Fact, ScalarValue};
 
 /// Build the frontend class node the recovery backend expects from the original
 /// class facts. Fields the facts do not carry stay empty rather than inferred.
@@ -81,11 +81,7 @@ pub(crate) fn build(facts: &ClassFacts) -> Option<ClassNode> {
             info,
             AccessInfo::for_field(entry.access_flags().raw()),
         );
-        if let Fact::Present(InitialValue::Encoded {
-            scalar: Some(scalar),
-            ..
-        }) = entry.initial_value()
-        {
+        if let Some(scalar) = entry.scalar() {
             field.initial_value = scalar_value(scalar, field.field_type());
         }
         node.add_field(field);
@@ -555,9 +551,9 @@ fn scalar_value(value: &ScalarValue, ty: &ArgType) -> Option<DexValue> {
         ScalarValue::DoubleBits(value) => Some(DexValue::Double(f64::from_bits(*value))),
         ScalarValue::Boolean(value) => Some(DexValue::Boolean(*value)),
         ScalarValue::Null => Some(DexValue::Null),
-        ScalarValue::String(value) => String::from_utf16(value.units())
-            .ok()
-            .map(|value| DexValue::String(Utf16String::from(value))),
+        ScalarValue::String(value) => Some(DexValue::String(Utf16String::from_utf16(
+            value.units().to_vec(),
+        ))),
     }
 }
 

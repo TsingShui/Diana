@@ -69,6 +69,10 @@ impl JavaIdentifier {
         &self.source_name
     }
 
+    pub(crate) fn original_name(&self) -> &str {
+        self.dex_name.as_deref().unwrap_or(&self.source_name)
+    }
+
     fn with_source_name(&self, source_name: String) -> Self {
         Self {
             source_name,
@@ -664,6 +668,12 @@ pub enum JavaExpr {
     Name(JavaIdentifier),
     Literal(JavaLiteral),
     ClassLiteral(JavaType),
+    Allocate(JavaType),
+    DirectInit {
+        receiver: Box<JavaExpr>,
+        target: Box<crate::ir::MethodReference>,
+        args: Vec<JavaExpr>,
+    },
     Field {
         owner: Box<JavaExpr>,
         name: JavaIdentifier,
@@ -851,6 +861,11 @@ impl JavaExpr {
                 _ => 1,
             };
             match expression {
+                Self::Allocate(_) => {}
+                Self::DirectInit { receiver, args, .. } => {
+                    pending.extend(args);
+                    pending.push(receiver);
+                }
                 Self::Field { owner, .. } => pending.push(owner),
                 Self::ArrayAccess { array, index } => {
                     pending.extend([array.as_ref(), index.as_ref()]);
@@ -935,6 +950,8 @@ pub enum JavaConstructorTarget {
 #[derive(Debug, Clone, PartialEq)]
 pub enum JavaStmt {
     Empty,
+    /// Unavailable original code, rendered only as a Diana diagnostic comment.
+    RecoveryFailure(String),
     Block(Vec<JavaStmt>),
     Labeled {
         label: JavaIdentifier,

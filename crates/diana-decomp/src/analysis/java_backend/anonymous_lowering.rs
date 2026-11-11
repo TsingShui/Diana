@@ -744,6 +744,7 @@ impl JavaAstRewriter for RecoveredAnonymousTypeBinding<'_> {
                 ty: self.ty(ty),
             },
             JavaExpr::ClassLiteral(ty) => JavaExpr::ClassLiteral(self.ty(ty)),
+            JavaExpr::Allocate(ty) => JavaExpr::Allocate(self.ty(ty)),
             expression => expression,
         }
     }
@@ -1848,7 +1849,8 @@ impl ReturnExpression {
                 };
                 Some(Self::select(condition.clone(), when_true, when_false))
             }
-            JavaStmt::Variable { .. }
+            JavaStmt::RecoveryFailure(_)
+            | JavaStmt::Variable { .. }
             | JavaStmt::Expression(_)
             | JavaStmt::Assign { .. }
             | JavaStmt::ConstructorInvocation { .. }

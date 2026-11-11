@@ -588,6 +588,15 @@ impl JavaPrinter {
     ) -> Result<(), JavaPrintError> {
         match statement {
             JavaStmt::Empty => {}
+            JavaStmt::RecoveryFailure(reason) => {
+                self.indent(output, depth);
+                writeln!(
+                    output,
+                    "// Diana: WARNING: Failed to decompile this method. Please report an issue at https://github.com/TsingShui/Diana/issues"
+                )?;
+                self.indent(output, depth);
+                writeln!(output, "// Diana: {}", reason.escape_debug())?;
+            }
             JavaStmt::Block(statements) => {
                 writeln!(output, "{{")?;
                 pending.push(PrintTask::CloseBrace(depth));
@@ -867,6 +876,24 @@ impl JavaPrinter {
                     }
                     JavaExpr::ClassLiteral(ty) => {
                         results.push(RenderedExpression::primary(format!("{ty}.class")))
+                    }
+                    JavaExpr::Allocate(ty) => results.push(RenderedExpression::primary(format!(
+                        "allocate-instance {ty}"
+                    ))),
+                    JavaExpr::DirectInit {
+                        receiver,
+                        target,
+                        args,
+                    } => {
+                        let receiver = self.expression_at(receiver, depth)?;
+                        let args = args
+                            .iter()
+                            .map(|argument| self.expression_at(argument, depth))
+                            .collect::<Result<Vec<_>, _>>()?
+                            .join(", ");
+                        results.push(RenderedExpression::primary(format!(
+                            "init-direct {receiver}, {target}, [{args}]"
+                        )));
                     }
                     JavaExpr::StaticField { owner, name } => results.push(
                         RenderedExpression::primary(format!("{}.{name}", owner.clone().into_raw())),

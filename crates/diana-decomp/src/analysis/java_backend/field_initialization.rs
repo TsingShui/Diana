@@ -135,6 +135,10 @@ impl<'a> FieldInitializationAnalysis<'a> {
 
     fn statement(&mut self, statement: &JavaStmt, state: AssignmentCounts) -> InitializationFlow {
         match statement {
+            JavaStmt::RecoveryFailure(_) => {
+                // Unavailable code establishes no successful completion facts.
+                InitializationFlow::normal(AssignmentCounts::NONE)
+            }
             JavaStmt::Empty => InitializationFlow::normal(state),
             JavaStmt::Block(statements) => self.statements(statements, state),
             JavaStmt::Labeled { body, .. } | JavaStmt::Synchronized { body, .. } => {
@@ -329,6 +333,11 @@ impl<'a> FieldInitializationAnalysis<'a> {
 
     fn expression(&mut self, expression: &JavaExpr, state: AssignmentCounts) -> AssignmentCounts {
         match expression {
+            JavaExpr::Allocate(_) => state,
+            JavaExpr::DirectInit { receiver, args, .. } => {
+                let state = self.expression(receiver, state);
+                self.expressions(args, state)
+            }
             JavaExpr::Field { owner, .. } => self.expression(owner, state),
             JavaExpr::ArrayAccess { array, index } => {
                 let state = self.expression(array, state);
@@ -482,6 +491,11 @@ impl<'a> FieldInitializationAnalysis<'a> {
         let mut pending = vec![root];
         while let Some(expression) = pending.pop() {
             match expression {
+                JavaExpr::Allocate(_) => {}
+                JavaExpr::DirectInit { receiver, args, .. } => {
+                    pending.extend(args);
+                    pending.push(receiver);
+                }
                 JavaExpr::Assignment { target, value, .. } => {
                     if self.is_field(target) {
                         return true;

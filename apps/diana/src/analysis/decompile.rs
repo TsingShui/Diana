@@ -3,7 +3,8 @@
 use diana_decomp::p0::{ClassFacts, Fact};
 use diana_decomp::render::Rendered;
 use diana_decomp::{
-    ByteOffset, ClassKey, DexImage, Engine, ImageOrigin, InputId, MethodId, Request, RequestError,
+    ByteOffset, ClassKey, DexImage, Engine, ImageOrigin, InputId, MethodFailure, MethodId,
+    MethodSource, Request, RequestError,
 };
 use serde::Serialize;
 
@@ -64,6 +65,17 @@ pub struct Decompiled {
     pub selection: Selection,
     #[serde(rename = "result")]
     pub rendered: Rendered,
+    pub issues: Vec<DecompileIssue>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DecompileIssue {
+    pub method_id: Option<u32>,
+    pub class: String,
+    pub name: String,
+    pub prototype: String,
+    pub stage: String,
+    pub reason: String,
 }
 
 /// Runs the shared Engine chain with one method worker.
@@ -131,7 +143,7 @@ fn run_presentation(
     let entry = selected.image.entry.map(|entry| entry.0);
     let logical = selected.image.logical;
     let class_at = super::at::class(entry, logical.0, class.class_def.0, &selected.descriptor);
-    let (method, method_at, rendered) = match selector {
+    let (method, method_at, rendered, issues) = match selector {
         Selector::Method(selector) => {
             let facts = {
                 #[cfg(feature = "perf")]
@@ -159,7 +171,9 @@ fn run_presentation(
                 let _timer = crate::analysis::perf::Timer::new(&crate::analysis::perf::ANALYZE_NS);
                 engine.analyze_method(class, method)?
             };
-            (Some(method), Some(method_at), result.rendered)
+            let issues = result.failures.as_slice();
+            let issues = method_issues(issues, &[], Some(method), &selected.descriptor);
+            (Some(method), Some(method_at), result.rendered, issues)
         }
         Selector::Class(_) => {
             let result = {
@@ -170,7 +184,17 @@ fn run_presentation(
                     method: None,
                 })?
             };
-            (None, None, result.rendered)
+            (
+                None,
+                None,
+                result.rendered,
+                method_issues(
+                    &result.failures,
+                    &result.methods,
+                    None,
+                    &selected.descriptor,
+                ),
+            )
         }
         Selector::Field(_) | Selector::String(_) => unreachable!("selection checked above"),
     };
@@ -185,7 +209,46 @@ fn run_presentation(
             method_at,
         },
         rendered,
+        issues,
     })
+}
+
+fn method_issues(
+    failures: &[MethodFailure],
+    methods: &[MethodSource],
+    selected: Option<MethodId>,
+    owner: &[u16],
+) -> Vec<DecompileIssue> {
+    failures
+        .iter()
+        .map(|failure| {
+            let method_id = failure
+                .class
+                .encode_utf16()
+                .eq(owner.iter().copied())
+                .then(|| {
+                    selected.or_else(|| {
+                        methods
+                            .iter()
+                            .find(|method| {
+                                String::from_utf16_lossy(&method.name) == failure.name
+                                    && String::from_utf16_lossy(&method.prototype)
+                                        == failure.prototype
+                            })
+                            .map(|method| method.method)
+                    })
+                })
+                .flatten();
+            DecompileIssue {
+                method_id: method_id.map(|method| method.0),
+                class: failure.class.clone(),
+                name: failure.name.clone(),
+                prototype: failure.prototype.clone(),
+                stage: failure.stage.clone(),
+                reason: failure.reason.clone(),
+            }
+        })
+        .collect()
 }
 
 pub(super) fn select_method(

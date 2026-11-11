@@ -1883,9 +1883,15 @@ impl DexJavaDialect {
                     anonymous_body: None,
                 })
             }
-            InsnType::NewInstance => Err(JavaLoweringError::UnrecoveredObjectInitialization(
-                insn.offset,
-            )),
+            InsnType::NewInstance => {
+                let ty = insn.payload.class_type.as_deref().ok_or(
+                    JavaLoweringError::MissingPayload {
+                        instruction: insn.insn_type,
+                        field: "class_type",
+                    },
+                )?;
+                Ok(JavaExpr::Allocate(self.source_type(ty)?))
+            }
             InsnType::NewArray => Ok(JavaExpr::NewArray {
                 element_type: self.source_type(self.array_element_type(insn)?)?,
                 dimensions: vec![self.arg(
@@ -3912,12 +3918,22 @@ impl DexJavaDialect {
         let receiver = insn
             .operands()
             .first()
-            .and_then(SemanticExpression::as_register)
             .ok_or(JavaLoweringError::InvalidConstructorReceiver)?;
-        if receiver.code_var != self.this_code_var {
-            return Err(JavaLoweringError::UnrecoveredObjectInitialization(
-                insn.offset,
-            ));
+        if !receiver.as_register().is_some_and(|register| {
+            self.this_code_var.is_some() && register.code_var == self.this_code_var
+        }) {
+            let args = insn
+                .operands()
+                .iter()
+                .skip(1)
+                .zip(&method.descriptor.parameters)
+                .map(|(argument, ty)| self.arg_as(argument, ty))
+                .collect::<Result<Vec<_>, _>>()?;
+            return Ok(JavaStmt::Expression(JavaExpr::DirectInit {
+                receiver: Box::new(self.arg(receiver)?),
+                target: Box::new(method.clone()),
+                args,
+            }));
         }
         let target = if self.current_type.as_ref() == Some(&method.owner) {
             JavaConstructorTarget::This

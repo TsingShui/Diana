@@ -6,7 +6,7 @@ use crate::analysis::java_backend::{JavaDecompiler, JavaDecompilerConfig};
 use crate::frontend::{ClassNode, DexError, DexResult, MethodNode};
 use crate::input::{InputError, InputProblem};
 use crate::ir::analysis::ClassHierarchyIndex;
-use crate::ir::{AnalysisObserver, NullAnalysisObserver, CFG};
+use crate::ir::{AnalysisEvent, AnalysisEventKind, AnalysisObserver, CFG};
 use crate::p0::{ClassFacts, Fact};
 use crate::p1::DecodedMethod;
 use crate::render::Rendered;
@@ -56,6 +56,7 @@ pub struct ClassSource {
     pub class: ClassKey,
     pub text: String,
     pub methods: Vec<MethodSource>,
+    pub failures: Vec<MethodFailure>,
 }
 
 pub struct MethodSource {
@@ -69,15 +70,73 @@ pub struct ClassAnalysis {
     pub image: ImageFact,
     pub facts: Arc<ClassFacts>,
     pub rendered: Rendered,
+    /// Method-local failures retained beside the published class text.
+    pub methods: Vec<MethodSource>,
+    pub failures: Vec<MethodFailure>,
 }
 
 pub struct SingleMethodAnalysis {
     pub rendered: Rendered,
+    pub failures: Vec<MethodFailure>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct MethodFailure {
+    pub class: String,
+    pub name: String,
+    pub prototype: String,
+    pub stage: String,
+    pub reason: String,
 }
 
 struct ClassOutput {
     source: String,
     methods: Vec<MethodSource>,
+    failures: Vec<MethodFailure>,
+}
+
+#[derive(Default)]
+struct MethodFailureObserver {
+    failures: std::sync::Mutex<Vec<MethodFailure>>,
+}
+
+impl MethodFailureObserver {
+    fn snapshot(&self) -> Vec<MethodFailure> {
+        match self.failures.lock() {
+            Ok(failures) => failures.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+}
+
+impl AnalysisObserver for MethodFailureObserver {
+    fn is_enabled(&self, kind: AnalysisEventKind) -> bool {
+        kind == AnalysisEventKind::MethodFailure
+    }
+
+    fn observe(&self, event: AnalysisEvent<'_>) {
+        let AnalysisEvent::MethodFailure {
+            class,
+            method,
+            descriptor,
+            stage,
+            reason,
+        } = event
+        else {
+            return;
+        };
+        let failure = MethodFailure {
+            class: class.to_owned(),
+            name: method.to_owned(),
+            prototype: descriptor.to_owned(),
+            stage: stage.to_owned(),
+            reason: reason.to_owned(),
+        };
+        match self.failures.lock() {
+            Ok(mut failures) => failures.push(failure),
+            Err(poisoned) => poisoned.into_inner().push(failure),
+        }
+    }
 }
 
 /// Decode one P1 method directly into the recovery CFG.
@@ -265,18 +324,20 @@ fn decompile_class<'a>(
         collect_nested_declarations(nested, &mut declarations);
     }
     let method_sources = method_sources(&parts.methods);
-    let observer: Arc<dyn AnalysisObserver> = Arc::new(NullAnalysisObserver);
+    let observer = Arc::new(MethodFailureObserver::default());
+    let analysis_observer: Arc<dyn AnalysisObserver> = observer.clone();
     let mut methods = parts.methods;
     let source =
         JavaDecompiler::new(JavaDecompilerConfig::default().with_preserved_dex_names(true))
             .with_shared_type_hierarchy(hierarchy(&declarations))
             .with_source_abi(java_abi(&declarations))
-            .with_analysis_observer(observer)
+            .with_analysis_observer(analysis_observer)
             .generate_class_with_nested(&parts.class, &mut methods, parts.nested)
             .map_err(|error| DexError::Backend(error.to_string()))?;
     Ok(ClassOutput {
         source,
         methods: method_sources,
+        failures: observer.snapshot(),
     })
 }
 
@@ -517,6 +578,7 @@ impl<'a> Engine<'a> {
             class: request.class,
             text: output.source,
             methods: output.methods,
+            failures: output.failures,
         })
     }
 
@@ -525,6 +587,8 @@ impl<'a> Engine<'a> {
         let image = self.image(class.dex).ok_or(RequestError::UnknownDex)?;
         let facts = image.index.class_facts_cached(class.class_def)?;
         let source = self.class_source(request)?;
+        let methods = source.methods;
+        let failures = source.failures;
         let rendered = Rendered::external(class, source.text, facts.clone());
         Ok(ClassAnalysis {
             image: ImageFact {
@@ -534,6 +598,8 @@ impl<'a> Engine<'a> {
             },
             facts,
             rendered,
+            methods,
+            failures,
         })
     }
 
@@ -573,6 +639,7 @@ impl<'a> Engine<'a> {
         })?;
         Ok(SingleMethodAnalysis {
             rendered: Rendered::external(class, source.text, facts),
+            failures: source.failures,
         })
     }
 }

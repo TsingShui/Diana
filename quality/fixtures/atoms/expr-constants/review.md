@@ -7,7 +7,21 @@ generated from it with `javac --release 8 -g` + `d8 --min-api 24` (see
 - Provenance: authored for this repository. No third-party code or data.
 - Regenerate with `quality/build.sh`; never edit `classes.dex` by hand.
 
-## Current verdict — exact character-use spelling
+## Current verdict: encoded string preparation
+
+Compared the same DEX on `b5eb94d` and the recovery-fixes candidate. The only text
+difference is LABEL: the baseline prints null, while the candidate retains the
+source's `label` string. All method bodies are byte-for-byte unchanged, so the
+prior path judgments below are reused for those bodies. This is LLM semantic
+review of the changed field, not behavioral execution.
+
+### Semantics
+
+| Subject | Judgment and reasoning |
+|---|---|
+| `LABEL` | Agreement: the original static string preparation is `label`, and that exact value is now retained instead of a descriptor default. No new initializer is introduced. |
+
+## Prior verdict — exact character-use spelling
 
 Compared df10b74 with this rendering change on the same DEX. Only charValue
 changes text: its existing range-proved char120 now prints as 'x'. P2–P8

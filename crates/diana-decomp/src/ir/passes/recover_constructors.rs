@@ -600,7 +600,12 @@ impl Pass for RecoverConstructors<'_> {
         let values = SsaValueGraph::build(cfg).map_err(ConstructorRecoveryError::Ssa)?;
         let facts = ObjectInitializations::analyze(cfg, &values, self.hierarchy)
             .map_err(ConstructorRecoveryError::Initialization)?;
-        if facts.entries().is_empty() && facts.discarded_allocations().is_empty() {
+        if !facts
+            .entries()
+            .iter()
+            .any(|initialization| initialization.mergeable)
+            && facts.discarded_allocations().is_empty()
+        {
             return Ok(PassResult::Unchanged);
         }
 
@@ -622,6 +627,9 @@ impl Pass for RecoverConstructors<'_> {
         let mut versions = SyntheticVersions::new(&values);
         let mut object_plans = Vec::new();
         for initialization in facts.entries() {
+            if !initialization.mergeable {
+                continue;
+            }
             if let [constructor] = initialization.constructors.as_slice() {
                 replacements.extend(
                     initialization

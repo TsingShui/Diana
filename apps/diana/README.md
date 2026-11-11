@@ -49,7 +49,7 @@ matching modes retain completion order.
 | `xref` | `context, match, use` |
 | `resources` | `context, id, name, config, value` |
 | `manifest` | XML, or JSON with `status, xml, warnings` |
-| `get-class`, `get-method` | Backend Java-like text, or JSON schema 4 |
+| `get-class`, `get-method` | Backend Java-like text, or JSON schema 5 |
 | `outline-class`, `outline-method` | Structured tree with call links, or JSON schema 1 |
 | `extract` | One output file |
 
@@ -358,16 +358,44 @@ Available expressions, original members, explicit operations and local recovery
 gaps remain visible. Java legality or compilability is not an output gate.
 Diagnostics are not hidden behind a verbosity flag.
 
-Schema 4 has these top-level fields:
+An unavailable method body contains Diana warning comments with the recovery
+reason and the project's issue URL. The diagnostic does not invent executable
+`throw` or `return` statements. Original input throws remain ordinary code:
 
-- `schema_version: 4` and `command: "get-class" | "get-method"`.
+```text
+// Diana: WARNING: Failed to decompile this method. Please report an issue at https://github.com/TsingShui/Diana/issues
+// Diana: Method could not be decompiled during semantic recovery: <concrete reason>
+```
+
+When a DEX allocation and its direct constructor call name different owners, the
+backend keeps separate operations instead of substituting a constructor:
+
+```text
+Child child = allocate-instance Child;
+init-direct child, Lexample/Parent;-><init>(I)V, [value];
+```
+
+`allocate-instance` allocates the original type without running a constructor.
+`init-direct` invokes the exact original target on that same reference. These
+Java-like operations preserve the separate execution sites and surrounding
+effects. They are not external helper calls or a claim of runtime verification.
+Ordinary matching allocation/constructor pairs retain `new T(...)` syntax.
+
+Schema 5 has these top-level fields:
+
+- `schema_version: 5` and `command: "get-class" | "get-method"`.
 - `selection`: physical `entry` (`null` for bare DEX), `logical` header
   ordinal, container-relative byte `header_offset`, Engine `class` key,
   optional `method` ID, `class_at` and optional `method_at`.
 - `result`: the rendered publication with `class, notation, text`.
+- `issues`: method-local recovery failures retained beside the published text;
+  each entry carries the method identity, stage and concrete reason. A nonempty
+  list makes the command exit nonzero after the complete publication is written.
 
 `result.text` is byte-for-byte the text presentation. Local member failures
-remain content of that publication. A shared rendering failure is returned as a
+remain content of that publication and also appear in `issues`. Both formats
+exit with code 1 and report the recovery failure on stderr after writing the
+available result, including when `-o` selects a file. A shared rendering failure is returned as a
 request error; an unfinished prefix is never reported as a successful complete
 result.
 
