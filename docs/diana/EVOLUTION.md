@@ -120,11 +120,16 @@ structural and actually executed behavioral evidence.
 
 ## What the machine checks
 
+The supplementary executor design from this section onward refers to retired
+pipeline products and archived module paths. It is retained as historical design,
+not a current implementation prescription or runnable acceptance suite. The
+primary fixture/review iteration above remains applicable.
+
 The following sections define supplementary, test-owned behavioral checking.
 They do not replace the primary complexity-challenge and LLM-review loop.
 
-The subject is the owned `MethodCode`, its selected control arena and its
-[operation/transfer emission facts](../../crates/diana-decomp/src/p7/emission.rs),
+The historical subject was the owned `MethodCode`, its selected control arena and
+operation/transfer emission facts from the archived `src/p7/emission.rs`,
 obtained through the shared ordinary Engine entry. These are consumed by P9,
 not an earlier CFG that still contains decisions the final output has omitted.
 

@@ -1,9 +1,13 @@
 # Diana phases
 
-The approved architecture is [PIPELINE_DESIGN](PIPELINE_DESIGN.md). The application
-owns files/APKs and lends DEX bytes to the native engine. The active path is the
-reader, P0/P1 facts and recovery backend inside `crates/diana-decomp/`. The P2–P9 rows below describe the archived staged
-implementation under `ref-old-impl/v2/`, not active modules.
+> Historical stage map for the retired numbered-stage pipeline. The scheduling,
+> product-access rules and inspection commands below do not describe the current
+> backend. Consult the [engine README](../../crates/diana-decomp/README.md) and
+> `crates/diana-decomp/src/engine.rs` for the active entry.
+
+The application owns files/APKs and lends DEX bytes to the native engine. P0/P1
+fact modules remain in the active backend. The P2–P9 rows below describe the
+archived implementation under `ref-old-impl/v2/`.
 
 | Stage | Location | Product and responsibility |
 |---|---|---|
@@ -20,7 +24,7 @@ implementation under `ref-old-impl/v2/`, not active modules.
 | P9 | `ref-old-impl/v2/crates/diana-decomp/src/p9/` | Owned `Rendered`: existing expressions/names to UTF-8 text, JSON, source spans and concrete output diagnostics. |
 
 Archived implementations are not active stages or alternate recovery paths.
-The [P1–P9 local-result contract](PIPELINE_DESIGN.md#92-p1p9-uniformly-consume-local-results) applies
+The historical P1–P9 local-result design applied
 to every stage: mature products account for coverage, established facts and local
 unavailability, and downstream processing preserves independent results. This
 contract is broader than the currently supported local data/binding continuation;
@@ -132,10 +136,5 @@ DEX reconstruction.
 - Method results and failure kinds are distinct. Unknown heap/lock outcomes are
   explicit semantics, not a successful verification badge or an input error.
 
-The stage chapters define [input](spec/01-input.md), [P0](spec/00-class.md) and
-[P2 execution/tests](spec/02-flow.md), [P3 SSA/tests](spec/03-ssa.md) and
-[P4 interpretations](spec/04-types.md), [P5 storage](spec/05-variables.md),
-[P6 regions](spec/06-regions.md), [P7 expressions](spec/07-java.md) and
-[P8 assembly/names](spec/08-class.md) and [P9 rendering](spec/09-rendering.md).
-PIPELINE_DESIGN remains authoritative
-for ownership, consumers, failure preservation and the later product chain.
+The old stage chapters have been removed and remain available in Git history.
+This stage map does not govern current ownership, interfaces or scheduling.

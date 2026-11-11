@@ -8,8 +8,7 @@ The binary is `diana` (`diana.exe` on Windows). CLI binary releases use
 [GitHub Releases](https://github.com/TsingShui/Diana/releases). Cargo installation
 builds from Git or a local checkout; the crate is not published to crates.io.
 
-The [approved architecture](../../docs/diana/PIPELINE_DESIGN.md) owns product
-boundaries. This package owns input mapping, APK/ZIP access, selection,
+This package owns input mapping, APK/ZIP access, selection,
 command routing and file publication. Decompilation uses only the analyzed input;
 external classpaths, declarations and runtimes are not required.
 
@@ -354,8 +353,7 @@ explicitly unavailable. A resource-name/value search requires the resource table
 
 ## Decompilation text and JSON
 
-Text is exactly the existing P9 UTF-8 text. The notation is
-`diana-java-like-v1`, described in [P9 rendering](../../docs/diana/spec/09-rendering.md).
+Text is the UTF-8 source delivered by the active Engine recovery backend.
 Available expressions, original members, explicit operations and local recovery
 gaps remain visible. Java legality or compilability is not an output gate.
 Diagnostics are not hidden behind a verbosity flag.
@@ -456,5 +454,6 @@ remaining declaration and reference-resolution costs. Compare a one-worker run
 to identify intrinsic hotspots, then use the normal worker count for wall-clock
 and resource measurements.
 
-Use the engine's [`dbg_shell`](../../crates/diana-decomp/README.md) for P0–P9
-inspection. The CLI does not expose separate phase constructors or a retry chain.
+For recovery behavior, inspect the public `Engine` entry and its consumers in
+`crates/diana-decomp/src/engine.rs`. The retired stage-inspection shell is not
+part of the current package.

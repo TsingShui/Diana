@@ -21,7 +21,7 @@ relevant work. Package-local instructions refine their respective scopes.
   build, test, lint, format or release it, and do not add a Diana dependency on
   reference crates.
 
-See [00-overview](spec/00-overview.md) for actual paths. Older root-product/src paths in
+See the package layout above for actual paths. Older root-product/src paths in
 feature tasks mean the Diana application root `apps/diana/`; historical reference
 paths are resolved against their upstream URL and pinned commit in SOURCE_MAP, not
 by a local copy.
@@ -34,13 +34,11 @@ Diana is a decompiler: default class/method retrieval MUST expose available
 code, not require an entirely verified Java unit before showing anything.
 Keep partial Java, original DEX debug information and unavailable reasons explicit; a local failure
 MUST NOT discard independently recoverable fragments within that method or other
-members. All error handling follows [failure locality](PIPELINE_DESIGN.md#9-local-failure-and-method-exit).
+members. Error handling follows the root [AGENTS.md](../../AGENTS.md#error-handling).
 Contributors MUST identify the owning producer, affected facts, actual dependents
 and retained output when adding or changing an error path. Any wider stop requires
 a concrete dependency/resource reason, not only an error kind or an Engine-level
-catch-and-continue patch. The [P1–P9 contract](PIPELINE_DESIGN.md#92-p1p9-uniformly-consume-local-results)
-applies to each stage's input, output and stop behavior, not only P1–P3 or outer
-scheduling. Contributors MUST update the owning producer and real consumers
+catch-and-continue patch. Contributors MUST update the owning producer and real consumers
 together; a later stage MUST NOT erase local results by reintroducing an all-or-nothing
 gate. Text/JSON are presentations of the same result,
 not capability gates. Preserve hard errors and distinguish observed readable output
@@ -68,59 +66,42 @@ are available in git history. Do not maintain a separate task or batch-record tr
 
 ## Architecture guardrails
 
-Before changing an engine capability, contributors MUST read
-[phases](phases.md) and the owning stage chapter. Contributors MUST identify the owning phase, actual producer/consumer, invariant
-and existing independent evidence before implementation. Before
-implementation, contributors MUST also identify the consumed facts, their full or
-partial guarantees, and the classified failure/resource behavior.
-For the pipeline refactoring, contributors follow the root
-[refactoring authority](../../AGENTS.md#pipeline-refactoring-authority). Technical
-details within the approved target have default approval; the listed prohibited
-changes do not. Stop and report concrete conflicts without weakening the design
-or adding a bypass.
+Before changing an engine capability, contributors MUST read the owning
+implementation and [engine README](../../crates/diana-decomp/README.md).
+Identify the actual producer/consumer, consumed facts, full or partial guarantees,
+invariants, classified failure/resource behavior and independent evidence.
+The active public entry is `Engine` in `crates/diana-decomp/src/engine.rs`.
+The retired numbered-stage design does not authorize a migration or define
+current interfaces.
 
-- Contributors MUST keep one shared ordinary-method chain: P2 CFG/effects →
-  P3 SSA → P4 declaration constraints/evidence → P4 types/use conversions →
-  P5 storage/copies → P6 regions → P7 method expression. Under the approved
-  target, P8 assembles the class and plans names; P9 renders existing products
-  and original facts without further analysis.
-- Contributors MUST follow the stage-authority rules in [phases](phases.md)
-  when exposing stage entries, implementation modules and product views. A
-  read-only product or a passing behavior test does not establish phase ownership.
-- Contributors MUST document actual producer/consumer needs before implementing
-  the approved product interfaces. Root refactoring authority permits technical
-  detail decisions, not wider stage access, exports or product-construction
-  authority. Contributors MUST NOT change ownership or scheduling beyond that
-  target or treat default approval as permission for its prohibited changes.
+- Contributors MUST keep one shared ordinary-method analysis chain. Rendering
+  consumes delivered products and original facts without starting another analysis.
+- Contributors MUST document actual producer/consumer needs before changing
+  interfaces, visibility, ownership or scheduling. A read-only view or passing
+  behavior test does not establish construction authority.
 - Contributors MUST NOT work around a missing producer or an access restriction
   by widening visibility, forwarding internal implementations through another
   module, adding an alternate analysis route or weakening a sealed product.
   Contributors MUST stop the affected change and request a decision when the
   capability cannot be implemented within the existing contract.
-- Contributors MUST put calls, fields, arrays, casts, allocation and fill into
-  common operation, definition/use and effect products. Initialization and
-  FreshArray proofs MUST consume those products in their owning phases, not
+- Contributors MUST represent calls, fields, arrays, casts, allocation and fill
+  through the shared operation, definition/use and effect representations.
+  Initialization and array proofs MUST consume those facts in their owning modules, not
   maintain another complete method register/alias tracker.
 - Contributors MUST NOT select recovery paths by hard-coded class/test names or
   whole-method instruction templates. Specification-defined opcode/format checks, local
-  proofs, P6 region patterns and Generated-member rules remain in their owning
-  phases.
+  proofs, region patterns and generated-member rules remain in their owning modules.
 - Contributors MUST NOT organize `engine.rs` as successive whole-method
   builders/verifiers that emit on the first match. Ordinary methods MUST use one
-  analysis chain. P7 MUST retain available readable reconstruction from
+  analysis chain. Recovery MUST retain available readable reconstruction from
   shared products; the classified read-only raw exit MUST NOT retry analysis or
   reconstruct values.
-- Contributors MUST keep P4 constraints/binding obligations distinct from P4
-  typed uses and P7 method-expression checks. P6 MUST read P5 storage before
-  lowering, not derive its graph from a P7 AST. Under the approved target, P8
-  plans display names without reselecting method types or recovery semantics;
-  P9 only renders existing products.
 - Natural regions and explicit Java-like graph transfers MUST consume the same
-  operations, storage and CopyPlans. Contributors MUST NOT add a generated
+  operations, storage and transfer facts. Contributors MUST NOT add a generated
   dispatcher or a separate method analysis for either representation.
 - Reviewers MUST reject parallel recovery implementations with their own
   complete-method decoding, SSA/type analysis or register/alias tracking.
-  Operation-specific helpers and phase-owned proofs do not authorize another
+  Operation-specific helpers and module-owned proofs do not authorize another
   method entry path. Independent replay remains a test-only verifier obligation.
 - A migration MUST preserve available members, original identities, classified
   failures, raw completeness, effect order and resource behavior.
@@ -274,7 +255,7 @@ remain authoritative.
   depend on those guarantees; only the owning stage constructs its sealed product.
 - Contributors MUST model mutually exclusive states with enums rather than
   independent flags that permit contradictions. Output states and failure kinds
-  remain separate as defined by [00-overview](spec/00-overview.md). Independent declaration/code results
+  remain separate. Independent declaration/code results
   and ordinary boolean predicates remain valid when their combinations have
   explicit meanings.
 - Core interfaces MUST propagate classified errors. Contributors MUST NOT turn
@@ -341,8 +322,8 @@ Timeline spans do not replace CPU sampling, benchmarks or resource accounting.
 ## diana-decomp
 
 Before working on files under `crates/diana-decomp/`, contributors MUST read
-and follow [the engine instructions](../../crates/diana-decomp/AGENTS.md) in addition
-to this file. A link does not automatically load the referenced instructions.
+the [engine README](../../crates/diana-decomp/README.md) and the owning
+implementation, alongside the root instructions and this file.
 
 ## Corpus data and sensitive inputs
 

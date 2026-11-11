@@ -155,8 +155,9 @@ location as independently accessible evidence.
 ## 6. Terminology and prose
 
 Use one preferred term for one concept. Do not interchange distinct concepts to
-satisfy a vocabulary rule. The definitions in [spec/00](spec/00-overview.md) remain
-authoritative; this table guides wording rather than redefining data or interfaces.
+satisfy a vocabulary rule. Use the definitions in the owning implementation and
+current API documentation; this table guides wording rather than redefining data
+or interfaces.
 
 | Term | Use it for | Do not use it for |
 |---|---|---|
@@ -177,7 +178,7 @@ authoritative; this table guides wording rather than redefining data or interfac
 | `limit` | A configured bound | allowance policy |
 
 `Malformed`, `Unsupported`, `ResourceExhausted` and `InternalInvariant`
-are failure kinds in [spec/00](spec/00-overview.md). `Unavailable` is a result status there,
+are failure kinds where defined by the owning API. `Unavailable` is a result status,
 not a synonym for those failure kinds. Known invalid semantics also belong under
 `Malformed`; the term is not limited to damaged byte structure. Missing evidence
 can cause `Unsupported` without proving that the input is semantically valid.

@@ -1,5 +1,9 @@
 # Diana pipeline redesign: complete product delivery and stage trust
 
+> Historical design for the retired numbered-stage pipeline. This document does
+> not define current architecture, interfaces, refactoring authority or acceptance
+> requirements. See the [documentation entry](README.md) for active references.
+
 ## 1. Design positioning
 
 This plan defines the target data flow of single-class decompilation: P0 produces
@@ -9,16 +13,10 @@ Method input preparation adds no P number. The optimisation target is the total
 latency of a formal single-class request; `p0_debug` is a fact-inspection entry,
 not a performance target.
 
-This is the target design, not a capability claim about the current
-implementation. The current execution order is in [phases.md](phases.md), and the
-active stage contracts are in the [spec chapters](README.md).
-During implementation, contributors MUST update the affected contracts, producers
-and consumers together; this plan cannot be used as grounds to widen approved
-product access or construction authority. Independent semantic verification runs
-only in test builds under §6 and does not enter ordinary decompilation. Technical
-detail within the agreed target has default approval; prohibited additional
-changes are listed in the root
-[AGENTS.md](../../AGENTS.md#pipeline-refactoring-authority).
+The execution order and stage contracts described here belong to the historical
+design. Its implementation rules and approval language do not grant authority for
+current changes. Current contribution rules are in [AGENTS.md](../../AGENTS.md)
+and [CONTRIBUTING](CONTRIBUTING.md).
 
 Core principle: **the previous stage delivers a complete product that satisfies its
 contract, and the next stage trusts that guarantee and performs only its own
@@ -1207,8 +1205,7 @@ downstream does not project again. Ordinary reads and writes depend on the origi
 opcode encoding and SSA bindings and are not gated on complete component declarations;
 the payload's element interpretation still requires sufficient component evidence.
 A complete positional bound also does not authorize deleting the original null, bounds
-or covariant-store checks. Detailed rules are in
-[P4 component knowledge](spec/04-types.md#array-component-knowledge).
+or covariant-store checks.
 
 Type origins and array components first form a usable constraint closure, and family
 selection ends afterwards; aget, for example, cannot default to int first and then
@@ -1243,9 +1240,6 @@ once after representation completes: P5 does not re-select a family, and P7 does
 back whether Java generation succeeded.
 
 ### 5.5 P5: per-edge out-of-SSA and storage transfer plans
-
-The active closed interface, plan coverage and local gaps are in
-[the P5 product contract](spec/05-variables.md).
 
 Chosen algorithm: type-explicit, per-edge SSA elimination (out-of-SSA), ordering parallel
 copies through a copy-dependency index and a ready queue, breaking cycles with temporary
@@ -1847,8 +1841,7 @@ or an allocation-source set alone does not prove the same dynamic acquisition.
 Captures, handler receives, operations, branches and secondary exceptions inside real cleanup
 still stay in their original protection region; natural synchronization carries only monitor
 events that already correspond. When exits and copy positions cannot be preserved in existing
-regions, P6 retains the complete explicit plan and the concrete reasons. The implementation
-contract is in [lock scopes and exits](spec/06-regions.md#monitor-capture-and-scope-proof).
+regions, P6 retains the complete explicit plan and the concrete reasons.
 
 When a natural lock scope cannot be established, use the following explicit pseudo-code
 operations:
@@ -1928,8 +1921,6 @@ Input: PlannedMethod, whose mature operations, bindings, types, storage, regions
 context are consumed through formal interfaces. A member with confirmed absence of code
 consumes the P0 declaration and the method reader's no-code facts along the independent
 declaration path, fabricates no DecodedMethod and enters no P2–P6 stage.
-The concrete interfaces of the sealed product, execution phases and local failure are in
-[the P7 product contract](spec/07-java.md).
 
 #### 5.7.1 Default per-operation expression
 
@@ -2470,9 +2461,7 @@ hierarchy uniqueness.
 
 P8 owns class-header/field expression, static preparation, member presentation ownership,
 class-scoped package/import name plans and class assembly. Its final input is ClassFacts, all
-method results and required class-level evidence, and its product is the owned ClassResult. The
-sealed delivery and name-selection interfaces are in
-[the P8 product contract](spec/08-class.md).
+method results and required class-level evidence, and its product is the owned ClassResult.
 
 Assembly is based on the original member directory, not on the list of successful methods.
 Failures, declaration-only members and generated members retain original identities; when the
@@ -2615,7 +2604,6 @@ problems and the same immutable source product; write_text/write_json use that o
 A method-private traversal/display-index scratch failure is limited to that member; when shared
 output or class-level display context cannot be established, a RenderStop is delivered that retains
 the source product and the completed prefix and is not relabelled a success.
-Detailed notation, lifetime and error scope are in [P9 rendering](spec/09-rendering.md).
 
 ### 8.3 Member contract of class assembly
 
@@ -2702,8 +2690,7 @@ method and §9.2 defines chain-wide ownership:
    problem into termination of a whole class, DEX or request. Widening the stop scope MUST name the
    damaged shared fact, the section that cannot be located, or the scheduling, result retention and
    output resources that can no longer be maintained.
-3. Missing or unusable local facts MUST be delivered explicitly under
-   [fact states](spec/00-overview.md#failure-kinds-and-fact-states), and Unknown must not erase an
+3. Missing or unusable local facts MUST be delivered with explicit states, and Unknown must not erase an
    already recorded error. When a local expression cannot be recovered, the method result MUST keep
    the recovered content and mark the unrecovered fragment and the available DEX facts explicitly in
    the corresponding original range; the whole method must not be withdrawn because that fragment
@@ -2851,8 +2838,8 @@ independently check that:
   retention do not regress.
 
 These are target contracts and acceptance conditions, not a claim that the current implementation
-passes. Current capabilities and stages not yet connected are governed by [phases](phases.md) and
-the [engine README](../../crates/diana-decomp/README.md).
+passes. Current capabilities are documented in the
+[engine README](../../crates/diana-decomp/README.md) and active source.
 
 ### 9.2 P1–P9 uniformly consume local results
 

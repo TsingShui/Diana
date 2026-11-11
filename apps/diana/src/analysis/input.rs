@@ -154,7 +154,7 @@ impl InputBytes {
 ///
 /// The mapping is read-only and outlives the file descriptor it was made from.
 /// The host owns the file: truncating or rewriting it while a request holds this
-/// lease is outside the supported input contract (see spec/01-input.md).
+/// lease is outside the supported input contract.
 #[derive(Debug)]
 pub struct InputLease {
     identity: InputIdentity,
@@ -243,7 +243,7 @@ pub fn open_input(path: &Path, options: &InputOptions) -> Result<InputLease, Inp
 /// unsafe operation because the bytes are outside Rust's aliasing model. The
 /// obligations this function relies on are that the mapping is never written and
 /// that the file is not truncated for as long as the lease lives; both belong to
-/// the host and are stated in spec/01-input.md.
+/// the host.
 #[allow(unsafe_code)]
 fn map_input(file: &std::fs::File, len: u64) -> Result<InputBytes, InputError> {
     if len == 0 {

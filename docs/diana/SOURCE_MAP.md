@@ -2,6 +2,10 @@
 
 Status: source-review notes for the design, not a cross-engine performance or correctness evaluation. This document pins reference versions; linked line numbers apply only to those versions. Diana is designed independently, not as a migration of an existing experimental branch.
 
+The algorithm comparison tables record historical design decisions. They are
+provenance notes, not current pipeline requirements or implementation-status
+claims. Consult the package READMEs and owning implementation for current behavior.
+
 ## 1. Reference versions available to the team
 
 References are identified by **public repository URL, pinned commit, and repository-relative file/symbol**. They do not depend on the author's home directory, a deleted worktree, the parent repository's disk layout, or SSH access. Public availability check: the pinned versions of the independent decompiler repositories can be accessed over HTTPS. This does not establish authorization for every fixture or the correctness of their algorithms.
@@ -21,9 +25,9 @@ The old sources were archived under `ref-fork/rasc/` until commit 5cb156c, when
 that tree was removed from the working tree; they do not participate in active
 builds or tests and remain reachable in git history. Read the pinned DX/old root
 paths through their public URL, commit and path anchors below; those anchors are
-unchanged. See [00-overview](spec/00-overview.md).
+unchanged.
 
-Product scope: Diana is the entire project, `diana` is the active product/CLI, and `diana-decomp` is the internal engine. Existing rasc source is a reuse source for CLI, input and lightweight queries; see [00-overview](spec/00-overview.md). No MCP protocol, schema or migration is designed. Decompilation algorithms are independently implemented; the experimental branch is not ported.
+Product scope: Diana is the entire project, `diana` is the active product/CLI, and `diana-decomp` is the internal engine. Package boundaries are described in the [documentation entry](README.md); fork provenance is in the [engine README](../../crates/diana-decomp/README.md).
 
 The review covers source, public entry points and documentation; it makes no corpus coverage claim. Pinned commits do not track HEAD. Each reference update requires separate review; another version must not be substituted silently. The RG parent repository's gitlink does not automatically extend the parent's Apache declaration to the child repository; see §6.
 
@@ -43,7 +47,7 @@ certified by the reference or by fixture output.
 |---|---|---|---|
 | KU-01 | `docs/phases.md`: Phases, Band B, Source layout | Phases classify artifacts; preparation is orthogonal; Band B execution order is not determined by directory numbering. | Physical directories follow artifact ownership; actual execution order is listed separately. Do not assume every numbered phase runs exactly once. |
 | KU-02 | `decompiler/crates/kuna-decomp/src/infra/universalaction.rs:46–101`: `RuleRow`, `SchedNode`, `materialize` | The scheduling tree has Action/Pool/Group/RestartGroup; constructors actually build the execution tree. | Use direct typed-function calls and module-local bounded worklists; do not port dynamic plugins, ActionDatabase or generic Repeat scheduling. |
-| KU-03 | Same file: `universal_sched:296`, `mainloop:550`, `fullloop:627` | `ActionBlockStructure` is inside mainloop; types, heritage and the rule pool interleave with later control-graph transformations. | “Kuna always finishes all dataflow before structuring” is not an accurate execution description. Diana uses the typed-call order in [phases](phases.md). |
+| KU-03 | Same file: `universal_sched:296`, `mainloop:550`, `fullloop:627` | `ActionBlockStructure` is inside mainloop; types, heritage and the rule pool interleave with later control-graph transformations. | “Kuna always finishes all dataflow before structuring” is not an accurate execution description. Inspect Diana's actual call chain when comparing execution order. |
 | KU-04 | `docs/spec/00-overview.md §0.7` (approximately `3432–3475`) | Triggers, persistent state and re-entry scope are listed individually; unimplemented feedback edges are explicitly identified. | Establish feedback only for implemented producers/consumers; algorithms do not rewrite original bytes or user configuration. |
 | KU-05 | `decompiler/crates/kuna-decomp/phases.toml`; `build.rs`; `build/registry.rs` | Registry and code generation provide option/catalog metadata, not the actual schedule. | Wire typed functions directly; do not build a registry or static metadata generator. PhaseId is for diagnostics only. Do not introduce TOML/build.rs as a second source of truth. |
 | KU-06 | `p8_structure/blockaction.rs`: `ActionBlockStructure`; `p8_structure/region_structurer.rs` | Different structuring strategies and fallbacks after rejection exist. Some module header comments describe historical defaults and do not override live configuration. | Use actual defaults and call sites as evidence. Diana differs because Java has no goto: ordinary graphs may fall back to a state machine, but exception/monitor graphs cannot use it unconditionally. |
@@ -89,11 +93,11 @@ Check payload and `bytes()` paths in `crates/rusty-dex/src/dex/instructions.rs` 
 | RG-06 | `src/dex/mod.rs:847–925`: `parse_code_item`, `parse_catch_handlers` | Has checked_mul/range checks, but typed_count can reach Vec::with_capacity before complete validation. | The reader validates the count against remaining input before allocation; small size is not evidence of safety. |
 | RG-07 | Same file, `read_mutf8:1059–1121` | Uses replacement characters for isolated surrogates when constructing a Rust String. | Diana preserves DEX strings as UTF-16 code units and does not accept semantic change; human diagnostics and literal representation are separate. |
 | RG-08 | `tests/quality_gate.py:420–456`: `decompile_dad_cached`; `normalize_dad_*` | Frozen DAD output with DEX-aware normalization; missing caches are not automatically generated. pickle is suitable only for trusted internal input. | Borrow the discipline of a fixed comparator and explicit baseline; do not copy fixtures, the pickle loader or permissive normalization. Differential results are clues only. |
-| RG-09 | `src/types.rs`, `src/decompiler.rs` `encoded_value` | Conversion from access flags/source literals to strings needs Java-legality checks. | synthetic/bridge have no Java modifier word; declared-synchronized conveys the declaration modifier, not implicit VM locking (see [P9](spec/09-rendering.md#declarations-metadata-and-literal-identity)); retain original flags in metadata. |
+| RG-09 | `src/types.rs`, `src/decompiler.rs` `encoded_value` | Conversion from access flags/source literals to strings needs Java-legality checks. | synthetic/bridge have no Java modifier word; declared-synchronized conveys the declaration modifier, not implicit VM locking; retain original flags in metadata. |
 
 ## 5. Algorithm applicability conditions
 
-1. Fixed ValueId/PhiId fixes naming only; it does not prove state propagation converges. The set domains, transfers and finite measures are defined in [PIPELINE_DESIGN §§5.3–5.4](PIPELINE_DESIGN.md#53-p3-exception-aware-pruned-ssa-with-on-demand-idf). Do not inherit a reference paper's proof for a different domain.
+1. Fixed ValueId/PhiId fixes naming only; it does not prove state propagation converges. Establish the actual set domains, transfers and finite measures from the owning implementation. Do not inherit a reference paper's proof for a different domain.
 2. Phi assignments must follow parallel-copy semantics. Arbitrary sequential assignments can lose old values; check actual edge placement.
 3. Compilability, structural coverage, behavior on finite inputs and equivalence for arbitrary programs are distinct forms of evidence and cannot substitute for each other.
 4. Constructor helpers cannot legally access arbitrary uninitialized this, locks or fields. Reject inexpressible forms under the adjacent new/init condition; do not provide a universal helper.
@@ -274,8 +278,8 @@ The table at the top of [the download script](../../tools/fetch_references.py) i
 Fixture-authoring and AXML format anchors: the locked Smali 2.5.2
 [parser](https://github.com/JesusFreke/smali/blob/v2.5.2/smali/src/main/antlr/smaliParser.g),
 [lexer](https://github.com/JesusFreke/smali/blob/v2.5.2/smali/src/main/jflex/smaliLexer.jflex)
-and tree walker define input-fixture directives, escapes, literals and operands;
-[PIPELINE_DESIGN](PIPELINE_DESIGN.md) requires readable original facts, not this assembler grammar.
+and tree walker define input-fixture directives, escapes, literals and operands.
+These assembler rules do not define Diana's output grammar.
 AOSP Android 15 [ResourceTypes.h](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-15.0.0_r1/libs/androidfw/include/androidfw/ResourceTypes.h)
 defines ResChunk_header, ResStringPool, ResXMLTree and ResTable package/type/entry
 field layouts. Diana's resource catalog and AXML reader share one bounded string
@@ -356,29 +360,30 @@ The script pins commits and sparse paths; links below also point to those commit
 
 ## 9. Design choices and evidence boundaries
 
-This section connects sources to concrete implementation rules. DESIGN/ALGORITHMS govern algorithm steps and data definitions; this document records provenance and the scope of evidence only.
+This section records historical design comparisons and the scope of their source
+evidence. It does not define current algorithm steps, interfaces or acceptance.
 
-### 9.1 Existing supported choices retained
+### 9.1 Historical design choices
 
 1. **Semantics first; distinguish success from fallback:** D-Helix, empirical Java research and CompCert all indicate that source-like appearance or compilability does not substitute for behavior. Retain Java/Debug/Unavailable with original facts and explicit coverage; do not report Java success with exception stubs.
 2. **Three-address CFG → fixed-identity SSA → type/storage → region/Java** remains a reasonable conservative engineering choice. Recent POPL work presents a joint-analysis alternative; it does not prove independent phases wrong or require importing GVN/BDD.
 3. **Phi parallel copies, exceptional old state and strict preservation of may-throw operations** have more direct evidence: R8/ART explicitly distinguish exceptional and normal state. Do not give every predecessor the same successful state.
-4. **Natural regions and explicit labelled graph transfers** preserve readable control flow without a generated dispatcher under the approved PIPELINE_DESIGN. DREAM/SAILR do not remove type, exception or lock correspondence obligations.
+4. **Natural regions and explicit labelled graph transfers** were the staged design's control representation. DREAM/SAILR do not remove type, exception or lock correspondence obligations.
 5. **Core correctness cannot be switched off; beautification is off by default.** TUNER can inspire development localization, but disabling a faulty phase cannot count as Java success. Reports/text still have no cross-run stable-order requirement.
 
-### 9.2 Specific adopted design choices
+### 9.2 Source evidence for the historical design
 
-| Source | Adopted engineering rule | Current location |
+| Source | Historical engineering rule | Evidence boundary |
 |---|---|---|
-| R01 Cousot / POPL 2023 / R8 | Finite slot-state/liveness domains and exceptional commit positions constrain SSA construction; approved P3 uses pruned SSA and on-demand IDF, not fixed Phis at every block entry. | [PIPELINE_DESIGN §5.3](PIPELINE_DESIGN.md#53-p3-exception-aware-pruned-ssa-with-on-demand-idf); no claim to inherit a reference proof. |
-| R02 SoK / DREAM / Ghidra | Explicit schemas for Sequence/Diamond/natural loops/restricted switch, check capacity before copying, use an explicit labelled transfer representation on failure; no global optimum sought. | [PIPELINE_DESIGN §5.6](PIPELINE_DESIGN.md#56-p6-natural-regions-first-a-java-like-control-plan-with-explicit-transfers-preserved); resource quotas are not used. No numeric thresholds are inferred from the papers. |
+| R01 Cousot / POPL 2023 / R8 | Finite slot-state/liveness domains and exceptional commit positions constrain SSA construction; the staged design selected pruned SSA and on-demand IDF. | The selected algorithm does not inherit a reference proof. |
+| R02 SoK / DREAM / Ghidra | Explicit schemas for Sequence/Diamond/natural loops/restricted switch, check capacity before copying, use an explicit labelled transfer representation on failure; no global optimum sought. | No numeric thresholds are inferred from the papers. |
 | R03 verified lifting / CompCert / Alive2 | Raw/value/copy/edge/Java binding validators each read original facts; finite Drivers and coverage are reported separately, not as general proof. | ALGORITHMS validators and independent case evidence. |
-| R04 JLS/JMM / ART | Preserve volatile/init/lock order; lock roots require dynamic freshness; avoid constant field initializers on final fields that would inline sget. | [PIPELINE_DESIGN §§5.4–5.7](PIPELINE_DESIGN.md#54-p4-value-facts-and-use-interpretations-producing-typedmethod); no new concurrency platform. |
-| R05 DEX / ART / EverParse / wasmparser | Explicit checked ranges/ULEB/MUTF16/metadata and 041 physical addressing; distinguish raw-valid/Java-profile/resource/BUG classifications. | [01-input](spec/01-input.md), [00-overview](spec/00-overview.md); do not copy upstream panic or unsafe behavior. |
-| R06 Java research / fidelity taxonomy | Generated executable members are not DeclarationOnly; finite behavior is not equivalent to “compilation implies equivalence.” | [00-overview](spec/00-overview.md) and [PIPELINE_DESIGN](PIPELINE_DESIGN.md). |
-| R07 R8 lifetime / concrete call chain | Preserve fallible allocation and original-result delivery, release scratch after its consumer, and keep only required result facts; Diana has no cumulative work/allocation ledger. | [00-overview](spec/00-overview.md). |
-| R08 Dalvik fill / ART verifier | Filling an existing primitive array can accept null under static type verification; do not remove the NPE of a zero-element operation. Java uses a length read and proven FreshArray stores. | [02-flow](spec/02-flow.md); [bytecode](https://source.android.com/docs/core/runtime/dalvik-bytecode), FILL_ARRAY_DATA branch of pinned ART method_verifier.cc. |
-| R09 JVMS 8 format limits | JVMS limits describe compiled artifacts, not Diana readable-output admission. DEX format, platform capacity and configured resource limits remain enforced; production does not qualify source against classfile limits. | [01-input](spec/01-input.md); [JVMS 4.3.3](https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-4.html#jvms-4.3.3), [4.7.3](https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-4.html#jvms-4.7.3). |
+| R04 JLS/JMM / ART | Preserve volatile/init/lock order; lock roots require dynamic freshness; avoid constant field initializers on final fields that would inline sget. | Source semantics do not establish that a recovery implementation preserves them. |
+| R05 DEX / ART / EverParse / wasmparser | Explicit checked ranges/ULEB/MUTF16/metadata and 041 physical addressing; distinguish raw-valid/Java-profile/resource/BUG classifications. | Do not copy upstream panic or unsafe behavior. |
+| R06 Java research / fidelity taxonomy | Generated executable members are not DeclarationOnly; finite behavior is not equivalent to “compilation implies equivalence.” | Product status and semantic evidence remain distinct. |
+| R07 R8 lifetime / concrete call chain | Preserve fallible allocation and original-result delivery, release scratch after its consumer, and keep only required result facts. | Reference lifetime patterns require review against the actual consumer chain. |
+| R08 Dalvik fill / ART verifier | Filling an existing primitive array can accept null under static type verification; do not remove the NPE of a zero-element operation. The staged design used a length read and proven FreshArray stores. | [Bytecode](https://source.android.com/docs/core/runtime/dalvik-bytecode), FILL_ARRAY_DATA branch of pinned ART method_verifier.cc. |
+| R09 JVMS 8 format limits | JVMS limits describe compiled artifacts, not Diana readable-output admission. | [JVMS 4.3.3](https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-4.html#jvms-4.3.3), [4.7.3](https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-4.html#jvms-4.7.3). |
 
 Independent normative basis for case revisions (R10): [DEX access_flags/encoded_value](https://source.android.com/docs/core/runtime/dex-format) distinguishes the managed declared-synchronized flag, explicit value tags and defaults; [JLS §8.9.3](https://docs.oracle.com/javase/specs/jls/se8/html/jls-8.html#jls-8.9.3) gives enum declaration order; [JLS §12.4.1](https://docs.oracle.com/javase/specs/jls/se8/html/jls-12.html#jls-12.4.1) and [§13.4.9](https://docs.oracle.com/javase/specs/jls/se8/html/jls-13.html#jls-13.4.9) define constant inlining/initialization; [ZIP APPNOTE](https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT) specifies entry CRC/size/identity. The historical D069 TargetExists issue concerns the [CLI publication contract](../../apps/diana/README.md#file-publication-and-exit-codes); atomic publication relies on native filesystem primitives, not finite concurrent sampling. Revisions are recorded in git history and JSON revisionReason; normative sources do not replace actual input certification or independent review.
 

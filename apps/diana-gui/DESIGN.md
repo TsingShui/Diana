@@ -24,8 +24,8 @@ missing, the Adapter MUST report the missing capability instead of accessing pri
 re-running stages or starting another reconstruction route.
 The rendering layer MUST NOT start analysis, decide recovery strategy or accept GPUI
 controls supplied by a backend.
-DEX method-level scheduling and stage construction authority still follow
-[PIPELINE_DESIGN](../../docs/diana/PIPELINE_DESIGN.md).
+DEX analysis and method scheduling use the public API of the
+[active engine](../../crates/diana-decomp/README.md).
 This contract grants no exception for external processes, non-Rust runtimes, `unsafe` or
 externally declared input.
 

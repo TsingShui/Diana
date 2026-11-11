@@ -1,10 +1,8 @@
 # A small recovery core for P6-P9
 
-Replacement design against `f6e7893`, with partial implementation recorded in
-the [engine README](../../crates/diana-decomp/README.md#unified-recovery-implementation).
-This document specifies the complete target; partial delivery does not establish
-its size or recovery objectives. [PIPELINE_DESIGN](PIPELINE_DESIGN.md) remains
-the active authority for stage ownership, input safety and local results.
+> Historical proposal against `f6e7893` for the retired numbered-stage pipeline.
+> It does not define current architecture, implementation status or refactoring
+> authority. See the [documentation entry](README.md) for active references.
 
 ## 1. Decision and size objective
 
@@ -374,8 +372,7 @@ copy or region fact affects its actual dependents, not every candidate in the
 method. Ordinary no-match, unavailable facts and genuine construction/resource
 failure remain distinct. Error kind alone does not determine stop scope.
 
-The existing [local-result contract](PIPELINE_DESIGN.md#92-p1p9-uniformly-consume-local-results)
-remains authoritative. Constructors retain input safety and necessary invariants;
+The proposal retained local results. Constructors retain input safety and necessary invariants;
 partial arenas are not complete products. P7/P9 do not fabricate values or retry
 another method analyzer. Java legality is not an output gate.
 
@@ -458,11 +455,6 @@ Reference notes remain in [SOURCE_MAP](SOURCE_MAP.md). The design decision is
 based on the operations and deletions above, not on being different from another
 decompiler or on adopting a named optimization technique.
 
-## Related contracts
-
-- [P0-P9 architecture](PIPELINE_DESIGN.md).
-- [P5 storage and transfer facts](spec/05-variables.md).
-- [P6 control and protection](spec/06-regions.md).
-- [P7 method expressions](spec/07-java.md).
-- [P9 rendering](spec/09-rendering.md).
-- [Contribution and validation rules](CONTRIBUTING.md).
+The stage-specific chapters referenced by this proposal have been removed and
+remain available in Git history. Current contribution and validation rules are in
+[CONTRIBUTING](CONTRIBUTING.md).

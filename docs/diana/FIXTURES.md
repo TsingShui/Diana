@@ -133,9 +133,10 @@ Changing an expectation requires independent evidence and review; refreshing a
 snapshot to absorb a regression is not such evidence. Third-party decompiler
 output is an investigation aid, not a correctness gate.
 
-Use the existing [`dbg_shell`](../../crates/diana-decomp/README.md) for engine
-inspection. Its products locate facts and failures; they do not independently
-prove those facts. Use direct byte evidence or another independent source when
+Inspect fixtures through the ordinary Engine API or the CLI's `get-class` and
+`get-method` commands. Their results locate recovery failures; they do not
+independently prove semantic correctness. Use direct byte evidence or another
+independent source when
 adjudication requires it. Local paths describe generated artifacts, not portable
 evidence substitutes for source, commands and observations.
 

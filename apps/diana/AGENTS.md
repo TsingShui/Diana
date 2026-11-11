@@ -1,7 +1,7 @@
 # Working on the Diana application
 
-The root `AGENTS.md` and `docs/diana/CONTRIBUTING.md` apply. Read the relevant
-DESIGN and ALGORITHMS sections before changing application behavior.
+The root `AGENTS.md` and `docs/diana/CONTRIBUTING.md` apply. Read the owning
+implementation and package README before changing application behavior.
 
 - This package owns file/input snapshots, ZIP/APK handling, query and result
   adaptation, CLI routing and atomic output publication. The engine remains the

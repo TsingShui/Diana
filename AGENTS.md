@@ -2,7 +2,7 @@
 
 Diana is a native Rust APK/DEX decompiler. The workspace contains the CLI in
 `apps/diana/` and the independent engine in `crates/diana-decomp/`. Read the
-package-local `AGENTS.md` before working in either package.
+package-local `AGENTS.md`, where present, before working in either package.
 
 ## Product and safety
 
@@ -34,24 +34,16 @@ package-local `AGENTS.md` before working in either package.
   `#[allow(unsafe_code)]`; the engine keeps `unsafe_code = "forbid"`. The
   application owns files and ZIPs; the engine borrows input bytes and declaration
   facts.
-- Loop recovery MAY use `while`, `do-while`, `while (true)`, `for`, or
-  enhanced-for syntax. Preserve original updates, copies, effects, destinations
-  and continuation targets. A header may own an initializer, update or iterator
-  operation only when it preserves that operation's original execution and
-  ordering; otherwise retain ordinary body statements and explicit transfers.
-- Use one shared ordinary-method analysis chain. Migrate only to the approved
-  target below; rendering consumes existing products and original facts without
-  starting analysis or retrying reconstruction.
 - Never bypass a missing producer or sealed boundary with a parallel analysis
-  route. Follow the approved refactoring authority below for interface changes.
+  route. Identify actual producer/consumer needs before changing an interface.
 
 ## Error handling
 
-- All error paths MUST follow [failure locality](docs/diana/PIPELINE_DESIGN.md#9-local-failure-and-method-exit):
-  contain failure to the smallest reliably identified scope and propagate missing
-  facts only to their actual dependents. Partial method recovery is a normal result.
-- P1–P9 MUST each implement the [local-result contract](docs/diana/PIPELINE_DESIGN.md#92-p1p9-uniformly-consume-local-results).
-  Published products describe coverage, established facts and local unavailability;
+- All error paths MUST contain failure to the smallest reliably identified scope
+  and propagate missing facts only to their actual dependents. Partial method
+  recovery is a normal result.
+- Analysis results MUST describe coverage, established facts and local
+  unavailability;
   a downstream stage MUST NOT collapse mixed input into whole-method failure merely
   because one item is unavailable. Keep owning-stage construction and one method chain.
 - Failure kind MUST NOT alone determine stop scope. A method-private invariant or
@@ -60,37 +52,6 @@ package-local `AGENTS.md` before working in either package.
 - Preserve recovered code, original facts, identities and precise unavailable
   ranges/reasons. Do not erase effects, fabricate values or promote incomplete
   analysis snapshots to complete products to appear tolerant.
-
-## Pipeline refactoring authority
-
-The target in [PIPELINE_DESIGN](docs/diana/PIPELINE_DESIGN.md) is approved: P0 owns
-class facts; an independent method reader prepares input; P1 disassembles; P2–P7
-process one method; P8 assembles the class and plans names; P9 renders. Engine
-holds and delivers products and schedules method-level tasks. Current phase
-chapters describe the existing implementation until migrated to this target.
-
-- Contributors MAY decide technical details within this target without repeated
-  approval: private product layout, lifetimes, algorithm invariants, classified
-  outcomes, check organization and implementation order. Prefer implementing the
-  new product structure; existing algorithms can be reused or rewritten without
-  preserving old private IR layouts or moving files one-to-one. Contributors MUST
-  document producer/consumer needs, retain input safety and test-owned semantic
-  verification obligations,
-  and remove replaced paths when the new chain enters the shared formal entry.
-  Rewriting MUST NOT introduce a second method-analysis or retry route.
-- Contributors MUST NOT change agreed output behavior, hide available members or
-  introduce a generated dispatcher. Natural and explicit Java-like expressions
-  remain readable results, not whole-method qualification gates.
-- Contributors MUST NOT introduce external declarations, new dependencies or
-  numeric resource quotas for this refactoring.
-- Contributors MUST NOT change phase ownership or scheduling beyond the approved
-  target. Stage implementations MUST NOT invoke another stage's analysis.
-- Contributors MUST NOT widen stage input access, exports or product-construction
-  authority beyond the approved producer/consumer contracts. Private fact views
-  and owning-stage constructors MUST NOT become general upstream access.
-- Default approval does not authorize these prohibited changes. If the target
-  cannot be implemented within these constraints, stop the affected work and
-  report the concrete conflict; do not add a bypass or treat silence as an exception.
 
 ## Workflow
 
@@ -107,9 +68,9 @@ chapters describe the existing implementation until migrated to this target.
   Contributors MUST update affected producers, consumers and invariants together
   and remove superseded paths. Small, focused changes remain valid when they fix
   the shared cause; this rule does not require speculative frameworks or broad rewrites.
-- Read the owning [stage chapter](docs/diana/README.md) before capability
-  changes.
-  Identify consumed facts, guarantees, invariants and classified failure behavior.
+- Read the owning implementation and package documentation before capability
+  changes. Identify consumed facts, guarantees, invariants and classified failure
+  behavior.
   If contracts conflict with the change, stop and request a decision.
 - The primary improvement process is the fixture-driven loop in
   [EVOLUTION](docs/diana/EVOLUTION.md): discover, repair the general cause,
@@ -125,13 +86,6 @@ chapters describe the existing implementation until migrated to this target.
 - All repository documentation MUST be written exclusively in English, including
   READMEs, specifications, fixture reviews and AGENTS.md files. Contributors MUST
   NOT write documentation in Chinese or any other non-English language.
-- For development verification of the engine, use the `dbg_shell` Cargo example
-  as the single inspection entry:
-  `cargo run -p diana-decomp --example dbg_shell --locked -- --dex <classes.dex> --exec '<json>'`.
-  It accepts a bare DEX, emits one JSON response per command, and exposes the
-  delivered P0/P1/P2/P3/P4/P5/P6/P7/P8/P9 products. `class` is the `class_def` index of that image and
-  `method` is the engine-wide `MethodId`, not an index inside the class. Do not add phase-specific debug binaries, renderers or
-  debug examples.
 - Contributors MAY develop unit, integration, end-to-end and regression tests,
   fixture preparation tools and CI test jobs. Tests MUST use independent
   expectations and current product contracts. Fixture inputs and scenario
@@ -181,37 +135,10 @@ chapters describe the existing implementation until migrated to this target.
   use `.cache/` locally. Consult `tools/audit/desensitize_words.txt` and run
   `python3 tools/audit/desensitize_check.py --range HEAD`.
 
-## Common checks
-
-Run from the repository root with Rust 1.93 or newer:
-
-```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo build --workspace --release --locked
-```
-
-The CLI and engine hold the 1.93 minimum and CI gates them on that toolchain on
-Linux, macOS and Windows. The GPUI desktop application follows current stable and
-needs the platform GUI libraries; CI gates the full workspace on Linux stable only.
-
-Run applicable format, lint, build and implemented test checks. Before integrating
-an evolution repair, run its required regression set under EVOLUTION. Report
-failures, missing cases and unrun evidence accurately; an empty test run or an
-unimplemented checker is not acceptance evidence.
-
 ## Documentation map
 
-- [phases](docs/diana/phases.md): phase map and current scheduling entry.
-- [documentation entry](docs/diana/README.md): active contracts and package docs.
-- [PIPELINE_DESIGN](docs/diana/PIPELINE_DESIGN.md): approved P0–P9 architecture.
-- [spec](docs/diana/spec/): product boundary and implemented P0/input/P1/P2/P3 contracts.
 - [SOURCE_MAP](docs/diana/SOURCE_MAP.md): sources, attribution and reference use.
 - [CONTRIBUTING](docs/diana/CONTRIBUTING.md): detailed contribution rules.
 - [FIXTURES](docs/diana/FIXTURES.md): Java/Smali pairs and DEX reproduction evidence.
 - [EVOLUTION](docs/diana/EVOLUTION.md): discovery-to-repair workflow and test-side acceptance design.
 - [WRITING](docs/diana/WRITING.md): documentation conventions.
-
-PIPELINE_DESIGN is the approved architecture, not an implementation-status claim.
-Use phases and package READMEs for active capabilities; archived specifications
-and verification gates are not current contracts or acceptance evidence.

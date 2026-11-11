@@ -5,27 +5,13 @@ of decompilation facts. Available readable code, original identities and materia
 uncertainty are the product goal; Java legality and compilability are not output
 gates.
 
-[PIPELINE_DESIGN](PIPELINE_DESIGN.md) remains the approved architecture for the
-complete P0–P9 product chain. The active backend is `crates/diana-decomp/`, a fork
-of dexdec that owns the DEX reader plus P0/P1 facts and returns Java-like text.
-The staged P2–P9 implementation is archived under `ref-old-impl/v2/` and is not
-part of the active build.
+The active backend is `crates/diana-decomp/`, a fork of dexdec that owns the DEX
+reader, class and decoded-method facts, and recovery to Java-like text. Its public
+entry is `Engine` in `src/engine.rs`. Consult the implementation and package
+READMEs for current interfaces and behavior.
 
 | Document | Responsibility |
 |---|---|
-| [PIPELINE_DESIGN.md](PIPELINE_DESIGN.md) | Approved product chain, stage ownership, algorithms and failure contracts. |
-| [phases.md](phases.md) | Active stage map and Engine method scheduling. |
-| [spec/00-overview.md](spec/00-overview.md) | Product boundary, failure kinds and safety obligations. |
-| [spec/00-class.md](spec/00-class.md) | P0 class facts and independent member coverage. |
-| [spec/01-input.md](spec/01-input.md) | Shared readers, MethodSource and P1 disassembly facts. |
-| [spec/02-flow.md](spec/02-flow.md) | P2 execution/completion products and translation validation. |
-| [spec/03-ssa.md](spec/03-ssa.md) | P3 exact-slot states, pruned SSA, original position mapping and correspondence checks. |
-| [spec/04-types.md](spec/04-types.md) | P4 value/type sources, per-use views, Phi adaptations and position-related initialization. |
-| [spec/05-variables.md](spec/05-variables.md) | P5 storage bindings, original transfer copies, exception snapshots and local gaps. |
-| [spec/06-regions.md](spec/06-regions.md) | P6 regions, concrete transfers, protection ownership and monitor scope plans. |
-| [spec/07-java.md](spec/07-java.md) | P7 owned expressions, declarations, execution phases, selected controls and local gaps. |
-| [spec/08-class.md](spec/08-class.md) | P8 directory-driven assembly, preparation/metadata expressions and scope-aware names. |
-| [spec/09-rendering.md](spec/09-rendering.md) | P9 pure rendering, explicit phase notation, source spans and output failure locality. |
 | [Engine README](../../crates/diana-decomp/README.md) | Fork provenance, input boundary and license. |
 | [CLI README](../../apps/diana/README.md) | Application commands, selectors and publication behavior. |
 | [GUI DESIGN](../../apps/diana-gui/DESIGN.md) | Host-level resource, identity, navigation, view and result contracts; not an Engine integration status claim. |
@@ -36,32 +22,33 @@ part of the active build.
 | [EVOLUTION.md](EVOLUTION.md) | Primary fixture-driven repair/complexity-challenge/review loop and supplementary test-side behavioral acceptance. |
 | [WRITING.md](WRITING.md) | Documentation conventions. |
 
-Archived implementations are not active stages or alternate recovery paths. Removed specifications and historical
-execution records remain available in git history. The archived implementations in `ref-old-impl/v1/` and `ref-old-impl/v2/`
-supply semantic/check reference material, not another build or method-analysis
-route.
+## Historical pipeline material
+
+`PIPELINE_DESIGN.md`, `UNIFIED_RECOVERY_IR_DESIGN.md` and `phases.md`
+describe the retired numbered-stage pipeline. They are retained for historical
+reference and do not define current architecture, interfaces, migration authority
+or acceptance requirements. Their commands and implementation-status claims may
+refer to archived code. The old `spec/` chapters have been removed; their content
+remains available in Git history. The archived implementations in `ref-old-impl/v1/` and
+`ref-old-impl/v2/` are outside the active build.
 
 Engine checks use the crate tests and ordinary CLI requests. Build/lint success,
 byte roundtrip and finite corpus checks have different evidence scopes; none alone
-proves complete decompilation correctness. Production safety and stage-owned
+proves complete decompilation correctness. Production safety and module-owned
 transform checks remain required.
 
 ## Regression workflow status
 
 [EVOLUTION](EVOLUTION.md#primary-iteration) defines the primary improvement loop:
-fixture discovery, owning-stage repair, newly authored complexity challenges,
+fixture discovery, owning-module repair, newly authored complexity challenges,
 LLM path-by-path semantic review, and preservation of original/prior effects.
 A repair of the discovery case alone does not complete the iteration.
 [FIXTURES](FIXTURES.md) uses paired Java explanations and Smali inputs without
 requiring a fixed Java/D8/R8 toolchain or exact assembler version. The crate tests and ordinary CLI requests supply the available products for
 review. The old staged inspection shell is archived with the staged pipeline.
 
-The final-output-plan executor and admitted regression suite are not implemented.
-There is no automated final-plan behavioral acceptance command or regression CI
-job to report as passing. This does not prevent the primary LLM-reviewed
-iteration; its decision is not a substitute for a machine behavioral result.
-The root testing policy now permits automated tests and CI test jobs. That
-permission does not implement the checker or activate a nonexistent suite.
-[Checker implementation](EVOLUTION.md#checker-implementation) defines the planned
-Rust modules and their qualification. Plan behavior and P9 textual fidelity
-remain separate evidence scopes.
+Run applicable implemented checks through `cargo nextest run`; report their actual
+scope and results. The supplementary final-plan executor design in EVOLUTION
+refers to archived pipeline products and does not supply a current acceptance
+command. Written semantic judgments remain separate from executed behavioral
+checks.
