@@ -117,6 +117,8 @@ impl<'a> Builder<'a> {
             let references = match self.resolved.get(&key) {
                 Some(range) => range.clone(),
                 None => {
+                    #[cfg(feature = "perf")]
+                    let started = std::time::Instant::now();
                     let start = self.batch.references.len();
                     let direct_proto = matches!(site.reference, OperandReference::Proto(_));
                     index.visit_reference_leaves::<QueryError>(site.reference, |path, facts| {
@@ -148,12 +150,19 @@ impl<'a> Builder<'a> {
                         .try_reserve(1)
                         .map_err(InputError::Allocation)?;
                     self.resolved.insert(key, range.clone());
+                    #[cfg(feature = "perf")]
+                    crate::analysis::perf::add_elapsed(
+                        &crate::analysis::perf::BATCH_REFERENCE_NS,
+                        started,
+                    );
                     range
                 }
             };
             if references.is_empty() {
                 continue;
             }
+            #[cfg(feature = "perf")]
+            let dedup_started = std::time::Instant::now();
             for reference in references {
                 let mut hasher = DefaultHasher::new();
                 self.batch.references[reference].matched.hash(&mut hasher);
@@ -173,6 +182,8 @@ impl<'a> Builder<'a> {
                 let context = match context {
                     Some(id) => id,
                     None => {
+                        #[cfg(feature = "perf")]
+                        let started = std::time::Instant::now();
                         let reference = index.method_reference(method)?;
                         if self.batch.contexts.is_empty() {
                             self.batch.descriptor = self.descriptor.units()?;
@@ -190,6 +201,11 @@ impl<'a> Builder<'a> {
                             name: reference.declaration.name.units()?,
                             prototype: prototype_units(&reference.declaration.prototype)?,
                         });
+                        #[cfg(feature = "perf")]
+                        crate::analysis::perf::add_elapsed(
+                            &crate::analysis::perf::BATCH_CONTEXT_NS,
+                            started,
+                        );
                         context = Some(id);
                         id
                     }
@@ -206,6 +222,11 @@ impl<'a> Builder<'a> {
                     code_unit: site.code_unit,
                 });
             }
+            #[cfg(feature = "perf")]
+            crate::analysis::perf::add_elapsed(
+                &crate::analysis::perf::BATCH_DEDUP_NS,
+                dedup_started,
+            );
         }
         Ok(())
     }

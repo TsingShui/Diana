@@ -29,7 +29,6 @@ pub mod ir;
 pub mod language;
 pub mod outline;
 pub mod platform_symbols;
-pub mod profiling;
 pub mod render;
 
 pub mod facts;

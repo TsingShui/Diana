@@ -195,7 +195,7 @@ impl<'a> EncodedValues<'a> {
             FrameKind::Array => None,
             FrameKind::Annotation { last_name } => {
                 let id = StringId(self.cursor.read_uleb32()?);
-                index.string(id)?.validate_name()?;
+                index.member_name(id)?;
                 if last_name.is_some_and(|last| last >= id) {
                     return Err(invalid(self.cursor.position_byte()).into());
                 }

@@ -38,6 +38,10 @@ pub fn run(
     format: Format,
     output: Option<&Path>,
 ) -> Result<(), Failure> {
+    #[cfg(feature = "perf")]
+    crate::analysis::perf::reset();
+    #[cfg(feature = "perf")]
+    let request_started = std::time::Instant::now();
     if parameter_types && kind != "type" {
         return Err(invalid("--parameter-types requires the type kind"));
     }
@@ -205,7 +209,7 @@ pub fn run(
             "//Diana Warn: Too much results, only show top {shown} , use --no-limit or --limit N"
         )
     });
-    publish_encoded(
+    let result = publish_encoded(
         shown,
         &["context", "match", "use"],
         "xref",
@@ -218,7 +222,13 @@ pub fn run(
             issues: &issues,
         },
         |writer| render::write(&rows, shown, &images, jobs, format, writer),
-    )
+    );
+    #[cfg(feature = "perf")]
+    {
+        crate::analysis::perf::add_elapsed(&crate::analysis::perf::REQUEST_NS, request_started);
+        crate::analysis::perf::print("xref");
+    }
+    result
 }
 
 /// Identity behind one rendered locator: the class, or one member of it.

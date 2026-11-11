@@ -185,7 +185,7 @@ impl<'a> ProgramIndex<'a> {
     }
 
     /// The pool entry named by a member identity, validated once per entry.
-    fn member_name(&self, string_idx: StringId) -> Result<DexString<'a>, InputError> {
+    pub(super) fn member_name(&self, string_idx: StringId) -> Result<DexString<'a>, InputError> {
         self.declarations.member_name(string_idx)
     }
 
@@ -630,6 +630,29 @@ impl<'a> ProgramIndex<'a> {
         Ok(StringId(record.read_u32()?))
     }
 
+    pub(super) fn field_type_idx(&self, id: FieldId, owner: TypeId) -> Result<TypeId, InputError> {
+        let mut record = self.table(TableKey::Field(id))?;
+        let owner_idx = TypeId(u32::from(record.read_u16()?));
+        if owner_idx != owner {
+            return Err(malformed(
+                InputProblem::InvalidReference,
+                ByteOffset(record.position_byte().0 - 2),
+            ));
+        }
+        Ok(TypeId(u32::from(record.read_u16()?)))
+    }
+
+    pub(super) fn method_return_type_idx(
+        &self,
+        method: MethodId,
+        owner: TypeId,
+    ) -> Result<TypeId, InputError> {
+        let (_, _, proto_idx) = self.method_header(method, owner)?;
+        let mut record = self.table(TableKey::Proto(proto_idx))?;
+        let _shorty = self.string(StringId(record.read_u32()?))?;
+        Ok(TypeId(record.read_u32()?))
+    }
+
     pub fn method_reference(&self, id: MethodId) -> Result<MethodReference<'_, 'a>, InputError> {
         let mut record = self.table(TableKey::Method(id))?;
         let owner_idx = TypeId(u32::from(record.read_u16()?));
@@ -919,6 +942,10 @@ pub enum MemberSelection<'f, 'a> {
     Fields,
     /// Method identities and code offsets only: no declaration, no code read.
     MethodCodes,
+    /// Field type indices only; declarations remain lazy until a type matches.
+    FieldTypes,
+    /// Method return type indices only; complete declarations remain lazy.
+    MethodReturnTypes,
 }
 
 pub enum MemberEntry<'i, 'a> {
@@ -935,6 +962,16 @@ pub enum MemberEntry<'i, 'a> {
         method_idx: MethodId,
         access_flags: u32,
         code_offset: Option<ByteOffset>,
+    },
+    FieldType {
+        field_idx: FieldId,
+        access_flags: u32,
+        type_id: TypeId,
+    },
+    MethodReturnType {
+        method_idx: MethodId,
+        access_flags: u32,
+        type_id: TypeId,
     },
 }
 
@@ -983,6 +1020,25 @@ impl<'i, 'a> ClassView<'i, 'a> {
         })
     }
 
+    /// Visits field identities and their original type indices without resolving
+    /// field names or descriptors. A type query resolves the full declaration
+    /// only after its target set accepts the type index.
+    pub fn visit_field_type_ids(
+        &self,
+        mut visit: impl FnMut(FieldId, u32, TypeId) -> Result<(), InputError>,
+    ) -> Result<(), InputError> {
+        self.visit_members_with(MemberSelection::FieldTypes, |entry| match entry {
+            MemberEntry::FieldType {
+                field_idx,
+                access_flags,
+                type_id,
+            } => visit(field_idx, access_flags, type_id),
+            _ => Err(InputError::InternalInvariant(
+                "field-type traversal delivered another entry",
+            )),
+        })
+    }
+
     /// Visits each method this class defines without reading its code.
     ///
     /// A listing needs the original index, access flags and declaration of every
@@ -1016,13 +1072,32 @@ impl<'i, 'a> ClassView<'i, 'a> {
                     Ok(declaration) => visit(method_idx, access_flags, Ok(&declaration)),
                     Err(error) => visit(method_idx, access_flags, Err(error)),
                 },
-                MemberEntry::Method(_) | MemberEntry::MethodCode { .. } => {
-                    Err(InputError::InternalInvariant(
-                        "code visitation reached a header-only selection",
-                    ))
-                }
+                MemberEntry::Method(_)
+                | MemberEntry::MethodCode { .. }
+                | MemberEntry::FieldType { .. }
+                | MemberEntry::MethodReturnType { .. } => Err(InputError::InternalInvariant(
+                    "code visitation reached a header-only selection",
+                )),
             },
         )
+    }
+
+    /// Visits method identities and return type indices without resolving a
+    /// complete prototype. Complete declarations are resolved only on a match.
+    pub fn visit_method_return_type_ids(
+        &self,
+        mut visit: impl FnMut(crate::MethodId, u32, TypeId) -> Result<(), InputError>,
+    ) -> Result<(), InputError> {
+        self.visit_members_with(MemberSelection::MethodReturnTypes, |entry| match entry {
+            MemberEntry::MethodReturnType {
+                method_idx,
+                access_flags,
+                type_id,
+            } => visit(method_idx, access_flags, type_id),
+            _ => Err(InputError::InternalInvariant(
+                "method-return-type traversal delivered another entry",
+            )),
+        })
     }
 
     /// Per-member failures retain their original IDs. A class-data boundary
@@ -1034,9 +1109,12 @@ impl<'i, 'a> ClassView<'i, 'a> {
         self.visit_members_with(MemberSelection::AllMethods, |entry| match entry {
             MemberEntry::Method(method) => visit(method),
             MemberEntry::Field(_) => Ok(()),
-            MemberEntry::MethodHeader { .. } | MemberEntry::MethodCode { .. } => Err(
-                InputError::InternalInvariant("header-only selection reached code visitation"),
-            ),
+            MemberEntry::MethodHeader { .. }
+            | MemberEntry::MethodCode { .. }
+            | MemberEntry::FieldType { .. }
+            | MemberEntry::MethodReturnType { .. } => Err(InputError::InternalInvariant(
+                "header-only selection reached code visitation",
+            )),
         })
     }
 
@@ -1090,7 +1168,11 @@ impl<'i, 'a> ClassView<'i, 'a> {
             ([counts[0], counts[1]], MemberKind::Field),
             ([counts[2], counts[3]], MemberKind::Method),
         ] {
-            if matches!(selection, MemberSelection::Fields) && matches!(kind, MemberKind::Method) {
+            if matches!(
+                selection,
+                MemberSelection::Fields | MemberSelection::FieldTypes
+            ) && matches!(kind, MemberKind::Method)
+            {
                 break;
             }
             if groups == [0, 0] {
@@ -1180,7 +1262,27 @@ impl<'i, 'a> ClassView<'i, 'a> {
                                 MemberSelection::AllMethods
                                     | MemberSelection::MethodHeaders(_)
                                     | MemberSelection::MethodCodes
+                                    | MemberSelection::MethodReturnTypes
                             ) {
+                                continue;
+                            }
+                            if matches!(selection, MemberSelection::FieldTypes) {
+                                let Ok(type_id) = local(
+                                    self.index.field_type_idx(FieldId(index), self.type_idx),
+                                )?
+                                else {
+                                    continue;
+                                };
+                                let group_slot = match kind {
+                                    MemberKind::Field => group,
+                                    MemberKind::Method => group + 2,
+                                };
+                                delivered[group_slot] = delivered[group_slot].saturating_add(1);
+                                visit(MemberEntry::FieldType {
+                                    field_idx: FieldId(index),
+                                    access_flags,
+                                    type_id,
+                                })?;
                                 continue;
                             }
                             let declaration =
@@ -1213,6 +1315,26 @@ impl<'i, 'a> ClassView<'i, 'a> {
                                     method_idx: MethodId(index),
                                     access_flags,
                                     code_offset,
+                                })?;
+                                continue;
+                            }
+                            if matches!(selection, MemberSelection::MethodReturnTypes) {
+                                let Ok(type_id) = local(
+                                    self.index
+                                        .method_return_type_idx(MethodId(index), self.type_idx),
+                                )?
+                                else {
+                                    continue;
+                                };
+                                let group_slot = match kind {
+                                    MemberKind::Field => group,
+                                    MemberKind::Method => group + 2,
+                                };
+                                delivered[group_slot] = delivered[group_slot].saturating_add(1);
+                                visit(MemberEntry::MethodReturnType {
+                                    method_idx: MethodId(index),
+                                    access_flags,
+                                    type_id,
                                 })?;
                                 continue;
                             }

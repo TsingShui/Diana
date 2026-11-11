@@ -41,6 +41,8 @@ impl Rows {
 
     #[cfg_attr(feature = "perf", fastrace::trace(name = "xref.rank"))]
     pub fn rank(&mut self) -> Result<(), QueryError> {
+        #[cfg(feature = "perf")]
+        let _timer = crate::analysis::perf::Timer::new(&crate::analysis::perf::RANK_NS);
         use crate::analysis::filter::best_first;
         // Sorting must compare cached scalar keys. Following both identity
         // tables on every comparison defeats the compact hit representation.

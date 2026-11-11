@@ -817,7 +817,7 @@ impl GenericTypeHierarchy {
     }
 
     pub(crate) fn is_subtype(&self, subtype: &ArgType, supertype: &ArgType) -> bool {
-        crate::profile_scope!("hierarchy.is_subtype", {
+        {
             let mut pending = VecDeque::from([subtype.clone()]);
             let mut visited = BTreeSet::new();
             while let Some(candidate) = pending.pop_front() {
@@ -833,7 +833,7 @@ impl GenericTypeHierarchy {
                 pending.extend(declared.parents.iter().cloned());
             }
             false
-        })
+        }
     }
 
     /// Every type reachable from `ty` through parent links, including `ty`.
@@ -1312,7 +1312,7 @@ impl GenericTypeHierarchy {
         instantiated_owner: &JvmTypeSignature,
         declaring_owner: &ClassTypeSignature,
     ) -> Option<TypeSubstitution> {
-        crate::profile_scope!("hierarchy.member_substitution", {
+        {
             let owner = self.hierarchy.class_details(&instantiated_owner.erased())?;
             let bound = bind_class(&self.hierarchy, &owner, instantiated_owner).ok()?;
             let super_types = collect_instantiated_super_types(&self.hierarchy, &bound).ok()?;
@@ -1334,7 +1334,7 @@ impl GenericTypeHierarchy {
             )
             .ok()?;
             Some(substitutions)
-        })
+        }
     }
 }
 

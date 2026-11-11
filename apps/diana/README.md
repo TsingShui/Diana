@@ -432,5 +432,29 @@ cargo run --locked -p diana -- get-class classes.dex 'Lexample/Main;'
 cargo run --locked -p diana -- get-method classes.dex 'Lexample/Main;->run()V' --format json
 ```
 
+### Performance instrumentation
+
+The optional `perf` feature adds fastrace phase spans and aggregated request
+counters. Build the profiling caller explicitly:
+
+```sh
+cargo build --release --locked -p diana --features perf --example app_profile
+target/release/examples/app_profile xref app.apk field INSTANCE \
+  --substring --jobs 12 --no-limit --format json >/dev/null
+```
+
+The caller writes the `{"record":"perf",...}` summary to stderr alongside
+the fastrace spans. Use a normal release build for wall-clock and RSS baselines:
+the counters themselves add measurement overhead. For class and method
+decompilation, `DEXDEC_METHOD_STATS=1` and `DEXDEC_BATCH_STATS=1` expose the
+engine's per-method and per-class phase records.
+
+The xref summary separates `class_walk_ms` (the whole class-data callback walk)
+from `class_data_parse_ms` (record parsing outside the per-method callback).
+`declaration_context_ms`, `annotation_*`, and `batch_*` counters split the
+remaining declaration and reference-resolution costs. Compare a one-worker run
+to identify intrinsic hotspots, then use the normal worker count for wall-clock
+and resource measurements.
+
 Use the engine's [`dbg_shell`](../../crates/diana-decomp/README.md) for P0–P9
 inspection. The CLI does not expose separate phase constructors or a retry chain.

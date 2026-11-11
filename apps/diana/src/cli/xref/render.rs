@@ -22,6 +22,8 @@ pub(super) fn write(
         return Ok(());
     }
     #[cfg(feature = "perf")]
+    let _timer = crate::analysis::perf::Timer::new(&crate::analysis::perf::ENCODE_NS);
+    #[cfg(feature = "perf")]
     let render_span = fastrace::Span::enter_with_local_parent("xref.encode");
     let workers = jobs.max(1).min(shown);
     let width = shown.div_ceil(workers);
@@ -65,6 +67,11 @@ fn encode(
     format: Format,
     sender: &SyncSender<Result<Vec<u8>, Failure>>,
 ) -> Result<(), Failure> {
+    #[cfg(feature = "perf")]
+    crate::analysis::perf::add(
+        &crate::analysis::perf::ENCODED_ROWS,
+        u64::try_from(range.end - range.start).unwrap_or(u64::MAX),
+    );
     let mut encoder = Encoder {
         format,
         contexts: HashMap::new(),

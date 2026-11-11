@@ -87,6 +87,8 @@ fn run_presentation(
     selector: &Selector,
     jobs: usize,
 ) -> Result<Decompiled, DecompileError> {
+    #[cfg(feature = "perf")]
+    let _decompile_timer = crate::analysis::perf::Timer::new(&crate::analysis::perf::DECOMPILE_NS);
     let class_selector = match selector {
         Selector::Class(class) => class,
         Selector::Method(method) => &method.class,
@@ -94,12 +96,20 @@ fn run_presentation(
             return Err(SelectorError::Syntax("this command selects a class or a method").into());
         }
     };
-    let (images, selection) = ImageSet::resolve(scope, class_selector, super::image_jobs())?;
+    let (images, selection) = {
+        #[cfg(feature = "perf")]
+        let _timer = crate::analysis::perf::Timer::new(&crate::analysis::perf::RESOLVE_NS);
+        ImageSet::resolve(scope, class_selector, super::image_jobs())?
+    };
     let selected = images.selection(&selection);
     // One class request needs one image. The defining image keeps its original
     // DexId, so published class keys still name the image the locator selected.
     let defining = DexImage {
-        bytes: images.bytes(selected.image)?,
+        bytes: {
+            #[cfg(feature = "perf")]
+            let _timer = crate::analysis::perf::Timer::new(&crate::analysis::perf::IMAGE_BYTES_NS);
+            images.bytes(selected.image)?
+        },
         header_offset: selected.image.header_offset,
         origin: ImageOrigin {
             input: InputId(
@@ -108,7 +118,12 @@ fn run_presentation(
             ),
         },
     };
-    let engine = Engine::focus(defining, selected.image.dex)?.with_method_jobs(jobs);
+    let engine = {
+        #[cfg(feature = "perf")]
+        let _timer = crate::analysis::perf::Timer::new(&crate::analysis::perf::ENGINE_OPEN_NS);
+        Engine::focus(defining, selected.image.dex)?
+    }
+    .with_method_jobs(jobs);
     let class = ClassKey {
         dex: selected.image.dex,
         class_def: selected.class_def,
@@ -118,8 +133,18 @@ fn run_presentation(
     let class_at = super::at::class(entry, logical.0, class.class_def.0, &selected.descriptor);
     let (method, method_at, rendered) = match selector {
         Selector::Method(selector) => {
-            let facts = engine.class_facts(class)?;
-            let method = select_method(&facts, selector)?;
+            let facts = {
+                #[cfg(feature = "perf")]
+                let _timer =
+                    crate::analysis::perf::Timer::new(&crate::analysis::perf::CLASS_FACTS_NS);
+                engine.class_facts(class)?
+            };
+            let method = {
+                #[cfg(feature = "perf")]
+                let _timer =
+                    crate::analysis::perf::Timer::new(&crate::analysis::perf::METHOD_SELECT_NS);
+                select_method(&facts, selector)?
+            };
             let method_at = super::at::method(
                 entry,
                 logical.0,
@@ -129,14 +154,22 @@ fn run_presentation(
                 &selector.name,
                 &selector.prototype,
             );
-            let result = engine.analyze_method(class, method)?;
+            let result = {
+                #[cfg(feature = "perf")]
+                let _timer = crate::analysis::perf::Timer::new(&crate::analysis::perf::ANALYZE_NS);
+                engine.analyze_method(class, method)?
+            };
             (Some(method), Some(method_at), result.rendered)
         }
         Selector::Class(_) => {
-            let result = engine.analyze(Request {
-                class,
-                method: None,
-            })?;
+            let result = {
+                #[cfg(feature = "perf")]
+                let _timer = crate::analysis::perf::Timer::new(&crate::analysis::perf::ANALYZE_NS);
+                engine.analyze(Request {
+                    class,
+                    method: None,
+                })?
+            };
             (None, None, result.rendered)
         }
         Selector::Field(_) | Selector::String(_) => unreachable!("selection checked above"),
