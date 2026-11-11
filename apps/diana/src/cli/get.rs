@@ -29,6 +29,10 @@ pub fn run(
     format: Format,
     output: Option<&Path>,
 ) -> Result<(), Failure> {
+    #[cfg(feature = "perf")]
+    crate::analysis::perf::reset();
+    #[cfg(feature = "perf")]
+    let request_started = std::time::Instant::now();
     let parsed = match kind {
         Kind::Class { .. } => selector::class(text).map(Selector::Class),
         Kind::Method => selector::method(text).map(Selector::Method),
@@ -53,26 +57,35 @@ pub fn run(
             code: error.code(),
             message: error.to_string(),
         })?;
-    publish_with(output, input, |mut writer| match format {
-        Format::Text => decompiled
-            .rendered
-            .write_text(&mut writer)
+    let result = {
+        #[cfg(feature = "perf")]
+        let _timer = crate::analysis::perf::Timer::new(&crate::analysis::perf::PUBLISH_NS);
+        publish_with(output, input, |mut writer| match format {
+            Format::Text => decompiled
+                .rendered
+                .write_text(&mut writer)
+                .map_err(|error| Failure {
+                    code: 1,
+                    message: error.to_string(),
+                }),
+            Format::Json => serde_json::to_writer(
+                writer,
+                &Publication {
+                    schema_version: 4,
+                    command,
+                    analysis: &decompiled,
+                },
+            )
             .map_err(|error| Failure {
                 code: 1,
-                message: error.to_string(),
+                message: format!("JSON output failed: {error}"),
             }),
-        Format::Json => serde_json::to_writer(
-            writer,
-            &Publication {
-                schema_version: 4,
-                command,
-                analysis: &decompiled,
-            },
-        )
-        .map_err(|error| Failure {
-            code: 1,
-            message: format!("JSON output failed: {error}"),
-        }),
-    })?;
-    Ok(())
+        })
+    };
+    #[cfg(feature = "perf")]
+    {
+        crate::analysis::perf::add_elapsed(&crate::analysis::perf::REQUEST_NS, request_started);
+        crate::analysis::perf::print(command);
+    }
+    result
 }

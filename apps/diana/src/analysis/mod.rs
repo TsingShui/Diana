@@ -27,6 +27,9 @@ pub mod selector;
 pub mod tree;
 pub mod xref;
 
+#[cfg(feature = "perf")]
+pub(crate) mod perf;
+
 /// Worker count for independent DEX images on this host.
 ///
 /// Image header reads, declaration scans and class-name resolution per image are

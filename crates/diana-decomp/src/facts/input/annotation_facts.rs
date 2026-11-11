@@ -358,8 +358,15 @@ fn read_members<'a>(
             range,
             bytes: bytes(index, range)?,
         });
-        let (owner, offset, parameters) =
-            association(index, class, &mut members, records, &mut last, method)?;
+        let (owner, offset, parameters) = association(
+            index,
+            class,
+            &mut members,
+            records,
+            &mut last,
+            method,
+            matches!(kind, AssociationKind::Parameter),
+        )?;
         match (matches!(kind, AssociationKind::Parameter), owner) {
             (false, AnnotationOwner::Field(id)) => {
                 read_set(index, offset, AnnotationLocation::Field(id), facts)?

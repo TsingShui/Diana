@@ -214,6 +214,7 @@ pub fn association(
     records: &mut Cursor<'_>,
     last: &mut Option<u32>,
     method: bool,
+    needs_parameters: bool,
 ) -> Result<(AnnotationOwner, ByteOffset, usize), InputError> {
     let at = records.position_byte();
     let id = records.read_u32()?;
@@ -223,7 +224,7 @@ pub fn association(
     }
     *last = Some(id);
     members.check(id)?;
-    let parameters = if method {
+    let parameters = if method && needs_parameters {
         index
             .method_declaration(MethodId(id), class.type_idx)?
             .prototype
@@ -231,7 +232,6 @@ pub fn association(
             .len()
             / 2
     } else {
-        index.validate_field(FieldId(id), class.type_idx)?;
         0
     };
     let owner = if method {

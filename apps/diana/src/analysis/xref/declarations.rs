@@ -674,44 +674,65 @@ fn borrowed_error(error: &diana_decomp::RequestError) -> QueryError {
 ///
 /// Reads field and method signatures without constructing a class snapshot.
 pub(super) fn scan_type_declarations<'a>(
+    index: &ProgramIndex<'a>,
     class: &diana_decomp::input::ClassView<'_, 'a>,
     location: &InputLocation<'a>,
+    prefilter: &super::prefilter::Prefilter,
     targets: &[Target],
     depth: u32,
     parameter_types: bool,
     emit: &mut dyn FnMut(Event) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
+    #[cfg(feature = "perf")]
+    let _timer = crate::analysis::perf::Timer::new(&crate::analysis::perf::DECLARATION_NS);
+    #[cfg(feature = "perf")]
+    crate::analysis::perf::add(&crate::analysis::perf::DECLARATION_CLASSES, 1);
     let mut failure = None;
-    let visited = class.visit_fields(|field| {
-        if failure.is_some() {
-            return Ok(());
-        }
-        let result = (|| -> Result<(), QueryError> {
-            let declaration = match field.declaration {
-                Ok(declaration) => declaration,
-                Err(_) => return Ok(()),
-            };
-            emit_type_row(
-                location,
-                targets,
-                depth,
-                emit,
-                || {
-                    Ok(Site::Field {
-                        field: field.field_idx,
-                        name: declaration.name.units()?,
-                        field_type: declaration.field_type.units()?,
-                    })
-                },
-                declaration.field_type,
-                || "field-type".to_owned(),
-            )
-        })();
-        if let Err(error) = result {
-            failure = Some(error);
-        }
-        Ok(())
-    });
+    #[cfg(feature = "perf")]
+    let mut type_field_count = 0u64;
+    let visited = {
+        #[cfg(feature = "perf")]
+        let _timer = crate::analysis::perf::Timer::new(&crate::analysis::perf::TYPE_FIELD_NS);
+        class.visit_field_type_ids(|field_idx, _, type_id| {
+            #[cfg(feature = "perf")]
+            {
+                type_field_count += 1;
+            }
+            if failure.is_some() {
+                return Ok(());
+            }
+            let result = (|| -> Result<(), QueryError> {
+                if !prefilter.contains(type_id.0) {
+                    return Ok(());
+                }
+                let reference = match index.field_reference(field_idx) {
+                    Ok(reference) => reference,
+                    Err(_) => return Ok(()),
+                };
+                emit_type_row(
+                    location,
+                    targets,
+                    depth,
+                    emit,
+                    || {
+                        Ok(Site::Field {
+                            field: field_idx,
+                            name: reference.declaration.name.units()?,
+                            field_type: reference.declaration.field_type.units()?,
+                        })
+                    },
+                    reference.declaration.field_type,
+                    || "field-type".to_owned(),
+                )
+            })();
+            if let Err(error) = result {
+                failure = Some(error);
+            }
+            Ok(())
+        })
+    };
+    #[cfg(feature = "perf")]
+    crate::analysis::perf::add(&crate::analysis::perf::TYPE_FIELDS, type_field_count);
     if let Err(error) = visited {
         emit(Event::Issue(Issue::new(
             format!("{} fields", location.context()),
@@ -723,49 +744,101 @@ pub(super) fn scan_type_declarations<'a>(
         return Err(error);
     }
     let mut failure = None;
-    let visited = class.visit_method_headers(None, |method_idx, _, declaration| {
-        if failure.is_some() {
-            return Ok(());
-        }
-        let result = (|| -> Result<(), QueryError> {
-            let Ok(declaration) = declaration else {
+    #[cfg(feature = "perf")]
+    let mut type_method_count = 0u64;
+    let visited = if parameter_types {
+        #[cfg(feature = "perf")]
+        let _timer = crate::analysis::perf::Timer::new(&crate::analysis::perf::TYPE_METHOD_NS);
+        class.visit_method_headers(None, |method_idx, _, declaration| {
+            #[cfg(feature = "perf")]
+            {
+                type_method_count += 1;
+            }
+            if failure.is_some() {
                 return Ok(());
-            };
-            let site = || {
-                Ok(Site::Method {
-                    method: method_idx,
-                    name: declaration.name.units()?,
-                    prototype: prototype_units(&declaration.prototype)?,
-                })
-            };
-            emit_type_row(
-                location,
-                targets,
-                depth,
-                emit,
-                site,
-                declaration.prototype.return_type,
-                || "return-type".to_owned(),
-            )?;
-            if parameter_types {
-                for (ordinal, parameter) in declaration
-                    .prototype
-                    .parameter_descriptors()
-                    .iter()
-                    .enumerate()
-                {
-                    emit_type_row(location, targets, depth, emit, site, *parameter, || {
-                        format!("parameter-type[{ordinal}]")
-                    })?;
+            }
+            let result = (|| -> Result<(), QueryError> {
+                let Ok(declaration) = declaration else {
+                    return Ok(());
+                };
+                let site = || {
+                    Ok(Site::Method {
+                        method: method_idx,
+                        name: declaration.name.units()?,
+                        prototype: prototype_units(&declaration.prototype)?,
+                    })
+                };
+                emit_type_row(
+                    location,
+                    targets,
+                    depth,
+                    emit,
+                    site,
+                    declaration.prototype.return_type,
+                    || "return-type".to_owned(),
+                )?;
+                if parameter_types {
+                    for (ordinal, parameter) in declaration
+                        .prototype
+                        .parameter_descriptors()
+                        .iter()
+                        .enumerate()
+                    {
+                        emit_type_row(location, targets, depth, emit, site, *parameter, || {
+                            format!("parameter-type[{ordinal}]")
+                        })?;
+                    }
                 }
+                Ok(())
+            })();
+            if let Err(error) = result {
+                failure = Some(error);
             }
             Ok(())
-        })();
-        if let Err(error) = result {
-            failure = Some(error);
-        }
-        Ok(())
-    });
+        })
+    } else {
+        #[cfg(feature = "perf")]
+        let _timer = crate::analysis::perf::Timer::new(&crate::analysis::perf::TYPE_METHOD_NS);
+        class.visit_method_return_type_ids(|method_idx, _, type_id| {
+            #[cfg(feature = "perf")]
+            {
+                type_method_count += 1;
+            }
+            if failure.is_some() {
+                return Ok(());
+            }
+            let result = (|| -> Result<(), QueryError> {
+                if !prefilter.contains(type_id.0) {
+                    return Ok(());
+                }
+                let reference = match index.method_reference(method_idx) {
+                    Ok(reference) => reference,
+                    Err(_) => return Ok(()),
+                };
+                emit_type_row(
+                    location,
+                    targets,
+                    depth,
+                    emit,
+                    || {
+                        Ok(Site::Method {
+                            method: method_idx,
+                            name: reference.declaration.name.units()?,
+                            prototype: prototype_units(&reference.declaration.prototype)?,
+                        })
+                    },
+                    reference.declaration.prototype.return_type,
+                    || "return-type".to_owned(),
+                )
+            })();
+            if let Err(error) = result {
+                failure = Some(error);
+            }
+            Ok(())
+        })
+    };
+    #[cfg(feature = "perf")]
+    crate::analysis::perf::add(&crate::analysis::perf::TYPE_METHODS, type_method_count);
     if let Err(error) = visited {
         emit(Event::Issue(Issue::new(
             format!("{} methods", location.context()),
@@ -818,20 +891,42 @@ pub(super) fn scan_declared_values<'a>(
     index: &ProgramIndex<'a>,
     class: &diana_decomp::input::ClassView<'_, 'a>,
     location: &InputLocation<'a>,
+    prefilter: &super::prefilter::Prefilter,
     targets: &[Target],
     depth: u32,
     include_values: bool,
     emit: &mut dyn FnMut(Event) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
-    let context = index.class_context(location.class_def)?;
+    if prefilter.impossible() {
+        return Ok(());
+    }
+    #[cfg(feature = "perf")]
+    let _timer = crate::analysis::perf::Timer::new(&crate::analysis::perf::DECLARATION_NS);
+    #[cfg(feature = "perf")]
+    crate::analysis::perf::add(&crate::analysis::perf::DECLARATION_CLASSES, 1);
+    let context = {
+        #[cfg(feature = "perf")]
+        let _timer =
+            crate::analysis::perf::Timer::new(&crate::analysis::perf::DECLARATION_CONTEXT_NS);
+        index.class_context(location.class_def)?
+    };
     let annotated = context.annotations_offset.0 != 0;
     let values = include_values && matches!(context.values_offset, Ok(Some(_)));
+    #[cfg(feature = "perf")]
+    if annotated {
+        crate::analysis::perf::add(&crate::analysis::perf::ANNOTATED_CLASSES, 1);
+    }
+    #[cfg(feature = "perf")]
+    if values {
+        crate::analysis::perf::add(&crate::analysis::perf::VALUE_CLASSES, 1);
+    }
     if !annotated && !values {
         return Ok(());
     }
     let mut scan = MemberScan {
         index,
         location,
+        prefilter,
         targets,
         depth,
         emit,
@@ -839,16 +934,52 @@ pub(super) fn scan_declared_values<'a>(
         type_query: targets
             .iter()
             .any(|target| matches!(target, Target::Type(_))),
+        #[cfg(feature = "perf")]
+        annotation_sets: 0,
+        #[cfg(feature = "perf")]
+        static_value_classes: 0,
+        #[cfg(feature = "perf")]
+        annotation_header_ns: 0,
+        #[cfg(feature = "perf")]
+        annotation_values_ns: 0,
     };
     if annotated {
-        let directory = index.annotation_directory(context.annotations_offset)?;
+        #[cfg(feature = "perf")]
+        let _timer = crate::analysis::perf::Timer::new(&crate::analysis::perf::ANNOTATION_NS);
+        let directory = {
+            #[cfg(feature = "perf")]
+            let _timer =
+                crate::analysis::perf::Timer::new(&crate::analysis::perf::ANNOTATION_DIRECTORY_NS);
+            index.annotation_directory(context.annotations_offset)?
+        };
         scan.annotation_set(directory.class, None, "annotation")?;
         scan.member_annotations(class, directory.fields, false)?;
         scan.member_annotations(class, directory.methods, true)?;
         scan.parameter_annotations(class, directory.parameters)?;
     }
     if let Ok(Some(offset)) = context.values_offset {
+        #[cfg(feature = "perf")]
+        let _timer = crate::analysis::perf::Timer::new(&crate::analysis::perf::STATIC_VALUES_NS);
         scan.static_values(class, offset)?;
+    }
+    #[cfg(feature = "perf")]
+    {
+        crate::analysis::perf::add(
+            &crate::analysis::perf::ANNOTATION_SETS,
+            scan.annotation_sets,
+        );
+        crate::analysis::perf::add(
+            &crate::analysis::perf::STATIC_VALUE_CLASSES,
+            scan.static_value_classes,
+        );
+        crate::analysis::perf::add(
+            &crate::analysis::perf::ANNOTATION_HEADER_NS,
+            u64::try_from(scan.annotation_header_ns).unwrap_or(u64::MAX),
+        );
+        crate::analysis::perf::add(
+            &crate::analysis::perf::ANNOTATION_VALUES_NS,
+            u64::try_from(scan.annotation_values_ns).unwrap_or(u64::MAX),
+        );
     }
     Ok(())
 }
@@ -856,11 +987,20 @@ pub(super) fn scan_declared_values<'a>(
 struct MemberScan<'i, 'a, 'e> {
     index: &'i ProgramIndex<'a>,
     location: &'e InputLocation<'a>,
+    prefilter: &'e super::prefilter::Prefilter,
     targets: &'e [Target],
     depth: u32,
     emit: &'e mut dyn FnMut(Event) -> Result<(), QueryError>,
     stopped: bool,
     type_query: bool,
+    #[cfg(feature = "perf")]
+    annotation_sets: u64,
+    #[cfg(feature = "perf")]
+    static_value_classes: u64,
+    #[cfg(feature = "perf")]
+    annotation_header_ns: u128,
+    #[cfg(feature = "perf")]
+    annotation_values_ns: u128,
 }
 
 impl<'i, 'a> MemberScan<'i, 'a, '_> {
@@ -905,19 +1045,40 @@ impl<'i, 'a> MemberScan<'i, 'a, '_> {
         owner: Option<&AnnotationOwner>,
         use_: &str,
     ) -> Result<(), QueryError> {
+        #[cfg(feature = "perf")]
+        {
+            self.annotation_sets += 1;
+        }
         if offset.0 == 0 {
             return Ok(());
         }
-        let mut offsets = self.index.annotation_offsets(0x1003, offset)?;
+        let mut offsets = {
+            #[cfg(feature = "perf")]
+            let _timer =
+                crate::analysis::perf::Timer::new(&crate::analysis::perf::ANNOTATION_OFFSETS_NS);
+            self.index.annotation_offsets(0x1003, offset)?
+        };
         let mut last = None;
         while offsets.remaining_byte().0 != 0 {
+            #[cfg(feature = "perf")]
+            let header_started = std::time::Instant::now();
             let (_at, _visibility, type_id, mut values) =
                 self.index.next_annotation(&mut offsets, &mut last)?;
-            if self.type_query {
+            #[cfg(feature = "perf")]
+            {
+                self.annotation_header_ns += header_started.elapsed().as_nanos();
+            }
+            if self.type_query && self.prefilter.contains(type_id.0) {
                 let descriptor = self.index.type_name(type_id)?;
                 self.typed(owner, descriptor, || format!("{use_} annotation-type"))?;
             }
+            #[cfg(feature = "perf")]
+            let values_started = std::time::Instant::now();
             self.values(&mut values, owner, use_)?;
+            #[cfg(feature = "perf")]
+            {
+                self.annotation_values_ns += values_started.elapsed().as_nanos();
+            }
         }
         Ok(())
     }
@@ -965,7 +1126,7 @@ impl<'i, 'a> MemberScan<'i, 'a, '_> {
         use_: &str,
     ) -> Result<(), QueryError> {
         if let EncodedKind::Annotation { type_id, .. } = value.kind {
-            if self.type_query {
+            if self.type_query && self.prefilter.contains(type_id.0) {
                 let descriptor = self.index.type_name(type_id)?;
                 self.typed(owner, descriptor, || format!("{use_} annotation-type"))?;
             }
@@ -974,6 +1135,9 @@ impl<'i, 'a> MemberScan<'i, 'a, '_> {
         let EncodedKind::Reference(reference) = value.kind else {
             return Ok(());
         };
+        if !super::reference_may_match(reference, self.prefilter) {
+            return Ok(());
+        }
         if !super::needs_reference(reference, self.targets) {
             return Ok(());
         }
@@ -1017,11 +1181,29 @@ impl<'i, 'a> MemberScan<'i, 'a, '_> {
             return Ok(());
         }
         let index = self.index;
-        let mut members = AnnotationMembers::open(index, class, method)?;
+        let mut members = {
+            #[cfg(feature = "perf")]
+            let _timer = crate::analysis::perf::Timer::new(
+                &crate::analysis::perf::ANNOTATION_MEMBER_OPEN_NS,
+            );
+            AnnotationMembers::open(index, class, method)?
+        };
         let mut last = None;
         while records.remaining_byte().0 != 0 {
-            let (owner, offset, _parameters) =
-                association(index, class, &mut members, &mut records, &mut last, method)?;
+            let (owner, offset, _parameters) = {
+                #[cfg(feature = "perf")]
+                let _timer =
+                    crate::analysis::perf::Timer::new(&crate::analysis::perf::ANNOTATION_MEMBER_NS);
+                association(
+                    index,
+                    class,
+                    &mut members,
+                    &mut records,
+                    &mut last,
+                    method,
+                    false,
+                )?
+            };
             self.annotation_set(offset, Some(&owner), "annotation")?;
         }
         Ok(())
@@ -1036,11 +1218,29 @@ impl<'i, 'a> MemberScan<'i, 'a, '_> {
             return Ok(());
         }
         let index = self.index;
-        let mut members = AnnotationMembers::open(index, class, true)?;
+        let mut members = {
+            #[cfg(feature = "perf")]
+            let _timer = crate::analysis::perf::Timer::new(
+                &crate::analysis::perf::ANNOTATION_MEMBER_OPEN_NS,
+            );
+            AnnotationMembers::open(index, class, true)?
+        };
         let mut last = None;
         while records.remaining_byte().0 != 0 {
-            let (owner, offset, parameters) =
-                association(index, class, &mut members, &mut records, &mut last, true)?;
+            let (owner, offset, parameters) = {
+                #[cfg(feature = "perf")]
+                let _timer =
+                    crate::analysis::perf::Timer::new(&crate::analysis::perf::ANNOTATION_MEMBER_NS);
+                association(
+                    index,
+                    class,
+                    &mut members,
+                    &mut records,
+                    &mut last,
+                    true,
+                    true,
+                )?
+            };
             let AnnotationOwner::Method(id) = owner else {
                 return Err(QueryError::Engine(
                     diana_decomp::input::InputError::InternalInvariant(
@@ -1074,6 +1274,10 @@ impl<'i, 'a> MemberScan<'i, 'a, '_> {
         class: &diana_decomp::input::ClassView<'_, 'a>,
         offset: diana_decomp::ByteOffset,
     ) -> Result<(), QueryError> {
+        #[cfg(feature = "perf")]
+        {
+            self.static_value_classes += 1;
+        }
         let mut fields = Vec::new();
         class.visit_fields(|field| {
             if let diana_decomp::input::FieldStorage::Static { ordinal } = field.storage {

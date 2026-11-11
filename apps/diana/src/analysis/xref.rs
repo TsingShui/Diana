@@ -1,3 +1,4 @@
+use diana_decomp::input::catalog::{MemberEntry, MemberSelection};
 use diana_decomp::input::{ClassView, ProgramIndex, Prototype, ReferenceFacts};
 use diana_decomp::raw::LayoutKind;
 use diana_decomp::{ClassDefId, MethodId};
@@ -322,7 +323,9 @@ impl<'a> Xref<'a> {
         let scan_span = fastrace::Span::enter_with_local_parent("xref.scan");
         #[cfg(feature = "perf")]
         let _scan_parent = scan_span.set_local_parent();
-        super::runner::run(
+        #[cfg(feature = "perf")]
+        let scan_started = std::time::Instant::now();
+        let result = super::runner::run(
             self.roots.len(),
             self.plan.jobs,
             Vec::new,
@@ -372,7 +375,12 @@ impl<'a> Xref<'a> {
                 }
             },
             sink,
-        )
+        );
+        #[cfg(feature = "perf")]
+        {
+            crate::analysis::perf::add_elapsed(&crate::analysis::perf::SCAN_NS, scan_started);
+        }
+        result
     }
 }
 
@@ -384,15 +392,16 @@ fn scan_logical(
     plan: &XrefPlan,
     emit: &mut dyn FnMut(Event) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
-    let stopped = std::cell::Cell::new(false);
-    let mut forward = |event| {
-        let result = emit(event);
-        if result.is_err() {
-            stopped.set(true);
-        }
-        result
+    #[cfg(feature = "perf")]
+    crate::analysis::perf::add(&crate::analysis::perf::LOGICALS, 1);
+    #[cfg(feature = "perf")]
+    let logical_started = std::time::Instant::now();
+    let mut forward = |event| emit(event);
+    let prefilter = {
+        #[cfg(feature = "perf")]
+        let _timer = crate::analysis::perf::Timer::new(&crate::analysis::perf::PREFILTER_NS);
+        prefilter::Prefilter::new(index, &plan.targets, plan.typed_uses)?
     };
-    let prefilter = prefilter::Prefilter::new(index, &plan.targets, plan.typed_uses)?;
     let mut failure = None;
     let result = index.visit_classes(|class_def, class| {
         let context = format!("image:{}:l{}:c{}", image.0, logical.0, class_def.0);
@@ -408,14 +417,10 @@ fn scan_logical(
                 &mut forward,
             )
         });
-        if let Err(error) = result {
-            if !stopped.get() {
-                if let Err(error) = forward(Event::Issue(Issue::new(context, &error, None))) {
-                    failure = Some(error);
-                }
-            } else {
-                failure = Some(error);
-            }
+        if let Err(error) = result
+            && let Err(error) = forward(Event::Issue(Issue::new(context, &error, None)))
+        {
+            failure = Some(error);
         }
         if failure.is_some() {
             return Err(diana_decomp::input::InputError::InternalInvariant(
@@ -424,6 +429,8 @@ fn scan_logical(
         }
         Ok(())
     });
+    #[cfg(feature = "perf")]
+    crate::analysis::perf::add_elapsed(&crate::analysis::perf::LOGICAL_NS, logical_started);
     if let Some(error) = failure {
         return Err(error);
     }
@@ -448,6 +455,8 @@ fn scan_class<'a>(
     prefilter: &prefilter::Prefilter,
     emit: &mut dyn FnMut(Event) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
+    #[cfg(feature = "perf")]
+    crate::analysis::perf::add(&crate::analysis::perf::CLASSES, 1);
     if let Some(target) = plan.class.as_deref()
         && !class.descriptor.matches(target)?
     {
@@ -506,6 +515,7 @@ fn scan_class<'a>(
             index,
             class,
             &location,
+            prefilter,
             &plan.targets,
             plan.depth,
             true,
@@ -547,6 +557,7 @@ fn scan_class<'a>(
                 index,
                 class,
                 &location,
+                prefilter,
                 &plan.targets,
                 plan.depth,
                 true,
@@ -577,8 +588,10 @@ fn scan_class<'a>(
             descriptor: class.descriptor,
         };
         declarations::scan_type_declarations(
+            index,
             class,
             &location,
+            prefilter,
             &plan.targets,
             plan.depth,
             plan.parameter_types,
@@ -748,69 +761,73 @@ fn scan_class<'a>(
                 .targets
                 .iter()
                 .any(|target| matches!(target, Target::Resource(_)));
-            let decoded = view.visit_instructions(|item| {
-                let instruction = match item {
-                    diana_decomp::raw::RawCodeItem::Instruction(instruction) => instruction,
-                    diana_decomp::raw::RawCodeItem::Payload(payload) => {
-                        if resources && let Some(elements) = payload.array_elements() {
-                            for (ordinal, element) in elements.enumerate() {
-                                if let Ok(value) = u32::try_from(element.bits) {
-                                    literals
-                                        .try_reserve(1)
-                                        .map_err(diana_decomp::input::MethodError::Allocation)?;
-                                    literals.push((
-                                        payload.pc(),
-                                        format!("array-payload[{ordinal}]"),
-                                        value,
-                                    ));
+            let decoded = {
+                #[cfg(feature = "perf")]
+                let _timer = crate::analysis::perf::Timer::new(&crate::analysis::perf::FALLBACK_NS);
+                view.visit_instructions(|item| {
+                    let instruction = match item {
+                        diana_decomp::raw::RawCodeItem::Instruction(instruction) => instruction,
+                        diana_decomp::raw::RawCodeItem::Payload(payload) => {
+                            if resources && let Some(elements) = payload.array_elements() {
+                                for (ordinal, element) in elements.enumerate() {
+                                    if let Ok(value) = u32::try_from(element.bits) {
+                                        literals.try_reserve(1).map_err(
+                                            diana_decomp::input::MethodError::Allocation,
+                                        )?;
+                                        literals.push((
+                                            payload.pc(),
+                                            format!("array-payload[{ordinal}]"),
+                                            value,
+                                        ));
+                                    }
                                 }
                             }
+                            recovered_end = recovered_end
+                                .checked_add(payload.words().len())
+                                .ok_or(diana_decomp::input::MethodError::PlatformCapacity)?;
+                            return Ok(());
                         }
-                        recovered_end = recovered_end
-                            .checked_add(payload.words().len())
-                            .ok_or(diana_decomp::input::MethodError::PlatformCapacity)?;
-                        return Ok(());
-                    }
-                };
-                let code_unit = instruction.pc();
-                let layout = instruction.layout();
-                let LayoutKind::Instruction(spec) = layout.kind() else {
-                    return Ok(());
-                };
-                if resources {
-                    let literal = match instruction.operands().literal() {
-                        Some(diana_decomp::raw::RawLiteral::Bits32(value)) => Some(value),
-                        Some(diana_decomp::raw::RawLiteral::Bits64(value)) => {
-                            u32::try_from(value).ok()
-                        }
-                        _ => None,
                     };
-                    if let Some(value) = literal {
-                        literals
+                    let code_unit = instruction.pc();
+                    let layout = instruction.layout();
+                    let LayoutKind::Instruction(spec) = layout.kind() else {
+                        return Ok(());
+                    };
+                    if resources {
+                        let literal = match instruction.operands().literal() {
+                            Some(diana_decomp::raw::RawLiteral::Bits32(value)) => Some(value),
+                            Some(diana_decomp::raw::RawLiteral::Bits64(value)) => {
+                                u32::try_from(value).ok()
+                            }
+                            _ => None,
+                        };
+                        if let Some(value) = literal {
+                            literals
+                                .try_reserve(1)
+                                .map_err(diana_decomp::input::MethodError::Allocation)?;
+                            literals.push((code_unit, spec.mnemonic.to_owned(), value));
+                        }
+                    }
+                    for reference in layout.references().into_iter().flatten() {
+                        let needed = if plan.typed_uses {
+                            needs_reference(reference.target, &plan.targets)
+                        } else {
+                            needs_direct(reference.target, &plan.targets)
+                        };
+                        if !needed {
+                            continue;
+                        }
+                        sites
                             .try_reserve(1)
                             .map_err(diana_decomp::input::MethodError::Allocation)?;
-                        literals.push((code_unit, spec.mnemonic.to_owned(), value));
+                        sites.push((code_unit, spec.mnemonic, reference.target));
                     }
-                }
-                for reference in layout.references().into_iter().flatten() {
-                    let needed = if plan.typed_uses {
-                        needs_reference(reference.target, &plan.targets)
-                    } else {
-                        needs_direct(reference.target, &plan.targets)
-                    };
-                    if !needed {
-                        continue;
-                    }
-                    sites
-                        .try_reserve(1)
-                        .map_err(diana_decomp::input::MethodError::Allocation)?;
-                    sites.push((code_unit, spec.mnemonic, reference.target));
-                }
-                recovered_end = recovered_end
-                    .checked_add(instruction.words().len())
-                    .ok_or(diana_decomp::input::MethodError::PlatformCapacity)?;
-                Ok(())
-            });
+                    recovered_end = recovered_end
+                        .checked_add(instruction.words().len())
+                        .ok_or(diana_decomp::input::MethodError::PlatformCapacity)?;
+                    Ok(())
+                })
+            };
             let name = copy(declaration.name_units())?;
             let prototype = copy(declaration.prototype_units())?;
             for (code_unit, mnemonic, reference) in sites {
@@ -991,27 +1008,125 @@ fn scan_code<'a>(
     if prefilter.impossible() {
         return Ok(());
     }
+    #[cfg(feature = "perf")]
+    let _code_timer = crate::analysis::perf::Timer::new(&crate::analysis::perf::CODE_NS);
     let mut failure = None;
     let mut sites = Vec::new();
     let mut batch = code::Builder::new(location, plan.depth);
-    let visited = class.visit_method_codes(|method_idx, access_flags, code_offset| {
+    #[cfg(feature = "perf")]
+    let _class_walk_timer =
+        crate::analysis::perf::Timer::new(&crate::analysis::perf::CLASS_WALK_NS);
+    #[cfg(feature = "perf")]
+    let mut body_count = 0u64;
+    #[cfg(feature = "perf")]
+    let mut skipped_count = 0u64;
+    #[cfg(feature = "perf")]
+    let mut flat_count = 0u64;
+    #[cfg(feature = "perf")]
+    let mut fallback_count = 0u64;
+    #[cfg(feature = "perf")]
+    let mut site_count = 0u64;
+    #[cfg(feature = "perf")]
+    let mut body_read_ns = 0u128;
+    #[cfg(feature = "perf")]
+    let mut byte_filter_ns = 0u128;
+    #[cfg(feature = "perf")]
+    let mut flat_ns = 0u128;
+    #[cfg(feature = "perf")]
+    let mut batch_ns = 0u128;
+    #[cfg(feature = "perf")]
+    let mut callback_ns = 0u128;
+    #[cfg(feature = "perf")]
+    let walk_started = std::time::Instant::now();
+    let visited = class.walk_members_with(MemberSelection::MethodCodes, |entry| {
+        let MemberEntry::MethodCode {
+            method_idx,
+            access_flags,
+            code_offset,
+        } = entry
+        else {
+            return Err(diana_decomp::input::InputError::InternalInvariant(
+                "method-code traversal delivered another entry",
+            ));
+        };
         if failure.is_some() {
             return Ok(());
         }
+        #[cfg(feature = "perf")]
+        let callback_started = std::time::Instant::now();
         sites.clear();
         let mut unavailable = None;
         let result = (|| -> Result<(), QueryError> {
             let Some(code_offset) = code_offset else {
                 return Ok(());
             };
-            let Some(code) = index.method_instructions(Some(code_offset), access_flags)? else {
+            let code = {
+                #[cfg(feature = "perf")]
+                let started = std::time::Instant::now();
+                let code = index.method_instructions(Some(code_offset), access_flags)?;
+                #[cfg(feature = "perf")]
+                {
+                    body_read_ns += started.elapsed().as_nanos();
+                }
+                code
+            };
+            let Some(code) = code else {
                 return Ok(());
             };
-            if !prefilter.might_reference(code) {
+            #[cfg(feature = "perf")]
+            {
+                body_count += 1;
+            }
+            let might_reference = {
+                #[cfg(feature = "perf")]
+                let started = std::time::Instant::now();
+                let matched = prefilter.might_reference(code);
+                #[cfg(feature = "perf")]
+                {
+                    byte_filter_ns += started.elapsed().as_nanos();
+                }
+                matched
+            };
+            if !might_reference {
+                #[cfg(feature = "perf")]
+                {
+                    skipped_count += 1;
+                }
                 return Ok(());
             }
-            if flat_sites(code, prefilter, &mut sites)? {
-                return batch.method(index, method_idx, &sites, plan);
+            let flat = {
+                #[cfg(feature = "perf")]
+                let started = std::time::Instant::now();
+                let flat = flat_sites(code, prefilter, &mut sites)?;
+                #[cfg(feature = "perf")]
+                {
+                    flat_ns += started.elapsed().as_nanos();
+                }
+                flat
+            };
+            #[cfg(feature = "perf")]
+            {
+                site_count += u64::try_from(sites.len()).unwrap_or(u64::MAX);
+            }
+            if flat {
+                #[cfg(feature = "perf")]
+                {
+                    flat_count += 1;
+                }
+                return {
+                    #[cfg(feature = "perf")]
+                    let started = std::time::Instant::now();
+                    let result = batch.method(index, method_idx, &sites, plan);
+                    #[cfg(feature = "perf")]
+                    {
+                        batch_ns += started.elapsed().as_nanos();
+                    }
+                    result
+                };
+            }
+            #[cfg(feature = "perf")]
+            {
+                fallback_count += 1;
             }
             let diana_decomp::input::MethodBody::Code(view) =
                 index.method_body(Some(code_offset), method_idx, access_flags)?
@@ -1061,7 +1176,16 @@ fn scan_code<'a>(
             if decoded.is_err() {
                 unavailable = Some([recovered_end, range.end.0]);
             }
-            batch.method(index, method_idx, &sites, plan)?;
+            {
+                #[cfg(feature = "perf")]
+                let started = std::time::Instant::now();
+                let result = batch.method(index, method_idx, &sites, plan);
+                #[cfg(feature = "perf")]
+                {
+                    batch_ns += started.elapsed().as_nanos();
+                }
+                result?;
+            }
             decoded.map_err(QueryError::from)
         })();
         if let Err(error) = result
@@ -1073,9 +1197,59 @@ fn scan_code<'a>(
         {
             failure = Some(error);
         }
+        #[cfg(feature = "perf")]
+        {
+            callback_ns += callback_started.elapsed().as_nanos();
+        }
         Ok(())
     });
+    #[cfg(feature = "perf")]
+    {
+        let walk_elapsed = walk_started.elapsed().as_nanos();
+        crate::analysis::perf::add(
+            &crate::analysis::perf::CLASS_DATA_PARSE_NS,
+            u64::try_from(walk_elapsed.saturating_sub(callback_ns)).unwrap_or(u64::MAX),
+        );
+        if let Ok(walk) = &visited {
+            crate::analysis::perf::add(
+                &crate::analysis::perf::CLASS_DATA_MEMBERS,
+                walk.shape.declared_members(),
+            );
+        }
+    }
     let batch = batch.finish();
+    #[cfg(feature = "perf")]
+    {
+        crate::analysis::perf::add(&crate::analysis::perf::BODIES, body_count);
+        crate::analysis::perf::add(&crate::analysis::perf::SKIPPED, skipped_count);
+        crate::analysis::perf::add(&crate::analysis::perf::FLAT, flat_count);
+        crate::analysis::perf::add(&crate::analysis::perf::FALLBACK, fallback_count);
+        crate::analysis::perf::add(&crate::analysis::perf::SITES, site_count);
+        crate::analysis::perf::add(
+            &crate::analysis::perf::BODY_READ_NS,
+            u64::try_from(body_read_ns).unwrap_or(u64::MAX),
+        );
+        crate::analysis::perf::add(
+            &crate::analysis::perf::BYTE_FILTER_NS,
+            u64::try_from(byte_filter_ns).unwrap_or(u64::MAX),
+        );
+        crate::analysis::perf::add(
+            &crate::analysis::perf::FLAT_NS,
+            u64::try_from(flat_ns).unwrap_or(u64::MAX),
+        );
+        crate::analysis::perf::add(
+            &crate::analysis::perf::BATCH_NS,
+            u64::try_from(batch_ns).unwrap_or(u64::MAX),
+        );
+        crate::analysis::perf::add(
+            &crate::analysis::perf::CALLBACK_NS,
+            u64::try_from(callback_ns).unwrap_or(u64::MAX),
+        );
+        crate::analysis::perf::add(
+            &crate::analysis::perf::HITS,
+            u64::try_from(batch.len()).unwrap_or(u64::MAX),
+        );
+    }
     if failure.is_none() && !batch.is_empty() {
         emit(Event::Code(batch))?;
     }
@@ -1288,6 +1462,25 @@ pub(super) fn needs_reference(
         }
         _ => false,
     })
+}
+
+/// A resolved operand index outside the prefilter cannot match any target of
+/// that operand family. Call-site and dynamic-handle references still need the
+/// shared leaf expansion because their index is not the final target identity.
+pub(in crate::analysis::xref) fn reference_may_match(
+    reference: diana_decomp::raw::OperandReference,
+    prefilter: &prefilter::Prefilter,
+) -> bool {
+    use diana_decomp::raw::OperandReference;
+    match reference {
+        OperandReference::String(id) => prefilter.contains(id.0),
+        OperandReference::Type(id) => prefilter.contains(id.0),
+        OperandReference::Field(id) => prefilter.contains(id.0),
+        OperandReference::Method(id) => prefilter.contains(id.0),
+        OperandReference::Proto(_)
+        | OperandReference::CallSite(_)
+        | OperandReference::MethodHandle(_) => true,
+    }
 }
 
 pub(super) fn resource_match(
