@@ -214,40 +214,39 @@ impl JavaMethodBody {
             && !crate::ir::semantic::SemanticCompletion::analyze(self.semantic.body())
                 .can_complete_normally();
         let completion_type = source_return_type.clone();
-        let (source_field_types, source_types) =
-            crate::profile_scope!("java_backend.method_lower.types", {
-                let source_field_types = if outer_instances.is_empty() {
-                    source_field_types
-                } else {
-                    let mut fields = source_field_types.as_ref().clone();
-                    fields.extend(outer_instances.clone());
-                    std::sync::Arc::new(fields)
-                };
-                let mut used_types = self.type_uses.clone();
-                used_types.extend(self.current_type.iter().cloned());
-                used_types.extend(self.return_type.iter().cloned());
-                used_types.insert(ArgType::object("java/lang/Object"));
-                let mut generic_uses = Vec::new();
-                for contract in generic_fields.values() {
-                    super::super::type_uses::GenericTypeUses::field_contract(
-                        contract,
-                        &mut generic_uses,
-                    );
-                }
-                for contract in generic_methods.values() {
-                    super::super::type_uses::GenericTypeUses::method_contract(
-                        contract,
-                        &mut generic_uses,
-                    );
-                }
-                used_types.extend(generic_uses);
-                let source_types = used_types
-                    .iter()
-                    .map(|ty| Ok((ty.clone(), type_names.resolve_type(ty)?)))
-                    .collect::<Result<std::collections::BTreeMap<_, _>, JavaDecompilerError>>()?;
-                Ok::<_, JavaDecompilerError>((source_field_types, source_types))
-            })?;
-        let semantic_names = crate::profile_scope!("java_backend.method_lower.names", {
+        let (source_field_types, source_types) = {
+            let source_field_types = if outer_instances.is_empty() {
+                source_field_types
+            } else {
+                let mut fields = source_field_types.as_ref().clone();
+                fields.extend(outer_instances.clone());
+                std::sync::Arc::new(fields)
+            };
+            let mut used_types = self.type_uses.clone();
+            used_types.extend(self.current_type.iter().cloned());
+            used_types.extend(self.return_type.iter().cloned());
+            used_types.insert(ArgType::object("java/lang/Object"));
+            let mut generic_uses = Vec::new();
+            for contract in generic_fields.values() {
+                super::super::type_uses::GenericTypeUses::field_contract(
+                    contract,
+                    &mut generic_uses,
+                );
+            }
+            for contract in generic_methods.values() {
+                super::super::type_uses::GenericTypeUses::method_contract(
+                    contract,
+                    &mut generic_uses,
+                );
+            }
+            used_types.extend(generic_uses);
+            let source_types = used_types
+                .iter()
+                .map(|ty| Ok((ty.clone(), type_names.resolve_type(ty)?)))
+                .collect::<Result<std::collections::BTreeMap<_, _>, JavaDecompilerError>>()?;
+            Ok::<_, JavaDecompilerError>((source_field_types, source_types))
+        }?;
+        let semantic_names = {
             super::super::semantic_naming::SemanticNameRecovery::new(type_names).recover(
                 self.semantic.body(),
                 self.semantic.state().types(),
@@ -255,8 +254,8 @@ impl JavaMethodBody {
                 &self.parameter_code_vars,
                 self.this_code_var,
             )
-        });
-        let dialect = crate::profile_scope!("java_backend.method_lower.dialect", {
+        };
+        let dialect = {
             crate::language::java::DexJavaDialect::new(
                 self.is_static,
                 self.this_code_var,
@@ -288,68 +287,64 @@ impl JavaMethodBody {
                     .with_analysis_observer(observer)
                     .with_semantic_names(semantic_names)
             })
-        })?;
-        let mut ast = crate::profile_scope!("java_backend.method_lower.ast", {
+        }?;
+        let mut ast = {
             JavaLowerer::new(dialect)
                 .lower(self.semantic.body())
                 .map_err(JavaDecompilerError::Java)
-        })?;
+        }?;
         let mut declarations = LexicalDeclarationPlacement;
-        crate::profile_scope!("java_backend.method_lower.declarations", {
+        {
             declarations
                 .apply(&mut ast)
                 .map_err(crate::language::java::JavaLoweringError::from)
-        })?;
+        }?;
         let mut structural_normalizer = JavaAstNormalizer;
-        crate::profile_scope!("java_backend.method_lower.normalize", {
+        {
             structural_normalizer
                 .apply(&mut ast)
                 .map_err(crate::language::java::JavaLoweringError::from)
-        })?;
+        }?;
         if class_initializer {
             let mut exits = JavaInitializerExitLowering;
-            crate::profile_scope!("java_backend.method_lower.initializer", {
+            {
                 exits
                     .apply(&mut ast)
                     .map_err(crate::language::java::JavaLoweringError::from)
-            })?;
+            }?;
         }
         let mut aggregates = AggregateInitializer::default();
-        crate::profile_scope!("java_backend.method_lower.aggregates", {
+        {
             aggregates
                 .apply(&mut ast)
                 .map_err(crate::language::java::JavaLoweringError::from)
-        })?;
+        }?;
         let mut assignment = DefiniteAssignment;
-        crate::profile_scope!("java_backend.method_lower.assignment", {
+        {
             assignment
                 .apply(&mut ast)
                 .map_err(crate::language::java::JavaLoweringError::from)
-        })?;
+        }?;
         let mut normalizer = JavaAstNormalizer;
-        crate::profile_scope!("java_backend.method_lower.finalize", {
+        {
             normalizer
                 .apply(&mut ast)
                 .map_err(crate::language::java::JavaLoweringError::from)
-        })?;
+        }?;
         if !class_initializer && self.return_type.as_ref() == Some(&ArgType::VOID) {
             let mut tail = JavaVoidTailLinearizer;
-            crate::profile_scope!("java_backend.method_lower.void_tail", {
-                match tail.apply(&mut ast) {
-                    Ok(_) => {}
-                    Err(never) => match never {},
-                }
-            });
+            match tail.apply(&mut ast) {
+                Ok(_) => {}
+                Err(never) => match never {},
+            };
         }
         if semantically_terminal {
             if let Some(return_type) = completion_type {
                 let mut completion = JavaMethodCompletion::new(return_type);
-                crate::profile_scope!("java_backend.method_lower.completion", {
-                    match completion.apply(&mut ast) {
-                        Ok(_) => {}
-                        Err(never) => match never {},
-                    }
-                });
+                match completion.apply(&mut ast) {
+                    Ok(_) => {}
+                    Err(never) => match never {},
+                };
             }
         }
         Ok(ast)

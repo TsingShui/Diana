@@ -5026,11 +5026,11 @@ impl JavaDialect for DexJavaDialect {
     }
 
     fn prepare(&mut self, root: &crate::ir::SemanticNode) -> Result<(), Self::Error> {
-        crate::profile_scope!("java_prepare.verify", JavaInputVerifier::verify(root))?;
+        JavaInputVerifier::verify(root)?;
         let diagnostics_enabled = self
             .observer
             .is_enabled(crate::ir::AnalysisEventKind::SourceTypes);
-        let source_types = crate::profile_scope!("java_prepare.source_types", {
+        let source_types = {
             SourceTypeFlow::solve(
                 root,
                 &self.source_field_types,
@@ -5048,7 +5048,7 @@ impl JavaDialect for DexJavaDialect {
                 &self.source_variable_types,
                 diagnostics_enabled,
             )
-        });
+        };
         if diagnostics_enabled {
             let diagnostics = source_types.diagnostics();
             self.observer
@@ -5062,9 +5062,7 @@ impl JavaDialect for DexJavaDialect {
             self.source_variable_requirements,
             self.source_value_requirements,
         ) = source_types.into_parts();
-        let declarations = crate::profile_scope!("java_prepare.declarations", {
-            DeclarationAnalysis::default().analyze(root)
-        })?;
+        let declarations = { DeclarationAnalysis::default().analyze(root) }?;
         self.inline_declarations = declarations.inline_variables().clone();
         let mut bindings = SourceBindings::default();
         bindings.visit_node(root);
