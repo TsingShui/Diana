@@ -1,24 +1,32 @@
-## Diana CLI 0.2.5
+## Diana CLI 0.2.6
 
-This release improves cross-reference performance and cleans up the unused
-profiling compatibility shim.
+This release fixes silent static-value corruption, unblocks platform framework
+DEX inputs with hidden-API metadata, and preserves construction sequences that
+previously failed semantic recovery.
 
-### Cross references
+### Decompilation fixes
 
-- Cross-reference scans apply resolved target-index prefilters before decoding
-  annotations, static values, field types, and method return types.
-- Field and method annotation association no longer resolves complete member
-  declarations when the query only needs the declaring member identity.
-- Type queries can answer return-type and field-type relations without
-  materializing unrelated declarations.
+- Original encoded static field values are restored, including mixed scalar
+  widths, negative zero and original UTF-16 string units.
+- Allocations and direct constructor calls with different owners remain explicit
+  `allocate-instance` and `init-direct` operations. Their exact original targets
+  and surrounding effects are preserved.
+- DEX map kind `0xF000` is admitted as opaque platform hidden-API metadata under
+  the shared envelope checks.
+- Unavailable method bodies contain `// Diana: WARNING:` comments with the
+  concrete reason and issue URL, instead of generated exception throws.
+  Original input throws remain ordinary code.
 
-### Instrumentation
+### CLI compatibility changes
 
-- The opt-in `perf` feature adds fastrace spans and aggregated xref,
-  annotation, class-data, batch, resolve, analyze, and publish counters.
-- Normal release builds remain instrumentation-free.
-- Removed the unused no-op `profile_scope!` compatibility macro and its
-  `profiling.rs` module.
+- `get-class` and `get-method` JSON now use schema 5 with method-local `issues`.
+- Recovery failures retain the available publication, including `-o` output,
+  write a diagnostic to stderr and return exit code 1 in both presentations.
+- Automation consuming these commands needs to handle schema 5 and retained
+  partial results on exit code 1.
+
+The changelog also records the retirement of obsolete pipeline specifications
+and their active documentation references.
 
 These archives contain the CLI executable and Apache-2.0 license. macOS and Linux
 use `.tar.gz`; Windows uses `.zip`. Linux binaries target musl.
@@ -26,14 +34,14 @@ use `.tar.gz`; Windows uses `.zip`. Linux binaries target musl.
 ### Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/TsingShui/Diana/diana-v0.2.5/install.sh -o install-diana.sh
-sh install-diana.sh diana-v0.2.5
+curl -fsSL https://raw.githubusercontent.com/TsingShui/Diana/diana-v0.2.6/install.sh -o install-diana.sh
+sh install-diana.sh diana-v0.2.6
 ```
 
 Or build the released CLI with Rust 1.93+ and native build tools:
 
 ```sh
-cargo install --git https://github.com/TsingShui/Diana.git --tag diana-v0.2.5 --locked diana
+cargo install --git https://github.com/TsingShui/Diana.git --tag diana-v0.2.6 --locked diana
 ```
 
 Windows users can extract `diana.exe` from the matching ZIP and add it to PATH.
