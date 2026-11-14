@@ -1,4 +1,4 @@
-name: Diana
+name: diana-cli
 
 # CLI and engine gates: format, lint and release build on Rust 1.93 across
 # Linux, macOS and Windows. Releases are handled by release.yml.
@@ -12,14 +12,14 @@ on:
       - "crates/diana-decomp/**"
       - "Cargo.toml"
       - "Cargo.lock"
-      - ".github/workflows/diana.yml"
+      - ".github/workflows/diana-cli.yml"
   pull_request:
     paths:
       - "apps/diana/**"
       - "crates/diana-decomp/**"
       - "Cargo.toml"
       - "Cargo.lock"
-      - ".github/workflows/diana.yml"
+      - ".github/workflows/diana-cli.yml"
   workflow_dispatch:
 
 permissions:
