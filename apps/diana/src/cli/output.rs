@@ -90,6 +90,19 @@ pub fn publish_with(
     }
 }
 
+/// Publishes an input-independent document atomically, refusing any existing target.
+pub(super) fn publish_new(target: &Path, bytes: &[u8]) -> Result<(), Failure> {
+    let directory = target.parent().unwrap_or_else(|| Path::new("."));
+    let (mut file, temporary) = tempfile_in(directory).map_err(Failure::output)?;
+    let written = write_buffered(&mut file, |writer| {
+        writer.write_all(bytes).map_err(Failure::output)
+    });
+    drop(file);
+    written?;
+    // Linking rather than renaming prevents a concurrent creator from being overwritten.
+    std::fs::hard_link(&temporary.0, target).map_err(Failure::output)
+}
+
 fn write_buffered(
     sink: &mut dyn Write,
     write: impl FnOnce(&mut buffer::Buffered<'_>) -> Result<(), Failure>,

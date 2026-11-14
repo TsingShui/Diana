@@ -11,6 +11,7 @@ mod matching;
 mod outline;
 mod output;
 mod resources;
+mod skill;
 mod table;
 mod tree;
 mod xref;
@@ -55,6 +56,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Print the Diana Agent Skill, or install it with -i
+    Skill {
+        #[arg(short = 'i', long)]
+        /// Install to ~/.agents/skills/diana/SKILL.md without overwriting an existing file
+        install: bool,
+    },
     /// List the entries an archive holds, in central-directory order
     #[command(
         long_about = "Columns: name, compressed_size, uncompressed_size, compression. Physical records in directory order; numeric ZIP method, no label."
@@ -364,6 +371,7 @@ enum MethodRelationArg {
 pub fn run() -> std::process::ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
+        Command::Skill { install } => skill::run(install),
         Command::Resources {
             input,
             filter,

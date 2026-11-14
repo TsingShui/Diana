@@ -29,10 +29,11 @@ classes     List class definitions
 tree        Show the code package hierarchy
 fields      List defined fields
 methods     List defined methods
+skill       Print the Diana Agent Skill, or install it with -i
 help        Print help for a command
 ```
 
-Commands accept `--format text|json` and `-o <file>`. Extraction always writes
+Analysis commands accept `--format text|json` and `-o <file>`. Extraction always writes
 the requested payload to `-o`, with no stdout result. Index queries return every
 match. `xref` defaults to `--limit 50` with an explicit warning when limited;
 `--no-limit` returns every reference. An empty match is a normal empty result.
@@ -110,6 +111,20 @@ CPU count, capped by the number of roots. Workers claim roots dynamically, with
 larger query roots started first. Logical headers within a root retain their own
 identities. `get-class --jobs` instead sets Engine's
 method worker count; its default is one. Explicit job counts must be positive.
+
+## Agent Skill
+
+`diana skill` writes the embedded `SKILL.md` to stdout without an input file.
+Install it to the user-level Agent Skills directory with:
+
+```sh
+diana skill -i
+```
+
+`-i` (or `--install`) creates `~/.agents/skills/diana/SKILL.md` and reports the
+path on stderr. The home directory comes from `HOME` on Unix and `USERPROFILE`
+on Windows; it must be an absolute path. Installation refuses an existing file,
+symlink or directory at the destination and leaves it unchanged.
 
 ## Package tree
 

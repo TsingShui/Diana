@@ -42,6 +42,7 @@ Analyze APK archives and standalone DEX files
 Usage: diana <COMMAND>
 
 Commands:
+  skill           Print the Diana Agent Skill, or install it with -i
   entries         List the entries an archive holds, in central-directory order
   classes         List classes defined across every DEX in an APK
   tree            Show the package hierarchy of defined classes
@@ -74,6 +75,15 @@ Locators name the entry and index, so follow-up commands skip the APK-wide scan.
 Outline follows calls across every DEX; a class outside the input stays [other-dex].
 Java may contain explicit stubs for constructs the recovery cannot express.
 ```
+
+Install the Agent Skill to `~/.agents/skills/diana/SKILL.md`:
+
+```sh
+diana skill -i
+```
+
+Installation leaves existing files unchanged. Run `diana skill` to print the
+content instead.
 
 Type cross-references include code uses, field types, and method return types.
 Add `--parameter-types` to include method parameter declarations, and
