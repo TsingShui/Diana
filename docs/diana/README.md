@@ -39,6 +39,13 @@ transform checks remain required.
 
 ## Regression workflow status
 
+The only GitHub Actions workflow is
+[release.yml](../../.github/workflows/release.yml). It runs on `diana-v*` tag
+pushes or a manual dispatch naming an existing tag, builds the CLI for all
+release targets and publishes after every build succeeds. Ordinary branch pushes
+and pull requests do not trigger CI. Format, lint and test checks run locally
+under the contribution and testing policies.
+
 [EVOLUTION](EVOLUTION.md#primary-iteration) defines the primary improvement loop:
 fixture discovery, owning-module repair, newly authored complexity challenges,
 LLM path-by-path semantic review, and preservation of original/prior effects.

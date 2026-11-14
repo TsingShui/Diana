@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### CI
+
+- Removed the separate `diana-cli` format, lint and build workflow. GitHub
+  Actions now runs only the release workflow, triggered by `diana-v*` tags or
+  manual dispatch with an existing tag.
+
 ## 0.2.7 - 2026-11-14
 
 ### Agent Skill
