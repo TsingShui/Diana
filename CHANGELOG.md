@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.7 - 2026-11-14
+
+### Agent Skill
+
+- Added `diana skill` to print an embedded, minimal `SKILL.md` for Android
+  reverse engineering. The skill directs agents to the CLI help for commands
+  and detailed usage.
+- Added `diana skill -i` (`--install`) to install the skill to
+  `~/.agents/skills/diana/SKILL.md`, creating missing directories and reporting
+  the installed path on stderr.
+- Installation publishes the complete file atomically and refuses to overwrite
+  an existing file, symlink or directory. The home directory comes from `HOME`
+  on Unix or `USERPROFILE` on Windows and must be an absolute path.
+
 ## 0.2.6 - 2026-11-11
 
 ### Decompilation
