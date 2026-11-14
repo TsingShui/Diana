@@ -1,11 +1,7 @@
 name: Diana
 
-# Diana-only gates: format, lint and release build.
-# `gates` runs the CLI and engine on the declared minimum toolchain (1.93) on three
-# platforms. `workspace` reruns the same gates over every workspace member,
-# including the GPUI desktop application, on current stable. The GUI follows stable
-# because its GPUI dependency needs newer library features than 1.93, and it needs
-# the platform GUI libraries. No version preparation, artifact upload, tag or release.
+# CLI and engine gates: format, lint and release build on Rust 1.93 across
+# Linux, macOS and Windows. Releases are handled by release.yml.
 
 on:
   push:
@@ -60,36 +56,3 @@ jobs:
 
       - name: Build CLI and engine
         run: cargo build -p diana -p diana-decomp --locked --release
-
-  workspace:
-    name: Workspace gates (ubuntu-latest, stable)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      # GPUI resolves fonts through fontconfig and links the X11/Wayland toolkit.
-      - name: System libraries
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config libfontconfig1-dev libfreetype-dev libxkbcommon-dev \
-            libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev \
-            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
-
-      - name: Toolchain
-        run: |
-          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
-          rustup default stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: diana-workspace
-
-      - name: Format
-        run: cargo fmt --all -- --check
-
-      - name: Lint
-        run: cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
-
-      - name: Build
-        run: cargo build --workspace --locked --release

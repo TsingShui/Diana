@@ -23,6 +23,11 @@ The home directory comes from `HOME` on Unix and `USERPROFILE` on Windows and
 must be an absolute path. Skill discovery depends on the agent's support for
 `~/.agents/skills`; installing the file does not configure individual agents.
 
+### CI
+
+CI now checks the CLI and engine on Rust 1.93 across Linux, macOS and Windows.
+The Linux stable full-workspace job, including the GUI build, has been removed.
+
 ### Install or upgrade Diana
 
 For macOS and Linux:

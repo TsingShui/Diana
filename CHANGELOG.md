@@ -14,6 +14,11 @@
   an existing file, symlink or directory. The home directory comes from `HOME`
   on Unix or `USERPROFILE` on Windows and must be an absolute path.
 
+### CI
+
+- Removed the Linux stable full-workspace job, including the GUI build.
+  Rust 1.93 CLI and engine gates remain on Linux, macOS and Windows.
+
 ## 0.2.6 - 2026-11-11
 
 ### Decompilation
