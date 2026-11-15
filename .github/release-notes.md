@@ -1,46 +1,40 @@
-## Diana CLI 0.2.7
+## Diana CLI 0.2.8
 
-This release adds a minimal Agent Skill for Android reverse engineering and a
-command to install it in the user-level Agent Skills directory.
+This release fixes misleading command help. The analyzed image set and the size
+of an unfiltered listing are now stated where the commands are described. No
+analysis behavior changed.
 
-### Agent Skill
+### Help and documentation fixes
 
-```sh
-diana skill       # Print SKILL.md to stdout
-diana skill -i    # Install the skill (--install also works)
-```
+- `classes`, `fields`, `methods`, `strings` and `xref` state that they read root
+  DEX images only: `classes.dex` and `classes<N>.dex` at the archive root, or the
+  whole input for a bare DEX. DEX stored in `assets/`, `res/raw/` or a nested
+  archive is not scanned, and the help names `entries` and `extract` as the way to
+  analyze it.
+- The inaccurate "every DEX in an APK" scope claim is gone from `classes`, `xref`
+  and the top-level notes.
+- `strings` documents one row per original `string_ids` entry per root, so equal
+  values are not merged, and that text output escapes control characters.
+- List commands document the 50-row default with its truncation notice, the
+  several-MB size of `--no-limit` output on a large APK, and `--filter` or `-o`
+  as the intended way to read a large result.
+- The top-level help gains a `strings` example.
 
-The skill directs agents to `diana --help` and `diana <command> --help`, keeping
-command documentation in the CLI rather than duplicating it in the skill.
-
-Installation creates `~/.agents/skills/diana/SKILL.md` and any missing parent
-directories, then reports the installed path on stderr. It publishes the complete
-file atomically and refuses to overwrite any existing file, symlink or directory.
-To replace an older skill, review and remove the existing file before installing
-again, or use the stdout output to update it manually.
-
-The home directory comes from `HOME` on Unix and `USERPROFILE` on Windows and
-must be an absolute path. Skill discovery depends on the agent's support for
-`~/.agents/skills`; installing the file does not configure individual agents.
-
-### CI
-
-CI now checks the CLI and engine on Rust 1.93 across Linux, macOS and Windows.
-The Linux stable full-workspace job, including the GUI build, has been removed.
+The changelog records the same corrections.
 
 ### Install or upgrade Diana
 
 For macOS and Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/TsingShui/Diana/diana-v0.2.7/install.sh -o install-diana.sh
-sh install-diana.sh diana-v0.2.7
+curl -fsSL https://raw.githubusercontent.com/TsingShui/Diana/diana-v0.2.8/install.sh -o install-diana.sh
+sh install-diana.sh diana-v0.2.8
 ```
 
 Or build the released CLI with Rust 1.93+ and native build tools:
 
 ```sh
-cargo install --git https://github.com/TsingShui/Diana.git --tag diana-v0.2.7 --locked diana
+cargo install --git https://github.com/TsingShui/Diana.git --tag diana-v0.2.8 --locked diana
 ```
 
 Windows users can extract `diana.exe` from the matching ZIP and add it to PATH.

@@ -8,6 +8,24 @@
   Actions now runs only the release workflow, triggered by `diana-v*` tags or
   manual dispatch with an existing tag.
 
+## 0.2.8 - 2026-11-15
+
+### Documentation
+
+- Command help and the READMEs now state the analyzed image set: `classes`,
+  `fields`, `methods`, `strings` and `xref` read root DEX images only, meaning
+  `classes.dex` and `classes<N>.dex` at the archive root, or the whole input for
+  a bare DEX. DEX stored in `assets/`, `res/raw/` or a nested archive is not
+  scanned; the help names `entries` and `extract` as the way to analyze it.
+- Removed the inaccurate "every DEX in an APK" scope claim from `classes`, `xref`
+  and the top-level help notes.
+- `strings` documents one row per original `string_ids` entry per root, so equal
+  values are not merged, and that text output escapes control characters.
+- List commands document the 50-row default with its truncation notice, the
+  several-MB size of `--no-limit` output on a large APK, and `--filter` or `-o`
+  as the intended way to read a large result.
+- Added a `strings` example to the top-level help.
+
 ## 0.2.7 - 2026-11-14
 
 ### Agent Skill
