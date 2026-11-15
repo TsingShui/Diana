@@ -27,17 +27,18 @@ use crate::analysis::query::{ImageInfo, Query, QueryError, QueryKind, QueryPlan,
 use crate::analysis::request::RequestScope;
 use matching::MatchArgs;
 
-const EXAMPLES: &str = "Examples:
+const AFTER_HELP: &str = "Examples:
   diana classes app.apk --filter MainActivity
+  diana strings app.apk --filter Authorization
   diana get-class app.apk 'e0:l0:c123'
   diana get-method app.apk 'e0:l0:c123:m45'
   diana outline-class app.apk 'e0:l0:c123' --call-depth 2
   diana xref app.apk string Authorization
   diana manifest app.apk
-Copy classes.at into get-class; copy methods.at into get-method and outline-method.
-Locators name the entry and index, so follow-up commands skip the APK-wide scan.
-Outline follows calls across every DEX; a class outside the input stays [other-dex].
-Java may contain explicit stubs for constructs the recovery cannot express.";
+Copy classes.at to get-class, methods.at to get-method/outline-method; locators (entry:index) skip the APK-wide scan.
+Root DEX only: classes.dex and classes<N>.dex at the archive root, or a bare DEX; DEX in assets/, res/raw/ or nested archives needs extract, then a bare-DEX run.
+Lists show 50 rows by default and warn on truncation; --no-limit reaches several MB on a large APK, so prefer --filter or -o.
+Outline crosses root DEX; a class outside the input stays [other-dex]. Java may contain explicit stubs.";
 
 use output::{Failure, Format, publish};
 use table::{Locator, QueryRow, RowFormat};
@@ -46,7 +47,7 @@ use table::{Locator, QueryRow, RowFormat};
 #[command(
     name = "diana",
     about = "Analyze APK archives and standalone DEX files",
-    after_help = EXAMPLES,
+    after_help = AFTER_HELP,
     version
 )]
 struct Cli {
@@ -76,9 +77,9 @@ enum Command {
         /// Write the result to this file instead of stdout
         output: Option<PathBuf>,
     },
-    /// List classes defined across every DEX in an APK
+    /// List classes defined in every root DEX
     #[command(
-        long_about = "Column: at. Restrict with --filter, --extends, --implements, --subinterface and --kind; hierarchy filters use direct edges only."
+        long_about = "Column: at. Root DEX only: classes.dex and classes<N>.dex at the archive root, or a bare DEX; DEX elsewhere is not scanned. --filter, --extends, --implements, --subinterface and --kind restrict; hierarchy filters use direct edges only. 50 rows by default; --no-limit reaches several MB, so prefer --filter or -o."
     )]
     Classes {
         /// Input file (APK, ZIP or bare DEX)
@@ -118,9 +119,9 @@ enum Command {
     },
     /// Show the package hierarchy of defined classes
     Tree(tree::TreeArgs),
-    /// List every field the archive DEX files declare
+    /// List every field declared in every root DEX
     #[command(
-        long_about = "Column: at. Only class_data definitions; --class selects the defining class exactly and --filter defaults to ranked case-insensitive fuzzy matching."
+        long_about = "Column: at. Root DEX only: classes.dex and classes<N>.dex at the archive root, or a bare DEX; DEX elsewhere is not scanned. Only class_data definitions; --class selects the defining class exactly. 50 rows by default; --no-limit reaches several MB, so prefer --filter or -o."
     )]
     Fields {
         /// Input file (APK, ZIP or bare DEX)
@@ -151,7 +152,7 @@ enum Command {
     },
     /// List defined methods, excluding reference-only method_ids entries
     #[command(
-        long_about = "Column: at. Only class_data definitions, including abstract, native, constructor and clinit declarations."
+        long_about = "Column: at. Root DEX only: classes.dex and classes<N>.dex at the archive root, or a bare DEX; DEX elsewhere is not scanned. Only class_data definitions, including abstract, native, constructor and clinit. 50 rows by default; --no-limit reaches several MB, so prefer --filter or -o."
     )]
     Methods {
         /// Input file (APK, ZIP or bare DEX)
@@ -180,9 +181,9 @@ enum Command {
         /// Write the result to this file instead of stdout
         output: Option<PathBuf>,
     },
-    /// List every string in every root DEX of an archive
+    /// List every string in every root DEX
     #[command(
-        long_about = "Columns: at, value. Original string_ids values; filtered searches default to ranked fuzzy matching. Find code reference sites with xref."
+        long_about = "Columns: at, value. Root DEX only: classes.dex and classes<N>.dex at the archive root, or a bare DEX; DEX elsewhere is not scanned. One row per string_ids entry per root, so equal values are not merged; text escapes control characters. Find code reference sites with xref. 50 rows by default; --no-limit reaches several MB, so prefer --filter or -o."
     )]
     Strings {
         /// Input file (APK, ZIP or bare DEX)
@@ -220,7 +221,7 @@ enum Command {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-    /// Locate a class in an APK and decompile it
+    /// Locate a class in an APK or DEX and decompile it
     #[command(
         long_about = "Displays the Engine/P9 Java-like text, including original members and local recovery gaps. JSON schema 5 carries the same text, source facts, byte spans and method-local issues."
     )]
@@ -287,9 +288,9 @@ enum Command {
         /// Exit non-zero when the delivered document is partial
         strict: bool,
     },
-    /// Find code references across every DEX in an APK
+    /// Find code references in every root DEX
     #[command(
-        long_about = "Columns: context, match, use. Kinds: string, type, method, field, impl, extend, resource. Defaults to ranked case-insensitive fuzzy matching; --substring, --regex and --exact select other modes. Canonical coordinates always select exact values."
+        long_about = "Columns: context, match, use. Root DEX only: classes.dex and classes<N>.dex at the archive root, or a bare DEX; DEX elsewhere is not scanned. Kinds: string, type, method, field, impl, extend, resource. Canonical coordinates always select exact values. 50 rows by default; --no-limit reaches several MB, so prefer --filter or -o."
     )]
     Xref {
         /// Input file (APK, ZIP or bare DEX)

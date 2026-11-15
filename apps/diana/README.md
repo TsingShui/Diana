@@ -35,11 +35,19 @@ help        Print help for a command
 
 Analysis commands accept `--format text|json` and `-o <file>`. Extraction always writes
 the requested payload to `-o`, with no stdout result. Index queries return every
-match. `xref` defaults to `--limit 50` with an explicit warning when limited;
-`--no-limit` returns every reference. An empty match is a normal empty result.
+match. `classes`, `fields`, `methods`, `strings` and `xref` show at most 50 rows
+by default and report truncation; `--no-limit` returns every row, which reaches
+several MB on a large APK. An empty match is a normal empty result.
 Fuzzy searches rank matches across all input images before presentation. Fuzzy
 is the default for filtered searches and xref; unfiltered lists and the other
 matching modes retain completion order.
+
+`classes`, `fields`, `methods`, `strings`, `xref`, the outline commands and the
+decompilation commands read root DEX images only: `classes.dex` and
+`classes<N>.dex` at the archive root, or the whole input for a bare DEX. DEX
+stored elsewhere, such as `assets/`, `res/raw/` or a nested archive, is not
+scanned. `entries` lists those records and `extract` writes one out for analysis
+as a bare DEX input.
 
 | Command | Presentation |
 |---|---|
