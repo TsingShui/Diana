@@ -1,5 +1,6 @@
 //! Request assembly: method facts, hierarchy closure and nested classes.
 
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, OnceLock};
 
@@ -14,7 +15,7 @@ pub(super) struct IndexedImage<'a> {
     pub(super) image: DexImage<'a>,
     pub(super) index: ProgramIndex<'a>,
     pub(super) dex: DexId,
-    classes_by_descriptor: OnceLock<HashMap<String, crate::ClassDefId>>,
+    classes_by_descriptor: OnceLock<HashMap<Cow<'a, str>, crate::ClassDefId>>,
 }
 
 impl<'a> IndexedImage<'a> {
@@ -29,7 +30,7 @@ impl<'a> IndexedImage<'a> {
         })
     }
 
-    pub(super) fn classes_by_descriptor(&self) -> &HashMap<String, crate::ClassDefId> {
+    pub(super) fn classes_by_descriptor(&self) -> &HashMap<Cow<'a, str>, crate::ClassDefId> {
         self.classes_by_descriptor.get_or_init(|| {
             let mut classes = HashMap::new();
             for ordinal in 0..self.index.class_count() {
@@ -40,7 +41,7 @@ impl<'a> IndexedImage<'a> {
                 let Ok(descriptor) = view.descriptor.utf8_lossy() else {
                     continue;
                 };
-                classes.insert(descriptor.into_owned(), key);
+                classes.insert(descriptor, key);
             }
             classes
         })
@@ -132,22 +133,25 @@ pub(super) fn backend_input_from_facts<'a>(
     visited.insert(class_def);
     let mut frontier = vec![facts.clone()];
     while let Some(current) = frontier.pop() {
-        let mut wanted = Vec::new();
-        if let Fact::Present(super_class) = current.superclass() {
-            wanted.push(super_class);
-        }
-        if let Fact::Present(interfaces) = current.interfaces() {
-            for interface in interfaces {
-                if let Fact::Present(descriptor) = &interface.descriptor {
-                    wanted.push(descriptor);
-                }
-            }
-        }
-        for descriptor in wanted {
+        let super_class = match current.superclass() {
+            Fact::Present(name) => Some(name),
+            _ => None,
+        };
+        let interfaces = match current.interfaces() {
+            Fact::Present(interfaces) => interfaces.as_slice(),
+            _ => &[],
+        };
+        let interfaces = interfaces
+            .iter()
+            .filter_map(|interface| match &interface.descriptor {
+                Fact::Present(name) => Some(name),
+                _ => None,
+            });
+        for descriptor in super_class.into_iter().chain(interfaces) {
             let Ok(text) = String::from_utf16(descriptor.units()) else {
                 continue;
             };
-            let Some(&key) = classes.get(&text) else {
+            let Some(&key) = classes.get(text.as_str()) else {
                 continue;
             };
             if !visited.insert(key) {

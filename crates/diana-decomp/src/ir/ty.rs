@@ -429,11 +429,32 @@ impl ArgType {
 
     /// Convert to DEX type descriptor
     pub fn to_descriptor(&self) -> String {
+        let mut descriptor = String::with_capacity(self.descriptor_len());
+        self.append_descriptor(&mut descriptor);
+        descriptor
+    }
+
+    pub(crate) fn descriptor_len(&self) -> usize {
         match self {
-            ArgType::Primitive(p) => p.descriptor().to_string(),
-            ArgType::Object(name) => format!("L{};", name),
-            ArgType::Array(elem) => format!("[{}", elem.to_descriptor()),
-            ArgType::Unknown(_) => "?".to_string(),
+            Self::Primitive(_) | Self::Unknown(_) => 1,
+            Self::Object(name) => name.len() + 2,
+            Self::Array(element) => 1 + element.descriptor_len(),
+        }
+    }
+
+    pub(crate) fn append_descriptor(&self, out: &mut String) {
+        match self {
+            Self::Primitive(p) => out.push(p.descriptor()),
+            Self::Unknown(_) => out.push('?'),
+            Self::Object(name) => {
+                out.push('L');
+                out.push_str(name);
+                out.push(';');
+            }
+            Self::Array(element) => {
+                out.push('[');
+                element.append_descriptor(out);
+            }
         }
     }
 }

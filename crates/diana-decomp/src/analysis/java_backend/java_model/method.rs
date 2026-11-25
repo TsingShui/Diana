@@ -181,6 +181,7 @@ impl JavaMethodBody {
                 crate::ir::generic_types::GenericMethodContract,
             >,
         >,
+        generic_uses: &[ArgType],
         source_object_types: std::sync::Arc<crate::language::java::SourceObjectTypes>,
         generic_type_projection: std::rc::Rc<dyn crate::language::java::GenericTypeProjection>,
         source_current_type: Option<JavaType>,
@@ -210,26 +211,18 @@ impl JavaMethodBody {
                 fields.extend(outer_instances.clone());
                 std::sync::Arc::new(fields)
             };
-            let mut used_types = self.type_uses.uses.clone();
-            used_types.extend(self.current_type.iter().cloned());
-            used_types.extend(self.return_type.iter().cloned());
-            used_types.insert(ArgType::object("java/lang/Object"));
-            let mut generic_uses = Vec::new();
-            for contract in generic_fields.values() {
-                super::super::type_uses::GenericTypeUses::field_contract(
-                    contract,
-                    &mut generic_uses,
-                );
-            }
-            for contract in generic_methods.values() {
-                super::super::type_uses::GenericTypeUses::method_contract(
-                    contract,
-                    &mut generic_uses,
-                );
-            }
-            used_types.extend(generic_uses);
-            let source_types = used_types
+            let object = ArgType::object("java/lang/Object");
+            let used_types = self
+                .type_uses
+                .uses
                 .iter()
+                .chain(self.current_type.iter())
+                .chain(self.return_type.iter())
+                .chain(std::iter::once(&object))
+                .chain(generic_uses)
+                .collect::<std::collections::BTreeSet<_>>();
+            let source_types = used_types
+                .into_iter()
                 .map(|ty| Ok((ty.clone(), type_names.resolve_type(ty)?)))
                 .collect::<Result<std::collections::BTreeMap<_, _>, JavaDecompilerError>>()?;
             Ok::<_, JavaDecompilerError>((source_field_types, source_types))
@@ -287,38 +280,26 @@ impl JavaMethodBody {
                 .apply(&mut ast)
                 .map_err(crate::language::java::JavaLoweringError::from)
         }?;
-        let mut structural_normalizer = JavaAstNormalizer;
-        {
-            structural_normalizer
-                .apply(&mut ast)
-                .map_err(crate::language::java::JavaLoweringError::from)
-        }?;
-        if class_initializer {
-            let mut exits = JavaInitializerExitLowering;
-            {
-                exits
-                    .apply(&mut ast)
-                    .map_err(crate::language::java::JavaLoweringError::from)
-            }?;
-        }
-        let mut aggregates = AggregateInitializer::default();
-        {
-            aggregates
-                .apply(&mut ast)
-                .map_err(crate::language::java::JavaLoweringError::from)
-        }?;
-        let mut assignment = DefiniteAssignment;
-        {
-            assignment
-                .apply(&mut ast)
-                .map_err(crate::language::java::JavaLoweringError::from)
-        }?;
         let mut normalizer = JavaAstNormalizer;
-        {
+        let mut changed = normalizer
+            .apply(&mut ast)
+            .map_err(crate::language::java::JavaLoweringError::from)?;
+        if class_initializer {
+            changed |= JavaInitializerExitLowering
+                .apply(&mut ast)
+                .map_err(crate::language::java::JavaLoweringError::from)?;
+        }
+        changed |= AggregateInitializer::default()
+            .apply(&mut ast)
+            .map_err(crate::language::java::JavaLoweringError::from)?;
+        changed |= DefiniteAssignment
+            .apply(&mut ast)
+            .map_err(crate::language::java::JavaLoweringError::from)?;
+        if changed {
             normalizer
                 .apply(&mut ast)
-                .map_err(crate::language::java::JavaLoweringError::from)
-        }?;
+                .map_err(crate::language::java::JavaLoweringError::from)?;
+        }
         if !class_initializer && self.return_type.as_ref() == Some(&ArgType::VOID) {
             let mut tail = JavaVoidTailLinearizer;
             match tail.apply(&mut ast) {

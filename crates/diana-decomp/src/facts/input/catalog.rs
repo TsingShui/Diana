@@ -381,6 +381,7 @@ impl<'a> ProgramIndex<'a> {
             return_type_idx: facts.return_type_idx,
             parameters: facts.parameters,
             parameter_descriptors: &facts.descriptors,
+            shared_parameters: &facts.shared_parameters,
             parameter_words: facts.parameter_words,
         })
     }
@@ -454,6 +455,7 @@ impl<'a> ProgramIndex<'a> {
             return_type_idx,
             parameters,
             descriptors,
+            shared_parameters: std::sync::OnceLock::new(),
             parameter_words,
         })
     }
@@ -892,10 +894,27 @@ struct PrototypeFacts<'a> {
     return_type_idx: TypeId,
     parameters: &'a [u8],
     descriptors: Vec<DexString<'a>>,
+    shared_parameters: std::sync::OnceLock<std::sync::Arc<Vec<PrototypeParameter<'a>>>>,
     parameter_words: RegisterWordCount,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct PrototypeParameter<'a> {
+    type_id: TypeId,
+    descriptor: DexString<'a>,
+}
+
+impl<'a> PrototypeParameter<'a> {
+    pub fn type_id(&self) -> TypeId {
+        self.type_id
+    }
+    pub fn descriptor(&self) -> DexString<'a> {
+        self.descriptor
+    }
+}
+
 pub struct Prototype<'i, 'a> {
+    shared_parameters: &'i std::sync::OnceLock<std::sync::Arc<Vec<PrototypeParameter<'a>>>>,
     parameter_descriptors: &'i [DexString<'a>],
     pub shorty: DexString<'a>,
     pub return_type: DexString<'a>,
@@ -905,6 +924,34 @@ pub struct Prototype<'i, 'a> {
 }
 
 impl<'i, 'a> Prototype<'i, 'a> {
+    /// Retains checked parameter identities and descriptors for products that
+    /// can outlive this logical index.
+    pub(crate) fn shared_parameters(
+        &self,
+    ) -> Result<Option<std::sync::Arc<Vec<PrototypeParameter<'a>>>>, crate::RequestError> {
+        if self.parameter_descriptors.is_empty() {
+            return Ok(None);
+        }
+        if let Some(parameters) = self.shared_parameters.get() {
+            return Ok(Some(parameters.clone()));
+        }
+        let mut parameters = Vec::new();
+        crate::substrate::owned::reserve(&mut parameters, self.parameter_descriptors.len())?;
+        self.visit_parameter_type_ids(|type_id, descriptor| -> Result<(), crate::RequestError> {
+            parameters.push(PrototypeParameter {
+                type_id,
+                descriptor,
+            });
+            Ok(())
+        })?;
+        // Only successful products are shared. A failed allocation stays local.
+        Ok(Some(
+            self.shared_parameters
+                .get_or_init(|| std::sync::Arc::new(parameters))
+                .clone(),
+        ))
+    }
+
     /// Original parameter descriptors, resolved once in the logical index.
     pub fn parameter_descriptors(&self) -> &'i [DexString<'a>] {
         self.parameter_descriptors

@@ -1,16 +1,22 @@
-use crate::ir::{InsnType, SemanticNode, SemanticVisitor};
+use crate::ir::{InsnType, RegisterArg, SemanticBindingKind, SemanticNode, SemanticVisitor};
 
 use super::JavaLoweringError;
 
-pub(super) struct JavaInputVerifier {
+pub(super) struct JavaInputBindings {
+    bindings: Vec<(SemanticBindingKind, RegisterArg)>,
     invalid: Option<JavaLoweringError>,
 }
 
-impl JavaInputVerifier {
-    pub(super) fn verify(root: &SemanticNode) -> Result<(), JavaLoweringError> {
-        let mut verifier = Self { invalid: None };
-        verifier.visit_node(root);
-        verifier.invalid.map_or(Ok(()), Err)
+impl JavaInputBindings {
+    pub(super) fn collect(
+        root: &SemanticNode,
+    ) -> Result<Vec<(SemanticBindingKind, RegisterArg)>, JavaLoweringError> {
+        let mut input = Self {
+            bindings: Vec::new(),
+            invalid: None,
+        };
+        input.visit_node(root);
+        input.invalid.map_or(Ok(input.bindings), Err)
     }
 
     fn reject(&mut self, error: JavaLoweringError) {
@@ -20,7 +26,11 @@ impl JavaInputVerifier {
     }
 }
 
-impl SemanticVisitor for JavaInputVerifier {
+impl SemanticVisitor for JavaInputBindings {
+    fn visit_binding(&mut self, kind: SemanticBindingKind, register: &RegisterArg) {
+        self.bindings.push((kind, register.clone()));
+    }
+
     fn enter_operation(&mut self, instruction: &crate::ir::SemanticOperation) {
         let error = match instruction.insn_type {
             InsnType::Phi => JavaLoweringError::UnrecoveredPhi(instruction.offset),

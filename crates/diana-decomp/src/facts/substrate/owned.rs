@@ -46,13 +46,18 @@ pub fn push<T>(values: &mut Vec<T>, value: T) -> Result<(), RequestError> {
 
 pub fn copy_units(value: DexString<'_>) -> Result<Vec<u16>, RequestError> {
     let mut result = Vec::new();
-    reserve(
-        &mut result,
-        usize::try_from(value.utf16_len().0).map_err(|_| RequestError::PlatformCapacity)?,
-    )?;
-    let mut units = value.reader()?;
-    while let Some(unit) = units.next()? {
-        result.push(unit);
+    let bytes = value.bytes();
+    if bytes.is_ascii() {
+        // string_data_item bounds exclude the NUL terminator.
+        reserve(&mut result, bytes.len())?;
+        result.extend(bytes.iter().map(|&byte| u16::from(byte)));
+    } else {
+        let capacity = (value.utf16_len().0 as usize).min(bytes.len());
+        reserve(&mut result, capacity)?;
+        let mut units = value.reader()?;
+        while let Some(unit) = units.next()? {
+            push(&mut result, unit)?;
+        }
     }
     Ok(result)
 }

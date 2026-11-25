@@ -70,16 +70,10 @@ impl JavaCompilationUnitLowering {
                 source_abi.referenced_constructors(references.methods.iter()),
             )
         };
-        let type_uses = {
-            let mut type_uses = ClassTypeUses::collect(&class);
-            for contract in generic_fields.values() {
-                GenericTypeUses::field_contract(contract, &mut type_uses);
-            }
-            for contract in generic_methods.values() {
-                GenericTypeUses::method_contract(contract, &mut type_uses);
-            }
-            type_uses
-        };
+        let generic_uses =
+            GenericTypeUses::contracts(generic_fields.values(), generic_methods.values());
+        let mut type_uses = ClassTypeUses::collect(&class);
+        type_uses.extend_from_slice(&generic_uses);
         let local_function_object_types = FunctionObjectTypeCatalog::collect(&class);
         let cu_types = CompilationUnitAbiTypes::collect(
             Some(&class),
@@ -89,14 +83,12 @@ impl JavaCompilationUnitLowering {
             current_type.as_ref(),
             &local_function_object_types,
         );
-        let names = {
-            JavaTypeNameResolver::for_class(
-                &class,
-                package.as_deref(),
-                current_type.as_ref(),
-                type_uses,
-            )
-        }?;
+        let names = std::rc::Rc::new(JavaTypeNameResolver::for_class(
+            &class,
+            package.as_deref(),
+            current_type.as_ref(),
+            type_uses,
+        )?);
         let members = {
             std::sync::Arc::new(
                 ClassMemberNames::collect(&class)
@@ -191,6 +183,7 @@ impl JavaCompilationUnitLowering {
                 source_field_types,
                 generic_fields,
                 generic_methods,
+                generic_uses,
                 constructor_method_return_types,
                 source_object_types,
                 outer_instances,
@@ -227,12 +220,9 @@ impl JavaSingleMethodLowering {
         let referenced_overloads = source_abi.referenced_overloads(references.methods.iter());
         let referenced_constructors = source_abi.referenced_constructors(references.methods.iter());
         let mut type_uses = type_uses.into_iter().collect::<Vec<_>>();
-        for contract in generic_fields.values() {
-            GenericTypeUses::field_contract(contract, &mut type_uses);
-        }
-        for contract in generic_methods.values() {
-            GenericTypeUses::method_contract(contract, &mut type_uses);
-        }
+        let generic_uses =
+            GenericTypeUses::contracts(generic_fields.values(), generic_methods.values());
+        type_uses.extend_from_slice(&generic_uses);
         let body_current_type = method
             .body
             .as_ref()
@@ -256,7 +246,11 @@ impl JavaSingleMethodLowering {
             CompilationUnitAbiTypes::insert(&mut cu_types, &field.field_type);
             CompilationUnitAbiTypes::insert(&mut cu_types, outer);
         }
-        let names = JavaTypeNameResolver::new(current_package, current_type, type_uses)?;
+        let names = std::rc::Rc::new(JavaTypeNameResolver::new(
+            current_package,
+            current_type,
+            type_uses,
+        )?);
         let members = std::sync::Arc::new(
             ClassMemberNames::method_only(current_type, method)
                 .with_constructor_layouts(referenced_constructors)
@@ -309,6 +303,7 @@ impl JavaSingleMethodLowering {
             source_field_types,
             generic_fields,
             generic_methods,
+            generic_uses,
             ConstructorMethodReturnTypes::new(),
             source_object_types,
             outer_instances,
@@ -427,6 +422,7 @@ struct JavaTypeLowering<'a> {
             crate::ir::generic_types::GenericMethodContract,
         >,
     >,
+    generic_uses: Vec<ArgType>,
     constructor_method_return_types: ConstructorMethodReturnTypes,
     source_object_types: std::sync::Arc<SourceObjectTypes>,
     outer_instances: std::collections::BTreeMap<crate::ir::FieldReference, ArgType>,
@@ -436,7 +432,7 @@ struct JavaTypeLowering<'a> {
 
 #[derive(Debug)]
 struct SourceGenericTypeProjection {
-    names: JavaTypeNameResolver,
+    names: std::rc::Rc<JavaTypeNameResolver>,
     source_abi: std::sync::Arc<super::JavaSourceAbi>,
     hierarchy: std::sync::Arc<crate::ir::analysis::ClassHierarchyIndex>,
     cache: GenericProjectionCache,
@@ -455,6 +451,9 @@ struct GenericProjectionCache {
     common_types:
         std::cell::RefCell<std::collections::BTreeMap<(ArgType, ArgType), Option<ArgType>>>,
     resolved: std::cell::RefCell<std::collections::BTreeMap<ArgType, JavaType>>,
+    declared_parameters: std::cell::RefCell<
+        std::collections::BTreeMap<ArgType, Option<Vec<crate::ir::generic_types::TypeParameter>>>,
+    >,
 }
 
 impl SourceGenericTypeProjection {
@@ -632,13 +631,21 @@ impl crate::language::java::GenericTypeProjection for SourceGenericTypeProjectio
         &self,
         ty: &ArgType,
     ) -> Option<Vec<crate::ir::generic_types::TypeParameter>> {
-        self.source_abi.class_type_parameters(ty)
+        if let Some(parameters) = self.cache.declared_parameters.borrow().get(ty) {
+            return parameters.clone();
+        }
+        let result = self.source_abi.class_type_parameters(ty);
+        self.cache
+            .declared_parameters
+            .borrow_mut()
+            .insert(ty.clone(), result.clone());
+        result
     }
 }
 
 impl<'a> JavaTypeLowering<'a> {
     fn new(
-        names: &'a JavaTypeNameResolver,
+        names: &'a std::rc::Rc<JavaTypeNameResolver>,
         members: &'a JavaMemberNames,
         shared_members: std::sync::Arc<JavaMemberNames>,
         source_abi: &'a super::JavaSourceAbi,
@@ -653,6 +660,7 @@ impl<'a> JavaTypeLowering<'a> {
             crate::ir::MethodReference,
             crate::ir::generic_types::GenericMethodContract,
         >,
+        generic_uses: Vec<ArgType>,
         constructor_method_return_types: ConstructorMethodReturnTypes,
         source_object_types: SourceObjectTypes,
         outer_instances: std::collections::BTreeMap<crate::ir::FieldReference, ArgType>,
@@ -667,6 +675,7 @@ impl<'a> JavaTypeLowering<'a> {
             source_field_types: std::sync::Arc::new(source_field_types),
             generic_fields: std::sync::Arc::new(generic_fields),
             generic_methods: std::sync::Arc::new(generic_methods),
+            generic_uses,
             constructor_method_return_types,
             source_object_types: std::sync::Arc::new(source_object_types),
             outer_instances,
@@ -742,7 +751,7 @@ impl<'a> JavaTypeLowering<'a> {
                     class.declaration.name.clone(),
                 )))
             });
-        let mut source_field_types = self.source_field_types.as_ref().clone();
+        let mut source_field_types = self.source_field_types.clone();
         if let Some(owner) = &owner {
             let lexical_field_types = class
                 .fields
@@ -760,9 +769,10 @@ impl<'a> JavaTypeLowering<'a> {
                     })
                 })
                 .collect::<Result<std::collections::BTreeMap<_, _>, JavaDecompilerError>>()?;
-            source_field_types.extend(lexical_field_types);
+            if !lexical_field_types.is_empty() {
+                std::sync::Arc::make_mut(&mut source_field_types).extend(lexical_field_types);
+            }
         }
-        let source_field_types = std::sync::Arc::new(source_field_types);
         let source_constructor_count = class
             .methods
             .iter()
@@ -1299,6 +1309,7 @@ impl<'a> JavaTypeLowering<'a> {
                             source_field_types.clone(),
                             self.generic_fields.clone(),
                             self.generic_methods.clone(),
+                            &self.generic_uses,
                             self.source_object_types.clone(),
                             self.generic_type_projection.clone(),
                             source_current_type.clone(),
@@ -1994,7 +2005,7 @@ mod tests {
             |_| (Vec::new(), None),
         ));
         let projection = SourceGenericTypeProjection {
-            names: names.clone(),
+            names: std::rc::Rc::new(names.clone()),
             source_abi,
             hierarchy: std::sync::Arc::new(crate::ir::analysis::ClassHierarchyIndex::default()),
             cache: GenericProjectionCache::default(),

@@ -13,7 +13,7 @@ use crate::ir::{
     ArgType, ArithOp, CmpBias, FieldReference, IfOp, InsnType, InstructionId, InvokeType,
     MemberReference, MethodReference, PrimitiveType, RegisterArg, SemanticBindingKind,
     SemanticExpression, SemanticOperation, SemanticPredicate, SemanticStatement,
-    SemanticStatementKind, SemanticVisitor,
+    SemanticStatementKind,
 };
 
 use super::ast::{
@@ -32,7 +32,7 @@ use super::source_types::{
     GenericTypeProjection, GenericTypeRelation, GenericTypeSolver, JavaTypeErasureIndex,
     JavaTypeRelations, SourceObjectTypes, SourceTypeFlow,
 };
-use input::JavaInputVerifier;
+use input::JavaInputBindings;
 
 #[derive(Clone, Copy)]
 struct ComparisonTest {
@@ -3775,7 +3775,7 @@ impl DexJavaDialect {
 
     fn same_erasure(left: &JavaType, right: &JavaType) -> bool {
         match (left, right) {
-            (JavaType::Class(left), JavaType::Class(right)) => left.name() == right.name(),
+            (JavaType::Class(left), JavaType::Class(right)) => left.same_name(right),
             (JavaType::Array(left), JavaType::Array(right)) => Self::same_erasure(left, right),
             (JavaType::Primitive(left), JavaType::Primitive(right)) => left == right,
             _ => left == right,
@@ -5042,7 +5042,7 @@ impl JavaDialect for DexJavaDialect {
     }
 
     fn prepare(&mut self, root: &crate::ir::SemanticNode) -> Result<(), Self::Error> {
-        JavaInputVerifier::verify(root)?;
+        let bindings = JavaInputBindings::collect(root)?;
         let diagnostics_enabled = self
             .observer
             .is_enabled(crate::ir::AnalysisEventKind::SourceTypes);
@@ -5055,6 +5055,7 @@ impl JavaDialect for DexJavaDialect {
                 &self.generic_methods,
                 self.generic_type_projection.as_deref(),
                 &self.source_types,
+                Arc::clone(&self.source_erasures),
                 &self.source_type_erasures,
                 &self.source_type_bounds,
                 self.source_return_type.as_ref(),
@@ -5080,9 +5081,7 @@ impl JavaDialect for DexJavaDialect {
         ) = source_types.into_parts();
         let declarations = { DeclarationAnalysis::default().analyze(root) }?;
         self.inline_declarations = declarations.inline_variables().clone();
-        let mut bindings = SourceBindings::default();
-        bindings.visit_node(root);
-        for (kind, register) in bindings.registers {
+        for (kind, register) in bindings {
             let name = self.register_name(&register)?;
             let variable = SourceVariable::of(&register)?;
             if kind == SemanticBindingKind::Catch && declarations.catch_requires_storage(variable) {
@@ -5194,17 +5193,6 @@ mod tests {
         );
 
         assert_eq!(dialect.source_expression_type(&select), Some(source_string));
-    }
-}
-
-#[derive(Default)]
-struct SourceBindings {
-    registers: Vec<(SemanticBindingKind, RegisterArg)>,
-}
-
-impl SemanticVisitor for SourceBindings {
-    fn visit_binding(&mut self, kind: SemanticBindingKind, register: &RegisterArg) {
-        self.registers.push((kind, register.clone()));
     }
 }
 

@@ -14,7 +14,7 @@ pub(super) struct RegionAnchors {
     control_anchors: BTreeSet<BlockId>,
     contractions: ControlContractions,
     canonical_continuations: Arc<ControlContinuations>,
-    control_continuations: ControlContinuations,
+    control_continuations: Arc<ControlContinuations>,
 }
 
 impl RegionAnchors {
@@ -42,7 +42,11 @@ impl RegionAnchors {
             .collect();
         let canonical_continuations =
             Arc::new(ControlContinuations::preserving(cfg, &phi_predecessors));
-        let control_continuations = ControlContinuations::preserving(cfg, &BTreeSet::new());
+        let control_continuations = if phi_predecessors.is_empty() {
+            Arc::clone(&canonical_continuations)
+        } else {
+            Arc::new(ControlContinuations::preserving(cfg, &BTreeSet::new()))
+        };
         Ok(Self {
             phi_predecessors,
             control_anchors,

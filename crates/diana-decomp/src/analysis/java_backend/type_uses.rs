@@ -116,6 +116,22 @@ impl JavaMethodTypeUses {
 pub(super) struct GenericTypeUses;
 
 impl GenericTypeUses {
+    pub(super) fn contracts<'a>(
+        fields: impl Iterator<Item = &'a crate::ir::generic_types::GenericFieldContract>,
+        methods: impl Iterator<Item = &'a crate::ir::generic_types::GenericMethodContract>,
+    ) -> Vec<ArgType> {
+        let mut types = Vec::new();
+        for contract in fields {
+            Self::field_contract(contract, &mut types);
+        }
+        for contract in methods {
+            Self::method_contract(contract, &mut types);
+        }
+        types.sort_unstable();
+        types.dedup();
+        types
+    }
+
     pub(super) fn field_contract(
         contract: &crate::ir::generic_types::GenericFieldContract,
         types: &mut Vec<ArgType>,

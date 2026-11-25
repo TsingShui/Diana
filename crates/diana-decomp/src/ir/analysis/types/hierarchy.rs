@@ -59,7 +59,6 @@ pub struct ClassHierarchyIndex {
     base: Option<Arc<ClassHierarchyIndex>>,
     source: Option<Arc<dyn HierarchySource>>,
     distances: DistanceTable,
-    frozen_required: bool,
 }
 
 impl Clone for ClassHierarchyIndex {
@@ -75,7 +74,6 @@ impl Clone for ClassHierarchyIndex {
                     DistanceTable::Building(RwLock::new(Self::read_cache(cache).clone()))
                 }
             },
-            frozen_required: self.frozen_required,
         }
     }
 }
@@ -88,7 +86,6 @@ impl ClassHierarchyIndex {
             base: Some(base),
             source: None,
             distances: DistanceTable::default(),
-            frozen_required: false,
         }
     }
 
@@ -100,7 +97,6 @@ impl ClassHierarchyIndex {
             base: None,
             source: Some(source),
             distances: DistanceTable::default(),
-            frozen_required: false,
         }
     }
 
@@ -126,10 +122,6 @@ impl ClassHierarchyIndex {
             map.insert(start, distances);
         }
         self.distances = DistanceTable::Frozen(Arc::new(map));
-    }
-
-    pub(crate) fn set_frozen_required(&mut self, required: bool) {
-        self.frozen_required = required;
     }
 
     /// Record `class` and its direct parents.
@@ -200,10 +192,6 @@ impl ClassHierarchyIndex {
     }
 
     fn distances(&self, start: &str) -> Arc<BTreeMap<String, usize>> {
-        debug_assert!(
-            !self.frozen_required || matches!(self.distances, DistanceTable::Frozen(_)),
-            "ClassHierarchyIndex distances must be frozen before sharing"
-        );
         match &self.distances {
             DistanceTable::Frozen(map) => {
                 if let Some(distances) = map.get(start) {

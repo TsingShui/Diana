@@ -27,7 +27,7 @@ use crate::ir::{
 pub use domain::DomainError;
 use flow::{
     GatedControlFlow, PhiExpressionPlacement, RecoveryMode, ValueAction, ValueFlowGraph,
-    ValueIdentity,
+    ValueIdentity, ValuePlan,
 };
 use schedule::ValueSchedule;
 use ssa_constants::SparseConstantPropagation;
@@ -227,34 +227,65 @@ impl SemanticTransform<SsaSemantics> for ValueRecovery {
         &mut self,
         mut method: SemanticMethod<SsaSemantics>,
     ) -> Result<SemanticMethod<Self::Output>, Self::Error> {
-        crate::ir::SemanticSiteNumbering::assign(method.body_mut())?;
-        let graph = {
-            ValueFlowGraph::build_gated(method.body(), method.state().values(), &self.ssa_constants)
-        }?;
-        let recovery = graph.recover_gated_phis(method.state().values(), &self.gated_control)?;
-        self.diagnostics = recovery.diagnostics;
-        let mut recovered_phis = recovery.eliminated;
-        let placement = PhiExpressionPlacement::new(recovery.expressions);
-        recovered_phis.extend(placement.recovered());
-        let specialization_actions = recovery
-            .specializations
-            .into_iter()
-            .map(|specialization| {
-                recovered_phis.insert(specialization.result);
-                ValueAction::ReplaceAt {
-                    event: 0,
-                    key: specialization.result,
-                    replacements: specialization.replacements,
-                }
-            })
-            .collect::<Vec<_>>();
-        placement.apply(method.body_mut())?;
-        let specialization_schedule =
-            ValueSchedule::compile(specialization_actions, ValueIdentity::Ssa)?;
-        specialization_schedule.apply(method.body_mut())?;
+        // Without merge inputs there are no gated candidates. The ordinary SSA
+        // flow collector below checks this same body before scheduling. Keep
+        // the initial specialization pass for pre-existing select expressions,
+        // which its empty substitution can still reduce.
+        let has_select = ValueSchedule::contains_select(method.body());
         let retained = cleanup_state_values(&method, &self.ssa_constants);
+        let mut first_plan = None;
+        let mut recovered_phis = BTreeSet::new();
+        if method.state().values().phis().is_empty() && !has_select {
+            self.diagnostics = Default::default();
+        } else {
+            crate::ir::SemanticSiteNumbering::assign(method.body_mut())?;
+            let mut graph = ValueFlowGraph::build_gated(
+                method.body(),
+                method.state().values(),
+                &self.ssa_constants,
+            )?;
+            let saturated = graph.proof_budget_exhausted();
+            let recovery =
+                graph.recover_gated_phis(method.state().values(), &self.gated_control)?;
+            self.diagnostics = recovery.diagnostics;
+            recovered_phis = recovery.eliminated;
+            // Gated recovery reads the collected domains and constructs its own
+            // proof arenas. Without a tree rewrite, the first scheduler can use
+            // this graph with its ordinary reachability facts attached.
+            if recovery.expressions.is_empty()
+                && recovery.specializations.is_empty()
+                && !has_select
+                && graph.proof_budget_exhausted() == saturated
+            {
+                graph.attach_semantic_flow(method.body(), &mut self.source_flow_cache);
+                first_plan = Some(
+                    SsaValueSolver::new(&recovered_phis, &self.ssa_constants, &retained)
+                        .plan(graph)?,
+                );
+            } else {
+                drop(graph);
+                let placement = PhiExpressionPlacement::new(recovery.expressions);
+                recovered_phis.extend(placement.recovered());
+                let specialization_actions = recovery
+                    .specializations
+                    .into_iter()
+                    .map(|specialization| {
+                        recovered_phis.insert(specialization.result);
+                        ValueAction::ReplaceAt {
+                            event: 0,
+                            key: specialization.result,
+                            replacements: specialization.replacements,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                placement.apply(method.body_mut())?;
+                let specialization_schedule =
+                    ValueSchedule::compile(specialization_actions, ValueIdentity::Ssa)?;
+                specialization_schedule.apply(method.body_mut())?;
+            }
+        }
         let constants = SsaValueSolver::new(&recovered_phis, &self.ssa_constants, &retained)
-            .solve_profiled(&mut method)?;
+            .solve(&mut method, &mut self.source_flow_cache, first_plan)?;
         Ok(method.into_values(constants, recovered_phis))
     }
 }
@@ -283,6 +314,9 @@ fn cleanup_state_closure(
         .into_iter()
         .filter(|value| !trivial_cleanup_constant(constants, *value))
         .collect::<BTreeSet<_>>();
+    if values.is_empty() {
+        return values;
+    }
     let phis = phis
         .iter()
         .map(|phi| (phi.result, phi))
@@ -372,23 +406,33 @@ impl<'a> SsaValueSolver<'a> {
         }
     }
 
+    fn plan(&self, mut graph: ValueFlowGraph<'_>) -> Result<ValuePlan, ValueRecoveryError> {
+        graph.exclude_phis(self.recovered_phis);
+        graph.retain_values(self.retained_values.iter().copied());
+        graph.schedule(RecoveryMode::Full)
+    }
+
     fn solve(
         self,
         method: &mut SemanticMethod<SsaSemantics>,
+        flow_cache: &mut Option<source::SourceFlowCache>,
+        mut first_plan: Option<ValuePlan>,
     ) -> Result<BTreeMap<SsaVar, crate::ir::InsnArg>, ValueRecoveryError> {
         let mut constants = BTreeMap::new();
-        let mut flow_cache = None;
         loop {
-            crate::ir::SemanticSiteNumbering::assign(method.body_mut())?;
-            let mut graph = ValueFlowGraph::build_with_flow_cache(
-                method.body(),
-                method.state().values(),
-                self.constants,
-                &mut flow_cache,
-            )?;
-            graph.exclude_phis(self.recovered_phis);
-            graph.retain_values(self.retained_values.iter().copied());
-            let value_plan = graph.schedule(RecoveryMode::Full)?;
+            let value_plan = match first_plan.take() {
+                Some(plan) => plan,
+                None => {
+                    crate::ir::SemanticSiteNumbering::assign(method.body_mut())?;
+                    let graph = ValueFlowGraph::build_with_flow_cache(
+                        method.body(),
+                        method.state().values(),
+                        self.constants,
+                        flow_cache,
+                    )?;
+                    self.plan(graph)?
+                }
+            };
             constants.extend(value_plan.constants);
             let schedule = ValueSchedule::compile(value_plan.actions, ValueIdentity::Ssa)?;
             let changed = schedule.apply(method.body_mut())?;
@@ -399,13 +443,6 @@ impl<'a> SsaValueSolver<'a> {
         }
         crate::ir::SemanticSiteNumbering::assign(method.body_mut())?;
         Ok(constants)
-    }
-
-    fn solve_profiled(
-        self,
-        method: &mut SemanticMethod<SsaSemantics>,
-    ) -> Result<BTreeMap<SsaVar, crate::ir::InsnArg>, ValueRecoveryError> {
-        self.solve(method)
     }
 }
 

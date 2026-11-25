@@ -3,8 +3,8 @@ use crate::input::catalog::Prototype;
 use crate::input::strings::{DexString, TypeShape};
 use crate::raw::OperandReference;
 use crate::raw::ReferenceSlot;
-use crate::substrate::owned::push;
 use crate::{CodeUnitOffset, TypeId};
+use std::sync::Arc;
 
 /// The resolved form of one original type descriptor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -22,39 +22,18 @@ pub struct CheckedPrototype<'a> {
     shorty: DexString<'a>,
     return_type: DexString<'a>,
     return_type_id: TypeId,
-    parameters: Vec<CheckedParameter<'a>>,
+    parameters: Option<Arc<Vec<CheckedParameter<'a>>>>,
     parameter_words: u64,
     pub(super) result_kind: super::binding::ResultKind,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct CheckedParameter<'a> {
-    type_id: TypeId,
-    descriptor: DexString<'a>,
-}
-
-impl<'a> CheckedParameter<'a> {
-    pub fn type_id(&self) -> TypeId {
-        self.type_id
-    }
-    pub fn descriptor(&self) -> DexString<'a> {
-        self.descriptor
-    }
-}
+pub use crate::input::catalog::PrototypeParameter as CheckedParameter;
 
 impl<'a> CheckedPrototype<'a> {
     pub fn from_prototype(prototype: &Prototype<'_, 'a>) -> Result<Self, MethodError> {
-        let mut parameters = Vec::new();
-        prototype.visit_parameter_type_ids(|type_id, descriptor| {
-            push(
-                &mut parameters,
-                CheckedParameter {
-                    type_id,
-                    descriptor,
-                },
-            )
-            .map_err(super::disassembly::scratch)
-        })?;
+        let parameters = prototype
+            .shared_parameters()
+            .map_err(super::disassembly::scratch)?;
         use super::binding::ResultKind;
         let result_kind = match prototype.shorty.reader()?.next()? {
             Some(0x56) => ResultKind::Void,
@@ -95,7 +74,7 @@ impl<'a> CheckedPrototype<'a> {
         self.return_type_id
     }
     pub fn parameters(&self) -> &[CheckedParameter<'a>] {
-        &self.parameters
+        self.parameters.as_ref().map_or(&[], |p| p.as_slice())
     }
     pub fn parameter_words(&self) -> u64 {
         self.parameter_words

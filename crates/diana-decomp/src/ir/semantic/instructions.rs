@@ -169,18 +169,12 @@ impl SemanticInstructions {
     {
         match &mut statement.kind {
             SemanticStatementKind::Instruction(operation) => {
-                let taken = std::mem::replace(
-                    operation,
-                    SemanticOperation::from_parts(
-                        InsnNode::new(InsnType::Nop, 0),
-                        Vec::new(),
-                        None,
-                    ),
-                );
-                let expression = Self::transform_owned_expression(
-                    SemanticExpression::Operation(Box::new(taken)),
-                    transform,
-                )?;
+                thread_local! {
+                    static PLACEHOLDER: SemanticOperation = SemanticOperation::from_parts(
+                        InsnNode::new(InsnType::Nop, 0), Vec::new(), None);
+                }
+                let taken = std::mem::replace(operation, PLACEHOLDER.with(Clone::clone));
+                let expression = Self::transform_root_operation(taken, transform)?;
                 let SemanticExpression::Operation(transformed) = expression else {
                     return Err(SemanticFoldError::NonOperationStatement);
                 };
@@ -201,12 +195,81 @@ impl SemanticInstructions {
     where
         T: SemanticExpressionTransform + ?Sized,
     {
-        let root = std::mem::replace(
-            expression,
-            SemanticExpression::Literal(crate::ir::LiteralArg::int(0)),
-        );
+        match expression {
+            SemanticExpression::Literal(_) => return Ok(()),
+            SemanticExpression::Register(_) => {
+                Self::transform_leaf(expression, transform);
+                return Ok(());
+            }
+            _ => {}
+        }
+        let root = Self::take_expression(expression);
         *expression = Self::transform_owned_expression(root, transform)?;
         Ok(())
+    }
+
+    fn take_expression(value: &mut SemanticExpression) -> SemanticExpression {
+        std::mem::replace(
+            value,
+            SemanticExpression::Literal(crate::ir::LiteralArg::int(0)),
+        )
+    }
+
+    fn transform_leaf<T: SemanticExpressionTransform + ?Sized>(
+        value: &mut SemanticExpression,
+        transform: &mut T,
+    ) {
+        if matches!(value, SemanticExpression::Register(_)) {
+            let SemanticExpression::Register(register) = Self::take_expression(value) else {
+                unreachable!()
+            };
+            *value = transform.transform_register(register);
+        }
+    }
+
+    fn direct_operands(op: &SemanticOperation) -> bool {
+        op.operands()
+            .iter()
+            .chain(op.compound_target())
+            .all(|value| {
+                matches!(
+                    value,
+                    SemanticExpression::Register(_) | SemanticExpression::Literal(_)
+                )
+            })
+    }
+
+    fn finish_operation<T: SemanticExpressionTransform + ?Sized>(
+        mut op: SemanticOperation,
+        transform: &mut T,
+    ) -> SemanticExpression {
+        if op.result.is_some() {
+            op.result = op
+                .result
+                .take()
+                .map(|result| transform.transform_result(result));
+        }
+        transform.transform_operation(op)
+    }
+
+    fn transform_direct_operation<T: SemanticExpressionTransform + ?Sized>(
+        mut op: SemanticOperation,
+        transform: &mut T,
+    ) -> SemanticExpression {
+        for child in op.children_mut() {
+            Self::transform_leaf(child, transform);
+        }
+        Self::finish_operation(op, transform)
+    }
+
+    fn transform_root_operation<T: SemanticExpressionTransform + ?Sized>(
+        op: SemanticOperation,
+        transform: &mut T,
+    ) -> Result<SemanticExpression, SemanticFoldError> {
+        if Self::direct_operands(&op) {
+            return Ok(Self::transform_direct_operation(op, transform));
+        }
+        Self::transform_owned_expression(SemanticExpression::Operation(Box::new(op)), transform)
     }
 
     fn transform_owned_expression<T>(
@@ -218,6 +281,7 @@ impl SemanticInstructions {
     {
         let mut pending = vec![ExpressionTask::Visit(root)];
         let mut results = Vec::new();
+        let mut operations = Vec::new();
         while let Some(task) = pending.pop() {
             match task {
                 ExpressionTask::Visit(SemanticExpression::Register(register)) => {
@@ -227,19 +291,19 @@ impl SemanticInstructions {
                     results.push(SemanticExpression::Literal(literal));
                 }
                 ExpressionTask::Visit(SemanticExpression::Operation(operation)) => {
-                    let (instruction, operands, compound_target) = operation.into_parts();
-                    pending.push(ExpressionTask::Operation {
-                        instruction,
-                        operand_count: operands.len(),
-                        has_compound_target: compound_target.is_some(),
-                    });
+                    let mut operation = *operation;
+                    if Self::direct_operands(&operation) {
+                        results.push(Self::transform_direct_operation(operation, transform));
+                        continue;
+                    }
+                    pending.push(ExpressionTask::FinishOperation);
                     pending.extend(
-                        operands
-                            .into_iter()
-                            .chain(compound_target)
+                        operation
+                            .children_mut()
                             .rev()
-                            .map(ExpressionTask::Visit),
+                            .map(|value| ExpressionTask::Visit(Self::take_expression(value))),
                     );
+                    operations.push(operation);
                 }
                 ExpressionTask::Visit(SemanticExpression::Select {
                     condition,
@@ -250,34 +314,20 @@ impl SemanticInstructions {
                     pending.push(ExpressionTask::Visit(*when_false));
                     pending.push(ExpressionTask::Visit(*when_true));
                 }
-                ExpressionTask::Operation {
-                    mut instruction,
-                    operand_count,
-                    has_compound_target,
-                } => {
-                    let count = operand_count + usize::from(has_compound_target);
+                ExpressionTask::FinishOperation => {
+                    let mut operation = operations
+                        .pop()
+                        .ok_or(SemanticFoldError::MalformedWorkStack)?;
+                    let count = operation.operands().len()
+                        + usize::from(operation.compound_target().is_some());
                     let start = results
                         .len()
                         .checked_sub(count)
                         .ok_or(SemanticFoldError::MalformedWorkStack)?;
-                    let (operands, compound_target) = {
-                        let mut children = results.drain(start..);
-                        let operands = children.by_ref().take(operand_count).collect();
-                        let compound_target =
-                            has_compound_target.then(|| children.next()).flatten();
-                        (operands, compound_target)
-                    };
-                    if has_compound_target && compound_target.is_none() {
-                        return Err(SemanticFoldError::MalformedWorkStack);
+                    for (slot, child) in operation.children_mut().zip(results.drain(start..)) {
+                        *slot = child;
                     }
-                    instruction.result = instruction
-                        .result
-                        .map(|result| transform.transform_result(result));
-                    results.push(transform.transform_operation(SemanticOperation::from_parts(
-                        instruction,
-                        operands,
-                        compound_target,
-                    )));
+                    results.push(Self::finish_operation(operation, transform));
                 }
                 ExpressionTask::Select(mut condition) => {
                     let when_false = results.pop().ok_or(SemanticFoldError::MalformedWorkStack)?;
@@ -306,10 +356,7 @@ impl SemanticInstructions {
         while let Some(task) = pending.pop() {
             match task {
                 PredicateTask::Visit(SemanticPredicate::Test(operation)) => {
-                    let expression = Self::transform_owned_expression(
-                        SemanticExpression::Operation(Box::new(operation)),
-                        transform,
-                    )?;
+                    let expression = Self::transform_root_operation(operation, transform)?;
                     let SemanticExpression::Operation(operation) = expression else {
                         return Err(SemanticFoldError::NonOperationPredicate);
                     };
@@ -373,11 +420,7 @@ impl SemanticInstructions {
 
 enum ExpressionTask {
     Visit(SemanticExpression),
-    Operation {
-        instruction: crate::ir::InsnNode,
-        operand_count: usize,
-        has_compound_target: bool,
-    },
+    FinishOperation,
     Select(SemanticPredicate),
 }
 

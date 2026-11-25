@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::frontend::{ClassNode, MethodNode};
 use crate::ir::analysis::{SubtypeRelation, TypeHierarchy};
@@ -29,101 +29,142 @@ impl<'a> DeclaredExceptionAnalysis<'a> {
         class: &ClassNode,
         methods: impl IntoIterator<Item = (&'b MethodNode, &'b CFG)>,
     ) -> BTreeMap<MethodReference, Vec<ArgType>> {
-        let methods = methods.into_iter().collect::<Vec<_>>();
+        let function_object = super::FunctionObjectClass::analyze(class);
+        let candidates = methods
+            .into_iter()
+            .filter(|(method, _)| {
+                !method.is_class_init() && Self::declared(function_object, method).is_empty()
+            })
+            .map(|(method, cfg)| (Self::reference(class, method), cfg))
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return BTreeMap::new();
+        }
         let mut contracts = class
             .methods()
             .iter()
             .filter_map(|method| {
-                let exceptions = Self::declared(class, method);
-                (!exceptions.is_empty()).then(|| (Self::reference(class, method), exceptions))
+                let exceptions = Self::declared(function_object, method);
+                (!exceptions.is_empty()).then(|| {
+                    (
+                        Self::reference(class, method),
+                        exceptions.iter().cloned().collect::<BTreeSet<_>>(),
+                    )
+                })
             })
             .collect::<BTreeMap<_, _>>();
-        let candidates = methods
-            .into_iter()
-            .filter(|(method, _)| {
-                !method.is_class_init() && Self::declared(class, method).is_empty()
-            })
-            .collect::<Vec<_>>();
+        let candidate_refs = candidates
+            .iter()
+            .map(|(reference, _)| reference)
+            .collect::<BTreeSet<_>>();
+        let mut callers = BTreeMap::<&MethodReference, Vec<(usize, u32)>>::new();
+        let mut generic = BTreeMap::new();
+        let mut external = BTreeMap::new();
+        let mut checked = BTreeMap::new();
 
-        loop {
-            let mut changed = false;
-            for (method, cfg) in &candidates {
-                let reference = Self::reference(class, method);
-                let inferred = self.escaping_invocation_exceptions(cfg, &contracts);
-                let current = contracts.entry(reference).or_default();
-                let before = current.len();
-                current.extend(inferred);
-                current.sort();
-                current.dedup();
-                changed |= current.len() != before;
-            }
-            if !changed {
-                break;
-            }
-        }
-
-        candidates
-            .into_iter()
-            .filter_map(|(method, _)| {
-                let reference = Self::reference(class, method);
-                contracts
-                    .remove(&reference)
-                    .filter(|exceptions| !exceptions.is_empty())
-                    .map(|exceptions| (reference, exceptions))
-            })
-            .collect()
-    }
-
-    fn escaping_invocation_exceptions(
-        &self,
-        cfg: &CFG,
-        local: &BTreeMap<MethodReference, Vec<ArgType>>,
-    ) -> BTreeSet<ArgType> {
-        cfg.blocks
-            .values()
-            .flat_map(|block| &block.insns)
-            .filter(|instruction| instruction.insn_type == InsnType::Invoke)
-            .filter_map(|instruction| {
+        // Preserve the first sweep's declaration order. Before a local method
+        // has contributed its first contract, its ABI is still a possible seed.
+        for (caller, (reference, cfg)) in candidates.iter().enumerate() {
+            let mut escapes = BTreeSet::new();
+            for instruction in cfg.blocks.values().flat_map(|block| &block.insns) {
+                if instruction.insn_type != InsnType::Invoke {
+                    continue;
+                }
                 let Some(MemberReference::Method(method)) =
                     instruction.payload.reference.as_deref()
                 else {
-                    return None;
+                    continue;
                 };
-                let exceptions = self.invocation_exceptions(method, local);
-                Some(
-                    exceptions
-                        .into_iter()
-                        .filter(|exception| self.is_checked(exception))
-                        .filter(|exception| !self.handled(cfg, instruction.offset, exception))
-                        .collect::<Vec<_>>(),
-                )
+                let add_exception = |exception: &ArgType| {
+                    let is_checked = checked.get(exception).copied().unwrap_or_else(|| {
+                        let result = self.is_checked(exception);
+                        checked.insert(exception.clone(), result);
+                        result
+                    });
+                    if is_checked && !self.handled(cfg, instruction.offset, exception) {
+                        escapes.insert(exception.clone());
+                    }
+                };
+                if let Some(exceptions) = generic
+                    .entry(method)
+                    .or_insert_with(|| self.generic_exceptions(method))
+                {
+                    exceptions.iter().for_each(add_exception);
+                    continue;
+                }
+                if candidate_refs.contains(method) {
+                    callers
+                        .entry(method)
+                        .or_default()
+                        .push((caller, instruction.offset));
+                }
+                if let Some(local) = contracts.get(method) {
+                    local.iter().for_each(add_exception);
+                } else {
+                    external
+                        .entry(method)
+                        .or_insert_with(|| self.abi.method_exceptions(method))
+                        .iter()
+                        .for_each(add_exception);
+                }
+            }
+            contracts
+                .entry(reference.clone())
+                .or_default()
+                .extend(escapes);
+        }
+
+        // Only newly discovered effects can change a caller. Keeping each
+        // invoke offset on the edge preserves its own ordered handler ranges.
+        let mut pending = VecDeque::new();
+        for (reference, exceptions) in &contracts {
+            if let Some(sites) = callers.get(reference) {
+                for exception in exceptions {
+                    if *checked
+                        .entry(exception.clone())
+                        .or_insert_with(|| self.is_checked(exception))
+                    {
+                        pending.push_back((sites, exception.clone()));
+                    }
+                }
+            }
+        }
+        while let Some((sites, exception)) = pending.pop_front() {
+            for &(caller, offset) in sites {
+                let (reference, cfg) = &candidates[caller];
+                if !self.handled(cfg, offset, &exception)
+                    && contracts
+                        .get_mut(reference)
+                        .expect("candidate contract initialized")
+                        .insert(exception.clone())
+                {
+                    if let Some(sites) = callers.get(reference) {
+                        pending.push_back((sites, exception.clone()));
+                    }
+                }
+            }
+        }
+
+        contracts
+            .into_iter()
+            .filter(|(reference, exceptions)| {
+                !exceptions.is_empty() && candidate_refs.contains(reference)
             })
-            .flatten()
+            .map(|(reference, exceptions)| (reference, exceptions.into_iter().collect()))
             .collect()
     }
 
-    fn invocation_exceptions(
-        &self,
-        method: &MethodReference,
-        local: &BTreeMap<MethodReference, Vec<ArgType>>,
-    ) -> Vec<ArgType> {
-        let generic = self.abi.generic_method(method);
-        let Some(signature) = generic
-            .as_ref()
-            .map(|contract| &contract.signature)
-            .filter(|signature| !signature.throws.is_empty())
-        else {
-            return local
-                .get(method)
-                .cloned()
-                .unwrap_or_else(|| self.abi.method_exceptions(method));
-        };
-        signature
-            .throws
-            .iter()
-            .filter(|exception| !Self::is_unconstrained_throws_variable(signature, exception))
-            .map(JvmTypeSignature::erased)
-            .collect()
+    fn generic_exceptions(&self, method: &MethodReference) -> Option<Vec<ArgType>> {
+        let contract = self.abi.generic_method(method)?;
+        let signature = &contract.signature;
+        (!signature.throws.is_empty()).then(|| {
+            signature
+                .throws
+                .iter()
+                .filter(|exception| !Self::is_unconstrained_throws_variable(signature, exception))
+                .map(JvmTypeSignature::erased)
+                .collect()
+        })
     }
 
     /// JLS 18.4 instantiates an inference variable used only in a throws
@@ -196,19 +237,16 @@ impl<'a> DeclaredExceptionAnalysis<'a> {
         }
     }
 
-    fn declared(class: &ClassNode, method: &MethodNode) -> Vec<ArgType> {
+    fn declared(function_object: bool, method: &MethodNode) -> &[ArgType] {
         if !method.throws().is_empty() {
-            return method.throws().to_vec();
+            return method.throws();
         }
-        (method.access_flags.is_synthetic() || super::FunctionObjectClass::analyze(class))
-            .then(|| {
-                method
-                    .override_semantics
-                    .as_ref()
-                    .map(|semantics| semantics.inherited_throws.clone())
-            })
-            .flatten()
-            .unwrap_or_default()
+        if method.access_flags.is_synthetic() || function_object {
+            if let Some(semantics) = &method.override_semantics {
+                return &semantics.inherited_throws;
+            }
+        }
+        &[]
     }
 
     fn reference(class: &ClassNode, method: &MethodNode) -> MethodReference {

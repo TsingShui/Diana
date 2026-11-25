@@ -33,8 +33,10 @@ pub struct StringBuilderProtocol;
 impl StringBuilderProtocol {
     /// Whether the type is a builder whose protocol this module describes.
     pub fn is_builder(owner: &ArgType) -> bool {
-        *owner == ArgType::object("java/lang/StringBuilder")
-            || *owner == ArgType::object("java/lang/StringBuffer")
+        matches!(
+            owner.as_object(),
+            Some("java/lang/StringBuilder" | "java/lang/StringBuffer")
+        )
     }
 
     pub fn method(operation: &SemanticOperation) -> Option<&MethodReference> {

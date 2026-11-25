@@ -19,6 +19,7 @@ perf = []
 
 
 [dependencies]
+smol_str = { version = "0.3", default-features = false }
 memchr = "2"
 thiserror = "2"
 unicode-general-category = "1"

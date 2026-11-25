@@ -59,19 +59,41 @@ impl MethodInfo {
     /// Get short ID (name + prototype signature)
     /// Format: name(params)retType
     pub fn short_id(&self) -> String {
-        format!("{}{}", self.name, self.descriptor())
+        self.format_id(&[&self.name])
     }
 
     /// Get descriptor signature
     /// Format: (params)retType
     pub fn descriptor(&self) -> String {
-        let params: String = self.param_types.iter().map(|t| t.to_descriptor()).collect();
-        format!("({}){}", params, self.return_type.to_descriptor())
+        self.format_id(&[])
     }
 
     /// Get full ID (class->name+prototype)
     pub fn full_id(&self) -> String {
-        format!("{}->{}", self.declaring_class, self.short_id())
+        self.format_id(&[&self.declaring_class, "->", &self.name])
+    }
+
+    fn format_id(&self, prefix: &[&str]) -> String {
+        let parameters = self
+            .param_types
+            .iter()
+            .map(ArgType::descriptor_len)
+            .sum::<usize>();
+        let len = prefix.iter().map(|s| s.len()).sum::<usize>()
+            + 2
+            + parameters
+            + self.return_type.descriptor_len();
+        let mut result = String::with_capacity(len);
+        for part in prefix {
+            result.push_str(part);
+        }
+        result.push('(');
+        for parameter in &self.param_types {
+            parameter.append_descriptor(&mut result);
+        }
+        result.push(')');
+        self.return_type.append_descriptor(&mut result);
+        result
     }
 
     /// Check if this is a constructor

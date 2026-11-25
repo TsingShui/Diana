@@ -153,26 +153,39 @@ impl<'a> RegionReducer<'a> {
                 target: port.target,
             });
         }
-        Self::verify_root_labels("contracted", &root.body)?;
-        Self::verify_node_limit(root_region, "contraction", &root.body)?;
-        let body = ExceptionEnvelopeCanonicalizer::new(self.cfg, self.regions).apply(root.body)?;
-        Self::verify_root_labels("exception-canonicalized", &body)?;
-        Self::verify_node_limit(root_region, "exception canonicalization", &body)?;
-        let mut body = LexicalLabels::uniquify(body).map_err(StructureError::from)?;
-        Self::verify_root_labels("label-uniquified", &body)?;
-        Self::verify_node_limit(root_region, "label repair", &body)?;
-        SemanticCleanupResolver::apply(self.regions, &mut body);
+        let mut body = root.body;
+        let mut shape = Self::inspect_root(root_region, "contracted", "contraction", &body)?;
+        if shape.protected {
+            body = ExceptionEnvelopeCanonicalizer::new(self.cfg, self.regions).apply(body)?;
+            shape = Self::inspect_root(
+                root_region,
+                "exception-canonicalized",
+                "exception canonicalization",
+                &body,
+            )?;
+        }
+        if shape.labels {
+            body = LexicalLabels::uniquify(body).map_err(StructureError::from)?;
+            shape = Self::inspect_root(root_region, "label-uniquified", "label repair", &body)?;
+        }
+        if shape.cleanup {
+            SemanticCleanupResolver::apply(self.regions, &mut body);
+        }
         Ok(body)
     }
 
-    fn verify_node_limit(
+    fn inspect_root(
         region: RegionId,
+        label_stage: &'static str,
         stage: &'static str,
         body: &SemanticNode,
-    ) -> Result<(), StructureError> {
+    ) -> Result<SemanticComplexity, StructureError> {
         const MAX_SEMANTIC_ITEMS: usize = 100_000;
         let mut count = SemanticComplexity::default();
         count.visit_node(body);
+        if count.labels {
+            Self::verify_root_labels(label_stage, body)?;
+        }
         if count.items > MAX_SEMANTIC_ITEMS {
             Err(StructureError::SemanticItemLimit {
                 region,
@@ -181,7 +194,7 @@ impl<'a> RegionReducer<'a> {
                 limit: MAX_SEMANTIC_ITEMS,
             })
         } else {
-            Ok(())
+            Ok(count)
         }
     }
 
@@ -528,11 +541,24 @@ impl<'a> RegionReducer<'a> {
 #[derive(Default)]
 struct SemanticComplexity {
     items: usize,
+    protected: bool,
+    labels: bool,
+    cleanup: bool,
 }
 
 impl SemanticVisitor for SemanticComplexity {
-    fn enter_node(&mut self, _node: &SemanticNode) {
+    fn enter_node(&mut self, node: &SemanticNode) {
         self.items = self.items.saturating_add(1);
+        self.labels |= LexicalLabels::binding(node).is_some();
+        match node {
+            SemanticNode::Try { finally, .. } => {
+                self.protected = true;
+                self.cleanup |= finally.is_some();
+            }
+            SemanticNode::Synchronized { .. } => self.cleanup = true,
+            SemanticNode::Leave(leave) => self.cleanup |= !leave.cleanup.is_empty(),
+            _ => {}
+        }
     }
 
     fn enter_operation(&mut self, _operation: &SemanticOperation) {

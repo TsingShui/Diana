@@ -16,10 +16,16 @@ static NEXT_CONTEXT: AtomicU64 = AtomicU64::new(1);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Bdd {
     context: u64,
-    node: usize,
+    node: u16,
 }
 
 impl Bdd {
+    // Cache keys are local to the validating manager. The node limit fits
+    // in 16 bits, so two child IDs fit in a single integer.
+    fn pair(self, other: Self) -> u32 {
+        u32::from(self.node) << 16 | u32::from(other.node)
+    }
+
     pub fn is_false(self) -> bool {
         self.node == 0
     }
@@ -85,39 +91,52 @@ enum BinaryOp {
     Or,
 }
 
+#[derive(Clone, Copy)]
+struct ArenaNode {
+    variable: usize,
+    low: u16,
+    high: u16,
+    complement: Option<u16>,
+}
+
 struct Manager {
     context: u64,
-    nodes: Vec<Node>,
-    unique: HashMap<(usize, Bdd, Bdd), Bdd>,
-    binary_cache: HashMap<(BinaryOp, Bdd, Bdd), Bdd>,
-    not_cache: HashMap<Bdd, Bdd>,
-    implication_cache: HashMap<(Bdd, Bdd), bool>,
+    nodes: Vec<ArenaNode>,
+    unique: HashMap<(usize, u32), u16>,
+    binary_cache: HashMap<u64, u16>,
+    complements: usize,
+    implication_cache: HashMap<u32, bool>,
     limits: BddLimits,
     operations_used: usize,
 }
 
 impl Manager {
     fn new(context: u64, limits: BddLimits) -> Self {
-        let falsity = Bdd { context, node: 0 };
-        let truth = Bdd { context, node: 1 };
-        let terminal = Node {
+        let falsity = ArenaNode {
             variable: usize::MAX,
-            low: falsity,
-            high: truth,
+            low: 0,
+            high: 1,
+            complement: Some(1),
         };
         Self {
             context,
-            nodes: vec![terminal, terminal],
+            nodes: vec![
+                falsity,
+                ArenaNode {
+                    complement: Some(0),
+                    ..falsity
+                },
+            ],
             unique: HashMap::new(),
             binary_cache: HashMap::new(),
-            not_cache: HashMap::from([(falsity, truth), (truth, falsity)]),
+            complements: 2,
             implication_cache: HashMap::new(),
             limits,
             operations_used: 0,
         }
     }
 
-    fn handle(&self, node: usize) -> Bdd {
+    fn handle(&self, node: u16) -> Bdd {
         Bdd {
             context: self.context,
             node,
@@ -128,10 +147,15 @@ impl Manager {
         if value.context != self.context {
             return Err(BddError::ForeignHandle);
         }
-        self.nodes
-            .get(value.node)
-            .copied()
-            .ok_or(BddError::InvalidHandle(value.node))
+        let node = self
+            .nodes
+            .get(usize::from(value.node))
+            .ok_or(BddError::InvalidHandle(usize::from(value.node)))?;
+        Ok(Node {
+            variable: node.variable,
+            low: self.handle(node.low),
+            high: self.handle(node.high),
+        })
     }
 
     fn variable(&mut self, variable: usize) -> Result<Bdd, BddError> {
@@ -144,9 +168,11 @@ impl Manager {
         if low == high {
             return Ok(low);
         }
-        let key = (variable, low, high);
-        if let Some(existing) = self.unique.get(&key) {
-            return Ok(*existing);
+        let key = (variable, low.pair(high));
+        let entry = self.unique.entry(key);
+        if let std::collections::hash_map::Entry::Occupied(existing) = entry {
+            let node = *existing.get();
+            return Ok(self.handle(node));
         }
         if self.nodes.len() >= self.limits.nodes {
             return Err(BddError::ResourceLimit {
@@ -154,14 +180,18 @@ impl Manager {
                 limit: self.limits.nodes,
             });
         }
-        let id = self.handle(self.nodes.len());
-        self.nodes.push(Node {
+        let id = u16::try_from(self.nodes.len()).map_err(|_| BddError::ResourceLimit {
+            resource: BddResource::Nodes,
+            limit: self.limits.nodes,
+        })?;
+        self.nodes.push(ArenaNode {
             variable,
-            low,
-            high,
+            low: low.node,
+            high: high.node,
+            complement: None,
         });
-        self.unique.insert(key, id);
-        Ok(id)
+        entry.or_insert(id);
+        Ok(self.handle(id))
     }
 
     fn and(&mut self, left: Bdd, right: Bdd) -> Result<Bdd, BddError> {
@@ -175,6 +205,9 @@ impl Manager {
     fn apply(&mut self, operation: BinaryOp, left: Bdd, right: Bdd) -> Result<Bdd, BddError> {
         self.validate(left)?;
         self.validate(right)?;
+        if let Some(result) = self.terminal(operation, left, right) {
+            return Ok(result);
+        }
         let mut tasks = vec![ApplyTask::Visit(left, right)];
         let mut results = Vec::new();
         while let Some(task) = tasks.pop() {
@@ -185,9 +218,9 @@ impl Manager {
                         results.push(result);
                         continue;
                     }
-                    let key = (operation, left, right);
-                    if let Some(result) = self.binary_cache.get(&key) {
-                        results.push(*result);
+                    let key = ((operation as u64) << 32) | u64::from(left.pair(right));
+                    if let Some(&result) = self.binary_cache.get(&key) {
+                        results.push(self.handle(result));
                         continue;
                     }
                     self.charge_operation()?;
@@ -202,12 +235,10 @@ impl Manager {
                     let high = results.pop().ok_or(BddError::MalformedEvaluation)?;
                     let low = results.pop().ok_or(BddError::MalformedEvaluation)?;
                     let result = self.node(variable, low, high)?;
-                    self.reserve_cache_entries(if self.binary_cache.contains_key(&key) {
-                        0
-                    } else {
-                        1
-                    })?;
-                    self.binary_cache.insert(key, result);
+                    // Descending into a cofactor advances the top variable.
+                    // Neither child can have inserted this pending pair.
+                    self.reserve_cache_entries(1)?;
+                    self.binary_cache.insert(key, result.node);
                     results.push(result);
                 }
             }
@@ -220,16 +251,16 @@ impl Manager {
 
     fn negate(&mut self, value: Bdd) -> Result<Bdd, BddError> {
         self.validate(value)?;
-        if let Some(result) = self.not_cache.get(&value) {
-            return Ok(*result);
+        if let Some(result) = self.nodes[usize::from(value.node)].complement {
+            return Ok(self.handle(result));
         }
         let mut tasks = vec![NotTask::Visit(value)];
         let mut results = Vec::new();
         while let Some(task) = tasks.pop() {
             match task {
                 NotTask::Visit(value) => {
-                    if let Some(result) = self.not_cache.get(&value) {
-                        results.push(*result);
+                    if let Some(result) = self.nodes[usize::from(value.node)].complement {
+                        results.push(self.handle(result));
                         continue;
                     }
                     self.charge_operation()?;
@@ -245,18 +276,14 @@ impl Manager {
                     let high = results.pop().ok_or(BddError::MalformedEvaluation)?;
                     let low = results.pop().ok_or(BddError::MalformedEvaluation)?;
                     let result = self.node(variable, low, high)?;
-                    let additional = (if self.not_cache.contains_key(&value) {
-                        0
-                    } else {
-                        1
-                    }) + (if self.not_cache.contains_key(&result) {
-                        0
-                    } else {
-                        1
-                    });
+                    let first = usize::from(value.node);
+                    let second = usize::from(result.node);
+                    let additional = usize::from(self.nodes[first].complement.is_none())
+                        + usize::from(self.nodes[second].complement.is_none());
                     self.reserve_cache_entries(additional)?;
-                    self.not_cache.insert(value, result);
-                    self.not_cache.insert(result, value);
+                    self.nodes[first].complement = Some(result.node);
+                    self.nodes[second].complement = Some(value.node);
+                    self.complements += additional;
                     results.push(result);
                 }
             }
@@ -445,7 +472,8 @@ impl Manager {
     fn implies(&mut self, premise: Bdd, consequence: Bdd) -> Result<bool, BddError> {
         self.validate(premise)?;
         self.validate(consequence)?;
-        if let Some(result) = self.implication_cache.get(&(premise, consequence)) {
+        let key = premise.pair(consequence);
+        if let Some(result) = self.implication_cache.get(&key) {
             return Ok(*result);
         }
         let mut pending = vec![(premise, consequence)];
@@ -469,11 +497,8 @@ impl Manager {
             pending.push((premise_low, consequence_low));
             pending.push((premise_high, consequence_high));
         }
-        self.reserve_cache_entries(usize::from(
-            !self.implication_cache.contains_key(&(premise, consequence)),
-        ))?;
-        self.implication_cache
-            .insert((premise, consequence), result);
+        self.reserve_cache_entries(1)?;
+        self.implication_cache.insert(key, result);
         Ok(result)
     }
 
@@ -510,7 +535,7 @@ impl Manager {
         let entries = self
             .binary_cache
             .len()
-            .saturating_add(self.not_cache.len())
+            .saturating_add(self.complements)
             .saturating_add(self.implication_cache.len());
         if entries.saturating_add(additional) > self.limits.cache_entries {
             return Err(BddError::ResourceLimit {
@@ -539,10 +564,7 @@ impl Manager {
 
 enum ApplyTask {
     Visit(Bdd, Bdd),
-    Combine {
-        key: (BinaryOp, Bdd, Bdd),
-        variable: usize,
-    },
+    Combine { key: u64, variable: usize },
 }
 
 enum NotTask {
@@ -668,7 +690,7 @@ impl DnfBuilder {
 }
 
 fn ordered(left: Bdd, right: Bdd) -> (Bdd, Bdd) {
-    if left <= right {
+    if left.node <= right.node {
         (left, right)
     } else {
         (right, left)

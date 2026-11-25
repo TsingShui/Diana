@@ -1733,6 +1733,7 @@ impl JavaAstTransform for JavaAstNormalizer {
             }
             if matches!(statements.last(), Some(JavaStmt::Empty)) {
                 statements.pop();
+                changed = true;
             }
         }
         body.root = root;

@@ -4,7 +4,7 @@ use crate::input::catalog::{ClassDataShape, ClassDataWalk, MemberEntry, MemberSe
 use crate::input::values::{EncodedKind, EncodedValues, ValueStep};
 use crate::input::{InputError, ProgramIndex};
 use crate::substrate::flags;
-use crate::substrate::owned::{copy_proto, copy_units, push};
+use crate::substrate::owned::{copy_units, push, reserve};
 use crate::{ClassKey, FailureKind, MethodId, RequestError};
 
 /// A declaration or metadata read that damaged only its own member entry.
@@ -318,20 +318,42 @@ fn method_declaration(
         let declaration = declaration?;
         let mut parameter_types = Vec::new();
         let mut parameter_type_ids = Vec::new();
+        let parameter_count = declaration.prototype.parameter_descriptors().len();
+        reserve(&mut parameter_types, parameter_count)?;
+        reserve(&mut parameter_type_ids, parameter_count)?;
         declaration
             .prototype
             .visit_parameter_type_ids(|id, name| -> Result<(), RequestError> {
                 let name = OriginalText::new(copy_units(name)?);
-                push(&mut parameter_types, name)?;
-                push(&mut parameter_type_ids, id.0)
+                parameter_types.push(name);
+                parameter_type_ids.push(id.0);
+                Ok(())
             })?;
+        let returns = OriginalText::new(copy_units(declaration.prototype.return_type)?);
+        // Construct the full descriptor from the exact units P0 already owns.
+        let total_units =
+            parameter_types
+                .iter()
+                .chain([&returns])
+                .try_fold(2usize, |size, ty| {
+                    size.checked_add(ty.units().len())
+                        .ok_or(RequestError::PlatformCapacity)
+                })?;
+        let mut prototype = Vec::new();
+        reserve(&mut prototype, total_units)?;
+        prototype.push(u16::from(b'('));
+        for ty in &parameter_types {
+            prototype.extend_from_slice(ty.units());
+        }
+        prototype.push(u16::from(b')'));
+        prototype.extend_from_slice(returns.units());
         Ok(MethodDeclaration {
             name: OriginalText::new(copy_units(declaration.name)?),
-            prototype: OriginalText::new(copy_proto(&declaration.prototype)?),
+            prototype: OriginalText::new(prototype),
             shorty: OriginalText::new(copy_units(declaration.prototype.shorty)?),
             parameter_types,
             parameter_type_ids,
-            return_type: OriginalText::new(copy_units(declaration.prototype.return_type)?),
+            return_type: returns,
             return_type_id: declaration.prototype.return_type_idx.0,
             parameter_words: declaration.prototype.parameter_words.0,
         })

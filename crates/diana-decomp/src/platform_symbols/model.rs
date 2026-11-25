@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
@@ -480,6 +480,7 @@ impl PlatformSymbolDatabase {
             target,
             store: SymbolStore::Eager(Arc::new(classes)),
             selected: Vec::new(),
+            positions: None,
             slots: Box::new([]),
         }
     }
@@ -632,6 +633,7 @@ pub struct PlatformSymbolSet {
     target: PlatformTarget,
     store: SymbolStore,
     selected: Vec<u32>,
+    positions: Option<HashMap<Box<str>, usize>>,
     slots: Box<[OnceLock<Option<PlatformClass>>]>,
 }
 
@@ -687,10 +689,27 @@ impl PlatformSymbolSet {
     fn from_archive(archive: Arc<SymbolArchive>, target: PlatformTarget) -> Self {
         let selected = archive.select(target);
         let slots = (0..selected.len()).map(|_| OnceLock::new()).collect();
+        // Every analysis consults the same selected platform. Resolve archive string
+        // spans once, including for misses, instead of validating many UTF-8 spans
+        // for each class/member lookup. Keep the original selection for an archive
+        // whose descriptor order does not form a unique sorted directory.
+        let mut positions = HashMap::with_capacity(selected.len());
+        let mut previous = None;
+        let mut ordered = true;
+        for (position, &record) in selected.iter().enumerate() {
+            let name = archive.descriptor(record);
+            if previous.is_some_and(|previous| previous >= name) {
+                ordered = false;
+                break;
+            }
+            positions.insert(Box::from(name), position);
+            previous = Some(name);
+        }
         Self {
             target,
             store: SymbolStore::Archive(archive),
             selected,
+            positions: ordered.then_some(positions),
             slots,
         }
     }
@@ -712,6 +731,9 @@ impl PlatformSymbolSet {
     }
 
     fn position(&self, descriptor: &str) -> Option<usize> {
+        if let Some(positions) = &self.positions {
+            return positions.get(descriptor).copied();
+        }
         let SymbolStore::Archive(archive) = &self.store else {
             return None;
         };

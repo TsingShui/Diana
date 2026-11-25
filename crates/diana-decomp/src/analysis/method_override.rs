@@ -1868,20 +1868,6 @@ impl crate::ir::analysis::HierarchySource for PlatformSymbolSet {
     }
 }
 
-fn freeze_shared_hierarchy(index: &mut ClassHierarchyIndex) {
-    // DEXDEC_HIERARCHY_LAZY=1 skips precomputation. Read at OnceLock fill and
-    // each type_hierarchy_index call.
-    if hierarchy_lazy_distances() {
-        return;
-    }
-    index.freeze_distances();
-    index.set_frozen_required(true);
-}
-
-fn hierarchy_lazy_distances() -> bool {
-    std::env::var_os("DEXDEC_HIERARCHY_LAZY").is_some_and(|value| value == "1")
-}
-
 fn hierarchy_object_name(descriptor: &str) -> OverrideResult<String> {
     descriptor
         .strip_prefix('L')
@@ -2088,6 +2074,7 @@ pub(crate) fn type_hierarchy_from_classes(
         })
         .collect::<Vec<_>>();
     index.extend_declared_types(declarations);
-    freeze_shared_hierarchy(&mut index);
+    // This request owns the local declaration overlay. Compute ancestor distances
+    // only for names actually queried while recovering its methods.
     index
 }

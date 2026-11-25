@@ -1,4 +1,5 @@
 use crate::ir::Utf16String;
+use smol_str::SmolStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum JavaPrimitiveType {
@@ -15,8 +16,8 @@ pub enum JavaPrimitiveType {
 
 #[derive(Debug, Clone)]
 pub struct JavaIdentifier {
-    source_name: String,
-    dex_name: Option<String>,
+    source_name: SmolStr,
+    dex_name: Option<SmolStr>,
 }
 
 impl JavaIdentifier {
@@ -26,36 +27,36 @@ impl JavaIdentifier {
     pub fn from_dex(value: &str) -> Self {
         Self {
             source_name: Self::sanitize_dex_name(value),
-            dex_name: Some(value.to_string()),
+            dex_name: Some(SmolStr::new(value)),
         }
     }
 
     pub(crate) fn from_dex_alias(value: &str, source_name: impl Into<String>) -> Self {
         Self {
-            source_name: source_name.into(),
-            dex_name: Some(value.to_string()),
+            source_name: SmolStr::from(source_name.into()),
+            dex_name: Some(SmolStr::new(value)),
         }
     }
 
-    fn sanitize_dex_name(value: &str) -> String {
-        if Self::is_valid_and_printable(value) {
-            return value.to_string();
+    fn sanitize_dex_name(value: &str) -> SmolStr {
+        if Self::is_valid_identifier(value) {
+            return SmolStr::new(value);
         }
         let clean = Self::remove_invalid_chars(value, "C");
         if clean.is_empty() {
-            return Self::alias_fallback(value);
+            return Self::alias_fallback(value).into();
         }
         if !Self::is_valid_identifier(&clean) {
-            return format!("C{clean}");
+            return format!("C{clean}").into();
         }
-        clean
+        clean.into()
     }
 
     pub fn from_hint(value: &str) -> Self {
-        let source_name = if Self::is_valid_and_printable(value) {
-            value.to_string()
+        let source_name = if Self::is_valid_identifier(value) {
+            SmolStr::new(value)
         } else if Self::is_reserved(value) && Self::is_all_chars_printable(value) {
-            format!("{value}Value")
+            format!("{value}Value").into()
         } else {
             Self::sanitize_dex_name(value)
         };
@@ -75,7 +76,7 @@ impl JavaIdentifier {
 
     fn with_source_name(&self, source_name: String) -> Self {
         Self {
-            source_name,
+            source_name: source_name.into(),
             dex_name: self.dex_name.clone(),
         }
     }
@@ -96,7 +97,7 @@ impl JavaIdentifier {
     }
 
     fn remove_invalid_chars_middle(name: &str) -> String {
-        if Self::is_valid_identifier(name) && Self::is_all_chars_printable(name) {
+        if Self::is_valid_identifier(name) {
             return name.to_string();
         }
         name.chars()
@@ -135,10 +136,6 @@ impl JavaIdentifier {
 
     fn is_java_identifier_part(character: char) -> bool {
         Self::is_java_identifier_start(character) || character.is_ascii_digit()
-    }
-
-    fn is_valid_and_printable(value: &str) -> bool {
-        Self::is_valid_identifier(value) && Self::is_all_chars_printable(value)
     }
 
     fn is_valid_identifier(value: &str) -> bool {
@@ -339,14 +336,13 @@ impl JavaClassName {
 
 impl std::fmt::Display for JavaClassName {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(
-            &self
-                .components
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join("."),
-        )
+        for (index, component) in self.components.iter().enumerate() {
+            if index != 0 {
+                formatter.write_str(".")?;
+            }
+            component.fmt(formatter)?;
+        }
+        Ok(())
     }
 }
 
@@ -393,7 +389,24 @@ impl JavaClassType {
     }
 
     pub fn from_source(name: &str) -> Self {
-        Self::raw(JavaClassName::from_source(name))
+        Self {
+            segments: name
+                .split('.')
+                .map(|component| JavaClassTypeSegment {
+                    name: JavaIdentifier::from_dex(component),
+                    arguments: Vec::new(),
+                })
+                .collect(),
+        }
+    }
+
+    pub(super) fn same_name(&self, other: &Self) -> bool {
+        self.segments.len() == other.segments.len()
+            && self
+                .segments
+                .iter()
+                .zip(&other.segments)
+                .all(|(left, right)| left.name == right.name)
     }
 
     pub fn name(&self) -> JavaClassName {
@@ -464,16 +477,14 @@ impl JavaType {
     }
 
     pub(crate) fn into_raw(mut self) -> Self {
-        match &mut self {
-            Self::Class(class) => {
-                for segment in &mut class.segments {
-                    segment.arguments.clear();
-                }
+        let mut ty = &mut self;
+        while let Self::Array(element) = ty {
+            ty = element;
+        }
+        if let Self::Class(class) = ty {
+            for segment in &mut class.segments {
+                segment.arguments.clear();
             }
-            Self::Array(element) => {
-                **element = (**element).clone().into_raw();
-            }
-            Self::Primitive(_) | Self::Variable(_) => {}
         }
         self
     }

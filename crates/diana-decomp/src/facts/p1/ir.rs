@@ -247,27 +247,21 @@ fn regroup_invoke_args(
     let Some(Ok(layout)) = facts.invoke_layout_at(pc) else {
         return Ok(());
     };
-    let mut words = insn.args.iter().cloned();
-    let mut args = Vec::new();
-    args.try_reserve_exact(usize::from(layout.has_receiver()) + layout.arguments().len())
-        .map_err(|_| "invoke argument allocation failed".to_owned())?;
-    if layout.has_receiver() {
-        let receiver = words
-            .next()
-            .ok_or_else(|| format!("invoke at {pc:?} lost its receiver"))?;
-        args.push(receiver);
+    if layout.has_receiver() && insn.args.is_empty() {
+        return Err(format!("invoke at {pc:?} lost its receiver"));
     }
+    let mut word = usize::from(layout.has_receiver());
+    let mut argument = word;
     for (width, parameter) in layout.arguments().iter().zip(&descriptor.parameters) {
-        let Some(InsnArg::Reg(mut register)) = words.next() else {
+        let Some(InsnArg::Reg(register)) = insn.args.get_mut(word) else {
             return Err(format!("invoke at {pc:?} lost a declared argument"));
         };
         register.ty = parameter.clone();
-        args.push(InsnArg::Reg(register));
-        if width.words() == 2 {
-            words.next();
-        }
+        insn.args.swap(argument, word);
+        argument += 1;
+        word += width.words() as usize;
     }
-    insn.args = args;
+    insn.args.truncate(argument);
     Ok(())
 }
 
@@ -297,7 +291,9 @@ fn text(value: crate::input::DexString<'_>) -> Result<String, String> {
 }
 
 fn descriptor(value: crate::input::DexString<'_>) -> Result<crate::ir::ArgType, String> {
-    text(value)?
+    value
+        .utf8_lossy()
+        .map_err(|error| error.to_string())?
         .parse()
         .map_err(|error: crate::ir::DescriptorParseError| error.to_string())
 }

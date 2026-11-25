@@ -151,16 +151,62 @@ pub struct OriginalAnnotations {
     owner: ClassKey,
     directory: ByteOffset,
     records: Vec<AnnotationRecord>,
+    member_ranges: Option<Box<MemberRanges>>,
+    member_ranges_unavailable: bool,
     references: Vec<super::value_facts::ValueReference>,
     prefix: Option<AnnotationPrefix>,
     extent: AnnotationExtent,
 }
+#[derive(Default, Debug)]
+struct MemberRanges {
+    // A zero method-set offset is distinguishable from an absent association.
+    methods: Vec<(crate::MethodId, Option<ByteRange>)>,
+    parameters: Vec<(crate::MethodId, ByteRange)>,
+}
+
 impl OriginalAnnotations {
     pub fn owner(&self) -> ClassKey {
         self.owner
     }
     pub fn directory(&self) -> ByteOffset {
         self.directory
+    }
+    /// Method-source ranges established by a complete P0 directory traversal.
+    /// Prefixes and explicitly zero method-set offsets need the independent
+    /// member read, which retains the selected method's own diagnostic.
+    pub(super) fn checked_method(
+        &self,
+        id: crate::MethodId,
+    ) -> Option<super::method::CheckedAnnotations> {
+        if self.extent != AnnotationExtent::Complete || self.member_ranges_unavailable {
+            return None;
+        }
+        let Some(ranges) = &self.member_ranges else {
+            return Some(super::method::CheckedAnnotations::default());
+        };
+        let method = match ranges.methods.binary_search_by_key(&id, |(id, _)| *id) {
+            Ok(index) => Some(ranges.methods[index].1?),
+            Err(_) => None,
+        };
+        let parameters = ranges
+            .parameters
+            .binary_search_by_key(&id, |(id, _)| *id)
+            .ok()
+            .map(|index| ranges.parameters[index].1);
+        Some(super::method::CheckedAnnotations { method, parameters })
+    }
+    fn remember_member_range(
+        &mut self,
+        insert: impl FnOnce(&mut MemberRanges) -> Result<(), RequestError>,
+    ) {
+        if !self.member_ranges_unavailable {
+            let ranges = self.member_ranges.get_or_insert_with(Default::default);
+            if insert(ranges).is_err() {
+                // Optional acceleration must not affect original facts or diagnostics.
+                self.member_ranges = None;
+                self.member_ranges_unavailable = true;
+            }
+        }
     }
     pub fn references(&self) -> &[super::value_facts::ValueReference] {
         &self.references
@@ -259,9 +305,9 @@ fn read_set(
     offset: ByteOffset,
     location: AnnotationLocation,
     facts: &mut OriginalAnnotations,
-) -> Result<(), RequestError> {
+) -> Result<Option<ByteRange>, RequestError> {
     if offset.0 == 0 {
-        return Ok(());
+        return Ok(None);
     }
     let mut offsets = index.annotation_offsets(0x1003, offset)?;
     let mut last = None;
@@ -320,7 +366,10 @@ fn read_set(
         facts.prefix = None;
     }
 
-    Ok(())
+    Ok(Some(ByteRange {
+        start: offset,
+        end: offsets.position_byte(),
+    }))
 }
 
 #[derive(Clone, Copy)]
@@ -369,10 +418,11 @@ fn read_members<'a>(
         )?;
         match (matches!(kind, AssociationKind::Parameter), owner) {
             (false, AnnotationOwner::Field(id)) => {
-                read_set(index, offset, AnnotationLocation::Field(id), facts)?
+                read_set(index, offset, AnnotationLocation::Field(id), facts)?;
             }
             (false, AnnotationOwner::Method(id)) => {
-                read_set(index, offset, AnnotationLocation::Method(id), facts)?
+                let set = read_set(index, offset, AnnotationLocation::Method(id), facts)?;
+                facts.remember_member_range(|ranges| push(&mut ranges.methods, (id, set)));
             }
             (true, AnnotationOwner::Method(id)) => {
                 let mut references = index.annotation_parameters(offset, parameters)?;
@@ -392,6 +442,11 @@ fn read_members<'a>(
                         facts,
                     )?;
                 }
+                let list = ByteRange {
+                    start: offset,
+                    end: references.position_byte(),
+                };
+                facts.remember_member_range(|ranges| push(&mut ranges.parameters, (id, list)));
             }
             (true, AnnotationOwner::Field(_)) => {
                 return Err(RequestError::InternalInvariant(
@@ -411,6 +466,8 @@ pub fn collect(index: &ProgramIndex<'_>, owner: ClassKey) -> Result<ReadAnnotati
             owner,
             directory: context.annotations_offset,
             records: Vec::new(),
+            member_ranges: None,
+            member_ranges_unavailable: false,
             references: Vec::new(),
             prefix: None,
             extent: AnnotationExtent::Complete,

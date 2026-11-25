@@ -119,6 +119,9 @@ fn apply_annotations(node: &mut ClassNode, facts: &ClassFacts) {
     }
 
     let original = facts.annotations();
+    if original.records().is_empty() {
+        return;
+    }
     let mut class_annotations = Vec::new();
     let mut method_annotations: BTreeMap<u32, Vec<AnnotationNode>> = BTreeMap::new();
     let mut field_annotations: BTreeMap<u32, Vec<AnnotationNode>> = BTreeMap::new();
@@ -434,10 +437,7 @@ fn unsigned_scalar(value: u64, tag: u8) -> DexValue {
 }
 
 fn is_system_annotation(annotation: &AnnotationNode) -> bool {
-    annotation
-        .annotation_type
-        .to_descriptor()
-        .starts_with("Ldalvik/annotation/")
+    matches!(&annotation.annotation_type, ArgType::Object(name) if name.starts_with("dalvik/annotation/"))
 }
 
 fn signature(annotations: &[AnnotationNode]) -> Option<String> {
@@ -485,9 +485,10 @@ fn annotation_value_named<'a>(
     annotation: &str,
     element: &str,
 ) -> Option<&'a DexValue> {
+    let name = annotation.strip_prefix('L')?.strip_suffix(';')?;
     annotations
         .iter()
-        .find(|candidate| candidate.annotation_type.to_descriptor() == annotation)
+        .find(|candidate| matches!(&candidate.annotation_type, ArgType::Object(owner) if owner == name))
         .and_then(|candidate| {
             candidate
                 .elements

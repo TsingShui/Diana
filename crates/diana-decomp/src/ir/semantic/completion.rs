@@ -82,7 +82,7 @@ pub(crate) enum SemanticTransfer {
     Continue(RegionId),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct SemanticControlTopology {
     tokens: Vec<ControlToken>,
 }
@@ -113,6 +113,10 @@ enum ControlToken {
 }
 
 impl SemanticVisitor for SemanticControlTopology {
+    fn visits_values(&self) -> bool {
+        false
+    }
+
     fn enter_node(&mut self, node: &SemanticNode) {
         self.tokens.push(match node {
             SemanticNode::Empty => ControlToken::Empty,

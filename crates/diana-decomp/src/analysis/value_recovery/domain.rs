@@ -94,9 +94,8 @@ enum DomainNode {
 
 pub(super) struct DomainLogic {
     bdd: BddContext,
-    nodes: Vec<DomainNode>,
+    nodes: Vec<(DomainNode, Option<Bdd>)>,
     domains: BTreeMap<DomainNode, ControlDomain>,
-    exact: BTreeMap<ControlDomain, Bdd>,
     saturated: Cell<bool>,
 }
 
@@ -107,15 +106,15 @@ impl DomainLogic {
     pub(super) fn new(variables: &BTreeSet<BoolVariable>) -> Self {
         let bdd = BddContext::new(variables);
         Self {
-            exact: BTreeMap::from([(Self::TRUE, bdd.truth()), (Self::FALSE, bdd.falsity())]),
-            nodes: vec![DomainNode::True, DomainNode::False],
-            domains: BTreeMap::from([
-                (DomainNode::True, Self::TRUE),
-                (DomainNode::False, Self::FALSE),
-            ]),
+            nodes: Vec::new(),
+            domains: BTreeMap::new(),
             bdd,
             saturated: Cell::new(false),
         }
+    }
+
+    pub(super) fn proof_budget_exhausted(&self) -> bool {
+        self.saturated.get()
     }
 
     pub(super) fn truth(&self) -> ControlDomain {
@@ -126,7 +125,28 @@ impl DomainLogic {
         Self::FALSE
     }
 
+    pub(super) fn predicate(
+        &mut self,
+        predicate: &crate::ir::SemanticPredicate,
+    ) -> Result<ControlDomain, super::ValueRecoveryError> {
+        use crate::ir::SemanticPredicate;
+        match predicate {
+            SemanticPredicate::True => Ok(Self::TRUE),
+            SemanticPredicate::False => Ok(Self::FALSE),
+            SemanticPredicate::Test(instruction) => {
+                Ok(self.symbol(BoolVariable::Instruction(instruction.id))?)
+            }
+            _ => Ok(self.compile(&predicate.domain()?)?),
+        }
+    }
+
     pub(super) fn compile(&mut self, expression: &BoolExpr) -> Result<ControlDomain, DomainError> {
+        match expression {
+            BoolExpr::True => return Ok(Self::TRUE),
+            BoolExpr::False => return Ok(Self::FALSE),
+            BoolExpr::Symbol(symbol) => return self.symbol(symbol.clone()),
+            _ => {}
+        }
         let mut pending = vec![CompileTask::Visit(expression)];
         let mut results = Vec::new();
         while let Some(task) = pending.pop() {
@@ -171,13 +191,12 @@ impl DomainLogic {
     }
 
     pub(super) fn not(&mut self, domain: ControlDomain) -> Result<ControlDomain, DomainError> {
-        let node = self.node(domain)?.clone();
-        match node {
+        match self.node(domain)? {
             DomainNode::True => Ok(Self::FALSE),
             DomainNode::False => Ok(Self::TRUE),
-            DomainNode::Not(inner) => Ok(inner),
+            DomainNode::Not(inner) => Ok(*inner),
             _ => {
-                let exact = match (self.saturated.get(), self.exact.get(&domain).copied()) {
+                let exact = match (self.saturated.get(), self.exact(domain)) {
                     (false, Some(value)) => self.proof(self.bdd.not(value))?,
                     _ => None,
                 };
@@ -196,7 +215,7 @@ impl DomainLogic {
             .len()
             .checked_sub(count)
             .ok_or_else(DomainError::malformed_evaluation)?;
-        let values = results.drain(start..).collect::<Vec<_>>();
+        let values = results.drain(start..);
         let mut value = if conjunction { Self::TRUE } else { Self::FALSE };
         for operand in values {
             value = if conjunction {
@@ -232,10 +251,7 @@ impl DomainLogic {
         if left == right {
             return Ok(true);
         }
-        match (
-            self.exact.get(&left).copied(),
-            self.exact.get(&right).copied(),
-        ) {
+        match (self.exact(left), self.exact(right)) {
             (Some(left), Some(right)) => match self.bdd.equivalent(left, right) {
                 Ok(result) => Ok(result),
                 Err(error) if error.is_resource_limit() => {
@@ -264,10 +280,8 @@ impl DomainLogic {
         if self.saturated.get() {
             return Ok(false);
         }
-        let (Some(premise), Some(consequence)) = (
-            self.exact.get(&premise).copied(),
-            self.exact.get(&consequence).copied(),
-        ) else {
+        let (Some(premise), Some(consequence)) = (self.exact(premise), self.exact(consequence))
+        else {
             return Ok(false);
         };
         match self.bdd.implies_bdd(premise, consequence) {
@@ -285,12 +299,12 @@ impl DomainLogic {
         premise: ControlDomain,
         consequences: impl IntoIterator<Item = ControlDomain>,
     ) -> Result<bool, DomainError> {
-        let Some(premise) = self.exact.get(&premise).copied() else {
+        let Some(premise) = self.exact(premise) else {
             return Ok(false);
         };
         let mut covered = self.bdd.falsity();
         for consequence in consequences {
-            let Some(consequence) = self.exact.get(&consequence).copied() else {
+            let Some(consequence) = self.exact(consequence) else {
                 return Ok(false);
             };
             covered = match self.bdd.or(covered, consequence) {
@@ -323,10 +337,7 @@ impl DomainLogic {
         if self.saturated.get() {
             return Ok(false);
         }
-        let (Some(left), Some(right)) = (
-            self.exact.get(&left).copied(),
-            self.exact.get(&right).copied(),
-        ) else {
+        let (Some(left), Some(right)) = (self.exact(left), self.exact(right)) else {
             return Ok(false);
         };
         match self.bdd.and(left, right) {
@@ -348,10 +359,7 @@ impl DomainLogic {
         if self.saturated.get() {
             return Ok(None);
         }
-        let (Some(value), Some(care)) = (
-            self.exact.get(&value).copied(),
-            self.exact.get(&care).copied(),
-        ) else {
+        let (Some(value), Some(care)) = (self.exact(value), self.exact(care)) else {
             return Ok(None);
         };
         let constrained = match self.bdd.constrain(value, care) {
@@ -464,7 +472,7 @@ impl DomainLogic {
             self.bdd.falsity()
         };
         for term in terms {
-            let Some(operand) = self.exact.get(term).copied() else {
+            let Some(operand) = self.exact(*term) else {
                 return Ok(None);
             };
             let result = if conjunction {
@@ -481,9 +489,26 @@ impl DomainLogic {
     }
 
     fn node(&self, domain: ControlDomain) -> Result<&DomainNode, DomainError> {
-        self.nodes
-            .get(domain.0 as usize)
-            .ok_or_else(|| DomainError::invalid(domain))
+        match domain {
+            Self::TRUE => Ok(&DomainNode::True),
+            Self::FALSE => Ok(&DomainNode::False),
+            ControlDomain(id) => self
+                .nodes
+                .get((id - 2) as usize)
+                .map(|(node, _)| node)
+                .ok_or_else(|| DomainError::invalid(domain)),
+        }
+    }
+
+    fn exact(&self, domain: ControlDomain) -> Option<Bdd> {
+        match domain {
+            Self::TRUE => Some(self.bdd.truth()),
+            Self::FALSE => Some(self.bdd.falsity()),
+            ControlDomain(id) => self
+                .nodes
+                .get((id - 2) as usize)
+                .and_then(|(_, proof)| *proof),
+        }
     }
 
     fn intern(
@@ -494,14 +519,11 @@ impl DomainLogic {
         if let Some(domain) = self.domains.get(&node).copied() {
             return Ok(domain);
         }
-        let id =
-            u32::try_from(self.nodes.len()).map_err(|_| DomainError::capacity(self.nodes.len()))?;
+        let len = self.nodes.len().saturating_add(2);
+        let id = u32::try_from(len).map_err(|_| DomainError::capacity(len))?;
         let domain = ControlDomain(id);
-        self.nodes.push(node.clone());
+        self.nodes.push((node.clone(), exact));
         self.domains.insert(node, domain);
-        if let Some(exact) = exact {
-            self.exact.insert(domain, exact);
-        }
         Ok(domain)
     }
 

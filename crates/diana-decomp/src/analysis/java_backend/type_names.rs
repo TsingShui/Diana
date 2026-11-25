@@ -39,6 +39,7 @@ pub(super) struct JavaTypeNameResolver {
     simple_names: BTreeMap<String, String>,
     declarations: DeclaredTypes,
     lexical_scope: JavaLexicalTypeScope,
+    resolved_objects: std::cell::RefCell<BTreeMap<String, JavaClassType>>,
 }
 
 impl JavaTypeNameResolver {
@@ -88,18 +89,20 @@ impl JavaTypeNameResolver {
         let simple_counts = collector.simple_counts();
         let mut imports = BTreeSet::new();
         let mut simple_names = BTreeMap::new();
-        for binary_name in collector.into_binary_names() {
+        for (binary_name, name) in collector.binary_names {
             if declarations.resolve(&binary_name).is_some() {
                 continue;
             }
-            let name = JavaTypeName::from_binary_name(&binary_name);
-            let Some(name) = name.as_ref() else {
+            let Some(name) = name else {
                 simple_names.insert(binary_name.clone(), binary_name.clone());
                 continue;
             };
-            let has_conflicting_simple_name =
-                simple_counts.get(&name.simple).copied().unwrap_or_default() > 1
-                    || declarations.reserves(&name.simple);
+            let has_conflicting_simple_name = simple_counts
+                .get(name.simple())
+                .copied()
+                .unwrap_or_default()
+                > 1
+                || declarations.reserves(name.simple());
             if has_conflicting_simple_name {
                 simple_names.insert(binary_name, name.qualified_source_name());
                 continue;
@@ -117,6 +120,7 @@ impl JavaTypeNameResolver {
             simple_names,
             declarations,
             lexical_scope,
+            resolved_objects: Default::default(),
         })
     }
 
@@ -231,24 +235,30 @@ impl JavaTypeNameResolver {
     }
 
     fn resolve_object_type_in(&self, internal_name: &str, header: bool) -> JavaClassType {
+        if !header {
+            if let Some(cached) = self.resolved_objects.borrow().get(internal_name) {
+                return cached.clone();
+            }
+        }
         let full_name = JavaTypeName::internal_to_binary_name(internal_name);
         if header {
             if let Some(source_type) = self.declarations.header(&full_name) {
                 return source_type.clone();
             }
         }
-        if let Some(source_type) = self.declarations.resolve(&full_name) {
-            return source_type.clone();
-        }
-        if let Some(relative_name) = self.lexical_scope.relative_name(&full_name) {
-            return JavaClassType::from_source(&relative_name);
-        }
-        let source_name = self
-            .simple_names
-            .get(&full_name)
-            .cloned()
-            .unwrap_or_else(|| JavaTypeName::implicit_or_qualified_source_name(&full_name));
-        JavaClassType::from_source(&source_name)
+        let source = if let Some(declared) = self.declarations.resolve(&full_name) {
+            declared.clone()
+        } else if let Some(relative) = self.lexical_scope.relative_name(&full_name) {
+            JavaClassType::from_source(&relative)
+        } else if let Some(simple) = self.simple_names.get(&full_name) {
+            JavaClassType::from_source(simple)
+        } else {
+            JavaClassType::from_source(&JavaTypeName::implicit_or_qualified_source_name(&full_name))
+        };
+        self.resolved_objects
+            .borrow_mut()
+            .insert(internal_name.to_owned(), source.clone());
+        source
     }
 
     fn type_binary_name(ty: &ArgType) -> Option<String> {
@@ -524,49 +534,40 @@ impl<'a> GenericTypeResolver<'a> {
 
 #[derive(Debug, Clone, Default)]
 struct JavaLexicalTypeScope {
-    owner_chain: Vec<String>,
+    owner: Option<JavaTypeName>,
 }
 
 impl JavaLexicalTypeScope {
     fn new(current_type: Option<String>) -> Self {
-        let owner_chain = current_type
-            .as_deref()
-            .map(owner_chain_from_binary_name)
-            .unwrap_or_default();
-        Self { owner_chain }
+        Self {
+            owner: current_type
+                .as_deref()
+                .and_then(JavaTypeName::from_binary_name),
+        }
     }
 
     fn relative_name(&self, binary_name: &str) -> Option<String> {
+        let owner = self.owner.as_ref()?;
         let target = JavaTypeName::from_binary_name(binary_name)?;
-        for scope_binary_name in &self.owner_chain {
-            let scope = JavaTypeName::from_binary_name(scope_binary_name)?;
-            if !target.has_prefix(&scope) {
-                continue;
-            }
-            let start_segment = if target.segment_count() == scope.segment_count() {
-                scope.segment_count().saturating_sub(1)
-            } else {
-                scope.segment_count()
-            };
-            return Some(target.source_name_from_segment(start_segment));
+        if target.package != owner.package || target.top_level != owner.top_level {
+            return None;
         }
-        None
+        // The deepest enclosing type shared with the target determines the
+        // shortest relative spelling. A target that is itself an enclosing
+        // type retains its final segment.
+        let common = 1 + owner
+            .nested
+            .iter()
+            .zip(&target.nested)
+            .take_while(|(left, right)| left == right)
+            .count();
+        Some(target.source_name_from_segment(common.min(target.segment_count() - 1)))
     }
-}
-
-fn owner_chain_from_binary_name(binary_name: &str) -> Vec<String> {
-    let Some(name) = JavaTypeName::from_binary_name(binary_name) else {
-        return Vec::new();
-    };
-    (1..=name.segment_count())
-        .rev()
-        .map(|segment_count| name.binary_name_with_segments(segment_count))
-        .collect()
 }
 
 #[derive(Default)]
 struct JavaTypeImportCollector {
-    binary_names: BTreeSet<String>,
+    binary_names: BTreeMap<String, Option<JavaTypeName>>,
 }
 
 impl JavaTypeImportCollector {
@@ -577,7 +578,8 @@ impl JavaTypeImportCollector {
                 ArgType::Array(element) => ty = element,
                 ArgType::Object(name) => {
                     self.binary_names
-                        .insert(JavaTypeName::internal_to_binary_name(name));
+                        .entry(JavaTypeName::internal_to_binary_name(name))
+                        .or_insert_with_key(|binary| JavaTypeName::from_binary_name(binary));
                     return Ok(());
                 }
                 ArgType::Primitive(_) => return Ok(()),
@@ -590,54 +592,50 @@ impl JavaTypeImportCollector {
 
     fn simple_counts(&self) -> BTreeMap<String, usize> {
         let mut counts = BTreeMap::new();
-        for full_name in &self.binary_names {
-            if let Some(name) = JavaTypeName::from_binary_name(full_name) {
-                *counts.entry(name.simple).or_default() += 1;
-            }
+        for name in self.binary_names.values().flatten() {
+            *counts.entry(name.simple().to_owned()).or_default() += 1;
         }
         counts
     }
-
-    fn into_binary_names(self) -> BTreeSet<String> {
-        self.binary_names
-    }
 }
 
+#[derive(Debug, Clone)]
 struct JavaTypeName {
     package: Option<String>,
     top_level: String,
     nested: Vec<String>,
-    simple: String,
 }
 
 impl JavaTypeName {
     fn from_binary_name(full_name: &str) -> Option<Self> {
         let (package, name) = full_name
             .rsplit_once('.')
-            .map(|(package, name)| (Some(package.to_string()), name.to_string()))
-            .unwrap_or((None, full_name.to_string()));
+            .map(|(package, name)| (Some(package), name))
+            .unwrap_or((None, full_name));
         if name.is_empty() {
             return None;
         }
-        let mut parts = name.split('$').map(ToOwned::to_owned).collect::<Vec<_>>();
-        if parts.iter().any(|part| part.is_empty()) {
-            return None;
+        let (mut top_level, mut nested) = (name, Vec::new());
+        if let Some((outer, inner)) = name.split_once('$') {
+            if outer.is_empty() || inner.split('$').any(str::is_empty) {
+                return None;
+            }
+            if inner.split('$').all(|part| {
+                part.bytes().all(|byte| byte.is_ascii_digit()) || is_source_nested_identifier(part)
+            }) {
+                top_level = outer;
+                nested.extend(inner.split('$').map(str::to_owned));
+            }
         }
-        if parts.iter().skip(1).any(|part| {
-            !part.chars().all(|character| character.is_ascii_digit())
-                && !is_source_nested_identifier(part)
-        }) {
-            parts = vec![name];
-        }
-        let top_level = parts.first()?.clone();
-        let nested = parts.iter().skip(1).cloned().collect::<Vec<_>>();
-        let simple = parts.last()?.clone();
         Some(Self {
-            package,
-            top_level,
+            package: package.map(str::to_owned),
+            top_level: top_level.to_owned(),
             nested,
-            simple,
         })
+    }
+
+    fn simple(&self) -> &str {
+        self.nested.last().unwrap_or(&self.top_level)
     }
 
     fn source_name(&self) -> String {
@@ -685,27 +683,6 @@ impl JavaTypeName {
                 name.push('$');
             }
             name.push_str(&rendered);
-        }
-        name
-    }
-
-    fn has_prefix(&self, prefix: &Self) -> bool {
-        if self.package != prefix.package || self.segment_count() < prefix.segment_count() {
-            return false;
-        }
-        (0..prefix.segment_count()).all(|idx| self.segment(idx) == prefix.segment(idx))
-    }
-
-    fn binary_name_with_segments(&self, segment_count: usize) -> String {
-        let mut name = match &self.package {
-            Some(package) => format!("{}.{}", package, self.top_level),
-            None => self.top_level.clone(),
-        };
-        for idx in 1..segment_count {
-            if let Some(segment) = self.segment(idx) {
-                name.push('$');
-                name.push_str(segment);
-            }
         }
         name
     }

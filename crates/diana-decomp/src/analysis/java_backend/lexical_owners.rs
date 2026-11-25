@@ -21,7 +21,9 @@ impl LexicalOwners {
             .collect::<BTreeMap<_, _>>();
         let root_path = vec![root.name.clone()];
         Self::collect_aliases(root, root_path.clone(), true, &mut aliases);
-        Self::rewrite_aliases(root, root_path, true, &aliases);
+        if !aliases.is_empty() {
+            Self::rewrite_aliases(root, root_path, true, &aliases);
+        }
     }
 
     pub(super) fn qualify(root: &mut JavaTypeDeclaration) {

@@ -73,6 +73,16 @@ impl SemanticFolder for JavaLoopSyntax<'_> {
         };
         let mut index = 1;
         while index < children.len() {
+            if !matches!(
+                &children[index],
+                SemanticNode::Loop {
+                    kind: SemanticLoopKind::PreTested,
+                    ..
+                }
+            ) {
+                index += 1;
+                continue;
+            }
             let mut start = index;
             while start != 0 {
                 let candidate = start - 1;

@@ -429,32 +429,20 @@ impl<'a> Checker<'_, 'a> {
         Ok(())
     }
 
-    fn item_at(&self, pc: CodeUnitOffset) -> Result<&super::DecodedItem, MethodError> {
+    fn item_index(&self, pc: CodeUnitOffset) -> Result<usize, MethodError> {
         self.items
-            .binary_search_by(|item| item.pc().cmp(&pc))
-            .ok()
-            .map(|index| &self.items[index])
-            .ok_or(MethodError::InternalInvariant(
-                "decoded directory lost a checked item",
-            ))
+            .binary_search_by_key(&pc, super::DecodedItem::pc)
+            .map_err(|_| MethodError::InternalInvariant("decoded directory lost a checked item"))
+    }
+
+    fn item_at(&self, pc: CodeUnitOffset) -> Result<&super::DecodedItem, MethodError> {
+        Ok(&self.items[self.item_index(pc)?])
     }
 
     fn layout_at(&self, pc: CodeUnitOffset) -> Result<InsnLayout, MethodError> {
         match self.item_at(pc)? {
             super::DecodedItem::Instruction(instruction) => Ok(instruction.layout()),
             super::DecodedItem::Payload(payload) => Ok(payload.layout()),
-        }
-    }
-
-    fn operands_at(
-        &self,
-        pc: CodeUnitOffset,
-    ) -> Result<crate::input::operands::RawOperands, MethodError> {
-        match self.item_at(pc)? {
-            super::DecodedItem::Instruction(instruction) => Ok(*instruction.operands()),
-            super::DecodedItem::Payload(_) => Err(MethodError::InternalInvariant(
-                "decoded directory has no operands for a payload",
-            )),
         }
     }
 
@@ -471,8 +459,8 @@ impl<'a> Checker<'_, 'a> {
         &self,
         pc: CodeUnitOffset,
         spec: OpcodeSpec,
+        operands: &RawOperands,
     ) -> Result<CodeUnitOffset, MethodError> {
-        let operands = self.operands_at(pc)?;
         let delta = operands
             .offset()
             .ok_or(MethodError::InternalInvariant("branch format has no delta"))?
@@ -480,9 +468,7 @@ impl<'a> Checker<'_, 'a> {
         if delta == 0 && spec.format != Format::F30t {
             return Err(bad(pc, MethodProblem::ZeroBranchDelta));
         }
-        let target = relative(pc, delta)?;
-        self.normal_target(pc, target, true)?;
-        Ok(target)
+        relative(pc, delta)
     }
 
     fn normal_target(
@@ -501,7 +487,15 @@ impl<'a> Checker<'_, 'a> {
                 },
             ));
         }
-        match self.spec_at(target)?.result {
+        Self::check_entry_role(source, self.spec_at(target)?.result, explicit)
+    }
+
+    fn check_entry_role(
+        source: CodeUnitOffset,
+        result: ResultRole,
+        explicit: bool,
+    ) -> Result<(), MethodError> {
+        match result {
             ResultRole::MoveResult if explicit => {
                 Err(bad(source, MethodProblem::InvalidResultEntry))
             }
@@ -514,10 +508,11 @@ impl<'a> Checker<'_, 'a> {
         &self,
         pc: CodeUnitOffset,
         flow: FlowKind,
+        operands: &RawOperands,
     ) -> Result<(CodeUnitOffset, LayoutKind), MethodError> {
         let target = relative(
             pc,
-            self.operands_at(pc)?
+            operands
                 .offset()
                 .ok_or(MethodError::InternalInvariant("switch lost payload delta"))?
                 .0,
@@ -541,8 +536,9 @@ impl<'a> Checker<'_, 'a> {
         &self,
         pc: CodeUnitOffset,
         flow: FlowKind,
+        operands: &RawOperands,
     ) -> Result<SwitchTargets<'a>, MethodError> {
-        let (payload, kind) = self.payload_at(pc, flow)?;
+        let (payload, kind) = self.payload_at(pc, flow, operands)?;
         let (entries, base) = match kind {
             LayoutKind::PackedSwitch { entries } => (u32::from(entries), 4),
             LayoutKind::SparseSwitch { entries } => {
@@ -571,12 +567,12 @@ impl<'a> Checker<'_, 'a> {
             Known(ResultKind),
             Unavailable,
         }
-        let mut pc = CodeUnitOffset(0);
         let mut previous = None;
-        while pc.0 < self.original.code_units().0 {
-            let layout = self.layout_at(pc)?;
-            if let LayoutKind::Instruction(spec) = layout.kind() {
-                let operands = self.operands_at(pc)?;
+        for item in self.items {
+            if let super::DecodedItem::Instruction(instruction) = item {
+                let pc = instruction.pc();
+                let spec = instruction.spec();
+                let operands = *instruction.operands();
                 if let Err(error) = check_registers(self.original, pc, spec, operands) {
                     crate::substrate::owned::push(
                         &mut self.issues,
@@ -614,16 +610,17 @@ impl<'a> Checker<'_, 'a> {
                 }
                 match spec.flow {
                     FlowKind::Goto | FlowKind::Conditional => {
-                        self.branch_target(pc, spec)?;
+                        let target = self.branch_target(pc, spec, &operands)?;
+                        self.normal_target(pc, target, true)?;
                     }
                     FlowKind::PackedSwitch | FlowKind::SparseSwitch => {
-                        let targets = self.switch_targets(pc, spec.flow)?;
+                        let targets = self.switch_targets(pc, spec.flow, &operands)?;
                         for index in 0..targets.entries {
                             self.normal_target(pc, targets.at(index)?, true)?;
                         }
                     }
                     FlowKind::FillArray => {
-                        self.payload_at(pc, spec.flow)?;
+                        self.payload_at(pc, spec.flow, &operands)?;
                     }
                     _ => {}
                 }
@@ -657,16 +654,12 @@ impl<'a> Checker<'_, 'a> {
             } else {
                 previous = None;
             }
-            pc = advance(pc, layout)?;
         }
         Ok(())
     }
 
-    fn enqueue(
-        &mut self,
-        pc: CodeUnitOffset,
-        pending: &mut Vec<CodeUnitOffset>,
-    ) -> Result<(), MethodError> {
+    fn enqueue(&mut self, index: usize, pending: &mut Vec<u32>) -> Result<(), MethodError> {
+        let pc = self.items[index].pc();
         if self.boundaries.flags(pc) & 8 == 0 {
             if pending.len() == pending.capacity() {
                 return Err(MethodError::InternalInvariant(
@@ -674,7 +667,8 @@ impl<'a> Checker<'_, 'a> {
                 ));
             }
             self.boundaries.mark(pc, 8)?;
-            pending.push(pc);
+            // Each decoded item occupies at least one of the u32 code units.
+            pending.push(index as u32);
         }
         Ok(())
     }
@@ -686,23 +680,27 @@ impl<'a> Checker<'_, 'a> {
         }
         self.normal_target(entry, entry, true)?;
         let mut pending = exact_buffer(instruction_count)?;
-        self.enqueue(entry, &mut pending)?;
-        while let Some(pc) = pending.pop() {
-            let layout = self.layout_at(pc)?;
-            let LayoutKind::Instruction(spec) = layout.kind() else {
+        self.enqueue(0, &mut pending)?;
+        while let Some(index) = pending.pop() {
+            let index = index as usize;
+            let super::DecodedItem::Instruction(instruction) = &self.items[index] else {
                 return Err(MethodError::InternalInvariant(
                     "reachability entered a payload",
                 ));
             };
+            let pc = instruction.pc();
+            let spec = instruction.spec();
+            let layout = instruction.layout();
+            let operands = instruction.operands();
             match spec.flow {
                 FlowKind::Goto | FlowKind::Conditional => {
-                    let target = self.branch_target(pc, spec)?;
-                    self.enqueue(target, &mut pending)?;
+                    let target = self.branch_target(pc, spec, operands)?;
+                    self.enqueue(self.item_index(target)?, &mut pending)?;
                 }
                 FlowKind::PackedSwitch | FlowKind::SparseSwitch => {
-                    let targets = self.switch_targets(pc, spec.flow)?;
+                    let targets = self.switch_targets(pc, spec.flow, operands)?;
                     for index in 0..targets.entries {
-                        self.enqueue(targets.at(index)?, &mut pending)?;
+                        self.enqueue(self.item_index(targets.at(index)?)?, &mut pending)?;
                     }
                 }
                 _ => {}
@@ -711,9 +709,12 @@ impl<'a> Checker<'_, 'a> {
                 spec.flow,
                 FlowKind::Return | FlowKind::Throw | FlowKind::Goto
             ) {
-                let next = advance(pc, layout)?;
-                self.normal_target(pc, next, false)?;
-                self.enqueue(next, &mut pending)?;
+                // The decoded directory is contiguous and in original PC order.
+                let Some(super::DecodedItem::Instruction(next)) = self.items.get(index + 1) else {
+                    return Err(bad(pc, MethodProblem::InvalidFallthrough));
+                };
+                Self::check_entry_role(pc, next.spec().result, false)?;
+                self.enqueue(index + 1, &mut pending)?;
             }
             if spec.may_throw {
                 // monitor-exit selects a handler after its advanced PC.
@@ -731,7 +732,7 @@ impl<'a> Checker<'_, 'a> {
     fn enqueue_handlers(
         &mut self,
         pc: CodeUnitOffset,
-        pending: &mut Vec<CodeUnitOffset>,
+        pending: &mut Vec<u32>,
     ) -> Result<(), MethodError> {
         let range = self.original.try_byte_range();
         let mut lower = 0;
@@ -755,7 +756,9 @@ impl<'a> Checker<'_, 'a> {
                     .checked_advance(ByteLength(usize::from(record.handler_offset)))
                     .ok_or(MethodError::InternalInvariant("handler offset overflow"))?;
                 let mut cursor = Cursor::bounded(self.original.source_bytes, start, handlers.end)?;
-                return visit_handler(&mut cursor, |target| self.enqueue(target, pending));
+                return visit_handler(&mut cursor, |target| {
+                    self.enqueue(self.item_index(target)?, pending)
+                });
             }
         }
         Ok(())

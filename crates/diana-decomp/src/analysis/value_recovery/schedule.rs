@@ -24,6 +24,21 @@ struct SiteReplacement {
 }
 
 impl ValueSchedule {
+    pub(super) fn contains_select(root: &SemanticNode) -> bool {
+        struct Selects(bool);
+        impl crate::ir::SemanticVisitor for Selects {
+            fn visits_values(&self) -> bool {
+                false
+            }
+            fn enter_node(&mut self, node: &SemanticNode) {
+                self.0 = self.0 || SemanticExpressionReduction::node_contains_select(node);
+            }
+        }
+        let mut selects = Selects(false);
+        crate::ir::SemanticVisitor::visit_node(&mut selects, root);
+        selects.0
+    }
+
     pub(super) fn compile(
         actions: impl IntoIterator<Item = ValueAction>,
         identity: ValueIdentity,

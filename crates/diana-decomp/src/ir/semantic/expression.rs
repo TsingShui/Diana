@@ -352,6 +352,15 @@ impl SemanticOperation {
         &self.operands
     }
 
+    pub(super) fn children_mut(
+        &mut self,
+    ) -> impl DoubleEndedIterator<Item = &mut SemanticExpression> {
+        let data = Arc::make_mut(&mut self.0);
+        data.operands
+            .iter_mut()
+            .chain(data.compound_target.as_deref_mut())
+    }
+
     pub fn operands_mut(&mut self) -> &mut [SemanticExpression] {
         &mut self.operands
     }

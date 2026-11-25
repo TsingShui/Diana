@@ -245,7 +245,7 @@ impl<'ir> FlowCollector<'ir> {
                     site.map(|site| UseSite::SelectedPredicate(site, current)),
                     origin,
                 )?);
-                let condition = self.graph.logic.compile(&condition.domain()?)?;
+                let condition = self.graph.logic.predicate(condition)?;
                 let true_domain = self.graph.logic.and(domain, condition)?;
                 let negated = self.graph.logic.not(condition)?;
                 let false_domain = self.graph.logic.and(domain, negated)?;
@@ -373,7 +373,7 @@ impl<'ir> FlowCollector<'ir> {
                     let mut visits = Vec::with_capacity(terms.len());
                     for term in terms {
                         visits.push((term, evaluation_domain));
-                        let term_domain = self.graph.logic.compile(&term.domain()?)?;
+                        let term_domain = self.graph.logic.predicate(term)?;
                         let continuation = if conjunction {
                             term_domain
                         } else {
@@ -472,7 +472,7 @@ impl<'ir> FlowCollector<'ir> {
                     *prefix = prefix
                         .clone()
                         .join(self.visit_predicate_uses(condition, domain, event, site, origin)?);
-                    let condition = self.graph.logic.compile(&condition.domain()?)?;
+                    let condition = self.graph.logic.predicate(condition)?;
                     let true_domain = self.graph.logic.and(domain, condition)?;
                     let negated = self.graph.logic.not(condition)?;
                     let false_domain = self.graph.logic.and(domain, negated)?;
@@ -551,7 +551,7 @@ impl<'ir> FlowCollector<'ir> {
                 *prefix = prefix
                     .clone()
                     .join(self.visit_predicate_uses(condition, domain, event, site, origin)?);
-                let condition = self.graph.logic.compile(&condition.domain()?)?;
+                let condition = self.graph.logic.predicate(condition)?;
                 let true_domain = self.graph.logic.and(domain, condition)?;
                 let negated = self.graph.logic.not(condition)?;
                 let false_domain = self.graph.logic.and(domain, negated)?;
@@ -690,8 +690,7 @@ impl<'a> ControlFallthrough<'a> {
         &self,
         predicate: &SemanticPredicate,
     ) -> Result<ControlDomain, ValueRecoveryError> {
-        let expression = predicate.domain()?;
-        Ok(self.logic.borrow_mut().compile(&expression)?)
+        self.logic.borrow_mut().predicate(predicate)
     }
 }
 

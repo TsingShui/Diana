@@ -84,7 +84,7 @@ impl LexicalLabels {
         scopes.escaped
     }
 
-    fn binding(node: &SemanticNode) -> Option<SemanticLabel> {
+    pub(super) fn binding(node: &SemanticNode) -> Option<SemanticLabel> {
         match node {
             SemanticNode::Loop {
                 control: SemanticLoopControl::Label(label),

@@ -12,8 +12,8 @@ use crate::{ByteLength, ByteOffset, ByteRange, ClassDefId, MethodId, RequestErro
 /// members' annotation bodies are independent and are not sealed by this value.
 #[derive(Clone, Copy, Default)]
 pub struct CheckedAnnotations {
-    method: Option<ByteRange>,
-    parameters: Option<ByteRange>,
+    pub(super) method: Option<ByteRange>,
+    pub(super) parameters: Option<ByteRange>,
 }
 
 impl CheckedAnnotations {
@@ -110,7 +110,7 @@ impl<'a> ProgramIndex<'a> {
         facts: &crate::p0::ClassFacts,
         method_id: MethodId,
     ) -> Result<MethodSource<'i, 'a>, MethodError> {
-        self.bound_method_source(facts, facts.method_entry(method_id), |declaration| {
+        self.bound_method_source(facts, facts.method_entry(method_id), None, |declaration| {
             declaration.try_copy().map(Cow::Owned).map_err(method_error)
         })
     }
@@ -122,7 +122,9 @@ impl<'a> ProgramIndex<'a> {
         facts: &'i crate::p0::ClassFacts,
         ordinal: usize,
     ) -> Result<MethodSource<'i, 'a>, MethodError> {
-        self.bound_method_source(facts, facts.methods().get(ordinal), |declaration| {
+        let entry = facts.methods().get(ordinal);
+        let metadata = entry.and_then(|entry| facts.annotations().checked_method(entry.method()));
+        self.bound_method_source(facts, entry, metadata, |declaration| {
             Ok(Cow::Borrowed(declaration))
         })
     }
@@ -131,6 +133,7 @@ impl<'a> ProgramIndex<'a> {
         &'i self,
         facts: &crate::p0::ClassFacts,
         entry: Option<&'f crate::p0::MethodDirectoryEntry>,
+        metadata: Option<CheckedAnnotations>,
         bind: impl FnOnce(
             &'f crate::p0::MethodDeclaration,
         ) -> Result<Cow<'i, crate::p0::MethodDeclaration>, MethodError>,
@@ -181,7 +184,7 @@ impl<'a> ProgramIndex<'a> {
                     + u64::from(access_flags & crate::substrate::flags::STATIC == 0),
             )),
         )?;
-        self.finish_method_source(facts, method_id, access_flags, body, declaration)
+        self.finish_method_source(facts, method_id, access_flags, body, declaration, metadata)
     }
 
     /// Locates one original method by walking its class-data directory and then
@@ -205,13 +208,17 @@ impl<'a> ProgramIndex<'a> {
         access_flags: u32,
         body: MethodBody<'a>,
         declaration: Cow<'i, crate::p0::MethodDeclaration>,
+        metadata: Option<CheckedAnnotations>,
     ) -> Result<MethodSource<'i, 'a>, MethodError> {
         let class_id = facts.class_def();
         // Optional metadata is read independently: a damaged debug program or
         // annotation set keeps its own state and never removes intact code.
-        let metadata = self
-            .check_method_metadata(class_id, method_id, declaration.parameter_count())
-            .map_err(|e| std::sync::Arc::new(RequestError::from(e)));
+        let metadata = match metadata {
+            Some(checked) => Ok(checked),
+            None => self
+                .check_method_metadata(class_id, method_id, declaration.parameter_count())
+                .map_err(|e| std::sync::Arc::new(RequestError::from(e))),
+        };
         // The reader establishes only safe original ranges and independent
         // metadata. P1 owns instruction decoding, structural checks and
         // reference-content association.

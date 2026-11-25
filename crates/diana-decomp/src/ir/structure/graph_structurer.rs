@@ -53,22 +53,32 @@ impl<'a, 'semantic> GraphStructurer<'a, 'semantic> {
     }
 
     pub(super) fn structure(mut self) -> Result<SemanticNode, StructureError> {
-        let nodes = self.cfg.graph_node_ids();
-        if nodes.is_empty() {
+        if self.cfg.num_graph_nodes() == 0 {
             return Ok(SemanticNode::Empty);
         }
-        if self.force_graph_reduction
-            || !self.terminal_seeds.is_empty()
-            || !StrongComponents::analyze(self.cfg, nodes.iter().copied()).is_acyclic()
-        {
+        if self.force_graph_reduction || !self.terminal_seeds.is_empty() {
             return self.reduce_graph();
         }
-        let acyclic = AcyclicStructurer::new(self.cfg, self.semantic, &mut self.seeded)
-            .structure()
+        let mut structurer = AcyclicStructurer::new(self.cfg, self.semantic, &mut self.seeded);
+        if let Some(node) = structurer
+            .linear()
             .map_err(|source| StructureError::Acyclic {
                 region: self.region,
                 source,
-            })?;
+            })?
+        {
+            return Ok(node);
+        }
+        if !StrongComponents::analyze(self.cfg, self.cfg.graph_node_ids()).is_acyclic() {
+            return self.reduce_graph();
+        }
+        let acyclic =
+            structurer
+                .structure_branches()
+                .map_err(|source| StructureError::Acyclic {
+                    region: self.region,
+                    source,
+                })?;
         match acyclic {
             AcyclicStructure::Structured(node) => Ok(node),
             AcyclicStructure::RequiresGraphReduction(_) => self.reduce_graph(),

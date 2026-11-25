@@ -3,7 +3,7 @@
 //! Candidate selection is derived exclusively from the semantic control graph.
 //! Effect-aware movement and source rewriting remain planner responsibilities.
 
-use std::collections::BTreeMap;
+use std::{cell::OnceCell, collections::BTreeMap};
 
 use super::{DefinitionFact, UseFact, UseSite, ValueFlowGraph, ValueIdentity};
 use crate::analysis::value_recovery::ValueRecoveryError;
@@ -19,39 +19,26 @@ pub(super) struct SemanticReachingAnalysis<'a> {
 enum ReachingModel<'a> {
     Ssa(&'a SemanticFlowGraph),
     Source {
-        values: BTreeMap<SsaVar, usize>,
-        facts: SemanticReachingValues,
+        flow: &'a SemanticFlowGraph,
+        reaching: OnceCell<SourceReaching>,
     },
     Incomplete,
 }
 
-impl<'a> SemanticReachingAnalysis<'a> {
-    pub(super) fn new(graph: &'a ValueFlowGraph<'a>) -> Self {
-        let Some(flow) = graph.semantic_flow().filter(|flow| flow.is_complete()) else {
-            return Self {
-                graph,
-                model: ReachingModel::Incomplete,
-            };
-        };
-        if graph.identity() == ValueIdentity::Ssa {
-            return Self {
-                graph,
-                model: ReachingModel::Ssa(flow),
-            };
-        }
+struct SourceReaching {
+    values: BTreeMap<SsaVar, usize>,
+    facts: SemanticReachingValues,
+}
 
-        let values = graph
-            .definitions
-            .keys()
-            .copied()
-            .enumerate()
-            .map(|(value, key)| (key, value))
-            .collect::<BTreeMap<_, _>>();
+impl SourceReaching {
+    fn analyze(graph: &ValueFlowGraph<'_>, flow: &SemanticFlowGraph) -> Self {
+        let mut values = BTreeMap::new();
         let definitions = graph
             .definitions
             .iter()
-            .flat_map(|(key, definitions)| {
-                let value = values[key];
+            .enumerate()
+            .flat_map(|(value, (key, definitions))| {
+                values.insert(*key, value);
                 definitions
                     .iter()
                     .enumerate()
@@ -67,34 +54,27 @@ impl<'a> SemanticReachingAnalysis<'a> {
             })
             .collect::<Vec<_>>();
         let targets = graph.movement_points();
-        Self {
-            graph,
-            model: ReachingModel::Source {
-                facts: flow.reaching_values(&definitions, values.len(), &targets),
-                values,
+        let facts = flow.reaching_values(&definitions, values.len(), &targets);
+        Self { values, facts }
+    }
+}
+
+impl<'a> SemanticReachingAnalysis<'a> {
+    pub(super) fn new(graph: &'a ValueFlowGraph<'a>) -> Self {
+        let Some(flow) = graph.semantic_flow().filter(|flow| flow.is_complete()) else {
+            return Self {
+                graph,
+                model: ReachingModel::Incomplete,
+            };
+        };
+        let model = match graph.identity() {
+            ValueIdentity::Ssa => ReachingModel::Ssa(flow),
+            ValueIdentity::Source => ReachingModel::Source {
+                flow,
+                reaching: OnceCell::new(),
             },
-        }
-    }
-
-    fn value(&self, key: SsaVar) -> Result<usize, ValueRecoveryError> {
-        match &self.model {
-            ReachingModel::Source { values, .. } => values
-                .get(&key)
-                .copied()
-                .ok_or(ValueRecoveryError::MissingSemanticSite),
-            ReachingModel::Ssa(_) | ReachingModel::Incomplete => {
-                Err(ValueRecoveryError::MissingSemanticSite)
-            }
-        }
-    }
-
-    fn facts(&self) -> Result<&SemanticReachingValues, ValueRecoveryError> {
-        match &self.model {
-            ReachingModel::Source { facts, .. } => Ok(facts),
-            ReachingModel::Ssa(_) | ReachingModel::Incomplete => {
-                Err(ValueRecoveryError::IncompleteSemanticFlow)
-            }
-        }
+        };
+        Self { graph, model }
     }
 
     fn has_complete_definitions(&self, key: SsaVar) -> bool {
@@ -129,9 +109,13 @@ impl<'a> SemanticReachingAnalysis<'a> {
                     })
                     .collect())
             }
-            ReachingModel::Source { .. } => {
-                let value = self.value(key)?;
-                let candidates = self.facts()?.at(value, point);
+            ReachingModel::Source { flow, reaching } => {
+                let reaching = reaching.get_or_init(|| SourceReaching::analyze(self.graph, flow));
+                let value = *reaching
+                    .values
+                    .get(&key)
+                    .ok_or(ValueRecoveryError::MissingSemanticSite)?;
+                let candidates = reaching.facts.at(value, point);
                 candidates.ok_or(ValueRecoveryError::MissingReachingFact { value: key, point })
             }
             ReachingModel::Incomplete => Err(ValueRecoveryError::IncompleteSemanticFlow),
@@ -152,12 +136,14 @@ impl<'a> SemanticReachingAnalysis<'a> {
         }
         match &self.model {
             ReachingModel::Ssa(_) => true,
-            ReachingModel::Source { .. } => self
-                .value(key)
-                .ok()
-                .and_then(|value| self.facts().ok().map(|facts| (value, facts)))
-                .and_then(|(value, facts)| facts.unchanged(value, source, target))
-                .unwrap_or(false),
+            ReachingModel::Source { flow, reaching } => {
+                let reaching = reaching.get_or_init(|| SourceReaching::analyze(self.graph, flow));
+                reaching
+                    .values
+                    .get(&key)
+                    .and_then(|&value| reaching.facts.unchanged(value, source, target))
+                    .unwrap_or(false)
+            }
             ReachingModel::Incomplete => false,
         }
     }

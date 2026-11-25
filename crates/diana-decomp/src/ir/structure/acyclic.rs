@@ -14,8 +14,8 @@ use crate::ir::analysis::{
 use crate::ir::bdd::Bdd;
 use crate::ir::semantic::{SemanticCompletion, SemanticFactory};
 use crate::ir::{
-    BlockId, BoolExpr, BoolVariable, InsnType, SemanticBuildError, SemanticNode, SemanticPredicate,
-    CFG,
+    BlockId, BoolExpr, BoolVariable, EdgeKind, InsnType, SemanticBuildError, SemanticNode,
+    SemanticPredicate, CFG,
 };
 
 pub(super) enum AcyclicStructure {
@@ -58,7 +58,51 @@ impl<'a, 'semantic, 'seeded> AcyclicStructurer<'a, 'semantic, 'seeded> {
         self
     }
 
+    /// An unconditional chain has one reaching condition (true) and its
+    /// dominator tree is the chain itself. Construct the same ordered block
+    /// facts directly, leaving ordinary lowering in charge of seeds and DEX
+    /// statements. Bounded traversal also rejects cycles and detached blocks.
+    pub(super) fn linear(&mut self) -> Result<Option<SemanticNode>, AcyclicStructureError> {
+        let count = self.cfg.num_graph_nodes();
+        let mut block = self.cfg.entry;
+        let mut facts = Vec::new();
+        loop {
+            if facts.len() == count || !self.cfg.is_graph_node(block) {
+                return Ok(None);
+            }
+            let Some(body) = self.cfg.block(block) else {
+                return Ok(None);
+            };
+            if body
+                .terminator()
+                .is_some_and(|insn| matches!(insn.insn_type, InsnType::If | InsnType::Switch))
+            {
+                return Ok(None);
+            }
+            facts.push(AcyclicStructureFact::Block {
+                block,
+                prefix_only: false,
+            });
+            match self.cfg.successors_with_kind(block) {
+                [] if facts.len() == count => break,
+                [(target, EdgeKind::Normal)] => block = *target,
+                _ => return Ok(None),
+            }
+        }
+        let shape = AcyclicStructureFact::sequence(facts);
+        AcyclicStructureLowering::new(self.semantic, self.seeded, self.predicates)
+            .lower(shape)
+            .map(Some)
+    }
+
     pub(super) fn structure(&mut self) -> Result<AcyclicStructure, AcyclicStructureError> {
+        if let Some(node) = self.linear()? {
+            return Ok(AcyclicStructure::Structured(node));
+        }
+        self.structure_branches()
+    }
+
+    pub(super) fn structure_branches(&mut self) -> Result<AcyclicStructure, AcyclicStructureError> {
         let facts = match ReachingConditions::analyze(self.cfg) {
             Ok(facts) => facts,
             Err(error) if error.requires_graph_reduction() => {

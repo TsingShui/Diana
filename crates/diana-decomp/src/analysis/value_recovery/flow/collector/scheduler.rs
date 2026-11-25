@@ -106,7 +106,7 @@ impl<'collector, 'node> NodeScheduler<'collector, 'node> {
         else_node: Option<&'node SemanticNode>,
     ) -> Result<(), ValueRecoveryError> {
         self.record_predicate(condition, condition.site.map(UseSite::Predicate))?;
-        let condition_domain = self.collector.graph.logic.compile(&condition.domain()?)?;
+        let condition_domain = self.collector.graph.logic.predicate(condition)?;
         if let Some(else_node) = else_node {
             let otherwise = self.collector.graph.logic.not(condition_domain)?;
             let domain = self.collector.graph.logic.and(self.domain, otherwise)?;
@@ -128,7 +128,7 @@ impl<'collector, 'node> NodeScheduler<'collector, 'node> {
         condition: &'node SemanticOperand<SemanticPredicate>,
         body: &'node SemanticNode,
     ) -> Result<(), ValueRecoveryError> {
-        let condition_domain = self.collector.graph.logic.compile(&condition.domain()?)?;
+        let condition_domain = self.collector.graph.logic.predicate(condition)?;
         let body_domain = match kind {
             SemanticLoopKind::PreTested => self
                 .collector
@@ -175,7 +175,7 @@ impl<'collector, 'node> NodeScheduler<'collector, 'node> {
     ) -> Result<(), ValueRecoveryError> {
         self.collector.visit_statement(init, self.domain)?;
         self.record_predicate(condition, condition.site.map(UseSite::Predicate))?;
-        let condition_domain = self.collector.graph.logic.compile(&condition.domain()?)?;
+        let condition_domain = self.collector.graph.logic.predicate(condition)?;
         let iteration = self
             .collector
             .graph

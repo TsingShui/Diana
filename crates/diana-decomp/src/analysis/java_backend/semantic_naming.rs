@@ -528,7 +528,6 @@ impl<'a> SemanticNameRecovery<'a> {
         this_variable: Option<u32>,
     ) -> BTreeMap<u32, JavaIdentifier> {
         let graph = VariableSemanticGraph::analyze(root, source_types);
-        let roles = StructuralVariableRoleAnalysis.analyze(&graph);
         let intrinsic_names = jadx_local_names::intrinsic_local_names(root);
         let excluded = parameter_variables
             .iter()
@@ -537,6 +536,15 @@ impl<'a> SemanticNameRecovery<'a> {
             .chain(this_variable)
             .chain(intrinsic_names.keys().copied())
             .collect::<BTreeSet<_>>();
+        if !graph.variables().any(|variable| {
+            variable.is_source_binding() && !excluded.contains(&variable.identity())
+        }) {
+            return intrinsic_names
+                .into_iter()
+                .map(|(identity, name)| (identity, JavaIdentifier::from_hint(&name)))
+                .collect();
+        }
+        let roles = StructuralVariableRoleAnalysis.analyze(&graph);
         let model = StructuralNameModel::for_graph(self.types, &graph);
         let mut names = ConstrainedNameSolver::new(&model, 35).solve(
             &graph,

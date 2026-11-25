@@ -1334,6 +1334,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "smol_str",
  "tempfile",
  "thiserror 2.0.21",
  "unicode-general-category",

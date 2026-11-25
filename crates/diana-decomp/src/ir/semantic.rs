@@ -572,6 +572,12 @@ pub enum SemanticNode {
 
 impl Clone for SemanticNode {
     fn clone(&self) -> Self {
+        match self {
+            Self::Empty => return Self::Empty,
+            Self::BasicBlock(block) => return Self::BasicBlock(block.clone()),
+            Self::Leave(leave) => return Self::Leave(leave.clone()),
+            _ => {}
+        }
         let mut tasks = vec![SemanticCloneTask::Visit(self)];
         let mut results = Vec::new();
         while let Some(task) = tasks.pop() {

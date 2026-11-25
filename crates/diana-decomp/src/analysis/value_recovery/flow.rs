@@ -150,6 +150,7 @@ pub(super) enum ValueAction {
     },
 }
 
+#[derive(Default)]
 pub(super) struct ValuePlan {
     pub(super) actions: Vec<ValueAction>,
     pub(super) constants: BTreeMap<SsaVar, InsnArg>,
@@ -179,16 +180,26 @@ impl SsaCopyFlow {
         values: &SsaValueGraph,
         definitions: &BTreeMap<SsaVar, Vec<DefinitionFact>>,
     ) -> Self {
+        if values.copies().is_empty() {
+            return Self::default();
+        }
         let sources = values
             .copies()
             .iter()
             .map(|copy| (copy.result, copy.source))
             .collect::<BTreeMap<_, _>>();
-        let omitted = sources
+        let omitted: BTreeSet<_> = sources
             .keys()
             .filter(|result| !definitions.contains_key(result))
             .copied()
             .collect();
+        if omitted.is_empty() {
+            return Self {
+                sources,
+                omitted,
+                types: BTreeMap::new(),
+            };
+        }
         let types = values
             .values()
             .filter_map(|value| {
@@ -331,8 +342,6 @@ impl<'ir> ValueFlowGraph<'ir> {
     ) -> Result<Self, ValueRecoveryError> {
         let symbols = ControlSymbolClosure::analyze(root);
         let logic = DomainLogic::new(&symbols.variables);
-        let semantic_flow =
-            semantic_flow.then(|| super::source::SourceFlowCache::get_or_analyze(cache, root));
         let graph = Self {
             identity: ValueIdentity::Ssa,
             logic,
@@ -349,12 +358,15 @@ impl<'ir> ValueFlowGraph<'ir> {
             predicate_uses: BTreeMap::new(),
             canonical: canonical.clone(),
             identity_statements: Vec::new(),
-            semantic_flow,
+            semantic_flow: None,
         };
         let mut graph = FlowCollector::new(graph).collect(root)?;
         graph.phis = values.phis().to_vec();
         graph.copies = SsaCopyFlow::analyze(values, &graph.definitions);
         graph.validate(values)?;
+        if semantic_flow {
+            graph.attach_semantic_flow(root, cache);
+        }
         Ok(graph)
     }
 
@@ -374,7 +386,6 @@ impl<'ir> ValueFlowGraph<'ir> {
     ) -> Result<Self, ValueRecoveryError> {
         let symbols = ControlSymbolClosure::analyze(root);
         let logic = DomainLogic::new(&symbols.variables);
-        let semantic_flow = super::source::SourceFlowCache::get_or_analyze(cache, root);
         let graph = Self {
             identity,
             logic,
@@ -391,12 +402,39 @@ impl<'ir> ValueFlowGraph<'ir> {
             predicate_uses: BTreeMap::new(),
             canonical: BTreeMap::new(),
             identity_statements: Vec::new(),
-            semantic_flow: Some(semantic_flow),
+            semantic_flow: None,
         };
-        FlowCollector::new(graph).collect(root)
+        let mut graph = FlowCollector::new(graph).collect(root)?;
+        graph.attach_semantic_flow(root, cache);
+        Ok(graph)
+    }
+
+    pub(super) fn attach_semantic_flow(
+        &mut self,
+        root: &SemanticNode,
+        cache: &mut Option<super::source::SourceFlowCache>,
+    ) {
+        if self.has_plan_inputs() {
+            self.semantic_flow = Some(super::source::SourceFlowCache::get_or_analyze(cache, root));
+        }
+    }
+
+    pub(super) fn proof_budget_exhausted(&self) -> bool {
+        self.logic.proof_budget_exhausted()
+    }
+
+    fn has_plan_inputs(&self) -> bool {
+        !self.definitions.is_empty()
+            || !self.phis.is_empty()
+            || !self.copies.omitted.is_empty()
+            || !self.canonical.is_empty()
+            || !self.identity_statements.is_empty()
     }
 
     pub(super) fn schedule(&self, mode: RecoveryMode) -> Result<ValuePlan, ValueRecoveryError> {
+        if !self.has_plan_inputs() {
+            return Ok(ValuePlan::default());
+        }
         let planner = ValuePlanner::new(self, mode)?;
         planner.schedule()
     }
@@ -878,11 +916,12 @@ impl ControlSymbolClosure {
 
 impl SemanticVisitor for ControlSymbolClosure {
     fn visit_predicate(&mut self, predicate: &SemanticPredicate) {
-        self.variables.extend(predicate.symbols());
         let mut pending = vec![predicate];
         while let Some(predicate) = pending.pop() {
             match predicate {
                 SemanticPredicate::Test(instruction) => {
+                    self.variables
+                        .insert(BoolVariable::Instruction(instruction.id));
                     self.tests.insert(instruction.id, instruction.clone());
                     self.visit_operation(instruction);
                 }

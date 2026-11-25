@@ -1,17 +1,10 @@
-use crate::ir::{SemanticFoldError, SemanticNode, SemanticSiteId, SemanticVisitor};
+use crate::ir::{SemanticFoldError, SemanticNode, SemanticSiteId};
 
 pub(crate) struct SemanticSiteNumbering {
     next: u64,
 }
 
 impl SemanticSiteNumbering {
-    /// Site ids in the same node order `assign` writes them.
-    pub(crate) fn fingerprint(root: &SemanticNode) -> Vec<u64> {
-        let mut visitor = SiteFingerprint { sites: Vec::new() };
-        visitor.visit_node(root);
-        visitor.sites
-    }
-
     pub(crate) fn assign(root: &mut SemanticNode) -> Result<(), SemanticFoldError> {
         Self { next: 0 }.assign_node(root);
         Ok(())
@@ -97,47 +90,6 @@ impl SemanticSiteNumbering {
             SemanticNode::Leave(leave) => {
                 leave.site = Some(self.next_site());
             }
-        }
-    }
-}
-
-struct SiteFingerprint {
-    sites: Vec<u64>,
-}
-
-impl SiteFingerprint {
-    fn push(&mut self, site: Option<SemanticSiteId>) {
-        if let Some(site) = site {
-            self.sites.push(site.0);
-        }
-    }
-}
-
-impl SemanticVisitor for SiteFingerprint {
-    fn enter_node(&mut self, node: &SemanticNode) {
-        match node {
-            SemanticNode::BasicBlock(block) => {
-                for statement in &block.statements {
-                    self.push(statement.site);
-                }
-            }
-            SemanticNode::For {
-                init,
-                condition,
-                update,
-                ..
-            } => {
-                self.push(init.site);
-                self.push(condition.site);
-                self.push(update.site);
-            }
-            SemanticNode::If { condition, .. } => self.push(condition.site),
-            SemanticNode::Loop { test, .. } => self.push(test.condition.site),
-            SemanticNode::ForEach { iterable, .. } => self.push(iterable.site),
-            SemanticNode::Switch { selector, .. } => self.push(selector.site),
-            SemanticNode::Synchronized { lock, .. } => self.push(lock.site),
-            SemanticNode::Leave(leave) => self.push(leave.site),
-            _ => {}
         }
     }
 }
