@@ -3,8 +3,6 @@ use std::io;
 
 use std::sync::{Arc, OnceLock, RwLock};
 
-use rayon::prelude::*;
-
 use crate::frontend::{
     AccessInfo, AnalysisDiagnostic, AnalysisLocation, ClassNode, MethodNode,
     MethodOverrideSemantics, MethodReference,
@@ -767,20 +765,13 @@ impl GenericTypeHierarchy {
         classes: impl IntoIterator<Item = &'a ClassNode>,
     ) -> OverrideResult<Self> {
         let (loaded, _) = LoadedClassHierarchy::decode_classes(classes)?;
-        let owners = loaded
-            .classes
-            .keys()
-            .filter_map(|descriptor| descriptor.parse().ok())
-            .collect::<Vec<_>>();
-        let hierarchy = Self {
+        // Overload resolution indexes a receiver's inherited signatures on first
+        // query. Most class requests use only a fraction of their receivers.
+        Ok(Self {
             hierarchy: CompositeClassHierarchy::from_loaded(loaded)?,
             method_overloads: Arc::new(MethodOverloadIndex::default()),
             method_contracts: Arc::new(RwLock::new(HashMap::new())),
-        };
-        owners
-            .into_par_iter()
-            .for_each(|owner| hierarchy.ensure_method_overloads(&owner));
-        Ok(hierarchy)
+        })
     }
 
     pub(crate) fn inherited_method_signature(

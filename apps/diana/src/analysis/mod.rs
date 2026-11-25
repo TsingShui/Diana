@@ -13,6 +13,8 @@ mod attr_names;
 pub mod axml;
 pub mod decompile;
 pub mod dex;
+pub(crate) mod export_path;
+pub(crate) mod export_resources;
 pub mod extract;
 pub mod filter;
 pub mod images;
@@ -24,6 +26,7 @@ pub mod request;
 pub mod resources;
 mod runner;
 pub mod selector;
+pub(crate) mod source_export;
 pub mod tree;
 pub mod xref;
 

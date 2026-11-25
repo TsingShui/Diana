@@ -355,10 +355,12 @@ impl<'a> ValuePlanner<'a> {
             };
             let mut dependencies = self.replacement_dependencies(action)?;
             dependencies.remove(&key);
-            let crosses_repetition =
-                self.replacement_enters_repetition(key, &dependencies, &blocking_keys);
-            if (!ssa_identity || self.facts.uses_of(key).len() > 1 || crosses_repetition)
-                && !dependencies.is_disjoint(&blocking_keys)
+            if dependencies.is_disjoint(&blocking_keys) {
+                continue;
+            }
+            if !ssa_identity
+                || self.facts.uses_of(key).len() > 1
+                || self.replacement_changes_execution_context(key, &dependencies, &blocking_keys)
             {
                 deferred_keys.insert(key);
             }
@@ -407,24 +409,27 @@ impl<'a> ValuePlanner<'a> {
         Ok(())
     }
 
-    fn replacement_enters_repetition(
+    // A register copy can acquire a throwing producer when replacements are
+    // composed. Preserve its exception scope and execution count until the
+    // next movement proof sees the expanded expression's effects.
+    fn replacement_changes_execution_context(
         &self,
         key: SsaVar,
         dependencies: &BTreeSet<SsaVar>,
         blocking_keys: &BTreeSet<SsaVar>,
     ) -> bool {
         self.facts.uses_of(key).iter().any(|usage| {
-            usage.repetitive
-                && dependencies.iter().any(|dependency| {
-                    blocking_keys.contains(dependency)
-                        && self
-                            .graph()
-                            .definitions
-                            .get(dependency)
-                            .is_some_and(|definitions| {
-                                definitions.iter().any(|definition| !definition.repetitive)
-                            })
-                })
+            dependencies.intersection(blocking_keys).any(|dependency| {
+                self.graph()
+                    .definitions
+                    .get(dependency)
+                    .is_none_or(|definitions| {
+                        definitions.iter().any(|definition| {
+                            definition.protections != usage.protections
+                                || (usage.repetitive && !definition.repetitive)
+                        })
+                    })
+            })
         })
     }
 

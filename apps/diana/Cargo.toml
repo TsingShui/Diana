@@ -1,6 +1,6 @@
 [package]
 name = "diana"
-version = "0.2.8"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.93"
 description = "Native Diana APK/DEX analysis and decompilation CLI"
@@ -20,6 +20,10 @@ regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+tempfile = "3"
+
+[target.'cfg(any(target_os = "linux", target_vendor = "apple", target_os = "android"))'.dependencies]
+rustix = { version = "1", features = ["fs"] }
 
 [lints.rust]
 # one allow: the read-only input mapping in `analysis::input`.

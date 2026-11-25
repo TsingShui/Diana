@@ -1305,7 +1305,7 @@ dependencies = [
 
 [[package]]
 name = "diana"
-version = "0.2.8"
+version = "0.3.0"
 dependencies = [
  "clap",
  "diana-decomp",
@@ -1315,8 +1315,10 @@ dependencies = [
  "memmap2",
  "nucleo-matcher",
  "regex",
+ "rustix",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
 ]
 

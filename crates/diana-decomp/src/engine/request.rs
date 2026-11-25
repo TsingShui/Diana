@@ -5,7 +5,7 @@ use std::sync::{Arc, OnceLock};
 
 use crate::input::{DexContainer, InputError, ProgramIndex};
 use crate::p0::{ClassFacts, Fact};
-use crate::p1::DecodedMethod;
+use crate::p1::MethodIr;
 use crate::{DexId, MethodId, RequestError};
 
 use super::{DexImage, MethodSelector};
@@ -47,17 +47,17 @@ impl<'a> IndexedImage<'a> {
     }
 }
 
-pub(super) struct MethodFacts<'a> {
+pub(super) struct MethodFacts {
     pub(super) method: MethodId,
-    pub(super) decoded: Result<DecodedMethod<'a>, String>,
+    pub(super) decoded: Result<MethodIr, String>,
 }
 
 /// One complete P0/P1 delivery for a backend class request.
-pub(super) struct BackendInput<'a> {
+pub(super) struct BackendInput {
     pub(super) class: Arc<ClassFacts>,
     pub(super) related: Vec<Arc<ClassFacts>>,
-    pub(super) methods: Vec<MethodFacts<'a>>,
-    pub(super) nested: Vec<BackendInput<'a>>,
+    pub(super) methods: Vec<MethodFacts>,
+    pub(super) nested: Vec<BackendInput>,
 }
 
 pub(super) fn backend_input<'a>(
@@ -65,8 +65,18 @@ pub(super) fn backend_input<'a>(
     class_def: crate::ClassDefId,
     selector: Option<&MethodSelector>,
     include_nested: bool,
-) -> Result<BackendInput<'a>, RequestError> {
+) -> Result<BackendInput, RequestError> {
     let facts = image.index.class_facts_cached(class_def)?;
+    backend_input_from_facts(image, facts, selector, include_nested)
+}
+
+pub(super) fn backend_input_from_facts<'a>(
+    image: &IndexedImage<'a>,
+    facts: Arc<ClassFacts>,
+    selector: Option<&MethodSelector>,
+    include_nested: bool,
+) -> Result<BackendInput, RequestError> {
+    let class_def = facts.class_def();
     let mut methods = Vec::new();
     for entry in facts.methods() {
         let id = entry.method();
@@ -102,7 +112,9 @@ pub(super) fn backend_input<'a>(
         match decoded.decoded {
             Some(decoded) => methods.push(MethodFacts {
                 method: id,
-                decoded: Ok(decoded),
+                decoded: decoded
+                    .into_ir()
+                    .map_err(|reason| crate::DexError::Backend(reason).to_string()),
             }),
             None => methods.push(MethodFacts {
                 method: id,

@@ -1,7 +1,10 @@
-use super::input::{ArchiveProblem, BytesSource, EntryIndex, InputByteLen, InputLease};
+use super::input::{
+    ArchiveProblem, BytesSource, EntryIndex, InputByteLen, InputError, InputLease, InputWindow,
+};
+use std::io::{self, Write};
 
 /// One physical central-directory record. Names are kept as decoded metadata and
-/// never used as output paths.
+/// require portable component checks before use in an export path.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EntryRecord {
     index: EntryIndex,
@@ -266,13 +269,22 @@ fn inflate_bytes(
         buffer.resize(size, 0);
     }
     let mut decompressor = libdeflater::Decompressor::new();
-    let written = decompressor
-        .deflate_decompress(compressed, &mut buffer[..size])
+    inflate_exact(&mut decompressor, compressed, &mut buffer[..size])?;
+    Ok(size)
+}
+
+fn inflate_exact(
+    decoder: &mut libdeflater::Decompressor,
+    compressed: &[u8],
+    output: &mut [u8],
+) -> Result<(), ArchiveProblem> {
+    let written = decoder
+        .deflate_decompress(compressed, output)
         .map_err(|_| ArchiveProblem::DecompressionFailed)?;
-    if written != size {
+    if written != output.len() {
         return Err(ArchiveProblem::DamagedEntry);
     }
-    Ok(written)
+    Ok(())
 }
 
 /// A streaming prefix cursor bound to one compressed entry and its scratch buffer.
@@ -357,31 +369,45 @@ fn compressed_payload<'a>(
     bytes: &'a [u8],
     entry: &EntryRecord,
 ) -> Result<&'a [u8], ArchiveProblem> {
+    let start =
+        usize::try_from(entry.local_header_offset).map_err(|_| ArchiveProblem::OutOfRange)?;
+    let local = bytes.get(start..).ok_or(ArchiveProblem::OutOfRange)?;
+    let range = payload_range(entry, local, bytes.len() as u64)?;
+    let start = usize::try_from(range.start).map_err(|_| ArchiveProblem::OutOfRange)?;
+    let end = usize::try_from(range.end).map_err(|_| ArchiveProblem::OutOfRange)?;
+    bytes.get(start..end).ok_or(ArchiveProblem::OutOfRange)
+}
+
+/// The local header and its original name must fit before the compressed data.
+/// Both the whole-entry reader and the sliding export window use this range.
+fn payload_range(
+    entry: &EntryRecord,
+    local: &[u8],
+    file_len: u64,
+) -> Result<std::ops::Range<u64>, ArchiveProblem> {
     if entry.is_encrypted() {
         return Err(ArchiveProblem::EncryptedEntry);
     }
-    const SIGNATURE: [u8; 4] = [0x50, 0x4b, 0x03, 0x04];
-    let at = usize::try_from(entry.local_header_offset).map_err(|_| ArchiveProblem::OutOfRange)?;
-    if bytes.get(at..at + 4) != Some(&SIGNATURE) {
+    if local.get(..4) != Some(b"PK\x03\x04") || u16_at(local, 8)? != entry.method {
         return Err(ArchiveProblem::InconsistentDirectory);
     }
-    let method = u16_at(bytes, at + 8)?;
-    let name_len = usize::from(u16_at(bytes, at + 26)?);
-    let extra_len = usize::from(u16_at(bytes, at + 28)?);
-    let name_at = at + 30;
-    let name = bytes
-        .get(name_at..name_at + name_len)
-        .ok_or(ArchiveProblem::OutOfRange)?;
-    if method != entry.method || name != entry.name.as_bytes() {
+    if u16_at(local, 6)? & 1 != 0 {
+        return Err(ArchiveProblem::EncryptedEntry);
+    }
+    let name_len = usize::from(u16_at(local, 26)?);
+    let extra_len = u64::from(u16_at(local, 28)?);
+    if local.get(30..30 + name_len) != Some(entry.name.as_bytes()) {
         return Err(ArchiveProblem::InconsistentDirectory);
     }
-    let start = name_at
-        .checked_add(name_len)
-        .and_then(|value| value.checked_add(extra_len))
+    let start = entry
+        .local_header_offset
+        .checked_add(30 + name_len as u64 + extra_len)
         .ok_or(ArchiveProblem::OutOfRange)?;
-    let size = usize::try_from(entry.compressed_size.0).map_err(|_| ArchiveProblem::OutOfRange)?;
-    let end = start.checked_add(size).ok_or(ArchiveProblem::OutOfRange)?;
-    bytes.get(start..end).ok_or(ArchiveProblem::OutOfRange)
+    let end = start
+        .checked_add(entry.compressed_size.0)
+        .filter(|&end| end <= file_len)
+        .ok_or(ArchiveProblem::OutOfRange)?;
+    Ok(start..end)
 }
 
 /// A borrowed payload view that cannot outlive its lease.
@@ -413,5 +439,157 @@ impl<'a> EntryView<'a> {
     }
     pub fn payload(&self) -> &'a [u8] {
         self.payload
+    }
+}
+
+/// Keeps input failures local to their entry and output failures with the sink.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum CopyError {
+    #[error(transparent)]
+    Input(#[from] InputError),
+    #[error(transparent)]
+    Output(#[from] io::Error),
+}
+
+impl From<ArchiveProblem> for CopyError {
+    fn from(problem: ArchiveProblem) -> Self {
+        Self::Input(InputError::MalformedArchive(problem))
+    }
+}
+
+/// Small entries take the whole-entry path. Larger records stream through the
+/// same fixed scratch space, checking stream completion and the declared size.
+pub(super) struct ExportReader<'a> {
+    input: InputWindow<'a>,
+    small: libdeflater::Decompressor,
+    stream: flate2::Decompress,
+    output: Vec<u8>,
+}
+
+impl<'a> ExportReader<'a> {
+    pub(super) fn new(input: &'a InputLease) -> Self {
+        Self {
+            input: input.window(),
+            small: libdeflater::Decompressor::new(),
+            stream: flate2::Decompress::new(false),
+            output: vec![0; 64 * 1024],
+        }
+    }
+
+    pub(super) fn copy(
+        &mut self,
+        entry: &EntryRecord,
+        mut out: impl Write,
+    ) -> Result<(), CopyError> {
+        let range = self.range(entry)?;
+        self.chunks(entry, range, |bytes| {
+            out.write_all(bytes).map_err(CopyError::Output)
+        })
+    }
+
+    fn range(&mut self, entry: &EntryRecord) -> Result<std::ops::Range<u64>, InputError> {
+        let file_len = self.input.len();
+        let local = self
+            .input
+            .read(entry.local_header_offset, 30 + entry.name.len())?;
+        let range = payload_range(entry, local, file_len)?;
+        if entry.method == 0 && range.end - range.start != entry.uncompressed_size.0 {
+            return Err(ArchiveProblem::DamagedEntry.into());
+        }
+        Ok(range)
+    }
+
+    /// Lends the checked payload for a complete DEX image. Stored entries
+    /// borrow their own sliding mapping. Inflation grows the caller's reusable
+    /// storage only as bytes arrive from the stream.
+    pub(super) fn read_entry<'s>(
+        &'s mut self,
+        entry: &EntryRecord,
+        scratch: &'s mut Vec<u8>,
+    ) -> Result<&'s [u8], InputError> {
+        let range = self.range(entry)?;
+        if entry.method == 0 {
+            let size = usize::try_from(entry.uncompressed_size.0)
+                .map_err(|_| InputError::PlatformCapacity)?;
+            let bytes = self.input.read(range.start, size)?;
+            if libdeflater::crc32(bytes) != entry.crc32 {
+                return Err(ArchiveProblem::DamagedEntry.into());
+            }
+            return Ok(bytes);
+        }
+        scratch.clear();
+        self.chunks(entry, range, |bytes| {
+            scratch
+                .try_reserve(bytes.len())
+                .map_err(InputError::Allocation)?;
+            scratch.extend_from_slice(bytes);
+            Ok::<_, InputError>(())
+        })?;
+        Ok(scratch)
+    }
+
+    fn chunks<E: From<ArchiveProblem> + From<InputError>>(
+        &mut self,
+        entry: &EntryRecord,
+        range: std::ops::Range<u64>,
+        mut emit: impl FnMut(&[u8]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let mut crc = libdeflater::Crc::new();
+        let expected = entry.uncompressed_size.0;
+        let compressed = range.end - range.start;
+        let chunk = self.output.len() as u64;
+        match entry.method {
+            0 => {
+                let mut at = range.start;
+                while at < range.end {
+                    let n = (range.end - at).min(1024 * 1024) as usize;
+                    let bytes = self.input.read(at, n)?;
+                    crc.update(bytes);
+                    emit(bytes)?;
+                    at += n as u64;
+                }
+            }
+            8 if expected <= chunk && compressed <= chunk => {
+                let data = self.input.read(range.start, compressed as usize)?;
+                let output = &mut self.output[..expected as usize];
+                inflate_exact(&mut self.small, data, output)?;
+                crc.update(output);
+                emit(output)?;
+            }
+            8 => {
+                self.stream.reset(false);
+                loop {
+                    let consumed = self.stream.total_in();
+                    let produced = self.stream.total_out();
+                    let n = (compressed - consumed).min(chunk) as usize;
+                    let data = self.input.read(range.start + consumed, n)?;
+                    let status = self
+                        .stream
+                        .decompress(data, &mut self.output, flate2::FlushDecompress::None)
+                        .map_err(|_| ArchiveProblem::DecompressionFailed)?;
+                    let written = self.stream.total_out();
+                    if written > expected {
+                        return Err(ArchiveProblem::DamagedEntry.into());
+                    }
+                    let bytes = &self.output[..(written - produced) as usize];
+                    crc.update(bytes);
+                    emit(bytes)?;
+                    if status == flate2::Status::StreamEnd {
+                        if written != expected {
+                            return Err(ArchiveProblem::DamagedEntry.into());
+                        }
+                        break;
+                    }
+                    if consumed == self.stream.total_in() && written == produced {
+                        return Err(ArchiveProblem::DecompressionFailed.into());
+                    }
+                }
+            }
+            method => return Err(ArchiveProblem::UnsupportedCompression(method).into()),
+        }
+        if crc.sum() != entry.crc32 {
+            return Err(ArchiveProblem::DamagedEntry.into());
+        }
+        Ok(())
     }
 }

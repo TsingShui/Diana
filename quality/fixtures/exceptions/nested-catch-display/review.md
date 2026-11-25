@@ -66,3 +66,14 @@ pass173 checks. The116-fixture comparison keeps complete P2–P5 and
 original-coordinate P6 facts, and the same APK keeps full coverage with only
 `ChapterUtils.loadChapters` changing class text. These are product and manual
 results, not execution.
+
+## Ordinary finish failure
+
+The DEX ends the protected step before the normal finish. With step(0,7)
+returning 8 and the first finish(7) throwing an IllegalStateException F,
+the expected calls are step then finish. F must escape by identity. A JVM
+check with these helper bodies found that the earlier export implementation
+propagated F. An intermediate handler-coverage repair caught F, ran recover
+with priority 0, called finish a second time and returned 9. The corrected
+continuation placement put finish after the typed scope. The same check then
+observed exactly step, finish and escaping F.

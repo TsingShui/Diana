@@ -1,5 +1,26 @@
 # Fixture: complex-exceptions
 
+## Protected division across a register copy
+
+In `nestedFinally(I)I`, the DEX instruction at code-unit offset 0x7 divides
+10 by the method argument. It is the only instruction in the innermost
+protected range. The move at 0x8 copies its result into the accumulator.
+On the earlier value schedule the generated return divided after both cleanup
+logs, so zero skipped the arithmetic handler. Directing the division into the
+accumulator and replacing the move with a NOP in a temporary copy kept the
+baseline division inside the try. Extending the try to include the move
+still reproduced the misplaced division.
+
+The repaired output evaluates the division inside the inner try. On success
+it logs inner, logs outer, and returns the quotient plus one. For zero it logs
+inner, enters the arithmetic handler, logs catch, logs outer, and returns -1.
+If the catch log fails, outer cleanup runs before propagation. These paths
+assume the other log calls return normally. This reading compares the DEX
+and rendered code. The ordinary Engine regression checks division placement
+and the normal cleanup order, alongside the obfuscated input without the move.
+The [three-resource case](../../exceptions/three-resources-late-failure/review.md)
+exercises the same scheduling boundary with throwing calls and suppression.
+
 ## Natural catch display
 
 Only `parseOrThrow` changes. Its natural `NumberFormatException` catch already

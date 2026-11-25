@@ -37,7 +37,9 @@ final class CleanupFrontiers {
         FrontierHandle handle = null;
         try { handle = acquire(mode, 1); }
         catch (java.io.IOException recover) {
-            log(recover); if (handle != null) handle.close(); return -2;
+            try { log(recover); }
+            finally { if (handle != null) handle.close(); }
+            return -2;
         } catch (Throwable primary) {
             if (handle != null) handle.close(); throw primary;
         }
@@ -45,7 +47,9 @@ final class CleanupFrontiers {
         int result;
         try { result = handle.read(); }
         catch (java.io.IOException recover) {
-            log(recover); if (handle != null) handle.close(); return -2;
+            try { log(recover); }
+            finally { if (handle != null) handle.close(); }
+            return -2;
         } catch (Throwable primary) {
             if (handle != null) handle.close(); throw primary;
         }

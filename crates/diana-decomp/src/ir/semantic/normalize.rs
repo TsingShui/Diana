@@ -1189,7 +1189,7 @@ impl TryLexicalScope {
                         && catches.iter().all(|catch| {
                             !super::SemanticCompletion::analyze(&catch.body).can_complete_normally()
                         })
-                        && !SemanticThrowability::analyze(&nodes[index + 1])
+                        && !nodes[index + 1].may_throw()
                 }
                 _ => false,
             };
@@ -1213,10 +1213,10 @@ struct SemanticThrowability {
     may_throw: bool,
 }
 
-impl SemanticThrowability {
-    fn analyze(node: &SemanticNode) -> bool {
-        let mut facts = Self::default();
-        facts.visit_node(node);
+impl SemanticNode {
+    pub(crate) fn may_throw(&self) -> bool {
+        let mut facts = SemanticThrowability::default();
+        facts.visit_node(self);
         facts.may_throw
     }
 }

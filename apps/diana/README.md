@@ -20,6 +20,7 @@ get-method  Decompile one method
 outline-class   Show class members and structured method outlines
 outline-method  Show one method outline, with optional call expansion
 entries     List physical archive entries
+export      Export all root DEX classes and APK resources to a new directory
 extract     Extract one physical entry
 strings     List original string values
 xref        Find references, hierarchy and method relationships
@@ -33,7 +34,7 @@ skill       Print the Diana Agent Skill, or install it with -i
 help        Print help for a command
 ```
 
-Analysis commands accept `--format text|json` and `-o <file>`. Extraction always writes
+Single-result analysis commands accept `--format text|json` and `-o <file>`. Extraction always writes
 the requested payload to `-o`, with no stdout result. Index queries return every
 match. `classes`, `fields`, `methods`, `strings` and `xref` show at most 50 rows
 by default and report truncation; `--no-limit` returns every row, which reaches
@@ -119,6 +120,34 @@ CPU count, capped by the number of roots. Workers claim roots dynamically, with
 larger query roots started first. Logical headers within a root retain their own
 identities. `get-class --jobs` instead sets Engine's
 method worker count; its default is one. Explicit job counts must be positive.
+
+## Directory export
+
+```sh
+diana export app.apk -o project
+diana export classes.dex -o project-dex --jobs 4
+```
+
+Use a new output directory under an existing parent. Each class definition
+gets a Java-like file under `sources/`, following its DEX package. Member
+classes get their own files. Definitions whose paths collide or cannot be
+represented portably use `source-definitions/` with their original coordinates
+and UTF-16 descriptor recorded in `export-report.jsonl`.
+
+For an APK, `resources/` preserves the contents and paths of non-root-DEX
+entries, including `res/`, `assets/`, `lib/<abi>/` and `resources.arsc`.
+A readable presentation of the selected manifest is written to
+`AndroidManifest.xml` when decoding succeeds. Its original bytes remain in
+`resources/` or the reported alternate path. Unsafe or conflicting entry names
+use `resource-entries/<physical index>`.
+
+Export processes one DEX image at a time. `--jobs N` controls simultaneous
+class workers. The default uses the available CPU count up to 16 workers.
+Lower values reduce the number of class analyses in memory.
+When a class, method or entry has a recovery issue, the CLI publishes the
+available output, records the issue in `export-report.jsonl` and exits 1.
+A write failure leaves the destination unpublished. An existing destination
+is refused.
 
 ## Agent Skill
 

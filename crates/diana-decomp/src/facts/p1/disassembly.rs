@@ -314,6 +314,9 @@ impl MethodIr {
             ins,
         }
     }
+    pub(crate) fn into_code(self) -> (Vec<crate::ir::InsnNode>, Vec<crate::ir::ExceptionHandler>) {
+        (self.instructions, self.handlers)
+    }
     pub fn instructions(&self) -> &[crate::ir::InsnNode] {
         &self.instructions
     }
@@ -406,6 +409,16 @@ impl<'a> DecodedMethod<'a> {
     /// decoded facts that remain published.
     pub fn ir_error(&self) -> Option<&str> {
         self.ir_error.as_deref()
+    }
+    /// The class backend retains only the resolved operations and handlers.
+    /// Release the checked disassembly before decoding the next class member.
+    pub(crate) fn into_ir(self) -> Result<MethodIr, String> {
+        self.ir.ok_or_else(|| {
+            self.ir_error
+                .as_deref()
+                .unwrap_or("P1 produced no recovery IR")
+                .to_owned()
+        })
     }
     pub(crate) fn set_ir(&mut self, ir: MethodIr) {
         self.ir = Some(ir);

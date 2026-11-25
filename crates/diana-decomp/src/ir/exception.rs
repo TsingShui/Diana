@@ -539,13 +539,13 @@ impl<'a> ExceptionAnalyzer<'a> {
         let t0 = std::time::Instant::now();
         let raw = self.raw_regions();
         let raw_ms = t0.elapsed();
-        let t1 = std::time::Instant::now();
-        let scopes = HandlerStackForest::new(self).build(raw)?;
-        let forest_ms = t1.elapsed();
         let t2 = std::time::Instant::now();
         let ownership =
             HandlerBodies::new(self.cfg, &self.handler_entries, &self.ordinary_reachable);
         let own_ms = t2.elapsed();
+        let t1 = std::time::Instant::now();
+        let scopes = HandlerStackForest::new(self).build(raw, &ownership)?;
+        let forest_ms = t1.elapsed();
         let t2b = std::time::Instant::now();
         let semantics = HandlerSemanticDomains::analyze(self.cfg, &self.handler_entries);
         let mut handler_adapters = semantics.adapter_map()?;
@@ -571,7 +571,17 @@ impl<'a> ExceptionAnalyzer<'a> {
         HandlerDomains::assign(self.cfg, &mut regions);
         let nested_handlers = NestedHandlerDomains::analyze(&regions);
         let recovery_order = Self::cleanup_recovery_order(&regions);
-        let shared_handler_entries = conflicting_shared_catch_entries(&regions);
+        let shared_catch_entries = conflicting_shared_catch_entries(&regions);
+        // Elision is method-wide. If independently live scopes still use
+        // the same rethrow, recovering a finally in just one scope would
+        // erase the exception propagation required by its siblings.
+        let shared_cleanup_entries = shared_handler_entries(regions.iter().flat_map(|region| {
+            region
+                .handlers
+                .iter()
+                .filter(|handler| handler.kind == HandlerKind::Cleanup)
+                .map(move |handler| (region.id, handler.canonical_entry))
+        }));
         let dom_ms = t3.elapsed();
 
         let mut elided_instructions = BTreeSet::new();
@@ -580,6 +590,13 @@ impl<'a> ExceptionAnalyzer<'a> {
         let mut cleanup_proofs = Vec::new();
         let mut cleanup_representatives = BTreeMap::new();
         let t4 = std::time::Instant::now();
+        let recovery = CleanupRecovery::new(
+            self.cfg,
+            self.values,
+            &normal_dominators,
+            &shared_catch_entries,
+            &shared_cleanup_entries,
+        );
         for region_id in recovery_order {
             let region = regions
                 .iter_mut()
@@ -587,13 +604,7 @@ impl<'a> ExceptionAnalyzer<'a> {
                 .ok_or(ExceptionInvariantError::MissingExceptionScope(region_id))?;
             let nested_cleanup = nested_handlers.cleanup(region.id);
             let nested_all = nested_handlers.all(region.id);
-            let cleanup = CleanupRecovery::new(
-                self.cfg,
-                self.values,
-                &normal_dominators,
-                &shared_handler_entries,
-            )
-            .recover(
+            let cleanup = recovery.recover(
                 region,
                 &nested_cleanup,
                 &nested_all,
@@ -1139,13 +1150,70 @@ impl<'analysis, 'cfg> HandlerStackForest<'analysis, 'cfg> {
     fn build(
         &self,
         mut segments: Vec<RawRegion>,
+        ownership: &HandlerBodies,
     ) -> Result<Vec<ExceptionScope>, ExceptionInvariantError> {
         segments.sort_by_key(|segment| (segment.start, segment.end));
         let representatives = segments
             .iter()
             .map(|segment| (segment.key.clone(), segment.clauses.clone()))
             .collect::<BTreeMap<_, _>>();
-        let keys = representatives.keys().cloned().collect::<Vec<_>>();
+        let mut throwing_sites = BTreeMap::<BlockId, Vec<(u32, ThrowEffect)>>::new();
+        for &(offset, block, effect) in &self.analyzer.throw_effects_by_offset {
+            if effect != ThrowEffect::None {
+                if let Some(entries) = ownership.owners.get(&block) {
+                    for entry in entries {
+                        throwing_sites
+                            .entry(*entry)
+                            .or_default()
+                            .push((offset, effect));
+                    }
+                }
+            }
+        }
+        let chains = representatives
+            .keys()
+            .map(|stack| {
+                let mut chain = representatives
+                    .keys()
+                    .filter(|suffix| suffix.is_suffix_of(stack))
+                    .filter(|suffix| {
+                        // Factoring a handler suffix into an outer try also places
+                        // the earlier catch bodies inside its protected scope.
+                        // Each throwing site in those bodies needs that original
+                        // protection, including shared handler tails.
+                        stack.0[..stack.0.len() - suffix.0.len()]
+                            .iter()
+                            .all(|(_, offset)| {
+                                self.analyzer
+                                    .handler_entries
+                                    .get(offset)
+                                    .is_some_and(|entry| {
+                                        throwing_sites.get(entry).into_iter().flatten().all(
+                                            |&(site, effect)| {
+                                                if GapFacts::is_transparent(
+                                                    effect,
+                                                    suffix,
+                                                    self.analyzer.hierarchy,
+                                                ) {
+                                                    return true;
+                                                }
+                                                let end = segments.partition_point(|segment| {
+                                                    segment.start <= site
+                                                });
+                                                end != 0
+                                                    && site < segments[end - 1].end
+                                                    && suffix.is_suffix_of(&segments[end - 1].key)
+                                            },
+                                        )
+                                    })
+                            })
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                chain.sort_by_key(|key| key.0.len());
+                (stack.clone(), chain)
+            })
+            .collect::<BTreeMap<_, _>>();
         let mut scopes = Vec::<ExceptionScope>::new();
         let mut active = Vec::<(ClauseKey, u32)>::new();
         let mut previous_end = None;
@@ -1158,7 +1226,7 @@ impl<'analysis, 'cfg> HandlerStackForest<'analysis, 'cfg> {
                 });
             }
 
-            let chain = Self::scope_chain(&keys, &segment.key);
+            let chain = chains[&segment.key].clone();
             let mut common = active
                 .iter()
                 .zip(&chain)
@@ -1241,16 +1309,6 @@ impl<'analysis, 'cfg> HandlerStackForest<'analysis, 'cfg> {
             previous_end = Some(segment.end);
         }
         Ok(scopes)
-    }
-
-    fn scope_chain(keys: &[ClauseKey], stack: &ClauseKey) -> Vec<ClauseKey> {
-        let mut chain = keys
-            .iter()
-            .filter(|candidate| candidate.is_suffix_of(stack))
-            .cloned()
-            .collect::<Vec<_>>();
-        chain.sort_by_key(|key| key.0.len());
-        chain
     }
 }
 
@@ -2339,15 +2397,33 @@ impl<'cfg> ExceptionScopeCoalescing<'cfg> {
                         .flat_map(|handler| handler.semantic_blocks.iter().copied())
                         .collect::<BTreeSet<_>>();
                     let body = owner.blocks.iter().copied().collect::<BTreeSet<_>>();
-                    let enters_protected_handler = owner.handlers.iter().any(|handler| {
+                    let enters_protected_handler = owner.catch_handlers().any(|handler| {
                         protected.contains(&handler.semantic_entry)
-                            || handler
-                                .entry_blocks
-                                .iter()
-                                .any(|entry| protected.contains(entry))
+                            || !handler.entry_blocks.is_disjoint(&protected)
+                    });
+                    // Removing one local range assumes an outer cleanup can
+                    // enclose every catch arm. A fully protected rethrow arm
+                    // still needs this range when another arm has a throwing
+                    // tail outside the shared cleanup.
+                    let all_catches_protected = owner.catch_handlers().all(|handler| {
+                        handler
+                            .semantic_blocks
+                            .iter()
+                            .filter(|block| self.throwing_blocks.contains(block))
+                            .all(|block| {
+                                self.cfg.successors_with_kind(*block).iter().any(
+                                    |(target, kind)| {
+                                        kind.is_exception()
+                                            && extension.handlers.iter().any(|cleanup| {
+                                                cleanup.entry_blocks.contains(target)
+                                            })
+                                    },
+                                )
+                            })
                     });
                     (body.is_disjoint(&protected)
                         && enters_protected_handler
+                        && all_catches_protected
                         && protected.is_subset(&handler_domain))
                     .then_some((handler_domain.len(), owner.id))
                 })

@@ -1064,34 +1064,60 @@ impl RegionCfg {
         if handlers.is_empty() {
             return false;
         }
-        self.mapping.iter().any(|(block, representative)| {
-            self.representatives.contains(representative)
-                && source
-                    .successors_with_kind(*block)
-                    .iter()
-                    .filter(|(_, kind)| kind.is_exception())
-                    .any(|(target, _)| {
-                        std::iter::once(*target)
-                            .chain(graph.handler_adapters().get(target).copied())
-                            .any(|entry| {
-                                let owned_by_handler = graph.owner_of(entry).is_some_and(|owner| {
-                                    handlers.iter().any(|handler| {
-                                        owner == *handler
-                                            || graph
-                                                .tree()
-                                                .is_ancestor(*handler, owner)
-                                                .is_ok_and(|descendant| descendant)
-                                    })
-                                });
-                                owned_by_handler
-                                    || Self::empty_handler_continues_at(
-                                        graph.tree(),
-                                        &handlers,
-                                        entry,
-                                    )
-                            })
-                    })
-        })
+        let catches = |target| {
+            std::iter::once(target)
+                .chain(graph.handler_adapters().get(&target).copied())
+                .any(|entry| {
+                    graph.owner_of(entry).is_some_and(|owner| {
+                        handlers.iter().any(|handler| {
+                            owner == *handler
+                                || graph
+                                    .tree()
+                                    .is_ancestor(*handler, owner)
+                                    .is_ok_and(|descendant| descendant)
+                        })
+                    }) || Self::empty_handler_continues_at(graph.tree(), &handlers, entry)
+                })
+        };
+        let hidden = |target: BlockId| {
+            self.mapping
+                .get(&target)
+                .is_some_and(|port| !self.representatives.contains(port))
+        };
+        let mut pending = Vec::new();
+        for (block, representative) in &self.mapping {
+            if !self.representatives.contains(representative) {
+                continue;
+            }
+            for &(target, kind) in source.successors_with_kind(*block) {
+                if kind.is_exception() {
+                    if catches(target) {
+                        return true;
+                    }
+                    if hidden(target) {
+                        pending.push(target);
+                    }
+                }
+            }
+        }
+        // A contracted child can run an inner finally on its exceptional
+        // path. Its handler then reaches the outer catch even though it is
+        // absent from this port's ordinary representatives.
+        let mut visited = BTreeSet::new();
+        while let Some(block) = pending.pop() {
+            if !visited.insert(block) {
+                continue;
+            }
+            for &(target, kind) in source.successors_with_kind(block) {
+                if kind.is_exception() && catches(target) {
+                    return true;
+                }
+                if hidden(target) {
+                    pending.push(target);
+                }
+            }
+        }
+        false
     }
 
     fn empty_handler_continues_at(

@@ -100,6 +100,12 @@ impl InputError {
     }
 }
 
+impl From<ArchiveProblem> for InputError {
+    fn from(problem: ArchiveProblem) -> Self {
+        Self::MalformedArchive(problem)
+    }
+}
+
 impl From<std::io::Error> for InputError {
     fn from(error: std::io::Error) -> Self {
         Self::Io(error)
@@ -152,7 +158,7 @@ impl InputBytes {
 
 /// One leased input: its mapped bytes and its restricted entry metadata.
 ///
-/// The mapping is read-only and outlives the file descriptor it was made from.
+/// The mapping is read-only. Export also borrows the retained file for short-lived windows.
 /// The host owns the file: truncating or rewriting it while a request holds this
 /// lease is outside the supported input contract.
 #[derive(Debug)]
@@ -160,6 +166,7 @@ pub struct InputLease {
     identity: InputIdentity,
     kind: InputKind,
     bytes: InputBytes,
+    file: std::fs::File,
     archive: Option<ArchiveDirectory>,
 }
 
@@ -179,8 +186,50 @@ impl InputLease {
     pub fn bytes(&self) -> &[u8] {
         self.bytes.as_slice()
     }
+    pub(super) fn window(&self) -> InputWindow<'_> {
+        InputWindow {
+            lease: self,
+            start: 0,
+            mapped: InputBytes::Owned(Vec::new()),
+        }
+    }
+
     pub fn archive(&self) -> Option<&ArchiveDirectory> {
         self.archive.as_ref()
+    }
+}
+
+/// A sliding view of the same open file used for the lease. Full archive scans
+/// consume small adjacent ranges and release the previous mapping on a miss.
+/// This keeps already-copied file pages out of the process's resident set.
+pub(super) struct InputWindow<'a> {
+    lease: &'a InputLease,
+    start: u64,
+    mapped: InputBytes,
+}
+
+impl InputWindow<'_> {
+    pub(super) fn read(&mut self, offset: u64, length: usize) -> Result<&[u8], InputError> {
+        let length64 = u64::try_from(length).map_err(|_| InputError::PlatformCapacity)?;
+        let end = offset
+            .checked_add(length64)
+            .filter(|&end| end <= self.lease.identity.len.0)
+            .ok_or(InputError::MalformedArchive(ArchiveProblem::OutOfRange))?;
+        if offset < self.start || end - self.start > self.mapped.as_slice().len() as u64 {
+            const READ_AHEAD: u64 = 1024 * 1024;
+            let size = length64
+                .max(READ_AHEAD)
+                .min(self.lease.identity.len.0 - offset);
+            self.mapped = map_input(&self.lease.file, offset, size)?;
+            self.start = offset;
+        }
+        let start =
+            usize::try_from(offset - self.start).map_err(|_| InputError::PlatformCapacity)?;
+        Ok(&self.mapped.as_slice()[start..start + length])
+    }
+
+    pub(super) fn len(&self) -> u64 {
+        self.lease.identity.len.0
     }
 }
 
@@ -215,7 +264,7 @@ pub fn open_input(path: &Path, options: &InputOptions) -> Result<InputLease, Inp
     if file.metadata().map_err(InputError::Io)?.len() != len {
         return Err(InputError::Changed);
     }
-    let bytes = map_input(&file, len)?;
+    let bytes = map_input(&file, 0, len)?;
     if file.metadata().map_err(InputError::Io)?.len() != len {
         return Err(InputError::Changed);
     }
@@ -233,6 +282,7 @@ pub fn open_input(path: &Path, options: &InputOptions) -> Result<InputLease, Inp
         },
         kind,
         bytes,
+        file,
         archive,
     })
 }
@@ -245,15 +295,21 @@ pub fn open_input(path: &Path, options: &InputOptions) -> Result<InputLease, Inp
 /// that the file is not truncated for as long as the lease lives; both belong to
 /// the host.
 #[allow(unsafe_code)]
-fn map_input(file: &std::fs::File, len: u64) -> Result<InputBytes, InputError> {
+fn map_input(file: &std::fs::File, offset: u64, len: u64) -> Result<InputBytes, InputError> {
     if len == 0 {
         return Ok(InputBytes::Owned(Vec::new()));
     }
-    // SAFETY: a read-only mapping of an open regular file. The mapping is owned by
-    // the returned value, so it cannot outlive the descriptor it was created from,
-    // and no code in this crate ever takes a mutable view of it.
-    let mapped = unsafe { memmap2::MmapOptions::new().map(file) }.map_err(InputError::Io)?;
-    if mapped.len() != usize::try_from(len).map_err(|_| InputError::PlatformCapacity)? {
+    let length = usize::try_from(len).map_err(|_| InputError::PlatformCapacity)?;
+    // SAFETY: the range is inside the leased regular file. The host keeps its
+    // contents stable for the lease, and every mapping is read-only.
+    let mapped = unsafe {
+        memmap2::MmapOptions::new()
+            .offset(offset)
+            .len(length)
+            .map(file)
+    }
+    .map_err(InputError::Io)?;
+    if mapped.len() != length {
         return Err(InputError::Changed);
     }
     Ok(InputBytes::Mapped(mapped))

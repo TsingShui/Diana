@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::ir::analysis::{
-    DominatorTree, InstructionEffects, SsaClasses, SsaOrigins, SsaUseSite, SsaValueGraph, SsaVar,
+    DominatorTree, InstructionEffects, SsaOrigins, SsaUseSite, SsaValueGraph, SsaVar,
 };
 use crate::ir::{
     BlockId, EdgeKind, IfOp, InsnArg, InsnNode, InsnType, InstructionEquivalence, InvokeType,
@@ -64,11 +64,46 @@ pub enum CleanupMismatchReason {
     PhiFlow,
 }
 
+/// Whole-method facts shared by cleanup comparisons. Each proof owns its own
+/// bindings and traversals, all of which depend on the particular exit pair.
+struct CleanupValues<'a> {
+    graph: &'a SsaValueGraph,
+    origins: std::cell::OnceCell<SsaOrigins>,
+    copy_roots: std::cell::OnceCell<BTreeMap<SsaVar, SsaVar>>,
+}
+
+impl<'a> CleanupValues<'a> {
+    fn new(graph: &'a SsaValueGraph) -> Self {
+        Self {
+            graph,
+            origins: Default::default(),
+            copy_roots: Default::default(),
+        }
+    }
+
+    fn origins(&self) -> &SsaOrigins {
+        self.origins.get_or_init(|| SsaOrigins::analyze(self.graph))
+    }
+
+    fn copy_root(&self, value: SsaVar) -> SsaVar {
+        let roots = self.copy_roots.get_or_init(|| {
+            let mut classes = self.graph.copy_classes();
+            classes
+                .values()
+                .into_iter()
+                .map(|member| (member, classes.root(member)))
+                .collect()
+        });
+        roots.get(&value).copied().unwrap_or(value)
+    }
+}
+
 pub(super) struct CleanupRecovery<'a> {
     cfg: &'a CFG,
-    values: &'a SsaValueGraph,
+    values: CleanupValues<'a>,
     normal_dominators: &'a DominatorTree,
     shared_handler_entries: &'a BTreeSet<BlockId>,
+    shared_cleanup_entries: &'a BTreeSet<BlockId>,
 }
 
 impl<'a> CleanupRecovery<'a> {
@@ -77,12 +112,14 @@ impl<'a> CleanupRecovery<'a> {
         values: &'a SsaValueGraph,
         normal_dominators: &'a DominatorTree,
         shared_handler_entries: &'a BTreeSet<BlockId>,
+        shared_cleanup_entries: &'a BTreeSet<BlockId>,
     ) -> Self {
         Self {
             cfg,
-            values,
+            values: CleanupValues::new(values),
             normal_dominators,
             shared_handler_entries,
+            shared_cleanup_entries,
         }
     }
 
@@ -137,11 +174,14 @@ impl<'a> CleanupRecovery<'a> {
         }
 
         let mut result = CleanupRecoveryResult::default();
-        let origins = SsaOrigins::analyze(self.values);
         let mut unresolved = BTreeSet::new();
         let mut recovered_finally = false;
         for handler in &mut region.handlers {
-            if handler.kind != HandlerKind::Cleanup {
+            if handler.kind != HandlerKind::Cleanup
+                || self
+                    .shared_cleanup_entries
+                    .contains(&handler.canonical_entry)
+            {
                 continue;
             }
             let isolation_ingress = region
@@ -166,7 +206,7 @@ impl<'a> CleanupRecovery<'a> {
                 for candidate in NormalCleanupCandidates::new(self.cfg, normal_entry).entries() {
                     let semantic_entry = CleanupSpecialization::new(
                         self.cfg,
-                        self.values,
+                        self.values.graph,
                         self.normal_dominators,
                         &handler.rethrow_blocks,
                     )
@@ -184,13 +224,8 @@ impl<'a> CleanupRecovery<'a> {
                         });
                         continue;
                     }
-                    let mut proof = CleanupProof::new(
-                        self.cfg,
-                        self.values,
-                        &origins,
-                        &owned,
-                        &handler.rethrow_blocks,
-                    );
+                    let mut proof =
+                        CleanupProof::new(self.cfg, &self.values, &owned, &handler.rethrow_blocks);
                     let equivalent = proof.compare(semantic_entry, candidate)?;
                     let blocks = proof.contracted_normal_blocks(candidate);
                     let complete = proof.fully_contracts_normal_cleanup(&blocks);
@@ -263,8 +298,7 @@ impl<'a> CleanupRecovery<'a> {
             handler.semantic_entry = handler.canonical_entry;
             let Some(catch_copies) = CatchCleanupRecovery::new(
                 self.cfg,
-                self.values,
-                &origins,
+                &self.values,
                 handler.semantic_entry,
                 &owned,
                 &handler.rethrow_blocks,
@@ -285,7 +319,7 @@ impl<'a> CleanupRecovery<'a> {
             recovered_finally = true;
             copies.extend(DeadCleanupState::analyze(
                 self.cfg,
-                self.values,
+                self.values.graph,
                 &copy_blocks,
                 &copies,
             ));
@@ -632,8 +666,7 @@ struct RecoveredCleanupCopies {
 /// clauses belonging to the same protected scope.
 struct CatchCleanupRecovery<'a> {
     cfg: &'a CFG,
-    values: &'a SsaValueGraph,
-    origins: &'a SsaOrigins,
+    values: &'a CleanupValues<'a>,
     handler_entry: BlockId,
     handler_blocks: &'a BTreeSet<BlockId>,
     rethrow_blocks: &'a BTreeSet<BlockId>,
@@ -644,8 +677,7 @@ struct CatchCleanupRecovery<'a> {
 impl<'a> CatchCleanupRecovery<'a> {
     fn new(
         cfg: &'a CFG,
-        values: &'a SsaValueGraph,
-        origins: &'a SsaOrigins,
+        values: &'a CleanupValues<'a>,
         handler_entry: BlockId,
         handler_blocks: &'a BTreeSet<BlockId>,
         rethrow_blocks: &'a BTreeSet<BlockId>,
@@ -655,7 +687,6 @@ impl<'a> CatchCleanupRecovery<'a> {
         Self {
             cfg,
             values,
-            origins,
             handler_entry,
             handler_blocks,
             rethrow_blocks,
@@ -680,7 +711,7 @@ impl<'a> CatchCleanupRecovery<'a> {
             for candidate in &domain.blocks {
                 let specialized = CleanupSpecialization::new(
                     self.cfg,
-                    self.values,
+                    self.values.graph,
                     self.normal_dominators,
                     self.rethrow_blocks,
                 )
@@ -693,7 +724,6 @@ impl<'a> CatchCleanupRecovery<'a> {
                 let mut proof = CleanupProof::new(
                     self.cfg,
                     self.values,
-                    self.origins,
                     self.handler_blocks,
                     self.rethrow_blocks,
                 );
@@ -719,7 +749,7 @@ impl<'a> CatchCleanupRecovery<'a> {
                 })
                 .collect::<BTreeSet<_>>();
             let covered = NormalCleanupCoverage::new(self.cfg, &domain.blocks, &selected)
-                .covers_ordinary_exits(domain.entry);
+                .covers_exits(domain.entry, self.handler_entry);
             if !covered {
                 return Ok(None);
             }
@@ -765,7 +795,7 @@ impl<'a> NormalCleanupCoverage<'a> {
         }
     }
 
-    fn covers_ordinary_exits(&self, entry: BlockId) -> bool {
+    fn covers_exits(&self, entry: BlockId, cleanup: BlockId) -> bool {
         let mut pending = vec![entry];
         let mut visited = BTreeSet::new();
         while let Some(block) = pending.pop() {
@@ -774,6 +804,22 @@ impl<'a> NormalCleanupCoverage<'a> {
             }
             if self.cleanup_entries.contains(&block) {
                 continue;
+            }
+            // Folding the handler's normal copy into finally would also run
+            // it after every throwing instruction before the copy. A missing
+            // exceptional edge is observable even when the ordinary path
+            // eventually reaches an equivalent close.
+            if self.cfg.block(block).is_some_and(|body| {
+                body.insns
+                    .iter()
+                    .any(|insn| InstructionEffects::of_tree(insn).may_throw())
+            }) && !self
+                .cfg
+                .successors_with_kind(block)
+                .iter()
+                .any(|(target, kind)| kind.is_exception() && *target == cleanup)
+            {
+                return false;
             }
             let successors = self.cfg.normal_successors(block).collect::<Vec<_>>();
             if successors.is_empty() {
@@ -1349,9 +1395,7 @@ struct CleanupProof<'a> {
     cfg: &'a CFG,
     handler_blocks: &'a BTreeSet<BlockId>,
     rethrow_blocks: &'a BTreeSet<BlockId>,
-    value_graph: &'a SsaValueGraph,
-    aliases: SsaClasses,
-    origins: &'a SsaOrigins,
+    method_values: &'a CleanupValues<'a>,
     values: BTreeMap<SsaVar, SsaVar>,
     reverse_values: BTreeMap<SsaVar, SsaVar>,
     state_bindings: BTreeSet<(SsaVar, SsaVar)>,
@@ -1367,8 +1411,7 @@ struct CleanupProof<'a> {
 impl<'a> CleanupProof<'a> {
     fn new(
         cfg: &'a CFG,
-        value_graph: &'a SsaValueGraph,
-        origins: &'a SsaOrigins,
+        method_values: &'a CleanupValues<'a>,
         handler_blocks: &'a BTreeSet<BlockId>,
         rethrow_blocks: &'a BTreeSet<BlockId>,
     ) -> Self {
@@ -1376,9 +1419,7 @@ impl<'a> CleanupProof<'a> {
             cfg,
             handler_blocks,
             rethrow_blocks,
-            value_graph,
-            aliases: value_graph.copy_classes(),
-            origins,
+            method_values,
             values: BTreeMap::new(),
             reverse_values: BTreeMap::new(),
             state_bindings: BTreeSet::new(),
@@ -2096,12 +2137,17 @@ impl<'a> CleanupProof<'a> {
         let Some(value) = instruction.result.as_ref().and_then(SsaVar::from_reg) else {
             return true;
         };
-        self.value_graph.value(value).is_some_and(|value| {
+        self.method_values.graph.value(value).is_some_and(|value| {
             value.uses.iter().all(|usage| {
-                let consumer = match self.value_graph.use_site(self.cfg, value.variable, *usage) {
-                    Some(SsaUseSite::Phi(phi)) => phi.block,
-                    Some(SsaUseSite::Instruction(_)) | None => usage.instruction.block,
-                };
+                let consumer =
+                    match self
+                        .method_values
+                        .graph
+                        .use_site(self.cfg, value.variable, *usage)
+                    {
+                        Some(SsaUseSite::Phi(phi)) => phi.block,
+                        Some(SsaUseSite::Instruction(_)) | None => usage.instruction.block,
+                    };
                 contractible.contains(&consumer)
             })
         })
@@ -2122,7 +2168,10 @@ impl<'a> CleanupProof<'a> {
             .collect()
     }
 
-    fn instruction(&mut self, handler: &InsnNode, normal: &InsnNode) -> bool {
+    fn instruction<'n>(&mut self, handler: &'n InsnNode, normal: &'n InsnNode) -> bool
+    where
+        'a: 'n,
+    {
         let mut pending = vec![EquivalenceTask::Instruction(handler, normal)];
         while let Some(task) = pending.pop() {
             match task {
@@ -2182,7 +2231,7 @@ impl<'a> CleanupProof<'a> {
                         }
                     }
                     (InsnArg::Reg(handler), InsnArg::Reg(normal)) => {
-                        if !self.equivalent_value(handler, normal) {
+                        if !self.match_operand(handler, normal, &mut pending) {
                             return false;
                         }
                     }
@@ -2201,100 +2250,82 @@ impl<'a> CleanupProof<'a> {
         true
     }
 
-    fn equivalent_value(
+    fn match_operand<'n>(
         &mut self,
         handler: &crate::ir::RegisterArg,
         normal: &crate::ir::RegisterArg,
-    ) -> bool {
+        pending: &mut Vec<EquivalenceTask<'n>>,
+    ) -> bool
+    where
+        'a: 'n,
+    {
         let Some(handler_key) = SsaVar::from_reg(handler) else {
             return false;
         };
         let Some(normal_key) = SsaVar::from_reg(normal) else {
             return false;
         };
-        let handler_root = self.aliases.root(handler_key);
-        let normal_root = self.aliases.root(normal_key);
+        let handler_root = self.method_values.copy_root(handler_key);
+        let normal_root = self.method_values.copy_root(normal_key);
         if let Some(bound) = self.values.get(&handler_root) {
             return *bound == normal_root;
         }
         if handler_root == normal_root {
             return true;
         }
-        if handler_key.reg_num == normal_key.reg_num
-            || handler_root.reg_num == normal_root.reg_num
-            || self.origins.equivalent(handler_key, normal_key)
-        {
-            return self.bind_value_pair(handler_key, normal_key);
+        // A register can carry different values at the normal exit and at
+        // a throwing site. Even Phi nodes with the same set of alternatives
+        // may select different ones. Only a single common origin identifies
+        // the value independently of which path reached this cleanup.
+        let origins = self.method_values.origins();
+        if let Some(origin) = origins.unique(handler_key) {
+            if origins.unique(normal_key) == Some(origin) {
+                return self.bind_value_pair(handler_key, normal_key);
+            }
         }
         if handler.ty != normal.ty {
             return false;
         }
-        let equivalent = self.equivalent_local_definition(handler_key, normal_key);
-        if equivalent {
-            return true;
+        let Some((left, right)) = self.local_definitions(handler_key, normal_key) else {
+            return false;
+        };
+        if !self.bind_value_pair(handler_key, normal_key) {
+            return false;
         }
-        self.bind_value_pair(handler_key, normal_key)
+        pending.push(EquivalenceTask::Instruction(left, right));
+        true
     }
 
-    fn equivalent_local_definition(&mut self, handler: SsaVar, normal: SsaVar) -> bool {
-        let Some(handler_position) = self
-            .value_graph
-            .value(handler)
-            .and_then(|value| value.definition)
-        else {
-            return false;
-        };
-        let Some(normal_position) = self
-            .value_graph
-            .value(normal)
-            .and_then(|value| value.definition)
-        else {
-            return false;
-        };
+    fn local_definitions(
+        &self,
+        handler: SsaVar,
+        normal: SsaVar,
+    ) -> Option<(&'a InsnNode, &'a InsnNode)> {
+        let handler_position = self.method_values.graph.value(handler)?.definition?;
+        let normal_position = self.method_values.graph.value(normal)?.definition?;
         let corresponding_blocks = self.blocks.get(&handler_position.block)
             == Some(&normal_position.block)
             || self
                 .phi_edges
                 .contains(&(handler_position.block, normal_position.block));
         if !corresponding_blocks {
-            return false;
+            return None;
         }
-        let Some(handler_definition) = self
+        let handler = self
             .cfg
-            .block(handler_position.block)
-            .and_then(|block| block.insns.get(handler_position.index))
-            .cloned()
-        else {
-            return false;
-        };
-        let Some(normal_definition) = self
+            .block(handler_position.block)?
+            .insns
+            .get(handler_position.index)?;
+        let normal = self
             .cfg
-            .block(normal_position.block)
-            .and_then(|block| block.insns.get(normal_position.index))
-            .cloned()
-        else {
-            return false;
+            .block(normal_position.block)?
+            .insns
+            .get(normal_position.index)?;
+        let local = |instruction: &InsnNode| {
+            InstructionEffects::is_ssa_bookkeeping(instruction)
+                || InstructionEffects::of_tree(instruction).is_pure()
         };
-        let handler_local = InstructionEffects::is_ssa_bookkeeping(&handler_definition)
-            || InstructionEffects::of_tree(&handler_definition).is_pure();
-        let normal_local = InstructionEffects::is_ssa_bookkeeping(&normal_definition)
-            || InstructionEffects::of_tree(&normal_definition).is_pure();
-        if !handler_local || !normal_local {
-            return false;
-        }
-
-        let values = self.values.clone();
-        let reverse_values = self.reverse_values.clone();
-        let phi_edges = self.phi_edges.clone();
-        if !self.bind_value_pair(handler, normal)
-            || !self.instruction(&handler_definition, &normal_definition)
-        {
-            self.values = values;
-            self.reverse_values = reverse_values;
-            self.phi_edges = phi_edges;
-            return false;
-        }
-        true
+        (local(handler) && local(normal)).then_some((handler, normal))
     }
 
     fn bind_result(
@@ -2315,8 +2346,8 @@ impl<'a> CleanupProof<'a> {
     }
 
     fn bind_value_pair(&mut self, handler: SsaVar, normal: SsaVar) -> bool {
-        let handler_root = self.aliases.root(handler);
-        let normal_root = self.aliases.root(normal);
+        let handler_root = self.method_values.copy_root(handler);
+        let normal_root = self.method_values.copy_root(normal);
         if self
             .values
             .get(&handler_root)
@@ -2381,29 +2412,30 @@ mod tests {
         cfg.add_edge(observable, target, EdgeKind::Normal);
 
         let values = SsaValueGraph::default();
-        let origins = SsaOrigins::analyze(&values);
+        let method_values = CleanupValues::new(&values);
         let handler_blocks = BTreeSet::from([handler]);
         let rethrow_blocks = BTreeSet::new();
-        let mut proof =
-            CleanupProof::new(&cfg, &values, &origins, &handler_blocks, &rethrow_blocks);
+        let mut proof = CleanupProof::new(&cfg, &method_values, &handler_blocks, &rethrow_blocks);
         assert!(proof.bind_block(handler, trampoline));
         assert!(proof.bind_block(handler, target));
         assert_eq!(proof.blocks.get(&handler), Some(&target));
 
-        let mut proof =
-            CleanupProof::new(&cfg, &values, &origins, &handler_blocks, &rethrow_blocks);
+        let mut proof = CleanupProof::new(&cfg, &method_values, &handler_blocks, &rethrow_blocks);
         assert!(proof.bind_block(handler, observable));
         assert!(!proof.bind_block(handler, target));
     }
 
     #[test]
     fn straight_line_cleanup_records_observable_argument_binding() {
-        let handler = BlockId::new(0);
-        let normal = BlockId::new(1);
-        let handler_value = RegisterArg::new_ssa(1, 7, ArgType::object("java/io/Closeable"));
-        let normal_value = RegisterArg::new_ssa(12, 3, ArgType::object("java/io/Closeable"));
+        let entry = BlockId::new(0);
+        let handler = BlockId::new(1);
+        let normal = BlockId::new(2);
+        let handler_value = RegisterArg::new_ssa(1, 7, ArgType::INT);
+        let normal_value = RegisterArg::new_ssa(12, 3, ArgType::INT);
         let mut cfg = CFG::new("cleanup_straight_line_state");
+        cfg.add_block(Block::new(entry));
         let mut handler_block = Block::new(handler);
+        handler_block.push(InsnNode::const_insn(handler_value.clone(), 7));
         handler_block.push(InsnNode::invoke(
             InvokeType::Static,
             0,
@@ -2411,19 +2443,21 @@ mod tests {
         ));
         cfg.add_block(handler_block);
         let mut normal_block = Block::new(normal);
+        normal_block.push(InsnNode::const_insn(normal_value.clone(), 7));
         normal_block.push(InsnNode::invoke(
             InvokeType::Static,
             0,
             vec![InsnArg::Reg(normal_value.clone())],
         ));
         cfg.add_block(normal_block);
+        cfg.add_edge(entry, handler, EdgeKind::Exception);
+        cfg.add_edge(entry, normal, EdgeKind::Normal);
 
-        let values = SsaValueGraph::default();
-        let origins = SsaOrigins::analyze(&values);
+        let values = SsaValueGraph::build(&cfg).expect("SSA cleanup copies");
+        let method_values = CleanupValues::new(&values);
         let handler_blocks = BTreeSet::from([handler]);
         let rethrow_blocks = BTreeSet::from([handler]);
-        let mut proof =
-            CleanupProof::new(&cfg, &values, &origins, &handler_blocks, &rethrow_blocks);
+        let mut proof = CleanupProof::new(&cfg, &method_values, &handler_blocks, &rethrow_blocks);
 
         assert!(proof.compare(handler, normal).expect("cleanup proof"));
         assert_eq!(

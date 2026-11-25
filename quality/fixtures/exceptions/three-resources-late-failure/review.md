@@ -1,5 +1,29 @@
 # Fixture: three-resources-late-failure
 
+## Preserving reads before resource cleanup
+
+The Smali invokes `read` on the first, second and third handles inside the
+innermost protected range. It adds the results and copies the total into
+the return register. The previous value schedule delayed the third read
+until the return, after all three normal closes. A third-read fault could
+therefore bypass the suppression handlers and a close fault could prevent
+the read entirely.
+
+In the recovered method, evaluation of the sum reads all three handles in
+acquisition order. It stops at the first failing read. Any such failure
+enters the innermost handler, which closes the third handle and rethrows
+the captured exception. The surrounding handlers then close the second
+and first handles in order. When an exceptional close fails, its handler
+adds that failure to the exception already in flight. On a successful
+read path the three normal closes run in reverse acquisition order before
+the saved sum is returned. A failing normal close propagates through only
+the still-open outer handles.
+
+This semantic review examined the published Smali and the ordinary Engine
+output. The regression checks the read operands and their protected extent.
+It complements [the integer-division case](../../composite/complex-exceptions/review.md)
+with three throwing producers, a copied sum and nested cleanup.
+
 ## Current verdict — scoped catch capture
 
 Compared the same prepared input on `c95c6dd` and this repair. Reviewed header

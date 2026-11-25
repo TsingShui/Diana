@@ -11,9 +11,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::ir::semantic::SemanticCompletion;
 use crate::ir::semantic::SemanticFactory;
 use crate::ir::{
-    Block, BlockId, BoolExpr, EdgeKind, InsnArg, InsnType, RegionId, SemanticFoldError,
-    SemanticFolder, SemanticLabel, SemanticLeaveKind, SemanticNode, SemanticPredicate,
-    SemanticSwitchCase, SemanticVisitor, CFG,
+    Block, BlockId, BoolExpr, EdgeKind, InsnArg, InsnType, RegionId, SemanticExpression,
+    SemanticFoldError, SemanticFolder, SemanticLabel, SemanticLeaveKind, SemanticNode,
+    SemanticPredicate, SemanticStatement, SemanticSwitchCase, SemanticVisitor, CFG,
 };
 
 use super::{
@@ -51,10 +51,9 @@ struct FlowBoundary {
 
 impl FlowBoundary {
     fn analyze(region: RegionId, body: &SemanticNode, targets: BTreeSet<BlockId>) -> Self {
-        let mut jumps = OpenTargetCollector::new(region);
-        jumps.visit_node(body);
+        let jumps = open_targets(region, body);
         let open = targets
-            .intersection(&jumps.targets)
+            .intersection(&jumps)
             .copied()
             .collect::<BTreeSet<_>>();
         Self {
@@ -690,13 +689,8 @@ impl SemanticFlowGraph {
                 FlowTransfer::Switch { .. } | FlowTransfer::Fragment { .. } => return Ok(None),
                 FlowTransfer::Stop | FlowTransfer::Jump(_) => {}
             }
-            let mut jumps = OpenTargetCollector::new(self.region);
-            jumps.visit_node(&node.body);
-            if jumps
-                .targets
-                .iter()
-                .any(|target| self.is_internal_target(*target))
-            {
+            let jumps = open_targets(self.region, &node.body);
+            if jumps.iter().any(|target| self.is_internal_target(*target)) {
                 return Ok(None);
             }
             cfg.add_block(skeleton);
@@ -886,9 +880,9 @@ impl SemanticFlowGraph {
             return BTreeSet::new();
         };
         let mut targets = node.transfer.targets();
-        let mut collector = OpenTargetCollector::new(self.region);
-        collector.visit_node(&node.body);
-        targets.extend(collector.targets);
+        visit_open_targets(self.region, &node.body, |target| {
+            targets.insert(target);
+        });
         targets
     }
 
@@ -911,7 +905,10 @@ impl SemanticFlowGraph {
         let Some(node) = self.nodes.get(&source) else {
             return 0;
         };
-        let body_uses = OpenTargetUseCounter::count(self.region, &node.body, target);
+        let mut body_uses = 0;
+        visit_open_targets(self.region, &node.body, |used| {
+            body_uses += usize::from(used == target);
+        });
         body_uses
             + match &node.transfer {
                 FlowTransfer::Fragment { normal, .. } => usize::from(*normal == Some(target)),
@@ -1324,12 +1321,12 @@ impl FragmentNormalizer {
             body: Box::new(std::mem::replace(&mut node.body, SemanticNode::Empty)),
         };
         let completion = SemanticCompletion::analyze(&node.body);
-        if completion.has_open_transfer_to(graph.region) {
-            let mut jumps = OpenTargetCollector::new(graph.region);
-            jumps.visit_node(&node.body);
-            if jumps.targets.iter().any(|target| *target != graph.entry) {
-                return Err(StructureError::MalformedFlowNode(block));
-            }
+        if completion.has_open_transfer_to(graph.region)
+            && open_targets(graph.region, &node.body)
+                .iter()
+                .any(|target| *target != graph.entry)
+        {
+            return Err(StructureError::MalformedFlowNode(block));
         }
         if !completion.can_complete_normally() {
             return Err(StructureError::MalformedFlowNode(block));
@@ -1488,6 +1485,9 @@ struct LexicalTransferClosure;
 
 impl LexicalTransferClosure {
     fn can_embed(graph: &SemanticFlowGraph, destination: BlockId, blocks: &[BlockId]) -> bool {
+        if !ProtectedTransfer::can_embed(graph, destination, blocks) {
+            return false;
+        }
         let mut identities = LexicalIdentities::default();
         let mut bindings = LexicalBindings::default();
         for block in blocks {
@@ -1635,6 +1635,87 @@ impl SemanticVisitor for FreeLabelReferences {
     }
 }
 
+/// An open exit from a nested try or monitor is bound in its parent graph.
+/// Replacing the exit in place puts the continuation back inside that
+/// scope, before its finally or monitor release. In a try with catches alone,
+/// only throwing continuations can observe the additional handlers.
+struct ProtectedTransfer {
+    region: RegionId,
+    target: BlockId,
+    may_throw: bool,
+    depth: usize,
+    protected_depth: Option<usize>,
+    protected_body_next: bool,
+    found: bool,
+}
+
+impl ProtectedTransfer {
+    fn can_embed(graph: &SemanticFlowGraph, source: BlockId, blocks: &[BlockId]) -> bool {
+        let Some(&target) = blocks.first() else {
+            return false;
+        };
+        let mut may_throw = false;
+        let mut pure_control = true;
+        for block in blocks {
+            let Some(node) = graph.nodes.get(block) else {
+                return false;
+            };
+            may_throw |= node.body.may_throw();
+            pure_control &= TerminalContinuation::is_pure_control(&node.body);
+        }
+        if pure_control {
+            return true;
+        }
+        let mut search = Self {
+            region: graph.region,
+            target,
+            may_throw,
+            depth: 0,
+            protected_depth: None,
+            protected_body_next: false,
+            found: false,
+        };
+        search.visit_node(&graph.nodes[&source].body);
+        !search.found
+    }
+}
+
+impl SemanticVisitor for ProtectedTransfer {
+    fn enter_node(&mut self, node: &SemanticNode) {
+        self.depth += 1;
+        if self.protected_body_next
+            || matches!(
+                node,
+                SemanticNode::Try {
+                    finally: Some(_),
+                    ..
+                } | SemanticNode::Synchronized { .. }
+            )
+        {
+            self.protected_depth.get_or_insert(self.depth);
+        }
+        // The semantic visitor enters the try body before the catch alternatives.
+        self.protected_body_next =
+            self.may_throw && matches!(node, SemanticNode::Try { finally: None, .. });
+        if self.protected_depth.is_some()
+            && NaturalFallthrough::targets(node, self.region, self.target)
+        {
+            self.found = true;
+        }
+    }
+
+    fn exit_node(&mut self, _: &SemanticNode) {
+        if self.protected_depth == Some(self.depth) {
+            self.protected_depth = None;
+        }
+        self.depth -= 1;
+    }
+
+    fn visit_statement(&mut self, _: &SemanticStatement) {}
+    fn visit_predicate(&mut self, _: &SemanticPredicate) {}
+    fn visit_expression(&mut self, _: &SemanticExpression) {}
+}
+
 struct TerminalContinuationBinding<'a> {
     region: RegionId,
     target: BlockId,
@@ -1755,7 +1836,10 @@ impl LinearContinuation {
                     expected_predecessor = current;
                     current = *next;
                 }
-                if !blocks.is_empty() && !blocks.contains(&current) {
+                if !blocks.is_empty()
+                    && !blocks.contains(&current)
+                    && ProtectedTransfer::can_embed(graph, *source, &blocks)
+                {
                     return Ok(Some(Self {
                         source: *source,
                         target,
@@ -2628,11 +2712,12 @@ impl<'a> AcyclicLabelLowering<'a> {
                 self.record_interval(&ranks, &mut intervals, index, target)?;
             }
             let body = self.body(node, next);
-            let mut collector = OpenTargetCollector::new(self.graph.region);
-            collector.visit_node(&body);
-            for target in collector.targets.into_iter().filter(|target| {
-                self.nodes.contains(target) && !self.graph.continues.contains_key(target)
-            }) {
+            for target in open_targets(self.graph.region, &body)
+                .into_iter()
+                .filter(|target| {
+                    self.nodes.contains(target) && !self.graph.continues.contains_key(target)
+                })
+            {
                 self.record_interval(&ranks, &mut intervals, index, target)?;
             }
         }
@@ -3065,21 +3150,24 @@ impl SemanticFolder for OpenTargetRemap<'_> {
     }
 }
 
-struct OpenTargetCollector {
+fn open_targets(region: RegionId, body: &SemanticNode) -> BTreeSet<BlockId> {
+    let mut targets = BTreeSet::new();
+    visit_open_targets(region, body, |target| {
+        targets.insert(target);
+    });
+    targets
+}
+
+fn visit_open_targets(region: RegionId, body: &SemanticNode, emit: impl FnMut(BlockId)) {
+    OpenTargets { region, emit }.visit_node(body);
+}
+
+struct OpenTargets<F> {
     region: RegionId,
-    targets: BTreeSet<BlockId>,
+    emit: F,
 }
 
-impl OpenTargetCollector {
-    fn new(region: RegionId) -> Self {
-        Self {
-            region,
-            targets: BTreeSet::new(),
-        }
-    }
-}
-
-impl SemanticVisitor for OpenTargetCollector {
+impl<F: FnMut(BlockId)> SemanticVisitor for OpenTargets<F> {
     fn enter_node(&mut self, node: &SemanticNode) {
         let SemanticNode::Leave(leave) = node else {
             return;
@@ -3089,43 +3177,14 @@ impl SemanticVisitor for OpenTargetCollector {
         }
         if let SemanticLeaveKind::Jump(target) | SemanticLeaveKind::FallThrough(target) = leave.kind
         {
-            self.targets.insert(target);
+            (self.emit)(target);
         }
     }
-}
 
-struct OpenTargetUseCounter {
-    region: RegionId,
-    target: BlockId,
-    count: usize,
-}
-
-impl OpenTargetUseCounter {
-    fn count(region: RegionId, node: &SemanticNode, target: BlockId) -> usize {
-        let mut counter = Self {
-            region,
-            target,
-            count: 0,
-        };
-        counter.visit_node(node);
-        counter.count
-    }
-}
-
-impl SemanticVisitor for OpenTargetUseCounter {
-    fn enter_node(&mut self, node: &SemanticNode) {
-        if matches!(
-            node,
-            SemanticNode::Leave(crate::ir::SemanticLeave {
-                kind:
-                    SemanticLeaveKind::Jump(target) | SemanticLeaveKind::FallThrough(target),
-                target: region,
-                ..
-            }) if *region == self.region && *target == self.target
-        ) {
-            self.count += 1;
-        }
-    }
+    // Open transfers are semantic nodes. The operand subtrees contain only values.
+    fn visit_statement(&mut self, _: &SemanticStatement) {}
+    fn visit_predicate(&mut self, _: &SemanticPredicate) {}
+    fn visit_expression(&mut self, _: &SemanticExpression) {}
 }
 
 #[derive(Default)]

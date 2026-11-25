@@ -54,6 +54,7 @@ Commands:
   get-method      Decompile one method as Java, selected by its methods.at coordinate
   outline-class   Show one class call tree with aggregated imports
   outline-method  Show the call tree below one method
+  export          Export Java-like sources by package, APK resources and the manifest
   extract         Write one original entry to -o; --raw keeps binary XML
   xref            Find code references in every root DEX
   manifest        Decode the binary AndroidManifest.xml

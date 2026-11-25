@@ -59,7 +59,7 @@ impl<'a> ExceptionEnvelopeCanonicalizer<'a> {
 
     fn finalize(&self, root: SemanticNode) -> Result<SemanticNode, StructureError> {
         let root = ExternalMonitorHandlerPlacement::apply(self.cfg, self.regions.tree(), root)?;
-        HandlerCleanupEnvelopePlacement::apply(self.regions, root)
+        HandlerCleanupEnvelopePlacement::apply(self.cfg, self.regions, root)
     }
 
     fn merge_families(&self, mut root: SemanticNode) -> Result<SemanticNode, StructureError> {
@@ -1311,27 +1311,92 @@ impl SemanticFolder for ExternalMonitorHandlerPlacement<'_, '_> {
 /// handler bodies here; nesting after envelope canonicalization prevents a
 /// shared coroutine handler tail from being moved outside the cleanup.
 struct HandlerCleanupEnvelopePlacement<'a> {
+    cfg: &'a CFG,
     regions: &'a RegionGraph,
 }
 
 impl<'a> HandlerCleanupEnvelopePlacement<'a> {
-    fn apply(regions: &'a RegionGraph, root: SemanticNode) -> Result<SemanticNode, StructureError> {
-        Self { regions }.fold_node(root)
+    fn apply(
+        cfg: &'a CFG,
+        regions: &'a RegionGraph,
+        root: SemanticNode,
+    ) -> Result<SemanticNode, StructureError> {
+        Self { cfg, regions }.fold_node(root)
     }
 
-    fn protects(&self, cleanup: RegionId, handler: RegionId) -> Result<bool, StructureError> {
-        for owner in self.regions.handler_owners(cleanup) {
-            if owner == handler
-                || self
-                    .regions
-                    .tree()
-                    .is_ancestor(handler, owner)
-                    .map_err(StructureError::from)?
+    fn protects(&self, cleanup: RegionId, catch: &SemanticCatch) -> Result<bool, StructureError> {
+        let tree = self.regions.tree();
+        let handler = tree
+            .region(catch.region)
+            .ok_or(StructureError::UnknownRegion(catch.region))?;
+        // A shared catch can acquire an outside continuation during graph
+        // reduction. Its effects now sit in the catch body even when their
+        // original blocks were owned by a different physical region.
+        let mut blocks = handler.blocks.clone();
+        let key = EnvelopeKey {
+            catches: vec![cleanup],
+            finally: None,
+        };
+        ExceptionEnvelopeCanonicalizer::new(self.cfg, self.regions).family_body(
+            &catch.body,
+            &key,
+            &mut |node| match node {
+                SemanticNode::BasicBlock(block) if !block.statements.is_empty() => {
+                    blocks.insert(block.id);
+                }
+                SemanticNode::Leave(leave) => {
+                    blocks.extend(leave.origin);
+                }
+                _ => {}
+            },
+        );
+        let mut protected = false;
+        for id in &blocks {
+            let block = self
+                .cfg
+                .block(*id)
+                .ok_or(StructureError::MissingBlock(*id))?;
+            if !block
+                .insns
+                .iter()
+                .any(|insn| crate::ir::analysis::InstructionEffects::of_tree(insn).may_throw())
             {
-                return Ok(true);
+                continue;
             }
+            // A catch can have its own protected prefix and an unprotected
+            // throwing tail. Moving the cleanup outside would also catch faults
+            // from that tail, possibly retrying a close that already failed.
+            let targets = self
+                .cfg
+                .successors_with_kind(*id)
+                .iter()
+                .filter(|(_, kind)| kind.is_exception())
+                .map(|(target, _)| {
+                    self.regions
+                        .handler_adapters()
+                        .get(target)
+                        .copied()
+                        .unwrap_or(*target)
+                });
+            let mut reaches = false;
+            for target in targets {
+                if let Some(owner) = self.regions.owner_of(target) {
+                    if owner == cleanup
+                        || tree
+                            .is_ancestor(cleanup, owner)
+                            .map_err(StructureError::from)?
+                    {
+                        reaches = true;
+                        break;
+                    }
+                }
+            }
+            if !reaches {
+                return Ok(false);
+            }
+            protected = true;
         }
-        Ok(false)
+        Ok(protected)
     }
 
     fn nest(
@@ -1440,7 +1505,7 @@ impl SemanticFolder for HandlerCleanupEnvelopePlacement<'_> {
                 .region(catch.region)
                 .ok_or(StructureError::UnknownRegion(catch.region))?;
             if !matches!(&kind.kind, crate::ir::RegionKind::Catch(_))
-                || !self.protects(cleanup, catch.region)?
+                || !self.protects(cleanup, catch)?
             {
                 return Ok(SemanticNode::Try {
                     region,

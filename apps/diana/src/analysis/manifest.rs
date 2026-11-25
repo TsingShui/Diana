@@ -1,11 +1,11 @@
-use super::archive::{EntryRecord, read_entry};
+use super::archive::{ArchiveDirectory, EntryRecord, read_entry};
 use super::axml::{DecodedManifest, ManifestError, decode};
 use super::input::{ArchiveProblem, InputError, InputKind};
 use super::request::RequestScope;
 
 /// The physical entry name the manifest command selects. Selection uses physical
 /// directory order, so a later duplicate wins regardless of worker completion.
-const MANIFEST_NAME: &str = "AndroidManifest.xml";
+pub(super) const MANIFEST_NAME: &str = "AndroidManifest.xml";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ManifestSelectionError {
@@ -83,17 +83,18 @@ pub fn read(scope: &RequestScope) -> Result<Manifest, ManifestSelectionError> {
         .ok_or(ManifestSelectionError::Entry(
             ArchiveProblem::InconsistentDirectory,
         ))?;
-    let Some(entry) = directory
-        .entries()
-        .iter()
-        .rev()
-        .find(|entry| entry.name() == MANIFEST_NAME)
-        .cloned()
-    else {
-        return Err(ManifestSelectionError::Missing);
-    };
+    let entry = selected(directory)
+        .ok_or(ManifestSelectionError::Missing)?
+        .clone();
     let payload =
         read_entry(scope.input().bytes(), &entry).map_err(ManifestSelectionError::Entry)?;
     let decoded = decode(payload.bytes())?;
     Ok(Manifest { entry, decoded })
+}
+
+pub(super) fn selected(directory: &ArchiveDirectory) -> Option<&EntryRecord> {
+    directory
+        .entries()
+        .iter()
+        .rfind(|entry| entry.name() == MANIFEST_NAME)
 }

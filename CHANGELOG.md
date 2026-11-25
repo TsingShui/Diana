@@ -1,6 +1,26 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 - 2026-11-25
+
+### Export
+
+- Added `diana export INPUT -o DIRECTORY [--jobs N]` for package-organized
+  Java-like sources from standalone DEX files and APK root images.
+- APK export retains resources, assets and native libraries and decodes the
+  manifest. Local recovery issues and relocated paths appear in the export
+  report.
+
+For methods with multiple exception regions, cleanup recovery now shares
+immutable SSA origin and copy information across region comparisons.
+
+### Decompilation
+
+- Cleanup matching now distinguishes the argument values passed on normal and
+  exceptional paths when reconstructing a finally block.
+- Nested catch scopes respect the original protected instructions in typed
+  handlers. A failure during an unprotected close escapes without retrying it.
+- Value folding and continuation inlining keep potentially throwing operations
+  under their original exception handlers when combining expressions or exits.
 
 ### CI
 

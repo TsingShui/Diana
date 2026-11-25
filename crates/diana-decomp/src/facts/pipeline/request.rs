@@ -54,6 +54,8 @@ pub enum RequestError {
     SourceNameUnproved { class: crate::ClassDefId },
     #[error("requested DEX identity does not exist")]
     UnknownDex,
+    #[error("backend failed: {0}")]
+    Backend(#[source] crate::DexError),
     #[error("BUG: {0}")]
     InternalInvariant(&'static str),
 }
@@ -78,7 +80,7 @@ impl RequestError {
             | Self::BindingEvidenceMissing { .. }
             | Self::FieldBindingEvidenceMissing { .. }
             | Self::SourceNameUnproved { .. } => FailureKind::Unsupported,
-            Self::InternalInvariant(_) => FailureKind::InternalInvariant,
+            Self::Backend(_) | Self::InternalInvariant(_) => FailureKind::InternalInvariant,
         }
     }
 }

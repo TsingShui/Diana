@@ -46,3 +46,16 @@ checks pass. This is product/text sensitivity, not behavioral execution.
 
 - Fresh challenge after the parent repair: loop, producer merge, typed recovery,
   partial commits, finally, composition and unproved-view guards.
+
+## Ordinary mark failure
+
+The DEX ends its typed range before mark(70 + row). On the first row with
+array input and limit 1, that cleanup must receive 70 and its
+IllegalStateException F must propagate directly. A JVM check with a
+single-shot cleanup fault observed that the earlier export implementation
+propagated F but passed 71 after advancing the index. The intermediate
+handler-coverage repair passed 70, caught F, invoked recovery mark(40), retried
+mark(70) and returned. With the corrected continuation placement, the ordinary
+cleanup received 70 once and F escaped by identity. Across these three builds
+the second record call resolved to the char overload in Java, a separate
+pre-existing discrepancy. This check establishes the cleanup fault path.

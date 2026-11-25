@@ -8,7 +8,7 @@ use crate::input::{InputError, InputProblem};
 use crate::ir::analysis::ClassHierarchyIndex;
 use crate::ir::{AnalysisEvent, AnalysisEventKind, AnalysisObserver, CFG};
 use crate::p0::{ClassFacts, Fact};
-use crate::p1::DecodedMethod;
+use crate::p1::MethodIr;
 use crate::render::Rendered;
 use crate::{
     ByteOffset, ClassDefId, ClassKey, DexId, ImageFact, ImageOrigin, MethodId, RequestError,
@@ -140,15 +140,7 @@ impl AnalysisObserver for MethodFailureObserver {
 }
 
 /// Decode one P1 method directly into the recovery CFG.
-fn decode_decoded_method(method: &MethodNode, facts: &DecodedMethod<'_>) -> DexResult<CFG> {
-    let ir = facts.ir().ok_or_else(|| {
-        DexError::Backend(
-            facts
-                .ir_error()
-                .unwrap_or("P1 produced no recovery IR")
-                .to_owned(),
-        )
-    })?;
+fn decode_decoded_method(method: &MethodNode, ir: MethodIr) -> DexResult<CFG> {
     let owner = method
         .info
         .declaring_class
@@ -167,12 +159,15 @@ fn decode_decoded_method(method: &MethodNode, facts: &DecodedMethod<'_>) -> DexR
         method.access_flags.is_static(),
     )
     .with_declared_synchronization(method.access_flags.is_synchronized());
+    let registers = ir.registers();
+    let incoming_words = ir.ins();
+    let (instructions, handlers) = ir.into_code();
     Ok(crate::ir::splitter::Splitter::new("method")
         .method(context)
-        .instructions(ir.instructions().to_vec())
-        .handlers(ir.handlers().to_vec())
-        .registers(ir.registers())
-        .ins(ir.ins())
+        .instructions(instructions)
+        .handlers(handlers)
+        .registers(registers)
+        .ins(incoming_words)
         .build())
 }
 
@@ -208,21 +203,21 @@ fn failed_method_input(
     )
 }
 
-fn build_method_inputs<'a>(
+fn build_method_inputs(
     class: &ClassNode,
-    methods: Vec<MethodFacts<'a>>,
+    methods: Vec<MethodFacts>,
     jobs: Option<usize>,
 ) -> Result<Vec<crate::analysis::ClassMethodInput>, DexError> {
     use rayon::prelude::*;
 
-    let prepare = |facts: MethodFacts<'a>| {
+    let prepare = |facts: MethodFacts| {
         let method = class
             .methods()
             .iter()
             .find(|method| method.id == facts.method.0)
             .cloned()?;
         Some(match facts.decoded {
-            Ok(decoded) => match decode_decoded_method(&method, &decoded) {
+            Ok(decoded) => match decode_decoded_method(&method, decoded) {
                 Ok(cfg) => crate::analysis::ClassMethodInput::decoded(method, cfg),
                 Err(error) => failed_method_input(method, error),
             },
@@ -260,10 +255,7 @@ fn method_sources(methods: &[crate::analysis::ClassMethodInput]) -> Vec<MethodSo
         .collect()
 }
 
-fn build_class_parts<'a>(
-    input: BackendInput<'a>,
-    jobs: Option<usize>,
-) -> Result<ClassParts, DexError> {
+fn build_class_parts(input: BackendInput, jobs: Option<usize>) -> Result<ClassParts, DexError> {
     let class = input
         .class
         .node()
@@ -299,27 +291,16 @@ fn collect_nested_declarations<'a>(
     }
 }
 
-fn decompile_class<'a>(
-    input: BackendInput<'a>,
-    jobs: Option<usize>,
-) -> Result<ClassOutput, DexError> {
-    let related = input.related.clone();
+fn decompile_class(input: BackendInput, jobs: Option<usize>) -> Result<ClassOutput, DexError> {
+    let mut input = input;
+    let related = std::mem::take(&mut input.related);
     let parts = build_class_parts(input, jobs)?;
-    let mut related_nodes = Vec::new();
-    related_nodes
-        .try_reserve_exact(related.len())
-        .map_err(|_| DexError::Backend("related class allocation failed".to_owned()))?;
-    for facts in &related {
-        if let Some(node) = facts.node() {
-            related_nodes.push(node.clone());
-        }
-    }
     let mut declarations: Vec<&ClassNode> = Vec::new();
     declarations
-        .try_reserve_exact(related_nodes.len() + 1)
+        .try_reserve_exact(related.len() + 1)
         .map_err(|_| DexError::Backend("declaration allocation failed".to_owned()))?;
     declarations.push(&parts.class);
-    declarations.extend(related_nodes.iter());
+    declarations.extend(related.iter().filter_map(|facts| facts.node()));
     for nested in &parts.nested {
         collect_nested_declarations(nested, &mut declarations);
     }
@@ -329,6 +310,7 @@ fn decompile_class<'a>(
     let mut methods = parts.methods;
     let source =
         JavaDecompiler::new(JavaDecompilerConfig::default().with_preserved_dex_names(true))
+            .with_parallel_methods(jobs != Some(1))
             .with_shared_type_hierarchy(hierarchy(&declarations))
             .with_source_abi(java_abi(&declarations))
             .with_analysis_observer(analysis_observer)
@@ -569,16 +551,66 @@ impl<'a> Engine<'a> {
             request.method.as_ref(),
             request.method.is_none(),
         )?;
-        let output = decompile_class(input, self.jobs).map_err(|error| {
-            RequestError::InternalInvariant(Box::leak(
-                format!("backend failed: {error}").into_boxed_str(),
-            ))
-        })?;
+        let output = decompile_class(input, self.jobs).map_err(RequestError::Backend)?;
         Ok(ClassSource {
             class: request.class,
             text: output.source,
             methods: output.methods,
             failures: output.failures,
+        })
+    }
+
+    /// Delivers each original definition in one logical image through the ordinary
+    /// class backend. Nested definitions have their own delivery. The target
+    /// class's P0 facts are released after delivery, while declarations shared
+    /// by hierarchy lookups are cached for the lifetime of this image.
+    ///
+    /// The callback runs on bounded class workers, receiving either the
+    /// original descriptor and source or a class-local failure. A callback
+    /// error stops delivery. Image selection and worker setup can also fail.
+    pub fn visit_class_sources<E>(
+        &self,
+        dex: DexId,
+        jobs: usize,
+        deliver: impl Fn(ClassDefId, Result<(Vec<u16>, ClassSource), RequestError>) -> Result<(), E>
+            + Sync,
+    ) -> Result<(), E>
+    where
+        E: From<RequestError> + Send,
+    {
+        use rayon::prelude::*;
+
+        let image = self.image(dex).ok_or(RequestError::UnknownDex)?;
+        let count = image.index.class_count();
+        if count == 0 {
+            return Ok(());
+        }
+        let workers = jobs.clamp(1, usize::try_from(count).unwrap_or(usize::MAX));
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build()
+            .map_err(RequestError::MethodScheduling)?;
+        pool.install(|| {
+            (0..count).into_par_iter().try_for_each(|ordinal| {
+                let class_def = ClassDefId(ordinal);
+                let class = ClassKey { dex, class_def };
+                let result = (|| {
+                    let facts = Arc::new(crate::p0::collect(&image.index, class)?);
+                    let descriptor = facts.descriptor().units().to_vec();
+                    let input = request::backend_input_from_facts(image, facts, None, false)?;
+                    let output = decompile_class(input, Some(1)).map_err(RequestError::Backend)?;
+                    Ok((
+                        descriptor,
+                        ClassSource {
+                            class,
+                            text: output.source,
+                            methods: output.methods,
+                            failures: output.failures,
+                        },
+                    ))
+                })();
+                deliver(class_def, result)
+            })
         })
     }
 

@@ -42,6 +42,8 @@ not establish external declarations or behavior for Engine; no model is executed
 | gap, ordinary success | acquire1, probe, readA, closeA; return10. |
 | gap, probe throws O or E | acquire1, probe, then identical failure propagates; no log or close. A broad try would be incorrect. |
 | gap, readA throws O | acquire1, probe, readA, log(O), closeA, return-2. |
+| gap, readA throws O; log(O) throws E | acquire1, probe, readA, log(O), closeA; rethrow E unless close throws F. |
+| gap, readA throws O; normal closeA after log(O) throws F | acquire1, probe, readA, log(O), closeA exactly once; propagate F. |
 | gap, readA throws E; closeA throws F | acquire1, probe, readA, closeA; F replaces E, no suppression. |
 
 Require natural nested owning catch scopes for dual without acquiring any normal

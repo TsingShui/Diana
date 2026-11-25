@@ -63,3 +63,25 @@ two passes/seven failures. Both full isolated configurations pass 155 checks.
 P2–P5 and original P6 nodes, links, clauses, completions, copies and locks agree
 across 111 fixtures. Product/origin assertions support the reading; no callback,
 APK/device, Java-output or full-method execution occurred.
+
+## Typed-handler coverage in the 0.3.0 export engine
+
+The original gap ranges protect the log call inside the IOException handler.
+A failing read followed by a successful log reaches one unprotected close.
+On the pre-fix export candidate, an outer lexical catch enclosed that close,
+so a close fault invoked close again. If log itself throws, the DEX instead
+requires exactly one close before propagation. The earlier Java explanation
+omitted this path. Its updated finally around log expresses that obligation.
+
+The candidate keeps probe between the two read/acquisition scopes. When read
+throws IOException, only log is inside the handler's nested try. A failing log
+runs one close on the acquired handle and rethrows the same logging failure.
+A failure during that close replaces the pending failure. A successful log
+continues to the separately spelled normal close, whose failure leaves directly.
+The direct catch-all of read still closes the acquired handle if read throws
+a different exception. Execution of the recovered gap body with modeled native
+helpers passed twelve scenarios, including throwable identity and absence of
+retry on the handler-close fault.
+
+The [handler boundary challenge](../handler-cleanup-boundary/review.md) adds
+an effect between the protected log and the unprotected close.
