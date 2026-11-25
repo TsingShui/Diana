@@ -521,9 +521,8 @@ impl<'a> HandlerReducer<'a> {
         reduced: &mut BTreeMap<RegionId, ReducedRegion>,
         region: RegionId,
     ) -> Result<(ReducedPort, BTreeMap<crate::ir::BlockId, ReducedPort>), StructureError> {
-        let mut reduction = reduced
+        let reduction = reduced
             .get(&region)
-            .cloned()
             .ok_or(StructureError::MissingReduction(region))?;
         let entry = self
             .regions
@@ -534,20 +533,20 @@ impl<'a> HandlerReducer<'a> {
         let primary = match entry {
             Some(entry) => reduction
                 .ports
-                .remove(&entry)
+                .get(&entry)
                 .ok_or(StructureError::RegionEntryMissing { region, entry }),
             None => reduction
                 .detached
-                .take()
+                .as_ref()
                 .ok_or(StructureError::MissingEntry(region)),
         }?;
         let mut alternate = BTreeMap::new();
-        for (entry, port) in reduction.ports {
-            if self.entry_belongs_to(region, entry)? {
-                alternate.insert(entry, port);
+        for (&alternate_entry, port) in &reduction.ports {
+            if Some(alternate_entry) != entry && self.entry_belongs_to(region, alternate_entry)? {
+                alternate.insert(alternate_entry, port.clone());
             }
         }
-        Ok((primary, alternate))
+        Ok((primary.clone(), alternate))
     }
 
     fn entry_belongs_to(

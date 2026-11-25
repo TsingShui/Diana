@@ -84,11 +84,29 @@ impl Pass for PhiSimplify {
     }
 
     fn run(&mut self, cfg: &mut CFG) -> Result<PassResult, Self::Error> {
-        let values = SsaValueGraph::build(cfg).map_err(PhiSimplificationError::Ssa)?;
-        let replacements = Self::compute_replacements(&values);
+        self.run_reusing(cfg, &mut super::cfg_pipeline::SsaPassFacts::default())
+    }
+}
+
+impl PhiSimplify {
+    pub(super) fn run_reusing(
+        &mut self,
+        cfg: &mut CFG,
+        facts: &mut super::cfg_pipeline::SsaPassFacts,
+    ) -> Result<PassResult, PhiSimplificationError> {
+        let (values, _) = facts.get(cfg).map_err(PhiSimplificationError::Ssa)?;
+        if values.phis().is_empty() {
+            return Ok(PassResult::Unchanged);
+        }
+        let replacements = Self::compute_replacements(values);
         let mut changed = !replacements.is_empty();
-        Self::apply_replacements(cfg, &replacements)?;
+        if changed {
+            Self::apply_replacements(cfg, &replacements)?;
+        }
         changed |= Self::remove_dead_phis(cfg)?;
+        if changed {
+            facts.invalidate();
+        }
         Ok(changed.into())
     }
 }

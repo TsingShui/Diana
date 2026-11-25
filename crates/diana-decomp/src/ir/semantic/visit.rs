@@ -102,6 +102,12 @@ pub enum SemanticFoldControl {
 }
 
 pub trait SemanticVisitor {
+    /// Control-only analyses inspect node entries and exits. They can omit
+    /// statements, predicates, expressions, and value bindings altogether.
+    fn visits_values(&self) -> bool {
+        true
+    }
+
     fn visit_node(&mut self, node: &SemanticNode) {
         walk_node(self, node);
     }
@@ -156,6 +162,7 @@ pub trait SemanticFolder {
 }
 
 pub fn walk_node<V: SemanticVisitor + ?Sized>(visitor: &mut V, node: &SemanticNode) {
+    let values = visitor.visits_values();
     let mut pending = vec![VisitTask::Enter(node)];
     while let Some(task) = pending.pop() {
         let node = match task {
@@ -186,7 +193,11 @@ pub fn walk_node<V: SemanticVisitor + ?Sized>(visitor: &mut V, node: &SemanticNo
         match node {
             SemanticNode::Empty => {}
             SemanticNode::BasicBlock(block) => {
-                pending.extend(block.statements.iter().rev().map(VisitTask::Statement))
+                if values {
+                    for statement in &block.statements {
+                        visitor.visit_statement(statement);
+                    }
+                }
             }
             SemanticNode::Sequence(children) => {
                 pending.extend(children.iter().rev().map(VisitTask::Enter))
@@ -200,18 +211,24 @@ pub fn walk_node<V: SemanticVisitor + ?Sized>(visitor: &mut V, node: &SemanticNo
                     pending.push(VisitTask::Enter(node));
                 }
                 pending.push(VisitTask::Enter(then_node));
-                pending.push(VisitTask::Predicate(condition));
+                if values {
+                    pending.push(VisitTask::Predicate(condition));
+                }
             }
             SemanticNode::Loop {
                 kind, test, body, ..
             } => match kind {
                 super::SemanticLoopKind::PreTested => {
                     pending.push(VisitTask::Enter(body));
-                    pending.push(VisitTask::Predicate(&test.condition));
+                    if values {
+                        pending.push(VisitTask::Predicate(&test.condition));
+                    }
                     pending.push(VisitTask::Enter(&test.setup));
                 }
                 super::SemanticLoopKind::PostTested => {
-                    pending.push(VisitTask::Predicate(&test.condition));
+                    if values {
+                        pending.push(VisitTask::Predicate(&test.condition));
+                    }
                     pending.push(VisitTask::Enter(&test.setup));
                     pending.push(VisitTask::Enter(body));
                 }
@@ -227,10 +244,14 @@ pub fn walk_node<V: SemanticVisitor + ?Sized>(visitor: &mut V, node: &SemanticNo
                 body,
                 ..
             } => {
-                pending.push(VisitTask::Statement(update));
+                if values {
+                    pending.push(VisitTask::Statement(update));
+                }
                 pending.push(VisitTask::Enter(body));
-                pending.push(VisitTask::Predicate(condition));
-                pending.push(VisitTask::Statement(init));
+                if values {
+                    pending.push(VisitTask::Predicate(condition));
+                    pending.push(VisitTask::Statement(init));
+                }
             }
             SemanticNode::ForEach {
                 variable,
@@ -239,14 +260,18 @@ pub fn walk_node<V: SemanticVisitor + ?Sized>(visitor: &mut V, node: &SemanticNo
                 ..
             } => {
                 pending.push(VisitTask::Enter(body));
-                pending.push(VisitTask::Expression(iterable));
-                pending.push(VisitTask::Binding(SemanticBindingKind::ForEach, variable));
+                if values {
+                    pending.push(VisitTask::Expression(iterable));
+                    pending.push(VisitTask::Binding(SemanticBindingKind::ForEach, variable));
+                }
             }
             SemanticNode::Switch {
                 selector, cases, ..
             } => {
                 pending.extend(cases.iter().rev().map(|case| VisitTask::Enter(&case.body)));
-                pending.push(VisitTask::Expression(selector));
+                if values {
+                    pending.push(VisitTask::Expression(selector));
+                }
             }
             SemanticNode::Try {
                 body,
@@ -257,31 +282,33 @@ pub fn walk_node<V: SemanticVisitor + ?Sized>(visitor: &mut V, node: &SemanticNo
                 if let Some(finally) = finally {
                     pending.push(VisitTask::Enter(&finally.body));
                 }
-                pending.extend(catches.iter().rev().flat_map(|catch| {
-                    [
-                        Some(VisitTask::Enter(&catch.body)),
-                        catch.exception_value.as_ref().map(|register| {
-                            VisitTask::Binding(SemanticBindingKind::Catch, register)
-                        }),
-                    ]
-                    .into_iter()
-                    .flatten()
-                }));
+                for catch in catches.iter().rev() {
+                    pending.push(VisitTask::Enter(&catch.body));
+                    if values {
+                        if let Some(register) = &catch.exception_value {
+                            pending.push(VisitTask::Binding(SemanticBindingKind::Catch, register));
+                        }
+                    }
+                }
                 pending.push(VisitTask::Enter(body));
             }
             SemanticNode::Synchronized { lock, body, .. } => {
                 pending.push(VisitTask::Enter(body));
-                pending.push(VisitTask::Expression(lock));
+                if values {
+                    pending.push(VisitTask::Expression(lock));
+                }
             }
             SemanticNode::Label { body, .. } => {
                 pending.push(VisitTask::Enter(body));
             }
             SemanticNode::Leave(leave) => {
-                if let Some(condition) = &leave.condition {
-                    pending.push(VisitTask::Predicate(condition));
-                }
-                if let Some(value) = leave.value() {
-                    pending.push(VisitTask::Expression(value));
+                if values {
+                    if let Some(condition) = &leave.condition {
+                        pending.push(VisitTask::Predicate(condition));
+                    }
+                    if let Some(value) = leave.value() {
+                        pending.push(VisitTask::Expression(value));
+                    }
                 }
             }
         }
@@ -449,8 +476,9 @@ pub fn fold_node<F: SemanticFolder + ?Sized>(
                     .checked_sub(child_count)
                     .ok_or(SemanticFoldError::MalformedWorkStack)
                     .map_err(F::Error::from)?;
-                let children = results.drain(start..).collect::<Vec<_>>();
-                let node = frame.rebuild(children).map_err(F::Error::from)?;
+                let node = frame
+                    .rebuild(results.drain(start..))
+                    .map_err(F::Error::from)?;
                 results.push(folder.finish_node(node)?);
             }
         }
@@ -527,7 +555,10 @@ impl FoldFrame {
         }
     }
 
-    fn rebuild(self, mut children: Vec<SemanticNode>) -> Result<SemanticNode, SemanticFoldError> {
+    fn rebuild(
+        self,
+        mut children: impl ExactSizeIterator<Item = SemanticNode>,
+    ) -> Result<SemanticNode, SemanticFoldError> {
         let expected = self.child_count();
         if children.len() != expected {
             return Err(SemanticFoldError::ChildArity {
@@ -535,7 +566,6 @@ impl FoldFrame {
                 actual: children.len(),
             });
         }
-        let mut children = children.drain(..);
         let node = match self {
             Self::Sequence(_) => SemanticNode::Sequence(children.collect()),
             Self::If {
@@ -658,8 +688,9 @@ pub fn walk_expression<V: SemanticVisitor + ?Sized>(
     visitor: &mut V,
     expression: &SemanticExpression,
 ) {
-    let mut pending = vec![expression];
-    while let Some(expression) = pending.pop() {
+    let mut expression = expression;
+    let mut pending = Vec::new();
+    loop {
         match expression {
             SemanticExpression::Register(register) => visitor.visit_register(register),
             SemanticExpression::Literal(_) => {}
@@ -670,55 +701,47 @@ pub fn walk_expression<V: SemanticVisitor + ?Sized>(
                 when_false,
             } => {
                 visitor.visit_predicate(condition);
-                pending.push(when_false);
-                pending.push(when_true);
+                pending.push(when_false.as_ref());
+                expression = when_true;
+                continue;
             }
         }
+        let Some(next) = pending.pop() else { break };
+        expression = next;
     }
 }
 
 pub fn walk_predicate<V: SemanticVisitor + ?Sized>(visitor: &mut V, predicate: &SemanticPredicate) {
-    let mut pending = vec![predicate];
-    while let Some(predicate) = pending.pop() {
+    let mut predicate = predicate;
+    let mut pending = Vec::new();
+    loop {
         match predicate {
             SemanticPredicate::Test(operation) => visitor.visit_operation(operation),
-            SemanticPredicate::Not(inner) => pending.push(inner),
+            SemanticPredicate::Not(inner) => {
+                predicate = inner;
+                continue;
+            }
             SemanticPredicate::And(terms) | SemanticPredicate::Or(terms) => {
-                pending.extend(terms.iter().rev());
+                if let Some((first, rest)) = terms.split_first() {
+                    pending.extend(rest.iter().rev());
+                    predicate = first;
+                    continue;
+                }
             }
             SemanticPredicate::True | SemanticPredicate::False => {}
         }
+        let Some(next) = pending.pop() else { break };
+        predicate = next;
     }
 }
 
 pub fn walk_operation<V: SemanticVisitor + ?Sized>(visitor: &mut V, operation: &SemanticOperation) {
-    let mut pending = vec![OperationVisitTask::Enter(operation)];
-    while let Some(task) = pending.pop() {
-        match task {
-            OperationVisitTask::Enter(operation) => {
-                visitor.enter_operation(operation);
-                pending.push(OperationVisitTask::Exit(operation));
-                pending.extend(
-                    operation
-                        .compound_target()
-                        .map(OperationVisitTask::Expression),
-                );
-                pending.extend(
-                    operation
-                        .operands()
-                        .iter()
-                        .rev()
-                        .map(OperationVisitTask::Expression),
-                );
-            }
-            OperationVisitTask::Exit(operation) => visitor.exit_operation(operation),
-            OperationVisitTask::Expression(expression) => visitor.visit_expression(expression),
-        }
+    visitor.enter_operation(operation);
+    for operand in operation.operands() {
+        visitor.visit_expression(operand);
     }
-}
-
-enum OperationVisitTask<'a> {
-    Enter(&'a SemanticOperation),
-    Exit(&'a SemanticOperation),
-    Expression(&'a SemanticExpression),
+    if let Some(target) = operation.compound_target() {
+        visitor.visit_expression(target);
+    }
+    visitor.exit_operation(operation);
 }

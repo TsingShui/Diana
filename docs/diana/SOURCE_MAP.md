@@ -125,8 +125,8 @@ workspace member. The GUI's adapted theme data is recorded in §6.2. RG remains
 unreviewable for copying, so it stays reading-only.
 
 Production dependencies remain the reviewed set in each package manifest. The
-backend fork additionally carries `mimalloc`, `bitflags`, `crc32fast` and `zstd`;
-these are general-purpose libraries, not separate decompiler implementations. The
+CLI uses `mimalloc` for allocation. The backend fork carries `bitflags`,
+`crc32fast` and `zstd`. The
 CLI and facts crates declare `Apache-2.0`; the forked backend inherits the same
 license and keeps its upstream [LICENSE](../../crates/diana-decomp/LICENSE).
 

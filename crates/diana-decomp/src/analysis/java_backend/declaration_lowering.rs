@@ -53,7 +53,7 @@ impl JavaCompilationUnitLowering {
     }
 
     pub(super) fn lower(
-        class: &JavaClassModel,
+        class: JavaClassModel,
         source_abi: &std::sync::Arc<super::JavaSourceAbi>,
         hierarchy: std::sync::Arc<crate::ir::analysis::ClassHierarchyIndex>,
         observer: std::sync::Arc<dyn crate::ir::AnalysisObserver>,
@@ -61,18 +61,17 @@ impl JavaCompilationUnitLowering {
         let package_name = class.declaration.package.clone();
         let package = package_name.as_ref().map(ToString::to_string);
         let current_type = class.declaration.current_type();
-        let (field_references, method_references) =
-            { (class.field_references(), class.method_references()) };
+        let references = class.member_references();
         let (generic_fields, generic_methods, referenced_overloads, referenced_constructors) = {
             (
-                source_abi.generic_fields(field_references.iter()),
-                source_abi.generic_methods(method_references.iter()),
-                source_abi.referenced_overloads(method_references.iter()),
-                source_abi.referenced_constructors(method_references.iter()),
+                source_abi.generic_fields(references.fields.iter()),
+                source_abi.generic_methods(references.methods.iter()),
+                source_abi.referenced_overloads(references.methods.iter()),
+                source_abi.referenced_constructors(references.methods.iter()),
             )
         };
         let type_uses = {
-            let mut type_uses = ClassTypeUses::collect(class);
+            let mut type_uses = ClassTypeUses::collect(&class);
             for contract in generic_fields.values() {
                 GenericTypeUses::field_contract(contract, &mut type_uses);
             }
@@ -81,18 +80,18 @@ impl JavaCompilationUnitLowering {
             }
             type_uses
         };
-        let local_function_object_types = FunctionObjectTypeCatalog::collect(class);
+        let local_function_object_types = FunctionObjectTypeCatalog::collect(&class);
         let cu_types = CompilationUnitAbiTypes::collect(
-            Some(class),
-            &field_references,
-            &method_references,
+            Some(&class),
+            &references.fields,
+            &references.methods,
             type_uses.iter().cloned(),
             current_type.as_ref(),
             &local_function_object_types,
         );
         let names = {
             JavaTypeNameResolver::for_class(
-                class,
+                &class,
                 package.as_deref(),
                 current_type.as_ref(),
                 type_uses,
@@ -100,12 +99,13 @@ impl JavaCompilationUnitLowering {
         }?;
         let members = {
             std::sync::Arc::new(
-                ClassMemberNames::collect(class)
+                ClassMemberNames::collect(&class)
                     .with_constructor_layouts(referenced_constructors)
                     .with_overloads(referenced_overloads),
             )
         };
-        let constructor_method_return_types = method_references
+        let constructor_method_return_types = references
+            .methods
             .iter()
             .filter(|reference| {
                 reference.name != "<init>"
@@ -218,20 +218,14 @@ impl JavaSingleMethodLowering {
         hierarchy: std::sync::Arc<crate::ir::analysis::ClassHierarchyIndex>,
         observer: std::sync::Arc<dyn crate::ir::AnalysisObserver>,
     ) -> Result<JavaMethodDeclaration, JavaDecompilerError> {
-        let field_references = method
-            .body
-            .as_ref()
-            .map(super::java_model::method::JavaMethodBody::field_references)
-            .unwrap_or_default();
-        let generic_fields = source_abi.generic_fields(field_references.iter());
-        let method_references = method
-            .body
-            .as_ref()
-            .map(super::java_model::method::JavaMethodBody::method_references)
-            .unwrap_or_default();
-        let generic_methods = source_abi.generic_methods(method_references.iter());
-        let referenced_overloads = source_abi.referenced_overloads(method_references.iter());
-        let referenced_constructors = source_abi.referenced_constructors(method_references.iter());
+        let mut references = super::java_model::method::MemberReferences::default();
+        if let Some(body) = &method.body {
+            body.collect_member_references(&mut references);
+        }
+        let generic_fields = source_abi.generic_fields(references.fields.iter());
+        let generic_methods = source_abi.generic_methods(references.methods.iter());
+        let referenced_overloads = source_abi.referenced_overloads(references.methods.iter());
+        let referenced_constructors = source_abi.referenced_constructors(references.methods.iter());
         let mut type_uses = type_uses.into_iter().collect::<Vec<_>>();
         for contract in generic_fields.values() {
             GenericTypeUses::field_contract(contract, &mut type_uses);
@@ -247,8 +241,8 @@ impl JavaSingleMethodLowering {
         let local_function_object_types = method_local_function_objects(method, current_type);
         let mut cu_types = CompilationUnitAbiTypes::collect(
             None,
-            &field_references,
-            &method_references,
+            &references.fields,
+            &references.methods,
             type_uses.iter().cloned(),
             current_type,
             &local_function_object_types,
@@ -686,30 +680,7 @@ impl<'a> JavaTypeLowering<'a> {
         }
     }
 
-    fn lower(&self, class: &JavaClassModel) -> Result<JavaTypeDeclaration, JavaDecompilerError> {
-        let mut pending = vec![(class, false)];
-        let mut results: Vec<LoweredNestedType> = Vec::new();
-        while let Some((class, exiting)) = pending.pop() {
-            if !exiting {
-                pending.push((class, true));
-                pending.extend(class.nested.iter().rev().map(|nested| (nested, false)));
-                continue;
-            }
-            let start = results
-                .len()
-                .checked_sub(class.nested.len())
-                .ok_or(JavaDecompilerError::MalformedDeclarationStack)?;
-            let nested = results.drain(start..).collect();
-            results.push(self.lower_type(class, nested)?);
-        }
-        if results.len() != 1 {
-            return Err(JavaDecompilerError::MalformedDeclarationStack);
-        }
-        let lowered = results
-            .pop()
-            .ok_or(JavaDecompilerError::MalformedDeclarationStack)?;
-        let mut declaration = lowered.declaration;
-        let recovered_functions = lowered.liveness.apply(&mut declaration);
+    fn lower(&self, class: JavaClassModel) -> Result<JavaTypeDeclaration, JavaDecompilerError> {
         // Resolved simple owner names can collide across unrelated classes;
         // only aliases owned by this lexical model may rewrite its fields.
         let outer_aliases = class
@@ -721,10 +692,34 @@ impl<'a> JavaTypeLowering<'a> {
                     self.names.resolve_type(outer)?,
                 ))
             })
-            .collect::<Result<Vec<_>, JavaDecompilerError>>()?;
+            .collect::<Result<Vec<_>, JavaDecompilerError>>();
+        let mut pending = vec![(class, None)];
+        let mut results: Vec<LoweredNestedType> = Vec::new();
+        while let Some((mut class, child_count)) = pending.pop() {
+            let Some(child_count) = child_count else {
+                let children = std::mem::take(&mut class.nested);
+                pending.push((class, Some(children.len())));
+                pending.extend(children.into_iter().rev().map(|child| (child, None)));
+                continue;
+            };
+            let start = results
+                .len()
+                .checked_sub(child_count)
+                .ok_or(JavaDecompilerError::MalformedDeclarationStack)?;
+            let nested = results.drain(start..).collect();
+            results.push(self.lower_type(&mut class, nested)?);
+        }
+        if results.len() != 1 {
+            return Err(JavaDecompilerError::MalformedDeclarationStack);
+        }
+        let lowered = results
+            .pop()
+            .ok_or(JavaDecompilerError::MalformedDeclarationStack)?;
+        let mut declaration = lowered.declaration;
+        let recovered_functions = lowered.liveness.apply(&mut declaration);
         super::lexical_owners::LexicalOwners::recover_outer_aliases(
             &mut declaration,
-            outer_aliases,
+            outer_aliases?,
         );
         SyntheticMemberRecovery::apply(&mut declaration, &recovered_functions);
         super::type_variable_closure::TypeVariableClosure::close(&mut declaration);
@@ -734,7 +729,7 @@ impl<'a> JavaTypeLowering<'a> {
 
     fn lower_type(
         &self,
-        class: &JavaClassModel,
+        class: &mut JavaClassModel,
         mut nested: Vec<LoweredNestedType>,
     ) -> Result<LoweredNestedType, JavaDecompilerError> {
         let owner = class.declaration.current_type();
@@ -787,8 +782,9 @@ impl<'a> JavaTypeLowering<'a> {
             (_, None) => None,
         };
         let mut methods = Vec::with_capacity(class.methods.len());
-        for method in &class.methods {
+        for method in &mut class.methods {
             if method.declaration.source_bridge {
+                method.body = None;
                 continue;
             }
             let lowered = {
@@ -834,7 +830,7 @@ impl<'a> JavaTypeLowering<'a> {
                         },
                         &descriptor,
                     );
-                    let failed = method.clone().with_failure(failure);
+                    let failed = method.with_failure(failure);
                     self.method(
                         &failed,
                         owner.as_ref(),
@@ -844,8 +840,9 @@ impl<'a> JavaTypeLowering<'a> {
                     )?
                 }
             };
-            if method.body.as_ref().is_some_and(|_| {
-                lowered.body.as_ref().is_some_and(|body| {
+            let had_body = method.body.take().is_some();
+            if had_body
+                && lowered.body.as_ref().is_some_and(|body| {
                     source_constructor_count == 1
                         && method.is_default_constructor(
                             &class.declaration.name,
@@ -853,7 +850,7 @@ impl<'a> JavaTypeLowering<'a> {
                             body,
                         )
                 })
-            }) {
+            {
                 continue;
             }
             methods.push(lowered);
@@ -1159,7 +1156,7 @@ impl<'a> JavaTypeLowering<'a> {
             .as_ref()
             .into_iter()
             .flat_map(super::java_model::method::JavaMethodBody::static_owner_types)
-            .map(|owner| self.names.resolve_type(&owner))
+            .map(|owner| self.names.resolve_type(owner))
             .collect::<Result<Vec<_>, _>>()?
             .iter()
             .filter_map(source_type_qualifier)

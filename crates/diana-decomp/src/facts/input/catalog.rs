@@ -12,6 +12,55 @@ use crate::{
     RegisterWordCount, StringId, TypeId, Utf16Offset,
 };
 
+/// Access checks resolve many references to members of the same owner. Only a
+/// complete, unambiguous directory can answer subsequent requests, including
+/// a definitive absence. Cache allocation is optional.
+struct MemberFlags<I> {
+    owners: std::sync::RwLock<std::collections::HashMap<ClassDefId, Vec<(I, u32)>>>,
+}
+
+impl<I: Ord + Copy> MemberFlags<I> {
+    fn new() -> Self {
+        Self {
+            owners: Default::default(),
+        }
+    }
+
+    fn get(&self, class: ClassDefId, id: I) -> Option<Option<u32>> {
+        let owners = self.owners.read().ok()?;
+        let members = owners.get(&class)?;
+        Some(
+            members
+                .binary_search_by_key(&id, |&(member, _)| member)
+                .ok()
+                .map(|index| members[index].1),
+        )
+    }
+
+    fn save(&self, class: ClassDefId, entries: Option<Vec<(I, u32)>>) {
+        let Some(mut entries) = entries else { return };
+        entries.sort_unstable_by_key(|&(member, _)| member);
+        if entries.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+            return;
+        }
+        if let Ok(mut owners) = self.owners.write() {
+            if owners.try_reserve(1).is_ok() {
+                owners.entry(class).or_insert(entries);
+            }
+        }
+    }
+
+    fn record(entries: &mut Option<Vec<(I, u32)>>, id: I, flags: u32) {
+        if let Some(items) = entries {
+            if items.try_reserve(1).is_ok() {
+                items.push((id, flags));
+            } else {
+                *entries = None;
+            }
+        }
+    }
+}
+
 /// A single-image index borrowing original bytes. Variable metadata is resolved
 /// on demand; it owns neither a decoded string pool nor method result buffers.
 pub struct ProgramIndex<'a> {
@@ -24,6 +73,8 @@ pub struct ProgramIndex<'a> {
         >,
     >,
     facts_build: std::sync::Mutex<()>,
+    field_flags: MemberFlags<FieldId>,
+    method_flags: MemberFlags<MethodId>,
     pub(super) declarations: std::sync::Arc<LocalDeclarations<'a>>,
     pub header: DexHeader,
     prototypes: std::sync::OnceLock<Vec<std::sync::OnceLock<PrototypeFacts<'a>>>>,
@@ -171,6 +222,8 @@ impl<'a> ProgramIndex<'a> {
             dex: crate::DexId(0),
             class_facts: std::sync::Mutex::new(std::collections::HashMap::new()),
             facts_build: std::sync::Mutex::new(()),
+            field_flags: MemberFlags::new(),
+            method_flags: MemberFlags::new(),
             declarations: std::sync::Arc::new(LocalDeclarations::new(
                 container,
                 header.clone(),
@@ -488,6 +541,10 @@ impl<'a> ProgramIndex<'a> {
         let Some(class_id) = self.class_location(owner)? else {
             return Ok(None);
         };
+        if let Some(flags) = self.field_flags.get(class_id, field_id) {
+            return Ok(flags);
+        }
+        let mut entries = Some(Vec::new());
         let mut found = None;
         self.class(class_id)?.visit_members_with(
             MemberSelection::Fields,
@@ -497,6 +554,11 @@ impl<'a> ProgramIndex<'a> {
                         "local field lookup acquired another member",
                     ));
                 };
+                if field.declaration.is_ok() {
+                    MemberFlags::record(&mut entries, field.field_idx, field.access_flags);
+                } else {
+                    entries = None;
+                }
                 if field.field_idx == field_id {
                     field.declaration?;
                     if found.is_some() {
@@ -510,6 +572,7 @@ impl<'a> ProgramIndex<'a> {
                 Ok(())
             },
         )?;
+        self.field_flags.save(class_id, entries);
         Ok(found)
     }
     pub fn local_method(&self, method_id: MethodId) -> Result<Option<LocalMethod<'a>>, InputError> {
@@ -518,6 +581,12 @@ impl<'a> ProgramIndex<'a> {
         let Some(class_id) = self.class_location(owner)? else {
             return Ok(None);
         };
+        if let Some(flags) = self.method_flags.get(class_id, method_id) {
+            return flags
+                .map(|flags| self.local_method_context(class_id, flags))
+                .transpose();
+        }
+        let mut entries = Some(Vec::new());
         let mut found = None;
         self.class(class_id)?.visit_members_with(
             MemberSelection::AllMembers,
@@ -530,22 +599,32 @@ impl<'a> ProgramIndex<'a> {
                 } = entry
                 {
                     declaration?;
+                    MemberFlags::record(&mut entries, method_idx, access_flags);
                     if method_idx == method_id {
-                        let class = self.class(class_id)?;
-                        let context = self.class_context(class_id)?;
-                        found = Some(LocalMethod {
-                            access_flags,
-                            owner_access_flags: class.access_flags,
-                            parent: context.superclass?,
-                            plain_scope: self.no_class_annotations(context.annotations_offset)?
-                                && context.interfaces?.is_empty(),
-                        });
+                        found = Some(self.local_method_context(class_id, access_flags)?);
                     }
                 }
                 Ok(())
             },
         )?;
+        self.method_flags.save(class_id, entries);
         Ok(found)
+    }
+
+    fn local_method_context(
+        &self,
+        class_id: ClassDefId,
+        access_flags: u32,
+    ) -> Result<LocalMethod<'a>, InputError> {
+        let class = self.class(class_id)?;
+        let context = self.class_context(class_id)?;
+        Ok(LocalMethod {
+            access_flags,
+            owner_access_flags: class.access_flags,
+            parent: context.superclass?,
+            plain_scope: self.no_class_annotations(context.annotations_offset)?
+                && context.interfaces?.is_empty(),
+        })
     }
 
     pub fn source_file(&self, id: ClassDefId) -> Result<Option<DexString<'a>>, InputError> {

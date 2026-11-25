@@ -90,7 +90,7 @@ impl JavaDecompiler {
     pub(crate) fn generate_class_with_nested(
         &mut self,
         class: &ClassNode,
-        methods: &mut [ClassMethodInput],
+        methods: Vec<ClassMethodInput>,
         inner: Vec<NestedClassInput>,
     ) -> Result<String, JavaDecompilerError> {
         {
@@ -101,14 +101,14 @@ impl JavaDecompiler {
     fn generate_class_with_nested_impl(
         &mut self,
         class: &ClassNode,
-        methods: &mut [ClassMethodInput],
+        methods: Vec<ClassMethodInput>,
         inner: Vec<NestedClassInput>,
     ) -> Result<String, JavaDecompilerError> {
         self.observer.checkpoint()?;
         let signature_started = std::time::Instant::now();
         let source_signatures = super::signature_inference::SourceSignatureInference::analyze(
             self.type_hierarchy.as_ref(),
-            methods,
+            &methods,
             &inner,
         );
         let signature_ms = signature_started.elapsed();
@@ -135,7 +135,7 @@ impl JavaDecompiler {
         let render_started = std::time::Instant::now();
         let source = {
             self.observer.checkpoint()?;
-            self.render_class_model(&class_model)
+            self.render_class_model(class_model)
         }?;
         if std::env::var_os("DEXDEC_BATCH_STATS").is_some() {
             let render_ms = render_started.elapsed();
@@ -183,13 +183,13 @@ impl JavaDecompiler {
 
     fn build_nested_class_tree(
         &self,
-        mut input: NestedClassInput,
+        input: NestedClassInput,
         source_signatures: &super::signature_inference::SourceSignatureInference<'_>,
     ) -> Result<JavaClassModel, JavaDecompilerError> {
         self.observer.checkpoint()?;
         self.class_stage(input.class.type_descriptor(), "build_nested_class:start");
         let (methods, outer_instance) =
-            self.build_class_methods(&input.class, &mut input.methods, source_signatures)?;
+            self.build_class_methods(&input.class, input.methods, source_signatures)?;
         let children = self.build_nested_class_forest(input.nested, source_signatures)?;
         self.class_stage(input.class.type_descriptor(), "build_nested_class:done");
         Ok(
@@ -202,14 +202,14 @@ impl JavaDecompiler {
     fn build_class_methods(
         &self,
         class: &ClassNode,
-        methods: &mut [ClassMethodInput],
+        methods: Vec<ClassMethodInput>,
         source_signatures: &super::signature_inference::SourceSignatureInference<'_>,
     ) -> Result<(Vec<JavaMethodModel>, Option<OuterInstanceField>), JavaDecompilerError> {
         let outer_instance = OuterInstanceField::analyze_cfgs(
             class,
             methods
                 .iter()
-                .filter_map(|input| input.cfg().map(|cfg| (input.method(), cfg))),
+                .filter_map(|input| input.cfg().map(|cfg| (input.method(class), cfg))),
         )
         .or_else(|| OuterInstanceField::analyze(class));
         let exception_contracts = super::exception_contract::DeclaredExceptionAnalysis::new(
@@ -220,18 +220,25 @@ impl JavaDecompiler {
             class,
             methods
                 .iter()
-                .filter_map(|input| input.cfg().map(|cfg| (input.method(), cfg))),
+                .filter_map(|input| input.cfg().map(|cfg| (input.method(class), cfg))),
         );
-        let decoded = methods
-            .iter()
-            .enumerate()
-            .map(|(index, input)| {
-                let method = input.method();
-                ((method.info.name.clone(), method.info.descriptor()), index)
-            })
-            .collect::<std::collections::BTreeMap<_, _>>();
-        let recover = |input: &mut ClassMethodInput| {
-            let (decoded_method, cfg) = input.decoded_mut()?;
+        let mut input_positions = vec![None; class.methods().len()];
+        for (index, input) in methods.iter().enumerate() {
+            input_positions[input.position()] = Some(index);
+        }
+        let is_function_object = super::FunctionObjectClass::analyze(class);
+        let parallel = self.parallel_methods
+            && methods
+                .iter()
+                .filter(|input| input.cfg().is_some())
+                .nth(7)
+                .is_some();
+        let recover = |input: ClassMethodInput| {
+            let decoded_method = input.method(class);
+            let mut cfg = match input.into_cfg() {
+                Ok(cfg) => cfg,
+                Err(failure) => return Ok(Err(failure)),
+            };
             let method_reference = crate::ir::MethodReference {
                 owner: class.class_type().clone(),
                 name: decoded_method.name().to_string(),
@@ -243,7 +250,7 @@ impl JavaDecompiler {
             let inferred_parameter_types = source_signatures.parameter_types(&method_reference);
             let inferred_return_type = source_signatures.return_type(&method_reference);
             let body_parameter_types = source_signatures.body_parameter_types(&method_reference);
-            let function_types = super::FunctionObjectClass::analyze(class)
+            let function_types = is_function_object
                 .then(|| {
                     super::function_object_types::FunctionObjectMethodInference::infer(
                         decoded_method,
@@ -275,7 +282,7 @@ impl JavaDecompiler {
             let recovered = self.build_method_model_from_node(
                 class,
                 decoded_method,
-                cfg,
+                &mut cfg,
                 exception_contracts
                     .get(&method_reference)
                     .map(Vec::as_slice),
@@ -284,7 +291,7 @@ impl JavaDecompiler {
                 function_types.as_ref().map(|types| types.interface()),
                 outer_instance.as_ref(),
             );
-            Some(match recovered {
+            match recovered {
                 Ok(model) => {
                     self.method_stage(
                         class.type_descriptor(),
@@ -292,7 +299,7 @@ impl JavaDecompiler {
                         &descriptor,
                         "done",
                     );
-                    Ok(model)
+                    Ok(Ok(model))
                 }
                 Err(error) if error.is_cancelled() => Err(error),
                 Err(error) => {
@@ -308,46 +315,56 @@ impl JavaDecompiler {
                         MethodRecoveryStage::Semantics
                     };
                     let failure = MethodRecoveryFailure::new(stage, error);
-                    failure.observe(
-                        self.observer.as_ref(),
-                        class.type_descriptor(),
-                        &decoded_method.info.name,
-                        &descriptor,
-                    );
-                    Ok(JavaMethodModel::from_failure(
+                    if !parallel {
+                        failure.observe(
+                            self.observer.as_ref(),
+                            class.type_descriptor(),
+                            &decoded_method.info.name,
+                            &descriptor,
+                        );
+                    }
+                    Ok(Ok(JavaMethodModel::from_failure(
                         class,
                         decoded_method,
                         failure,
-                    ))
+                    )))
                 }
-            })
+            }
         };
-        let decoded_cfg_count = methods.iter().filter(|m| m.cfg().is_some()).count();
-        let recovered = if self.parallel_methods && decoded_cfg_count >= 8 {
-            methods
-                .par_iter_mut()
-                .enumerate()
-                .filter_map(|(index, input)| recover(input).map(|model| (index, model)))
-                .collect::<Vec<_>>()
+        let recovered = if parallel {
+            methods.into_par_iter().map(recover).collect::<Vec<_>>()
         } else {
-            methods
-                .iter_mut()
-                .enumerate()
-                .filter_map(|(index, input)| recover(input).map(|model| (index, model)))
-                .collect::<Vec<_>>()
+            methods.into_iter().map(recover).collect::<Vec<_>>()
         };
-        let mut recovered_models = std::collections::BTreeMap::new();
-        for (index, model) in recovered {
-            recovered_models.insert(index, model?);
+        if parallel {
+            // Recovery failures precede declaration and lowering failures. Indexed method
+            // results restore the original serial observation order within this stage.
+            for (method, position) in class.methods().iter().zip(&input_positions) {
+                let Some(index) = *position else { continue };
+                if let Ok(Ok(model)) = &recovered[index] {
+                    if let Some(failure) = &model.failure {
+                        failure.observe(
+                            self.observer.as_ref(),
+                            class.type_descriptor(),
+                            &method.info.name,
+                            &method.info.descriptor(),
+                        );
+                    }
+                }
+            }
         }
-        let mut built = Vec::new();
-        for method in class
+        let mut recovered_models = recovered
+            .into_iter()
+            .map(|result| result.map(Some))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut built = Vec::with_capacity(class.methods().len());
+        for (position, method) in class
             .methods()
             .iter()
-            .filter(|method| !method.access_flags.is_bridge())
+            .enumerate()
+            .filter(|(_, method)| !method.access_flags.is_bridge())
         {
-            let has_input = methods.iter().any(|input| input.method().id == method.id);
-            if !has_input {
+            let Some(index) = input_positions[position] else {
                 let declaration = match JavaMethodDeclaration::from_method_node(
                     class,
                     method,
@@ -375,57 +392,26 @@ impl JavaDecompiler {
                 };
                 built.push(JavaMethodModel::from_declaration(declaration));
                 continue;
-            }
-            let key = (method.info.name.clone(), method.info.descriptor());
-            let Some(index) = decoded.get(&key).copied() else {
-                let failure = MethodRecoveryFailure::new(
-                    MethodRecoveryStage::Decode,
-                    "class method input is missing",
-                );
-                failure.observe(
-                    self.observer.as_ref(),
-                    class.type_descriptor(),
-                    &method.info.name,
-                    &method.info.descriptor(),
-                );
-                built.push(JavaMethodModel::from_failure(class, method, failure));
-                continue;
             };
-            if let Some(failure) = methods[index].failure().cloned() {
-                let decoded_method = methods[index].method();
-                failure.observe(
-                    self.observer.as_ref(),
-                    class.type_descriptor(),
-                    &decoded_method.info.name,
-                    &decoded_method.info.descriptor(),
-                );
-                built.push(JavaMethodModel::from_failure(
-                    class,
-                    decoded_method,
-                    failure,
-                ));
-                continue;
-            }
-            if let Some(model) = recovered_models.remove(&index) {
-                built.push(model);
-            } else {
-                let decoded_method = methods[index].method();
-                let failure = MethodRecoveryFailure::new(
-                    MethodRecoveryStage::Decode,
-                    "decoded CFG is missing",
-                );
-                failure.observe(
-                    self.observer.as_ref(),
-                    class.type_descriptor(),
-                    &decoded_method.info.name,
-                    &decoded_method.info.descriptor(),
-                );
-                built.push(JavaMethodModel::from_failure(
-                    class,
-                    decoded_method,
-                    failure,
-                ));
-            }
+            let model = match recovered_models[index].take() {
+                Some(Ok(model)) => model,
+                failed => {
+                    let failure = failed.and_then(Result::err).unwrap_or_else(|| {
+                        MethodRecoveryFailure::new(
+                            MethodRecoveryStage::Decode,
+                            "decoded CFG is missing",
+                        )
+                    });
+                    failure.observe(
+                        self.observer.as_ref(),
+                        class.type_descriptor(),
+                        &method.info.name,
+                        &method.info.descriptor(),
+                    );
+                    JavaMethodModel::from_failure(class, method, failure)
+                }
+            };
+            built.push(model);
         }
         Ok((built, outer_instance))
     }
@@ -529,7 +515,14 @@ impl JavaDecompiler {
         }
     }
 
-    fn render_class_model(&self, class: &JavaClassModel) -> Result<String, JavaDecompilerError> {
+    fn render_class_model(&self, class: JavaClassModel) -> Result<String, JavaDecompilerError> {
+        let stats_name = std::env::var_os("DEXDEC_BATCH_STATS").map(|_| {
+            class
+                .declaration
+                .current_type()
+                .map(|ty| ty.to_string())
+                .unwrap_or_else(|| class.declaration.name.to_string())
+        });
         let lower_started = std::time::Instant::now();
         let unit = {
             JavaCompilationUnitLowering::lower(
@@ -546,16 +539,12 @@ impl JavaDecompiler {
                 .with_preserved_dex_names(self.config.preserve_dex_names)
                 .print_compilation_unit(&unit)
         }?;
-        if std::env::var_os("DEXDEC_BATCH_STATS").is_some() {
+        if let Some(name) = stats_name {
             let print_ms = print_started.elapsed();
             if (lower_ms + print_ms).as_millis() >= 50 {
                 eprintln!(
                     "diana-decomp render {}: lower={:.0}ms print={:.0}ms",
-                    class
-                        .declaration
-                        .current_type()
-                        .map(|ty| ty.to_string())
-                        .unwrap_or_else(|| class.declaration.name.to_string()),
+                    name,
                     lower_ms.as_secs_f64() * 1000.0,
                     print_ms.as_secs_f64() * 1000.0,
                 );
@@ -620,13 +609,13 @@ mod tests {
             AccessInfo::for_method(0x0009),
         );
         class.add_method(method.clone());
-        let mut methods = vec![ClassMethodInput::failed(
-            method,
+        let methods = vec![ClassMethodInput::failed(
+            0,
             MethodRecoveryFailure::new(MethodRecoveryStage::Semantics, "test failure"),
         )];
 
         let source = JavaDecompiler::new(Default::default())
-            .generate_class_with_nested(&class, &mut methods, Vec::new())
+            .generate_class_with_nested(&class, methods, Vec::new())
             .expect("partial class source");
 
         assert!(source.contains("class Partial"));

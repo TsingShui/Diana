@@ -48,15 +48,18 @@ impl std::error::Error for DominanceError {}
 /// Dominator Tree structure
 #[derive(Debug, Clone)]
 pub struct DominatorTree {
-    /// Immediate dominator for each node
-    /// idom[n] = immediate dominator of n
-    idom: BTreeMap<BlockId, BlockId>,
-    /// Children in dominator tree
-    /// children[n] = nodes immediately dominated by n
-    children: BTreeMap<BlockId, Vec<BlockId>>,
-    /// Entry node (root of dominator tree)
     entry: BlockId,
-    nodes: BTreeSet<BlockId>,
+    /// Sorted by block identity, independently of graph traversal order.
+    nodes: Vec<DominatorNode>,
+}
+
+#[derive(Debug, Clone)]
+struct DominatorNode {
+    block: BlockId,
+    parent: Option<BlockId>,
+    children: Vec<BlockId>,
+    preorder: usize,
+    subtree_end: usize,
 }
 
 impl DominatorTree {
@@ -193,56 +196,79 @@ impl DominatorTree {
             return Err(DominanceError::Unreachable(unreachable));
         }
 
-        let mut algorithm = LengauerTarjan::new(&traversal, &topology.predecessors);
-        let immediate = algorithm.compute()?;
-        let nodes = traversal.indices.keys().copied().collect::<BTreeSet<_>>();
-        let idom = immediate
-            .into_iter()
-            .filter_map(|(node, parent)| parent.map(|parent| (node, parent)))
-            .collect::<BTreeMap<_, _>>();
-        let mut children = nodes
+        let mut algorithm = LengauerTarjan::new(traversal, &topology.predecessors);
+        let mut nodes = algorithm.compute()?;
+        nodes.sort_unstable_by_key(|node| node.block);
+        let mut tree = Self { entry, nodes };
+        for i in 0..tree.nodes.len() {
+            let child = &tree.nodes[i];
+            if let Some(parent) = child.parent {
+                let block = child.block;
+                let parent_index = tree
+                    .index_of(parent)
+                    .ok_or(DominanceError::MissingDominator(parent))?;
+                tree.nodes[parent_index].children.push(block);
+            }
+        }
+        // A subtree occupies a contiguous range in dominator-tree preorder.
+        // Queries on a chain can use these bounds without following every parent.
+        let mut next = 0;
+        let root = tree
+            .index_of(entry)
+            .ok_or(DominanceError::MissingEntry(entry))?;
+        let mut pending = vec![(root, false)];
+        while let Some((index, exiting)) = pending.pop() {
+            if exiting {
+                tree.nodes[index].subtree_end = next;
+            } else {
+                tree.nodes[index].preorder = next;
+                next += 1;
+                pending.push((index, true));
+                for &child in tree.nodes[index].children.iter().rev() {
+                    let child = tree
+                        .index_of(child)
+                        .ok_or(DominanceError::MissingDominator(child))?;
+                    pending.push((child, false));
+                }
+            }
+        }
+        Ok(tree)
+    }
+
+    fn index_of(&self, block: BlockId) -> Option<usize> {
+        let index = block.raw() as usize;
+        if self
+            .nodes
+            .get(index)
+            .is_some_and(|node| node.block == block)
+        {
+            return Some(index);
+        }
+        self.nodes
+            .binary_search_by_key(&block, |node| node.block)
+            .ok()
+    }
+
+    /// Get immediate dominator of a node.
+    pub fn idom(&self, node: BlockId) -> Option<BlockId> {
+        self.nodes[self.index_of(node)?].parent
+    }
+
+    /// Get children of a node in block identity order.
+    pub fn children(&self, node: BlockId) -> impl DoubleEndedIterator<Item = BlockId> + '_ {
+        self.index_of(node)
+            .map_or(&[][..], |i| self.nodes[i].children.as_slice())
             .iter()
             .copied()
-            .map(|node| (node, Vec::new()))
-            .collect::<BTreeMap<_, _>>();
-        for (&node, &parent) in &idom {
-            let children = children
-                .get_mut(&parent)
-                .ok_or(DominanceError::MissingDominator(parent))?;
-            children.push(node);
-        }
-        for children in children.values_mut() {
-            children.sort();
-        }
-
-        Ok(Self {
-            idom,
-            children,
-            entry,
-            nodes,
-        })
-    }
-
-    /// Get immediate dominator of a node
-    pub fn idom(&self, node: BlockId) -> Option<BlockId> {
-        self.idom.get(&node).copied()
-    }
-
-    /// Get children of a node in dominator tree
-    pub fn children(&self, node: BlockId) -> impl Iterator<Item = BlockId> + '_ {
-        self.children
-            .get(&node)
-            .into_iter()
-            .flat_map(|children| children.iter().copied())
     }
 
     pub fn contains(&self, node: BlockId) -> bool {
-        self.nodes.contains(&node)
+        self.index_of(node).is_some()
     }
 
     /// Get all nodes dominated by the given node (including itself)
     pub fn dominated_by(&self, node: BlockId) -> BTreeSet<BlockId> {
-        if !self.nodes.contains(&node) {
+        if !self.contains(node) {
             return BTreeSet::new();
         }
         let mut result = BTreeSet::new();
@@ -257,24 +283,10 @@ impl DominatorTree {
 
     /// Check if `dom` dominates `node`
     pub fn dominates(&self, dom: BlockId, node: BlockId) -> bool {
-        if !self.nodes.contains(&dom) || !self.nodes.contains(&node) {
+        let (Some(dom), Some(node)) = (self.index_of(dom), self.index_of(node)) else {
             return false;
-        }
-        if dom == node {
-            return true;
-        }
-        let mut current = node;
-        while let Some(idom) = self.idom(current) {
-            if idom == dom {
-                return true;
-            }
-            if idom == current {
-                // Reached entry or cycle
-                break;
-            }
-            current = idom;
-        }
-        false
+        };
+        (self.nodes[dom].preorder..self.nodes[dom].subtree_end).contains(&self.nodes[node].preorder)
     }
 
     /// Check if `sdom` strictly dominates `node` (dominates but not equal)
@@ -293,9 +305,7 @@ impl DominatorTree {
         let mut pending = vec![self.entry];
         while let Some(node) = pending.pop() {
             result.push(node);
-            let mut children = self.children(node).collect::<Vec<_>>();
-            children.reverse();
-            pending.extend(children);
+            pending.extend(self.children(node).rev());
         }
         result
     }
@@ -310,9 +320,7 @@ impl DominatorTree {
                 continue;
             }
             pending.push((node, true));
-            let mut children = self.children(node).collect::<Vec<_>>();
-            children.reverse();
-            pending.extend(children.into_iter().map(|child| (child, false)));
+            pending.extend(self.children(node).rev().map(|child| (child, false)));
         }
         result
     }
@@ -379,23 +387,20 @@ impl Topology {
         let mut induced_successors = BTreeMap::new();
         let mut induced_predecessors = BTreeMap::new();
         for node in &nodes {
-            let targets = successors
-                .get(node)
-                .ok_or(DominanceError::MissingTopology(*node))?
-                .iter()
-                .copied()
-                .filter(|target| nodes.contains(target))
-                .collect::<BTreeSet<_>>();
-            induced_successors.insert(*node, targets.into_iter().collect::<Vec<_>>());
-
-            let sources = predecessors
-                .get(node)
-                .ok_or(DominanceError::MissingTopology(*node))?
-                .iter()
-                .copied()
-                .filter(|source| nodes.contains(source))
-                .collect::<BTreeSet<_>>();
-            induced_predecessors.insert(*node, sources.into_iter().collect::<Vec<_>>());
+            let neighbors = |edges: &BTreeMap<BlockId, Vec<BlockId>>| {
+                let mut ids: Vec<_> = edges
+                    .get(node)
+                    .ok_or(DominanceError::MissingTopology(*node))?
+                    .iter()
+                    .copied()
+                    .filter(|block| nodes.contains(block))
+                    .collect();
+                ids.sort_unstable();
+                ids.dedup();
+                Ok::<_, DominanceError>(ids)
+            };
+            induced_successors.insert(*node, neighbors(successors)?);
+            induced_predecessors.insert(*node, neighbors(predecessors)?);
         }
         for (&source, targets) in &induced_successors {
             for target in targets {
@@ -486,10 +491,7 @@ struct LengauerTarjan {
 }
 
 impl LengauerTarjan {
-    fn new(
-        traversal: &DepthFirstNumbering,
-        predecessors: &BTreeMap<BlockId, Vec<BlockId>>,
-    ) -> Self {
+    fn new(traversal: DepthFirstNumbering, predecessors: &BTreeMap<BlockId, Vec<BlockId>>) -> Self {
         let count = traversal.vertices.len();
         let predecessor_indices = traversal
             .vertices
@@ -502,9 +504,9 @@ impl LengauerTarjan {
             })
             .collect();
         Self {
-            vertices: traversal.vertices.clone(),
+            vertices: traversal.vertices,
             predecessors: predecessor_indices,
-            parents: traversal.parents.clone(),
+            parents: traversal.parents,
             semi: (0..count).collect(),
             labels: (0..count).collect(),
             ancestors: vec![None; count],
@@ -513,9 +515,10 @@ impl LengauerTarjan {
         }
     }
 
-    fn compute(&mut self) -> Result<BTreeMap<BlockId, Option<BlockId>>, DominanceError> {
+    fn compute(&mut self) -> Result<Vec<DominatorNode>, DominanceError> {
         for node in (1..self.vertices.len()).rev() {
-            for predecessor in self.predecessors[node].clone() {
+            for i in 0..self.predecessors[node].len() {
+                let predecessor = self.predecessors[node][i];
                 let representative = self.evaluate(predecessor)?;
                 self.semi[node] = self.semi[node].min(self.semi[representative]);
             }
@@ -543,11 +546,12 @@ impl LengauerTarjan {
             .vertices
             .iter()
             .enumerate()
-            .map(|(index, node)| {
-                (
-                    *node,
-                    self.immediate[index].map(|parent| self.vertices[parent]),
-                )
+            .map(|(i, &block)| DominatorNode {
+                block,
+                parent: self.immediate[i].map(|parent| self.vertices[parent]),
+                children: Vec::new(),
+                preorder: 0,
+                subtree_end: 0,
             })
             .collect())
     }

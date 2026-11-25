@@ -191,11 +191,11 @@ struct ClassParts {
 }
 
 fn failed_method_input(
-    method: MethodNode,
+    position: usize,
     error: impl std::fmt::Display,
 ) -> crate::analysis::ClassMethodInput {
     crate::analysis::ClassMethodInput::failed(
-        method,
+        position,
         crate::analysis::MethodRecoveryFailure::new(
             crate::analysis::MethodRecoveryStage::Decode,
             error,
@@ -204,24 +204,21 @@ fn failed_method_input(
 }
 
 fn build_method_inputs(
-    class: &ClassNode,
+    class: &crate::p0::BackendClass,
     methods: Vec<MethodFacts>,
     jobs: Option<usize>,
 ) -> Result<Vec<crate::analysis::ClassMethodInput>, DexError> {
     use rayon::prelude::*;
 
     let prepare = |facts: MethodFacts| {
-        let method = class
-            .methods()
-            .iter()
-            .find(|method| method.id == facts.method.0)
-            .cloned()?;
+        let position = class.method_position(facts.ordinal)?;
+        let method = &class.node.methods()[position];
         Some(match facts.decoded {
-            Ok(decoded) => match decode_decoded_method(&method, decoded) {
-                Ok(cfg) => crate::analysis::ClassMethodInput::decoded(method, cfg),
-                Err(error) => failed_method_input(method, error),
+            Ok(decoded) => match decode_decoded_method(method, decoded) {
+                Ok(cfg) => crate::analysis::ClassMethodInput::decoded(position, cfg),
+                Err(error) => failed_method_input(position, error),
             },
-            Err(error) => failed_method_input(method, error),
+            Err(error) => failed_method_input(position, error),
         })
     };
     let prepared: Vec<Option<crate::analysis::ClassMethodInput>> = if jobs == Some(1) {
@@ -240,11 +237,14 @@ fn build_method_inputs(
     Ok(prepared.into_iter().flatten().collect())
 }
 
-fn method_sources(methods: &[crate::analysis::ClassMethodInput]) -> Vec<MethodSource> {
+fn method_sources(
+    class: &ClassNode,
+    methods: &[crate::analysis::ClassMethodInput],
+) -> Vec<MethodSource> {
     methods
         .iter()
         .map(|input| {
-            let method = input.method();
+            let method = input.method(class);
             MethodSource {
                 method: MethodId(method.id),
                 name: method.info.name.encode_utf16().collect(),
@@ -256,11 +256,11 @@ fn method_sources(methods: &[crate::analysis::ClassMethodInput]) -> Vec<MethodSo
 }
 
 fn build_class_parts(input: BackendInput, jobs: Option<usize>) -> Result<ClassParts, DexError> {
-    let class = input
-        .class
-        .node()
-        .ok_or_else(|| DexError::Backend("class node assembly failed".to_owned()))?
-        .clone();
+    let class = match Arc::try_unwrap(input.class) {
+        Ok(facts) => facts.into_backend_class(),
+        Err(shared) => shared.backend_class().cloned(),
+    }
+    .ok_or_else(|| DexError::Backend("class node assembly failed".to_owned()))?;
     let methods = build_method_inputs(&class, input.methods, jobs)?;
     let mut nested = Vec::new();
     nested
@@ -275,7 +275,7 @@ fn build_class_parts(input: BackendInput, jobs: Option<usize>) -> Result<ClassPa
         });
     }
     Ok(ClassParts {
-        class,
+        class: class.node,
         methods,
         nested,
     })
@@ -291,7 +291,11 @@ fn collect_nested_declarations<'a>(
     }
 }
 
-fn decompile_class(input: BackendInput, jobs: Option<usize>) -> Result<ClassOutput, DexError> {
+fn decompile_class(
+    input: BackendInput,
+    jobs: Option<usize>,
+    collect_method_sources: bool,
+) -> Result<ClassOutput, DexError> {
     let mut input = input;
     let related = std::mem::take(&mut input.related);
     let parts = build_class_parts(input, jobs)?;
@@ -304,17 +308,20 @@ fn decompile_class(input: BackendInput, jobs: Option<usize>) -> Result<ClassOutp
     for nested in &parts.nested {
         collect_nested_declarations(nested, &mut declarations);
     }
-    let method_sources = method_sources(&parts.methods);
+    let method_sources = if collect_method_sources {
+        method_sources(&parts.class, &parts.methods)
+    } else {
+        Vec::new()
+    };
     let observer = Arc::new(MethodFailureObserver::default());
     let analysis_observer: Arc<dyn AnalysisObserver> = observer.clone();
-    let mut methods = parts.methods;
     let source =
         JavaDecompiler::new(JavaDecompilerConfig::default().with_preserved_dex_names(true))
             .with_parallel_methods(jobs != Some(1))
             .with_shared_type_hierarchy(hierarchy(&declarations))
             .with_source_abi(java_abi(&declarations))
             .with_analysis_observer(analysis_observer)
-            .generate_class_with_nested(&parts.class, &mut methods, parts.nested)
+            .generate_class_with_nested(&parts.class, parts.methods, parts.nested)
             .map_err(|error| DexError::Backend(error.to_string()))?;
     Ok(ClassOutput {
         source,
@@ -551,7 +558,7 @@ impl<'a> Engine<'a> {
             request.method.as_ref(),
             request.method.is_none(),
         )?;
-        let output = decompile_class(input, self.jobs).map_err(RequestError::Backend)?;
+        let output = decompile_class(input, self.jobs, true).map_err(RequestError::Backend)?;
         Ok(ClassSource {
             class: request.class,
             text: output.source,
@@ -578,7 +585,45 @@ impl<'a> Engine<'a> {
     where
         E: From<RequestError> + Send,
     {
-        use rayon::prelude::*;
+        self.visit_classes(dex, jobs, true, deliver)
+    }
+
+    /// Visits the same definitions as `visit_class_sources` and delivers the
+    /// descriptor, source text and local recovery failures. Bulk file writers
+    /// need no separately encoded directory of the rendered methods.
+    pub fn visit_class_texts<E>(
+        &self,
+        dex: DexId,
+        jobs: usize,
+        deliver: impl Fn(
+                ClassDefId,
+                Result<(Vec<u16>, String, Vec<MethodFailure>), RequestError>,
+            ) -> Result<(), E>
+            + Sync,
+    ) -> Result<(), E>
+    where
+        E: From<RequestError> + Send,
+    {
+        self.visit_classes(dex, jobs, false, |id, result| {
+            deliver(
+                id,
+                result.map(|(descriptor, source)| (descriptor, source.text, source.failures)),
+            )
+        })
+    }
+
+    fn visit_classes<E>(
+        &self,
+        dex: DexId,
+        jobs: usize,
+        collect_method_sources: bool,
+        deliver: impl Fn(ClassDefId, Result<(Vec<u16>, ClassSource), RequestError>) -> Result<(), E>
+            + Sync,
+    ) -> Result<(), E>
+    where
+        E: From<RequestError> + Send,
+    {
+        use std::sync::atomic::{AtomicU32, Ordering};
 
         let image = self.image(dex).ok_or(RequestError::UnknownDex)?;
         let count = image.index.class_count();
@@ -590,15 +635,30 @@ impl<'a> Engine<'a> {
             .num_threads(workers)
             .build()
             .map_err(RequestError::MethodScheduling)?;
-        pool.install(|| {
-            (0..count).into_par_iter().try_for_each(|ordinal| {
+        // Each pool thread can hold one class. While it waits for that class's
+        // method jobs, the only stealable work is methods from an active class.
+        let next = AtomicU32::new(0);
+        pool.broadcast(|_| {
+            while let Ok(ordinal) =
+                next.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |ordinal| {
+                    (ordinal < count).then(|| ordinal + 1)
+                })
+            {
                 let class_def = ClassDefId(ordinal);
                 let class = ClassKey { dex, class_def };
                 let result = (|| {
                     let facts = Arc::new(crate::p0::collect(&image.index, class)?);
                     let descriptor = facts.descriptor().units().to_vec();
                     let input = request::backend_input_from_facts(image, facts, None, false)?;
-                    let output = decompile_class(input, Some(1)).map_err(RequestError::Backend)?;
+                    // None selects the current Rayon pool in both CFG preparation and
+                    // semantic recovery. A small class stays on its claiming thread.
+                    let method_jobs = if workers > 1 && input.methods.len() >= 8 {
+                        None
+                    } else {
+                        Some(1)
+                    };
+                    let output = decompile_class(input, method_jobs, collect_method_sources)
+                        .map_err(RequestError::Backend)?;
                     Ok((
                         descriptor,
                         ClassSource {
@@ -609,9 +669,15 @@ impl<'a> Engine<'a> {
                         },
                     ))
                 })();
-                deliver(class_def, result)
-            })
+                if let Err(error) = deliver(class_def, result) {
+                    next.store(count, Ordering::Relaxed);
+                    return Err(error);
+                }
+            }
+            Ok(())
         })
+        .into_iter()
+        .collect()
     }
 
     pub fn analyze(&self, request: Request) -> Result<ClassAnalysis, RequestError> {

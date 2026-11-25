@@ -6,7 +6,7 @@ use crate::language::java::{
     JavaVoidTailLinearizer, LexicalDeclarationPlacement,
 };
 
-use super::super::method_pipeline::MethodBodyAnalysis;
+use super::super::method_pipeline::{BodyTypeUses, MethodBodyAnalysis};
 use super::super::type_names::JavaTypeNameResolver;
 use super::super::JavaDecompilerError;
 use super::class::declaration_name;
@@ -33,11 +33,12 @@ pub(in crate::analysis::java_backend) struct JavaMethodParameter {
 
 #[derive(Debug, Clone)]
 pub(in crate::analysis::java_backend) struct JavaMethodBody {
-    semantic: crate::ir::SemanticMethod<crate::ir::SourceSyntaxSemantics>,
+    body: crate::ir::SemanticNode,
+    types: crate::ir::analysis::SourceTypeEnvironment,
     is_static: bool,
     this_code_var: Option<u32>,
     parameter_code_vars: Vec<Option<u32>>,
-    type_uses: std::collections::BTreeSet<ArgType>,
+    type_uses: BodyTypeUses,
     current_type: Option<ArgType>,
     return_type: Option<ArgType>,
     outer_instance: Option<crate::language::java::OuterInstanceBinding>,
@@ -79,11 +80,14 @@ impl JavaMethodModel {
         }
     }
 
-    pub fn with_failure(mut self, failure: MethodRecoveryFailure) -> Self {
-        self.declaration.discard_source_metadata();
-        self.body = None;
-        self.failure = Some(failure);
-        self
+    pub fn with_failure(&self, failure: MethodRecoveryFailure) -> Self {
+        let mut declaration = self.declaration.clone();
+        declaration.discard_source_metadata();
+        Self {
+            declaration,
+            body: None,
+            failure: Some(failure),
+        }
     }
 
     pub fn is_default_constructor(
@@ -123,7 +127,8 @@ impl JavaMethodBody {
             )
         });
         Self {
-            semantic: analysis.semantic,
+            body: analysis.body,
+            types: analysis.types,
             is_static: analysis.is_static,
             this_code_var: analysis.this_code_var,
             parameter_code_vars: analysis.parameter_code_vars,
@@ -134,36 +139,19 @@ impl JavaMethodBody {
         }
     }
 
-    pub(in crate::analysis::java_backend) fn method_references(
+    pub(in crate::analysis::java_backend) fn collect_member_references(
         &self,
-    ) -> std::collections::BTreeSet<crate::ir::MethodReference> {
-        let mut collector = MemberReferenceCollector::default();
-        crate::ir::SemanticVisitor::visit_node(&mut collector, self.semantic.body());
-        collector.methods
+        references: &mut MemberReferences,
+    ) {
+        crate::ir::SemanticVisitor::visit_node(references, &self.body);
     }
 
-    pub(in crate::analysis::java_backend) fn field_references(
-        &self,
-    ) -> std::collections::BTreeSet<crate::ir::FieldReference> {
-        let mut collector = MemberReferenceCollector::default();
-        crate::ir::SemanticVisitor::visit_node(&mut collector, self.semantic.body());
-        collector.fields
+    pub(in crate::analysis::java_backend) fn static_owner_types(&self) -> &[ArgType] {
+        &self.type_uses.static_owners
     }
 
-    pub(in crate::analysis::java_backend) fn static_owner_types(
-        &self,
-    ) -> std::collections::BTreeSet<ArgType> {
-        let mut collector = MemberReferenceCollector::default();
-        crate::ir::SemanticVisitor::visit_node(&mut collector, self.semantic.body());
-        collector.static_owners
-    }
-
-    pub(in crate::analysis::java_backend) fn lambda_reference_types(
-        &self,
-    ) -> std::collections::BTreeSet<ArgType> {
-        let mut collector = MemberReferenceCollector::default();
-        crate::ir::SemanticVisitor::visit_node(&mut collector, self.semantic.body());
-        collector.lambda_types
+    pub(in crate::analysis::java_backend) fn lambda_reference_types(&self) -> &[ArgType] {
+        &self.type_uses.lambda_types
     }
 
     pub(in crate::analysis::java_backend) fn outer_instance_field(
@@ -211,7 +199,7 @@ impl JavaMethodBody {
             .return_type
             .as_ref()
             .is_some_and(|return_type| return_type != &ArgType::VOID)
-            && !crate::ir::semantic::SemanticCompletion::analyze(self.semantic.body())
+            && !crate::ir::semantic::SemanticCompletion::analyze(&self.body)
                 .can_complete_normally();
         let completion_type = source_return_type.clone();
         let (source_field_types, source_types) = {
@@ -222,7 +210,7 @@ impl JavaMethodBody {
                 fields.extend(outer_instances.clone());
                 std::sync::Arc::new(fields)
             };
-            let mut used_types = self.type_uses.clone();
+            let mut used_types = self.type_uses.uses.clone();
             used_types.extend(self.current_type.iter().cloned());
             used_types.extend(self.return_type.iter().cloned());
             used_types.insert(ArgType::object("java/lang/Object"));
@@ -248,8 +236,8 @@ impl JavaMethodBody {
         }?;
         let semantic_names = {
             super::super::semantic_naming::SemanticNameRecovery::new(type_names).recover(
-                self.semantic.body(),
-                self.semantic.state().types(),
+                &self.body,
+                &self.types,
                 parameter_names,
                 &self.parameter_code_vars,
                 self.this_code_var,
@@ -261,7 +249,7 @@ impl JavaMethodBody {
                 self.this_code_var,
                 &self.parameter_code_vars,
                 parameter_names,
-                self.semantic.state().types(),
+                &self.types,
                 source_types,
                 member_names,
             )
@@ -290,7 +278,7 @@ impl JavaMethodBody {
         }?;
         let mut ast = {
             JavaLowerer::new(dialect)
-                .lower(self.semantic.body())
+                .lower(&self.body)
                 .map_err(JavaDecompilerError::Java)
         }?;
         let mut declarations = LexicalDeclarationPlacement;
@@ -351,7 +339,7 @@ impl JavaMethodBody {
     }
 
     pub fn type_uses(&self) -> impl Iterator<Item = &ArgType> {
-        self.type_uses.iter()
+        self.type_uses.uses.iter()
     }
 
     pub(in crate::analysis::java_backend) fn current_type(&self) -> Option<&ArgType> {
@@ -377,37 +365,23 @@ impl JavaMethodBody {
 }
 
 #[derive(Default)]
-struct MemberReferenceCollector {
-    methods: std::collections::BTreeSet<crate::ir::MethodReference>,
-    fields: std::collections::BTreeSet<crate::ir::FieldReference>,
-    static_owners: std::collections::BTreeSet<ArgType>,
-    lambda_types: std::collections::BTreeSet<ArgType>,
+pub(in crate::analysis::java_backend) struct MemberReferences {
+    pub(in crate::analysis::java_backend) methods:
+        std::collections::BTreeSet<crate::ir::MethodReference>,
+    pub(in crate::analysis::java_backend) fields:
+        std::collections::BTreeSet<crate::ir::FieldReference>,
 }
 
-impl crate::ir::SemanticVisitor for MemberReferenceCollector {
+impl crate::ir::SemanticVisitor for MemberReferences {
     fn enter_operation(&mut self, operation: &crate::ir::SemanticOperation) {
-        if let Some(lambda) = operation.payload.lambda.as_deref() {
-            self.lambda_types.insert(lambda.interface.clone());
-            self.lambda_types
-                .insert(lambda.implementation.owner.clone());
-        }
         match operation.payload.reference.as_deref() {
-            Some(crate::ir::MemberReference::Method(method)) => {
-                if operation.payload.invoke_type == Some(crate::ir::InvokeType::Static) {
-                    self.static_owners.insert(method.owner.clone());
-                }
+            Some(crate::ir::MemberReference::Method(method)) if !self.methods.contains(method) => {
                 self.methods.insert(method.clone());
             }
-            Some(crate::ir::MemberReference::Field(field)) => {
-                if matches!(
-                    operation.insn_type,
-                    crate::ir::InsnType::Sget | crate::ir::InsnType::Sput
-                ) {
-                    self.static_owners.insert(field.owner.clone());
-                }
+            Some(crate::ir::MemberReference::Field(field)) if !self.fields.contains(field) => {
                 self.fields.insert(field.clone());
             }
-            None => {}
+            _ => {}
         }
     }
 }

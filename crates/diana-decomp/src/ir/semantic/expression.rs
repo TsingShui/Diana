@@ -4,10 +4,12 @@
 //! boundary onward every value, including control-dependent selections, uses
 //! this representation.
 
+use std::sync::Arc;
+
 use crate::ir::{
     analysis::{InstructionEffects, SourceEvaluationError},
-    ArgType, InsnArg, InsnNode, InsnPayload, InsnType, InstructionEquivalence, InstructionId,
-    LiteralArg, MemberReference, RegisterArg,
+    ArgType, InsnArg, InsnNode, InsnPayload, InsnType, InstructionId, LiteralArg, MemberReference,
+    RegisterArg,
 };
 
 use super::{SemanticFoldError, SemanticPredicate};
@@ -29,8 +31,13 @@ pub enum SemanticExpression {
 /// `instruction.args` and `instruction.payload.compound_target` are always
 /// empty. Keeping the opcode payload separate from operands makes it
 /// impossible for later stages to accidentally reintroduce wrapped CFG trees.
-#[derive(Debug, Clone)]
-pub struct SemanticOperation {
+#[derive(Clone)]
+pub struct SemanticOperation(Arc<SemanticOperationData>);
+
+/// Region contraction can place one operation at several semantic sites.
+/// Those sites share the operation until a transform edits one of them.
+#[derive(Clone)]
+pub struct SemanticOperationData {
     pub id: InstructionId,
     pub insn_type: InsnType,
     pub result: Option<RegisterArg>,
@@ -40,9 +47,105 @@ pub struct SemanticOperation {
     compound_target: Option<Box<SemanticExpression>>,
 }
 
+impl Drop for SemanticOperationData {
+    fn drop(&mut self) {
+        if !self
+            .operands
+            .iter()
+            .chain(self.compound_target.as_deref())
+            .any(|value| {
+                matches!(
+                    value,
+                    SemanticExpression::Operation(_) | SemanticExpression::Select { .. }
+                )
+            })
+        {
+            return;
+        }
+
+        // Dismantle nested last-owner operations on the heap stack. A shared
+        // operation's last owner will release its children in the same way.
+        let mut expressions = std::mem::take(&mut self.operands);
+        expressions.extend(self.compound_target.take().map(|value| *value));
+        let mut predicates = Vec::new();
+        while let Some(expression) = expressions.pop() {
+            match expression {
+                SemanticExpression::Operation(operation) => {
+                    Self::release(*operation, &mut expressions)
+                }
+                SemanticExpression::Select {
+                    condition,
+                    when_true,
+                    when_false,
+                } => {
+                    expressions.push(*when_true);
+                    expressions.push(*when_false);
+                    predicates.push(condition);
+                }
+                SemanticExpression::Register(_) | SemanticExpression::Literal(_) => {}
+            }
+            while let Some(predicate) = predicates.pop() {
+                match predicate {
+                    SemanticPredicate::Test(operation) => {
+                        Self::release(operation, &mut expressions)
+                    }
+                    SemanticPredicate::Not(inner) => predicates.push(*inner),
+                    SemanticPredicate::And(mut terms) | SemanticPredicate::Or(mut terms) => {
+                        predicates.append(&mut terms);
+                    }
+                    SemanticPredicate::True | SemanticPredicate::False => {}
+                }
+            }
+        }
+    }
+}
+
+impl SemanticOperationData {
+    fn release(operation: SemanticOperation, expressions: &mut Vec<SemanticExpression>) {
+        if let Some(mut data) = Arc::into_inner(operation.0) {
+            expressions.append(&mut data.operands);
+            expressions.extend(data.compound_target.take().map(|value| *value));
+        }
+    }
+}
+
+impl std::ops::Deref for SemanticOperation {
+    type Target = SemanticOperationData;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for SemanticOperation {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::make_mut(&mut self.0)
+    }
+}
+
+impl std::fmt::Debug for SemanticOperation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SemanticOperation")
+            .field("id", &self.id)
+            .field("insn_type", &self.insn_type)
+            .field("result", &self.result)
+            .field("offset", &self.offset)
+            .field("payload", &self.payload)
+            .field("operands", &self.operands)
+            .field("compound_target", &self.compound_target)
+            .finish()
+    }
+}
+
 impl SemanticExpression {
     pub fn from_argument(argument: InsnArg) -> Result<Self, SemanticFoldError> {
-        let mut pending = vec![ExpressionTask::Argument(argument)];
+        let instruction = match argument {
+            InsnArg::Reg(register) => return Ok(Self::Register(register)),
+            InsnArg::Lit(literal) => return Ok(Self::Literal(literal)),
+            InsnArg::Wrapped(instruction) => Arc::unwrap_or_clone(instruction),
+        };
+        let mut pending = Vec::new();
+        Self::schedule_operation(instruction, &mut pending);
         let mut results = Vec::new();
         while let Some(task) = pending.pop() {
             match task {
@@ -53,7 +156,7 @@ impl SemanticExpression {
                     results.push(Self::Literal(literal));
                 }
                 ExpressionTask::Argument(InsnArg::Wrapped(instruction)) => {
-                    Self::schedule_operation((*instruction).clone(), &mut pending);
+                    Self::schedule_operation(Arc::unwrap_or_clone(instruction), &mut pending);
                 }
                 ExpressionTask::Operation {
                     instruction,
@@ -68,18 +171,21 @@ impl SemanticExpression {
                     let (operands, compound_target) = {
                         let mut children = results.drain(start..);
                         let operands = children.by_ref().take(operand_count).collect();
-                        let compound_target = has_compound_target
-                            .then(|| children.next().map(Box::new))
-                            .flatten();
+                        let compound_target = if has_compound_target {
+                            Some(
+                                children
+                                    .next()
+                                    .ok_or(SemanticFoldError::MalformedWorkStack)?,
+                            )
+                        } else {
+                            None
+                        };
                         (operands, compound_target)
                     };
-                    if has_compound_target && compound_target.is_none() {
-                        return Err(SemanticFoldError::MalformedWorkStack);
-                    }
                     results.push(Self::Operation(Box::new(SemanticOperation::from_parts(
                         instruction,
                         operands,
-                        compound_target.map(|target| *target),
+                        compound_target,
                     ))));
                 }
             }
@@ -91,47 +197,7 @@ impl SemanticExpression {
     }
 
     pub fn operation(instruction: InsnNode) -> Result<Self, SemanticFoldError> {
-        let mut pending = Vec::new();
-        Self::schedule_operation(instruction, &mut pending);
-        let mut results = Vec::new();
-        while let Some(task) = pending.pop() {
-            match task {
-                ExpressionTask::Argument(argument) => {
-                    results.push(Self::from_argument(argument)?);
-                }
-                ExpressionTask::Operation {
-                    instruction,
-                    operand_count,
-                    has_compound_target,
-                } => {
-                    let child_count = operand_count + usize::from(has_compound_target);
-                    let start = results
-                        .len()
-                        .checked_sub(child_count)
-                        .ok_or(SemanticFoldError::MalformedWorkStack)?;
-                    let (operands, compound_target) = {
-                        let mut children = results.drain(start..);
-                        let operands = children.by_ref().take(operand_count).collect();
-                        let compound_target = has_compound_target
-                            .then(|| children.next().map(Box::new))
-                            .flatten();
-                        (operands, compound_target)
-                    };
-                    if has_compound_target && compound_target.is_none() {
-                        return Err(SemanticFoldError::MalformedWorkStack);
-                    }
-                    results.push(Self::Operation(Box::new(SemanticOperation::from_parts(
-                        instruction,
-                        operands,
-                        compound_target.map(|target| *target),
-                    ))));
-                }
-            }
-        }
-        if results.len() != 1 {
-            return Err(SemanticFoldError::MalformedWorkStack);
-        }
-        results.pop().ok_or(SemanticFoldError::MalformedWorkStack)
+        SemanticOperation::from_instruction(instruction).map(|op| Self::Operation(Box::new(op)))
     }
 
     fn schedule_operation(instruction: InsnNode, pending: &mut Vec<ExpressionTask>) {
@@ -234,6 +300,9 @@ impl SemanticExpression {
     }
 
     pub fn effects(&self) -> InstructionEffects {
+        if matches!(self, Self::Register(_) | Self::Literal(_)) {
+            return InstructionEffects::PURE;
+        }
         let mut effects = InstructionEffects::PURE;
         let mut pending = vec![self];
         while let Some(expression) = pending.pop() {
@@ -263,21 +332,20 @@ impl SemanticOperation {
     pub(crate) fn string_literal(value: impl Into<crate::ir::Utf16String>) -> Self {
         let mut instruction = InsnNode::new(InsnType::ConstStr, 0);
         instruction.payload.string_value = Some(Box::new(value.into()));
-        Self {
-            id: instruction.id,
-            insn_type: instruction.insn_type,
-            result: instruction.result,
-            offset: instruction.offset,
-            payload: instruction.payload,
-            operands: Vec::new(),
-            compound_target: None,
-        }
+        Self::from_parts(instruction, Vec::new(), None)
     }
-    pub fn from_instruction(instruction: InsnNode) -> Result<Self, SemanticFoldError> {
-        match SemanticExpression::operation(instruction)? {
-            SemanticExpression::Operation(operation) => Ok(*operation),
-            _ => Err(SemanticFoldError::MalformedWorkStack),
-        }
+    pub fn from_instruction(mut instruction: InsnNode) -> Result<Self, SemanticFoldError> {
+        let operands = std::mem::take(&mut instruction.args)
+            .into_iter()
+            .map(SemanticExpression::from_argument)
+            .collect::<Result<_, _>>()?;
+        let target = instruction
+            .payload
+            .compound_target
+            .take()
+            .map(|target| SemanticExpression::from_argument(*target))
+            .transpose()?;
+        Ok(Self::from_parts(instruction, operands, target))
     }
 
     pub fn operands(&self) -> &[SemanticExpression] {
@@ -297,8 +365,7 @@ impl SemanticOperation {
     }
 
     pub fn operation_equivalent(&self, other: &Self) -> bool {
-        self.instruction_with_arguments(Vec::new())
-            .operation_equivalent(&other.instruction_with_arguments(Vec::new()))
+        self.insn_type == other.insn_type && self.payload.operation_equivalent(&other.payload)
     }
 
     pub fn discard_result(&mut self) {
@@ -344,9 +411,7 @@ impl SemanticOperation {
     }
 
     pub fn effects_ignoring_edge_copy(&self) -> InstructionEffects {
-        let mut instruction = self.instruction_with_arguments(Vec::new());
-        instruction.payload.edge_copy = false;
-        let mut effects = InstructionEffects::of(&instruction);
+        let mut effects = self.direct_effects_with_edge_copy(false);
         for operand in &self.operands {
             effects = effects.join(operand.effects());
         }
@@ -357,7 +422,16 @@ impl SemanticOperation {
     }
 
     pub fn direct_effects(&self) -> InstructionEffects {
-        InstructionEffects::of(&self.instruction_with_arguments(Vec::new()))
+        self.direct_effects_with_edge_copy(self.payload.edge_copy)
+    }
+
+    pub(crate) fn direct_effects_with_edge_copy(&self, edge_copy: bool) -> InstructionEffects {
+        InstructionEffects::direct(
+            self.insn_type,
+            self.result.as_ref(),
+            &self.payload,
+            edge_copy,
+        )
     }
 
     pub fn conversion_type(&self) -> Option<&ArgType> {
@@ -478,7 +552,7 @@ impl SemanticOperation {
     ) -> Self {
         debug_assert!(instruction.args.is_empty());
         debug_assert!(instruction.payload.compound_target.is_none());
-        Self {
+        Self(Arc::new(SemanticOperationData {
             id: instruction.id,
             insn_type: instruction.insn_type,
             result: instruction.result,
@@ -486,20 +560,35 @@ impl SemanticOperation {
             payload: instruction.payload,
             operands,
             compound_target: compound_target.map(Box::new),
-        }
+        }))
     }
 
-    pub(crate) fn into_parts(
+    /// Takes the operation's instruction metadata, ordered semantic operands,
+    /// and optional compound-assignment target. The instruction contains the
+    /// original ID, opcode, result, offset and payload. Its raw argument list
+    /// is empty because the operands are already semantic expressions.
+    ///
+    /// The last owner moves these values directly. If other sites still share
+    /// the operation, they retain their operands and instruction metadata.
+    pub fn into_parts(
         self,
     ) -> (
         InsnNode,
         Vec<SemanticExpression>,
         Option<SemanticExpression>,
     ) {
+        let mut data = Arc::unwrap_or_clone(self.0);
         (
-            self.instruction_with_arguments(Vec::new()),
-            self.operands,
-            self.compound_target.map(|target| *target),
+            InsnNode {
+                id: data.id,
+                insn_type: data.insn_type,
+                result: data.result.take(),
+                args: Vec::new(),
+                offset: data.offset,
+                payload: std::mem::take(&mut data.payload),
+            },
+            std::mem::take(&mut data.operands),
+            data.compound_target.take().map(|target| *target),
         )
     }
 

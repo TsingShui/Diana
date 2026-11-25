@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use super::values::EncodedValues;
 use super::{
     file_offset, malformed, Cursor, InputError, InputProblem, MethodBody, MethodError,
@@ -37,7 +39,7 @@ pub struct MethodSource<'i, 'a> {
     method_id: MethodId,
     owner: crate::p0::OwnerContext<'a>,
     access_flags: u32,
-    declaration: crate::p0::MethodDeclaration,
+    declaration: Cow<'i, crate::p0::MethodDeclaration>,
     raw: RawPrintable<'a>,
     /// The independent method/parameter annotation read for this member. A
     /// damaged set retains its own classified error and does not remove code.
@@ -103,12 +105,35 @@ impl<'a> ProgramIndex<'a> {
     /// Builds the method-source product for one original entry delivered by the
     /// class-fact producer. The entry supplies the identity, declaration result,
     /// encoded group and original code offset, so this never re-walks class-data.
-    /// The re-read declaration record is checked against that entry; a disagreement
-    /// is an internal invariant, not a second source of member facts.
     pub fn method_source<'i>(
         &'i self,
         facts: &crate::p0::ClassFacts,
         method_id: MethodId,
+    ) -> Result<MethodSource<'i, 'a>, MethodError> {
+        self.bound_method_source(facts, facts.method_entry(method_id), |declaration| {
+            declaration.try_copy().map(Cow::Owned).map_err(method_error)
+        })
+    }
+
+    /// Opens the directory position already selected by the class request.
+    /// Selecting through the owning facts keeps the member bound to this class.
+    pub(crate) fn method_source_by_ordinal<'i>(
+        &'i self,
+        facts: &'i crate::p0::ClassFacts,
+        ordinal: usize,
+    ) -> Result<MethodSource<'i, 'a>, MethodError> {
+        self.bound_method_source(facts, facts.methods().get(ordinal), |declaration| {
+            Ok(Cow::Borrowed(declaration))
+        })
+    }
+
+    fn bound_method_source<'i, 'f>(
+        &'i self,
+        facts: &crate::p0::ClassFacts,
+        entry: Option<&'f crate::p0::MethodDirectoryEntry>,
+        bind: impl FnOnce(
+            &'f crate::p0::MethodDeclaration,
+        ) -> Result<Cow<'i, crate::p0::MethodDeclaration>, MethodError>,
     ) -> Result<MethodSource<'i, 'a>, MethodError> {
         if facts.owner().dex != self.dex_id()
             || facts.header_offset() != self.header.header_offset
@@ -118,20 +143,19 @@ impl<'a> ProgramIndex<'a> {
                 "class facts and class view disagree on the original type",
             ));
         }
-        let entry = facts.method_entry(method_id).ok_or_else(|| {
+        let entry = entry.ok_or_else(|| {
             MethodError::Input(malformed(
                 InputProblem::InvalidReference,
                 self.header.method_ids.offset_byte,
             ))
         })?;
+        let method_id = entry.method();
         let access_flags = entry.access_flags().raw();
         // The declaration is P0's product. The reader binds the entry identity
         // and opens only the original code item; it never resolves the
         // declaration record again.
         let declaration = match entry.declaration() {
-            crate::p0::Fact::Present(declaration) => {
-                declaration.try_copy().map_err(method_error)?
-            }
+            crate::p0::Fact::Present(declaration) => bind(declaration)?,
             crate::p0::Fact::Unavailable(crate::RequestError::Input(error)) => {
                 return Err(MethodError::Input(*error));
             }
@@ -180,7 +204,7 @@ impl<'a> ProgramIndex<'a> {
         method_id: MethodId,
         access_flags: u32,
         body: MethodBody<'a>,
-        declaration: crate::p0::MethodDeclaration,
+        declaration: Cow<'i, crate::p0::MethodDeclaration>,
     ) -> Result<MethodSource<'i, 'a>, MethodError> {
         let class_id = facts.class_def();
         // Optional metadata is read independently: a damaged debug program or

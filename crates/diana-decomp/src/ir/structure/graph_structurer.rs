@@ -57,8 +57,9 @@ impl<'a, 'semantic> GraphStructurer<'a, 'semantic> {
         if nodes.is_empty() {
             return Ok(SemanticNode::Empty);
         }
-        let components = StrongComponents::analyze(self.cfg, nodes.iter().copied());
-        if self.force_graph_reduction || !self.terminal_seeds.is_empty() || !components.is_acyclic()
+        if self.force_graph_reduction
+            || !self.terminal_seeds.is_empty()
+            || !StrongComponents::analyze(self.cfg, nodes.iter().copied()).is_acyclic()
         {
             return self.reduce_graph();
         }
@@ -74,12 +75,12 @@ impl<'a, 'semantic> GraphStructurer<'a, 'semantic> {
         }
     }
 
-    fn reduce_graph(&self) -> Result<SemanticNode, StructureError> {
+    fn reduce_graph(self) -> Result<SemanticNode, StructureError> {
         SemanticFlowGraph::build(
             self.cfg,
             self.semantic,
             self.region,
-            &self.seeded,
+            self.seeded,
             &self.terminal_seeds,
         )?
         .reduce(self.semantic)

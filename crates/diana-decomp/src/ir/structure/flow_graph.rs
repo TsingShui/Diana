@@ -11,9 +11,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::ir::semantic::SemanticCompletion;
 use crate::ir::semantic::SemanticFactory;
 use crate::ir::{
-    Block, BlockId, BoolExpr, EdgeKind, InsnArg, InsnType, RegionId, SemanticExpression,
-    SemanticFoldError, SemanticFolder, SemanticLabel, SemanticLeaveKind, SemanticNode,
-    SemanticPredicate, SemanticStatement, SemanticSwitchCase, SemanticVisitor, CFG,
+    Block, BlockId, BoolExpr, EdgeKind, InsnArg, InsnType, RegionId, SemanticFoldError,
+    SemanticFolder, SemanticLabel, SemanticLeaveKind, SemanticNode, SemanticPredicate,
+    SemanticSwitchCase, SemanticVisitor, CFG,
 };
 
 use super::{
@@ -176,6 +176,26 @@ impl FlowTransfer {
 struct FlowNode {
     body: SemanticNode,
     transfer: FlowTransfer,
+    embedded_uses: std::cell::OnceCell<Box<[(BlockId, usize)]>>,
+}
+
+impl FlowNode {
+    fn take_body(&mut self) -> SemanticNode {
+        self.embedded_uses.take();
+        std::mem::replace(&mut self.body, SemanticNode::Empty)
+    }
+
+    // The region is fixed for the life of this fragment, including loop
+    // subgraphs. Replacing the body invalidates only this node's counts.
+    fn embedded_uses(&self, region: RegionId) -> &[(BlockId, usize)] {
+        self.embedded_uses.get_or_init(|| {
+            let mut uses = BTreeMap::<BlockId, usize>::new();
+            visit_open_targets(region, &self.body, |target| {
+                *uses.entry(target).or_default() += 1
+            });
+            uses.into_iter().collect()
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -232,7 +252,7 @@ impl SemanticFlowGraph {
         cfg: &CFG,
         semantic: &SemanticFactory<'_>,
         region: RegionId,
-        seeded: &BTreeMap<BlockId, SemanticNode>,
+        mut seeded: BTreeMap<BlockId, SemanticNode>,
         fragments: &BTreeSet<BlockId>,
     ) -> Result<Self, StructureError> {
         let graph_nodes = cfg.graph_node_ids().into_iter().collect::<BTreeSet<_>>();
@@ -250,8 +270,8 @@ impl SemanticFlowGraph {
             let prefix_only = source.terminator().is_some_and(|terminator| {
                 matches!(terminator.insn_type, InsnType::If | InsnType::Switch)
             });
-            let body = match seeded.get(block) {
-                Some(body) => body.clone(),
+            let body = match seeded.remove(block) {
+                Some(body) => body,
                 None => semantic.block(*block, prefix_only)?,
             };
             let transfer = if fragments.contains(block) {
@@ -261,7 +281,14 @@ impl SemanticFlowGraph {
             } else {
                 Self::transfer(semantic, *block, source.terminator(), &successors)?
             };
-            nodes.insert(*block, FlowNode { body, transfer });
+            nodes.insert(
+                *block,
+                FlowNode {
+                    body,
+                    transfer,
+                    embedded_uses: Default::default(),
+                },
+            );
         }
         let next_id = graph_nodes
             .iter()
@@ -382,7 +409,7 @@ impl SemanticFlowGraph {
                         return Ok((body, self.next_id));
                     }
                 }
-                let lowering = AcyclicLabelLowering::new(&self)?;
+                let lowering = AcyclicLabelLowering::new(self)?;
                 let next_id = lowering.next_id();
                 let body = lowering.lower()?;
                 return Ok((body, next_id));
@@ -451,6 +478,7 @@ impl SemanticFlowGraph {
         let boundary = FlowBoundary::analyze(self.region, &body, external)
             .bind_targets(self.continues.keys().copied());
         let replacement = FlowNode {
+            embedded_uses: Default::default(),
             transfer: FlowTransfer::fragment(header, &body, boundary)?,
             body,
         };
@@ -463,8 +491,7 @@ impl SemanticFlowGraph {
             .collect::<BTreeMap<_, _>>();
         for node in self.nodes.values_mut() {
             node.transfer.remap(&mapping);
-            node.body = OpenTargetRemap::new(self.region, &mapping)
-                .fold_node(std::mem::replace(&mut node.body, SemanticNode::Empty))?;
+            node.body = OpenTargetRemap::new(self.region, &mapping).fold_node(node.take_body())?;
         }
         Ok(())
     }
@@ -487,7 +514,7 @@ impl SemanticFlowGraph {
             _ => return Err(StructureError::MalformedFlowNode(branch.source)),
         };
         source.body = SemanticNode::sequence([
-            std::mem::replace(&mut source.body, SemanticNode::Empty),
+            source.take_body(),
             SemanticNode::branch(condition, when_true, Some(when_false)),
         ]);
         source.transfer = FlowTransfer::Jump(branch.join);
@@ -573,7 +600,7 @@ impl SemanticFlowGraph {
             .get_mut(&switch.source)
             .ok_or(StructureError::MalformedFlowNode(switch.source))?;
         source.body = SemanticNode::sequence([
-            std::mem::replace(&mut source.body, SemanticNode::Empty),
+            source.take_body(),
             SemanticNode::Switch {
                 region: Some(self.region),
                 selector: crate::ir::SemanticOperand::new(
@@ -640,12 +667,7 @@ impl SemanticFlowGraph {
         let mut seeded = self
             .nodes
             .iter_mut()
-            .map(|(block, node)| {
-                (
-                    *block,
-                    std::mem::replace(&mut node.body, SemanticNode::Empty),
-                )
-            })
+            .map(|(block, node)| (*block, node.take_body()))
             .collect::<BTreeMap<_, _>>();
         seeded.extend(
             cfg.block_ids()
@@ -689,8 +711,11 @@ impl SemanticFlowGraph {
                 FlowTransfer::Switch { .. } | FlowTransfer::Fragment { .. } => return Ok(None),
                 FlowTransfer::Stop | FlowTransfer::Jump(_) => {}
             }
-            let jumps = open_targets(self.region, &node.body);
-            if jumps.iter().any(|target| self.is_internal_target(*target)) {
+            if node
+                .embedded_uses(self.region)
+                .iter()
+                .any(|(target, _)| self.is_internal_target(*target))
+            {
                 return Ok(None);
             }
             cfg.add_block(skeleton);
@@ -784,7 +809,8 @@ impl SemanticFlowGraph {
                     .cloned()
                     .ok_or(StructureError::MalformedFlowNode(*block))?;
                 node.transfer.remap(&mapping);
-                node.body = LexicalAlphaRenaming::new(&lexical_mapping).fold_node(node.body)?;
+                node.body =
+                    LexicalAlphaRenaming::new(&lexical_mapping).fold_node(node.take_body())?;
                 node.body = OpenTargetRemap::new(self.region, &mapping).fold_node(node.body)?;
                 clones.insert(mapping[block], node);
             }
@@ -799,8 +825,8 @@ impl SemanticFlowGraph {
                     .get_mut(predecessor)
                     .ok_or(StructureError::MalformedFlowNode(*predecessor))?;
                 node.transfer.remap(&replacement);
-                node.body = OpenTargetRemap::new(self.region, &replacement)
-                    .fold_node(std::mem::replace(&mut node.body, SemanticNode::Empty))?;
+                node.body =
+                    OpenTargetRemap::new(self.region, &replacement).fold_node(node.take_body())?;
             }
         }
         Ok(())
@@ -844,7 +870,7 @@ impl SemanticFlowGraph {
         }
         for (block, node) in &mut self.nodes {
             node.body = EmbeddedContinuationBinding::new(self.region, *block, &self.continues)
-                .fold_node(std::mem::replace(&mut node.body, SemanticNode::Empty))?;
+                .fold_node(node.take_body())?;
         }
         Ok(())
     }
@@ -880,9 +906,11 @@ impl SemanticFlowGraph {
             return BTreeSet::new();
         };
         let mut targets = node.transfer.targets();
-        visit_open_targets(self.region, &node.body, |target| {
-            targets.insert(target);
-        });
+        targets.extend(
+            node.embedded_uses(self.region)
+                .iter()
+                .map(|(target, _)| *target),
+        );
         targets
     }
 
@@ -905,10 +933,11 @@ impl SemanticFlowGraph {
         let Some(node) = self.nodes.get(&source) else {
             return 0;
         };
-        let mut body_uses = 0;
-        visit_open_targets(self.region, &node.body, |used| {
-            body_uses += usize::from(used == target);
-        });
+        let uses = node.embedded_uses(self.region);
+        let body_uses = uses
+            .binary_search_by_key(&target, |&(used, _)| used)
+            .map(|index| uses[index].1)
+            .unwrap_or(0);
         body_uses
             + match &node.transfer {
                 FlowTransfer::Fragment { normal, .. } => usize::from(*normal == Some(target)),
@@ -1312,13 +1341,13 @@ impl FragmentNormalizer {
             .get_mut(&block)
             .ok_or(StructureError::MalformedFlowNode(block))?;
         let mut binding = BlockExitBinding::new(graph.region, target, label);
-        node.body = binding.fold_node(std::mem::replace(&mut node.body, SemanticNode::Empty))?;
+        node.body = binding.fold_node(node.take_body())?;
         if binding.count == 0 {
             return Err(StructureError::MalformedFlowNode(block));
         }
         node.body = SemanticNode::Label {
             label,
-            body: Box::new(std::mem::replace(&mut node.body, SemanticNode::Empty)),
+            body: Box::new(node.take_body()),
         };
         let completion = SemanticCompletion::analyze(&node.body);
         if completion.has_open_transfer_to(graph.region)
@@ -1466,8 +1495,7 @@ impl TerminalContinuation {
             continuation: &continuation,
             count: 0,
         };
-        source.body =
-            binding.fold_node(std::mem::replace(&mut source.body, SemanticNode::Empty))?;
+        source.body = binding.fold_node(source.take_body())?;
         if binding.count == 0 {
             return Err(StructureError::MalformedFlowNode(self.source));
         }
@@ -1570,6 +1598,9 @@ impl SemanticVisitor for LexicalLabelClosure {
             self.depth -= 1;
         }
     }
+    fn visits_values(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Default)]
@@ -1632,6 +1663,9 @@ impl SemanticVisitor for FreeLabelReferences {
         if *depth == 0 {
             self.active.remove(&label);
         }
+    }
+    fn visits_values(&self) -> bool {
+        false
     }
 }
 
@@ -1711,9 +1745,9 @@ impl SemanticVisitor for ProtectedTransfer {
         self.depth -= 1;
     }
 
-    fn visit_statement(&mut self, _: &SemanticStatement) {}
-    fn visit_predicate(&mut self, _: &SemanticPredicate) {}
-    fn visit_expression(&mut self, _: &SemanticExpression) {}
+    fn visits_values(&self) -> bool {
+        false
+    }
 }
 
 struct TerminalContinuationBinding<'a> {
@@ -1877,8 +1911,7 @@ impl LinearContinuation {
             continuation: &continuation,
             count: 0,
         };
-        source.body =
-            binding.fold_node(std::mem::replace(&mut source.body, SemanticNode::Empty))?;
+        source.body = binding.fold_node(source.take_body())?;
         if binding.count == 0 {
             return Err(StructureError::MalformedFlowNode(self.source));
         }
@@ -2631,15 +2664,15 @@ impl PostDomain {
     }
 }
 
-struct AcyclicLabelLowering<'a> {
-    graph: &'a SemanticFlowGraph,
+struct AcyclicLabelLowering {
+    graph: SemanticFlowGraph,
     nodes: BTreeSet<BlockId>,
     labels: BTreeMap<BlockId, SemanticLabel>,
     next_id: u32,
 }
 
-impl<'a> AcyclicLabelLowering<'a> {
-    fn new(graph: &'a SemanticFlowGraph) -> Result<Self, StructureError> {
+impl AcyclicLabelLowering {
+    fn new(graph: SemanticFlowGraph) -> Result<Self, StructureError> {
         let mut identities = LexicalIdentities::default();
         identities.labels.extend(
             graph
@@ -2676,8 +2709,8 @@ impl<'a> AcyclicLabelLowering<'a> {
             labels.insert(target, SemanticLabel::block(graph.region, block));
         }
         Ok(Self {
-            graph,
             nodes: graph.nodes.keys().copied().collect(),
+            graph,
             labels,
             next_id,
         })
@@ -2687,7 +2720,7 @@ impl<'a> AcyclicLabelLowering<'a> {
         self.next_id
     }
 
-    fn lower(&self) -> Result<SemanticNode, StructureError> {
+    fn lower(mut self) -> Result<SemanticNode, StructureError> {
         let order = self.graph.topological_order()?;
         let ranks = order
             .iter()
@@ -2711,14 +2744,28 @@ impl<'a> AcyclicLabelLowering<'a> {
             }) {
                 self.record_interval(&ranks, &mut intervals, index, target)?;
             }
-            let body = self.body(node, next);
-            for target in open_targets(self.graph.region, &body)
-                .into_iter()
-                .filter(|target| {
-                    self.nodes.contains(target) && !self.graph.continues.contains_key(target)
+            // Natural fallthrough removes at most one trailing transfer.
+            // Counting the remaining target uses needs no clone of the body.
+            let trailing = if matches!(node.transfer, FlowTransfer::Fragment { .. }) {
+                None
+            } else {
+                let tail = match &node.body {
+                    SemanticNode::Sequence(children) => children.last(),
+                    body => Some(body),
+                };
+                next.filter(|target| {
+                    tail.is_some_and(|tail| {
+                        NaturalFallthrough::targets(tail, self.graph.region, *target)
+                    })
                 })
-            {
-                self.record_interval(&ranks, &mut intervals, index, target)?;
+            };
+            for &(target, uses) in node.embedded_uses(self.graph.region) {
+                if !(trailing == Some(target) && uses == 1)
+                    && self.nodes.contains(&target)
+                    && !self.graph.continues.contains_key(&target)
+                {
+                    self.record_interval(&ranks, &mut intervals, index, target)?;
+                }
             }
         }
 
@@ -2728,10 +2775,14 @@ impl<'a> AcyclicLabelLowering<'a> {
             let node = self
                 .graph
                 .nodes
-                .get(&block)
+                .remove(&block)
                 .ok_or(StructureError::MalformedFlowNode(block))?;
-            let body = self.body(node, next);
-            let body = OpenTargetBinding::new(self).fold_node(body)?;
+            let body = if matches!(node.transfer, FlowTransfer::Fragment { .. }) {
+                node.body
+            } else {
+                NaturalFallthrough::strip(self.graph.region, node.body, next)
+            };
+            let body = OpenTargetBinding::new(&self).fold_node(body)?;
             let transfer = self.transfer(&node.transfer, next)?;
             lowered.push(SemanticNode::sequence([body, transfer]));
         }
@@ -2751,14 +2802,6 @@ impl<'a> AcyclicLabelLowering<'a> {
                 body: Box::new(body),
             });
         Ok(body)
-    }
-
-    fn body(&self, node: &FlowNode, next: Option<BlockId>) -> SemanticNode {
-        if matches!(&node.transfer, FlowTransfer::Fragment { .. }) {
-            node.body.clone()
-        } else {
-            NaturalFallthrough::strip(self.graph.region, node.body.clone(), next)
-        }
     }
 
     fn record_interval(
@@ -2892,101 +2935,57 @@ impl LabelLayout {
         order: &[BlockId],
         starts: BTreeMap<BlockId, usize>,
     ) -> Result<Self, StructureError> {
-        let ranks = order
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(rank, block)| (block, rank))
-            .collect::<BTreeMap<_, _>>();
-        let mut intervals = starts
-            .into_iter()
-            .map(|(target, start)| {
-                let end = ranks
-                    .get(&target)
-                    .copied()
-                    .ok_or(StructureError::MalformedFlowNode(target))?;
-                Ok(LabelInterval {
-                    target: Some(target),
-                    start,
-                    end,
-                    children: Vec::new(),
-                })
-            })
-            .collect::<Result<Vec<_>, StructureError>>()?;
-        Self::close_crossing_intervals(&mut intervals);
+        // In topological order every target has one interval and a unique
+        // end. Earlier intervals on the stack are disjoint maximal siblings.
+        // An overlapping sibling is either contained already or crosses the
+        // new interval; in the latter case extend the new start to enclose it.
+        let mut starts = starts;
+        let mut intervals = Vec::<LabelInterval>::with_capacity(starts.len() + 1);
+        let mut siblings = Vec::<usize>::new();
+        for (end, target) in order.iter().copied().enumerate() {
+            let Some(mut start) = starts.remove(&target) else {
+                continue;
+            };
+            let mut children = Vec::new();
+            while let Some(&previous) = siblings.last() {
+                let preceding = &intervals[previous];
+                if preceding.end <= start {
+                    break;
+                }
+                start = start.min(preceding.start);
+                children.push(previous);
+                siblings.pop();
+            }
+            children.reverse();
+            siblings.push(intervals.len());
+            intervals.push(LabelInterval {
+                target: Some(target),
+                start,
+                end,
+                children,
+            });
+        }
+        if let Some((&target, _)) = starts.first_key_value() {
+            return Err(StructureError::MalformedFlowNode(target));
+        }
         intervals.push(LabelInterval {
             target: None,
             start: 0,
             end: order.len(),
-            children: Vec::new(),
+            children: siblings,
         });
-        let root = intervals.len() - 1;
-        for child in 0..root {
-            let parent = (0..intervals.len())
-                .filter(|candidate| *candidate != child)
-                .filter(|candidate| Self::contains(&intervals[*candidate], &intervals[child]))
-                .min_by_key(|candidate| {
-                    intervals[*candidate]
-                        .end
-                        .saturating_sub(intervals[*candidate].start)
-                })
-                .ok_or(StructureError::MalformedFlowGraph(region))?;
-            intervals[parent].children.push(child);
-        }
-        let bounds = intervals
-            .iter()
-            .map(|interval| (interval.start, interval.end))
-            .collect::<Vec<_>>();
-        for interval in &mut intervals {
-            interval.children.sort_by_key(|child| {
-                let (start, end) = bounds[*child];
-                (start, std::cmp::Reverse(end))
-            });
-        }
         Ok(Self { region, intervals })
-    }
-
-    fn close_crossing_intervals(intervals: &mut [LabelInterval]) {
-        loop {
-            let mut changed = false;
-            for left in 0..intervals.len() {
-                for right in 0..intervals.len() {
-                    if intervals[left].start < intervals[right].start
-                        && intervals[right].start < intervals[left].end
-                        && intervals[left].end < intervals[right].end
-                    {
-                        intervals[right].start = intervals[left].start;
-                        changed = true;
-                    }
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
-    }
-
-    fn contains(parent: &LabelInterval, child: &LabelInterval) -> bool {
-        parent.start <= child.start
-            && child.end <= parent.end
-            && (parent.start < child.start || child.end < parent.end)
     }
 
     fn lower(
         &self,
-        nodes: Vec<SemanticNode>,
+        mut nodes: Vec<SemanticNode>,
         labels: &BTreeMap<BlockId, SemanticLabel>,
     ) -> Result<SemanticNode, StructureError> {
-        let root = self.intervals.len() - 1;
-        let mut bodies = BTreeMap::<usize, SemanticNode>::new();
-        let mut postorder = (0..self.intervals.len()).collect::<Vec<_>>();
-        postorder.sort_by_key(|interval| {
-            self.intervals[*interval]
-                .end
-                .saturating_sub(self.intervals[*interval].start)
-        });
-        for interval_id in postorder {
-            let interval = &self.intervals[interval_id];
+        let mut bodies = Vec::<Option<SemanticNode>>::with_capacity(self.intervals.len());
+        // Children have an earlier end than their parent. Each position
+        // belongs to exactly one innermost interval.
+        for interval in &self.intervals {
             let mut children = interval.children.iter().copied().peekable();
             let mut position = interval.start;
             let mut sequence = Vec::new();
@@ -2995,7 +2994,8 @@ impl LabelLayout {
                     let child_interval = &self.intervals[child];
                     if child_interval.start == position {
                         let body = bodies
-                            .remove(&child)
+                            .get_mut(child)
+                            .and_then(Option::take)
                             .ok_or(StructureError::MalformedFlowGraph(self.region))?;
                         let target = child_interval
                             .target
@@ -3013,31 +3013,30 @@ impl LabelLayout {
                         continue;
                     }
                 }
-                sequence.push(
-                    nodes
-                        .get(position)
-                        .cloned()
-                        .ok_or(StructureError::MalformedFlowGraph(self.region))?,
-                );
+                let node = nodes
+                    .get_mut(position)
+                    .ok_or(StructureError::MalformedFlowGraph(self.region))?;
+                sequence.push(std::mem::replace(node, SemanticNode::Empty));
                 position += 1;
             }
             if children.next().is_some() {
                 return Err(StructureError::MalformedFlowGraph(self.region));
             }
-            bodies.insert(interval_id, SemanticNode::sequence(sequence));
+            bodies.push(Some(SemanticNode::sequence(sequence)));
         }
         bodies
-            .remove(&root)
+            .pop()
+            .flatten()
             .ok_or(StructureError::MalformedFlowGraph(self.region))
     }
 }
 
 struct OpenTargetBinding<'a> {
-    lowering: &'a AcyclicLabelLowering<'a>,
+    lowering: &'a AcyclicLabelLowering,
 }
 
 impl<'a> OpenTargetBinding<'a> {
-    fn new(lowering: &'a AcyclicLabelLowering<'a>) -> Self {
+    fn new(lowering: &'a AcyclicLabelLowering) -> Self {
         Self { lowering }
     }
 }
@@ -3182,9 +3181,9 @@ impl<F: FnMut(BlockId)> SemanticVisitor for OpenTargets<F> {
     }
 
     // Open transfers are semantic nodes. The operand subtrees contain only values.
-    fn visit_statement(&mut self, _: &SemanticStatement) {}
-    fn visit_predicate(&mut self, _: &SemanticPredicate) {}
-    fn visit_expression(&mut self, _: &SemanticExpression) {}
+    fn visits_values(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Default)]
@@ -3227,6 +3226,9 @@ impl SemanticVisitor for LexicalBindings {
             }
             _ => {}
         }
+    }
+    fn visits_values(&self) -> bool {
+        false
     }
 }
 
@@ -3345,6 +3347,9 @@ impl SemanticVisitor for LexicalIdentities {
             _ => {}
         }
     }
+    fn visits_values(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -3415,6 +3420,7 @@ mod tests {
             nodes: BTreeMap::from([(
                 source,
                 FlowNode {
+                    embedded_uses: Default::default(),
                     body: SemanticNode::Leave(crate::ir::SemanticLeave {
                         site: None,
                         condition: None,
@@ -3467,6 +3473,7 @@ mod tests {
                 (
                     entry,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Branch {
                             condition: SemanticPredicate::True,
@@ -3478,6 +3485,7 @@ mod tests {
                 (
                     branch,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(exit),
                     },
@@ -3512,6 +3520,7 @@ mod tests {
                 (
                     source,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Branch {
                             condition: SemanticPredicate::True,
@@ -3523,6 +3532,7 @@ mod tests {
                 (
                     arm,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(exit),
                     },
@@ -3551,6 +3561,7 @@ mod tests {
                 (
                     source,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Branch {
                             condition: SemanticPredicate::True,
@@ -3562,6 +3573,7 @@ mod tests {
                 (
                     terminal,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Leave(crate::ir::SemanticLeave {
                             site: None,
                             condition: None,
@@ -3599,6 +3611,7 @@ mod tests {
             nodes: BTreeMap::from([(
                 source,
                 FlowNode {
+                    embedded_uses: Default::default(),
                     body: SemanticNode::Empty,
                     transfer: FlowTransfer::Branch {
                         condition: SemanticPredicate::True,
@@ -3643,6 +3656,7 @@ mod tests {
                 (
                     source,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::If {
                             condition: crate::ir::SemanticOperand::new(SemanticPredicate::True),
                             then_node: Box::new(leave(exit)),
@@ -3657,6 +3671,7 @@ mod tests {
                 (
                     terminal,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Leave(crate::ir::SemanticLeave {
                             site: None,
                             condition: None,
@@ -3677,7 +3692,7 @@ mod tests {
             exits: BTreeSet::from([exit]),
         };
 
-        let body = AcyclicLabelLowering::new(&graph)
+        let body = AcyclicLabelLowering::new(graph)
             .expect("label allocation")
             .lower()
             .expect("acyclic label lowering");
@@ -3712,6 +3727,7 @@ mod tests {
                 (
                     source,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Branch {
                             condition: SemanticPredicate::True,
@@ -3723,6 +3739,7 @@ mod tests {
                 (
                     join,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Stop,
                     },
@@ -3730,6 +3747,7 @@ mod tests {
                 (
                     tail_entry,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(update),
                     },
@@ -3737,6 +3755,7 @@ mod tests {
                 (
                     update,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(continuation),
                     },
@@ -3744,6 +3763,7 @@ mod tests {
                 (
                     continuation,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Leave(crate::ir::SemanticLeave {
                             site: None,
                             condition: None,
@@ -3792,6 +3812,7 @@ mod tests {
                 (
                     source,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Branch {
                             condition: SemanticPredicate::True,
@@ -3803,6 +3824,7 @@ mod tests {
                 (
                     when_true,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(continuation),
                     },
@@ -3810,6 +3832,7 @@ mod tests {
                 (
                     when_false,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(continuation),
                     },
@@ -3848,6 +3871,7 @@ mod tests {
                 (
                     source,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Branch {
                             condition: SemanticPredicate::True,
@@ -3859,6 +3883,7 @@ mod tests {
                 (
                     when_true,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(join),
                     },
@@ -3866,6 +3891,7 @@ mod tests {
                 (
                     when_false,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(join),
                     },
@@ -3873,6 +3899,7 @@ mod tests {
                 (
                     join,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(terminal),
                     },
@@ -3880,6 +3907,7 @@ mod tests {
                 (
                     terminal,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Leave(crate::ir::SemanticLeave {
                             site: None,
                             condition: None,
@@ -3959,6 +3987,7 @@ mod tests {
                 (
                     first,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::sequence([jump(second), jump(join)]),
                         transfer: FlowTransfer::Fragment {
                             normal: None,
@@ -3969,6 +3998,7 @@ mod tests {
                 (
                     second,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: labeled_second,
                         transfer: FlowTransfer::Jump(join),
                     },
@@ -3976,6 +4006,7 @@ mod tests {
                 (
                     join,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Stop,
                     },
@@ -4034,6 +4065,7 @@ mod tests {
                 (
                     source,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::If {
                             condition: crate::ir::SemanticOperand::new(condition),
                             then_node: Box::new(jump(arm)),
@@ -4048,6 +4080,7 @@ mod tests {
                 (
                     arm,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(join),
                     },
@@ -4055,6 +4088,7 @@ mod tests {
                 (
                     join,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(terminal),
                     },
@@ -4062,6 +4096,7 @@ mod tests {
                 (
                     terminal,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Leave(crate::ir::SemanticLeave {
                             site: None,
                             condition: None,
@@ -4117,6 +4152,7 @@ mod tests {
                 (
                     source,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: jump(terminal),
                         transfer: FlowTransfer::Fragment {
                             normal: None,
@@ -4127,6 +4163,7 @@ mod tests {
                 (
                     other,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(terminal),
                     },
@@ -4134,6 +4171,7 @@ mod tests {
                 (
                     terminal,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Leave(crate::ir::SemanticLeave {
                             site: None,
                             condition: None,
@@ -4204,6 +4242,7 @@ mod tests {
                 (
                     outside,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: jump(terminal),
                         transfer: FlowTransfer::Fragment {
                             normal: None,
@@ -4214,6 +4253,7 @@ mod tests {
                 (
                     other,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(terminal),
                     },
@@ -4221,6 +4261,7 @@ mod tests {
                 (
                     terminal,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Leave(crate::ir::SemanticLeave {
                             site: None,
                             condition: None,
@@ -4264,6 +4305,7 @@ mod tests {
                 (
                     source,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(test),
                     },
@@ -4271,6 +4313,7 @@ mod tests {
                 (
                     test,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Branch {
                             condition: SemanticPredicate::True,
@@ -4282,6 +4325,7 @@ mod tests {
                 (
                     abrupt,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(continuation),
                     },
@@ -4289,6 +4333,7 @@ mod tests {
                 (
                     join,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Stop,
                     },
@@ -4326,7 +4371,7 @@ mod tests {
             exits: BTreeSet::from([continuation]),
         };
 
-        let action = AcyclicLabelLowering::new(&graph)
+        let action = AcyclicLabelLowering::new(graph)
             .expect("label allocation")
             .embedded_action(continuation);
 
@@ -4351,6 +4396,7 @@ mod tests {
             nodes: BTreeMap::from([(
                 entry,
                 FlowNode {
+                    embedded_uses: Default::default(),
                     body: SemanticNode::Leave(crate::ir::SemanticLeave {
                         site: None,
                         condition: None,
@@ -4397,6 +4443,7 @@ mod tests {
             nodes: BTreeMap::from([(
                 outside,
                 FlowNode {
+                    embedded_uses: Default::default(),
                     body: SemanticNode::Leave(crate::ir::SemanticLeave {
                         site: None,
                         condition: None,
@@ -4448,6 +4495,7 @@ mod tests {
             nodes: BTreeMap::from([(
                 entry,
                 FlowNode {
+                    embedded_uses: Default::default(),
                     body: SemanticNode::Leave(crate::ir::SemanticLeave {
                         site: None,
                         condition: None,
@@ -4503,6 +4551,7 @@ mod tests {
                 (
                     first,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(second),
                     },
@@ -4510,6 +4559,7 @@ mod tests {
                 (
                     second,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(heavy),
                     },
@@ -4517,6 +4567,7 @@ mod tests {
                 (
                     heavy,
                     FlowNode {
+                        embedded_uses: Default::default(),
                         body: heavy_body,
                         transfer: FlowTransfer::Jump(first),
                     },

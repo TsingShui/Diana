@@ -19,7 +19,6 @@ perf = []
 
 
 [dependencies]
-mimalloc = "0.1"
 memchr = "2"
 thiserror = "2"
 unicode-general-category = "1"

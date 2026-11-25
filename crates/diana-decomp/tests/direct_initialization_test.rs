@@ -132,3 +132,39 @@ fn missing_constructor_remains_a_method_local_failure() {
     assert!(text.contains("https://github.com/TsingShui/Diana/issues"));
     assert!(!text.contains("throw "), "invented exception: {text}");
 }
+
+#[test]
+fn branched_constructors_retain_both_joined_values_and_the_handler() {
+    let result = method(
+        include_bytes!(
+            "../../../quality/fixtures/exceptions/branched-constructor-values/classes.dex"
+        ),
+        "Lfixture/BranchedConstructorValues;",
+        "run",
+        "(ZZ)I",
+    );
+    no_failures(&result.failures);
+    let source = result.rendered.text();
+    let (body, handler) = source
+        .split_once("catch (IllegalStateException")
+        .expect("typed recovery");
+    let (first, second) = body
+        .split_once("try {")
+        .expect("protected second construction");
+    for operands in ["(3)", "(3, 4)"] {
+        assert!(
+            first.contains(&format!("new BranchedConstructorValues{operands}")),
+            "{source}"
+        );
+    }
+    for operands in ["(5)", "(5, 6)"] {
+        assert!(
+            second.contains(&format!("new BranchedConstructorValues{operands}")),
+            "{source}"
+        );
+    }
+    assert!(
+        second.contains(".consume(") && handler.contains(".recover("),
+        "{source}"
+    );
+}

@@ -1226,6 +1226,10 @@ impl SourceSemantics {
 }
 
 impl SourceSyntaxSemantics {
+    pub(crate) fn into_types(self) -> super::analysis::SourceTypeEnvironment {
+        self.types
+    }
+
     pub fn types(&self) -> &super::analysis::SourceTypeEnvironment {
         &self.types
     }

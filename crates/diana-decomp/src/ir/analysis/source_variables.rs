@@ -62,14 +62,14 @@ impl SourceVariableAllocation {
             .iter()
             .flat_map(|(handler, normal)| [*handler, *normal])
             .collect::<BTreeSet<_>>();
-        let cleanup_phis = values
+        let phis_by_result = values
             .phis()
             .iter()
             .map(|phi| (phi.result, phi))
             .collect::<BTreeMap<_, _>>();
         let mut pending = cleanup_values.iter().copied().collect::<Vec<_>>();
         while let Some(value) = pending.pop() {
-            let Some(phi) = cleanup_phis.get(&value) else {
+            let Some(phi) = phis_by_result.get(&value) else {
                 continue;
             };
             for input in &phi.inputs {
@@ -95,8 +95,6 @@ impl SourceVariableAllocation {
         let exception_types = ExceptionValueTypes::collect(root, hierarchy);
         let phi_types =
             PhiTypeAnalysis::solve(cfg, &required_phis, values, types, constants, hierarchy)?;
-        let dominators =
-            super::DominatorTree::compute(cfg).map_err(SourceVariableError::Dominance)?;
         let mut coalescer = SourceClassCoalescer::new(
             classes,
             interference,
@@ -127,11 +125,6 @@ impl SourceVariableAllocation {
                 coalescer.coalesce_proven(phi.result, input.value);
             }
         }
-        let phis_by_result = values
-            .phis()
-            .iter()
-            .map(|phi| (phi.result, phi))
-            .collect::<BTreeMap<_, _>>();
         let mut coalescing_phis = required_phis
             .iter()
             .chain(recovered_phis)
@@ -158,7 +151,7 @@ impl SourceVariableAllocation {
                 .inputs
                 .iter()
                 .filter(|input| !constants.contains_key(&input.value))
-                .all(|input| !dominators.dominates(phi.block, input.predecessor));
+                .all(|input| !regions.semantic_dominates(phi.block, input.predecessor));
             for input in &phi.inputs {
                 if !constants.contains_key(&input.value) {
                     let phi_only = values.value(input.value).is_some_and(|value| {

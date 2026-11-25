@@ -1,9 +1,8 @@
 //! Path-sensitive source-observable effect stability.
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
 
-use crate::ir::analysis::{SemanticFlowPoint, SemanticReachability};
+use crate::ir::analysis::SemanticFlowPoint;
 
 use super::{effects::EffectSummary, ControlDomain, ValueFlowGraph};
 
@@ -17,18 +16,11 @@ pub(super) enum EffectStability {
 
 pub(super) struct EffectVersions<'a> {
     graph: &'a ValueFlowGraph<'a>,
-    reachability: Option<Arc<SemanticReachability>>,
 }
 
 impl<'a> EffectVersions<'a> {
-    pub(super) fn new(
-        graph: &'a ValueFlowGraph<'a>,
-        reachability: Option<Arc<SemanticReachability>>,
-    ) -> Self {
-        Self {
-            graph,
-            reachability,
-        }
+    pub(super) fn new(graph: &'a ValueFlowGraph<'a>) -> Self {
+        Self { graph }
     }
 
     pub(super) fn unchanged(
@@ -51,10 +43,7 @@ impl<'a> EffectVersions<'a> {
         if effect.is_pure() {
             return EffectStability::Stable;
         }
-        let Some(flow) = self.graph.semantic_flow() else {
-            return EffectStability::IncompleteFlow;
-        };
-        let Some(reachability) = &self.reachability else {
+        let Some(flow) = self.graph.semantic_flow().filter(|flow| flow.is_complete()) else {
             return EffectStability::IncompleteFlow;
         };
         if !flow.must_reach(source, target) {
@@ -76,7 +65,11 @@ impl<'a> EffectVersions<'a> {
             })
             .map(|fact| fact.point)
             .collect::<BTreeSet<_>>();
-        if reachability.reaches_any_between(source, target, &conflicting) {
+        if !conflicting.is_empty()
+            && flow
+                .indexed_reachability()
+                .reaches_any_between(source, target, &conflicting)
+        {
             EffectStability::Changed
         } else {
             EffectStability::Stable

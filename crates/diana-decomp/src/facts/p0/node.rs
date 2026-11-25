@@ -14,9 +14,25 @@ use crate::input::value_facts::{ValueDeclaration, ValueMember, ValuePrototype, V
 use crate::ir::{ArgType, FieldReference, MethodDescriptor, MethodReference, Utf16String};
 use crate::p0::{ClassFacts, Fact, ScalarValue};
 
+/// Original directory ordinals omitted by the frontend declaration representation.
+#[derive(Clone)]
+pub(crate) struct BackendClass {
+    pub(crate) node: ClassNode,
+    omitted_methods: Vec<usize>,
+}
+
+impl BackendClass {
+    pub(crate) fn method_position(&self, ordinal: usize) -> Option<usize> {
+        match self.omitted_methods.binary_search(&ordinal) {
+            Ok(_) => None,
+            Err(earlier_omissions) => Some(ordinal - earlier_omissions),
+        }
+    }
+}
+
 /// Build the frontend class node the recovery backend expects from the original
 /// class facts. Fields the facts do not carry stay empty rather than inferred.
-pub(crate) fn build(facts: &ClassFacts) -> Option<ClassNode> {
+pub(crate) fn build(facts: &ClassFacts) -> Option<BackendClass> {
     let descriptor = String::from_utf16(facts.descriptor().units()).ok()?;
     let info = ClassInfo::from_type_descriptor(&descriptor).ok()?;
     let mut node = ClassNode::new(
@@ -38,32 +54,13 @@ pub(crate) fn build(facts: &ClassFacts) -> Option<ClassNode> {
             }
         }
     }
-    for entry in facts.methods() {
-        let Fact::Present(declaration) = entry.declaration() else {
-            continue;
-        };
-        let Ok(name) = String::from_utf16(declaration.name_units()) else {
-            continue;
-        };
-        let mut parameters = Vec::new();
-        let mut usable = true;
-        for parameter in &declaration.parameter_types {
-            match parse_type(parameter.units()) {
-                Some(ty) => parameters.push(ty),
-                None => usable = false,
-            }
+    let mut omitted_methods = Vec::new();
+    for (ordinal, entry) in facts.methods().iter().enumerate() {
+        if let Some(method) = method_node(&descriptor, entry) {
+            node.add_method(method);
+        } else {
+            omitted_methods.push(ordinal);
         }
-        let return_type = parse_type(declaration.return_type.units());
-        let (Some(return_type), true) = (return_type, usable) else {
-            continue;
-        };
-        let info = MethodInfo::new(descriptor.clone(), name, parameters, return_type);
-        let method = MethodNode::new(
-            entry.method().0,
-            info,
-            AccessInfo::for_method(entry.access_flags().raw()),
-        );
-        node.add_method(method);
     }
     for entry in facts.fields() {
         let Fact::Present(declaration) = entry.declaration() else {
@@ -87,7 +84,31 @@ pub(crate) fn build(facts: &ClassFacts) -> Option<ClassNode> {
         node.add_field(field);
     }
     apply_annotations(&mut node, facts);
-    Some(node)
+    Some(BackendClass {
+        node,
+        omitted_methods,
+    })
+}
+
+fn method_node(owner: &str, entry: &crate::p0::MethodDirectoryEntry) -> Option<MethodNode> {
+    let Fact::Present(declaration) = entry.declaration() else {
+        return None;
+    };
+    let info = MethodInfo::new(
+        owner.to_owned(),
+        String::from_utf16(declaration.name_units()).ok()?,
+        declaration
+            .parameter_types
+            .iter()
+            .map(|parameter| parse_type(parameter.units()))
+            .collect::<Option<Vec<_>>>()?,
+        parse_type(declaration.return_type.units())?,
+    );
+    Some(MethodNode::new(
+        entry.method().0,
+        info,
+        AccessInfo::for_method(entry.access_flags().raw()),
+    ))
 }
 
 fn apply_annotations(node: &mut ClassNode, facts: &ClassFacts) {

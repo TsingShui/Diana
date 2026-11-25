@@ -158,11 +158,17 @@ impl ObjectInitializations {
         values: &SsaValueGraph,
         hierarchy: &dyn TypeHierarchy,
     ) -> Result<Self, ObjectInitializationError> {
-        let aliases = ObjectAliases::analyze(cfg, values);
+        Self::analyze_with_dominators(cfg, values, hierarchy, None)
+    }
 
-        let mut allocations = BTreeMap::<SsaVar, Vec<(InsnPosition, SsaVar)>>::new();
-        let mut constructors =
-            BTreeMap::<SsaVar, Vec<(InsnPosition, SsaVar, MethodReference)>>::new();
+    pub(crate) fn analyze_with_dominators(
+        cfg: &CFG,
+        values: &SsaValueGraph,
+        hierarchy: &dyn TypeHierarchy,
+        known_dominators: Option<&DominatorTree>,
+    ) -> Result<Self, ObjectInitializationError> {
+        let mut allocations = Vec::new();
+        let mut constructors = Vec::new();
         for (&block, body) in &cfg.blocks {
             for (index, instruction) in body.insns.iter().enumerate() {
                 let position = InsnPosition { block, index };
@@ -172,28 +178,47 @@ impl ObjectInitializations {
                         .as_ref()
                         .and_then(SsaVar::from_reg)
                         .ok_or(ObjectInitializationError::MissingAllocationValue(position))?;
-                    allocations
-                        .entry(aliases.class_of(value))
-                        .or_default()
-                        .push((position, value));
+                    allocations.push((position, value));
                     continue;
                 }
                 let Some((receiver, method)) = Self::constructor_receiver(instruction, position)?
                 else {
                     continue;
                 };
-                constructors
-                    .entry(aliases.class_of(receiver))
-                    .or_default()
-                    .push((position, receiver, method));
+                constructors.push((position, receiver, method));
             }
         }
 
-        let dominators =
-            DominatorTree::compute(cfg).map_err(ObjectInitializationError::Dominance)?;
+        let computed_dominators;
+        let dominators = match known_dominators {
+            Some(tree) => tree,
+            None => {
+                computed_dominators =
+                    DominatorTree::compute(cfg).map_err(ObjectInitializationError::Dominance)?;
+                &computed_dominators
+            }
+        };
+        if allocations.is_empty() {
+            return Ok(Self::default());
+        }
+        let aliases = ObjectAliases::analyze(cfg, values);
+        let mut allocated_classes = BTreeMap::<_, Vec<_>>::new();
+        for allocation in allocations {
+            allocated_classes
+                .entry(aliases.class_of(allocation.1))
+                .or_default()
+                .push(allocation);
+        }
+        let mut initialized_classes = BTreeMap::<_, Vec<_>>::new();
+        for constructor in constructors {
+            initialized_classes
+                .entry(aliases.class_of(constructor.1))
+                .or_default()
+                .push(constructor);
+        }
         let mut entries = Vec::new();
         let mut discarded_allocations = BTreeSet::new();
-        for (class, allocation) in allocations {
+        for (class, allocation) in allocated_classes {
             let [(allocation, allocation_value)] = allocation.as_slice() else {
                 return Err(ObjectInitializationError::MultipleAllocations {
                     class,
@@ -203,7 +228,7 @@ impl ObjectInitializations {
                         .collect(),
                 });
             };
-            let Some(constructors) = constructors.get(&class) else {
+            let Some(constructors) = initialized_classes.get(&class) else {
                 if Self::is_unobserved_allocation(
                     cfg,
                     values,
@@ -238,7 +263,7 @@ impl ObjectInitializations {
                 .cloned()
                 .ok_or(ObjectInitializationError::MissingAliasClass(class))?;
             for constructor in &constructor_positions {
-                if !Self::position_dominates(*allocation, *constructor, &dominators) {
+                if !Self::position_dominates(*allocation, *constructor, dominators) {
                     return Err(ObjectInitializationError::ConstructorNotDominated {
                         allocation: *allocation,
                         constructor: *constructor,
@@ -252,7 +277,7 @@ impl ObjectInitializations {
                     &aliases,
                     &object_aliases,
                     *constructor,
-                    &dominators,
+                    dominators,
                 ) {
                     return Err(ObjectInitializationError::UseBeforeInitialization {
                         allocation: *allocation,
@@ -406,7 +431,7 @@ impl ObjectInitializations {
     fn constructor_receiver(
         instruction: &crate::ir::InsnNode,
         position: InsnPosition,
-    ) -> Result<Option<(SsaVar, MethodReference)>, ObjectInitializationError> {
+    ) -> Result<Option<(SsaVar, &MethodReference)>, ObjectInitializationError> {
         if instruction.insn_type != InsnType::Invoke
             || instruction.payload.invoke_type != Some(crate::ir::InvokeType::Direct)
         {
@@ -431,7 +456,7 @@ impl ObjectInitializations {
             .ok_or(ObjectInitializationError::MissingConstructorReceiver(
                 position,
             ))?;
-        Ok(Some((receiver, method.clone())))
+        Ok(Some((receiver, method)))
     }
 
     fn invalid_initialization_use(

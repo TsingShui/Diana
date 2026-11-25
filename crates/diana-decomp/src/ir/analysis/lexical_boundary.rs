@@ -99,14 +99,18 @@ impl<'cfg> LexicalBoundaryAnalysis<'cfg> {
         entry: BlockId,
         allowed: &BTreeSet<BlockId>,
     ) -> BTreeSet<BlockId> {
-        let predecessors = self.cfg.predecessor_snapshot();
         let mut reachable = BTreeSet::new();
         let mut pending = vec![entry];
         while let Some(block) = pending.pop() {
             if !allowed.contains(&block) || !reachable.insert(block) {
                 continue;
             }
-            pending.extend(predecessors.get(&block).into_iter().flatten().copied());
+            pending.extend(
+                self.cfg
+                    .incoming_edges(block)
+                    .into_iter()
+                    .map(|(source, _)| source),
+            );
         }
         reachable
     }

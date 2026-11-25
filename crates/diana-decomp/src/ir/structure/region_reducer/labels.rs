@@ -35,10 +35,10 @@ impl LexicalLabels {
             .iter()
             .filter_map(|(label, count)| (*count > 1).then_some(*label))
             .collect::<BTreeSet<_>>();
-        let root = if duplicates.is_empty() {
-            root
+        let (root, unique) = if duplicates.is_empty() {
+            (root, definitions)
         } else {
-            Self {
+            let root = Self {
                 duplicates,
                 preserved: BTreeSet::new(),
                 used: definitions.counts.into_keys().collect(),
@@ -50,11 +50,12 @@ impl LexicalLabels {
                 used_blocks: definitions.used_blocks,
                 actions: Vec::new(),
             }
-            .fold_node(root)?
+            .fold_node(root)?;
+            let mut unique = LabelDefinitions::default();
+            unique.visit_node(&root);
+            (root, unique)
         };
 
-        let mut unique = LabelDefinitions::default();
-        unique.visit_node(&root);
         LexicalLabelScopes::repair(
             root,
             unique.counts.into_iter().filter_map(|(label, count)| {
@@ -71,6 +72,9 @@ impl LexicalLabels {
             .into_keys()
             .filter(|label| label.kind == SemanticLabelKind::Loop)
             .collect::<BTreeSet<_>>();
+        if loop_labels.is_empty() {
+            return None;
+        }
         let mut scopes = LoopLabelScopes {
             definitions: loop_labels,
             active: BTreeMap::new(),
@@ -121,6 +125,10 @@ struct LoopLabelScopes {
 }
 
 impl SemanticVisitor for LoopLabelScopes {
+    fn visits_values(&self) -> bool {
+        false
+    }
+
     fn enter_node(&mut self, node: &SemanticNode) {
         if let Some(label) =
             LexicalLabels::binding(node).filter(|label| label.kind == SemanticLabelKind::Loop)
@@ -398,6 +406,10 @@ struct LabelDefinitions {
 }
 
 impl SemanticVisitor for LabelDefinitions {
+    fn visits_values(&self) -> bool {
+        false
+    }
+
     fn enter_node(&mut self, node: &SemanticNode) {
         if let SemanticNode::BasicBlock(block) = node {
             self.used_blocks.insert(block.id);

@@ -66,6 +66,10 @@ impl ContinuationFacts {
 }
 
 impl SemanticVisitor for ContinuationFacts {
+    fn visits_values(&self) -> bool {
+        false
+    }
+
     fn enter_node(&mut self, node: &SemanticNode) {
         if let SemanticNode::Loop {
             control: crate::ir::SemanticLoopControl::Region(region),

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ir::analysis::{SemanticFlowGraph, SemanticFlowPoint};
 use crate::ir::{
@@ -250,9 +250,9 @@ impl InterferenceGraph {
                 return Err(SourceVariableError::LivenessMismatch(block));
             }
         }
-        let semantic_liveness = SemanticLiveness::analyze(semantic, &liveness.retained)?;
+        let semantic_liveness =
+            SemanticLiveness::analyze(semantic, &liveness.retained, &mut graph)?;
         semantic_liveness.add_recovered_phi_interference(cfg, required_phis, &mut graph);
-        semantic_liveness.add_interference(&mut graph);
         Ok(graph)
     }
 
@@ -332,77 +332,98 @@ struct SemanticSiteFacts {
 
 struct SemanticLiveness {
     sites: BTreeMap<SemanticSiteId, SemanticSiteFacts>,
-    live_after: BTreeMap<SemanticSiteId, BTreeSet<SsaVar>>,
+}
+
+enum SemanticPointDefinitions<'a> {
+    Before(&'a BTreeSet<SsaVar>),
+    After(&'a BTreeSet<SsaVar>),
+    None,
 }
 
 impl SemanticLiveness {
     fn analyze(
         root: &SemanticNode,
         retained: &BTreeSet<SsaVar>,
+        interference: &mut InterferenceGraph,
     ) -> Result<Self, SourceVariableError> {
         let sites = SemanticSiteCollector::new(retained).collect(root)?;
         let flow = SemanticFlowGraph::analyze(root);
         if !flow.is_complete() {
             return Err(SourceVariableError::IncompleteSemanticFlow);
         }
-        let points = flow.points();
-        let mut live = points
-            .iter()
-            .copied()
-            .map(|point| (point, BTreeSet::new()))
-            .collect::<BTreeMap<_, _>>();
-        let mut pending = points.iter().rev().copied().collect::<VecDeque<_>>();
-        let mut queued = points;
-        while let Some(point) = pending.pop_front() {
-            queued.remove(&point);
-            let mut input = flow
-                .successors(point)
-                .iter()
-                .filter_map(|successor| live.get(successor))
-                .flatten()
-                .copied()
-                .collect::<BTreeSet<_>>();
-            if let SemanticFlowPoint::Before(site) = point {
-                let facts = sites
-                    .get(&site)
-                    .ok_or(SourceVariableError::MissingSemanticSite("flow point"))?;
-                input.retain(|value| !facts.definitions.contains(value));
-                input.extend(facts.uses.iter().copied());
-            }
-            if live.get(&point) == Some(&input) {
-                continue;
-            }
-            live.insert(point, input);
-            for predecessor in flow.predecessors(point) {
-                if queued.insert(predecessor) {
-                    pending.push_back(predecessor);
-                }
-            }
-        }
-        let live_after = sites
-            .keys()
-            .copied()
-            .map(|site| {
-                let values = live
-                    .get(&SemanticFlowPoint::After(site))
-                    .cloned()
-                    .unwrap_or_default();
-                (site, values)
-            })
+        let points: BTreeMap<_, _> = flow
+            .points()
+            .into_iter()
+            .enumerate()
+            .map(|(index, point)| (point, index))
             .collect();
-        Ok(Self { sites, live_after })
-    }
+        let mut definitions = Vec::with_capacity(points.len());
+        let mut predecessors = Vec::new();
+        let mut offsets = Vec::with_capacity(points.len() + 1);
+        let mut uses = BTreeMap::<SsaVar, Vec<usize>>::new();
+        for (&point, &index) in &points {
+            offsets.push(predecessors.len());
+            predecessors.extend(
+                flow.predecessors(point)
+                    .map(|predecessor| points[&predecessor]),
+            );
+            definitions.push(match point {
+                SemanticFlowPoint::Before(site) => {
+                    let facts = sites
+                        .get(&site)
+                        .ok_or(SourceVariableError::MissingSemanticSite("flow point"))?;
+                    for value in &facts.uses {
+                        uses.entry(*value).or_default().push(index);
+                    }
+                    SemanticPointDefinitions::Before(&facts.definitions)
+                }
+                SemanticFlowPoint::After(site) => sites
+                    .get(&site)
+                    .map_or(SemanticPointDefinitions::None, |facts| {
+                        SemanticPointDefinitions::After(&facts.definitions)
+                    }),
+                SemanticFlowPoint::Synthetic(_) => SemanticPointDefinitions::None,
+            });
+        }
+        offsets.push(predecessors.len());
+        drop(flow);
+        drop(points);
 
-    fn add_interference(self, graph: &mut InterferenceGraph) {
-        for (site, facts) in self.sites {
-            graph.add_semantic_clique(&facts.uses);
-            let live = self.live_after.get(&site).cloned().unwrap_or_default();
-            for definition in &facts.definitions {
-                for other in live.iter().copied().filter(|other| other != definition) {
-                    graph.add_semantic(*definition, other);
+        // Each use makes one SSA value live backward until its definition. All
+        // uses seed the search, including a use at a site that also defines
+        // the value. A live After point contributes exactly the interference
+        // edges with the definitions at that occurrence.
+        let mut visited = vec![usize::MAX; definitions.len()];
+        let mut pending = Vec::new();
+        for (stamp, (value, starts)) in uses.into_iter().enumerate() {
+            for index in starts {
+                visited[index] = stamp;
+                pending.push(index);
+            }
+            while let Some(index) = pending.pop() {
+                if let SemanticPointDefinitions::After(defs) = definitions[index] {
+                    for &definition in defs {
+                        if definition != value {
+                            interference.add_semantic(definition, value);
+                        }
+                    }
+                }
+                for &predecessor in &predecessors[offsets[index]..offsets[index + 1]] {
+                    if visited[predecessor] == stamp {
+                        continue;
+                    }
+                    visited[predecessor] = stamp;
+                    if !matches!(definitions[predecessor], SemanticPointDefinitions::Before(kills) if kills.contains(&value))
+                    {
+                        pending.push(predecessor);
+                    }
                 }
             }
         }
+        for facts in sites.values() {
+            interference.add_semantic_clique(&facts.uses);
+        }
+        Ok(Self { sites })
     }
 
     fn add_recovered_phi_interference(
@@ -411,6 +432,9 @@ impl SemanticLiveness {
         required_phis: &BTreeSet<SsaVar>,
         graph: &mut InterferenceGraph,
     ) {
+        if required_phis.is_empty() {
+            return;
+        }
         let mut uses_by_block = BTreeMap::<BlockId, BTreeSet<SsaVar>>::new();
         for facts in self.sites.values() {
             for block in &facts.blocks {

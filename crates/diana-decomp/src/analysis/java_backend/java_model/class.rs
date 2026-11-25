@@ -3,7 +3,7 @@ use crate::ir::generic_types::ClassSignature;
 use crate::ir::ty::{ArgType, PrimitiveType};
 use crate::language::java::{JavaClassName, JavaIdentifier, JavaModifier};
 
-use super::method::{JavaMethodBody, JavaMethodModel};
+use super::method::{JavaMethodModel, MemberReferences};
 use super::source_abi::{EnclosingInstanceAbi, FunctionObjectClass, OuterInstanceField};
 
 #[derive(Debug, Clone)]
@@ -120,38 +120,18 @@ impl JavaClassModel {
         self
     }
 
-    pub(in crate::analysis::java_backend) fn method_references(
-        &self,
-    ) -> std::collections::BTreeSet<crate::ir::MethodReference> {
-        let mut references = std::collections::BTreeSet::new();
+    pub(in crate::analysis::java_backend) fn member_references(&self) -> MemberReferences {
+        let mut references = MemberReferences::default();
         let mut pending = vec![self];
         while let Some(class) = pending.pop() {
             pending.extend(class.nested.iter().rev());
-            references.extend(
-                class
-                    .methods
-                    .iter()
-                    .filter_map(|method| method.body.as_ref())
-                    .flat_map(JavaMethodBody::method_references),
-            );
-        }
-        references
-    }
-
-    pub(in crate::analysis::java_backend) fn field_references(
-        &self,
-    ) -> std::collections::BTreeSet<crate::ir::FieldReference> {
-        let mut references = std::collections::BTreeSet::new();
-        let mut pending = vec![self];
-        while let Some(class) = pending.pop() {
-            pending.extend(class.nested.iter().rev());
-            references.extend(
-                class
-                    .methods
-                    .iter()
-                    .filter_map(|method| method.body.as_ref())
-                    .flat_map(JavaMethodBody::field_references),
-            );
+            for body in class
+                .methods
+                .iter()
+                .filter_map(|method| method.body.as_ref())
+            {
+                body.collect_member_references(&mut references);
+            }
         }
         references
     }

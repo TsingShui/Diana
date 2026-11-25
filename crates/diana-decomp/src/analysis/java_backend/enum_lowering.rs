@@ -40,14 +40,15 @@ impl EnumDeclarationRecovery {
         let unchanged = LoweredEnumDeclaration {
             constants: Vec::new(),
             constant_implementations: Vec::new(),
-            fields: fields.clone(),
-            methods: methods.clone(),
+            fields,
+            methods,
         };
         if class.declaration.kind != JavaClassKind::Enum {
             return unchanged;
         }
 
-        Self::recover(class, fields, methods).unwrap_or(unchanged)
+        Self::recover(class, unchanged.fields.clone(), unchanged.methods.clone())
+            .unwrap_or(unchanged)
     }
 
     fn recover(

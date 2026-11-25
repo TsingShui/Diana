@@ -105,10 +105,8 @@ pub struct CFG {
     pub blocks: BTreeMap<BlockId, Block>,
     /// Successors: block -> [(successor, edge_kind)] (ordered by BlockId)
     successors: BTreeMap<BlockId, Vec<(BlockId, EdgeKind)>>,
-    /// Predecessors (lazy, ordered by BlockId)
-    predecessors: BTreeMap<BlockId, Vec<BlockId>>,
-    /// Predecessors dirty flag
-    preds_dirty: bool,
+    /// Reverse of the successor table, sorted by (source, kind).
+    incoming: BTreeMap<BlockId, Vec<(BlockId, EdgeKind)>>,
     /// Exception handlers
     pub handlers: Vec<ExceptionHandler>,
     /// DEX protected-range membership captured before CFG topology edits.
@@ -139,8 +137,7 @@ impl CFG {
             entry: BlockId::new(0),
             blocks: BTreeMap::new(),
             successors: BTreeMap::new(),
-            predecessors: BTreeMap::new(),
-            preds_dirty: true,
+            incoming: BTreeMap::new(),
             handlers: Vec::new(),
             exception_coverage: BTreeMap::new(),
             coverage_captured: false,
@@ -300,48 +297,47 @@ impl CFG {
         let id = block.id;
         self.blocks.insert(id, block);
         self.successors.entry(id).or_default();
-        self.preds_dirty = true;
     }
 
     /// Remove a block from the CFG, along with all edges to/from it.
     pub fn remove_block(&mut self, id: BlockId) {
-        // Remove all edges from this block
-        self.successors.remove(&id);
-
-        // Remove all edges to this block
-        for succs in self.successors.values_mut() {
-            succs.retain(|(s, _)| *s != id);
-        }
-
-        // Remove the block itself
+        self.remove_block_from_graph(id);
         self.blocks.remove(&id);
         self.exception_coverage.remove(&id);
-
-        self.preds_dirty = true;
     }
 
     pub fn capture_exception_coverage(&mut self) {
         if self.coverage_captured {
             return;
         }
-        self.exception_coverage = self
+        let mut coverage: BTreeMap<_, _> = self
             .blocks
-            .iter()
-            .map(|(id, block)| {
-                let ranges = self
-                    .handlers
-                    .iter()
-                    .filter(|handler| {
-                        block
-                            .insns
-                            .iter()
-                            .any(|instruction| handler.covers(instruction.offset))
-                    })
-                    .map(|handler| (handler.start, handler.end))
-                    .collect();
-                (*id, ranges)
-            })
+            .keys()
+            .map(|&id| (id, BTreeSet::new()))
             .collect();
+        if !self.handlers.is_empty() {
+            let mut sites: Vec<_> = self
+                .blocks
+                .iter()
+                .flat_map(|(&block, body)| body.insns.iter().map(move |insn| (insn.offset, block)))
+                .collect();
+            sites.sort_unstable();
+            let ranges: BTreeSet<_> = self
+                .handlers
+                .iter()
+                .map(|handler| (handler.start, handler.end))
+                .collect();
+            for (start, end) in ranges {
+                let first = sites.partition_point(|&(offset, _)| offset < start);
+                for &(_, block) in sites[first..]
+                    .iter()
+                    .take_while(|(offset, _)| *offset < end)
+                {
+                    coverage.entry(block).or_default().insert((start, end));
+                }
+            }
+        }
+        self.exception_coverage = coverage;
         self.coverage_captured = true;
     }
 
@@ -389,17 +385,14 @@ impl CFG {
     /// topology during iterative reduction, but the block content must be preserved
     /// for code generation after structuring is complete.
     pub fn remove_block_from_graph(&mut self, id: BlockId) {
-        // Remove all edges from this block
-        self.successors.remove(&id);
-
-        // Remove all edges to this block
-        for succs in self.successors.values_mut() {
-            succs.retain(|(s, _)| *s != id);
+        for (to, kind) in self.successors.remove(&id).unwrap_or_default() {
+            Self::forget_incoming(&mut self.incoming, to, (id, kind));
         }
-
-        // Note: Block content is preserved in self.blocks
-
-        self.preds_dirty = true;
+        for (from, kind) in self.incoming.remove(&id).unwrap_or_default() {
+            if let Some(edges) = self.successors.get_mut(&from) {
+                edges.retain(|edge| *edge != (id, kind));
+            }
+        }
     }
 
     // === Edge operations ===
@@ -408,8 +401,10 @@ impl CFG {
         let successors = self.successors.entry(from).or_default();
         if !successors.contains(&(to, kind)) {
             successors.push((to, kind));
+            let incoming = self.incoming.entry(to).or_default();
+            let index = incoming.partition_point(|edge| *edge < (from, kind));
+            incoming.insert(index, (from, kind));
         }
-        self.preds_dirty = true;
     }
 
     pub fn successors(&self, id: impl Into<BlockId>) -> impl Iterator<Item = BlockId> + '_ {
@@ -437,20 +432,11 @@ impl CFG {
             .unwrap_or(&[])
     }
 
-    /// Get predecessors of a block (mutable version - caches result)
     pub fn predecessors(&mut self, id: impl Into<BlockId>) -> Vec<BlockId> {
-        self.ensure_predecessors();
-        self.predecessors
-            .get(&id.into())
-            .cloned()
-            .unwrap_or_default()
+        self.get_predecessors(id)
     }
 
     /// Build a deterministic predecessor snapshot for the current graph.
-    ///
-    /// This is cheaper than repeated immutable `get_predecessors` calls in
-    /// read-only analyses because it scans the edge table once and lets callers
-    /// reuse the result without taking a mutable CFG borrow.
     pub fn predecessor_snapshot(&self) -> BTreeMap<BlockId, Vec<BlockId>> {
         self.predecessor_snapshot_for(|_| true)
     }
@@ -463,81 +449,54 @@ impl CFG {
     }
 
     pub fn incoming_edges(&self, target: BlockId) -> Vec<(BlockId, EdgeKind)> {
-        let mut edges = self
-            .successors
-            .iter()
-            .flat_map(|(source, successors)| {
-                successors.iter().filter_map(move |(successor, kind)| {
-                    (*successor == target).then_some((*source, *kind))
-                })
-            })
-            .collect::<Vec<_>>();
-        edges.sort();
-        edges.dedup();
-        edges
+        self.incoming.get(&target).cloned().unwrap_or_default()
     }
 
     fn predecessor_snapshot_for(
         &self,
         include: impl Fn(EdgeKind) -> bool,
     ) -> BTreeMap<BlockId, Vec<BlockId>> {
-        let mut predecessors: BTreeMap<BlockId, Vec<BlockId>> = BTreeMap::new();
-        for &id in self.blocks.keys() {
-            predecessors.entry(id).or_default();
-        }
-        for (&from, succs) in &self.successors {
-            for &(to, kind) in succs {
-                if !include(kind) {
-                    continue;
-                }
-                predecessors.entry(to).or_default().push(from);
+        let mut snapshot: BTreeMap<_, _> = self.blocks.keys().map(|&id| (id, Vec::new())).collect();
+        for (&to, edges) in &self.incoming {
+            let mut sources: Vec<_> = edges
+                .iter()
+                .filter(|(_, kind)| include(*kind))
+                .map(|&(from, _)| from)
+                .collect();
+            sources.dedup();
+            if !sources.is_empty() {
+                snapshot.insert(to, sources);
             }
         }
-        for preds in predecessors.values_mut() {
-            preds.sort();
-            preds.dedup();
-        }
-        predecessors
+        snapshot
     }
 
-    /// Get predecessors of a block (immutable version - computes on demand)
-    /// Results are sorted by BlockId for deterministic behavior.
+    /// Sorted, distinct sources, regardless of how many edge kinds they carry.
     pub fn get_predecessors(&self, id: impl Into<BlockId>) -> Vec<BlockId> {
-        let target_id = id.into();
-        let mut preds = Vec::new();
-        for (&from, succs) in &self.successors {
-            for &(to, _) in succs {
-                if to == target_id {
-                    preds.push(from);
-                }
-            }
-        }
-        // BTreeMap iteration is already sorted, but we sort again
-        // in case successors have duplicates or out-of-order entries
-        preds.sort();
-        preds.dedup();
-        preds
+        let mut sources: Vec<_> = self
+            .incoming
+            .get(&id.into())
+            .into_iter()
+            .flatten()
+            .map(|&(from, _)| from)
+            .collect();
+        sources.dedup();
+        sources
     }
 
-    fn ensure_predecessors(&mut self) {
-        if !self.preds_dirty {
-            return;
-        }
-        self.predecessors.clear();
-        for &id in self.blocks.keys() {
-            self.predecessors.entry(id).or_default();
-        }
-        for (&from, succs) in &self.successors {
-            for &(to, _) in succs {
-                self.predecessors.entry(to).or_default().push(from);
+    fn forget_incoming(
+        index: &mut BTreeMap<BlockId, Vec<(BlockId, EdgeKind)>>,
+        to: BlockId,
+        edge: (BlockId, EdgeKind),
+    ) {
+        if let Some(incoming) = index.get_mut(&to) {
+            if let Ok(index) = incoming.binary_search(&edge) {
+                incoming.remove(index);
+            }
+            if incoming.is_empty() {
+                index.remove(&to);
             }
         }
-        // Sort all predecessor lists for determinism
-        for preds in self.predecessors.values_mut() {
-            preds.sort();
-            preds.dedup();
-        }
-        self.preds_dirty = false;
     }
 
     pub fn has_edge(&self, from: BlockId, to: BlockId) -> bool {
@@ -549,18 +508,23 @@ impl CFG {
 
     /// Remove an edge from the graph
     pub fn remove_edge(&mut self, from: BlockId, to: BlockId) {
-        if let Some(succs) = self.successors.get_mut(&from) {
-            succs.retain(|(s, _)| *s != to);
+        if let Some(edges) = self.successors.get_mut(&from) {
+            edges.retain(|(target, _)| *target != to);
         }
-        self.preds_dirty = true;
+        if let Some(edges) = self.incoming.get_mut(&to) {
+            edges.retain(|(source, _)| *source != from);
+            if edges.is_empty() {
+                self.incoming.remove(&to);
+            }
+        }
     }
 
     /// Remove one typed edge while preserving parallel edges with a different kind.
     pub fn remove_edge_with_kind(&mut self, from: BlockId, to: BlockId, kind: EdgeKind) {
-        if let Some(successors) = self.successors.get_mut(&from) {
-            successors.retain(|edge| *edge != (to, kind));
+        if let Some(edges) = self.successors.get_mut(&from) {
+            edges.retain(|edge| *edge != (to, kind));
         }
-        self.preds_dirty = true;
+        Self::forget_incoming(&mut self.incoming, to, (from, kind));
     }
 
     /// Get the kind of edge between two blocks, if it exists.
@@ -573,31 +537,39 @@ impl CFG {
 
     /// Remove all edges from a block
     pub fn remove_all_edges_from(&mut self, from: BlockId) {
-        if let Some(succs) = self.successors.get_mut(&from) {
-            succs.clear();
+        if let Some(edges) = self.successors.get_mut(&from) {
+            for (to, kind) in std::mem::take(edges) {
+                Self::forget_incoming(&mut self.incoming, to, (from, kind));
+            }
         }
-        self.preds_dirty = true;
     }
 
-    /// Remove ordinary control flow from a block while preserving exception
-    /// dispatch. This is used when an operation is proven not to return.
+    /// Remove ordinary control flow from a block while preserving exception dispatch.
     pub fn remove_normal_edges_from(&mut self, from: BlockId) -> bool {
-        let Some(successors) = self.successors.get_mut(&from) else {
+        let Some(edges) = self.successors.get_mut(&from) else {
             return false;
         };
-        let before = successors.len();
-        successors.retain(|(_, kind)| *kind == EdgeKind::Exception);
-        let changed = successors.len() != before;
-        self.preds_dirty |= changed;
-        changed
+        let before = edges.len();
+        let incoming = &mut self.incoming;
+        edges.retain(|&(to, kind)| {
+            if kind == EdgeKind::Exception {
+                return true;
+            }
+            Self::forget_incoming(incoming, to, (from, kind));
+            false
+        });
+        edges.len() != before
     }
 
-    /// Remove all exception edges from the graph
+    /// Remove all exception edges from the graph.
     pub fn remove_exception_edges(&mut self) {
-        for succs in self.successors.values_mut() {
-            succs.retain(|(_, kind)| *kind != EdgeKind::Exception);
+        for edges in self.successors.values_mut() {
+            edges.retain(|(_, kind)| *kind != EdgeKind::Exception);
         }
-        self.preds_dirty = true;
+        self.incoming.retain(|_, edges| {
+            edges.retain(|(_, kind)| *kind != EdgeKind::Exception);
+            !edges.is_empty()
+        });
     }
 
     // === Traversal ===
@@ -628,12 +600,7 @@ impl CFG {
         let mut stack = vec![self.entry];
         while let Some(id) = stack.pop() {
             if visited.insert(id) {
-                // Sort successors for deterministic order
-                let mut succs: Vec<_> = self.successors(id).collect();
-                succs.sort();
-                for succ in succs {
-                    stack.push(succ);
-                }
+                stack.extend(self.successors(id));
             }
         }
         visited

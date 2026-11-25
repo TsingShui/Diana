@@ -184,31 +184,11 @@ struct ObjectValueSsa<'a> {
     cfg: &'a CFG,
     values: &'a SsaValueGraph,
     initialization: &'a ObjectInitialization,
-    dominators: DominatorTree,
-    frontier: DominanceFrontier,
+    dominators: &'a DominatorTree,
+    frontier: &'a DominanceFrontier,
 }
 
-impl<'a> ObjectValueSsa<'a> {
-    fn analyze(
-        cfg: &'a CFG,
-        values: &'a SsaValueGraph,
-        initialization: &'a ObjectInitialization,
-        versions: &mut SyntheticVersions,
-    ) -> Result<ObjectValuePlan, ConstructorRecoveryError> {
-        let dominators =
-            DominatorTree::compute(cfg).map_err(ConstructorRecoveryError::Dominance)?;
-        let frontier = DominanceFrontier::compute(cfg, &dominators)
-            .map_err(ConstructorRecoveryError::Dominance)?;
-        Self {
-            cfg,
-            values,
-            initialization,
-            dominators,
-            frontier,
-        }
-        .build(versions)
-    }
-
+impl ObjectValueSsa<'_> {
     fn build(
         &self,
         versions: &mut SyntheticVersions,
@@ -597,9 +577,24 @@ impl Pass for RecoverConstructors<'_> {
     }
 
     fn run(&mut self, cfg: &mut CFG) -> Result<PassResult, Self::Error> {
-        let values = SsaValueGraph::build(cfg).map_err(ConstructorRecoveryError::Ssa)?;
-        let facts = ObjectInitializations::analyze(cfg, &values, self.hierarchy)
-            .map_err(ConstructorRecoveryError::Initialization)?;
+        self.run_reusing(cfg, &mut super::cfg_pipeline::SsaPassFacts::default())
+    }
+}
+
+impl RecoverConstructors<'_> {
+    pub(super) fn run_reusing(
+        &mut self,
+        cfg: &mut CFG,
+        cached: &mut super::cfg_pipeline::SsaPassFacts,
+    ) -> Result<PassResult, ConstructorRecoveryError> {
+        let (values, dominators) = cached.get(cfg).map_err(ConstructorRecoveryError::Ssa)?;
+        let facts = ObjectInitializations::analyze_with_dominators(
+            cfg,
+            values,
+            self.hierarchy,
+            Some(dominators),
+        )
+        .map_err(ConstructorRecoveryError::Initialization)?;
         if !facts
             .entries()
             .iter()
@@ -624,7 +619,7 @@ impl Pass for RecoverConstructors<'_> {
                     .collect(),
             })
             .collect::<Vec<_>>();
-        let mut versions = SyntheticVersions::new(&values);
+        let mut multi_site = None;
         let mut object_plans = Vec::new();
         for initialization in facts.entries() {
             if !initialization.mergeable {
@@ -657,7 +652,24 @@ impl Pass for RecoverConstructors<'_> {
                     (initialization.value, initialization.ty.clone()),
                 );
             } else {
-                let plan = ObjectValueSsa::analyze(cfg, &values, initialization, &mut versions)?;
+                // Every allocation plan reads this same CFG. Only the rewrite
+                // below changes instructions and exceptional edges.
+                let (frontier, versions) = match multi_site {
+                    Some(ref mut state) => state,
+                    None => multi_site.insert((
+                        DominanceFrontier::compute(cfg, dominators)
+                            .map_err(ConstructorRecoveryError::Dominance)?,
+                        SyntheticVersions::new(values),
+                    )),
+                };
+                let plan = ObjectValueSsa {
+                    cfg,
+                    values,
+                    initialization,
+                    dominators,
+                    frontier,
+                }
+                .build(versions)?;
                 removals.extend(plan.removals.iter().copied());
                 constructors.extend(
                     plan.constructors
@@ -671,6 +683,9 @@ impl Pass for RecoverConstructors<'_> {
                 handlers: initialization.allocation_exception_handlers.clone(),
             });
         }
+
+        drop(multi_site);
+        cached.invalidate();
 
         for (&block_id, block) in &mut cfg.blocks {
             let mut rewriter = ConstructorRewriter::new(&replacements);

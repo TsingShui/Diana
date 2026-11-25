@@ -356,6 +356,47 @@ pub struct InsnNode {
     pub payload: InsnPayload,
 }
 
+impl InsnType {
+    pub(crate) fn can_throw(
+        self,
+        result: Option<&RegisterArg>,
+        arithmetic: Option<ArithOp>,
+    ) -> bool {
+        match self {
+            InsnType::Arith => {
+                let integral = result
+                    .map(|result| {
+                        !matches!(
+                            result.ty.as_primitive(),
+                            Some(PrimitiveType::Float | PrimitiveType::Double)
+                        )
+                    })
+                    .unwrap_or(true);
+                integral && matches!(arithmetic, Some(ArithOp::Div | ArithOp::Rem))
+            }
+            InsnType::Throw
+            | InsnType::Invoke
+            | InsnType::Constructor
+            | InsnType::ConstClass
+            | InsnType::Aget
+            | InsnType::Aput
+            | InsnType::Iget
+            | InsnType::Iput
+            | InsnType::Sget
+            | InsnType::Sput
+            | InsnType::NewInstance
+            | InsnType::NewArray
+            | InsnType::FilledNewArray
+            | InsnType::FillArray
+            | InsnType::CheckCast
+            | InsnType::ArrayLength
+            | InsnType::MonitorEnter
+            | InsnType::MonitorExit => true,
+            _ => false,
+        }
+    }
+}
+
 /// Semantic equality for instruction operations whose control targets are
 /// represented by CFG edges. Results, operands, Phi predecessor identities,
 /// offsets, and stable origins are compared by the owning graph analysis.
@@ -365,27 +406,39 @@ pub trait InstructionEquivalence {
 
 impl InstructionEquivalence for InsnNode {
     fn operation_equivalent(&self, other: &Self) -> bool {
-        self.insn_type == other.insn_type
-            && self.payload.arith_op == other.payload.arith_op
-            && self.payload.unary_op == other.payload.unary_op
-            && self.payload.if_op == other.payload.if_op
-            && self.payload.invoke_type == other.payload.invoke_type
-            && self.payload.no_return == other.payload.no_return
-            && self.payload.reference == other.payload.reference
-            && self.payload.string_value == other.payload.string_value
-            && self.payload.class_type == other.payload.class_type
-            && self.payload.cast_type == other.payload.cast_type
-            && self.payload.cmp_bias == other.payload.cmp_bias
-            && self.payload.is_static == other.payload.is_static
-            && self.payload.is_get == other.payload.is_get
-            && self.payload.is_length == other.payload.is_length
-            && self.payload.is_enter == other.payload.is_enter
-            && self.payload.fill_array_data == other.payload.fill_array_data
-            && self.switch_keys() == other.switch_keys()
-            && self.payload.switch_default.is_some() == other.payload.switch_default.is_some()
-            && self.payload.bool_expr == other.payload.bool_expr
-            && self.payload.edge_copy == other.payload.edge_copy
-            && match (&self.payload.lambda, &other.payload.lambda) {
+        self.insn_type == other.insn_type && self.payload.operation_equivalent(&other.payload)
+    }
+}
+
+impl InsnPayload {
+    pub(crate) fn operation_equivalent(&self, other: &Self) -> bool {
+        self.arith_op == other.arith_op
+            && self.unary_op == other.unary_op
+            && self.if_op == other.if_op
+            && self.invoke_type == other.invoke_type
+            && self.no_return == other.no_return
+            && self.reference == other.reference
+            && self.string_value == other.string_value
+            && self.class_type == other.class_type
+            && self.cast_type == other.cast_type
+            && self.cmp_bias == other.cmp_bias
+            && self.is_static == other.is_static
+            && self.is_get == other.is_get
+            && self.is_length == other.is_length
+            && self.is_enter == other.is_enter
+            && self.fill_array_data == other.fill_array_data
+            && match (&self.switch_cases, &other.switch_cases) {
+                (Some(left), Some(right)) => left
+                    .iter()
+                    .map(|(key, _)| key)
+                    .eq(right.iter().map(|(key, _)| key)),
+                (None, None) => true,
+                _ => false,
+            }
+            && self.switch_default.is_some() == other.switch_default.is_some()
+            && self.bool_expr == other.bool_expr
+            && self.edge_copy == other.edge_copy
+            && match (&self.lambda, &other.lambda) {
                 (Some(left), Some(right)) => {
                     left.interface == right.interface
                         && left.sam_name == right.sam_name
@@ -397,15 +450,6 @@ impl InstructionEquivalence for InsnNode {
                 (None, None) => true,
                 _ => false,
             }
-    }
-}
-
-impl InsnNode {
-    fn switch_keys(&self) -> Option<Vec<i32>> {
-        self.payload
-            .switch_cases
-            .as_ref()
-            .map(|cases| cases.iter().map(|(value, _)| *value).collect())
     }
 }
 
@@ -644,40 +688,8 @@ impl InsnNode {
     }
 
     pub fn can_throw(&self) -> bool {
-        match self.insn_type {
-            InsnType::Arith => {
-                let integral = self
-                    .result
-                    .as_ref()
-                    .map(|result| {
-                        !matches!(
-                            result.ty.as_primitive(),
-                            Some(PrimitiveType::Float | PrimitiveType::Double)
-                        )
-                    })
-                    .unwrap_or(true);
-                integral && matches!(self.payload.arith_op, Some(ArithOp::Div | ArithOp::Rem))
-            }
-            InsnType::Throw
-            | InsnType::Invoke
-            | InsnType::Constructor
-            | InsnType::ConstClass
-            | InsnType::Aget
-            | InsnType::Aput
-            | InsnType::Iget
-            | InsnType::Iput
-            | InsnType::Sget
-            | InsnType::Sput
-            | InsnType::NewInstance
-            | InsnType::NewArray
-            | InsnType::FilledNewArray
-            | InsnType::FillArray
-            | InsnType::CheckCast
-            | InsnType::ArrayLength
-            | InsnType::MonitorEnter
-            | InsnType::MonitorExit => true,
-            _ => false,
-        }
+        self.insn_type
+            .can_throw(self.result.as_ref(), self.payload.arith_op)
     }
 
     /// Create a new instruction node

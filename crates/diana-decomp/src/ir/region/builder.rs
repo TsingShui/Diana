@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ir::{
-    analysis::{ControlFlowFacts, DominatorTree, SsaValueGraph},
+    analysis::{ControlFlowFacts, SsaValueGraph},
     exception::{ExceptionAnalysis, HandlerKind},
     EdgeKind, CFG,
 };
@@ -54,9 +54,19 @@ impl<'a> RegionGraphBuilder<'a> {
             }
         }
         let control_flow = ControlFlowFacts::analyze(cfg)?;
-        let envelope_cfg = ContractedControlFlow::new(cfg, &cleanup_representatives).build();
-        let envelope_flow = ControlFlowFacts::analyze(&envelope_cfg)?;
-        let control_regions = ControlRegionAnalysis::new(&envelope_cfg, &envelope_flow);
+        // Exact control-flow facts cover every reachable block. With no cleanup
+        // contractions the projected graph and both dominance policies are identical.
+        let projected = if cleanup_representatives.is_empty() {
+            None
+        } else {
+            let graph = ContractedControlFlow::new(cfg, &cleanup_representatives).build();
+            let facts = ControlFlowFacts::analyze(&graph)?;
+            Some((graph, facts))
+        };
+        let (envelope_cfg, envelope_flow) = projected
+            .as_ref()
+            .map_or((cfg, &control_flow), |(graph, facts)| (graph, facts));
+        let control_regions = ControlRegionAnalysis::new(envelope_cfg, envelope_flow);
         let mut control_tree = RegionTree::new(Some(cfg.entry));
         control_tree.cover_method(cfg)?;
         control_regions.apply(&mut control_tree)?;
@@ -66,57 +76,24 @@ impl<'a> RegionGraphBuilder<'a> {
                 analysis,
                 cfg,
                 &control_flow,
-                &envelope_cfg,
-                &envelope_flow,
+                envelope_cfg,
+                envelope_flow,
                 &cleanup_representatives,
                 control_tree,
             )
             .build()?;
         tree.cover_method(cfg)?;
         LexicalTryAnalysis::new(cfg, &control_flow).apply(&mut tree, &exception_region_map)?;
-        let exact_dominators = DominatorTree::compute(cfg)?;
         let mut elisions =
             super::InstructionElisions::from_candidates(analysis.elided_instructions.clone());
-        let synchronization =
-            SynchronizationAnalysis::new(cfg, self.values, &exact_dominators, &analysis.regions);
-        let mut synchronized = analysis
-            .regions
-            .iter()
-            .filter_map(|source| {
-                let fact = synchronization.region(source)?;
-                let regions = exception_region_map.get(&source.id)?;
-                let owner = regions
-                    .iter()
-                    .copied()
-                    .find(|region| {
-                        tree.region(*region)
-                            .is_some_and(|region| region.owns_block(fact.body_entry))
-                    })
-                    .or_else(|| regions.first().copied())?;
-                Some(SynchronizationCandidate {
-                    owner,
-                    source_regions: regions.clone(),
-                    fact,
-                })
-            })
-            .collect::<Vec<_>>();
-        synchronized =
-            SynchronizationCandidate::canonicalize(&synchronization, &tree, synchronized)?;
-        let claimed_enters = synchronized
-            .iter()
-            .map(|candidate| candidate.fact.enter_origin.clone())
-            .collect();
-        for fact in synchronization.standalone(&claimed_enters) {
-            synchronized.push(SynchronizationCandidate::from_release_ownership(
-                analysis,
-                &tree,
-                &exception_region_map,
-                fact,
-            )?);
-        }
-        synchronized =
-            SynchronizationCandidate::canonicalize(&synchronization, &tree, synchronized)?;
-        synchronized = SynchronizationCandidate::schedule(synchronized);
+        let synchronized = SynchronizationCandidate::collect(
+            cfg,
+            self.values,
+            &control_flow,
+            analysis,
+            &tree,
+            &exception_region_map,
+        )?;
         for candidate in synchronized {
             let region_id = candidate.owner;
             let handlers = candidate.handlers(&exception_handlers);
@@ -188,8 +165,8 @@ impl<'a> RegionGraphBuilder<'a> {
         ExceptionRegionRelaminarizer::new(
             analysis,
             cfg,
-            &envelope_cfg,
-            &envelope_flow,
+            envelope_cfg,
+            envelope_flow,
             &cleanup_representatives,
         )
         .apply(
@@ -325,7 +302,7 @@ impl ExceptionalCleanupFlow {
         let mut relations = BTreeSet::new();
         let mut rethrow_sources =
             BTreeMap::<crate::ir::BlockId, BTreeSet<crate::ir::BlockId>>::new();
-        let predecessors = cfg.predecessor_snapshot();
+        let predecessors = std::cell::OnceCell::new();
         for handler in analysis
             .regions
             .iter()
@@ -358,7 +335,11 @@ impl ExceptionalCleanupFlow {
                         .or_default()
                         .extend(sources.iter().copied());
                 }
-                let slice = Self::reverse_slice(*rethrow, &component, &predecessors);
+                let slice = Self::reverse_slice(
+                    *rethrow,
+                    &component,
+                    predecessors.get_or_init(|| cfg.predecessor_snapshot()),
+                );
                 for block in slice {
                     relations.extend(
                         continuations
@@ -502,6 +483,67 @@ struct SynchronizationCandidate {
 }
 
 impl SynchronizationCandidate {
+    fn collect(
+        cfg: &CFG,
+        values: &SsaValueGraph,
+        control_flow: &ControlFlowFacts,
+        analysis: &ExceptionAnalysis,
+        tree: &RegionTree,
+        exception_region_map: &BTreeMap<u32, Vec<RegionId>>,
+    ) -> Result<Vec<Self>, RegionInvariantError> {
+        if !cfg
+            .blocks_iter()
+            .flat_map(|block| &block.insns)
+            .any(|insn| insn.insn_type == crate::ir::InsnType::MonitorEnter)
+        {
+            return Ok(Vec::new());
+        }
+        let synchronization = SynchronizationAnalysis::new(
+            cfg,
+            values,
+            control_flow.semantic_dominators(),
+            &analysis.regions,
+        );
+        let mut synchronized = analysis
+            .regions
+            .iter()
+            .filter_map(|source| {
+                let fact = synchronization.region(source)?;
+                let regions = exception_region_map.get(&source.id)?;
+                let owner = regions
+                    .iter()
+                    .copied()
+                    .find(|region| {
+                        tree.region(*region)
+                            .is_some_and(|region| region.owns_block(fact.body_entry))
+                    })
+                    .or_else(|| regions.first().copied())?;
+                Some(SynchronizationCandidate {
+                    owner,
+                    source_regions: regions.clone(),
+                    fact,
+                })
+            })
+            .collect::<Vec<_>>();
+        synchronized =
+            SynchronizationCandidate::canonicalize(&synchronization, tree, synchronized)?;
+        let claimed_enters = synchronized
+            .iter()
+            .map(|candidate| candidate.fact.enter_origin.clone())
+            .collect();
+        for fact in synchronization.standalone(&claimed_enters) {
+            synchronized.push(SynchronizationCandidate::from_release_ownership(
+                analysis,
+                tree,
+                exception_region_map,
+                fact,
+            )?);
+        }
+        synchronized =
+            SynchronizationCandidate::canonicalize(&synchronization, tree, synchronized)?;
+        Ok(Self::schedule(synchronized))
+    }
+
     fn handlers(&self, handlers: &BTreeMap<RegionId, Vec<RegionId>>) -> Vec<RegionId> {
         let mut regions = self
             .source_regions

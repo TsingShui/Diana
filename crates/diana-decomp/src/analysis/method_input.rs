@@ -1,4 +1,4 @@
-use crate::frontend::MethodNode;
+use crate::frontend::{ClassNode, MethodNode};
 use crate::ir::{AnalysisEvent, AnalysisObserver, CFG};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,31 +71,32 @@ pub(crate) enum ClassMethodState {
 
 #[derive(Debug)]
 pub(crate) struct ClassMethodInput {
-    method: MethodNode,
+    position: usize,
     state: ClassMethodState,
 }
 
 impl ClassMethodInput {
-    pub(crate) fn decoded(method: MethodNode, cfg: CFG) -> Self {
+    pub(crate) fn decoded(position: usize, cfg: CFG) -> Self {
         Self {
-            method,
+            position,
             state: ClassMethodState::Decoded(cfg),
         }
     }
 
-    pub(crate) fn failed(method: MethodNode, failure: MethodRecoveryFailure) -> Self {
+    pub(crate) fn failed(position: usize, failure: MethodRecoveryFailure) -> Self {
         Self {
-            method,
+            position,
             state: ClassMethodState::Failed(failure),
         }
     }
 
-    pub(crate) fn method(&self) -> &MethodNode {
-        &self.method
+    pub(crate) fn position(&self) -> usize {
+        self.position
     }
 
-    pub(crate) fn method_mut(&mut self) -> &mut MethodNode {
-        &mut self.method
+    pub(crate) fn method<'a>(&self, class: &'a ClassNode) -> &'a MethodNode {
+        // The input builder obtained this position from this class's method slice.
+        &class.methods()[self.position]
     }
 
     pub(crate) fn cfg(&self) -> Option<&CFG> {
@@ -105,17 +106,10 @@ impl ClassMethodInput {
         }
     }
 
-    pub(crate) fn cfg_mut(&mut self) -> Option<&mut CFG> {
-        match &mut self.state {
-            ClassMethodState::Decoded(cfg) => Some(cfg),
-            ClassMethodState::Failed(_) => None,
-        }
-    }
-
-    pub(crate) fn decoded_mut(&mut self) -> Option<(&mut MethodNode, &mut CFG)> {
-        match &mut self.state {
-            ClassMethodState::Decoded(cfg) => Some((&mut self.method, cfg)),
-            ClassMethodState::Failed(_) => None,
+    pub(crate) fn into_cfg(self) -> Result<CFG, MethodRecoveryFailure> {
+        match self.state {
+            ClassMethodState::Decoded(cfg) => Ok(cfg),
+            ClassMethodState::Failed(failure) => Err(failure),
         }
     }
 

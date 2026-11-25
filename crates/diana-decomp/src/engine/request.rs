@@ -6,7 +6,7 @@ use std::sync::{Arc, OnceLock};
 use crate::input::{DexContainer, InputError, ProgramIndex};
 use crate::p0::{ClassFacts, Fact};
 use crate::p1::MethodIr;
-use crate::{DexId, MethodId, RequestError};
+use crate::{DexId, RequestError};
 
 use super::{DexImage, MethodSelector};
 
@@ -48,7 +48,7 @@ impl<'a> IndexedImage<'a> {
 }
 
 pub(super) struct MethodFacts {
-    pub(super) method: MethodId,
+    pub(super) ordinal: usize,
     pub(super) decoded: Result<MethodIr, String>,
 }
 
@@ -78,19 +78,20 @@ pub(super) fn backend_input_from_facts<'a>(
 ) -> Result<BackendInput, RequestError> {
     let class_def = facts.class_def();
     let mut methods = Vec::new();
-    for entry in facts.methods() {
+    let selected = selector
+        .filter(|_| !facts.methods().is_empty())
+        .map(|selector| facts.resolve_method(&selector.name, &selector.prototype))
+        .transpose()?;
+    for (ordinal, entry) in facts.methods().iter().enumerate() {
         let id = entry.method();
-        if let Some(selector) = selector {
-            let selected = facts.resolve_method(&selector.name, &selector.prototype)?;
-            if selected != id {
-                continue;
-            }
+        if selected.is_some_and(|selected| selected != id) {
+            continue;
         }
-        let source = match image.index.method_source(&facts, id) {
+        let source = match image.index.method_source_by_ordinal(&facts, ordinal) {
             Ok(source) => source,
             Err(error) => {
                 methods.push(MethodFacts {
-                    method: id,
+                    ordinal,
                     decoded: Err(error.to_string()),
                 });
                 continue;
@@ -103,7 +104,7 @@ pub(super) fn backend_input_from_facts<'a>(
             Ok(decoded) => decoded,
             Err(error) => {
                 methods.push(MethodFacts {
-                    method: id,
+                    ordinal,
                     decoded: Err(error.to_string()),
                 });
                 continue;
@@ -111,13 +112,13 @@ pub(super) fn backend_input_from_facts<'a>(
         };
         match decoded.decoded {
             Some(decoded) => methods.push(MethodFacts {
-                method: id,
+                ordinal,
                 decoded: decoded
                     .into_ir()
                     .map_err(|reason| crate::DexError::Backend(reason).to_string()),
             }),
             None => methods.push(MethodFacts {
-                method: id,
+                ordinal,
                 decoded: Err(decoded
                     .error
                     .map_or_else(|| "method decoding stopped".to_owned(), |e| e.to_string())),

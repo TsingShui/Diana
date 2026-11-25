@@ -4,22 +4,20 @@
 //! Effect-aware movement and source rewriting remain planner responsibilities.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use super::{DefinitionFact, UseFact, UseSite, ValueFlowGraph, ValueIdentity};
 use crate::analysis::value_recovery::ValueRecoveryError;
 use crate::ir::analysis::{
-    SemanticFlowPoint, SemanticReachability, SemanticReachingValues, SemanticValueDefinition,
-    SsaVar,
+    SemanticFlowGraph, SemanticFlowPoint, SemanticReachingValues, SemanticValueDefinition, SsaVar,
 };
 
 pub(super) struct SemanticReachingAnalysis<'a> {
     graph: &'a ValueFlowGraph<'a>,
-    model: ReachingModel,
+    model: ReachingModel<'a>,
 }
 
-enum ReachingModel {
-    Ssa(Arc<SemanticReachability>),
+enum ReachingModel<'a> {
+    Ssa(&'a SemanticFlowGraph),
     Source {
         values: BTreeMap<SsaVar, usize>,
         facts: SemanticReachingValues,
@@ -28,10 +26,7 @@ enum ReachingModel {
 }
 
 impl<'a> SemanticReachingAnalysis<'a> {
-    pub(super) fn new(
-        graph: &'a ValueFlowGraph<'a>,
-        reachability: Option<Arc<SemanticReachability>>,
-    ) -> Self {
+    pub(super) fn new(graph: &'a ValueFlowGraph<'a>) -> Self {
         let Some(flow) = graph.semantic_flow().filter(|flow| flow.is_complete()) else {
             return Self {
                 graph,
@@ -41,9 +36,7 @@ impl<'a> SemanticReachingAnalysis<'a> {
         if graph.identity() == ValueIdentity::Ssa {
             return Self {
                 graph,
-                model: ReachingModel::Ssa(
-                    reachability.unwrap_or_else(|| Arc::new(flow.reachability())),
-                ),
+                model: ReachingModel::Ssa(flow),
             };
         }
 
@@ -121,7 +114,8 @@ impl<'a> SemanticReachingAnalysis<'a> {
             return Err(ValueRecoveryError::MissingDefinitionSite(key));
         }
         match &self.model {
-            ReachingModel::Ssa(reachability) => {
+            ReachingModel::Ssa(flow) => {
+                let reachability = flow.indexed_reachability();
                 let definitions = &self.graph.definitions[&key];
                 Ok(definitions
                     .iter()
@@ -398,7 +392,7 @@ mod tests {
         let key = SsaVar::new(variable, 0);
         let definitions = &graph.definitions[&key];
         let uses = &graph.uses[&key];
-        let analysis = SemanticReachingAnalysis::new(&graph, None);
+        let analysis = SemanticReachingAnalysis::new(&graph);
 
         let facts = ReachingDefinitions::new(&graph, &analysis)
             .analyze(definitions, uses)

@@ -191,6 +191,9 @@ fn method_overloads_index_matches_loaded_parent_descriptor_walk() {
                 ArgType::VOID,
             ),
             ("foo", vec![ArgType::string()], ArgType::VOID),
+            ("foo", vec![ArgType::VOID], ArgType::INT),
+            ("foo(", vec![ArgType::INT], ArgType::INT),
+            ("encoded", vec![ArgType::object("X;I[LY")], ArgType::VOID),
         ],
     );
     let child = class_with_methods(
@@ -213,6 +216,11 @@ fn method_overloads_index_matches_loaded_parent_descriptor_walk() {
         "parent foo(String) must remap onto Child, got {overloads:?}"
     );
     assert_eq!(overloads, hierarchy.method_overloads(&method));
+    let (_, encoded) =
+        assert_overloads_match_walk(&hierarchy, "Lcom/example/Child;->encoded(LX;I[LY;)V");
+    assert_eq!(encoded.len(), 1);
+    let (_, missing) = assert_overloads_match_walk(&hierarchy, "Lcom/example/Child;->encoded(I)V");
+    assert!(missing.is_empty());
 }
 
 #[test]
@@ -751,6 +759,50 @@ fn override_analysis_skips_a_broken_class_and_continues() {
         sink.0.iter().any(|(class, _)| class == "Lcom/example/Ok;"),
         "healthy class should still be analyzed"
     );
+}
+
+#[test]
+fn bound_queries_use_the_bound_parent_directory_on_inconsistent_metadata() {
+    let root = class_with_signature(
+        "LRoot;",
+        ["LPhysical;", "LExtra;"],
+        [],
+        Some(GenericSignatures::class("<T:Ljava/lang/Object;>LGeneric;").unwrap()),
+        "",
+    );
+    let hierarchy = LocalHierarchy::new([
+        class("LPhysical;", [], [], ""),
+        class("LExtra;", [], [], ""),
+        class("LGeneric;", [], [], ""),
+    ]);
+    assert!(matches!(
+        collect_instantiated_super_types(&hierarchy, &root),
+        Err(OverrideAnalysisError::MissingErasedParent { index: 1, .. })
+    ));
+
+    for (signature, expected) in [
+        ("LRoot;", vec!["LRoot;", "LPhysical;", "LExtra;"]),
+        ("LRoot<Ljava/lang/String;>;", vec!["LRoot;", "LGeneric;"]),
+    ] {
+        let occurrence = GenericSignatures::field(signature).unwrap();
+        let bound = bind_class(&hierarchy, &root, &occurrence).unwrap();
+        let eager: Vec<_> = std::iter::once(bound.descriptor.clone())
+            .chain(
+                collect_instantiated_super_types(&hierarchy, &bound)
+                    .unwrap()
+                    .into_iter()
+                    .map(|class| class.descriptor),
+            )
+            .collect();
+        assert_eq!(eager, expected);
+        let mut visited = Vec::new();
+        find_in_bound_hierarchy(&hierarchy, &root, &occurrence, true, |class, _, _| {
+            visited.push(class.descriptor.clone());
+            Ok(None::<()>)
+        })
+        .unwrap();
+        assert_eq!(visited, expected);
+    }
 }
 
 #[derive(Default)]

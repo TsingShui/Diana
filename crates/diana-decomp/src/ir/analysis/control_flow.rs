@@ -13,7 +13,7 @@ pub struct ControlFlowFacts {
     dominators: DominatorTree,
     semantic_dominators: DominatorTree,
     postdominators: PostDominatorTree,
-    continuations: ControlContinuations,
+    phi_continuations: Option<ControlContinuations>,
     structural_continuations: ControlContinuations,
 }
 
@@ -22,9 +22,16 @@ impl ControlFlowFacts {
         let predecessors = cfg.normal_predecessor_snapshot();
         let semantic_predecessors = cfg.predecessor_snapshot();
         let dominators = DominatorTree::compute_normal(cfg, cfg.block_ids(), &predecessors)?;
-        let semantic_dominators = DominatorTree::compute(cfg)?;
+        let semantic_dominators = DominatorTree::compute_with_predecessors(
+            cfg,
+            cfg.entry,
+            cfg.block_ids(),
+            &semantic_predecessors,
+        )?;
         let postdominators = PostDominatorTree::compute(cfg)?;
-        let continuations = ControlContinuations::analyze(cfg);
+        let boundaries = ControlContinuations::phi_boundaries(cfg);
+        let phi_continuations =
+            (!boundaries.is_empty()).then(|| ControlContinuations::preserving(cfg, &boundaries));
         let structural_continuations = ControlContinuations::preserving(cfg, &BTreeSet::new());
         Ok(Self {
             predecessors,
@@ -32,7 +39,7 @@ impl ControlFlowFacts {
             dominators,
             semantic_dominators,
             postdominators,
-            continuations,
+            phi_continuations,
             structural_continuations,
         })
     }
@@ -58,7 +65,10 @@ impl ControlFlowFacts {
     }
 
     pub fn continuation(&self, target: BlockId) -> BlockId {
-        self.continuations.destination(target)
+        self.phi_continuations
+            .as_ref()
+            .unwrap_or(&self.structural_continuations)
+            .destination(target)
     }
 
     /// Returns the semantic destination used by structural control analysis.
@@ -78,8 +88,11 @@ pub struct ControlContinuations {
 
 impl ControlContinuations {
     pub fn analyze(cfg: &CFG) -> Self {
-        let boundaries = cfg
-            .blocks
+        Self::preserving(cfg, &Self::phi_boundaries(cfg))
+    }
+
+    fn phi_boundaries(cfg: &CFG) -> BTreeSet<BlockId> {
+        cfg.blocks
             .values()
             .flat_map(|block| &block.insns)
             .filter(|instruction| instruction.insn_type == InsnType::Phi)
@@ -90,15 +103,18 @@ impl ControlContinuations {
                     .iter()
                     .map(|(predecessor, _)| *predecessor)
             })
-            .collect::<BTreeSet<_>>();
-        Self::preserving(cfg, &boundaries)
+            .collect()
     }
 
     pub fn preserving(cfg: &CFG, boundaries: &BTreeSet<BlockId>) -> Self {
         let destinations = cfg
             .block_ids()
             .into_iter()
-            .map(|target| (target, Self::find_destination(cfg, boundaries, target)))
+            .filter(|target| cfg.block(*target).is_some_and(|block| block.synthetic))
+            .filter_map(|target| {
+                let destination = Self::find_destination(cfg, boundaries, target);
+                (destination != target).then_some((target, destination))
+            })
             .collect();
         Self { destinations }
     }

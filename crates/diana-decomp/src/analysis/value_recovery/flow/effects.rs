@@ -40,7 +40,13 @@ impl EffectSummary {
     }
 
     pub(super) fn direct(operation: &SemanticOperation) -> Self {
-        let instruction = operation.direct_effects();
+        Self::with_instruction_effects(operation, operation.direct_effects())
+    }
+
+    fn with_instruction_effects(
+        operation: &SemanticOperation,
+        instruction: InstructionEffects,
+    ) -> Self {
         let mut summary = Self {
             instruction,
             ..Self::default()
@@ -101,7 +107,10 @@ impl EffectSummary {
     }
 
     pub(super) fn operation(operation: &SemanticOperation) -> Self {
-        let mut summary = Self::direct(operation);
+        Self::with_operands(operation, Self::direct(operation))
+    }
+
+    fn with_operands(operation: &SemanticOperation, mut summary: Self) -> Self {
         for operand in operation.operands() {
             summary = summary.join(Self::expression(operand));
         }
@@ -112,9 +121,11 @@ impl EffectSummary {
     }
 
     pub(super) fn operation_ignoring_edge_copy(operation: &SemanticOperation) -> Self {
-        let mut operation = operation.clone();
-        operation.payload.edge_copy = false;
-        Self::operation(&operation)
+        let direct = Self::with_instruction_effects(
+            operation,
+            operation.direct_effects_with_edge_copy(false),
+        );
+        Self::with_operands(operation, direct)
     }
 
     pub(super) fn statement(statement: &SemanticStatement) -> Self {

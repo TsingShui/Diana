@@ -6,7 +6,6 @@
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 
 use crate::analysis::value_recovery::{
     numbering::{SyntheticUse, ValueAvailability, ValueNumbering, ValueNumberingResult},
@@ -34,11 +33,7 @@ pub(super) struct SparseValueFacts<'a> {
 impl<'a> SparseValueFacts<'a> {
     pub(super) fn analyze(graph: &'a ValueFlowGraph<'a>) -> Result<Self, ValueRecoveryError> {
         let canonical = graph.canonical_values();
-        let reachability = graph
-            .semantic_flow()
-            .filter(|flow| flow.is_complete())
-            .map(|flow| Arc::new(flow.reachability()));
-        let reaching = SemanticReachingAnalysis::new(graph, reachability.clone());
+        let reaching = SemanticReachingAnalysis::new(graph);
         let availability = (graph.identity() == ValueIdentity::Source)
             .then_some(&reaching as &dyn ValueAvailability);
         let numbering = {
@@ -62,7 +57,7 @@ impl<'a> SparseValueFacts<'a> {
         } else {
             Default::default()
         };
-        let effects = EffectVersions::new(graph, reachability);
+        let effects = EffectVersions::new(graph);
         Ok(Self {
             graph,
             canonical,

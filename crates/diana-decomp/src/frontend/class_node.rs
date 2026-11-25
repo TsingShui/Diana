@@ -10,6 +10,7 @@
 use super::{AccessInfo, AnnotationNode, FieldNode, MethodNode};
 use crate::ir::{ArgType, DescriptorParseError};
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 /// Unique identifier for a class within a DEX file
 pub type ClassId = u32;
@@ -156,9 +157,9 @@ pub struct ClassNode {
     /// Processing state
     state: ClassState,
     /// Method lookup cache
-    method_cache: HashMap<String, usize>,
+    method_cache: OnceLock<HashMap<String, usize>>,
     /// Field lookup cache
-    field_cache: HashMap<String, usize>,
+    field_cache: OnceLock<HashMap<String, usize>>,
 }
 
 impl ClassNode {
@@ -179,8 +180,8 @@ impl ClassNode {
             inner_classes: Vec::new(),
             parent_class: None,
             state: ClassState::NotLoaded,
-            method_cache: HashMap::new(),
-            field_cache: HashMap::new(),
+            method_cache: OnceLock::new(),
+            field_cache: OnceLock::new(),
         }
     }
 
@@ -196,18 +197,18 @@ impl ClassNode {
 
     /// Add a method
     pub fn add_method(&mut self, method: MethodNode) {
-        let key = method.short_id();
-        let idx = self.methods.len();
+        if let Some(cache) = self.method_cache.get_mut() {
+            cache.insert(method.short_id(), self.methods.len());
+        }
         self.methods.push(method);
-        self.method_cache.insert(key, idx);
     }
 
     /// Add a field
     pub fn add_field(&mut self, field: FieldNode) {
-        let key = field.short_id();
-        let idx = self.fields.len();
+        if let Some(cache) = self.field_cache.get_mut() {
+            cache.insert(field.short_id(), self.fields.len());
+        }
         self.fields.push(field);
-        self.field_cache.insert(key, idx);
     }
 
     /// Add inner class
@@ -358,6 +359,7 @@ impl ClassNode {
 
     /// Get mutable methods
     pub fn methods_mut(&mut self) -> &mut [MethodNode] {
+        self.method_cache.take();
         &mut self.methods
     }
 
@@ -368,23 +370,21 @@ impl ClassNode {
 
     /// Get mutable method by index
     pub fn method_mut(&mut self, idx: usize) -> Option<&mut MethodNode> {
+        self.method_cache.take();
         self.methods.get_mut(idx)
     }
 
     /// Find method by short ID
     pub fn find_method(&self, short_id: &str) -> Option<&MethodNode> {
-        self.method_cache
+        self.method_index()
             .get(short_id)
             .and_then(|&idx| self.methods.get(idx))
     }
 
     /// Find mutable method by short ID
     pub fn find_method_mut(&mut self, short_id: &str) -> Option<&mut MethodNode> {
-        if let Some(&idx) = self.method_cache.get(short_id) {
-            self.methods.get_mut(idx)
-        } else {
-            None
-        }
+        let &idx = self.method_index().get(short_id)?;
+        self.method_mut(idx)
     }
 
     /// Find method by name (returns first match)
@@ -416,6 +416,7 @@ impl ClassNode {
 
     /// Get mutable fields
     pub fn fields_mut(&mut self) -> &mut [FieldNode] {
+        self.field_cache.take();
         &mut self.fields
     }
 
@@ -426,7 +427,7 @@ impl ClassNode {
 
     /// Find field by short ID
     pub fn find_field(&self, short_id: &str) -> Option<&FieldNode> {
-        self.field_cache
+        self.field_index()
             .get(short_id)
             .and_then(|&idx| self.fields.get(idx))
     }
@@ -467,15 +468,30 @@ impl ClassNode {
 
     /// Rebuild caches after bulk modifications
     pub fn rebuild_caches(&mut self) {
-        self.method_cache.clear();
-        for (idx, method) in self.methods.iter().enumerate() {
-            self.method_cache.insert(method.short_id(), idx);
-        }
+        self.method_cache.take();
+        self.field_cache.take();
+        self.method_index();
+        self.field_index();
+    }
 
-        self.field_cache.clear();
-        for (idx, field) in self.fields.iter().enumerate() {
-            self.field_cache.insert(field.short_id(), idx);
-        }
+    fn method_index(&self) -> &HashMap<String, usize> {
+        self.method_cache.get_or_init(|| {
+            self.methods
+                .iter()
+                .enumerate()
+                .map(|(idx, method)| (method.short_id(), idx))
+                .collect()
+        })
+    }
+
+    fn field_index(&self) -> &HashMap<String, usize> {
+        self.field_cache.get_or_init(|| {
+            self.fields
+                .iter()
+                .enumerate()
+                .map(|(idx, field)| (field.short_id(), idx))
+                .collect()
+        })
     }
 }
 
@@ -524,18 +540,6 @@ impl std::fmt::Display for ClassNode {
 
 impl Clone for ClassNode {
     fn clone(&self) -> Self {
-        let method_cache = self
-            .methods
-            .iter()
-            .enumerate()
-            .map(|(idx, method)| (method.short_id(), idx))
-            .collect();
-        let field_cache = self
-            .fields
-            .iter()
-            .enumerate()
-            .map(|(idx, field)| (field.short_id(), idx))
-            .collect();
         Self {
             id: self.id,
             info: self.info.clone(),
@@ -551,8 +555,8 @@ impl Clone for ClassNode {
             inner_classes: self.inner_classes.clone(),
             parent_class: self.parent_class.clone(),
             state: ClassState::NotLoaded,
-            method_cache,
-            field_cache,
+            method_cache: OnceLock::new(),
+            field_cache: OnceLock::new(),
         }
     }
 }

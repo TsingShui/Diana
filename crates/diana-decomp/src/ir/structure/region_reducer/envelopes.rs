@@ -894,6 +894,10 @@ impl LabelBindings {
 }
 
 impl SemanticVisitor for LabelBindings {
+    fn visits_values(&self) -> bool {
+        false
+    }
+
     fn enter_node(&mut self, node: &SemanticNode) {
         match node {
             SemanticNode::Label { label, .. } => {
@@ -946,6 +950,10 @@ impl FreeLabelDependencies {
 }
 
 impl SemanticVisitor for FreeLabelDependencies {
+    fn visits_values(&self) -> bool {
+        false
+    }
+
     fn enter_node(&mut self, node: &SemanticNode) {
         if let Some(label) = Self::binding(node) {
             *self.active.entry(label).or_default() += 1;
@@ -1010,6 +1018,10 @@ impl ControlBindings {
 }
 
 impl SemanticVisitor for ControlBindings {
+    fn visits_values(&self) -> bool {
+        false
+    }
+
     fn enter_node(&mut self, node: &SemanticNode) {
         if let Some(region) = Self::binding(node) {
             self.regions.insert(region);
@@ -1032,6 +1044,10 @@ impl FreeControlDependencies {
 }
 
 impl SemanticVisitor for FreeControlDependencies {
+    fn visits_values(&self) -> bool {
+        false
+    }
+
     fn enter_node(&mut self, node: &SemanticNode) {
         if let Some(region) = ControlBindings::binding(node) {
             *self.active.entry(region).or_default() += 1;

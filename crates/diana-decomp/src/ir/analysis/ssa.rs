@@ -199,6 +199,12 @@ impl std::error::Error for SsaInvariantError {}
 
 impl SsaValueGraph {
     pub fn build(cfg: &CFG) -> Result<Self, SsaInvariantError> {
+        Self::build_with_dominators(cfg).map(|(graph, _)| graph)
+    }
+
+    pub(crate) fn build_with_dominators(
+        cfg: &CFG,
+    ) -> Result<(Self, super::DominatorTree), SsaInvariantError> {
         let mut graph = Self::default();
         for (&block, body) in &cfg.blocks {
             for (index, instruction) in body.insns.iter().enumerate() {
@@ -260,8 +266,27 @@ impl SsaValueGraph {
             }
         }
         graph.validate_phi_edges(cfg)?;
-        graph.validate_dominance(cfg)?;
-        Ok(graph)
+        let dominators =
+            super::DominatorTree::compute(cfg).map_err(SsaInvariantError::Dominance)?;
+        graph.validate_dominance(cfg, &dominators)?;
+        Ok((graph, dominators))
+    }
+
+    // Freezing instruction identities only numbers the existing instructions;
+    // Phi records and their source instructions share the original walk order.
+    pub(crate) fn refresh_phi_identities(&mut self, cfg: &CFG) {
+        if self.phis.is_empty() {
+            return;
+        }
+        let ids = cfg
+            .blocks
+            .values()
+            .flat_map(|block| &block.insns)
+            .filter(|instruction| instruction.insn_type == InsnType::Phi)
+            .map(|instruction| instruction.id);
+        for (phi, id) in self.phis.iter_mut().zip(ids) {
+            phi.instruction = id;
+        }
     }
 
     pub fn values(&self) -> impl Iterator<Item = &SsaValue> {
@@ -414,9 +439,11 @@ impl SsaValueGraph {
         Ok(())
     }
 
-    fn validate_dominance(&self, cfg: &CFG) -> Result<(), SsaInvariantError> {
-        let dominators =
-            super::DominatorTree::compute(cfg).map_err(SsaInvariantError::Dominance)?;
+    fn validate_dominance(
+        &self,
+        cfg: &CFG,
+        dominators: &super::DominatorTree,
+    ) -> Result<(), SsaInvariantError> {
         let first_input = cfg.registers.saturating_sub(cfg.ins);
         for value in self.values.values() {
             let Some(definition) = value.definition else {

@@ -141,9 +141,10 @@ A readable presentation of the selected manifest is written to
 `resources/` or the reported alternate path. Unsafe or conflicting entry names
 use `resource-entries/<physical index>`.
 
-Export processes one DEX image at a time. `--jobs N` controls simultaneous
-class workers. The default uses the available CPU count up to 16 workers.
-Lower values reduce the number of class analyses in memory.
+Export processes one DEX image at a time. `--jobs N` sets the worker limit.
+Workers can share method recovery for a larger class within the same pool.
+The default uses the available CPU count up to 16 workers. Lower values
+limit the number of classes and methods being analyzed concurrently.
 When a class, method or entry has a recovery issue, the CLI publishes the
 available output, records the issue in `export-report.jsonl` and exits 1.
 A write failure leaves the destination unpublished. An existing destination

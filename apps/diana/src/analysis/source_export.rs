@@ -92,15 +92,15 @@ pub fn visit(
                     continue;
                 }
             };
-            let result = engine.visit_class_sources(dex, jobs, |class, result| {
+            let result = engine.visit_class_texts(dex, jobs, |class, result| {
                 let event = match result {
-                    Ok((descriptor, source)) => SourceEvent::Class {
+                    Ok((descriptor, text, failures)) => SourceEvent::Class {
                         entry,
                         logical,
                         class_def: class.0,
                         descriptor,
-                        text: source.text,
-                        failures: source.failures,
+                        text,
+                        failures,
                     },
                     Err(error) => SourceEvent::Issue {
                         entry,

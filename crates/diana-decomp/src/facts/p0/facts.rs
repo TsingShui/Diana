@@ -449,18 +449,26 @@ pub struct ClassFacts {
     pub(super) methods_issue: Option<RequestError>,
     pub(super) annotations: std::sync::Arc<OriginalAnnotations>,
     pub(super) annotations_issue: Option<std::sync::Arc<RequestError>>,
-    pub(super) node: std::sync::OnceLock<crate::frontend::ClassNode>,
+    pub(super) node: std::sync::OnceLock<super::BackendClass>,
 }
 
 impl ClassFacts {
     /// The backend class model, built once from these facts.
     pub fn node(&self) -> Option<&crate::frontend::ClassNode> {
+        self.backend_class().map(|class| &class.node)
+    }
+
+    pub(crate) fn backend_class(&self) -> Option<&super::BackendClass> {
         if let Some(node) = self.node.get() {
             return Some(node);
         }
         let node = super::node::build(self)?;
         let _ = self.node.set(node);
         self.node.get()
+    }
+
+    pub(crate) fn into_backend_class(mut self) -> Option<super::BackendClass> {
+        self.node.take().or_else(|| super::node::build(&self))
     }
 
     pub fn owner(&self) -> ClassKey {

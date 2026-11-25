@@ -134,12 +134,19 @@ impl<'a> CfgPipeline<'a> {
         let mut context = StageContext::new(cfg, observer);
         context.validate("input")?;
         let mut changed = NormalizationStage::default().run(&mut context)?;
-        changed |= SsaStage::new(self.hierarchy).run(&mut context)?;
+        let mut facts = SsaPassFacts::default();
+        changed |= SsaStage::new(self.hierarchy).run(&mut context, &mut facts)?;
 
         context.validate("ssa")?;
         context.cfg.identify_instructions();
         context.cfg.mark_analysis_prepared();
-        let values = Self::values(context.cfg)?;
+        let values = match facts.snapshot {
+            Some((mut values, _)) => {
+                values.refresh_phi_identities(context.cfg);
+                values
+            }
+            None => Self::values(context.cfg)?,
+        };
         Ok(CfgAnalysis {
             values,
             change: changed.into(),
@@ -187,6 +194,31 @@ impl CfgStage for NormalizationStage {
     }
 }
 
+// Value passes may reuse only the exact CFG snapshot they checked. A pass
+// that rewrites instructions or edges drops it before the next pass runs.
+#[derive(Default)]
+pub(super) struct SsaPassFacts {
+    snapshot: Option<(SsaValueGraph, crate::ir::analysis::DominatorTree)>,
+}
+
+impl SsaPassFacts {
+    pub(super) fn get(
+        &mut self,
+        cfg: &CFG,
+    ) -> Result<&(SsaValueGraph, crate::ir::analysis::DominatorTree), SsaInvariantError> {
+        match self.snapshot {
+            Some(ref snapshot) => Ok(snapshot),
+            None => Ok(self
+                .snapshot
+                .insert(SsaValueGraph::build_with_dominators(cfg)?)),
+        }
+    }
+
+    pub(super) fn invalidate(&mut self) {
+        self.snapshot = None;
+    }
+}
+
 struct SsaStage<'a> {
     construct: SSATransform,
     simplify: PhiSimplify,
@@ -205,17 +237,28 @@ impl<'a> SsaStage<'a> {
     }
 }
 
-impl CfgStage for SsaStage<'_> {
+impl SsaStage<'_> {
     const NAME: &'static str = "ssa";
 
-    fn run(&mut self, context: &mut StageContext<'_>) -> Result<bool, CfgPipelineError> {
+    fn run(
+        &mut self,
+        context: &mut StageContext<'_>,
+        facts: &mut SsaPassFacts,
+    ) -> Result<bool, CfgPipelineError> {
         let mut changed = context.pass(Self::NAME, &mut self.construct)?;
-        changed |= context.pass(Self::NAME, &mut self.simplify)?;
-        let constructors_changed = context.pass(Self::NAME, &mut self.constructors)?;
+        changed |= context.pass_with(Self::NAME, self.simplify.name(), |cfg| {
+            self.simplify.run_reusing(cfg, facts)
+        })?;
+        let constructors_changed =
+            context.pass_with(Self::NAME, self.constructors.name(), |cfg| {
+                self.constructors.run_reusing(cfg, facts)
+            })?;
         changed |= constructors_changed;
         if constructors_changed {
             changed |= context.pass(Self::NAME, &mut self.prune)?;
-            changed |= context.pass(Self::NAME, &mut self.simplify)?;
+            changed |= context.pass_with(Self::NAME, self.simplify.name(), |cfg| {
+                self.simplify.run_reusing(cfg, facts)
+            })?;
         }
         context.validate(Self::NAME)?;
         Ok(changed)
@@ -237,9 +280,21 @@ impl<'a> StageContext<'a> {
         P: Pass,
         CfgPipelineError: From<P::Error>,
     {
+        self.pass_with(stage, pass.name(), |cfg| pass.run(cfg))
+    }
+
+    fn pass_with<E>(
+        &mut self,
+        stage: &'static str,
+        name: &'static str,
+        run: impl FnOnce(&mut CFG) -> Result<PassResult, E>,
+    ) -> Result<bool, CfgPipelineError>
+    where
+        CfgPipelineError: From<E>,
+    {
         self.observer.checkpoint()?;
-        let result = pass.run(self.cfg).map_err(CfgPipelineError::from)?;
-        self.observe(stage, pass.name(), result);
+        let result = run(self.cfg).map_err(CfgPipelineError::from)?;
+        self.observe(stage, name, result);
         self.observer.checkpoint()?;
         Ok(result == PassResult::Changed)
     }

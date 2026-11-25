@@ -1,7 +1,8 @@
 //! Source-observable instruction effects shared by dataflow analyses.
 
 use crate::ir::{
-    ArgType, InsnArg, InsnNode, InsnType, InvokeType, MemberReference, MethodReference,
+    ArgType, InsnArg, InsnNode, InsnPayload, InsnType, InvokeType, MemberReference,
+    MethodReference, RegisterArg,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,19 +92,33 @@ impl InstructionEffects {
     };
 
     pub fn of(instruction: &InsnNode) -> Self {
-        if instruction.payload.edge_copy {
+        Self::direct(
+            instruction.insn_type,
+            instruction.result.as_ref(),
+            &instruction.payload,
+            instruction.payload.edge_copy,
+        )
+    }
+
+    pub(crate) fn direct(
+        insn_type: InsnType,
+        result: Option<&RegisterArg>,
+        payload: &InsnPayload,
+        edge_copy: bool,
+    ) -> Self {
+        if edge_copy {
             return Self {
                 writes: true,
                 controls: true,
                 ..Self::PURE
             };
         }
-        if instruction.insn_type == InsnType::Invoke {
-            if let Some(effects) = IntrinsicMethodEffects::resolve(instruction) {
+        if insn_type == InsnType::Invoke {
+            if let Some(effects) = IntrinsicMethodEffects::resolve(payload.reference.as_deref()) {
                 return effects;
             }
         }
-        let mut effects = match instruction.insn_type {
+        let mut effects = match insn_type {
             InsnType::Const
             | InsnType::ConstStr
             | InsnType::Move
@@ -165,7 +180,7 @@ impl InstructionEffects {
             | InsnType::Break
             | InsnType::Continue => Self::CONTROL,
         };
-        effects.may_throw |= instruction.can_throw();
+        effects.may_throw |= insn_type.can_throw(result, payload.arith_op);
         effects
     }
 
@@ -309,8 +324,8 @@ impl InstructionEffects {
 struct IntrinsicMethodEffects;
 
 impl IntrinsicMethodEffects {
-    fn resolve(instruction: &InsnNode) -> Option<InstructionEffects> {
-        let MemberReference::Method(method) = instruction.payload.reference.as_deref()? else {
+    fn resolve(reference: Option<&MemberReference>) -> Option<InstructionEffects> {
+        let MemberReference::Method(method) = reference? else {
             return None;
         };
         Self::floating_predicate(method).then_some(InstructionEffects::PURE)

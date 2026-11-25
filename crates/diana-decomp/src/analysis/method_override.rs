@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io;
 
@@ -455,6 +456,59 @@ impl ClassDetails {
     }
 }
 
+impl MethodDetails {
+    fn overload(&self, name: &str, arity: usize) -> Option<MethodDescriptor> {
+        let owner = &self.reference.declaring_class;
+        let (member, suffix) = self.reference.short_id.split_once('(')?;
+        // A separator in the owner changes how the original reference parser
+        // splits the member name. A parenthesis in the name changes where the
+        // descriptor begins. Keep its interpretation for exceptional metadata.
+        if !owner.contains("->") {
+            if member != name || member.is_empty() {
+                return None;
+            }
+            let ordinary_owner = owner
+                .strip_prefix('L')
+                .and_then(|s| s.strip_suffix(';'))
+                .is_some_and(|class| !class.is_empty() && !class.contains(';'));
+            if ordinary_owner
+                && !suffix.contains('(')
+                && self
+                    .params
+                    .iter()
+                    .all(|ty| descriptor_round_trips(ty, false))
+                && descriptor_round_trips(&self.return_type, true)
+            {
+                return (self.params.len() == arity).then(|| MethodDescriptor {
+                    parameters: self.params.clone(),
+                    return_type: self.return_type.clone(),
+                });
+            }
+        }
+        let reference = GenericTypeHierarchy::ir_method_reference(&self.reference)?;
+        (reference.name == name && reference.descriptor.parameters.len() == arity)
+            .then_some(reference.descriptor)
+    }
+}
+
+fn descriptor_round_trips(mut ty: &ArgType, mut allow_void: bool) -> bool {
+    loop {
+        match ty {
+            ArgType::Array(element) => {
+                ty = element;
+                allow_void = false;
+            }
+            ArgType::Object(name) => return !name.is_empty() && !name.contains(';'),
+            ArgType::Primitive(crate::ir::PrimitiveType::Void) => return allow_void,
+            ArgType::Primitive(
+                crate::ir::PrimitiveType::Object | crate::ir::PrimitiveType::Array,
+            )
+            | ArgType::Unknown(_) => return false,
+            ArgType::Primitive(_) => return true,
+        }
+    }
+}
+
 fn method_is_not_overridable(method: &MethodDetails) -> bool {
     method.reference.short_id.starts_with("<init>(")
         || method.reference.short_id.starts_with("<clinit>(")
@@ -481,22 +535,8 @@ pub(crate) fn bind_class<H: ClassHierarchy>(
     class: &ClassDetails,
     instantiated_self: &JvmTypeSignature,
 ) -> OverrideResult<ClassDetails> {
-    let raw_instantiation = class_type_signature_from_java_signature(instantiated_self)
-        .is_some_and(|instantiated| class_is_raw_instantiation(class, instantiated));
-    let substitutions = class_type_substitution(hierarchy, class, instantiated_self)?;
-    let generic_parents = if raw_instantiation {
-        class
-            .parents
-            .iter()
-            .map(arg_type_to_signature)
-            .collect::<OverrideResult<Vec<_>>>()?
-    } else {
-        class
-            .generic_parents
-            .iter()
-            .map(|parent| parent.substitute(&substitutions))
-            .collect::<Result<Vec<_>, _>>()?
-    };
+    let binding = ClassBinding::new(hierarchy, class, instantiated_self)?;
+    let generic_parents = binding.parents(class)?.into_owned();
     let parents = generic_parents
         .iter()
         .map(signature_erased_arg_type)
@@ -509,15 +549,7 @@ pub(crate) fn bind_class<H: ClassHierarchy>(
                 reference: method.reference.clone(),
                 params: method.params.clone(),
                 return_type: method.return_type.clone(),
-                generic_signature: if raw_instantiation {
-                    None
-                } else {
-                    method
-                        .generic_signature
-                        .as_ref()
-                        .map(|signature| signature.substitute(&substitutions))
-                        .transpose()?
-                },
+                generic_signature: binding.method_signature(method)?,
                 throws: method.throws.clone(),
                 access_flags: method.access_flags,
             })
@@ -535,6 +567,103 @@ pub(crate) fn bind_class<H: ClassHierarchy>(
         methods,
         method_candidates: OnceLock::new(),
     })
+}
+
+/// The substitutions for this occurrence of a class in the hierarchy. Its
+/// erased method declarations stay shared regardless of the instantiation.
+struct ClassBinding {
+    raw: bool,
+    substitutions: TypeSubstitution,
+}
+
+impl ClassBinding {
+    fn new(
+        hierarchy: &impl ClassHierarchy,
+        class: &ClassDetails,
+        instantiated: &JvmTypeSignature,
+    ) -> OverrideResult<Self> {
+        Ok(Self {
+            raw: class_type_signature_from_java_signature(instantiated)
+                .is_some_and(|ty| class_is_raw_instantiation(class, ty)),
+            substitutions: class_type_substitution(hierarchy, class, instantiated)?,
+        })
+    }
+
+    fn parents<'a>(&self, class: &'a ClassDetails) -> OverrideResult<Cow<'a, [JvmTypeSignature]>> {
+        if self.raw {
+            return class
+                .parents
+                .iter()
+                .map(arg_type_to_signature)
+                .collect::<OverrideResult<Vec<_>>>()
+                .map(Cow::Owned);
+        }
+        if self.substitutions.is_empty() {
+            return Ok(Cow::Borrowed(&class.generic_parents));
+        }
+        Ok(Cow::Owned(
+            class
+                .generic_parents
+                .iter()
+                .map(|parent| parent.substitute(&self.substitutions))
+                .collect::<Result<_, _>>()?,
+        ))
+    }
+
+    fn method_signature(&self, method: &MethodDetails) -> OverrideResult<Option<MethodSignature>> {
+        if self.raw {
+            return Ok(None);
+        }
+        if self.substitutions.is_empty() {
+            return Ok(method.generic_signature.clone());
+        }
+        Ok(method
+            .generic_signature
+            .as_ref()
+            .map(|signature| signature.substitute(&self.substitutions))
+            .transpose()?)
+    }
+}
+
+/// Visits the receiver and instantiated ancestors in breadth-first order. The
+/// full binder derives each lookup type by erasing the bound generic parent at
+/// the same index, even when the original erased directory was inconsistent.
+/// Binding an unrelated method only substitutes its already parsed, typed
+/// signature. Its substitution errors describe internal traversal invariants;
+/// input signature errors were handled while constructing the declaration.
+fn find_in_bound_hierarchy<T>(
+    hierarchy: &impl ClassHierarchy,
+    root: &ClassDetails,
+    instantiated: &JvmTypeSignature,
+    include_parents: bool,
+    mut find: impl FnMut(&ClassDetails, &JvmTypeSignature, &ClassBinding) -> OverrideResult<Option<T>>,
+) -> OverrideResult<Option<T>> {
+    let mut pending = VecDeque::new();
+    let mut inspect =
+        |class: &ClassDetails, occurrence: &JvmTypeSignature, pending: &mut VecDeque<_>| {
+            let binding = ClassBinding::new(hierarchy, class, occurrence)?;
+            let parents = binding.parents(class)?;
+            let result = find(class, occurrence, &binding)?;
+            if result.is_none() && include_parents {
+                pending.extend(parents.into_owned());
+            }
+            Ok::<_, OverrideAnalysisError>(result)
+        };
+    if let Some(found) = inspect(root, instantiated, &mut pending)? {
+        return Ok(Some(found));
+    }
+    let mut seen = BTreeSet::new();
+    while let Some(occurrence) = pending.pop_front() {
+        let Some(class) = hierarchy.class_details(&occurrence.erased()) else {
+            continue;
+        };
+        if seen.insert(class.descriptor.clone()) {
+            if let Ok(Some(found)) = inspect(&class, &occurrence, &mut pending) {
+                return Ok(Some(found));
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn class_is_raw_instantiation(class: &ClassDetails, instantiated: &ClassTypeSignature) -> bool {
@@ -565,6 +694,14 @@ fn class_type_substitution<H: ClassHierarchy>(
     let JvmTypeSignature::ClassType(instantiated) = instantiated_self else {
         return Ok(substitutions);
     };
+    if instantiated.type_arguments.is_empty()
+        && instantiated
+            .inner_segments
+            .iter()
+            .all(|inner| inner.type_arguments.is_empty())
+    {
+        return Ok(substitutions);
+    }
 
     for scope in instantiated.owner_scopes() {
         let descriptor = format!("L{};", scope.erased_name());
@@ -725,17 +862,8 @@ impl LoadedClassHierarchy {
     }
 }
 
-type MethodOverloadKey = (String, usize);
-type MethodOverloadSet = Vec<MethodDescriptor>;
-type MethodOverloadsByKey = BTreeMap<MethodOverloadKey, MethodOverloadSet>;
-
-/// Owner → (name, arity) → overloads declared on that owner or a parent.
-/// Sets store descriptors only; lookup remaps `MethodReference.owner` so the
-/// returned order still matches the previous `BTreeSet` walk.
-#[derive(Debug, Default)]
-struct MethodOverloadIndex {
-    by_owner: RwLock<BTreeMap<ArgType, MethodOverloadsByKey>>,
-}
+type MethodOverloadKey = (ArgType, String, usize);
+type MethodOverloadIndex = RwLock<HashMap<MethodOverloadKey, Vec<MethodDescriptor>>>;
 
 fn remap_overloads(
     owner: &ArgType,
@@ -780,21 +908,30 @@ impl GenericTypeHierarchy {
         method: &crate::ir::MethodReference,
     ) -> Option<MethodSignature> {
         let declared = self.hierarchy.class_details(&instantiated_type.erased())?;
-        let bound = bind_class(&self.hierarchy, &declared, instantiated_type).ok()?;
-        let mut classes = vec![bound.clone()];
-        classes.extend(collect_instantiated_super_types(&self.hierarchy, &bound).ok()?);
         let owner = method.owner.to_descriptor();
         let short_id = format!("{}{}", method.name, method.descriptor);
-        classes
-            .into_iter()
-            .find(|class| class.descriptor == owner)
-            .and_then(|class| {
-                class
+        find_in_bound_hierarchy(
+            &self.hierarchy,
+            &declared,
+            instantiated_type,
+            true,
+            |class, _, binding| {
+                if class.descriptor != owner {
+                    return Ok(None);
+                }
+                let found = class
                     .methods
-                    .into_iter()
-                    .find(|candidate| candidate.reference.short_id == short_id)
-            })
-            .and_then(|method| method.generic_signature)
+                    .iter()
+                    .find(|candidate| candidate.reference.short_id == short_id);
+                Ok(Some(match found {
+                    Some(method) => binding.method_signature(method)?,
+                    None => None,
+                }))
+            },
+        )
+        .ok()
+        .flatten()
+        .flatten()
     }
 
     pub(crate) fn declared_type_parameters(&self, ty: &ArgType) -> Option<Vec<TypeParameter>> {
@@ -902,10 +1039,12 @@ impl GenericTypeHierarchy {
     }
 
     fn instance_method_keys(&self, owner: &ArgType) -> BTreeSet<(String, Vec<ArgType>)> {
-        self.hierarchy
-            .class_details(owner)
-            .into_iter()
-            .flat_map(|declared| declared.methods.clone())
+        let Some(declared) = self.hierarchy.class_details(owner) else {
+            return BTreeSet::new();
+        };
+        declared
+            .methods
+            .iter()
             .filter(|method| {
                 !method.access_flags.is_static()
                     && !method.access_flags.is_private()
@@ -930,42 +1069,22 @@ impl GenericTypeHierarchy {
         &self,
         method: &crate::ir::MethodReference,
     ) -> Vec<crate::ir::MethodReference> {
-        self.ensure_method_overloads(&method.owner);
-        let key = (method.name.clone(), method.descriptor.parameters.len());
-        let Ok(index) = self.method_overloads.by_owner.read() else {
-            return remap_overloads(
-                &method.owner,
-                &method.name,
-                self.collect_owner_overloads(&method.owner)
-                    .remove(&key)
-                    .unwrap_or_default()
-                    .as_slice(),
-            );
-        };
-        index
-            .get(&method.owner)
-            .and_then(|overloads| overloads.get(&key))
-            .map(|descriptors| remap_overloads(&method.owner, &method.name, descriptors))
-            .unwrap_or_default()
-    }
-
-    fn ensure_method_overloads(&self, owner: &ArgType) {
-        if self
-            .method_overloads
-            .by_owner
-            .read()
-            .map(|index| index.contains_key(owner))
-            .unwrap_or(false)
-        {
-            return;
-        }
-        let grouped = self.collect_owner_overloads(owner);
-        if let Ok(mut index) = self.method_overloads.by_owner.write() {
-            // Recheck after the walk so a concurrent fill of the same owner is kept.
-            if !index.contains_key(owner) {
-                index.insert(owner.clone(), grouped);
+        let key = (
+            method.owner.clone(),
+            method.name.clone(),
+            method.descriptor.parameters.len(),
+        );
+        if let Ok(index) = self.method_overloads.read() {
+            if let Some(descriptors) = index.get(&key) {
+                return remap_overloads(&method.owner, &method.name, descriptors);
             }
         }
+        let descriptors = self.collect_owner_overloads(method);
+        let result = remap_overloads(&method.owner, &method.name, &descriptors);
+        if let Ok(mut index) = self.method_overloads.write() {
+            index.entry(key).or_insert(descriptors);
+        }
+        result
     }
 
     #[cfg(test)]
@@ -1004,9 +1123,12 @@ impl GenericTypeHierarchy {
         overloads.into_iter().collect()
     }
 
-    fn collect_owner_overloads(&self, owner: &ArgType) -> MethodOverloadsByKey {
-        let mut overloads = MethodOverloadsByKey::new();
-        let mut pending = vec![owner.clone()];
+    fn collect_owner_overloads(
+        &self,
+        method: &crate::ir::MethodReference,
+    ) -> Vec<MethodDescriptor> {
+        let mut overloads = Vec::new();
+        let mut pending = vec![method.owner.clone()];
         let mut visited = BTreeSet::new();
         while let Some(current) = pending.pop() {
             if !visited.insert(current.clone()) {
@@ -1015,23 +1137,13 @@ impl GenericTypeHierarchy {
             let Some(declared) = self.hierarchy.class_details(&current) else {
                 continue;
             };
-            for candidate in declared
-                .methods
-                .iter()
-                .filter_map(|candidate| Self::ir_method_reference(&candidate.reference))
-            {
-                let arity = candidate.descriptor.parameters.len();
-                overloads
-                    .entry((candidate.name, arity))
-                    .or_default()
-                    .push(candidate.descriptor);
-            }
+            overloads.extend(declared.methods.iter().filter_map(|candidate| {
+                candidate.overload(&method.name, method.descriptor.parameters.len())
+            }));
             pending.extend(declared.parents.iter().cloned());
         }
-        for descriptors in overloads.values_mut() {
-            descriptors.sort();
-            descriptors.dedup();
-        }
+        overloads.sort();
+        overloads.dedup();
         overloads
     }
 
@@ -1061,64 +1173,54 @@ impl GenericTypeHierarchy {
         let owner_parameters = declared
             .generic_signature
             .as_ref()
-            .map(|signature| signature.type_parameters.clone())
+            .map(|signature| signature.type_parameters.as_slice())
             .unwrap_or_default();
-        let owner_type_parameters = declared
-            .generic_signature
-            .as_ref()
-            .map(|signature| {
-                signature
-                    .type_parameters
-                    .iter()
-                    .map(|parameter| parameter.name.clone())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let raw_name = method.owner.as_object()?.to_string();
         let open_owner = ClassTypeSignature {
-            raw_name,
-            type_arguments: owner_type_parameters
+            raw_name: method.owner.as_object()?.to_string(),
+            type_arguments: owner_parameters
                 .iter()
                 .map(|parameter| {
-                    TypeArgument::Exact(JvmTypeSignature::TypeVariable(parameter.clone()))
+                    TypeArgument::Exact(JvmTypeSignature::TypeVariable(parameter.name.clone()))
                 })
                 .collect(),
             inner_segments: Vec::new(),
         };
-        let bound = bind_class(
+        let short_id = format!("{}{}", method.name, method.descriptor);
+        let occurrence = JvmTypeSignature::ClassType(open_owner);
+        let signature = find_in_bound_hierarchy(
             &self.hierarchy,
             &declared,
-            &JvmTypeSignature::ClassType(open_owner.clone()),
+            &occurrence,
+            !method.is_constructor(),
+            |class, _, binding| match class
+                .methods
+                .iter()
+                .find(|candidate| candidate.reference.short_id == short_id)
+            {
+                Some(candidate) => binding.method_signature(candidate),
+                None => Ok(None),
+            },
         )
         .ok()?;
-        let mut classes = vec![bound.clone()];
-        if !method.is_constructor() {
-            classes.extend(collect_instantiated_super_types(&self.hierarchy, &bound).ok()?);
-        }
-        let short_id = format!("{}{}", method.name, method.descriptor);
-        let signature = classes.into_iter().find_map(|class| {
-            class
-                .methods
-                .into_iter()
-                .find(|candidate| candidate.reference.short_id == short_id)
-                .and_then(|method| method.generic_signature)
-        });
-        signature
-            .map(|signature| GenericMethodContract {
+        let JvmTypeSignature::ClassType(open_owner) = occurrence else {
+            return None;
+        };
+        if let Some(signature) = signature {
+            return Some(GenericMethodContract {
                 signature,
-                owner: open_owner.clone(),
-                owner_parameters: owner_parameters.clone(),
-            })
-            .or_else(|| {
-                method.is_constructor().then(|| {
-                    GenericMethodContract::erased_constructor(
-                        open_owner,
-                        owner_parameters,
-                        &method.descriptor.parameters,
-                        &[],
-                    )
-                })?
-            })
+                owner: open_owner,
+                owner_parameters: owner_parameters.to_vec(),
+            });
+        }
+        if method.is_constructor() {
+            return GenericMethodContract::erased_constructor(
+                open_owner,
+                owner_parameters.to_vec(),
+                &method.descriptor.parameters,
+                &[],
+            );
+        }
+        None
     }
 
     pub(crate) fn specialize_subtype(
@@ -1181,22 +1283,8 @@ impl GenericTypeHierarchy {
                 .collect(),
             inner_segments: Vec::new(),
         });
-        let bound = bind_class(&self.hierarchy, &declared, &open_subtype).ok()?;
-        let expected_erasure = expected_supertype.erased();
-        let mut hierarchy = vec![bound.clone()];
-        hierarchy.extend(collect_instantiated_super_types(&self.hierarchy, &bound).ok()?);
-        let projected = hierarchy
-            .into_iter()
-            .find(|candidate| {
-                candidate
-                    .instantiated_self
-                    .as_ref()
-                    .is_some_and(|candidate| {
-                        JvmTypeSignature::ClassType(candidate.clone()).erased() == expected_erasure
-                    })
-            })?
-            .instantiated_self
-            .map(JvmTypeSignature::ClassType)?;
+        let projected =
+            self.find_projected_type(&declared, &open_subtype, &expected_supertype.erased())?;
         let variables = inference_parameters
             .iter()
             .cloned()
@@ -1261,19 +1349,28 @@ impl GenericTypeHierarchy {
         if supplied_arguments < declared_parameters {
             return None;
         }
-        let bound = bind_class(&self.hierarchy, &declared, subtype).ok()?;
-        let super_types = collect_instantiated_super_types(&self.hierarchy, &bound).ok()?;
-        std::iter::once(bound)
-            .chain(super_types)
-            .find_map(|candidate| {
-                candidate
-                    .instantiated_self
-                    .filter(|candidate| {
-                        JvmTypeSignature::ClassType(candidate.clone()).erased()
-                            == *expected_supertype
-                    })
-                    .map(JvmTypeSignature::ClassType)
-            })
+        self.find_projected_type(&declared, subtype, expected_supertype)
+    }
+
+    fn find_projected_type(
+        &self,
+        declared: &ClassDetails,
+        subtype: &JvmTypeSignature,
+        expected: &ArgType,
+    ) -> Option<JvmTypeSignature> {
+        find_in_bound_hierarchy(
+            &self.hierarchy,
+            declared,
+            subtype,
+            true,
+            |_, occurrence, _| {
+                Ok((matches!(occurrence, JvmTypeSignature::ClassType(_))
+                    && occurrence.erased() == *expected)
+                    .then(|| occurrence.clone()))
+            },
+        )
+        .ok()
+        .flatten()
     }
 
     pub(crate) fn project_member_type(
@@ -1303,29 +1400,21 @@ impl GenericTypeHierarchy {
         instantiated_owner: &JvmTypeSignature,
         declaring_owner: &ClassTypeSignature,
     ) -> Option<TypeSubstitution> {
-        {
-            let owner = self.hierarchy.class_details(&instantiated_owner.erased())?;
-            let bound = bind_class(&self.hierarchy, &owner, instantiated_owner).ok()?;
-            let super_types = collect_instantiated_super_types(&self.hierarchy, &bound).ok()?;
-            let declaring_erasure = JvmTypeSignature::ClassType(declaring_owner.clone()).erased();
-            let projected_owner =
-                std::iter::once(bound)
-                    .chain(super_types)
-                    .find_map(|candidate| {
-                        candidate.instantiated_self.filter(|candidate| {
-                            JvmTypeSignature::ClassType(candidate.clone()).erased()
-                                == declaring_erasure
-                        })
-                    })?;
-            let declaration = self.hierarchy.class_details(&declaring_erasure)?;
-            let substitutions = class_type_substitution(
-                &self.hierarchy,
-                &declaration,
-                &JvmTypeSignature::ClassType(projected_owner),
-            )
-            .ok()?;
-            Some(substitutions)
-        }
+        let owner = self.hierarchy.class_details(&instantiated_owner.erased())?;
+        let expected = ArgType::object(&declaring_owner.erased_name());
+        find_in_bound_hierarchy(
+            &self.hierarchy,
+            &owner,
+            instantiated_owner,
+            true,
+            |_, occurrence, binding| {
+                Ok((matches!(occurrence, JvmTypeSignature::ClassType(_))
+                    && occurrence.erased() == expected)
+                    .then(|| binding.substitutions.clone()))
+            },
+        )
+        .ok()
+        .flatten()
     }
 }
 

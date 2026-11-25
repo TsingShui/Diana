@@ -133,6 +133,7 @@ impl<'a> RegionReducer<'a> {
         let mut root = reduced
             .remove(&root_region)
             .ok_or(StructureError::MissingReduction(root_region))?;
+        drop(reduced);
         let root_entry = self
             .regions
             .tree()

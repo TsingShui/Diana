@@ -5,7 +5,8 @@
 //! one original CFG block.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::ops::Range;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::ir::{
     RegionId, SemanticExpression, SemanticLabel, SemanticLeave, SemanticLeaveKind,
@@ -45,6 +46,7 @@ pub struct SemanticFlowGraph {
     successors: BTreeMap<SemanticFlowPoint, Vec<SemanticFlowPoint>>,
     entries: BTreeSet<SemanticFlowPoint>,
     complete: bool,
+    reachability: OnceLock<SemanticReachability>,
 }
 
 #[derive(Debug, Clone)]
@@ -55,7 +57,8 @@ pub struct SemanticReachability {
 
 #[derive(Debug, Clone)]
 enum ReachabilityStore {
-    Dense(Vec<DefinitionSet>),
+    Linear,
+    Dense { row_words: usize, bits: Vec<u64> },
     Sparse(Arc<SparseReachability>),
 }
 
@@ -63,7 +66,6 @@ enum ReachabilityStore {
 struct SparseReachability {
     successors: Vec<Vec<usize>>,
     predecessors: Vec<Vec<usize>>,
-    topological_positions: Vec<usize>,
     forward: Mutex<ReachabilityCache>,
     backward: Mutex<ReachabilityCache>,
 }
@@ -74,30 +76,46 @@ struct ReachabilityCache {
     rows: BTreeMap<usize, Arc<DefinitionSet>>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct DefinitionSet {
-    words: Vec<u64>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DefinitionSet {
+    Word(u64),
+    Words(Box<[u64]>),
 }
 
 impl DefinitionSet {
     fn new(definitions: usize) -> Self {
-        Self {
-            words: vec![0; definitions.div_ceil(u64::BITS as usize)],
+        match definitions.div_ceil(u64::BITS as usize) {
+            1 => Self::Word(0),
+            words => Self::Words(vec![0; words].into_boxed_slice()),
+        }
+    }
+
+    fn words(&self) -> &[u64] {
+        match self {
+            Self::Word(word) => std::slice::from_ref(word),
+            Self::Words(words) => words,
+        }
+    }
+
+    fn words_mut(&mut self) -> &mut [u64] {
+        match self {
+            Self::Word(word) => std::slice::from_mut(word),
+            Self::Words(words) => words,
         }
     }
 
     fn insert(&mut self, definition: usize) {
-        self.words[definition / u64::BITS as usize] |= 1 << (definition % u64::BITS as usize);
+        self.words_mut()[definition / u64::BITS as usize] |= 1 << (definition % u64::BITS as usize);
     }
 
     fn contains(&self, definition: usize) -> bool {
-        self.words
+        self.words()
             .get(definition / u64::BITS as usize)
             .is_some_and(|word| word & (1 << (definition % u64::BITS as usize)) != 0)
     }
 
     fn union_with(&mut self, other: &Self) {
-        for (word, other) in self.words.iter_mut().zip(&other.words) {
+        for (word, other) in self.words_mut().iter_mut().zip(other.words()) {
             *word |= other;
         }
     }
@@ -105,10 +123,10 @@ impl DefinitionSet {
     fn union_delta(&mut self, other: &Self, delta: &mut Self) -> bool {
         let mut changed = false;
         for ((word, other), delta) in self
-            .words
+            .words_mut()
             .iter_mut()
-            .zip(&other.words)
-            .zip(&mut delta.words)
+            .zip(other.words())
+            .zip(delta.words_mut())
         {
             let added = *other & !*word;
             *word |= added;
@@ -121,11 +139,11 @@ impl DefinitionSet {
     fn union_delta_without(&mut self, other: &Self, excluded: &Self, delta: &mut Self) -> bool {
         let mut changed = false;
         for (((word, other), excluded), delta) in self
-            .words
+            .words_mut()
             .iter_mut()
-            .zip(&other.words)
-            .zip(&excluded.words)
-            .zip(&mut delta.words)
+            .zip(other.words())
+            .zip(excluded.words())
+            .zip(delta.words_mut())
         {
             let added = (*other & !*excluded) & !*word;
             *word |= added;
@@ -136,38 +154,36 @@ impl DefinitionSet {
     }
 
     fn remove_with(&mut self, other: &Self) {
-        for (word, other) in self.words.iter_mut().zip(&other.words) {
+        for (word, other) in self.words_mut().iter_mut().zip(other.words()) {
             *word &= !other;
         }
     }
 
     fn clear(&mut self) {
-        self.words.fill(0);
+        self.words_mut().fill(0);
     }
 
-    fn differs_under(&self, other: &Self, mask: &Self) -> bool {
-        self.words
-            .iter()
-            .zip(&other.words)
-            .zip(&mask.words)
-            .any(|((left, right), mask)| ((left ^ right) & mask) != 0)
+    fn mask_words(bits: Range<usize>) -> impl Iterator<Item = (usize, u64)> {
+        let start = bits.start / 64;
+        let end = bits.end.div_ceil(64);
+        (start..end).map(move |index| {
+            let first = bits.start.saturating_sub(index * 64);
+            let last = (bits.end - index * 64).min(64);
+            let mask = (u64::MAX << first) & (u64::MAX >> (64 - last));
+            (index, mask)
+        })
     }
 
-    fn members(&self) -> impl Iterator<Item = usize> + '_ {
-        self.words
-            .iter()
-            .enumerate()
-            .flat_map(|(word_index, word)| {
-                let mut remaining = *word;
-                std::iter::from_fn(move || {
-                    if remaining == 0 {
-                        return None;
-                    }
-                    let bit = remaining.trailing_zeros() as usize;
-                    remaining &= remaining - 1;
-                    Some(word_index * u64::BITS as usize + bit)
-                })
-            })
+    fn insert_range(&mut self, bits: Range<usize>) {
+        let words = self.words_mut();
+        for (index, mask) in Self::mask_words(bits) {
+            words[index] |= mask;
+        }
+    }
+
+    fn same_in_range(&self, other: &Self, bits: Range<usize>) -> bool {
+        Self::mask_words(bits)
+            .all(|(index, mask)| (self.words()[index] ^ other.words()[index]) & mask == 0)
     }
 }
 
@@ -188,23 +204,50 @@ impl SemanticValueDefinition {
     }
 }
 
+// Number definitions of the same value consecutively. Its kill mask is a
+// contiguous bit range, even when the caller supplied interleaved values.
+#[derive(Debug, Clone, Default)]
+struct DefinitionsByValue {
+    offsets: Vec<usize>,
+    ordinals: Vec<usize>,
+}
+
+impl DefinitionsByValue {
+    fn new(definitions: &[SemanticValueDefinition], value_count: usize) -> Self {
+        let mut offsets = vec![0usize; value_count + 1];
+        for definition in definitions {
+            offsets[definition.value + 1] += 1;
+        }
+        for value in 0..value_count {
+            offsets[value + 1] += offsets[value];
+        }
+        Self {
+            offsets,
+            ordinals: vec![0; definitions.len()],
+        }
+    }
+
+    fn range(&self, value: usize) -> Option<Range<usize>> {
+        let &start = self.offsets.get(value)?;
+        let &end = self.offsets.get(value.checked_add(1)?)?;
+        Some(start..end)
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SemanticReachingValues {
     reaching: BTreeMap<SemanticFlowPoint, DefinitionSet>,
-    definitions: Vec<(usize, usize)>,
-    value_masks: Vec<DefinitionSet>,
+    by_value: DefinitionsByValue,
 }
 
 impl SemanticReachingValues {
     pub fn at(&self, value: usize, point: SemanticFlowPoint) -> Option<Vec<usize>> {
         let reaching = self.reaching.get(&point)?;
+        let range = self.by_value.range(value).unwrap_or(0..0);
         Some(
-            reaching
-                .members()
-                .filter_map(|definition| {
-                    let (definition_value, ordinal) = self.definitions[definition];
-                    (definition_value == value).then_some(ordinal)
-                })
+            range
+                .filter(|index| reaching.contains(*index))
+                .map(|index| self.by_value.ordinals[index])
                 .collect(),
         )
     }
@@ -217,8 +260,7 @@ impl SemanticReachingValues {
     ) -> Option<bool> {
         let source = self.reaching.get(&source)?;
         let target = self.reaching.get(&target)?;
-        let mask = self.value_masks.get(value)?;
-        Some(!source.differs_under(target, mask))
+        Some(source.same_in_range(target, self.by_value.range(value)?))
     }
 }
 
@@ -229,21 +271,10 @@ impl SemanticReachability {
     }
 
     fn analyze_with_dense_limit(graph: &SemanticFlowGraph, max_dense_bytes: usize) -> Self {
-        let points = graph
-            .predecessors
-            .keys()
-            .chain(graph.successors.keys())
-            .chain(graph.successors.values().flatten())
-            .chain(
-                graph
-                    .predecessors
-                    .values()
-                    .flatten()
-                    .map(|(predecessor, _)| predecessor),
-            )
-            .chain(graph.entries.iter())
-            .copied()
-            .collect::<BTreeSet<_>>();
+        if let Some(chain) = Self::linear_chain(graph) {
+            return chain;
+        }
+        let points = graph.points();
         let mut visited = BTreeSet::new();
         let mut finish = Vec::with_capacity(points.len());
         for root in &points {
@@ -296,52 +327,40 @@ impl SemanticReachability {
         }
 
         let mut successors = vec![BTreeSet::new(); component_count];
-        let mut indegree = vec![0usize; component_count];
+        // Kosaraju assigns each component before all its outgoing neighbors:
+        // the reverse traversal starts at the greatest remaining finish time.
         for (point, point_successors) in &graph.successors {
             let source = components[point];
             for successor in point_successors {
                 let target = components[successor];
-                if source != target && successors[source].insert(target) {
-                    indegree[target] += 1;
+                if source != target {
+                    debug_assert!(source < target);
+                    successors[source].insert(target);
                 }
             }
         }
-        let mut ready = indegree
-            .iter()
-            .enumerate()
-            .filter_map(|(component, degree)| (*degree == 0).then_some(component))
-            .collect::<BTreeSet<_>>();
-        let mut topological = Vec::with_capacity(component_count);
-        while let Some(component) = ready.pop_first() {
-            topological.push(component);
-            for successor in &successors[component] {
-                indegree[*successor] -= 1;
-                if indegree[*successor] == 0 {
-                    ready.insert(*successor);
-                }
-            }
-        }
-        debug_assert_eq!(topological.len(), component_count);
 
         let words_per_row = component_count.div_ceil(u64::BITS as usize);
         let dense_bytes = component_count
             .saturating_mul(words_per_row)
             .saturating_mul(std::mem::size_of::<u64>());
         let store = if dense_bytes <= max_dense_bytes {
-            let mut reachable = (0..component_count)
-                .map(|component| {
-                    let mut set = DefinitionSet::new(component_count);
-                    set.insert(component);
-                    set
-                })
-                .collect::<Vec<_>>();
-            for component in topological.into_iter().rev() {
-                for successor in &successors[component] {
-                    let successor_reachability = reachable[*successor].clone();
-                    reachable[component].union_with(&successor_reachability);
+            let mut bits = vec![0u64; component_count * words_per_row];
+            for component in (0..component_count).rev() {
+                let (earlier, later) = bits.split_at_mut((component + 1) * words_per_row);
+                let row = &mut earlier[component * words_per_row..];
+                row[component / 64] |= 1u64 << (component % 64);
+                for &successor in &successors[component] {
+                    let start = (successor - component - 1) * words_per_row;
+                    for (word, other) in row.iter_mut().zip(&later[start..start + words_per_row]) {
+                        *word |= *other;
+                    }
                 }
             }
-            ReachabilityStore::Dense(reachable)
+            ReachabilityStore::Dense {
+                row_words: words_per_row,
+                bits,
+            }
         } else {
             let successors = successors
                 .into_iter()
@@ -353,19 +372,39 @@ impl SemanticReachability {
                     predecessors[*target].push(source);
                 }
             }
-            let mut topological_positions = vec![0; component_count];
-            for (position, component) in topological.into_iter().enumerate() {
-                topological_positions[component] = position;
-            }
             ReachabilityStore::Sparse(Arc::new(SparseReachability {
                 successors,
                 predecessors,
-                topological_positions,
                 forward: Mutex::new(ReachabilityCache::default()),
                 backward: Mutex::new(ReachabilityCache::default()),
             }))
         };
         Self { components, store }
+    }
+
+    // A straight-line method has one path. Its point order answers all
+    // reachability queries without a component graph or a closure matrix.
+    fn linear_chain(graph: &SemanticFlowGraph) -> Option<Self> {
+        if graph.entries.len() != 1 || graph.successors.values().any(|targets| targets.len() != 1) {
+            return None;
+        }
+        let mut point = *graph.entries.first()?;
+        let mut components = BTreeMap::new();
+        while components.insert(point, components.len()).is_none() {
+            match graph.successors(point) {
+                [next] => point = *next,
+                [] if components.len() - 1 == graph.successors.len() => {
+                    // Every edge, including any disconnected component's edge,
+                    // contributes an entry to the single-successor map above.
+                    return Some(Self {
+                        components,
+                        store: ReachabilityStore::Linear,
+                    });
+                }
+                _ => return None,
+            }
+        }
+        None
     }
 
     pub fn reaches(&self, source: SemanticFlowPoint, target: SemanticFlowPoint) -> bool {
@@ -375,7 +414,10 @@ impl SemanticReachability {
             return false;
         };
         match &self.store {
-            ReachabilityStore::Dense(reachable) => reachable[*source].contains(*target),
+            ReachabilityStore::Linear => source <= target,
+            ReachabilityStore::Dense { row_words, bits } => {
+                bits[source * row_words + target / 64] & (1u64 << (target % 64)) != 0
+            }
             ReachabilityStore::Sparse(reachable) => reachable.reaches(*source, *target),
         }
     }
@@ -387,9 +429,11 @@ impl SemanticReachability {
         candidates: &BTreeSet<SemanticFlowPoint>,
     ) -> bool {
         match &self.store {
-            ReachabilityStore::Dense(_) => candidates.iter().any(|candidate| {
-                self.reaches(source, *candidate) && self.reaches(*candidate, target)
-            }),
+            ReachabilityStore::Dense { .. } | ReachabilityStore::Linear => {
+                candidates.iter().any(|candidate| {
+                    self.reaches(source, *candidate) && self.reaches(*candidate, target)
+                })
+            }
             ReachabilityStore::Sparse(reachable) => {
                 let (Some(source), Some(target)) =
                     (self.components.get(&source), self.components.get(&target))
@@ -415,7 +459,7 @@ impl SparseReachability {
         if source == target {
             return true;
         }
-        if self.topological_positions[source] >= self.topological_positions[target] {
+        if source >= target {
             return false;
         }
         self.forward_row(source).contains(target)
@@ -520,6 +564,10 @@ impl SemanticFlowGraph {
         SemanticReachability::analyze(self)
     }
 
+    pub(crate) fn indexed_reachability(&self) -> &SemanticReachability {
+        self.reachability.get_or_init(|| self.reachability())
+    }
+
     /// Returns whether at least one path connects `source` to `target`.
     pub fn reaches(&self, source: SemanticFlowPoint, target: SemanticFlowPoint) -> bool {
         if source == target {
@@ -592,36 +640,28 @@ impl SemanticFlowGraph {
         targets: &BTreeSet<SemanticFlowPoint>,
     ) -> SemanticReachingValues {
         let definition_count = definitions.len();
+        let mut by_value = DefinitionsByValue::new(definitions, value_count);
+        let mut next = by_value.offsets[..value_count].to_vec();
         let mut generated = BTreeMap::<SemanticFlowPoint, DefinitionSet>::new();
-        let mut value_masks = (0..value_count)
-            .map(|_| DefinitionSet::new(definition_count))
-            .collect::<Vec<_>>();
-        for (index, definition) in definitions.iter().enumerate() {
+        let mut killed = BTreeMap::<SemanticFlowPoint, DefinitionSet>::new();
+        for definition in definitions {
+            let value = definition.value;
+            let index = next[value];
+            next[value] += 1;
+            by_value.ordinals[index] = definition.ordinal;
             generated
                 .entry(definition.point)
                 .or_insert_with(|| DefinitionSet::new(definition_count))
                 .insert(index);
-            value_masks[definition.value].insert(index);
-        }
-        let mut killed = BTreeMap::<SemanticFlowPoint, DefinitionSet>::new();
-        for (point, generated_at_point) in &generated {
-            let killed_at_point = killed
-                .entry(*point)
-                .or_insert_with(|| DefinitionSet::new(definition_count));
-            for definition in generated_at_point.members() {
-                killed_at_point.union_with(&value_masks[definitions[definition].value]);
-            }
+            killed
+                .entry(definition.point)
+                .or_insert_with(|| DefinitionSet::new(definition_count))
+                .insert_range(by_value.offsets[value]..by_value.offsets[value + 1]);
         }
         if !self.has_cleanup_continuations() {
-            return self.reaching_values_plain(
-                definitions,
-                targets,
-                generated,
-                killed,
-                value_masks,
-            );
+            return self.reaching_values_plain(definitions, targets, generated, killed, by_value);
         }
-        self.reaching_values_with_cleanup(definitions, targets, generated, killed, value_masks)
+        self.reaching_values_with_cleanup(definitions, targets, generated, killed, by_value)
     }
 
     fn has_cleanup_continuations(&self) -> bool {
@@ -641,7 +681,7 @@ impl SemanticFlowGraph {
         targets: &BTreeSet<SemanticFlowPoint>,
         generated: BTreeMap<SemanticFlowPoint, DefinitionSet>,
         killed: BTreeMap<SemanticFlowPoint, DefinitionSet>,
-        value_masks: Vec<DefinitionSet>,
+        by_value: DefinitionsByValue,
     ) -> SemanticReachingValues {
         let definition_count = definitions.len();
         let nodes = self.reaching_slice(targets);
@@ -719,14 +759,7 @@ impl SemanticFlowGraph {
             .map(|(index, point)| (point, facts[index].clone()))
             .collect::<BTreeMap<_, _>>();
         self.insert_unreachable_target_bottoms(&mut reaching, targets, definition_count);
-        SemanticReachingValues {
-            reaching,
-            definitions: definitions
-                .iter()
-                .map(|definition| (definition.value, definition.ordinal))
-                .collect(),
-            value_masks,
-        }
+        SemanticReachingValues { reaching, by_value }
     }
 
     fn reaching_values_with_cleanup(
@@ -735,7 +768,7 @@ impl SemanticFlowGraph {
         targets: &BTreeSet<SemanticFlowPoint>,
         generated: BTreeMap<SemanticFlowPoint, DefinitionSet>,
         killed: BTreeMap<SemanticFlowPoint, DefinitionSet>,
-        value_masks: Vec<DefinitionSet>,
+        by_value: DefinitionsByValue,
     ) -> SemanticReachingValues {
         let definition_count = definitions.len();
         let nodes = self.reaching_slice(targets);
@@ -843,14 +876,7 @@ impl SemanticFlowGraph {
             }
         }
         self.insert_unreachable_target_bottoms(&mut reaching, targets, definition_count);
-        SemanticReachingValues {
-            reaching,
-            definitions: definitions
-                .iter()
-                .map(|definition| (definition.value, definition.ordinal))
-                .collect(),
-            value_masks,
-        }
+        SemanticReachingValues { reaching, by_value }
     }
 
     fn insert_unreachable_target_bottoms(
