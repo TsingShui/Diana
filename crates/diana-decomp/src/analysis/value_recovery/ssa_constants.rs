@@ -71,12 +71,7 @@ impl<'a> SparseConstantPropagation<'a> {
                 .map(|argument| Self::argument(argument, states))
                 .unwrap_or(ConstantState::Varying),
             InsnType::Phi => Self::merge(&instruction.args, states),
-            InsnType::Arith
-            | InsnType::Neg
-            | InsnType::Not
-            | InsnType::Cast
-            | InsnType::Cmp
-            | InsnType::InstanceOf => self.fold(instruction, states),
+            kind if ConstantEvaluator::accepts(kind) => self.fold(instruction, states),
             _ => ConstantState::Varying,
         }
     }
@@ -115,9 +110,14 @@ impl<'a> SparseConstantPropagation<'a> {
                 ConstantState::Constant(constant) => arguments.push(constant),
             }
         }
-        ConstantEvaluator::fold(instruction, &arguments)
-            .map(ConstantState::Constant)
-            .unwrap_or(ConstantState::Varying)
+        ConstantEvaluator::fold(
+            instruction.insn_type,
+            &instruction.payload,
+            instruction.result.as_ref(),
+            &arguments,
+        )
+        .map(ConstantState::Constant)
+        .unwrap_or(ConstantState::Varying)
     }
 
     fn argument(argument: &InsnArg, states: &BTreeMap<SsaVar, ConstantState>) -> ConstantState {

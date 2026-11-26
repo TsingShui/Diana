@@ -483,7 +483,7 @@ impl CodeVariables {
     pub(super) fn from_classes(mut classes: SsaClasses) -> Self {
         let mut roots = BTreeMap::new();
         let mut assignments = BTreeMap::new();
-        for variable in classes.parents.keys().copied().collect::<Vec<_>>() {
+        for variable in classes.values() {
             let root = classes.root(variable);
             let next = roots.len() as u32;
             let id = *roots.entry(root).or_insert(next);
@@ -595,7 +595,7 @@ impl InstructionTransform for CodeVariableAnnotation<'_> {
 
 #[derive(Debug, Clone)]
 pub struct SsaClasses {
-    parents: BTreeMap<SsaVar, SsaVar>,
+    parents: foldhash::HashMap<SsaVar, SsaVar>,
 }
 
 impl Default for SsaClasses {
@@ -612,21 +612,20 @@ impl SsaClasses {
     }
 
     pub fn root(&mut self, value: SsaVar) -> SsaVar {
-        self.parents.entry(value).or_insert(value);
-        let mut path = Vec::new();
+        let mut parent = *self.parents.entry(value).or_insert(value);
+        if parent == value {
+            return value;
+        }
         let mut current = value;
         loop {
-            let parent = self.parents.get(&current).copied().unwrap_or(current);
-            if parent == current {
-                break;
+            let grandparent = self.parents[&parent];
+            if grandparent == parent {
+                return parent;
             }
-            path.push(current);
+            self.parents.insert(current, grandparent);
             current = parent;
+            parent = grandparent;
         }
-        for member in path {
-            self.parents.insert(member, current);
-        }
-        current
     }
 
     pub fn union(&mut self, left: SsaVar, right: SsaVar) {
@@ -644,7 +643,9 @@ impl SsaClasses {
     }
 
     pub fn values(&self) -> Vec<SsaVar> {
-        self.parents.keys().copied().collect()
+        let mut values: Vec<_> = self.parents.keys().copied().collect();
+        values.sort_unstable();
+        values
     }
 
     pub fn groups(&mut self) -> BTreeMap<SsaVar, BTreeSet<SsaVar>> {

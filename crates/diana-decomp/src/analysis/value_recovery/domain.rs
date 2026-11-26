@@ -8,6 +8,7 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::rc::Rc;
 
 use crate::ir::bdd::{Bdd, BddContext, BddError};
 use crate::ir::{BoolExpr, BoolVariable};
@@ -86,16 +87,24 @@ impl From<BddError> for DomainError {
 enum DomainNode {
     True,
     False,
-    Symbol(BoolVariable),
+    Symbol,
     Not(ControlDomain),
-    And(Vec<ControlDomain>),
-    Or(Vec<ControlDomain>),
+    And(Rc<[ControlDomain]>),
+    Or(Rc<[ControlDomain]>),
+}
+
+struct DomainRecord {
+    node: DomainNode,
+    proof: Option<Bdd>,
+    complement: Option<ControlDomain>,
 }
 
 pub(super) struct DomainLogic {
     bdd: BddContext,
-    nodes: Vec<(DomainNode, Option<Bdd>)>,
-    domains: BTreeMap<DomainNode, ControlDomain>,
+    nodes: Vec<DomainRecord>,
+    symbols: BTreeMap<BoolVariable, ControlDomain>,
+    conjunctions: BTreeMap<Rc<[ControlDomain]>, ControlDomain>,
+    disjunctions: BTreeMap<Rc<[ControlDomain]>, ControlDomain>,
     saturated: Cell<bool>,
 }
 
@@ -107,7 +116,9 @@ impl DomainLogic {
         let bdd = BddContext::new(variables);
         Self {
             nodes: Vec::new(),
-            domains: BTreeMap::new(),
+            symbols: BTreeMap::new(),
+            conjunctions: BTreeMap::new(),
+            disjunctions: BTreeMap::new(),
             bdd,
             saturated: Cell::new(false),
         }
@@ -191,16 +202,25 @@ impl DomainLogic {
     }
 
     pub(super) fn not(&mut self, domain: ControlDomain) -> Result<ControlDomain, DomainError> {
-        match self.node(domain)? {
-            DomainNode::True => Ok(Self::FALSE),
-            DomainNode::False => Ok(Self::TRUE),
-            DomainNode::Not(inner) => Ok(*inner),
-            _ => {
-                let exact = match (self.saturated.get(), self.exact(domain)) {
+        match domain {
+            Self::TRUE => Ok(Self::FALSE),
+            Self::FALSE => Ok(Self::TRUE),
+            ControlDomain(id) => {
+                let index = (id - 2) as usize;
+                let record = self
+                    .nodes
+                    .get(index)
+                    .ok_or_else(|| DomainError::invalid(domain))?;
+                if let Some(complement) = record.complement {
+                    return Ok(complement);
+                }
+                let proof = match (self.saturated.get(), record.proof) {
                     (false, Some(value)) => self.proof(self.bdd.not(value))?,
                     _ => None,
                 };
-                self.intern(DomainNode::Not(domain), exact)
+                let complement = self.push_node(DomainNode::Not(domain), proof, Some(domain))?;
+                self.nodes[index].complement = Some(complement);
+                Ok(complement)
             }
         }
     }
@@ -272,8 +292,8 @@ impl DomainLogic {
         if premise == consequence || consequence == Self::TRUE || premise == Self::FALSE {
             return Ok(true);
         }
-        if matches!(self.node(premise)?, DomainNode::And(terms) if terms.contains(&consequence))
-            || matches!(self.node(consequence)?, DomainNode::Or(terms) if terms.contains(&premise))
+        if matches!(self.node(premise)?, DomainNode::And(terms) if terms.binary_search(&consequence).is_ok())
+            || matches!(self.node(consequence)?, DomainNode::Or(terms) if terms.binary_search(&premise).is_ok())
         {
             return Ok(true);
         }
@@ -381,16 +401,17 @@ impl DomainLogic {
     }
 
     fn symbol(&mut self, symbol: BoolVariable) -> Result<ControlDomain, DomainError> {
-        let node = DomainNode::Symbol(symbol.clone());
-        if let Some(domain) = self.domains.get(&node).copied() {
+        if let Some(domain) = self.symbols.get(&symbol).copied() {
             return Ok(domain);
         }
-        let exact = if self.saturated.get() {
+        let proof = if self.saturated.get() {
             None
         } else {
-            self.proof(self.bdd.compile(&BoolExpr::Symbol(symbol)))?
+            self.proof(self.bdd.compile(&BoolExpr::Symbol(symbol.clone())))?
         };
-        self.intern(node, exact)
+        let domain = self.push_node(DomainNode::Symbol, proof, None)?;
+        self.symbols.insert(symbol, domain);
+        Ok(domain)
     }
 
     fn junction(
@@ -427,20 +448,29 @@ impl DomainLogic {
             return terms.pop().ok_or_else(DomainError::malformed_evaluation);
         }
 
-        let node = if conjunction {
-            DomainNode::And(terms)
+        let index = if conjunction {
+            &self.conjunctions
         } else {
-            DomainNode::Or(terms)
+            &self.disjunctions
         };
-        if let Some(domain) = self.domains.get(&node).copied() {
-            return Ok(domain);
+        if let Some(domain) = index.get(terms.as_slice()) {
+            return Ok(*domain);
         }
-        let operands = match &node {
-            DomainNode::And(terms) | DomainNode::Or(terms) => terms,
-            _ => return Err(DomainError::malformed_evaluation()),
+        let proof = self.junction_proof(&terms, conjunction, [left, right])?;
+        let terms: Rc<[ControlDomain]> = terms.into();
+        let node = if conjunction {
+            DomainNode::And(Rc::clone(&terms))
+        } else {
+            DomainNode::Or(Rc::clone(&terms))
         };
-        let exact = self.junction_proof(operands, conjunction)?;
-        self.intern(node, exact)
+        let domain = self.push_node(node, proof, None)?;
+        let index = if conjunction {
+            &mut self.conjunctions
+        } else {
+            &mut self.disjunctions
+        };
+        index.insert(terms, domain);
+        Ok(domain)
     }
 
     fn extend_terms(
@@ -462,16 +492,32 @@ impl DomainLogic {
         &self,
         terms: &[ControlDomain],
         conjunction: bool,
+        operands: [ControlDomain; 2],
     ) -> Result<Option<Bdd>, DomainError> {
         if self.saturated.get() {
             return Ok(None);
         }
-        let mut value = if conjunction {
-            self.bdd.truth()
-        } else {
-            self.bdd.falsity()
+        // A previously interned junction was folded in this same sorted
+        // order. Its ROBDD already contains exactly the prefix results that
+        // replaying those binary operations would find in the apply cache.
+        let mut start = 1;
+        let Some(mut value) = self.exact(terms[0]) else {
+            return Ok(None);
         };
-        for term in terms {
+        for operand in operands {
+            let prefix = match (conjunction, self.node(operand)?) {
+                (true, DomainNode::And(prefix)) | (false, DomainNode::Or(prefix)) => prefix,
+                _ => continue,
+            };
+            if prefix.len() > start && terms.starts_with(prefix) {
+                let Some(proof) = self.exact(operand) else {
+                    return Ok(None);
+                };
+                start = prefix.len();
+                value = proof;
+            }
+        }
+        for term in &terms[start..] {
             let Some(operand) = self.exact(*term) else {
                 return Ok(None);
             };
@@ -495,7 +541,7 @@ impl DomainLogic {
             ControlDomain(id) => self
                 .nodes
                 .get((id - 2) as usize)
-                .map(|(node, _)| node)
+                .map(|record| &record.node)
                 .ok_or_else(|| DomainError::invalid(domain)),
         }
     }
@@ -507,24 +553,24 @@ impl DomainLogic {
             ControlDomain(id) => self
                 .nodes
                 .get((id - 2) as usize)
-                .and_then(|(_, proof)| *proof),
+                .and_then(|record| record.proof),
         }
     }
 
-    fn intern(
+    fn push_node(
         &mut self,
         node: DomainNode,
-        exact: Option<Bdd>,
+        proof: Option<Bdd>,
+        complement: Option<ControlDomain>,
     ) -> Result<ControlDomain, DomainError> {
-        if let Some(domain) = self.domains.get(&node).copied() {
-            return Ok(domain);
-        }
         let len = self.nodes.len().saturating_add(2);
         let id = u32::try_from(len).map_err(|_| DomainError::capacity(len))?;
-        let domain = ControlDomain(id);
-        self.nodes.push((node.clone(), exact));
-        self.domains.insert(node, domain);
-        Ok(domain)
+        self.nodes.push(DomainRecord {
+            node,
+            proof,
+            complement,
+        });
+        Ok(ControlDomain(id))
     }
 
     fn proof(&self, result: Result<Bdd, BddError>) -> Result<Option<Bdd>, DomainError> {

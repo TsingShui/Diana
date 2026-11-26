@@ -1,6 +1,6 @@
 use super::{
     JavaAssignOp, JavaAstRewriter, JavaAstTransform, JavaExpr, JavaLiteral, JavaMethodBody,
-    JavaStmt, JavaType,
+    JavaStmt,
 };
 
 #[derive(Debug, Default)]
@@ -10,203 +10,104 @@ pub struct AggregateInitializer {
 
 impl AggregateInitializer {
     fn combine(&mut self, statements: Vec<JavaStmt>) -> Vec<JavaStmt> {
-        let mut output = Vec::with_capacity(statements.len());
-        let mut pending = statements.into_iter().peekable();
-
-        while let Some(statement) = pending.next() {
-            let JavaStmt::Variable {
-                ty,
-                name,
-                value: Some(value),
-            } = statement
-            else {
-                output.push(statement);
-                continue;
-            };
-            let Some(mut allocation) = ArrayAllocation::analyze(value.clone()) else {
-                output.push(JavaStmt::Variable {
-                    ty,
-                    name,
-                    value: Some(value),
-                });
-                continue;
-            };
-            let [JavaExpr::Literal(JavaLiteral::Integer(length))] =
-                allocation.dimensions.as_slice()
-            else {
-                output.push(JavaStmt::Variable {
-                    ty,
-                    name,
-                    value: Some(allocation.into_expression()),
-                });
-                continue;
-            };
-            let length = *length;
-            if length <= 0 || !allocation.initializer.is_empty() {
-                output.push(JavaStmt::Variable {
-                    ty,
-                    name,
-                    value: Some(allocation.into_expression()),
-                });
-                continue;
-            }
-
-            let mut values = Vec::with_capacity(length as usize);
-            while values.len() < length as usize {
-                let Some(JavaStmt::Assign {
-                    target: JavaExpr::ArrayAccess { array, index },
+        if !statements.windows(2).any(|pair| {
+            matches!(
+                pair[0],
+                JavaStmt::Variable {
+                    value: Some(JavaExpr::NewArray { .. } | JavaExpr::Cast { .. }),
+                    ..
+                }
+            ) && matches!(
+                pair[1],
+                JavaStmt::Assign {
                     op: JavaAssignOp::Assign,
                     ..
-                }) = pending.peek()
-                else {
-                    break;
-                };
-                let expected = values.len() as i32;
-                if !matches!(
-                    (array.as_ref(), index.as_ref()),
-                    (
-                        JavaExpr::Name(array),
-                        JavaExpr::Literal(JavaLiteral::Integer(index))
-                    ) if array == &name && *index == expected
-                ) {
-                    break;
                 }
-                let JavaStmt::Assign { value, .. } =
-                    pending.next().expect("peeked array assignment")
-                else {
-                    unreachable!();
-                };
-                values.push(value);
-            }
-
-            let complete = values.len() == length as usize;
-            let self_referential = values
-                .iter()
-                .any(|value| ExpressionNameUse::contains(value, &name));
-            if complete && !self_referential {
-                self.changed = true;
-                allocation.dimensions.clear();
-                allocation.initializer = values;
-                output.push(JavaStmt::Variable {
-                    ty,
-                    name,
-                    value: Some(allocation.into_expression()),
-                });
-                continue;
-            }
-
-            output.push(JavaStmt::Variable {
-                ty,
-                name: name.clone(),
-                value: Some(allocation.into_expression()),
-            });
-            for (index, value) in values.into_iter().enumerate() {
-                output.push(JavaStmt::Assign {
-                    target: JavaExpr::ArrayAccess {
-                        array: Box::new(JavaExpr::Name(name.clone())),
-                        index: Box::new(JavaExpr::Literal(JavaLiteral::Integer(index as i32))),
-                    },
-                    op: JavaAssignOp::Assign,
-                    value,
-                });
-            }
+            )
+        }) {
+            return statements;
         }
-        self.inline(output)
-    }
 
-    fn inline(&mut self, statements: Vec<JavaStmt>) -> Vec<JavaStmt> {
         let mut output = Vec::with_capacity(statements.len());
-        let mut pending = statements.into_iter().peekable();
-        while let Some(statement) = pending.next() {
-            let JavaStmt::Variable {
+        let mut pending = statements.into_iter();
+        while let Some(mut statement) = pending.next() {
+            if let JavaStmt::Variable {
                 name,
-                value:
-                    Some(
-                        value @ JavaExpr::NewArray {
-                            dimensions,
-                            initializer,
-                            ..
-                        },
-                    ),
+                value: Some(value),
                 ..
-            } = &statement
-            else {
-                output.push(statement);
-                continue;
-            };
-            if !dimensions.is_empty() || initializer.is_empty() {
-                output.push(statement);
-                continue;
+            } = &mut statement
+            {
+                self.combine_writes(name, value, &mut pending);
+                if matches!(&*value, JavaExpr::NewArray { dimensions, initializer, .. }
+                    if dimensions.is_empty() && !initializer.is_empty())
+                {
+                    if let Some(JavaStmt::Assign {
+                        target: JavaExpr::StaticField { .. },
+                        op: JavaAssignOp::Assign,
+                        value: source,
+                    }) = pending.as_mut_slice().first_mut()
+                    {
+                        if matches!(&*source, JavaExpr::Name(source) if source == name) {
+                            *source = std::mem::replace(value, JavaExpr::This);
+                            self.changed = true;
+                            continue;
+                        }
+                    }
+                }
             }
-            let Some(JavaStmt::Assign {
-                target: JavaExpr::StaticField { .. },
-                op: JavaAssignOp::Assign,
-                value: JavaExpr::Name(source),
-            }) = pending.peek_mut()
-            else {
-                output.push(statement);
-                continue;
-            };
-            if source != name {
-                output.push(statement);
-                continue;
-            }
-            *pending
-                .peek_mut()
-                .and_then(|statement| match statement {
-                    JavaStmt::Assign { value, .. } => Some(value),
-                    _ => None,
-                })
-                .expect("matched static field assignment") = value.clone();
-            self.changed = true;
+            output.push(statement);
         }
-        output.extend(pending);
         output
     }
-}
 
-struct ArrayAllocation {
-    casts: Vec<JavaType>,
-    element_type: JavaType,
-    dimensions: Vec<JavaExpr>,
-    initializer: Vec<JavaExpr>,
-}
-
-impl ArrayAllocation {
-    fn analyze(mut expression: JavaExpr) -> Option<Self> {
-        let mut casts = Vec::new();
-        while let JavaExpr::Cast { ty, value } = expression {
-            casts.push(ty);
-            expression = *value;
+    fn combine_writes(
+        &mut self,
+        name: &super::JavaIdentifier,
+        mut expression: &mut JavaExpr,
+        pending: &mut std::vec::IntoIter<JavaStmt>,
+    ) {
+        while let JavaExpr::Cast { value, .. } = expression {
+            expression = value;
         }
         let JavaExpr::NewArray {
-            element_type,
             dimensions,
             initializer,
+            ..
         } = expression
         else {
-            return None;
+            return;
         };
-        Some(Self {
-            casts,
-            element_type,
-            dimensions,
-            initializer,
-        })
-    }
-
-    fn into_expression(self) -> JavaExpr {
-        self.casts.into_iter().rev().fold(
-            JavaExpr::NewArray {
-                element_type: self.element_type,
-                dimensions: self.dimensions,
-                initializer: self.initializer,
-            },
-            |value, ty| JavaExpr::Cast {
-                ty,
-                value: Box::new(value),
-            },
-        )
+        let [JavaExpr::Literal(JavaLiteral::Integer(length))] = dimensions.as_slice() else {
+            return;
+        };
+        let Ok(length) = usize::try_from(*length) else {
+            return;
+        };
+        if length == 0 || !initializer.is_empty() {
+            return;
+        }
+        // A DEX dimension can be far larger than the statement list. Only
+        // complete, consecutively indexed stores are an aggregate initializer.
+        let Some(writes) = pending.as_slice().get(..length) else {
+            return;
+        };
+        let complete = writes.iter().enumerate().all(|(index, write)| {
+            let JavaStmt::Assign {
+                target: JavaExpr::ArrayAccess { array, index: subscript },
+                op: JavaAssignOp::Assign, value,
+            } = write else { return false };
+            matches!(array.as_ref(), JavaExpr::Name(array) if array == name)
+                && matches!(subscript.as_ref(), JavaExpr::Literal(JavaLiteral::Integer(i)) if usize::try_from(*i) == Ok(index))
+                && !ExpressionNameUse::contains(value, name)
+        });
+        if complete {
+            dimensions.clear();
+            initializer.extend(pending.take(length).map(|statement| match statement {
+                JavaStmt::Assign { value, .. } => value,
+                _ => unreachable!("checked consecutive array assignments"),
+            }));
+            self.changed = true;
+        }
     }
 }
 

@@ -6,11 +6,11 @@
 use crate::ir::RegisterArg;
 
 use super::{
-    SemanticExpression, SemanticNode, SemanticOperand, SemanticOperation, SemanticPredicate,
-    SemanticStatement, SemanticStatementKind,
+    SemanticExpression, SemanticNode, SemanticOperation, SemanticPredicate, SemanticStatement,
+    SemanticStatementKind,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SemanticBindingKind {
     Catch,
     ForEach,
@@ -326,354 +326,79 @@ enum VisitTask<'a> {
 
 pub fn fold_node<F: SemanticFolder + ?Sized>(
     folder: &mut F,
-    node: SemanticNode,
+    mut node: SemanticNode,
 ) -> Result<SemanticNode, F::Error> {
-    let mut pending = vec![FoldTask::Visit(node)];
-    let mut results = Vec::new();
-    while let Some(task) = pending.pop() {
-        match task {
-            FoldTask::Visit(node) => {
-                folder.enter_node(&node);
-                let node = match folder.begin_node(node)? {
-                    SemanticFoldControl::Descend(node) => node,
-                    SemanticFoldControl::Emit(node) => {
-                        results.push(node);
-                        continue;
-                    }
-                };
-                match node {
-                    SemanticNode::Sequence(children) => {
-                        let len = children.len();
-                        pending.push(FoldTask::Rebuild(FoldFrame::Sequence(len)));
-                        pending.extend(children.into_iter().rev().map(FoldTask::Visit));
-                    }
-                    SemanticNode::If {
-                        condition,
-                        then_node,
-                        else_node,
-                    } => {
-                        let has_else = else_node.is_some();
-                        pending.push(FoldTask::Rebuild(FoldFrame::If {
-                            condition,
-                            has_else,
-                        }));
-                        if let Some(node) = else_node {
-                            pending.push(FoldTask::Visit(*node));
-                        }
-                        pending.push(FoldTask::Visit(*then_node));
-                    }
-                    SemanticNode::Loop {
-                        control,
-                        header,
-                        kind,
-                        test,
-                        body,
-                    } => {
-                        pending.push(FoldTask::Rebuild(FoldFrame::Loop {
-                            control,
-                            header,
-                            kind,
-                            condition: test.condition,
-                        }));
-                        pending.push(FoldTask::Visit(*body));
-                        pending.push(FoldTask::Visit(*test.setup));
-                    }
-                    SemanticNode::For {
-                        control,
-                        init,
-                        condition,
-                        update,
-                        body,
-                    } => {
-                        pending.push(FoldTask::Rebuild(FoldFrame::For {
-                            control,
-                            init,
-                            condition,
-                            update,
-                        }));
-                        pending.push(FoldTask::Visit(*body));
-                    }
-                    SemanticNode::ForEach {
-                        control,
-                        variable,
-                        iterable,
-                        body,
-                    } => {
-                        pending.push(FoldTask::Rebuild(FoldFrame::ForEach {
-                            control,
-                            variable,
-                            iterable,
-                        }));
-                        pending.push(FoldTask::Visit(*body));
-                    }
-                    SemanticNode::Switch {
-                        region,
-                        selector,
-                        mut cases,
-                    } => {
-                        let bodies = cases
-                            .iter_mut()
-                            .map(|case| std::mem::replace(&mut case.body, SemanticNode::Empty))
-                            .collect::<Vec<_>>();
-                        pending.push(FoldTask::Rebuild(FoldFrame::Switch {
-                            region,
-                            selector,
-                            cases,
-                        }));
-                        pending.extend(bodies.into_iter().rev().map(FoldTask::Visit));
-                    }
-                    SemanticNode::Try {
-                        region,
-                        body,
-                        mut catches,
-                        mut finally,
-                    } => {
-                        let mut bodies =
-                            Vec::with_capacity(1 + catches.len() + usize::from(finally.is_some()));
-                        bodies.push(*body);
-                        bodies.extend(
-                            catches.iter_mut().map(|catch| {
-                                std::mem::replace(&mut catch.body, SemanticNode::Empty)
-                            }),
-                        );
-                        if let Some(finally) = &mut finally {
-                            bodies.push(std::mem::replace(
-                                finally.body.as_mut(),
-                                SemanticNode::Empty,
-                            ));
-                        }
-                        pending.push(FoldTask::Rebuild(FoldFrame::Try {
-                            region,
-                            catches,
-                            finally,
-                        }));
-                        pending.extend(bodies.into_iter().rev().map(FoldTask::Visit));
-                    }
-                    SemanticNode::Synchronized {
-                        region,
-                        lock,
-                        method,
-                        body,
-                    } => {
-                        pending.push(FoldTask::Rebuild(FoldFrame::Synchronized {
-                            region,
-                            lock,
-                            method,
-                        }));
-                        pending.push(FoldTask::Visit(*body));
-                    }
-                    SemanticNode::Label { label, body } => {
-                        pending.push(FoldTask::Rebuild(FoldFrame::Label(label)));
-                        pending.push(FoldTask::Visit(*body));
-                    }
-                    leaf => results.push(folder.finish_node(leaf)?),
+    // A frame retains its child storage while the folder owns the child.
+    // Only the active ancestor chain is on the stack, even for a wide switch.
+    let mut parents = Vec::<(SemanticNode, usize)>::new();
+    loop {
+        folder.enter_node(&node);
+        let mut result = match folder.begin_node(node)? {
+            SemanticFoldControl::Emit(node) => node,
+            SemanticFoldControl::Descend(mut parent) => {
+                if let Some(first) = fold_child(&mut parent, 0) {
+                    node = std::mem::replace(first, SemanticNode::Empty);
+                    parents.push((parent, 0));
+                    continue;
                 }
+                folder.finish_node(parent)?
             }
-            FoldTask::Rebuild(frame) => {
-                let child_count = frame.child_count();
-                let start = results
-                    .len()
-                    .checked_sub(child_count)
-                    .ok_or(SemanticFoldError::MalformedWorkStack)
-                    .map_err(F::Error::from)?;
-                let node = frame
-                    .rebuild(results.drain(start..))
-                    .map_err(F::Error::from)?;
-                results.push(folder.finish_node(node)?);
-            }
-        }
-    }
-    if results.len() != 1 {
-        return Err(F::Error::from(SemanticFoldError::MalformedWorkStack));
-    }
-    results
-        .pop()
-        .ok_or(SemanticFoldError::MalformedWorkStack)
-        .map_err(F::Error::from)
-}
-
-enum FoldTask {
-    Visit(SemanticNode),
-    Rebuild(FoldFrame),
-}
-
-enum FoldFrame {
-    Sequence(usize),
-    If {
-        condition: SemanticOperand<SemanticPredicate>,
-        has_else: bool,
-    },
-    Loop {
-        control: super::SemanticLoopControl,
-        header: Option<crate::ir::BlockId>,
-        kind: super::SemanticLoopKind,
-        condition: SemanticOperand<SemanticPredicate>,
-    },
-    For {
-        control: super::SemanticLoopControl,
-        init: SemanticStatement,
-        condition: SemanticOperand<SemanticPredicate>,
-        update: SemanticStatement,
-    },
-    ForEach {
-        control: super::SemanticLoopControl,
-        variable: crate::ir::RegisterArg,
-        iterable: SemanticOperand<SemanticExpression>,
-    },
-    Switch {
-        region: Option<crate::ir::RegionId>,
-        selector: SemanticOperand<SemanticExpression>,
-        cases: Vec<super::SemanticSwitchCase>,
-    },
-    Try {
-        region: crate::ir::RegionId,
-        catches: Vec<super::SemanticCatch>,
-        finally: Option<super::SemanticFinally>,
-    },
-    Synchronized {
-        region: crate::ir::RegionId,
-        lock: SemanticOperand<SemanticExpression>,
-        method: bool,
-    },
-    Label(super::SemanticLabel),
-}
-
-impl FoldFrame {
-    fn child_count(&self) -> usize {
-        match self {
-            Self::Sequence(len) => *len,
-            Self::If { has_else, .. } => 1 + usize::from(*has_else),
-            Self::Loop { .. } => 2,
-            Self::For { .. }
-            | Self::ForEach { .. }
-            | Self::Synchronized { .. }
-            | Self::Label(_) => 1,
-            Self::Switch { cases, .. } => cases.len(),
-            Self::Try {
-                catches, finally, ..
-            } => 1 + catches.len() + usize::from(finally.is_some()),
-        }
-    }
-
-    fn rebuild(
-        self,
-        mut children: impl ExactSizeIterator<Item = SemanticNode>,
-    ) -> Result<SemanticNode, SemanticFoldError> {
-        let expected = self.child_count();
-        if children.len() != expected {
-            return Err(SemanticFoldError::ChildArity {
-                expected,
-                actual: children.len(),
-            });
-        }
-        let node = match self {
-            Self::Sequence(_) => SemanticNode::Sequence(children.collect()),
-            Self::If {
-                condition,
-                has_else,
-            } => SemanticNode::If {
-                condition,
-                then_node: Box::new(Self::child(&mut children)?),
-                else_node: if has_else {
-                    Some(Box::new(Self::child(&mut children)?))
-                } else {
-                    None
-                },
-            },
-            Self::Loop {
-                control,
-                header,
-                kind,
-                condition,
-            } => SemanticNode::Loop {
-                control,
-                header,
-                kind,
-                test: super::SemanticLoopTest {
-                    setup: Box::new(Self::child(&mut children)?),
-                    condition,
-                },
-                body: Box::new(Self::child(&mut children)?),
-            },
-            Self::For {
-                control,
-                init,
-                condition,
-                update,
-            } => SemanticNode::For {
-                control,
-                init,
-                condition,
-                update,
-                body: Box::new(Self::child(&mut children)?),
-            },
-            Self::ForEach {
-                control,
-                variable,
-                iterable,
-            } => SemanticNode::ForEach {
-                control,
-                variable,
-                iterable,
-                body: Box::new(Self::child(&mut children)?),
-            },
-            Self::Switch {
-                region,
-                selector,
-                mut cases,
-            } => {
-                for case in &mut cases {
-                    case.body = Self::child(&mut children)?;
-                }
-                SemanticNode::Switch {
-                    region,
-                    selector,
-                    cases,
-                }
-            }
-            Self::Try {
-                region,
-                mut catches,
-                mut finally,
-            } => {
-                let body = Box::new(Self::child(&mut children)?);
-                for catch in &mut catches {
-                    catch.body = Self::child(&mut children)?;
-                }
-                SemanticNode::Try {
-                    region,
-                    body,
-                    catches,
-                    finally: {
-                        if let Some(finally) = &mut finally {
-                            *finally.body = Self::child(&mut children)?;
-                        }
-                        finally
-                    },
-                }
-            }
-            Self::Synchronized {
-                region,
-                lock,
-                method,
-            } => SemanticNode::Synchronized {
-                region,
-                lock,
-                method,
-                body: Box::new(Self::child(&mut children)?),
-            },
-            Self::Label(label) => SemanticNode::Label {
-                label,
-                body: Box::new(Self::child(&mut children)?),
-            },
         };
-        Ok(node)
+        loop {
+            let Some((parent, index)) = parents.last_mut() else {
+                return Ok(result);
+            };
+            *fold_child(parent, *index).ok_or(SemanticFoldError::MalformedWorkStack)? = result;
+            *index += 1;
+            if let Some(next) = fold_child(parent, *index) {
+                node = std::mem::replace(next, SemanticNode::Empty);
+                break;
+            }
+            let (parent, _) = parents.pop().ok_or(SemanticFoldError::MalformedWorkStack)?;
+            result = folder.finish_node(parent)?;
+        }
     }
+}
 
-    fn child(
-        children: &mut impl Iterator<Item = SemanticNode>,
-    ) -> Result<SemanticNode, SemanticFoldError> {
-        children.next().ok_or(SemanticFoldError::MalformedWorkStack)
+/// Child order is the folder's bottom-up reconstruction order. Condition
+/// expressions, catch bindings and other value slots belong to their owner.
+fn fold_child(node: &mut SemanticNode, index: usize) -> Option<&mut SemanticNode> {
+    match node {
+        SemanticNode::Empty | SemanticNode::BasicBlock(_) | SemanticNode::Leave(_) => None,
+        SemanticNode::Sequence(nodes) => nodes.get_mut(index),
+        SemanticNode::If {
+            then_node,
+            else_node,
+            ..
+        } => match index {
+            0 => Some(then_node),
+            1 => else_node.as_deref_mut(),
+            _ => None,
+        },
+        SemanticNode::Loop { test, body, .. } => match index {
+            0 => Some(&mut test.setup),
+            1 => Some(body),
+            _ => None,
+        },
+        SemanticNode::For { body, .. }
+        | SemanticNode::ForEach { body, .. }
+        | SemanticNode::Synchronized { body, .. }
+        | SemanticNode::Label { body, .. } => (index == 0).then_some(body.as_mut()),
+        SemanticNode::Switch { cases, .. } => cases.get_mut(index).map(|case| &mut case.body),
+        SemanticNode::Try {
+            body,
+            catches,
+            finally,
+            ..
+        } => {
+            if index == 0 {
+                Some(body)
+            } else if index - 1 == catches.len() {
+                finally.as_mut().map(|cleanup| cleanup.body.as_mut())
+            } else {
+                catches.get_mut(index - 1).map(|catch| &mut catch.body)
+            }
+        }
     }
 }
 

@@ -1,6 +1,6 @@
 //! Location-sensitive effects used by semantic value scheduling.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, rc::Rc};
 
 use crate::ir::{
     analysis::InstructionEffects, InsnType, SemanticExpression, SemanticOperation,
@@ -14,17 +14,57 @@ enum MemoryLocation {
     UnknownHeap,
 }
 
-impl MemoryLocation {
-    fn may_alias(self, other: Self) -> bool {
-        self == other || matches!(self, Self::UnknownHeap) || matches!(other, Self::UnknownHeap)
+/// A direct operation touches at most one kind of location on each side.
+/// Unions need a set only when a compound expression touches distinct fields
+/// or both fields and an array. An unknown heap access aliases every location.
+#[derive(Debug, Clone, Default)]
+enum Locations {
+    #[default]
+    Empty,
+    One(MemoryLocation),
+    Many(Rc<BTreeSet<MemoryLocation>>),
+}
+
+impl Locations {
+    fn union(self, other: Self) -> Self {
+        use Locations::*;
+        match (self, other) {
+            (Empty, set) | (set, Empty) => set,
+            (One(MemoryLocation::UnknownHeap), _) | (_, One(MemoryLocation::UnknownHeap)) => {
+                One(MemoryLocation::UnknownHeap)
+            }
+            (One(a), One(b)) if a == b => One(a),
+            (One(a), One(b)) => Many(Rc::new(BTreeSet::from([a, b]))),
+            (Many(mut set), One(location)) | (One(location), Many(mut set)) => {
+                Rc::make_mut(&mut set).insert(location);
+                Many(set)
+            }
+            (Many(mut a), Many(b)) => {
+                if !Rc::ptr_eq(&a, &b) {
+                    Rc::make_mut(&mut a).extend(b.iter().copied());
+                }
+                Many(a)
+            }
+        }
+    }
+
+    fn overlaps(&self, other: &Self) -> bool {
+        use Locations::*;
+        match (self, other) {
+            (Empty, _) | (_, Empty) => false,
+            (One(MemoryLocation::UnknownHeap), _) | (_, One(MemoryLocation::UnknownHeap)) => true,
+            (One(a), One(b)) => a == b,
+            (One(a), Many(set)) | (Many(set), One(a)) => set.contains(a),
+            (Many(a), Many(b)) => !a.is_disjoint(b),
+        }
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Default)]
 pub(super) struct EffectSummary {
     instruction: InstructionEffects,
-    reads: BTreeSet<MemoryLocation>,
-    writes: BTreeSet<MemoryLocation>,
+    reads: Locations,
+    writes: Locations,
 }
 
 impl EffectSummary {
@@ -72,10 +112,16 @@ impl EffectSummary {
             }
             _ => {}
         }
-        if instruction.reads_memory() && summary.reads.is_empty() && instruction.calls() {
+        if instruction.reads_memory()
+            && matches!(summary.reads, Locations::Empty)
+            && instruction.calls()
+        {
             summary.read(MemoryLocation::UnknownHeap);
         }
-        if instruction.writes_memory() && summary.writes.is_empty() && instruction.calls() {
+        if instruction.writes_memory()
+            && matches!(summary.writes, Locations::Empty)
+            && instruction.calls()
+        {
             summary.write(MemoryLocation::UnknownHeap);
         }
         summary
@@ -83,8 +129,9 @@ impl EffectSummary {
 
     pub(super) fn expression(expression: &SemanticExpression) -> Self {
         let mut summary = Self::pure();
-        let mut pending = vec![expression];
-        while let Some(expression) = pending.pop() {
+        let mut pending = Vec::new();
+        let mut expression = expression;
+        loop {
             match expression {
                 SemanticExpression::Register(_) | SemanticExpression::Literal(_) => {}
                 SemanticExpression::Operation(operation) => {
@@ -98,10 +145,12 @@ impl EffectSummary {
                     when_false,
                 } => {
                     summary = summary.join(Self::predicate(condition).without_control());
-                    pending.push(when_false);
-                    pending.push(when_true);
+                    pending.push(when_false.as_ref());
+                    pending.push(when_true.as_ref());
                 }
             }
+            let Some(next) = pending.pop() else { break };
+            expression = next;
         }
         summary
     }
@@ -145,25 +194,28 @@ impl EffectSummary {
 
     pub(super) fn predicate(predicate: &crate::ir::SemanticPredicate) -> Self {
         let mut summary = Self::pure();
-        let mut pending = vec![predicate];
-        while let Some(predicate) = pending.pop() {
+        let mut pending = Vec::new();
+        let mut predicate = predicate;
+        loop {
             match predicate {
                 crate::ir::SemanticPredicate::Test(operation) => {
                     summary = summary.join(Self::operation(operation));
                 }
-                crate::ir::SemanticPredicate::Not(inner) => pending.push(inner),
+                crate::ir::SemanticPredicate::Not(inner) => pending.push(inner.as_ref()),
                 crate::ir::SemanticPredicate::And(terms)
                 | crate::ir::SemanticPredicate::Or(terms) => pending.extend(terms),
                 crate::ir::SemanticPredicate::True | crate::ir::SemanticPredicate::False => {}
             }
+            let Some(next) = pending.pop() else { break };
+            predicate = next;
         }
         summary
     }
 
     pub(super) fn join(mut self, other: Self) -> Self {
         self.instruction = self.instruction.join(other.instruction);
-        self.reads.extend(other.reads);
-        self.writes.extend(other.writes);
+        self.reads = self.reads.union(other.reads);
+        self.writes = self.writes.union(other.writes);
         self
     }
 
@@ -198,26 +250,17 @@ impl EffectSummary {
         {
             return true;
         }
-        self.writes.iter().any(|write| {
-            other
-                .reads
-                .iter()
-                .chain(&other.writes)
-                .any(|other| write.may_alias(*other))
-        }) || other.writes.iter().any(|write| {
-            self.reads
-                .iter()
-                .chain(&self.writes)
-                .any(|other| write.may_alias(*other))
-        })
+        self.writes.overlaps(&other.reads)
+            || self.writes.overlaps(&other.writes)
+            || other.writes.overlaps(&self.reads)
     }
 
     fn read(&mut self, location: MemoryLocation) {
-        self.reads.insert(location);
+        self.reads = Locations::One(location);
     }
 
     fn write(&mut self, location: MemoryLocation) {
-        self.writes.insert(location);
+        self.writes = Locations::One(location);
     }
 
     fn field_location(operation: &SemanticOperation) -> MemoryLocation {

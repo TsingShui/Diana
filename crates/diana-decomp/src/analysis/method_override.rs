@@ -106,7 +106,7 @@ pub(crate) struct ClassDetails {
     generic_signature: Option<ClassSignature>,
     instantiated_self: Option<ClassTypeSignature>,
     methods: Vec<MethodDetails>,
-    method_candidates: OnceLock<HashMap<MethodCandidateKey, Vec<usize>>>,
+    method_candidates: OnceLock<Arc<DeclaredMethodNames>>,
 }
 
 pub(crate) trait ClassHierarchy {
@@ -167,7 +167,11 @@ pub(crate) struct MethodOverrideAnalyzer<'a, H> {
     hierarchy: &'a H,
 }
 
-type MethodCandidateKey = (String, usize);
+#[derive(Debug, PartialEq, Eq)]
+struct DeclaredMethodNames {
+    by_name: HashMap<smol_str::SmolStr, Vec<usize>>,
+    has_ambiguous_owner: bool,
+}
 
 impl<'a, H> MethodOverrideAnalyzer<'a, H>
 where
@@ -283,16 +287,14 @@ where
         owner: &ClassDetails,
     ) -> OverrideResult<Option<(MethodDetails, Option<MethodSignature>)>> {
         let mut best: Option<(&MethodDetails, Option<MethodSignature>)> = None;
-        let key = (
-            method_name(&method.reference.short_id).to_string(),
-            method.params.len(),
-        );
-        let Some(indices) = ancestor.method_candidates().get(&key) else {
-            return Ok(None);
-        };
-        for index in indices {
-            let candidate = &ancestor.methods[*index];
-            if !method_visible_from(candidate, ancestor, owner) {
+        for candidate in ancestor.methods_named(method_name(&method.reference.short_id), false) {
+            if candidate.params.len() != method.params.len()
+                || candidate.reference.short_id.starts_with("<init>(")
+                || candidate.reference.short_id.starts_with("<clinit>(")
+                || candidate.access_flags.is_static()
+                || candidate.access_flags.is_private()
+                || !method_visible_from(candidate, ancestor, owner)
+            {
                 continue;
             }
             let candidate_signature = candidate
@@ -428,25 +430,48 @@ where
 }
 
 impl ClassDetails {
-    fn method_candidates(&self) -> &HashMap<MethodCandidateKey, Vec<usize>> {
-        self.method_candidates.get_or_init(|| {
-            let mut candidates: HashMap<MethodCandidateKey, Vec<usize>> = HashMap::new();
-            for (index, method) in self.methods.iter().enumerate() {
-                if method.reference.short_id.starts_with("<init>(")
-                    || method.reference.short_id.starts_with("<clinit>(")
-                    || method.access_flags.is_static()
-                    || method.access_flags.is_private()
-                {
-                    continue;
+    /// Preserve declaration order for override selection. Only overload lookup
+    /// reparses references whose declaring descriptor contains a member separator.
+    fn methods_named<'a>(
+        &'a self,
+        name: &'a str,
+        allow_parsed_owner: bool,
+    ) -> impl Iterator<Item = &'a MethodDetails> {
+        let index = (self.methods.len() > 8).then(|| {
+            self.method_candidates.get_or_init(|| {
+                let mut by_name = HashMap::<smol_str::SmolStr, Vec<usize>>::new();
+                let mut has_ambiguous_owner = false;
+                for (position, method) in self.methods.iter().enumerate() {
+                    let member = method_name(&method.reference.short_id);
+                    by_name
+                        .entry(smol_str::SmolStr::new(member))
+                        .or_default()
+                        .push(position);
+                    has_ambiguous_owner |= method.reference.declaring_class.contains("->");
                 }
-                let key = (
-                    method_name(&method.reference.short_id).to_string(),
-                    method.params.len(),
-                );
-                candidates.entry(key).or_default().push(index);
-            }
-            candidates
-        })
+                Arc::new(DeclaredMethodNames {
+                    by_name,
+                    has_ambiguous_owner,
+                })
+            })
+        });
+        let (scan, positions) = match index {
+            Some(index) if !allow_parsed_owner || !index.has_ambiguous_owner => (
+                &[][..],
+                index
+                    .by_name
+                    .get(name)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default(),
+            ),
+            _ => (self.methods.as_slice(), &[][..]),
+        };
+        scan.iter()
+            .filter(move |method| {
+                method_name(&method.reference.short_id) == name
+                    || (allow_parsed_owner && method.reference.declaring_class.contains("->"))
+            })
+            .chain(positions.iter().map(|&index| &self.methods[index]))
     }
 
     fn is_raw_instantiation(&self) -> bool {
@@ -920,8 +945,7 @@ impl GenericTypeHierarchy {
                     return Ok(None);
                 }
                 let found = class
-                    .methods
-                    .iter()
+                    .methods_named(method_name(&short_id), false)
                     .find(|candidate| candidate.reference.short_id == short_id);
                 Ok(Some(match found {
                     Some(method) => binding.method_signature(method)?,
@@ -1137,9 +1161,13 @@ impl GenericTypeHierarchy {
             let Some(declared) = self.hierarchy.class_details(&current) else {
                 continue;
             };
-            overloads.extend(declared.methods.iter().filter_map(|candidate| {
-                candidate.overload(&method.name, method.descriptor.parameters.len())
-            }));
+            overloads.extend(
+                declared
+                    .methods_named(&method.name, true)
+                    .filter_map(|candidate| {
+                        candidate.overload(&method.name, method.descriptor.parameters.len())
+                    }),
+            );
             pending.extend(declared.parents.iter().cloned());
         }
         overloads.sort();
@@ -1193,8 +1221,7 @@ impl GenericTypeHierarchy {
             &occurrence,
             !method.is_constructor(),
             |class, _, binding| match class
-                .methods
-                .iter()
+                .methods_named(method_name(&short_id), false)
                 .find(|candidate| candidate.reference.short_id == short_id)
             {
                 Some(candidate) => binding.method_signature(candidate),

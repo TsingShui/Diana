@@ -242,7 +242,7 @@ impl<'a> AcyclicStructureAnalysis<'a> {
         while let Some(task) = tasks.pop() {
             match task {
                 RefineTask::Refine { items, assumption } => {
-                    let Some(mut cluster) = self.cluster(&items, &assumption)? else {
+                    let Some(cluster) = self.cluster(&items, &assumption)? else {
                         let Some(structure) = self.finish(items, &assumption)? else {
                             return Ok(None);
                         };
@@ -258,31 +258,41 @@ impl<'a> AcyclicStructureAnalysis<'a> {
                     let false_assumption = ConditionDomain {
                         domain: self.facts.and(assumption.domain, negated_domain)?,
                     };
-                    for item in &mut cluster.when_true {
+                    let mut when_true = Vec::new();
+                    let mut when_false = Vec::new();
+                    let mut remaining = Vec::new();
+                    for (item, class) in items.into_iter().zip(cluster.classes) {
+                        match class {
+                            BranchClass::True => when_true.push(item),
+                            BranchClass::False => when_false.push(item),
+                            BranchClass::Remaining => remaining.push(item),
+                        }
+                    }
+                    for item in &mut when_true {
                         item.condition.domain = self
                             .facts
                             .and(item.condition.domain, true_assumption.domain)?;
                     }
-                    for item in &mut cluster.when_false {
+                    for item in &mut when_false {
                         item.condition.domain = self
                             .facts
                             .and(item.condition.domain, false_assumption.domain)?;
                     }
                     tasks.push(RefineTask::Resume {
-                        remaining: cluster.remaining,
+                        remaining,
                         insertion: cluster.insertion,
                         assumption: assumption.clone(),
                         condition,
                         blocks: cluster.blocks,
                         lexical_rank: cluster.lexical_rank,
-                        has_false_branch: !cluster.when_false.is_empty(),
+                        has_false_branch: !when_false.is_empty(),
                     });
                     tasks.push(RefineTask::Refine {
-                        items: cluster.when_false,
+                        items: when_false,
                         assumption: false_assumption,
                     });
                     tasks.push(RefineTask::Refine {
-                        items: cluster.when_true,
+                        items: when_true,
                         assumption: true_assumption,
                     });
                 }
@@ -406,8 +416,8 @@ impl<'a> AcyclicStructureAnalysis<'a> {
                     .rank(condition)
                     .ok_or(AcyclicStructureError::MissingRank(condition))?,
                 items,
-                &classes,
-            )? {
+                classes,
+            ) {
                 return Ok(Some(cluster));
             }
         }
@@ -443,8 +453,7 @@ impl<'a> AcyclicStructureAnalysis<'a> {
             let Some((condition, nodes)) = self.facts.expression(relative, remaining)? else {
                 continue;
             };
-            if let Some(cluster) =
-                self.partition(condition, candidate.lexical_rank, items, &classes)?
+            if let Some(cluster) = self.partition(condition, candidate.lexical_rank, items, classes)
             {
                 self.expression_budget.set(remaining.saturating_sub(nodes));
                 return Ok(Some(cluster));
@@ -473,37 +482,31 @@ impl<'a> AcyclicStructureAnalysis<'a> {
         condition: BoolExpr,
         condition_rank: usize,
         items: &[StructureItem],
-        classes: &[BranchClass],
-    ) -> Result<Option<ConditionCluster>, AcyclicStructureError> {
-        let mut when_true = Vec::new();
-        let mut when_false = Vec::new();
+        classes: Vec<BranchClass>,
+    ) -> Option<ConditionCluster> {
+        let mut true_blocks = BTreeSet::new();
+        let mut false_blocks = BTreeSet::new();
         let mut remaining = Vec::new();
-        let mut blocks = BTreeSet::new();
         let mut lexical_rank = condition_rank;
-        for (item, class) in items.iter().cloned().zip(classes.iter().copied()) {
-            match class {
-                BranchClass::True => {
-                    blocks.extend(item.blocks.iter().copied());
-                    lexical_rank = lexical_rank.min(item.lexical_rank);
-                    when_true.push(item);
+        for (item, class) in items.iter().zip(&classes) {
+            let blocks = match class {
+                BranchClass::True => &mut true_blocks,
+                BranchClass::False => &mut false_blocks,
+                BranchClass::Remaining => {
+                    remaining.push(item);
+                    continue;
                 }
-                BranchClass::False => {
-                    blocks.extend(item.blocks.iter().copied());
-                    lexical_rank = lexical_rank.min(item.lexical_rank);
-                    when_false.push(item);
-                }
-                BranchClass::Remaining => remaining.push(item),
-            }
+            };
+            blocks.extend(item.blocks.iter().copied());
+            lexical_rank = lexical_rank.min(item.lexical_rank);
         }
-        if self
-            .facts
-            .any_reaches(&Self::blocks(&when_true), &Self::blocks(&when_false))
-            || self
-                .facts
-                .any_reaches(&Self::blocks(&when_false), &Self::blocks(&when_true))
+        if self.facts.any_reaches(&true_blocks, &false_blocks)
+            || self.facts.any_reaches(&false_blocks, &true_blocks)
         {
-            return Ok(None);
+            return None;
         }
+        let mut blocks = true_blocks;
+        blocks.extend(false_blocks);
         let mut lower = 0usize;
         let mut upper = remaining.len();
         for (index, item) in remaining.iter().enumerate() {
@@ -515,29 +518,20 @@ impl<'a> AcyclicStructureAnalysis<'a> {
             }
         }
         if lower > upper {
-            return Ok(None);
+            return None;
         }
         let desired = remaining
             .iter()
             .take_while(|item| item.lexical_rank < lexical_rank)
             .count();
         let insertion = desired.clamp(lower, upper);
-        Ok(Some(ConditionCluster {
+        Some(ConditionCluster {
             condition,
-            when_true,
-            when_false,
-            remaining,
+            classes,
             insertion,
             blocks,
             lexical_rank,
-        }))
-    }
-
-    fn blocks(items: &[StructureItem]) -> BTreeSet<BlockId> {
-        items
-            .iter()
-            .flat_map(|item| item.blocks.iter().copied())
-            .collect()
+        })
     }
 
     fn finish(
@@ -588,7 +582,6 @@ struct ConditionDomain {
     domain: Bdd,
 }
 
-#[derive(Clone)]
 struct StructureItem {
     condition: ConditionDomain,
     blocks: BTreeSet<BlockId>,
@@ -598,9 +591,7 @@ struct StructureItem {
 
 struct ConditionCluster {
     condition: BoolExpr,
-    when_true: Vec<StructureItem>,
-    when_false: Vec<StructureItem>,
-    remaining: Vec<StructureItem>,
+    classes: Vec<BranchClass>,
     insertion: usize,
     blocks: BTreeSet<BlockId>,
     lexical_rank: usize,
@@ -613,7 +604,7 @@ enum BranchClass {
     Remaining,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum AcyclicStructureFact {
     Empty,
     Block {

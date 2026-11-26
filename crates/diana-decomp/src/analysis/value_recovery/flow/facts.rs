@@ -40,6 +40,7 @@ impl<'a> SparseValueFacts<'a> {
             ValueNumbering::analyze(
                 graph.identity(),
                 &graph.logic,
+                &graph.scopes,
                 graph
                     .definitions
                     .values()

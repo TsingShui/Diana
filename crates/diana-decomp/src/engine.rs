@@ -635,6 +635,28 @@ impl<'a> Engine<'a> {
             .num_threads(workers)
             .build()
             .map_err(RequestError::MethodScheduling)?;
+        // One unusually long method can otherwise run alone after its image
+        // has drained. Start its class first, leaving all other claims in DEX
+        // order so multiple large classes do not all become resident at once.
+        let mut first = 0;
+        if workers > 1 && workers < count as usize {
+            let mut longest = 0;
+            for ordinal in 0..count {
+                if let Ok(class) = image.index.class(ClassDefId(ordinal)) {
+                    // This hint only reads checked instruction extents. Normal
+                    // retrieval owns every method, including malformed ones.
+                    let _ = class.visit_method_codes(|_, flags, offset| {
+                        if let Ok(Some(bytes)) = image.index.method_instructions(offset, flags) {
+                            if bytes.len() > longest {
+                                longest = bytes.len();
+                                first = ordinal;
+                            }
+                        }
+                        Ok(())
+                    });
+                }
+            }
+        }
         // Each pool thread can hold one class. While it waits for that class's
         // method jobs, the only stealable work is methods from an active class.
         let next = AtomicU32::new(0);
@@ -644,7 +666,13 @@ impl<'a> Engine<'a> {
                     (ordinal < count).then(|| ordinal + 1)
                 })
             {
-                let class_def = ClassDefId(ordinal);
+                let class_def = ClassDefId(if ordinal == 0 {
+                    first
+                } else if ordinal == first {
+                    0
+                } else {
+                    ordinal
+                });
                 let class = ClassKey { dex, class_def };
                 let result = (|| {
                     let facts = Arc::new(crate::p0::collect(&image.index, class)?);

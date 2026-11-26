@@ -1,6 +1,7 @@
 //! Immutable ordinary-control-flow facts shared by region analyses.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use crate::ir::{BlockId, InsnType, CFG};
 
@@ -10,7 +11,7 @@ use super::{DominanceError, DominatorTree, PostDominatorTree};
 pub struct ControlFlowFacts {
     predecessors: BTreeMap<BlockId, Vec<BlockId>>,
     semantic_predecessors: BTreeMap<BlockId, Vec<BlockId>>,
-    dominators: DominatorTree,
+    dominators: Arc<DominatorTree>,
     semantic_dominators: DominatorTree,
     postdominators: PostDominatorTree,
     phi_continuations: Option<ControlContinuations>,
@@ -36,7 +37,7 @@ impl ControlFlowFacts {
         Ok(Self {
             predecessors,
             semantic_predecessors,
-            dominators,
+            dominators: Arc::new(dominators),
             semantic_dominators,
             postdominators,
             phi_continuations,
@@ -46,6 +47,12 @@ impl ControlFlowFacts {
 
     pub fn predecessors(&self, block: BlockId) -> Option<&[BlockId]> {
         self.predecessors.get(&block).map(Vec::as_slice)
+    }
+
+    pub(crate) fn normal_dominance(
+        &self,
+    ) -> (&BTreeMap<BlockId, Vec<BlockId>>, Arc<DominatorTree>) {
+        (&self.predecessors, Arc::clone(&self.dominators))
     }
 
     pub fn semantic_predecessors(&self, block: BlockId) -> Option<&[BlockId]> {

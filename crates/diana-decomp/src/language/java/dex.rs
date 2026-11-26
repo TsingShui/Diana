@@ -1961,7 +1961,7 @@ impl DexJavaDialect {
         operation: &'operation SemanticOperation,
     ) -> Option<(
         GenericTypeSolver<'_>,
-        Vec<&'operation SemanticExpression>,
+        &'operation [SemanticExpression],
         GenericMethodContract,
     )> {
         let method = Self::method(operation.payload.reference.as_deref()).ok()?;
@@ -1981,15 +1981,14 @@ impl DexJavaDialect {
         }
         let arguments = operation
             .operands()
-            .iter()
-            .skip(usize::from(!is_static))
-            .collect::<Vec<_>>();
+            .get(usize::from(!is_static)..)
+            .unwrap_or_default();
         for ((formal, erased), actual) in contract
             .signature
             .parameter_types
             .iter()
             .zip(&method.descriptor.parameters)
-            .zip(arguments.iter().copied())
+            .zip(arguments)
         {
             if let Some(actual) = self.generic_inference_argument_source_type(actual, erased) {
                 solver.constrain(formal, &actual);
@@ -2236,21 +2235,23 @@ impl DexJavaDialect {
             }
             constraints.complete_with_bounds(&contract.signature.type_parameters);
         }
-        let receiver_is_poly_invocation = insn
-            .operands()
-            .first()
-            .and_then(SemanticExpression::as_operation)
-            .is_some_and(|receiver| {
-                matches!(receiver.insn_type, InsnType::Invoke | InsnType::Constructor)
-            });
-        let receiver_has_evidence =
-            insn.operands()
+        let receiver_is_poly_invocation = contract.is_some()
+            && insn
+                .operands()
+                .first()
+                .and_then(SemanticExpression::as_operation)
+                .is_some_and(|receiver| {
+                    matches!(receiver.insn_type, InsnType::Invoke | InsnType::Constructor)
+                });
+        let receiver_has_evidence = receiver_is_poly_invocation
+            && (insn
+                .operands()
                 .first()
                 .and_then(|receiver| self.source_receiver_type(receiver))
                 .is_some_and(|receiver| self.has_generic_argument_evidence(&receiver))
                 || insn.operands().first().is_some_and(|receiver| {
                     self.expression_declares_concrete_generic_type(receiver)
-                });
+                }));
         let inferred_receiver_source_type = contract.as_ref().and_then(|contract| {
             (receiver_is_poly_invocation && !receiver_has_evidence)
                 .then(|| {
@@ -2310,29 +2311,29 @@ impl DexJavaDialect {
             .as_ref()
             .zip(receiver_source_type.as_ref())
             .is_some_and(|(actual, expected)| !self.source_assignable_to(actual, expected));
-        let mut argument_source_types = method
-            .descriptor
-            .parameters
-            .iter()
-            .zip(
-                insn.operands()
-                    .iter()
-                    .skip(usize::from(invoke_type.has_receiver())),
-            )
-            .enumerate()
-            .map(|(index, (erased, actual))| {
+        let invocation_arguments = insn
+            .operands()
+            .get(usize::from(!is_static)..)
+            .unwrap_or_default();
+        let mut argument_source_types = contract
+            .as_ref()
+            .map(|contract| {
                 contract
-                    .as_ref()
-                    .and_then(|contract| contract.signature.parameter_types.get(index))
-                    .and_then(|formal| {
+                    .signature
+                    .parameter_types
+                    .iter()
+                    .zip(&method.descriptor.parameters)
+                    .zip(invocation_arguments)
+                    .map(|((formal, erased), actual)| {
                         constraints.invocation_input_type(formal).or_else(|| {
                             Self::signature_is_parameterized(formal)
                                 .then(|| self.argument_requirement(actual, erased))
                                 .flatten()
                         })
                     })
+                    .collect::<Vec<_>>()
             })
-            .collect::<Vec<_>>();
+            .unwrap_or_default();
         let capture_witness_targets = contract
             .as_ref()
             .and_then(|contract| {
@@ -2351,11 +2352,6 @@ impl DexJavaDialect {
                     .map(|formal| specialized.invocation_input_type(formal))
                     .collect::<Vec<_>>()
             });
-        let invocation_arguments = insn
-            .operands()
-            .iter()
-            .skip(usize::from(invoke_type.has_receiver()))
-            .collect::<Vec<_>>();
         let unchecked_arguments = contract
             .as_ref()
             .map(|contract| {
@@ -2364,7 +2360,7 @@ impl DexJavaDialect {
                     .parameter_types
                     .iter()
                     .zip(&method.descriptor.parameters)
-                    .zip(&invocation_arguments)
+                    .zip(invocation_arguments)
                     .enumerate()
                     .filter_map(|(index, ((formal, erased), actual))| {
                         let actual = self
@@ -2382,7 +2378,7 @@ impl DexJavaDialect {
             })
             .unwrap_or_default();
         let inferred_inputs_are_sound =
-            self.invocation_inputs_are_sound(&argument_source_types, &invocation_arguments);
+            self.invocation_inputs_are_sound(&argument_source_types, invocation_arguments);
         // Conflicting inference evidence prevents publishing explicit method
         // type arguments, but it does not erase the source conversion required
         // by each instantiated formal. Keeping those targets lets lowering
@@ -2407,7 +2403,7 @@ impl DexJavaDialect {
                             .parameter_types
                             .iter()
                             .zip(&method.descriptor.parameters)
-                            .zip(&invocation_arguments)
+                            .zip(invocation_arguments)
                             .map(|((formal, erased), actual)| {
                                 specialized.invocation_input_type(formal).or_else(|| {
                                     Self::signature_is_parameterized(formal)
@@ -2416,7 +2412,7 @@ impl DexJavaDialect {
                                 })
                             })
                             .collect::<Vec<_>>();
-                        self.invocation_inputs_are_sound(&targets, &invocation_arguments)
+                        self.invocation_inputs_are_sound(&targets, invocation_arguments)
                             .then_some((arguments, targets))
                     })
             })
@@ -2473,13 +2469,7 @@ impl DexJavaDialect {
                 ))
             }
         };
-        let call_arguments = insn
-            .operands()
-            .iter()
-            .skip(usize::from(!is_static))
-            .cloned()
-            .collect::<Vec<_>>();
-        let overload_casts = self.overload_argument_casts(method, &call_arguments);
+        let overload_casts = self.overload_argument_casts(method, invocation_arguments);
         let args = insn
             .operands()
             .iter()
@@ -2633,9 +2623,22 @@ impl DexJavaDialect {
         method: &MethodReference,
         arguments: &[SemanticExpression],
     ) -> BTreeSet<usize> {
+        if arguments.is_empty() {
+            return BTreeSet::new();
+        }
         let Some(overloads) = self.member_names.overloads(method) else {
             return BTreeSet::new();
         };
+        let mut alternatives = overloads
+            .iter()
+            .filter(|candidate| {
+                candidate.parameters.len() == arguments.len()
+                    && candidate.parameters != method.descriptor.parameters
+            })
+            .peekable();
+        if alternatives.peek().is_none() {
+            return BTreeSet::new();
+        }
         let target_types = method
             .descriptor
             .parameters
@@ -2643,10 +2646,7 @@ impl DexJavaDialect {
             .map(|ty| self.source_type(ty).ok())
             .collect::<Vec<_>>();
         let mut casts = BTreeSet::new();
-        for candidate in overloads {
-            if candidate == &method.descriptor || candidate.parameters.len() != arguments.len() {
-                continue;
-            }
+        for candidate in alternatives {
             let candidate_types = candidate
                 .parameters
                 .iter()
@@ -2725,7 +2725,7 @@ impl DexJavaDialect {
     fn invocation_inputs_are_sound(
         &self,
         targets: &[Option<JavaType>],
-        arguments: &[&SemanticExpression],
+        arguments: &[SemanticExpression],
     ) -> bool {
         targets.iter().zip(arguments).all(|(target, actual)| {
             let Some(target) = target else {
@@ -2845,7 +2845,7 @@ impl DexJavaDialect {
             .iter()
             .map(|formal| specialized.invocation_input_type(formal))
             .collect::<Vec<_>>();
-        if !self.invocation_inputs_are_sound(&targets, &arguments) {
+        if !self.invocation_inputs_are_sound(&targets, arguments) {
             return;
         }
         if let JavaExpr::Call {
@@ -3963,8 +3963,8 @@ impl DexJavaDialect {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        let call_arguments = insn.operands().iter().skip(1).cloned().collect::<Vec<_>>();
-        let overload_casts = self.overload_argument_casts(method, &call_arguments);
+        let call_arguments = insn.operands().get(1..).unwrap_or_default();
+        let overload_casts = self.overload_argument_casts(method, call_arguments);
         Ok(JavaStmt::ConstructorInvocation {
             target,
             args: insn

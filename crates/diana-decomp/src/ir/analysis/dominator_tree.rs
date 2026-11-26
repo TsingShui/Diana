@@ -185,18 +185,36 @@ impl DominatorTree {
         require_all_reachable: bool,
     ) -> Result<Self, DominanceError> {
         let topology = Topology::new(blocks, predecessors, successors)?;
-        if !topology.nodes.contains(&entry) {
-            return Err(DominanceError::MissingEntry(entry));
+        let start = Topology::position(&topology.nodes, entry)
+            .ok_or(DominanceError::MissingEntry(entry))?;
+        if topology.nodes.len() == 1 {
+            return Ok(Self {
+                entry,
+                nodes: vec![DominatorNode {
+                    block: entry,
+                    parent: None,
+                    children: Vec::new(),
+                    preorder: 0,
+                    subtree_end: 1,
+                }],
+            });
         }
-
-        let traversal = DepthFirstNumbering::compute(entry, &topology.successors)?;
-        if require_all_reachable && traversal.indices.len() != topology.nodes.len() {
-            let reachable = traversal.indices.keys().copied().collect::<BTreeSet<_>>();
-            let unreachable = topology.nodes.difference(&reachable).copied().collect();
+        let traversal = DepthFirstNumbering::compute(start, &topology);
+        if require_all_reachable && traversal.vertices.len() != topology.nodes.len() {
+            let unreachable = topology
+                .nodes
+                .iter()
+                .copied()
+                .enumerate()
+                .filter_map(|(index, block)| {
+                    (traversal.indices[index] == usize::MAX).then_some(block)
+                })
+                .collect();
             return Err(DominanceError::Unreachable(unreachable));
         }
 
-        let mut algorithm = LengauerTarjan::new(traversal, &topology.predecessors);
+        let mut algorithm = LengauerTarjan::new(traversal, &topology);
+        drop(topology);
         let mut nodes = algorithm.compute()?;
         nodes.sort_unstable_by_key(|node| node.block);
         let mut tree = Self { entry, nodes };
@@ -371,117 +389,115 @@ impl NormalFlowEntries {
     }
 }
 
+type Neighbors = smallvec::SmallVec<[usize; 2]>;
+
 struct Topology {
-    nodes: BTreeSet<BlockId>,
-    predecessors: BTreeMap<BlockId, Vec<BlockId>>,
-    successors: BTreeMap<BlockId, Vec<BlockId>>,
+    nodes: Vec<BlockId>,
+    predecessors: Vec<Neighbors>,
+    successors: Vec<Neighbors>,
 }
 
 impl Topology {
+    fn position(nodes: &[BlockId], block: BlockId) -> Option<usize> {
+        let direct = block.raw() as usize;
+        if nodes.get(direct) == Some(&block) {
+            Some(direct)
+        } else {
+            nodes.binary_search(&block).ok()
+        }
+    }
+
     fn new(
-        blocks: Vec<BlockId>,
+        mut nodes: Vec<BlockId>,
         predecessors: &BTreeMap<BlockId, Vec<BlockId>>,
         successors: &BTreeMap<BlockId, Vec<BlockId>>,
     ) -> Result<Self, DominanceError> {
-        let nodes = blocks.into_iter().collect::<BTreeSet<_>>();
-        let mut induced_successors = BTreeMap::new();
-        let mut induced_predecessors = BTreeMap::new();
-        for node in &nodes {
+        nodes.sort_unstable();
+        nodes.dedup();
+        let mut incoming = Vec::with_capacity(nodes.len());
+        let mut outgoing = Vec::with_capacity(nodes.len());
+        for &node in &nodes {
             let neighbors = |edges: &BTreeMap<BlockId, Vec<BlockId>>| {
-                let mut ids: Vec<_> = edges
-                    .get(node)
-                    .ok_or(DominanceError::MissingTopology(*node))?
+                let mut indices: Neighbors = edges
+                    .get(&node)
+                    .ok_or(DominanceError::MissingTopology(node))?
                     .iter()
-                    .copied()
-                    .filter(|block| nodes.contains(block))
+                    .filter_map(|&neighbor| Self::position(&nodes, neighbor))
                     .collect();
-                ids.sort_unstable();
-                ids.dedup();
-                Ok::<_, DominanceError>(ids)
+                indices.sort_unstable();
+                indices.dedup();
+                Ok::<_, DominanceError>(indices)
             };
-            induced_successors.insert(*node, neighbors(successors)?);
-            induced_predecessors.insert(*node, neighbors(predecessors)?);
+            outgoing.push(neighbors(successors)?);
+            incoming.push(neighbors(predecessors)?);
         }
-        for (&source, targets) in &induced_successors {
-            for target in targets {
-                if induced_predecessors
-                    .get(target)
-                    .is_none_or(|sources| sources.binary_search(&source).is_err())
-                {
+        for (source, targets) in outgoing.iter().enumerate() {
+            for &target in targets {
+                if incoming[target].binary_search(&source).is_err() {
                     return Err(DominanceError::InconsistentEdge {
-                        source,
-                        target: *target,
+                        source: nodes[source],
+                        target: nodes[target],
                     });
                 }
             }
         }
-        for (&target, sources) in &induced_predecessors {
-            for source in sources {
-                if induced_successors
-                    .get(source)
-                    .is_none_or(|targets| targets.binary_search(&target).is_err())
-                {
+        for (target, sources) in incoming.iter().enumerate() {
+            for &source in sources {
+                if outgoing[source].binary_search(&target).is_err() {
                     return Err(DominanceError::InconsistentEdge {
-                        source: *source,
-                        target,
+                        source: nodes[source],
+                        target: nodes[target],
                     });
                 }
             }
         }
         Ok(Self {
             nodes,
-            predecessors: induced_predecessors,
-            successors: induced_successors,
+            predecessors: incoming,
+            successors: outgoing,
         })
     }
 }
 
 struct DepthFirstNumbering {
-    vertices: Vec<BlockId>,
-    indices: BTreeMap<BlockId, usize>,
+    vertices: Vec<usize>,
+    indices: Vec<usize>,
     parents: Vec<Option<usize>>,
 }
 
 impl DepthFirstNumbering {
-    fn compute(
-        entry: BlockId,
-        successors: &BTreeMap<BlockId, Vec<BlockId>>,
-    ) -> Result<Self, DominanceError> {
+    fn compute(entry: usize, topology: &Topology) -> Self {
         let mut vertices = vec![entry];
-        let mut indices = BTreeMap::from([(entry, 0)]);
+        let mut indices = vec![usize::MAX; topology.nodes.len()];
+        indices[entry] = 0;
         let mut parents = vec![None];
         let mut pending = vec![(entry, 0usize)];
         while let Some((node, next_child)) = pending.last_mut() {
-            let targets = successors
-                .get(node)
-                .ok_or(DominanceError::InvalidTraversal(*node))?;
+            let targets = &topology.successors[*node];
             if *next_child == targets.len() {
                 pending.pop();
                 continue;
             }
             let target = targets[*next_child];
             *next_child += 1;
-            if indices.contains_key(&target) {
-                continue;
+            if indices[target] == usize::MAX {
+                parents.push(Some(indices[*node]));
+                indices[target] = vertices.len();
+                vertices.push(target);
+                pending.push((target, 0));
             }
-            let parent = indices[node];
-            let index = vertices.len();
-            vertices.push(target);
-            indices.insert(target, index);
-            parents.push(Some(parent));
-            pending.push((target, 0));
         }
-        Ok(Self {
+        Self {
             vertices,
             indices,
             parents,
-        })
+        }
     }
 }
 
 struct LengauerTarjan {
     vertices: Vec<BlockId>,
-    predecessors: Vec<Vec<usize>>,
+    predecessors: Vec<Neighbors>,
     parents: Vec<Option<usize>>,
     semi: Vec<usize>,
     labels: Vec<usize>,
@@ -491,20 +507,25 @@ struct LengauerTarjan {
 }
 
 impl LengauerTarjan {
-    fn new(traversal: DepthFirstNumbering, predecessors: &BTreeMap<BlockId, Vec<BlockId>>) -> Self {
+    fn new(traversal: DepthFirstNumbering, topology: &Topology) -> Self {
         let count = traversal.vertices.len();
         let predecessor_indices = traversal
             .vertices
             .iter()
-            .map(|node| {
-                predecessors[node]
+            .map(|&node| {
+                topology.predecessors[node]
                     .iter()
-                    .filter_map(|source| traversal.indices.get(source).copied())
+                    .map(|&source| traversal.indices[source])
+                    .filter(|&index| index != usize::MAX)
                     .collect()
             })
             .collect();
         Self {
-            vertices: traversal.vertices,
+            vertices: traversal
+                .vertices
+                .into_iter()
+                .map(|node| topology.nodes[node])
+                .collect(),
             predecessors: predecessor_indices,
             parents: traversal.parents,
             semi: (0..count).collect(),

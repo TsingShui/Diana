@@ -738,6 +738,10 @@ struct OperationRegisterReplacement {
 }
 
 impl SemanticExpressionTransform for OperationRegisterReplacement {
+    fn visits_registers(&self) -> bool {
+        false
+    }
+
     fn transform_operation(&mut self, operation: SemanticOperation) -> SemanticExpression {
         if operation.id == self.target {
             self.replaced = true;
@@ -753,6 +757,15 @@ impl RedundantVacuousPredicate {
         let SemanticNode::Sequence(mut nodes) = node else {
             return node;
         };
+        if !nodes.iter().any(|node| {
+            matches!(
+                node,
+                SemanticNode::If { then_node, else_node: None, .. }
+                    if matches!(then_node.as_ref(), SemanticNode::Empty)
+            )
+        }) {
+            return SemanticNode::sequence(nodes);
+        }
         let mut retained = Vec::with_capacity(nodes.len());
         let mut index = 0;
         while index < nodes.len() {
@@ -1137,18 +1150,17 @@ impl BranchLinearizer {
         else {
             return node;
         };
-        let then_normal = super::SemanticCompletion::analyze(&then_node).can_complete_normally();
-        let else_normal = super::SemanticCompletion::analyze(&else_node).can_complete_normally();
-        match (then_normal, else_normal) {
-            (false, _) => SemanticNode::sequence([
+        if !super::SemanticCompletion::analyze(&then_node).can_complete_normally() {
+            SemanticNode::sequence([
                 SemanticNode::If {
                     condition,
                     then_node,
                     else_node: None,
                 },
                 *else_node,
-            ]),
-            (true, false) => SemanticNode::sequence([
+            ])
+        } else if !super::SemanticCompletion::analyze(&else_node).can_complete_normally() {
+            SemanticNode::sequence([
                 SemanticNode::If {
                     condition: crate::ir::SemanticOperand {
                         site: condition.site,
@@ -1158,12 +1170,13 @@ impl BranchLinearizer {
                     else_node: None,
                 },
                 *then_node,
-            ]),
-            _ => SemanticNode::If {
+            ])
+        } else {
+            SemanticNode::If {
                 condition,
                 then_node,
                 else_node: Some(else_node),
-            },
+            }
         }
     }
 }
@@ -1639,13 +1652,14 @@ impl TerminalRewriteFrame {
 struct NormalCompletion;
 
 impl NormalCompletion {
-    fn sequence(nodes: Vec<SemanticNode>) -> SemanticNode {
-        let mut reachable = true;
-        SemanticNode::sequence(nodes.into_iter().take_while(|node| {
-            let keep = reachable;
-            reachable = reachable && Self::can_complete(node);
-            keep
-        }))
+    fn sequence(mut nodes: Vec<SemanticNode>) -> SemanticNode {
+        // Completion of the last child cannot cut off another child.
+        if let Some((_, prefix)) = nodes.split_last() {
+            if let Some(index) = prefix.iter().position(|node| !Self::can_complete(node)) {
+                nodes.truncate(index + 1);
+            }
+        }
+        SemanticNode::sequence(nodes)
     }
 
     fn can_complete(node: &SemanticNode) -> bool {

@@ -6,6 +6,9 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ops::Range;
+mod index;
+pub(super) use index::GraphIndex;
+use index::PointNumbers;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::ir::{
@@ -47,12 +50,14 @@ pub struct SemanticFlowGraph {
     entries: BTreeSet<SemanticFlowPoint>,
     complete: bool,
     reachability: OnceLock<SemanticReachability>,
+    index: OnceLock<Arc<GraphIndex>>,
     linear_points: OnceLock<Option<Vec<SemanticFlowPoint>>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct SemanticReachability {
-    components: BTreeMap<SemanticFlowPoint, usize>,
+    points: Arc<PointNumbers>,
+    components: Vec<usize>,
     store: ReachabilityStore,
 }
 
@@ -275,70 +280,64 @@ impl SemanticReachability {
         if let Some(chain) = Self::linear_chain(graph) {
             return chain;
         }
-        let points = graph.points();
-        let mut visited = BTreeSet::new();
-        let mut finish = Vec::with_capacity(points.len());
-        for root in &points {
-            if !visited.insert(*root) {
+        let index = graph.index();
+        let n = index.points.len();
+        let mut visited = vec![false; n];
+        let mut finish = Vec::with_capacity(n);
+        let mut stack = Vec::new();
+        for root in 0..n {
+            if std::mem::replace(&mut visited[root], true) {
                 continue;
             }
-            let mut stack = vec![(*root, 0usize)];
-            while let Some((point, successor_index)) = stack.last_mut() {
-                let successors = graph
-                    .successors
-                    .get(point)
-                    .map(Vec::as_slice)
-                    .unwrap_or_default();
-                if *successor_index < successors.len() {
-                    let successor = successors[*successor_index];
-                    *successor_index += 1;
-                    if visited.insert(successor) {
+            stack.push((root, 0));
+            while let Some((node, cursor)) = stack.last_mut() {
+                if let Some(&successor) = index.successors(*node).get(*cursor) {
+                    *cursor += 1;
+                    if !std::mem::replace(&mut visited[successor], true) {
                         stack.push((successor, 0));
                     }
                 } else {
-                    finish.push(*point);
+                    finish.push(*node);
                     stack.pop();
                 }
             }
         }
 
-        let mut components = BTreeMap::new();
-        let mut component_count = 0usize;
+        let mut components = vec![usize::MAX; n];
+        let mut component_count = 0;
+        let mut pending = Vec::new();
         for root in finish.into_iter().rev() {
-            if components.contains_key(&root) {
+            if components[root] != usize::MAX {
                 continue;
             }
             let component = component_count;
             component_count += 1;
-            components.insert(root, component);
-            let mut stack = vec![root];
-            while let Some(point) = stack.pop() {
-                for (predecessor, _) in graph
-                    .predecessors
-                    .get(&point)
-                    .into_iter()
-                    .flat_map(Vec::as_slice)
-                {
-                    if !components.contains_key(predecessor) {
-                        components.insert(*predecessor, component);
-                        stack.push(*predecessor);
+            components[root] = component;
+            pending.push(root);
+            while let Some(node) = pending.pop() {
+                for &predecessor in index.predecessors(node) {
+                    if components[predecessor] == usize::MAX {
+                        components[predecessor] = component;
+                        pending.push(predecessor);
                     }
                 }
             }
         }
 
-        let mut successors = vec![BTreeSet::new(); component_count];
-        // Kosaraju assigns each component before all its outgoing neighbors:
-        // the reverse traversal starts at the greatest remaining finish time.
-        for (point, point_successors) in &graph.successors {
-            let source = components[point];
-            for successor in point_successors {
+        let mut successors = vec![Vec::new(); component_count];
+        // Kosaraju assigns each component before all its outgoing neighbors.
+        for (node, &source) in components.iter().enumerate() {
+            for &successor in index.successors(node) {
                 let target = components[successor];
                 if source != target {
                     debug_assert!(source < target);
-                    successors[source].insert(target);
+                    successors[source].push(target);
                 }
             }
+        }
+        for row in &mut successors {
+            row.sort_unstable();
+            row.dedup();
         }
 
         let words_per_row = component_count.div_ceil(u64::BITS as usize);
@@ -363,10 +362,6 @@ impl SemanticReachability {
                 bits,
             }
         } else {
-            let successors = successors
-                .into_iter()
-                .map(|targets| targets.into_iter().collect::<Vec<_>>())
-                .collect::<Vec<_>>();
             let mut predecessors = vec![Vec::new(); component_count];
             for (source, targets) in successors.iter().enumerate() {
                 for target in targets {
@@ -380,28 +375,35 @@ impl SemanticReachability {
                 backward: Mutex::new(ReachabilityCache::default()),
             }))
         };
-        Self { components, store }
+        Self {
+            points: Arc::clone(&index.points),
+            components,
+            store,
+        }
     }
 
     // A straight-line method has one path. Its point order answers all
     // reachability queries without a component graph or a closure matrix.
     fn linear_chain(graph: &SemanticFlowGraph) -> Option<Self> {
         let points = graph.linear_points()?;
+        let numbers = Arc::new(PointNumbers::new(points.iter().copied()));
+        let mut ranks = vec![0; points.len()];
+        for (rank, &point) in points.iter().enumerate() {
+            ranks[numbers.get(point).expect("indexed linear point")] = rank;
+        }
         Some(Self {
-            components: points
-                .iter()
-                .copied()
-                .enumerate()
-                .map(|(rank, point)| (point, rank))
-                .collect(),
+            points: numbers,
+            components: ranks,
             store: ReachabilityStore::Linear,
         })
     }
 
+    fn component(&self, point: SemanticFlowPoint) -> Option<usize> {
+        self.points.get(point).map(|node| self.components[node])
+    }
+
     pub fn reaches(&self, source: SemanticFlowPoint, target: SemanticFlowPoint) -> bool {
-        let (Some(source), Some(target)) =
-            (self.components.get(&source), self.components.get(&target))
-        else {
+        let (Some(source), Some(target)) = (self.component(source), self.component(target)) else {
             return false;
         };
         match &self.store {
@@ -409,7 +411,7 @@ impl SemanticReachability {
             ReachabilityStore::Dense { row_words, bits } => {
                 bits[source * row_words + target / 64] & (1u64 << (target % 64)) != 0
             }
-            ReachabilityStore::Sparse(reachable) => reachable.reaches(*source, *target),
+            ReachabilityStore::Sparse(reachable) => reachable.reaches(source, target),
         }
     }
 
@@ -426,16 +428,15 @@ impl SemanticReachability {
                 })
             }
             ReachabilityStore::Sparse(reachable) => {
-                let (Some(source), Some(target)) =
-                    (self.components.get(&source), self.components.get(&target))
+                let (Some(source), Some(target)) = (self.component(source), self.component(target))
                 else {
                     return false;
                 };
-                let from_source = reachable.forward_row(*source);
-                let to_target = reachable.backward_row(*target);
+                let from_source = reachable.forward_row(source);
+                let to_target = reachable.backward_row(target);
                 candidates.iter().any(|candidate| {
-                    self.components.get(candidate).is_some_and(|candidate| {
-                        from_source.contains(*candidate) && to_target.contains(*candidate)
+                    self.component(*candidate).is_some_and(|candidate| {
+                        from_source.contains(candidate) && to_target.contains(candidate)
                     })
                 })
             }
@@ -513,24 +514,36 @@ impl SemanticFlowGraph {
         SemanticFlowBuilder::new().build(root)
     }
 
+    pub(super) fn index(&self) -> &GraphIndex {
+        self.index.get_or_init(|| Arc::new(GraphIndex::new(self)))
+    }
+
     pub fn is_complete(&self) -> bool {
         self.complete
     }
 
     pub fn points(&self) -> BTreeSet<SemanticFlowPoint> {
-        self.predecessors
-            .keys()
-            .chain(self.successors.keys())
-            .chain(self.successors.values().flatten())
-            .chain(
-                self.predecessors
-                    .values()
-                    .flatten()
-                    .map(|(predecessor, _)| predecessor),
-            )
-            .chain(&self.entries)
-            .copied()
-            .collect()
+        self.ordered_points().collect()
+    }
+
+    // Every edge is recorded under its source in successors and its target
+    // in predecessors. Merge the ordered keys; an isolated entry needs its
+    // own slot, but no adjacency payload needs to be visited.
+    fn ordered_points(&self) -> impl Iterator<Item = SemanticFlowPoint> + Clone + '_ {
+        let mut incoming = self.predecessors.keys().copied().peekable();
+        let mut outgoing = self.successors.keys().copied().peekable();
+        let mut entries = self.entries.iter().copied().peekable();
+        std::iter::from_fn(move || {
+            let point = [incoming.peek(), outgoing.peek(), entries.peek()]
+                .into_iter()
+                .flatten()
+                .min()
+                .copied()?;
+            incoming.next_if_eq(&point);
+            outgoing.next_if_eq(&point);
+            entries.next_if_eq(&point);
+            Some(point)
+        })
     }
 
     pub fn successors(&self, point: SemanticFlowPoint) -> &[SemanticFlowPoint] {
@@ -700,6 +713,7 @@ impl SemanticFlowGraph {
                 }
                 return SemanticReachingValues { reaching, by_value };
             }
+            return self.reaching_values_plain(definitions, targets, by_value, next);
         }
         let mut generated = BTreeMap::<SemanticFlowPoint, DefinitionSet>::new();
         let mut killed = BTreeMap::<SemanticFlowPoint, DefinitionSet>::new();
@@ -716,9 +730,6 @@ impl SemanticFlowGraph {
                 .entry(definition.point)
                 .or_insert_with(|| DefinitionSet::new(definition_count))
                 .insert_range(by_value.offsets[value]..by_value.offsets[value + 1]);
-        }
-        if !cleanup {
-            return self.reaching_values_plain(definitions, targets, generated, killed, by_value);
         }
         self.reaching_values_with_cleanup(definitions, targets, generated, killed, by_value)
     }
@@ -738,48 +749,81 @@ impl SemanticFlowGraph {
         &self,
         definitions: &[SemanticValueDefinition],
         targets: &BTreeSet<SemanticFlowPoint>,
-        generated: BTreeMap<SemanticFlowPoint, DefinitionSet>,
-        killed: BTreeMap<SemanticFlowPoint, DefinitionSet>,
-        by_value: DefinitionsByValue,
+        mut by_value: DefinitionsByValue,
+        mut next: Vec<usize>,
     ) -> SemanticReachingValues {
         let definition_count = definitions.len();
-        let nodes = self.reaching_slice(targets);
-        let points = nodes.iter().copied().collect::<Vec<_>>();
-        let ids = points
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(index, point)| (point, index))
-            .collect::<BTreeMap<_, _>>();
-        let mut successors = vec![Vec::new(); points.len()];
-        for (index, point) in points.iter().enumerate() {
-            for successor in self
-                .successors
-                .get(point)
-                .into_iter()
-                .flat_map(Vec::as_slice)
-            {
-                if let Some(&successor) = ids.get(successor) {
-                    successors[index].push(successor);
-                }
+        let index = self.index();
+        let mut local = vec![usize::MAX; index.points.len()];
+        let mut nodes = Vec::new();
+        for &target in targets {
+            if let Some(node) = index.points.get(target) {
+                local[node] = nodes.len();
+                nodes.push(node);
             }
         }
-        let entries = points
-            .iter()
-            .map(|point| self.entries.contains(point))
-            .collect::<Vec<_>>();
-        let mut facts = vec![DefinitionSet::new(definition_count); points.len()];
-        let mut deltas = vec![DefinitionSet::new(definition_count); points.len()];
-        let mut reachable = vec![false; points.len()];
+        let target_count = nodes.len();
+        let mut cursor = 0;
+        while cursor < nodes.len() {
+            for &predecessor in index.predecessors(nodes[cursor]) {
+                if local[predecessor] == usize::MAX {
+                    local[predecessor] = nodes.len();
+                    nodes.push(predecessor);
+                }
+            }
+            cursor += 1;
+        }
+
+        // A single-definition value generates its only possible bit. It has
+        // no distinct older definition to kill when that point is revisited.
+        struct Transfer {
+            generated: DefinitionSet,
+            killed: Option<DefinitionSet>,
+        }
+        let mut transfer_at = vec![usize::MAX; nodes.len()];
+        let mut transfers = Vec::<Transfer>::new();
+        for definition in definitions {
+            let value = definition.value;
+            let bit = next[value];
+            next[value] += 1;
+            by_value.ordinals[bit] = definition.ordinal;
+            let Some(node) = index.points.get(definition.point) else {
+                continue;
+            };
+            if local[node] == usize::MAX {
+                continue;
+            }
+            let slot = &mut transfer_at[local[node]];
+            if *slot == usize::MAX {
+                *slot = transfers.len();
+                transfers.push(Transfer {
+                    generated: DefinitionSet::new(definition_count),
+                    killed: None,
+                });
+            }
+            let transfer = &mut transfers[*slot];
+            transfer.generated.insert(bit);
+            let range = by_value.offsets[value]..by_value.offsets[value + 1];
+            if range.len() > 1 {
+                transfer
+                    .killed
+                    .get_or_insert_with(|| DefinitionSet::new(definition_count))
+                    .insert_range(range);
+            }
+        }
+        let mut facts = vec![DefinitionSet::new(definition_count); nodes.len()];
+        let mut deltas = vec![DefinitionSet::new(definition_count); nodes.len()];
+        let mut reachable = vec![false; nodes.len()];
         let mut pending = VecDeque::new();
-        let mut queued = vec![false; points.len()];
-        for (node, entry) in entries.iter().copied().enumerate() {
-            if !entry {
+        let mut queued = vec![false; nodes.len()];
+        for &entry in &index.entries {
+            let node = local[entry];
+            if node == usize::MAX {
                 continue;
             }
             reachable[node] = true;
-            if let Some(generated) = generated.get(&points[node]) {
-                facts[node].union_delta(generated, &mut deltas[node]);
+            if let Some(transfer) = transfers.get(transfer_at[node]) {
+                facts[node].union_delta(&transfer.generated, &mut deltas[node]);
             }
             queued[node] = true;
             pending.push_back(node);
@@ -788,37 +832,41 @@ impl SemanticFlowGraph {
         while let Some(node) = pending.pop_front() {
             queued[node] = false;
             std::mem::swap(&mut delta, &mut deltas[node]);
-            for successor in &successors[node] {
-                let first_reach = !reachable[*successor];
+            for &successor in index.successors(nodes[node]) {
+                let successor = local[successor];
+                if successor == usize::MAX {
+                    continue;
+                }
+                let transfer = transfers.get(transfer_at[successor]);
+                let first_reach = !reachable[successor];
                 if first_reach {
-                    reachable[*successor] = true;
-                    if let Some(generated) = generated.get(&points[*successor]) {
-                        facts[*successor].union_delta(generated, &mut deltas[*successor]);
+                    reachable[successor] = true;
+                    if let Some(transfer) = transfer {
+                        facts[successor].union_delta(&transfer.generated, &mut deltas[successor]);
                     }
                 }
-                let changed = match killed.get(&points[*successor]) {
-                    Some(killed) => facts[*successor].union_delta_without(
-                        &delta,
-                        killed,
-                        &mut deltas[*successor],
-                    ),
-                    None => facts[*successor].union_delta(&delta, &mut deltas[*successor]),
+                let changed = match transfer.and_then(|transfer| transfer.killed.as_ref()) {
+                    Some(killed) => {
+                        facts[successor].union_delta_without(&delta, killed, &mut deltas[successor])
+                    }
+                    None => facts[successor].union_delta(&delta, &mut deltas[successor]),
                 };
-                if (first_reach || changed) && !queued[*successor] {
-                    queued[*successor] = true;
-                    pending.push_back(*successor);
+                if (first_reach || changed) && !queued[successor] {
+                    queued[successor] = true;
+                    pending.push_back(successor);
                 }
             }
             delta.clear();
         }
-        let mut reaching = points
+        let mut reaching = nodes
             .into_iter()
             .zip(facts)
             .zip(reachable)
-            .filter_map(|((point, facts), reachable)| {
-                (reachable && targets.contains(&point)).then_some((point, facts))
+            .take(target_count)
+            .filter_map(|((id, facts), reachable)| {
+                reachable.then(|| (index.points.point(id), facts))
             })
-            .collect::<BTreeMap<_, _>>();
+            .collect();
         self.insert_unreachable_target_bottoms(&mut reaching, targets, definition_count);
         SemanticReachingValues { reaching, by_value }
     }
@@ -1052,9 +1100,7 @@ impl FlowFragment {
             && self.throwing.is_empty()
     }
 
-    fn site(site: SemanticSiteId, may_throw: bool) -> Self {
-        let before = SemanticFlowPoint::before(site);
-        let after = SemanticFlowPoint::after(site);
+    fn site(before: SemanticFlowPoint, after: SemanticFlowPoint, may_throw: bool) -> Self {
         Self {
             entry: Some(before),
             normal: true,
@@ -1148,6 +1194,7 @@ struct SemanticFlowBuilder {
     graph: SemanticFlowGraph,
     next_synthetic: u64,
     next_continuation: u64,
+    try_depth: usize,
 }
 
 impl SemanticFlowBuilder {
@@ -1159,6 +1206,7 @@ impl SemanticFlowBuilder {
             },
             next_synthetic: 0,
             next_continuation: 0,
+            try_depth: 0,
         }
     }
 
@@ -1197,14 +1245,7 @@ impl SemanticFlowBuilder {
     ) {
         match node {
             SemanticNode::Empty => results.push(self.empty_node()),
-            SemanticNode::BasicBlock(block) => {
-                let fragments = block
-                    .statements
-                    .iter()
-                    .map(|statement| self.site(statement.site, statement.effects().may_throw()))
-                    .collect();
-                results.push(self.sequence(fragments));
-            }
+            SemanticNode::BasicBlock(block) => results.push(self.block(&block.statements)),
             SemanticNode::Sequence(children) => {
                 pending.push(BuildTask::Combine(BuildFrame::Sequence(children.len())));
                 pending.extend(children.iter().rev().map(BuildTask::Visit));
@@ -1284,6 +1325,7 @@ impl SemanticFlowBuilder {
                 finally,
                 ..
             } => {
+                self.try_depth += 1;
                 pending.push(BuildTask::Combine(BuildFrame::Try {
                     catches: catches.len(),
                     has_finally: finally.is_some(),
@@ -1354,35 +1396,71 @@ impl SemanticFlowBuilder {
             BuildFrame::Try {
                 catches,
                 has_finally,
-            } => self.try_node(catches, has_finally, children),
+            } => {
+                self.try_depth -= 1;
+                self.try_node(catches, has_finally, children)
+            }
             BuildFrame::Synchronized { lock } => {
-                let lock = self.site(lock.site, expression_may_throw(&lock.value));
+                let lock = self.site(lock.site, || expression_may_throw(&lock.value));
                 self.sequence(vec![lock, children.remove(0)])
             }
             BuildFrame::Label(label) => self.label(label, children.remove(0)),
         }
     }
 
-    fn site(&mut self, site: Option<SemanticSiteId>, may_throw: bool) -> FlowFragment {
+    fn site_points(
+        &mut self,
+        site: Option<SemanticSiteId>,
+    ) -> Option<(SemanticFlowPoint, SemanticFlowPoint)> {
         let Some(site) = site else {
             self.mark_incomplete("semantic node has no numbered site");
+            return None;
+        };
+        let before = SemanticFlowPoint::before(site);
+        let after = SemanticFlowPoint::after(site);
+        self.add_edge(before, after, SemanticFlowEdgeKind::Normal);
+        Some((before, after))
+    }
+
+    fn site(
+        &mut self,
+        site: Option<SemanticSiteId>,
+        may_throw: impl FnOnce() -> bool,
+    ) -> FlowFragment {
+        let Some((before, after)) = self.site_points(site) else {
             return FlowFragment::identity();
         };
-        let fragment = FlowFragment::site(site, may_throw);
-        self.add_edge(
-            SemanticFlowPoint::before(site),
-            SemanticFlowPoint::after(site),
-            SemanticFlowEdgeKind::Normal,
-        );
+        FlowFragment::site(before, after, self.try_depth != 0 && may_throw())
+    }
+
+    fn block(&mut self, statements: &[crate::ir::SemanticStatement]) -> FlowFragment {
+        let mut fragment = FlowFragment::identity();
+        let mut previous = None;
+        for statement in statements {
+            let Some((before, after)) = self.site_points(statement.site) else {
+                continue;
+            };
+            if let Some(previous) = previous {
+                self.add_edge(previous, before, SemanticFlowEdgeKind::Normal);
+            } else {
+                fragment.entry = Some(before);
+            }
+            previous = Some(after);
+            // Potential throws only introduce graph edges inside a try. A
+            // thrown leave remains an explicit abrupt completion everywhere.
+            if self.try_depth != 0 && statement.effects().may_throw() {
+                fragment.throwing.insert(before);
+            }
+        }
+        fragment.exits.extend(previous);
         fragment
     }
 
     fn leave(&mut self, leave: &SemanticLeave) -> FlowFragment {
-        let mut fragment = self.site(
-            leave.site,
+        let mut fragment = self.site(leave.site, || {
             leave.value().is_some_and(expression_may_throw)
-                || leave.condition.as_ref().is_some_and(predicate_may_throw),
-        );
+                || leave.condition.as_ref().is_some_and(predicate_may_throw)
+        });
         let Some(point) = fragment.exits.iter().next().copied() else {
             self.mark_incomplete("semantic leave has no flow point");
             return fragment;
@@ -1434,7 +1512,7 @@ impl SemanticFlowBuilder {
         else_fragment: Option<FlowFragment>,
     ) -> FlowFragment {
         let mut condition_fragment =
-            self.site(condition.site, predicate_may_throw(&condition.value));
+            self.site(condition.site, || predicate_may_throw(&condition.value));
         let sources = condition_fragment.exits.clone();
         let mut result = FlowFragment {
             entry: condition_fragment.entry,
@@ -1462,7 +1540,8 @@ impl SemanticFlowBuilder {
         setup: FlowFragment,
         mut body: FlowFragment,
     ) -> FlowFragment {
-        let condition_fragment = self.site(condition.site, predicate_may_throw(&condition.value));
+        let condition_fragment =
+            self.site(condition.site, || predicate_may_throw(&condition.value));
         let break_points = body.take_abrupt(&break_completion(control));
         let continue_points = body.take_abrupt(&continue_completion(control));
         let condition_true = condition.value.constant_value() == Some(true);
@@ -1537,9 +1616,10 @@ impl SemanticFlowBuilder {
         update: &crate::ir::SemanticStatement,
         mut body: FlowFragment,
     ) -> FlowFragment {
-        let init = self.site(init.site, init.effects().may_throw());
-        let condition_fragment = self.site(condition.site, predicate_may_throw(&condition.value));
-        let update = self.site(update.site, update.effects().may_throw());
+        let init = self.site(init.site, || init.effects().may_throw());
+        let condition_fragment =
+            self.site(condition.site, || predicate_may_throw(&condition.value));
+        let update = self.site(update.site, || update.effects().may_throw());
         let break_points = body.take_abrupt(&break_completion(control));
         let continue_points = body.take_abrupt(&continue_completion(control));
         let prefix = self.sequence(vec![init, condition_fragment]);
@@ -1580,7 +1660,7 @@ impl SemanticFlowBuilder {
         iterable: &crate::ir::SemanticOperand<SemanticExpression>,
         mut body: FlowFragment,
     ) -> FlowFragment {
-        let iterable_fragment = self.site(iterable.site, expression_may_throw(&iterable.value));
+        let iterable_fragment = self.site(iterable.site, || expression_may_throw(&iterable.value));
         let break_points = body.take_abrupt(&break_completion(control));
         let continue_points = body.take_abrupt(&continue_completion(control));
         self.connect_to_fragment(
@@ -1613,7 +1693,7 @@ impl SemanticFlowBuilder {
         mut cases: Vec<FlowFragment>,
         has_default: bool,
     ) -> FlowFragment {
-        let selector = self.site(selector.site, expression_may_throw(&selector.value));
+        let selector = self.site(selector.site, || expression_may_throw(&selector.value));
         let mut result = FlowFragment {
             entry: selector.entry,
             normal: !has_default,
@@ -1903,16 +1983,20 @@ mod tests {
         SemanticFlowPoint::before(SemanticSiteId(id))
     }
 
+    fn graph_with_edges(edges: &[(SemanticFlowPoint, SemanticFlowPoint)]) -> SemanticFlowGraph {
+        let mut builder = SemanticFlowBuilder::new();
+        for &(source, target) in edges {
+            builder.add_edge(source, target, SemanticFlowEdgeKind::Normal);
+        }
+        builder.graph
+    }
+
     #[test]
     fn must_reach_accepts_linear_flow() {
         let source = point(0);
         let middle = point(1);
         let target = point(2);
-        let graph = SemanticFlowGraph {
-            successors: BTreeMap::from([(source, vec![middle]), (middle, vec![target])]),
-            complete: true,
-            ..SemanticFlowGraph::default()
-        };
+        let graph = graph_with_edges(&[(source, middle), (middle, target)]);
 
         assert!(graph.must_reach(source, target));
     }
@@ -1922,11 +2006,7 @@ mod tests {
         let source = point(0);
         let target = point(1);
         let terminal = point(2);
-        let graph = SemanticFlowGraph {
-            successors: BTreeMap::from([(source, vec![target, terminal])]),
-            complete: true,
-            ..SemanticFlowGraph::default()
-        };
+        let graph = graph_with_edges(&[(source, target), (source, terminal)]);
 
         assert!(!graph.must_reach(source, target));
     }
@@ -1936,11 +2016,7 @@ mod tests {
         let source = point(0);
         let cycle = point(1);
         let target = point(2);
-        let graph = SemanticFlowGraph {
-            successors: BTreeMap::from([(source, vec![cycle]), (cycle, vec![target, cycle])]),
-            complete: true,
-            ..SemanticFlowGraph::default()
-        };
+        let graph = graph_with_edges(&[(source, cycle), (cycle, target), (cycle, cycle)]);
 
         assert!(!graph.must_reach(source, target));
     }

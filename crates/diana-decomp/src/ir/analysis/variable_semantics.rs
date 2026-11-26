@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::ir::{
     ArgType, ArithOp, InsnType, InstructionId, MemberReference, PrimitiveType, RegisterArg,
@@ -35,9 +35,10 @@ impl VariableSemanticGraph {
     }
 
     pub fn edges_for(&self, variable: u32) -> impl Iterator<Item = &VariableEdge> {
-        self.edges
+        let start = self.edges.partition_point(|edge| edge.variable < variable);
+        self.edges[start..]
             .iter()
-            .filter(move |edge| edge.variable == variable)
+            .take_while(move |edge| edge.variable == variable)
     }
 }
 
@@ -161,7 +162,7 @@ impl OperationOperand {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VariableEdge {
     variable: u32,
     operation: Option<InstructionId>,
@@ -182,7 +183,7 @@ impl VariableEdge {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VariableEdgeKind {
     Definition,
     Operand(usize),
@@ -203,7 +204,7 @@ pub enum VariableEdgeKind {
     Recurrence(RecurrenceKind),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RecurrenceKind {
     Increment,
     Decrement,
@@ -382,6 +383,7 @@ impl VariableRoleAnalysis for StructuralVariableRoleAnalysis {
 struct VariableSemanticGraphBuilder<'a> {
     types: &'a SourceTypeEnvironment,
     graph: VariableSemanticGraph,
+    seen_edges: Option<HashSet<VariableEdge>>,
     loop_depth: usize,
 }
 
@@ -394,11 +396,16 @@ impl<'a> VariableSemanticGraphBuilder<'a> {
                 operations: BTreeMap::new(),
                 edges: Vec::new(),
             },
+            seen_edges: None,
             loop_depth: 0,
         }
     }
 
-    fn finish(self) -> VariableSemanticGraph {
+    fn finish(mut self) -> VariableSemanticGraph {
+        // The graph exposes each variable's edges in discovery order. Stable
+        // grouping gives consumers a contiguous slice for that identity.
+        drop(self.seen_edges.take());
+        self.graph.edges.sort_by_key(|edge| edge.variable);
         self.graph
     }
 
@@ -499,19 +506,17 @@ impl<'a> VariableSemanticGraphBuilder<'a> {
             operation,
             kind,
         };
-        if !self.graph.edges.contains(&edge) {
+        // Keep short lists in their original allocation. Beyond that size,
+        // repeated membership checks must not scan every edge of the method.
+        let is_new = if self.graph.edges.len() < 24 {
+            !self.graph.edges.contains(&edge)
+        } else {
+            self.seen_edges
+                .get_or_insert_with(|| self.graph.edges.iter().copied().collect())
+                .insert(edge)
+        };
+        if is_new {
             self.graph.edges.push(edge);
-        }
-    }
-
-    fn expression_edges(
-        &mut self,
-        expression: &SemanticExpression,
-        operation: Option<InstructionId>,
-        kind: VariableEdgeKind,
-    ) {
-        for variable in VariableReferences::expression(expression) {
-            self.edge(variable, operation, kind.clone());
         }
     }
 
@@ -730,11 +735,6 @@ impl SemanticVisitor for VariableSemanticGraphBuilder<'_> {
             }
         }
         for (index, operand) in operation.operands().iter().enumerate() {
-            self.expression_edges(
-                operand,
-                Some(operation.id),
-                VariableEdgeKind::Operand(index),
-            );
             let contextual = match (operation.insn_type, index) {
                 (InsnType::Aget, 1) | (InsnType::Aput, 2) => Some(VariableEdgeKind::ArrayIndex),
                 (InsnType::Aput, 0) => Some(VariableEdgeKind::ArrayValue),
@@ -742,8 +742,26 @@ impl SemanticVisitor for VariableSemanticGraphBuilder<'_> {
                 (InsnType::MonitorEnter | InsnType::MonitorExit, 0) => Some(VariableEdgeKind::Lock),
                 _ => None,
             };
-            if let Some(kind) = contextual {
-                self.expression_edges(operand, Some(operation.id), kind);
+            let mut record = |variable| {
+                self.edge(
+                    variable,
+                    Some(operation.id),
+                    VariableEdgeKind::Operand(index),
+                );
+                if let Some(kind) = contextual {
+                    self.edge(variable, Some(operation.id), kind);
+                }
+            };
+            match operand {
+                SemanticExpression::Register(register) => {
+                    if let Some(variable) = register.code_var {
+                        record(variable);
+                    }
+                }
+                SemanticExpression::Literal(_) => {}
+                _ => VariableReferences::expression(operand)
+                    .into_iter()
+                    .for_each(record),
             }
             self.visit_expression(operand);
         }

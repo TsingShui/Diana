@@ -63,6 +63,10 @@ impl DominanceFrontier {
             .flat_map(|frontier| frontier.iter().copied())
     }
 
+    pub(crate) fn is_empty(&self) -> bool {
+        self.frontiers.values().all(BTreeSet::is_empty)
+    }
+
     pub fn in_frontier(&self, block: BlockId, of: BlockId) -> bool {
         self.frontiers
             .get(&of)

@@ -95,7 +95,7 @@ impl<'a> MethodBodyPipeline<'a> {
         let t = stats.then(std::time::Instant::now);
         semantic.verify()?;
         mark(&mut stages, "verify1", t);
-        let mut value_recovery = ValueRecovery::new(cfg)?;
+        let mut value_recovery = ValueRecovery::from_structured(cfg, &semantic);
         let t = stats.then(std::time::Instant::now);
         let semantic = { value_recovery.transform(semantic) }?;
         mark(&mut stages, "value_recovery", t);
@@ -124,7 +124,7 @@ impl<'a> MethodBodyPipeline<'a> {
         mark(&mut stages, "types", t);
         self.observe_stage(cfg, "types:done")?;
         let t = stats.then(std::time::Instant::now);
-        let source_variables = SourceVariableAllocation::analyze(
+        let source_variables = SourceVariableAllocation::analyze_with_flow(
             cfg,
             semantic.state().values(),
             semantic.state().constants(),
@@ -133,6 +133,7 @@ impl<'a> MethodBodyPipeline<'a> {
             &types,
             self.hierarchy,
             semantic.state().regions(),
+            || value_recovery.semantic_flow(semantic.body()),
         )?;
         mark(&mut stages, "source_analysis", t);
         self.observe_stage(cfg, "source_analysis:done")?;

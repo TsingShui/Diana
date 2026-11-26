@@ -95,19 +95,18 @@ impl KnownValues {
                 else_stmt,
             } => {
                 self.invalidate(condition);
-                let incoming = self.values.clone();
-                let when_true = self.branch(then_stmt, &incoming);
+                let (when_true, true_values) = self.branch(then_stmt);
                 let when_false = else_stmt
                     .as_deref_mut()
-                    .map(|statement| self.branch(statement, &incoming))
-                    .unwrap_or_else(|| (Self::complete(false), incoming.clone()));
+                    .map(|statement| self.rewrite(statement))
+                    .unwrap_or_else(|| Self::complete(false));
                 self.values = Self::join(
-                    (when_true.0.completes, when_true.1),
-                    (when_false.0.completes, when_false.1),
+                    (when_true.completes, true_values),
+                    (when_false.completes, std::mem::take(&mut self.values)),
                 );
                 RewriteResult {
-                    changed: when_true.0.changed || when_false.0.changed,
-                    completes: when_true.0.completes || when_false.0.completes,
+                    changed: when_true.changed || when_false.changed,
+                    completes: when_true.completes || when_false.completes,
                 }
             }
             JavaStmt::Try {
@@ -115,17 +114,16 @@ impl KnownValues {
                 catches,
                 finally,
             } => {
-                let incoming = self.values.clone();
-                let body_result = self.branch(body, &incoming).0;
+                let body_result = self.branch(body).0;
                 let mut changed = body_result.changed;
                 let mut completes = body_result.completes;
                 for catch in catches {
-                    let result = self.branch(&mut catch.body, &incoming).0;
+                    let result = self.branch(&mut catch.body).0;
                     changed |= result.changed;
                     completes |= result.completes;
                 }
                 if let Some(finally) = finally {
-                    let result = self.branch(finally, &incoming).0;
+                    let result = self.rewrite(finally);
                     changed |= result.changed;
                     completes &= result.completes;
                 }
@@ -146,21 +144,16 @@ impl KnownValues {
             } => {
                 self.forget_statement_writes(body);
                 self.invalidate(condition);
-                let incoming = self.values.clone();
-                let result = self.branch(body, &incoming).0;
+                let result = self.rewrite(body);
                 self.values.clear();
                 RewriteResult {
                     changed: result.changed,
                     completes: true,
                 }
             }
-            JavaStmt::DoWhile {
-                body, condition, ..
-            } => {
+            JavaStmt::DoWhile { body, .. } => {
                 self.forget_statement_writes(body);
-                let incoming = self.values.clone();
-                let result = self.branch(body, &incoming).0;
-                self.invalidate(condition);
+                let result = self.rewrite(body);
                 self.values.clear();
                 RewriteResult {
                     changed: result.changed,
@@ -180,12 +173,8 @@ impl KnownValues {
                 if let Some(condition) = condition {
                     self.invalidate(condition);
                 }
-                let incoming = self.values.clone();
-                let body_result = self.branch(body, &incoming).0;
+                let body_result = self.rewrite(body);
                 result.changed |= body_result.changed;
-                for expression in update {
-                    self.invalidate(expression);
-                }
                 self.values.clear();
                 result.completes = true;
                 result
@@ -193,8 +182,7 @@ impl KnownValues {
             JavaStmt::ForEach { iterable, body, .. } => {
                 self.forget_statement_writes(body);
                 self.invalidate(iterable);
-                let incoming = self.values.clone();
-                let result = self.branch(body, &incoming).0;
+                let result = self.rewrite(body);
                 self.values.clear();
                 RewriteResult {
                     changed: result.changed,
@@ -205,11 +193,10 @@ impl KnownValues {
                 selector, cases, ..
             } => {
                 self.invalidate(selector);
-                let incoming = self.values.clone();
                 let mut changed = false;
                 for case in cases {
                     let mut branch = Self {
-                        values: incoming.clone(),
+                        values: self.values.clone(),
                     };
                     changed |= branch.sequence(&mut case.body).changed;
                 }
@@ -252,10 +239,9 @@ impl KnownValues {
     fn branch(
         &self,
         statement: &mut JavaStmt,
-        incoming: &BTreeMap<JavaIdentifier, JavaLiteral>,
     ) -> (RewriteResult, BTreeMap<JavaIdentifier, JavaLiteral>) {
         let mut branch = Self {
-            values: incoming.clone(),
+            values: self.values.clone(),
         };
         let result = branch.rewrite(statement);
         (result, branch.values)
@@ -278,6 +264,9 @@ impl KnownValues {
     }
 
     fn invalidate(&mut self, expression: &JavaExpr) {
+        if self.values.is_empty() {
+            return;
+        }
         let mut writes = ExpressionWrites::default();
         writes.rewrite_expression(expression.clone());
         for name in writes.names {
@@ -286,12 +275,18 @@ impl KnownValues {
     }
 
     fn forget_statement_writes(&mut self, statement: &JavaStmt) {
+        if self.values.is_empty() {
+            return;
+        }
         let mut writes = StatementWrites::default();
         writes.collect(statement);
         self.forget_names(writes.names);
     }
 
     fn forget_expression_writes(&mut self, expressions: &[JavaExpr]) {
+        if self.values.is_empty() {
+            return;
+        }
         let mut writes = ExpressionWrites::default();
         for expression in expressions {
             writes.rewrite_expression(expression.clone());

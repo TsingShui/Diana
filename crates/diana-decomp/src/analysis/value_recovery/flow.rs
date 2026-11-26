@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    cell::OnceCell,
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
@@ -27,6 +28,31 @@ use gated::GatedPhiAnalysis;
 pub(super) use gated::{GatedControlFlow, PhiExpressionPlacement};
 use planner::ValuePlanner;
 
+/// Scopes receive their number on entry. All descendants are visited before
+/// exit, so a prefix of the old lexical path is exactly a containing interval.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct ScopeId(usize);
+
+#[derive(Default)]
+pub(super) struct LexicalScopes {
+    last_descendant: Vec<usize>,
+}
+
+impl LexicalScopes {
+    fn enter(&mut self) -> ScopeId {
+        self.last_descendant.push(0);
+        ScopeId(self.last_descendant.len())
+    }
+
+    fn close(&mut self, scope: ScopeId) {
+        self.last_descendant[scope.0 - 1] = self.last_descendant.len();
+    }
+
+    pub(super) fn contains(&self, outer: ScopeId, inner: ScopeId) -> bool {
+        outer.0 == 0 || (outer.0 <= inner.0 && inner.0 <= self.last_descendant[outer.0 - 1])
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct DefinitionFact<'ir> {
     pub(super) key: SsaVar,
@@ -36,9 +62,9 @@ pub(super) struct DefinitionFact<'ir> {
     pub(super) result: &'ir crate::ir::RegisterArg,
     pub(super) value: Cow<'ir, SemanticExpression>,
     pub(super) domain: ControlDomain,
-    pub(super) scope: Arc<[u32]>,
-    pub(super) protections: Arc<[u32]>,
-    pub(super) loop_owners: Arc<[u32]>,
+    pub(super) scope: ScopeId,
+    pub(super) protection: Option<u32>,
+    pub(super) loop_owner: ScopeId,
     pub(super) event: usize,
     pub(super) repetitive: bool,
 }
@@ -66,9 +92,9 @@ impl DefinitionFact<'_> {
 struct UseFact {
     point: Option<crate::ir::analysis::SemanticFlowPoint>,
     domain: ControlDomain,
-    scope: Arc<[u32]>,
-    protections: Arc<[u32]>,
-    loop_owners: Arc<[u32]>,
+    scope: ScopeId,
+    protection: Option<u32>,
+    loop_owner: ScopeId,
     event: usize,
     repetitive: bool,
     evaluation_prefix: EffectSummary,
@@ -220,10 +246,10 @@ impl SsaCopyFlow {
 
     fn source(&self, mut value: SsaVar) -> SsaVar {
         let mut visited = BTreeSet::new();
-        while visited.insert(value) {
-            let Some(source) = self.sources.get(&value).copied() else {
+        while let Some(source) = self.sources.get(&value).copied() {
+            if !visited.insert(value) {
                 break;
-            };
+            }
             value = source;
         }
         value
@@ -287,6 +313,7 @@ impl UseSite {
 }
 
 pub(super) struct ValueFlowGraph<'ir> {
+    scopes: LexicalScopes,
     identity: ValueIdentity,
     logic: DomainLogic,
     definitions: BTreeMap<SsaVar, Vec<DefinitionFact<'ir>>>,
@@ -294,6 +321,7 @@ pub(super) struct ValueFlowGraph<'ir> {
     /// Their definition classes are intentionally open to statement scheduling.
     bindings: BTreeSet<SsaVar>,
     uses: BTreeMap<SsaVar, Vec<UseFact>>,
+    semantic_roots: OnceCell<BTreeSet<SsaVar>>,
     phis: Vec<PhiMerge>,
     copies: SsaCopyFlow,
     retained_phi_inputs: BTreeSet<SsaVar>,
@@ -345,9 +373,11 @@ impl<'ir> ValueFlowGraph<'ir> {
         let graph = Self {
             identity: ValueIdentity::Ssa,
             logic,
+            scopes: LexicalScopes::default(),
             definitions: BTreeMap::new(),
             bindings: BTreeSet::new(),
             uses: BTreeMap::new(),
+            semantic_roots: OnceCell::new(),
             phis: Vec::new(),
             copies: SsaCopyFlow::default(),
             retained_phi_inputs: BTreeSet::new(),
@@ -370,28 +400,47 @@ impl<'ir> ValueFlowGraph<'ir> {
         Ok(graph)
     }
 
-    pub(super) fn build_source(
+    pub(super) fn plan_source(
+        root: &'ir SemanticNode,
+        bindings: &BTreeSet<SsaVar>,
+        cache: &mut Option<super::source::SourceFlowCache>,
+        mode: RecoveryMode,
+    ) -> Result<ValuePlan, ValueRecoveryError> {
+        let symbols = ControlSymbolClosure::for_source(root);
+        // Source graphs have no CFG copies, Phis or canonical SSA constants.
+        // With no statement defining a source identity the planner has no
+        // action, including no identity move to eliminate. If evaluation can
+        // fail, the collector still owns the original error and its ordering.
+        if !symbols.source_plan_required {
+            return Ok(ValuePlan::default());
+        }
+        Self::build_allocated(root, bindings, cache, symbols)?.schedule(mode)
+    }
+
+    #[cfg(test)]
+    fn build_source(
         root: &'ir SemanticNode,
         bindings: &BTreeSet<SsaVar>,
         cache: &mut Option<super::source::SourceFlowCache>,
     ) -> Result<Self, ValueRecoveryError> {
-        Self::build_allocated(root, ValueIdentity::Source, bindings, cache)
+        Self::build_allocated(root, bindings, cache, ControlSymbolClosure::analyze(root))
     }
 
     fn build_allocated(
         root: &'ir SemanticNode,
-        identity: ValueIdentity,
         bindings: &BTreeSet<SsaVar>,
         cache: &mut Option<super::source::SourceFlowCache>,
+        symbols: ControlSymbolClosure,
     ) -> Result<Self, ValueRecoveryError> {
-        let symbols = ControlSymbolClosure::analyze(root);
         let logic = DomainLogic::new(&symbols.variables);
         let graph = Self {
-            identity,
+            identity: ValueIdentity::Source,
             logic,
+            scopes: LexicalScopes::default(),
             definitions: BTreeMap::new(),
             bindings: bindings.clone(),
             uses: BTreeMap::new(),
+            semantic_roots: OnceCell::new(),
             phis: Vec::new(),
             copies: SsaCopyFlow::default(),
             retained_phi_inputs: BTreeSet::new(),
@@ -448,6 +497,9 @@ impl<'ir> ValueFlowGraph<'ir> {
     }
 
     pub(super) fn exclude_phis(&mut self, recovered: &BTreeSet<SsaVar>) {
+        if recovered.is_empty() {
+            return;
+        }
         let excluded = self
             .phis
             .iter()
@@ -457,7 +509,7 @@ impl<'ir> ValueFlowGraph<'ir> {
         let mut pending = excluded
             .keys()
             .filter(|result| {
-                self.has_reaching_use(**result) && !self.definitions.contains_key(result)
+                self.semantic_use_roots().contains(result) && !self.definitions.contains_key(result)
             })
             .copied()
             .collect::<Vec<_>>();
@@ -504,17 +556,13 @@ impl<'ir> ValueFlowGraph<'ir> {
         self.copies.source(value)
     }
 
-    fn semantic_use_roots(&self) -> BTreeSet<SsaVar> {
-        self.uses
-            .keys()
-            .flat_map(|value| [*value, self.copy_source(*value)])
-            .collect()
-    }
-
-    fn has_reaching_use(&self, value: SsaVar) -> bool {
-        self.uses
-            .keys()
-            .any(|used| *used == value || self.copy_source(*used) == value)
+    fn semantic_use_roots(&self) -> &BTreeSet<SsaVar> {
+        self.semantic_roots.get_or_init(|| {
+            self.uses
+                .keys()
+                .flat_map(|value| [*value, self.copy_source(*value)])
+                .collect()
+        })
     }
 
     fn key(&self, register: &crate::ir::RegisterArg) -> Option<SsaVar> {
@@ -633,7 +681,10 @@ impl<'ir> ValueFlowGraph<'ir> {
         let mut definition_classes = self
             .definitions
             .iter()
-            .filter(|(_, definitions)| !definitions.is_empty())
+            // A parameter or catch variable has an incoming definition outside
+            // the statement list. Its value can still reach a use when a
+            // conditional assignment to the same source local is bypassed.
+            .filter(|(key, definitions)| !definitions.is_empty() && !self.is_bound(**key))
             .collect::<Vec<_>>();
         definition_classes.sort_by_key(|(_, definitions)| {
             definitions
@@ -767,21 +818,23 @@ impl<'ir> ValueFlowGraph<'ir> {
                     InsnArg::Wrapped(_) => None,
                 }
             }
-            _ => {
-                let arguments = definition
-                    .operation()?
+            kind if ConstantEvaluator::accepts(kind) => {
+                let arguments = expression
                     .operands()
                     .iter()
-                    .map(Self::semantic_leaf_argument)
-                    .collect::<Option<Vec<_>>>()?
-                    .into_iter()
-                    .map(|argument| self.resolve_canonical(argument, values))
-                    .collect::<Vec<_>>();
-                let instruction = definition
-                    .operation()?
-                    .instruction_with_arguments(arguments.clone());
-                ConstantEvaluator::fold(&instruction, &arguments)
+                    .map(|operand| {
+                        Self::semantic_leaf_argument(operand)
+                            .map(|argument| self.resolve_canonical(argument, values))
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                ConstantEvaluator::fold(
+                    kind,
+                    &expression.payload,
+                    expression.result.as_ref(),
+                    &arguments,
+                )
             }
+            _ => None,
         }
     }
 
@@ -799,12 +852,12 @@ impl<'ir> ValueFlowGraph<'ir> {
             let Some(variable) = value.as_register().and_then(|register| self.key(register)) else {
                 return value;
             };
-            if !visited.insert(variable) {
-                return value;
-            }
             let Some(replacement) = values.get(&variable) else {
                 return value;
             };
+            if !visited.insert(variable) {
+                return value;
+            }
             value = replacement.clone();
         }
     }
@@ -848,7 +901,7 @@ impl<'ir> ValueFlowGraph<'ir> {
         let pending = self
             .phis
             .iter()
-            .filter(|phi| self.has_reaching_use(phi.result))
+            .filter(|phi| self.semantic_use_roots().contains(&phi.result))
             .map(|phi| phi.result)
             .collect::<Vec<_>>();
         required_phi_input_closure(
@@ -904,10 +957,21 @@ enum CanonicalKey {
 struct ControlSymbolClosure {
     variables: BTreeSet<BoolVariable>,
     tests: BTreeMap<crate::ir::InstructionId, SemanticOperation>,
+    source_plan_required: bool,
 }
 
 impl ControlSymbolClosure {
     fn analyze(root: &SemanticNode) -> Self {
+        // SSA scheduling also has CFG facts that are absent from this tree.
+        let mut closure = Self {
+            source_plan_required: true,
+            ..Self::default()
+        };
+        closure.visit_node(root);
+        closure
+    }
+
+    fn for_source(root: &SemanticNode) -> Self {
         let mut closure = Self::default();
         closure.visit_node(root);
         closure
@@ -915,11 +979,30 @@ impl ControlSymbolClosure {
 }
 
 impl SemanticVisitor for ControlSymbolClosure {
+    fn visit_statement(&mut self, statement: &crate::ir::SemanticStatement) {
+        self.source_plan_required |= statement
+            .result()
+            .is_some_and(|result| result.code_var.is_some());
+        match &statement.kind {
+            crate::ir::SemanticStatementKind::Instruction(op) => self.visit_operation(op),
+            crate::ir::SemanticStatementKind::Definition { value, .. } => {
+                self.visit_expression(value)
+            }
+        }
+    }
+
+    fn enter_operation(&mut self, operation: &SemanticOperation) {
+        if !self.source_plan_required && operation.evaluation_operands_iter().is_err() {
+            self.source_plan_required = true;
+        }
+    }
+
     fn visit_predicate(&mut self, predicate: &SemanticPredicate) {
         let mut pending = vec![predicate];
         while let Some(predicate) = pending.pop() {
             match predicate {
                 SemanticPredicate::Test(instruction) => {
+                    self.source_plan_required = true;
                     self.variables
                         .insert(BoolVariable::Instruction(instruction.id));
                     self.tests.insert(instruction.id, instruction.clone());
@@ -934,6 +1017,10 @@ impl SemanticVisitor for ControlSymbolClosure {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/source_plan_inputs.rs"]
+mod source_plan_inputs;
 
 #[cfg(test)]
 mod tests {

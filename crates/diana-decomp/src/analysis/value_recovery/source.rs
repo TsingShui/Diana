@@ -168,8 +168,7 @@ impl SourceValueRecovery {
                     *cache = None;
                 }
                 crate::ir::SemanticSiteNumbering::assign(method.body_mut())?;
-                let graph = ValueFlowGraph::build_source(method.body(), bindings, cache)?;
-                let plan = graph.schedule(mode)?;
+                let plan = ValueFlowGraph::plan_source(method.body(), bindings, cache, mode)?;
                 #[cfg(debug_assertions)]
                 let before_schedule =
                     crate::ir::semantic::SemanticControlTopology::analyze(method.body());

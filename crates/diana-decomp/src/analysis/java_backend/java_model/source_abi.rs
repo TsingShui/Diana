@@ -1417,6 +1417,10 @@ impl JavaSourceAbi {
     ) -> BTreeSet<MethodReference> {
         let mut overloads = BTreeSet::new();
         for method in methods {
+            // Only argument casts consume the inherited overload set.
+            if method.descriptor.parameters.is_empty() {
+                continue;
+            }
             overloads.insert(method.clone());
             if let Some(hierarchy) = &self.generic_hierarchy {
                 overloads.extend(hierarchy.method_overloads(method));

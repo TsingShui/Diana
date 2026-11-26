@@ -120,6 +120,10 @@ struct AdvanceUseRewrite {
 }
 
 impl SemanticExpressionTransform for AdvanceUseRewrite {
+    fn visits_registers(&self) -> bool {
+        false
+    }
+
     fn transform_operation(&mut self, operation: SemanticOperation) -> SemanticExpression {
         if operation.id == self.instruction {
             SemanticExpression::Register(self.variable.clone())

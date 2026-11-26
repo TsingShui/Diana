@@ -1,4 +1,7 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
+
+use smallvec::SmallVec;
 
 use crate::ir::analysis::{InstructionEffects, LexicalBoundaryAnalysis};
 use crate::ir::{BlockId, InsnArg, CFG};
@@ -7,6 +10,36 @@ use super::{
     LaminarPlacement, RegionId, RegionInvariantError, RegionKind, RegionPlacement, RegionTree,
     StructuredRegion, SynchronizedRegion,
 };
+
+struct SiblingBlocks<'a> {
+    coverage: Vec<Cow<'a, BTreeSet<BlockId>>>,
+    owners: BTreeMap<BlockId, SmallVec<[usize; 1]>>,
+}
+
+impl<'a> SiblingBlocks<'a> {
+    fn for_children(tree: &'a RegionTree, children: &[RegionId]) -> Option<Self> {
+        if children.len() < 8 {
+            return None;
+        }
+        let mut coverage = Vec::with_capacity(children.len());
+        let mut owners = BTreeMap::<_, SmallVec<[usize; 1]>>::new();
+        for (index, &child) in children.iter().enumerate() {
+            let region = tree.region(child)?;
+            let mut blocks = Cow::Borrowed(&region.blocks);
+            let mut pending = region.children.clone();
+            while let Some(id) = pending.pop() {
+                let descendant = tree.region(id)?;
+                blocks.to_mut().extend(&descendant.blocks);
+                pending.extend(&descendant.children);
+            }
+            for &block in blocks.iter() {
+                owners.entry(block).or_default().push(index);
+            }
+            coverage.push(blocks);
+        }
+        Some(Self { coverage, owners })
+    }
+}
 
 impl RegionTree {
     pub fn new(method_entry: Option<BlockId>) -> Self {
@@ -425,41 +458,73 @@ impl RegionTree {
 
     fn overlapping_siblings(&self) -> Result<Option<(RegionId, RegionId)>, RegionInvariantError> {
         for parent in self.regions.values() {
-            for (index, left_id) in parent.children.iter().copied().enumerate() {
-                let left = self
-                    .region(left_id)
-                    .ok_or(RegionInvariantError::UnknownRegion(left_id))?;
-                for right_id in parent.children.iter().copied().skip(index + 1) {
-                    let right = self
-                        .region(right_id)
-                        .ok_or(RegionInvariantError::UnknownRegion(right_id))?;
-                    if left.blocks.is_disjoint(&right.blocks) {
-                        let left_reaches_right =
-                            self.descendants_intersect(left_id, &right.blocks)?;
-                        let right_reaches_left =
-                            self.descendants_intersect(right_id, &left.blocks)?;
-                        match (left_reaches_right, right_reaches_left) {
-                            (true, false) => return Ok(Some((left_id, right_id))),
-                            (false, true) => return Ok(Some((right_id, left_id))),
-                            _ => {}
-                        }
-                        continue;
-                    }
-                    if right.blocks != left.blocks && right.blocks.is_subset(&left.blocks) {
-                        return Ok(Some((left_id, right_id)));
-                    }
-                    if left.blocks != right.blocks && left.blocks.is_subset(&right.blocks) {
-                        return Ok(Some((right_id, left_id)));
-                    }
-                    if left.blocks == right.blocks && left.entry == right.entry {
-                        if left.kind.encloses_coincident(&right.kind) {
-                            return Ok(Some((left_id, right_id)));
-                        }
-                        if right.kind.encloses_coincident(&left.kind) {
-                            return Ok(Some((right_id, left_id)));
+            // A wide exception tree often has hundreds of disjoint fragments.
+            // Only subtrees with a common block can either enclose or reach
+            // each other. Keep child order as the canonical rewrite priority.
+            if let Some(index) = SiblingBlocks::for_children(self, &parent.children) {
+                for (left, blocks) in index.coverage.iter().enumerate() {
+                    let candidates = blocks
+                        .iter()
+                        .flat_map(|block| &index.owners[block])
+                        .copied()
+                        .filter(|&right| right > left)
+                        .collect::<BTreeSet<_>>();
+                    for right in candidates {
+                        let pair =
+                            self.overlapping_pair(parent.children[left], parent.children[right])?;
+                        if pair.is_some() {
+                            return Ok(pair);
                         }
                     }
                 }
+            } else {
+                for (index, &left) in parent.children.iter().enumerate() {
+                    self.region(left)
+                        .ok_or(RegionInvariantError::UnknownRegion(left))?;
+                    for &right in &parent.children[index + 1..] {
+                        let pair = self.overlapping_pair(left, right)?;
+                        if pair.is_some() {
+                            return Ok(pair);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn overlapping_pair(
+        &self,
+        left_id: RegionId,
+        right_id: RegionId,
+    ) -> Result<Option<(RegionId, RegionId)>, RegionInvariantError> {
+        let left = self
+            .region(left_id)
+            .ok_or(RegionInvariantError::UnknownRegion(left_id))?;
+        let right = self
+            .region(right_id)
+            .ok_or(RegionInvariantError::UnknownRegion(right_id))?;
+        if left.blocks.is_disjoint(&right.blocks) {
+            let left_reaches_right = self.descendants_intersect(left_id, &right.blocks)?;
+            let right_reaches_left = self.descendants_intersect(right_id, &left.blocks)?;
+            return Ok(match (left_reaches_right, right_reaches_left) {
+                (true, false) => Some((left_id, right_id)),
+                (false, true) => Some((right_id, left_id)),
+                _ => None,
+            });
+        }
+        if right.blocks != left.blocks && right.blocks.is_subset(&left.blocks) {
+            return Ok(Some((left_id, right_id)));
+        }
+        if left.blocks != right.blocks && left.blocks.is_subset(&right.blocks) {
+            return Ok(Some((right_id, left_id)));
+        }
+        if left.blocks == right.blocks && left.entry == right.entry {
+            if left.kind.encloses_coincident(&right.kind) {
+                return Ok(Some((left_id, right_id)));
+            }
+            if right.kind.encloses_coincident(&left.kind) {
+                return Ok(Some((right_id, left_id)));
             }
         }
         Ok(None)

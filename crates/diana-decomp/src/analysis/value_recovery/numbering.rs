@@ -1,9 +1,6 @@
 //! Global value numbering over pure semantic expressions.
 
-use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
-    sync::Arc,
-};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::ir::analysis::SsaVar;
 use crate::ir::{
@@ -12,7 +9,7 @@ use crate::ir::{
 };
 
 use super::domain::{ControlDomain, DomainLogic};
-use super::flow::{DefinitionFact, ValueIdentity};
+use super::flow::{DefinitionFact, LexicalScopes, ScopeId, ValueIdentity};
 use super::ValueRecoveryError;
 
 pub(super) trait ValueAvailability {
@@ -45,6 +42,7 @@ pub(super) struct ValueNumberingResult {
 pub(super) struct ValueNumbering<'a> {
     identity: ValueIdentity,
     logic: &'a DomainLogic,
+    scopes: &'a LexicalScopes,
     canonical_values: &'a BTreeMap<SsaVar, InsnArg>,
     availability: Option<&'a dyn ValueAvailability>,
     aliases: BTreeMap<SsaVar, SsaVar>,
@@ -55,6 +53,7 @@ impl<'a> ValueNumbering<'a> {
     pub(super) fn analyze(
         identity: ValueIdentity,
         logic: &'a DomainLogic,
+        scopes: &'a LexicalScopes,
         definitions: impl IntoIterator<Item = &'a DefinitionFact<'a>>,
         canonical_values: &'a BTreeMap<SsaVar, InsnArg>,
         availability: Option<&'a dyn ValueAvailability>,
@@ -64,6 +63,7 @@ impl<'a> ValueNumbering<'a> {
         let mut numbering = Self {
             identity,
             logic,
+            scopes,
             canonical_values,
             availability,
             aliases: BTreeMap::new(),
@@ -117,7 +117,7 @@ impl<'a> ValueNumbering<'a> {
                     key: definition.key,
                     register: (*definition.result).clone(),
                     domain: definition.domain,
-                    scope: definition.scope.clone(),
+                    scope: definition.scope,
                     event: definition.event,
                     repetitive: definition.repetitive,
                     site: definition.site,
@@ -152,7 +152,7 @@ impl<'a> ValueNumbering<'a> {
         expression: &ValueExpression,
     ) -> Result<bool, ValueRecoveryError> {
         if !(candidate.event < current.event
-            && current.scope.starts_with(&candidate.scope)
+            && self.scopes.contains(candidate.scope, current.scope)
             && (!candidate.repetitive || current.repetitive)
             && self.logic.implies(current.domain, candidate.domain)?)
         {
@@ -317,7 +317,7 @@ struct NumberedDefinition {
     key: SsaVar,
     register: RegisterArg,
     domain: ControlDomain,
-    scope: Arc<[u32]>,
+    scope: ScopeId,
     event: usize,
     repetitive: bool,
     site: Option<crate::ir::SemanticSiteId>,

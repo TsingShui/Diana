@@ -527,23 +527,28 @@ impl<'a> SemanticNameRecovery<'a> {
         parameter_variables: &[Option<u32>],
         this_variable: Option<u32>,
     ) -> BTreeMap<u32, JavaIdentifier> {
-        let graph = VariableSemanticGraph::analyze(root, source_types);
-        let intrinsic_names = jadx_local_names::intrinsic_local_names(root);
-        let excluded = parameter_variables
+        let mut excluded = parameter_variables
             .iter()
             .copied()
             .flatten()
             .chain(this_variable)
-            .chain(intrinsic_names.keys().copied())
             .collect::<BTreeSet<_>>();
-        if !graph.variables().any(|variable| {
-            variable.is_source_binding() && !excluded.contains(&variable.identity())
-        }) {
+        let (intrinsic_names, has_local_binding) =
+            jadx_local_names::intrinsic_local_names(root, &excluded);
+        excluded.extend(intrinsic_names.keys().copied());
+        // Only statement results and lexical bindings can become source
+        // locals. The intrinsic-name walk already visited each such site.
+        let graph = has_local_binding.then(|| VariableSemanticGraph::analyze(root, source_types));
+        let Some(graph) = graph.filter(|graph| {
+            graph.variables().any(|variable| {
+                variable.is_source_binding() && !excluded.contains(&variable.identity())
+            })
+        }) else {
             return intrinsic_names
                 .into_iter()
                 .map(|(identity, name)| (identity, JavaIdentifier::from_hint(&name)))
                 .collect();
-        }
+        };
         let roles = StructuralVariableRoleAnalysis.analyze(&graph);
         let model = StructuralNameModel::for_graph(self.types, &graph);
         let mut names = ConstrainedNameSolver::new(&model, 35).solve(

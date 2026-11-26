@@ -6,6 +6,7 @@
 //! irreducible entries are split by semantics-preserving node duplication; and
 //! the remaining DAG is translated with the NoMoreGotos nested-label scheme.
 
+use smallvec::{smallvec, SmallVec};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ir::semantic::SemanticCompletion;
@@ -88,24 +89,32 @@ impl FlowBoundary {
 }
 
 impl FlowTransfer {
-    fn targets(&self) -> BTreeSet<BlockId> {
-        match self {
+    fn targets(&self) -> SmallVec<[BlockId; 2]> {
+        let mut targets: SmallVec<[_; 2]> = match self {
             Self::Fragment { normal, open } => {
                 normal.iter().copied().chain(open.iter().copied()).collect()
             }
-            Self::Stop => BTreeSet::new(),
-            Self::Jump(target) => BTreeSet::from([*target]),
+            Self::Stop => return SmallVec::new(),
+            Self::Jump(target) => return smallvec![*target],
             Self::Branch {
                 when_true,
                 when_false,
                 ..
-            } => BTreeSet::from([*when_true, *when_false]),
+            } => {
+                if when_true == when_false {
+                    return smallvec![*when_true];
+                }
+                return smallvec![*when_true.min(when_false), *when_true.max(when_false)];
+            }
             Self::Switch { cases, default, .. } => cases
                 .iter()
                 .map(|(_, target)| *target)
                 .chain(default.iter().copied())
                 .collect(),
-        }
+        };
+        targets.sort_unstable();
+        targets.dedup();
+        targets
     }
 
     fn remap(&mut self, mapping: &BTreeMap<BlockId, BlockId>) {
@@ -380,11 +389,7 @@ impl SemanticFlowGraph {
             FragmentNormalizer::apply(&mut self)?;
             self.bind_embedded_continuations()?;
             self.verify_lexical_domains()?;
-            let components = self.components();
-            let Some(component) = components
-                .into_iter()
-                .find(|component| self.is_cyclic(component))
-            else {
+            let Some((component, predecessors)) = self.first_cyclic_component() else {
                 if semantic.is_switch_region(self.region) {
                     while pattern_budget.take() {
                         let Some(switch) = SwitchRegion::analyze(&self)? else {
@@ -414,9 +419,9 @@ impl SemanticFlowGraph {
                 let body = lowering.lower()?;
                 return Ok((body, next_id));
             };
-            let entries = self.component_entries(&component);
+            let entries = self.component_entries(&component, &predecessors);
             if entries.len() > 1 {
-                self.split_entries(&component, &entries)?;
+                self.split_entries(&component, &entries, &predecessors)?;
             } else {
                 let header = entries
                     .first()
@@ -772,9 +777,9 @@ impl SemanticFlowGraph {
         &mut self,
         component: &BTreeSet<BlockId>,
         entries: &BTreeSet<BlockId>,
+        predecessors: &BTreeMap<BlockId, BTreeSet<BlockId>>,
     ) -> Result<(), StructureError> {
         let plan = IrreducibleEntryAnalysis::new(self, component, entries).analyze()?;
-        let predecessors = self.predecessors();
         for (entry, slice) in plan.copies {
             let mapping = slice
                 .iter()
@@ -841,8 +846,11 @@ impl SemanticFlowGraph {
         Ok(block)
     }
 
-    fn component_entries(&self, component: &BTreeSet<BlockId>) -> BTreeSet<BlockId> {
-        let predecessors = self.predecessors();
+    fn component_entries(
+        &self,
+        component: &BTreeSet<BlockId>,
+        predecessors: &BTreeMap<BlockId, BTreeSet<BlockId>>,
+    ) -> BTreeSet<BlockId> {
         component
             .iter()
             .copied()
@@ -901,16 +909,17 @@ impl SemanticFlowGraph {
         })
     }
 
-    fn targets(&self, block: BlockId) -> BTreeSet<BlockId> {
+    fn targets(&self, block: BlockId) -> SmallVec<[BlockId; 2]> {
         let Some(node) = self.nodes.get(&block) else {
-            return BTreeSet::new();
+            return SmallVec::new();
         };
         let mut targets = node.transfer.targets();
-        targets.extend(
-            node.embedded_uses(self.region)
-                .iter()
-                .map(|(target, _)| *target),
-        );
+        let embedded = node.embedded_uses(self.region);
+        if !embedded.is_empty() {
+            targets.extend(embedded.iter().map(|(target, _)| *target));
+            targets.sort_unstable();
+            targets.dedup();
+        }
         targets
     }
 
@@ -958,32 +967,52 @@ impl SemanticFlowGraph {
             }
     }
 
-    fn components(&self) -> Vec<BTreeSet<BlockId>> {
-        let mut visited = BTreeSet::new();
-        let mut order = Vec::new();
+    fn first_cyclic_component(
+        &self,
+    ) -> Option<(BTreeSet<BlockId>, BTreeMap<BlockId, BTreeSet<BlockId>>)> {
+        // The first Kosaraju traversal detects a cycle exactly when it reaches
+        // an ancestor still on its DFS stack. A DAG needs no reverse traversal.
+        let mut finished = BTreeMap::new();
+        let mut order = Vec::with_capacity(self.nodes.len());
+        let mut pending = Vec::new();
+        let mut has_cycle = false;
         for root in self.nodes.keys().copied() {
-            let mut pending = vec![(root, false)];
+            if finished.contains_key(&root) {
+                continue;
+            }
+            pending.push((root, false));
             while let Some((node, exiting)) = pending.pop() {
                 if exiting {
+                    finished.insert(node, true);
                     order.push(node);
                     continue;
                 }
-                if !visited.insert(node) {
-                    continue;
+                match finished.entry(node) {
+                    std::collections::btree_map::Entry::Occupied(existing) => {
+                        has_cycle |= !*existing.get();
+                        continue;
+                    }
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(false);
+                    }
                 }
                 pending.push((node, true));
                 pending.extend(self.successors(node).map(|target| (target, false)));
             }
         }
+        if !has_cycle {
+            return None;
+        }
         let predecessors = self.predecessors();
         let mut assigned = BTreeSet::new();
-        let mut components = Vec::new();
+        let mut first = None::<BTreeSet<BlockId>>;
+        let mut pending = Vec::new();
         for root in order.into_iter().rev() {
             if assigned.contains(&root) {
                 continue;
             }
             let mut component = BTreeSet::new();
-            let mut pending = vec![root];
+            pending.push(root);
             while let Some(node) = pending.pop() {
                 if !assigned.insert(node) {
                     continue;
@@ -991,10 +1020,15 @@ impl SemanticFlowGraph {
                 component.insert(node);
                 pending.extend(predecessors.get(&node).into_iter().flatten().copied());
             }
-            components.push(component);
+            if first
+                .as_ref()
+                .is_none_or(|found| component.first() < found.first())
+                && self.is_cyclic(&component)
+            {
+                first = Some(component);
+            }
         }
-        components.sort_by_key(|component| component.first().copied());
-        components
+        first.map(|component| (component, predecessors))
     }
 
     fn prune(&mut self) {
@@ -1013,11 +1047,13 @@ impl SemanticFlowGraph {
         self.nodes.retain(|node, _| reachable.contains(node));
     }
 
-    fn topological_order(&self) -> Result<Vec<BlockId>, StructureError> {
-        let mut indegree = self
-            .predecessors()
-            .into_iter()
-            .map(|(node, predecessors)| (node, predecessors.len()))
+    fn topological_order(
+        &self,
+        predecessors: &BTreeMap<BlockId, BTreeSet<BlockId>>,
+    ) -> Result<Vec<BlockId>, StructureError> {
+        let mut indegree = predecessors
+            .iter()
+            .map(|(node, incoming)| (*node, incoming.len()))
             .collect::<BTreeMap<_, _>>();
         let mut ready = indegree
             .iter()
@@ -1993,9 +2029,10 @@ struct SwitchFlowArm {
 
 impl SwitchRegion {
     fn analyze(graph: &SemanticFlowGraph) -> Result<Option<Self>, StructureError> {
-        let postdominators = PostDominators::analyze(graph)?;
         let predecessors = graph.predecessors();
-        for source in graph.topological_order()? {
+        let order = graph.topological_order(&predecessors)?;
+        let postdominators = PostDominators::analyze(graph, &order)?;
+        for source in order {
             let Some(FlowNode {
                 transfer:
                     FlowTransfer::Switch {
@@ -2158,9 +2195,10 @@ struct BranchRegion {
 
 impl BranchRegion {
     fn analyze(graph: &SemanticFlowGraph) -> Result<Option<Self>, StructureError> {
-        let postdominators = PostDominators::analyze(graph)?;
         let predecessors = graph.predecessors();
-        let order = graph.topological_order()?;
+        let order = graph.topological_order(&predecessors)?;
+        let postdominators = PostDominators::analyze(graph, &order)?;
+        let mut tails = BTreeMap::new();
         let ranks = order
             .iter()
             .copied()
@@ -2190,11 +2228,13 @@ impl BranchRegion {
                 *when_false,
             );
             for join in joins.iter() {
-                let Some(true_arm) = BranchArm::analyze(graph, &predecessors, *when_true, join)
+                let Some(true_arm) =
+                    BranchArm::analyze(graph, &predecessors, &mut tails, *when_true, join)
                 else {
                     continue;
                 };
-                let Some(false_arm) = BranchArm::analyze(graph, &predecessors, *when_false, join)
+                let Some(false_arm) =
+                    BranchArm::analyze(graph, &predecessors, &mut tails, *when_false, join)
                 else {
                     continue;
                 };
@@ -2248,6 +2288,7 @@ impl BranchArm {
     fn analyze(
         graph: &SemanticFlowGraph,
         predecessors: &BTreeMap<BlockId, BTreeSet<BlockId>>,
+        tails: &mut BTreeMap<BlockId, Option<ContinuationTail>>,
         entry: BlockId,
         join: BlockId,
     ) -> Option<Self> {
@@ -2267,14 +2308,19 @@ impl BranchArm {
                 reaches_join = true;
                 continue;
             }
-            if let Some(tail) = ContinuationTail::analyze(graph, predecessors, block, join) {
+            // The linear epilogue belongs to its entry in this graph snapshot.
+            // A join inside that epilogue cuts it short for just this candidate.
+            let tail = tails
+                .entry(block)
+                .or_insert_with(|| ContinuationTail::analyze(graph, predecessors, block));
+            if let Some(tail) = tail.as_ref().filter(|tail| !tail.blocks.contains(&join)) {
                 if continuation
                     .as_ref()
                     .is_some_and(|current| current.entry != tail.entry)
                 {
                     return None;
                 }
-                continuation = Some(tail);
+                continuation = Some(tail.clone());
                 continue;
             }
             if !nodes.insert(block) {
@@ -2341,6 +2387,7 @@ impl BranchArm {
 ///
 /// Shared tails remain graph joins. Cloning a semantically safe but shared
 /// epilogue preserves behavior while destroying source-level control sharing.
+#[derive(Clone)]
 struct ContinuationTail {
     entry: BlockId,
     blocks: Vec<BlockId>,
@@ -2353,7 +2400,6 @@ impl ContinuationTail {
         graph: &SemanticFlowGraph,
         predecessors: &BTreeMap<BlockId, BTreeSet<BlockId>>,
         entry: BlockId,
-        join: BlockId,
     ) -> Option<Self> {
         if predecessors
             .get(&entry)
@@ -2362,26 +2408,28 @@ impl ContinuationTail {
             return None;
         }
         let mut blocks = Vec::new();
-        let mut visited = BTreeSet::new();
         let mut current = entry;
         loop {
-            if current == join || blocks.len() >= Self::BLOCK_BUDGET || !visited.insert(current) {
+            if blocks.len() >= Self::BLOCK_BUDGET || blocks.contains(&current) {
                 return None;
             }
             let node = graph.nodes.get(&current)?;
-            let completion = SemanticCompletion::analyze(&node.body);
             blocks.push(current);
-            if completion.is_continue_to_region(graph.region) {
-                return matches!(node.transfer, FlowTransfer::Stop)
-                    .then_some(Self { entry, blocks });
+            match &node.transfer {
+                FlowTransfer::Stop => {
+                    return SemanticCompletion::analyze(&node.body)
+                        .is_continue_to_region(graph.region)
+                        .then_some(Self { entry, blocks });
+                }
+                FlowTransfer::Jump(next) => {
+                    let completion = SemanticCompletion::analyze(&node.body);
+                    if !completion.can_complete_normally() || !completion.is_transfer_free() {
+                        return None;
+                    }
+                    current = *next;
+                }
+                _ => return None,
             }
-            if !completion.can_complete_normally() || !completion.is_transfer_free() {
-                return None;
-            }
-            let FlowTransfer::Jump(next) = &node.transfer else {
-                return None;
-            };
-            current = *next;
         }
     }
 
@@ -2474,12 +2522,11 @@ enum PostNode {
 struct PostDominators {
     nodes: Vec<PostNode>,
     indices: BTreeMap<PostNode, usize>,
-    domains: Vec<PostDomain>,
+    parents: Vec<usize>,
 }
 
 impl PostDominators {
-    fn analyze(graph: &SemanticFlowGraph) -> Result<Self, StructureError> {
-        let order = graph.topological_order()?;
+    fn analyze(graph: &SemanticFlowGraph, order: &[BlockId]) -> Result<Self, StructureError> {
         let nodes = order
             .iter()
             .copied()
@@ -2506,15 +2553,6 @@ impl PostDominators {
             .get(&PostNode::Exit)
             .copied()
             .ok_or(StructureError::MalformedFlowGraph(graph.region))?;
-        let mut domains = nodes
-            .iter()
-            .enumerate()
-            .map(|(index, node)| match node {
-                PostNode::Block(_) => PostDomain::full(nodes.len()),
-                PostNode::Boundary(_) => PostDomain::edge(nodes.len(), index, exit),
-                PostNode::Exit => PostDomain::singleton(nodes.len(), index),
-            })
-            .collect::<Vec<_>>();
         let transfers = order
             .iter()
             .copied()
@@ -2539,36 +2577,51 @@ impl PostDominators {
             })
             .collect::<Result<Vec<_>, StructureError>>()?;
 
-        loop {
-            let mut changed = false;
-            for (node, successors) in transfers.iter().rev() {
-                let mut successors = successors.iter().copied();
-                let first = successors.next().ok_or(StructureError::MalformedFlowNode(
-                    match nodes[*node] {
+        // In reverse topological order every successor already has its path to
+        // the virtual exit. Their deepest common ancestor is the first strict
+        // postdominator of the source. A boundary is a direct child of Exit.
+        let mut parents = vec![exit; nodes.len()];
+        let mut depths = vec![1; nodes.len()];
+        depths[exit] = 0;
+        for (node, successors) in transfers.into_iter().rev() {
+            let mut successors = successors.into_iter();
+            let first =
+                successors
+                    .next()
+                    .ok_or(StructureError::MalformedFlowNode(match nodes[node] {
                         PostNode::Block(block) | PostNode::Boundary(block) => block,
                         PostNode::Exit => graph.entry,
-                    },
-                ))?;
-                let mut domain = domains[first].clone();
-                for successor in successors {
-                    domain.intersect_with(&domains[successor]);
-                }
-                domain.insert(*node);
-                let slot = &mut domains[*node];
-                if *slot != domain {
-                    *slot = domain;
-                    changed = true;
-                }
-            }
-            if !changed {
-                break;
-            }
+                    }))?;
+            let parent = successors.fold(first, |left, right| {
+                Self::common_ancestor(left, right, &parents, &depths)
+            });
+            parents[node] = parent;
+            depths[node] = depths[parent] + 1;
         }
         Ok(Self {
             nodes,
             indices,
-            domains,
+            parents,
         })
+    }
+
+    fn common_ancestor(
+        mut left: usize,
+        mut right: usize,
+        parents: &[usize],
+        depths: &[usize],
+    ) -> usize {
+        while depths[left] > depths[right] {
+            left = parents[left];
+        }
+        while depths[right] > depths[left] {
+            right = parents[right];
+        }
+        while left != right {
+            left = parents[left];
+            right = parents[right];
+        }
+        left
     }
 
     fn successors(graph: &SemanticFlowGraph, block: BlockId) -> BTreeSet<PostNode> {
@@ -2597,70 +2650,7 @@ impl PostDominators {
 
     fn immediate_node(&self, block: BlockId) -> Option<PostNode> {
         let source = self.indices.get(&PostNode::Block(block)).copied()?;
-        let strict = self
-            .domains
-            .get(source)?
-            .members(self.nodes.len())
-            .filter(|candidate| *candidate != source)
-            .collect::<Vec<_>>();
-        strict
-            .into_iter()
-            .max_by_key(|candidate| self.domains[*candidate].count())
-            .map(|candidate| self.nodes[candidate])
-    }
-}
-
-#[derive(Clone, PartialEq, Eq)]
-struct PostDomain {
-    words: Vec<u64>,
-}
-
-impl PostDomain {
-    fn full(bits: usize) -> Self {
-        let mut domain = Self {
-            words: vec![u64::MAX; bits.div_ceil(u64::BITS as usize)],
-        };
-        let remainder = bits % u64::BITS as usize;
-        if remainder != 0 {
-            if let Some(last) = domain.words.last_mut() {
-                *last = (1u64 << remainder) - 1;
-            }
-        }
-        domain
-    }
-
-    fn singleton(bits: usize, member: usize) -> Self {
-        let mut domain = Self {
-            words: vec![0; bits.div_ceil(u64::BITS as usize)],
-        };
-        domain.insert(member);
-        domain
-    }
-
-    fn edge(bits: usize, node: usize, successor: usize) -> Self {
-        let mut domain = Self::singleton(bits, successor);
-        domain.insert(node);
-        domain
-    }
-
-    fn insert(&mut self, member: usize) {
-        self.words[member / u64::BITS as usize] |= 1 << (member % u64::BITS as usize);
-    }
-
-    fn intersect_with(&mut self, other: &Self) {
-        for (left, right) in self.words.iter_mut().zip(&other.words) {
-            *left &= *right;
-        }
-    }
-
-    fn members(&self, limit: usize) -> impl Iterator<Item = usize> + '_ {
-        (0..limit).filter(|member| {
-            self.words[*member / u64::BITS as usize] & (1 << (*member % u64::BITS as usize)) != 0
-        })
-    }
-
-    fn count(&self) -> u32 {
-        self.words.iter().map(|word| word.count_ones()).sum()
+        Some(self.nodes[self.parents[source]])
     }
 }
 
@@ -2721,7 +2711,7 @@ impl AcyclicLabelLowering {
     }
 
     fn lower(mut self) -> Result<SemanticNode, StructureError> {
-        let order = self.graph.topological_order()?;
+        let order = self.graph.topological_order(&self.graph.predecessors())?;
         let ranks = order
             .iter()
             .copied()
@@ -3625,7 +3615,11 @@ mod tests {
             exits: BTreeSet::from([left_exit, right_exit]),
         };
 
-        let postdominators = PostDominators::analyze(&graph).expect("postdominator analysis");
+        let order = graph
+            .topological_order(&graph.predecessors())
+            .expect("acyclic graph");
+        let postdominators =
+            PostDominators::analyze(&graph, &order).expect("postdominator analysis");
 
         assert_eq!(postdominators.immediate_node(source), Some(PostNode::Exit));
     }

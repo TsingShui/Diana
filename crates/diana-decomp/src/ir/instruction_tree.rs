@@ -56,6 +56,11 @@ impl InstructionTree {
     where
         V: InstructionVisitor + ?Sized,
     {
+        match argument {
+            InsnArg::Reg(register) => return visitor.visit_register(register),
+            InsnArg::Lit(_) => return,
+            InsnArg::Wrapped(_) => {}
+        }
         let mut pending = vec![argument];
         while let Some(argument) = pending.pop() {
             match argument {

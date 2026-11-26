@@ -171,13 +171,30 @@ impl From<crate::ir::analysis::SourceEvaluationError> for ValueRecoveryError {
 
 impl ValueRecovery {
     pub fn new(cfg: &CFG) -> Result<Self, ValueRecoveryError> {
-        Ok(Self {
-            gated_control: GatedControlFlow::analyze(cfg)?,
+        Ok(Self::from_gated_control(
+            cfg,
+            GatedControlFlow::analyze(cfg)?,
+        ))
+    }
+
+    pub(crate) fn from_structured(cfg: &CFG, method: &SemanticMethod<SsaSemantics>) -> Self {
+        // Structuring has already analyzed this CFG, including exceptional
+        // entry roots. Gated SSA uses the same ordinary-edge projection.
+        let (predecessors, dominators) = method.state().regions().control_flow().normal_dominance();
+        Self::from_gated_control(
+            cfg,
+            GatedControlFlow::from_normal_dominance(cfg, predecessors, dominators),
+        )
+    }
+
+    fn from_gated_control(cfg: &CFG, gated_control: GatedControlFlow) -> Self {
+        Self {
+            gated_control,
             ssa_constants: SparseConstantPropagation::new(cfg).solve(),
             source_bindings: BTreeSet::new(),
             diagnostics: crate::ir::ValueRecoveryDiagnostics::default(),
             source_flow_cache: None,
-        })
+        }
     }
 
     pub(crate) fn bind_source_inputs(&mut self, cfg: &CFG) {
@@ -192,6 +209,13 @@ impl ValueRecovery {
 
     pub fn diagnostics(&self) -> &crate::ir::ValueRecoveryDiagnostics {
         &self.diagnostics
+    }
+
+    pub(crate) fn semantic_flow(
+        &mut self,
+        root: &crate::ir::SemanticNode,
+    ) -> std::sync::Arc<crate::ir::analysis::SemanticFlowGraph> {
+        source::SourceFlowCache::get_or_analyze(&mut self.source_flow_cache, root)
     }
 
     pub fn recover_source<State: SourceVariableContext>(

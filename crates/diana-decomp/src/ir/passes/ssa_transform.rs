@@ -34,7 +34,7 @@ use crate::ir::{
     insn::{InsnNode, InsnType},
     passes::{Pass, PassResult},
     ty::ArgType,
-    InstructionTransform, InstructionTree, InstructionTreeError,
+    InstructionTransform, InstructionTree, InstructionTreeError, InstructionVisitor,
 };
 
 /// SSA transformation pass.
@@ -169,13 +169,12 @@ impl Pass for SSATransform {
 
     fn run(&mut self, cfg: &mut CFG) -> Result<PassResult, Self::Error> {
         Self::model_refining_definitions(cfg);
-        Self::validate_exception_boundaries(cfg)?;
+        let exceptional_definitions = Self::validate_exception_boundaries(cfg)?;
 
         // Step 1: Compute dominance information
         let dom_tree = DominatorTree::compute(cfg).map_err(SsaTransformError::Dominance)?;
         let dom_frontier =
             DominanceFrontier::compute(cfg, &dom_tree).map_err(SsaTransformError::Dominance)?;
-        let liveness = RegisterLiveness::analyze(cfg);
 
         // Step 2: Find all registers that need PHI nodes
         let variables = PhiPlacement::variables(cfg);
@@ -185,8 +184,11 @@ impl Pass for SSATransform {
         }
 
         // Step 3: Place PHI nodes
-        let phi_placements = PhiPlacement::compute(cfg, &dom_frontier, &liveness, &variables);
-        PhiPlacement::insert(cfg, &phi_placements)?;
+        if exceptional_definitions || !dom_frontier.is_empty() {
+            let liveness = RegisterLiveness::analyze(cfg);
+            let phi_placements = PhiPlacement::compute(cfg, &dom_frontier, &liveness, &variables);
+            PhiPlacement::insert(cfg, &phi_placements)?;
+        }
 
         // Step 4: Rename variables
         let mut renamer = VariableRenamer::new(variables.len());
@@ -197,7 +199,8 @@ impl Pass for SSATransform {
 }
 
 impl SSATransform {
-    fn validate_exception_boundaries(cfg: &CFG) -> Result<(), SsaTransformError> {
+    fn validate_exception_boundaries(cfg: &CFG) -> Result<bool, SsaTransformError> {
+        let mut has_definitions = false;
         for block in cfg.block_ids() {
             let has_exception_edge = cfg
                 .successors_with_kind(block)
@@ -219,8 +222,9 @@ impl SSATransform {
             if throwing.as_slice() != [body.insns.len().saturating_sub(1)] {
                 return Err(SsaTransformError::InvalidExceptionBoundary { block, throwing });
             }
+            has_definitions |= body.insns.last().is_some_and(|insn| insn.result.is_some());
         }
-        Ok(())
+        Ok(has_definitions)
     }
 
     fn model_refining_definitions(cfg: &mut CFG) {
@@ -251,28 +255,30 @@ impl PhiPlacement {
     /// constructors that just initialize fields. They still need SSA identities so
     /// later code-var recovery can bind them to `this` and declared parameters.
     fn variables(cfg: &CFG) -> Vec<u32> {
-        let mut vars = BTreeSet::new();
+        #[derive(Default)]
+        struct Variables(BTreeSet<u32>);
+
+        impl InstructionVisitor for Variables {
+            fn visit_register(&mut self, register: &RegisterArg) {
+                self.0.insert(register.reg_num);
+            }
+        }
+
+        let mut vars = Variables::default();
 
         for block in cfg.blocks.values() {
             for insn in &block.insns {
                 if let Some(result) = &insn.result {
-                    vars.insert(result.reg_num);
+                    vars.visit_register(result);
                 }
-                for arg in &insn.args {
-                    vars.extend(arg.regs_used());
-                }
-                if let Some(target) = &insn.payload.compound_target {
-                    vars.extend(target.regs_used());
-                }
+                InstructionTree::visit_args(insn, &mut vars);
             }
         }
 
         let first_input = cfg.registers.saturating_sub(cfg.ins);
-        for reg in first_input..cfg.registers {
-            vars.insert(reg);
-        }
+        vars.0.extend(first_input..cfg.registers);
 
-        vars.into_iter().collect()
+        vars.0.into_iter().collect()
     }
 
     /// Determine where to place PHI nodes for each variable.
@@ -288,11 +294,11 @@ impl PhiPlacement {
         let mut exceptional_definitions = BTreeMap::<u32, BTreeSet<BlockId>>::new();
         for block in cfg.block_ids() {
             let edge_clobbers = cfg
-                .incoming_edges(block)
-                .into_iter()
+                .predecessors_with_kind(block)
+                .iter()
                 .filter(|(_, kind)| *kind == crate::ir::EdgeKind::Exception)
                 .filter_map(|(source, _)| {
-                    cfg.block(source)
+                    cfg.block(*source)
                         .and_then(|body| body.insns.last())
                         .and_then(|throwing| throwing.result.as_ref())
                         .map(|result| result.reg_num)

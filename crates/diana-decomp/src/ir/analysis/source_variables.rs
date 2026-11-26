@@ -53,6 +53,30 @@ impl SourceVariableAllocation {
         hierarchy: &dyn super::TypeHierarchy,
         regions: &RegionGraph,
     ) -> Result<Self, SourceVariableError> {
+        Self::analyze_with_flow(
+            cfg,
+            values,
+            constants,
+            recovered_phis,
+            root,
+            types,
+            hierarchy,
+            regions,
+            || std::sync::Arc::new(super::SemanticFlowGraph::analyze(root)),
+        )
+    }
+
+    pub(crate) fn analyze_with_flow(
+        cfg: &CFG,
+        values: &SsaValueGraph,
+        constants: &BTreeMap<SsaVar, InsnArg>,
+        recovered_phis: &BTreeSet<SsaVar>,
+        root: &SemanticNode,
+        types: &SsaTypeEnvironment,
+        hierarchy: &dyn super::TypeHierarchy,
+        regions: &RegionGraph,
+        flow: impl FnOnce() -> std::sync::Arc<super::SemanticFlowGraph>,
+    ) -> Result<Self, SourceVariableError> {
         let contractions = ControlContractions::for_edge_arguments(cfg, regions);
         let required_phis =
             RequiredPhiValues::collect(cfg, values, root, constants, &contractions)?;
@@ -84,19 +108,15 @@ impl SourceVariableAllocation {
         let liveness = SsaLiveness::analyze(cfg, &retained)?;
         let edge_arguments =
             edge_arguments::ContractedEdgeArguments::new(cfg, values, constants, &contractions);
-        let mut interference = InterferenceGraph::build(cfg, root, &liveness, &required_phis)?;
+        let mut interference =
+            InterferenceGraph::build(cfg, root, &liveness, &required_phis, flow)?;
         interference.add_exceptional_edge_interference(cfg, &liveness, &edge_arguments)?;
-        let classes = SsaClasses::new(
-            values
-                .values()
-                .map(|value| value.variable)
-                .chain(SourceInputs::of(cfg)),
-        );
+        let inputs = SourceInputs::of(cfg);
         let exception_types = ExceptionValueTypes::collect(root, hierarchy);
         let phi_types =
             PhiTypeAnalysis::solve(cfg, &required_phis, values, types, constants, hierarchy)?;
         let mut coalescer = SourceClassCoalescer::new(
-            classes,
+            &inputs,
             interference,
             types,
             values,
@@ -104,7 +124,6 @@ impl SourceVariableAllocation {
             &phi_types,
             hierarchy,
         );
-        let inputs = SourceInputs::of(cfg);
         if !cfg.method().is_static() {
             if let Some(this) = inputs.first().copied() {
                 coalescer.fix(this);
@@ -557,7 +576,7 @@ struct SourceClassCoalescer<'a> {
 
 impl<'a> SourceClassCoalescer<'a> {
     fn new(
-        mut classes: SsaClasses,
+        inputs: &[SsaVar],
         interference: InterferenceGraph,
         types: &SsaTypeEnvironment,
         values: &SsaValueGraph,
@@ -565,6 +584,12 @@ impl<'a> SourceClassCoalescer<'a> {
         phi_types: &BTreeMap<SsaVar, crate::ir::ArgType>,
         hierarchy: &'a dyn super::TypeHierarchy,
     ) -> Self {
+        let mut classes = SsaClasses::new(
+            values
+                .values()
+                .map(|value| value.variable)
+                .chain(inputs.iter().copied()),
+        );
         let lattice = SourceTypeLattice::new(hierarchy);
         let mut class_types: BTreeMap<SsaVar, crate::ir::ArgType> = classes
             .values()
@@ -587,7 +612,7 @@ impl<'a> SourceClassCoalescer<'a> {
                 .map(|(value, ty)| (*value, ty.clone())),
         );
         class_types.extend(phi_types.iter().map(|(value, ty)| (*value, ty.clone())));
-        let interference = ClassInterference::new(interference, &mut classes);
+        let interference = ClassInterference::from_singletons(interference, &mut classes);
         Self {
             classes,
             interference,

@@ -405,6 +405,10 @@ impl RegionGraph {
         self.control_flow.structural_continuation(block)
     }
 
+    pub(crate) fn control_flow(&self) -> &ControlFlowFacts {
+        &self.control_flow
+    }
+
     pub(crate) fn semantic_dominates(&self, dominator: BlockId, block: BlockId) -> bool {
         self.control_flow
             .semantic_dominators()

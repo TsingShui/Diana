@@ -14,8 +14,16 @@ use super::{edge_arguments::ContractedEdgeArguments, SourceVariableError, SsaCla
 #[derive(Default)]
 struct BlockLiveness {
     definitions: BTreeSet<SsaVar>,
-    upward_uses: BTreeSet<SsaVar>,
+    input: BTreeSet<SsaVar>,
+    output: BTreeSet<SsaVar>,
     phi_definitions: BTreeSet<SsaVar>,
+}
+
+impl BlockLiveness {
+    /// True when this outgoing value also becomes newly live at entry.
+    fn add_live_out(&mut self, value: SsaVar) -> bool {
+        self.output.insert(value) && !self.definitions.contains(&value) && self.input.insert(value)
+    }
 }
 
 pub(super) struct SsaLiveness {
@@ -62,7 +70,7 @@ impl SsaLiveness {
                     .filter(|usage| retained.contains(usage))
                 {
                     if !facts.definitions.contains(&usage) {
-                        facts.upward_uses.insert(usage);
+                        facts.input.insert(usage);
                     }
                 }
                 if let Some(result) = instruction.result.as_ref().and_then(SsaVar::from_reg) {
@@ -74,45 +82,57 @@ impl SsaLiveness {
             blocks.insert(block, facts);
         }
 
-        let mut live_in = cfg
-            .block_ids()
-            .into_iter()
-            .map(|block| (block, BTreeSet::new()))
-            .collect::<BTreeMap<_, _>>();
-        let mut live_out = live_in.clone();
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for block in cfg.block_ids().into_iter().rev() {
-                let mut out = BTreeSet::new();
-                for &(successor, edge_kind) in cfg.successors_with_kind(block) {
-                    out.extend(Self::edge_values(
-                        block, successor, edge_kind, &live_in, &blocks, &phi_uses,
-                    )?);
+        let mut pending = Vec::new();
+        for (&source, facts) in blocks.iter_mut().rev() {
+            pending.extend(facts.input.iter().map(|&value| (source, value)));
+            for &(target, kind) in cfg.successors_with_kind(source) {
+                if !cfg.blocks.contains_key(&target) {
+                    return Err(SourceVariableError::MissingBlock(target));
                 }
-                let facts = blocks
-                    .get(&block)
-                    .ok_or(SourceVariableError::MissingBlock(block))?;
-                let mut input = facts.upward_uses.clone();
-                input.extend(out.difference(&facts.definitions).copied());
-                if live_out.get(&block) != Some(&out) {
-                    live_out.insert(block, out);
-                    changed = true;
+                if let Some(arguments) = phi_uses.get(&(source, target, kind)) {
+                    for &value in arguments {
+                        if facts.add_live_out(value) {
+                            pending.push((source, value));
+                        }
+                    }
                 }
-                if live_in.get(&block) != Some(&input) {
-                    live_in.insert(block, input);
-                    changed = true;
+            }
+        }
+        // The input/output equations are monotone. Propagate each new entry
+        // fact backward once. Phi operands above belong to their own edge,
+        // and phi definitions at a successor kill the incoming value.
+        while let Some((target, value)) = pending.pop() {
+            if blocks[&target].phi_definitions.contains(&value) {
+                continue;
+            }
+            for &(source, _) in cfg.predecessors_with_kind(target) {
+                if let Some(facts) = blocks.get_mut(&source) {
+                    if facts.add_live_out(value) {
+                        pending.push((source, value));
+                    }
                 }
             }
         }
         let mut edge_live = BTreeMap::new();
-        for source in cfg.block_ids() {
+        for &source in blocks.keys() {
             for &(target, kind) in cfg.successors_with_kind(source) {
-                edge_live.insert(
-                    (source, target, kind),
-                    Self::edge_values(source, target, kind, &live_in, &blocks, &phi_uses)?,
-                );
+                let facts = &blocks[&target];
+                let mut values: BTreeSet<_> = facts
+                    .input
+                    .difference(&facts.phi_definitions)
+                    .copied()
+                    .collect();
+                if let Some(arguments) = phi_uses.get(&(source, target, kind)) {
+                    values.extend(arguments);
+                }
+                edge_live.insert((source, target, kind), values);
             }
+        }
+        let mut live_in = BTreeMap::new();
+        let mut live_out = BTreeMap::new();
+        for (block, facts) in blocks {
+            live_in.insert(block, facts.input);
+            live_out.insert(block, facts.output);
         }
         Ok(Self {
             retained: retained.clone(),
@@ -120,34 +140,6 @@ impl SsaLiveness {
             live_out,
             edge_live,
         })
-    }
-
-    fn edge_values(
-        source: BlockId,
-        target: BlockId,
-        kind: crate::ir::EdgeKind,
-        live_in: &BTreeMap<BlockId, BTreeSet<SsaVar>>,
-        blocks: &BTreeMap<BlockId, BlockLiveness>,
-        phi_uses: &BTreeMap<(BlockId, BlockId, crate::ir::EdgeKind), BTreeSet<SsaVar>>,
-    ) -> Result<BTreeSet<SsaVar>, SourceVariableError> {
-        let successor_live = live_in
-            .get(&target)
-            .ok_or(SourceVariableError::MissingBlock(target))?;
-        let successor_facts = blocks
-            .get(&target)
-            .ok_or(SourceVariableError::MissingBlock(target))?;
-        let mut values = successor_live
-            .difference(&successor_facts.phi_definitions)
-            .copied()
-            .collect::<BTreeSet<_>>();
-        values.extend(
-            phi_uses
-                .get(&(source, target, kind))
-                .into_iter()
-                .flatten()
-                .copied(),
-        );
-        Ok(values)
     }
 
     pub(super) fn edge_live(
@@ -203,6 +195,7 @@ impl InterferenceGraph {
         semantic: &SemanticNode,
         liveness: &SsaLiveness,
         required_phis: &BTreeSet<SsaVar>,
+        flow: impl FnOnce() -> std::sync::Arc<SemanticFlowGraph>,
     ) -> Result<Self, SourceVariableError> {
         let mut graph = Self::default();
         if let Some(inputs) = liveness.live_in.get(&cfg.entry) {
@@ -220,15 +213,17 @@ impl InterferenceGraph {
                     .as_ref()
                     .and_then(SsaVar::from_reg)
                     .filter(|value| liveness.retained.contains(value));
-                let uses = if instruction.insn_type == InsnType::Phi {
-                    BTreeSet::new()
+                let mut uses = if instruction.insn_type == InsnType::Phi {
+                    Default::default()
                 } else {
                     InstructionUses::collect(instruction)
-                        .into_iter()
-                        .filter(|value| liveness.retained.contains(value))
-                        .collect()
                 };
-                graph.add_clique(&uses);
+                uses.retain(|value| liveness.retained.contains(value));
+                for (index, &left) in uses.iter().enumerate() {
+                    for &right in &uses[index + 1..] {
+                        graph.add(left, right);
+                    }
+                }
                 if let Some(definition) = definition {
                     let move_source = (instruction.insn_type == InsnType::Move)
                         .then(|| instruction.args.first())
@@ -251,7 +246,7 @@ impl InterferenceGraph {
             }
         }
         let semantic_liveness =
-            SemanticLiveness::analyze(semantic, &liveness.retained, &mut graph)?;
+            SemanticLiveness::analyze(semantic, &liveness.retained, &mut graph, flow)?;
         semantic_liveness.add_recovered_phi_interference(cfg, required_phis, &mut graph);
         Ok(graph)
     }
@@ -345,28 +340,18 @@ impl SemanticLiveness {
         root: &SemanticNode,
         retained: &BTreeSet<SsaVar>,
         interference: &mut InterferenceGraph,
+        flow: impl FnOnce() -> std::sync::Arc<SemanticFlowGraph>,
     ) -> Result<Self, SourceVariableError> {
         let sites = SemanticSiteCollector::new(retained).collect(root)?;
-        let flow = SemanticFlowGraph::analyze(root);
+        let flow = flow();
         if !flow.is_complete() {
             return Err(SourceVariableError::IncompleteSemanticFlow);
         }
-        let points: BTreeMap<_, _> = flow
-            .points()
-            .into_iter()
-            .enumerate()
-            .map(|(index, point)| (point, index))
-            .collect();
+        let points = flow.index();
         let mut definitions = Vec::with_capacity(points.len());
-        let mut predecessors = Vec::new();
-        let mut offsets = Vec::with_capacity(points.len() + 1);
         let mut uses = BTreeMap::<SsaVar, Vec<usize>>::new();
-        for (&point, &index) in &points {
-            offsets.push(predecessors.len());
-            predecessors.extend(
-                flow.predecessors(point)
-                    .map(|predecessor| points[&predecessor]),
-            );
+        for index in 0..points.len() {
+            let point = points.point(index);
             definitions.push(match point {
                 SemanticFlowPoint::Before(site) => {
                     let facts = sites
@@ -385,10 +370,6 @@ impl SemanticLiveness {
                 SemanticFlowPoint::Synthetic(_) => SemanticPointDefinitions::None,
             });
         }
-        offsets.push(predecessors.len());
-        drop(flow);
-        drop(points);
-
         // Each use makes one SSA value live backward until its definition. All
         // uses seed the search, including a use at a site that also defines
         // the value. A live After point contributes exactly the interference
@@ -408,7 +389,7 @@ impl SemanticLiveness {
                         }
                     }
                 }
-                for &predecessor in &predecessors[offsets[index]..offsets[index + 1]] {
+                for &predecessor in points.predecessors(index) {
                     if visited[predecessor] == stamp {
                         continue;
                     }
@@ -674,29 +655,24 @@ pub(super) struct ClassInterference {
 }
 
 impl ClassInterference {
-    pub(super) fn new(interference: InterferenceGraph, classes: &mut SsaClasses) -> Self {
-        Self {
-            hard_edges: Self::classes(interference.hard_edges, classes),
-            semantic_edges: Self::classes(interference.semantic_edges, classes),
-        }
-    }
-
-    fn classes(
-        edges: BTreeMap<SsaVar, BTreeSet<SsaVar>>,
+    /// The allocator creates one class per SSA name. The original symmetric
+    /// edges therefore already refer to class roots. Keep names introduced by
+    /// the structured body, including those without a CFG declaration.
+    pub(super) fn from_singletons(
+        interference: InterferenceGraph,
         classes: &mut SsaClasses,
-    ) -> BTreeMap<SsaVar, BTreeSet<SsaVar>> {
-        let mut graph = BTreeMap::<SsaVar, BTreeSet<SsaVar>>::new();
-        for (left, neighbors) in edges {
-            let left = classes.root(left);
-            for right in neighbors {
-                let right = classes.root(right);
-                if left != right {
-                    graph.entry(left).or_default().insert(right);
-                    graph.entry(right).or_default().insert(left);
-                }
-            }
+    ) -> Self {
+        for &value in interference
+            .hard_edges
+            .keys()
+            .chain(interference.semantic_edges.keys())
+        {
+            classes.root(value);
         }
-        graph
+        Self {
+            hard_edges: interference.hard_edges,
+            semantic_edges: interference.semantic_edges,
+        }
     }
 
     pub(super) fn interferes(&self, left: SsaVar, right: SsaVar) -> bool {
@@ -719,27 +695,29 @@ impl ClassInterference {
     }
 
     fn merge_edges(edges: &mut BTreeMap<SsaVar, BTreeSet<SsaVar>>, root: SsaVar, absorbed: SsaVar) {
-        let mut neighbors = edges.remove(&root).unwrap_or_default();
-        neighbors.extend(edges.remove(&absorbed).unwrap_or_default());
+        let Some(mut neighbors) = edges.remove(&absorbed) else {
+            return;
+        };
         neighbors.remove(&root);
         neighbors.remove(&absorbed);
         for neighbor in &neighbors {
             let adjacent = edges.entry(*neighbor).or_default();
-            adjacent.remove(&root);
             adjacent.remove(&absorbed);
             adjacent.insert(root);
         }
-        edges.insert(root, neighbors);
+        let adjacent = edges.entry(root).or_default();
+        adjacent.remove(&absorbed);
+        adjacent.extend(neighbors);
     }
 }
 
 #[derive(Default)]
 pub(super) struct InstructionUses {
-    values: BTreeSet<SsaVar>,
+    values: smallvec::SmallVec<[SsaVar; 4]>,
 }
 
 impl InstructionUses {
-    pub(super) fn collect(instruction: &InsnNode) -> BTreeSet<SsaVar> {
+    pub(super) fn collect(instruction: &InsnNode) -> smallvec::SmallVec<[SsaVar; 4]> {
         let mut uses = Self::default();
         if instruction.insn_type == InsnType::Constructor {
             for argument in instruction.args.get(1..).unwrap_or_default() {
@@ -751,6 +729,8 @@ impl InstructionUses {
         } else {
             InstructionTree::visit_args(instruction, &mut uses);
         }
+        uses.values.sort_unstable();
+        uses.values.dedup();
         uses.values
     }
 }
@@ -788,6 +768,11 @@ mod tests {
             &crate::ir::SemanticNode::Empty,
             &liveness,
             &BTreeSet::new(),
+            || {
+                std::sync::Arc::new(crate::ir::analysis::SemanticFlowGraph::analyze(
+                    &crate::ir::SemanticNode::Empty,
+                ))
+            },
         )
         .unwrap();
 
@@ -853,9 +838,14 @@ mod tests {
 
         let retained = BTreeSet::from([old_value, unrelated_value, phi_value]);
         let liveness = SsaLiveness::analyze(&cfg, &retained).unwrap();
-        let interference =
-            InterferenceGraph::build(&cfg, &semantic, &liveness, &BTreeSet::from([phi_value]))
-                .unwrap();
+        let interference = InterferenceGraph::build(
+            &cfg,
+            &semantic,
+            &liveness,
+            &BTreeSet::from([phi_value]),
+            || std::sync::Arc::new(crate::ir::analysis::SemanticFlowGraph::analyze(&semantic)),
+        )
+        .unwrap();
 
         assert!(interference
             .hard_edges

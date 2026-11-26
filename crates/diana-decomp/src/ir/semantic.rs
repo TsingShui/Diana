@@ -39,6 +39,7 @@ pub use instructions::{SemanticExpressionTransform, SemanticInstructions};
 pub(crate) use sites::SemanticSiteNumbering;
 pub use string_building::{StringBuilderProtocol, StringBuildingRecovery};
 pub use verify::SemanticInvariantError;
+pub(crate) use visit::walk_statement;
 pub use visit::{
     SemanticBindingKind, SemanticFoldControl, SemanticFoldError, SemanticFolder, SemanticVisitor,
 };
@@ -358,6 +359,12 @@ pub enum SemanticPredicate {
 
 impl Clone for SemanticPredicate {
     fn clone(&self) -> Self {
+        match self {
+            Self::True => return Self::True,
+            Self::False => return Self::False,
+            Self::Test(test) => return Self::Test(test.clone()),
+            _ => {}
+        }
         enum Task<'a> {
             Visit(&'a SemanticPredicate),
             Not,
@@ -932,13 +939,25 @@ impl SemanticPredicate {
             Junction { count: usize, conjunction: bool },
         }
 
-        let mut tasks = vec![Task::Visit(self)];
+        let mut root = self;
+        let mut negate = false;
+        while let Self::Not(inner) = root {
+            negate = !negate;
+            root = inner;
+        }
+        match root {
+            Self::True => return Some(!negate),
+            Self::False => return Some(negate),
+            Self::Test(test) => return Self::constant_test(test).map(|value| value ^ negate),
+            _ => {}
+        }
+        let mut tasks = vec![Task::Visit(root)];
         let mut values = Vec::new();
         while let Some(task) = tasks.pop() {
             match task {
-                Task::Visit(Self::True) => values.push(Some(true)),
-                Task::Visit(Self::False) => values.push(Some(false)),
-                Task::Visit(Self::Test(test)) => values.push(Self::constant_test(test)),
+                Task::Visit(Self::True) => values.push(true),
+                Task::Visit(Self::False) => values.push(false),
+                Task::Visit(Self::Test(test)) => values.push(Self::constant_test(test)?),
                 Task::Visit(Self::Not(inner)) => {
                     tasks.push(Task::Not);
                     tasks.push(Task::Visit(inner));
@@ -959,25 +978,22 @@ impl SemanticPredicate {
                 }
                 Task::Not => {
                     let value = values.pop()?;
-                    values.push(value.map(|value| !value));
+                    values.push(!value);
                 }
                 Task::Junction { count, conjunction } => {
                     let start = values.len().checked_sub(count)?;
-                    let terms = values.drain(start..).collect::<Vec<_>>();
-                    values.push(terms.into_iter().collect::<Option<Vec<_>>>().map(|terms| {
-                        if conjunction {
-                            terms.into_iter().all(|term| term)
-                        } else {
-                            terms.into_iter().any(|term| term)
-                        }
-                    }));
+                    let mut terms = values.drain(start..);
+                    let value = if conjunction {
+                        terms.all(|term| term)
+                    } else {
+                        terms.any(|term| term)
+                    };
+                    drop(terms);
+                    values.push(value);
                 }
             }
         }
-        (values.len() == 1)
-            .then(|| values.pop())
-            .flatten()
-            .flatten()
+        (values.len() == 1).then(|| values[0] ^ negate)
     }
 
     fn constant_test(test: &SemanticOperation) -> Option<bool> {
@@ -1008,18 +1024,24 @@ impl SemanticPredicate {
 
 impl SemanticNode {
     pub fn sequence(nodes: impl IntoIterator<Item = SemanticNode>) -> Self {
-        let mut flattened = Vec::new();
-        for node in nodes {
-            match node {
-                Self::Empty => {}
-                Self::Sequence(children) => flattened.extend(children),
-                other => flattened.push(other),
+        let mut nodes: Vec<_> = nodes.into_iter().collect();
+        if nodes.iter().any(|node| matches!(node, Self::Sequence(_))) {
+            let mut flattened = Vec::with_capacity(nodes.len());
+            for node in nodes {
+                match node {
+                    Self::Empty => {}
+                    Self::Sequence(children) => flattened.extend(children),
+                    other => flattened.push(other),
+                }
             }
+            nodes = flattened;
+        } else {
+            nodes.retain(|node| !matches!(node, Self::Empty));
         }
-        match flattened.len() {
+        match nodes.len() {
             0 => Self::Empty,
-            1 => flattened.into_iter().next().unwrap_or(Self::Empty),
-            _ => Self::Sequence(flattened),
+            1 => nodes.pop().unwrap_or(Self::Empty),
+            _ => Self::Sequence(nodes),
         }
     }
 

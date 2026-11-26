@@ -426,6 +426,9 @@ impl DeclaredTypes {
     }
 
     fn retain_injective_names(names: &mut BTreeMap<String, JavaClassType>) {
+        if names.len() <= 1 {
+            return;
+        }
         let mut multiplicity = BTreeMap::<String, usize>::new();
         for source_name in names.values() {
             *multiplicity.entry(source_name.to_string()).or_default() += 1;
@@ -548,8 +551,19 @@ impl JavaLexicalTypeScope {
 
     fn relative_name(&self, binary_name: &str) -> Option<String> {
         let owner = self.owner.as_ref()?;
+        let (package, simple) = binary_name
+            .rsplit_once('.')
+            .map_or((None, binary_name), |(package, name)| (Some(package), name));
+        if package != owner.package.as_deref()
+            || !simple
+                .strip_prefix(owner.top_level.as_str())
+                .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('$'))
+        {
+            return None;
+        }
         let target = JavaTypeName::from_binary_name(binary_name)?;
-        if target.package != owner.package || target.top_level != owner.top_level {
+        // A non-Java nested spelling can contain a literal '$' in its top-level name.
+        if target.top_level != owner.top_level {
             return None;
         }
         // The deepest enclosing type shared with the target determines the

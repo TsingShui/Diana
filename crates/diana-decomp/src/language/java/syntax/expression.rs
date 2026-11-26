@@ -144,20 +144,88 @@ impl ExpressionFact {
     }
 }
 
-pub(super) struct ExpressionSyntax {
-    proofs: Vec<Box<dyn ExpressionProof>>,
+pub(super) struct ExpressionSyntax;
+
+/// A source statement can seed boolean inference only when it defines a named
+/// int. Compound values may contain selects or rewritable operations further
+/// down, so the ordinary expression pass handles those conservatively.
+#[derive(Default)]
+struct ExpressionSites {
+    int_definition: bool,
+    boolean_definition: bool,
+    predicate: bool,
+    rewrite: bool,
+    select: bool,
 }
 
-impl Default for ExpressionSyntax {
-    fn default() -> Self {
-        Self {
-            proofs: vec![
-                Box::new(CmpConditionProof),
-                Box::new(BooleanXorProof),
-                Box::new(NumericPromotionProof),
-                Box::new(StringConcatProof),
-            ],
+impl ExpressionSites {
+    fn collect(root: &SemanticNode, types: &SourceTypeEnvironment) -> Self {
+        struct Sites<'a>(&'a mut ExpressionSites, &'a SourceTypeEnvironment);
+
+        impl SemanticVisitor for Sites<'_> {
+            fn visit_statement(&mut self, statement: &SemanticStatement) {
+                if let Some(result) = statement
+                    .result()
+                    .filter(|result| result.code_var.is_some())
+                {
+                    let ty = self.1.register_type(result).unwrap_or(&result.ty);
+                    self.0.int_definition |= ty == &ArgType::INT;
+                    self.0.boolean_definition |= ty == &ArgType::BOOLEAN;
+                }
+                match &statement.kind {
+                    SemanticStatementKind::Instruction(op) => self.visit_operation(op),
+                    SemanticStatementKind::Definition { value, .. } => self.visit_expression(value),
+                }
+            }
+
+            fn visit_predicate(&mut self, predicate: &SemanticPredicate) {
+                self.0.predicate = true;
+                match predicate {
+                    SemanticPredicate::Test(op) => self.visit_operation(op),
+                    SemanticPredicate::Not(_)
+                    | SemanticPredicate::And(_)
+                    | SemanticPredicate::Or(_) => self.0.compound(),
+                    SemanticPredicate::True | SemanticPredicate::False => {}
+                }
+            }
+
+            fn visit_expression(&mut self, value: &SemanticExpression) {
+                match value {
+                    SemanticExpression::Select { .. } => self.0.compound(),
+                    SemanticExpression::Operation(op) => self.visit_operation(op),
+                    SemanticExpression::Register(_) | SemanticExpression::Literal(_) => {}
+                }
+            }
+
+            fn visit_operation(&mut self, op: &SemanticOperation) {
+                if op
+                    .operands()
+                    .iter()
+                    .chain(op.compound_target())
+                    .any(|operand| {
+                        matches!(
+                            operand,
+                            SemanticExpression::Select { .. } | SemanticExpression::Operation(_)
+                        )
+                    })
+                {
+                    self.0.compound();
+                } else if op.insn_type == InsnType::Arith
+                    && op.payload.arith_op == Some(ArithOp::Xor)
+                {
+                    self.0.rewrite = true;
+                }
+            }
         }
+
+        let mut facts = Self::default();
+        Sites(&mut facts, types).visit_node(root);
+        facts
+    }
+
+    fn compound(&mut self) {
+        self.rewrite = true;
+        self.select = true;
     }
 }
 
@@ -223,25 +291,34 @@ impl CmpConditionProof {
 
 impl ExpressionSyntax {
     pub(super) fn apply(
-        &self,
         root: &mut SemanticNode,
         types: &SourceTypeEnvironment,
     ) -> Result<ExpressionRecovery, crate::ir::SemanticFoldError> {
-        let boolean_variables = BooleanValueAnalysis::analyze(root, types);
+        let sites = ExpressionSites::collect(root, types);
+        let boolean_variables = if sites.int_definition
+            && (sites.predicate || sites.select || sites.boolean_definition)
+        {
+            BooleanValueAnalysis::analyze(root, types)
+        } else {
+            BTreeSet::new()
+        };
         let mut rewriter = ExpressionRewriter {
-            proofs: &self.proofs,
             types,
             changed: false,
             boolean_variables,
         };
-        SemanticInstructions::transform(root, &mut rewriter)?;
+        if sites.rewrite {
+            SemanticInstructions::transform(root, &mut rewriter)?;
+        }
         let mut identities = BooleanIdentityEliminator {
             types,
             proven: &rewriter.boolean_variables,
             changed: false,
         };
-        let body = std::mem::replace(root, SemanticNode::Empty);
-        *root = identities.fold_node(body)?;
+        if sites.select {
+            let body = std::mem::replace(root, SemanticNode::Empty);
+            *root = identities.fold_node(body)?;
+        }
         Ok(ExpressionRecovery {
             changed: rewriter.changed || identities.changed,
             boolean_variables: rewriter.boolean_variables,
@@ -765,25 +842,32 @@ pub(super) struct ExpressionRecovery {
 }
 
 struct ExpressionRewriter<'a> {
-    proofs: &'a [Box<dyn ExpressionProof>],
     types: &'a SourceTypeEnvironment,
     changed: bool,
     boolean_variables: std::collections::BTreeSet<u32>,
 }
 
 impl SemanticExpressionTransform for ExpressionRewriter<'_> {
+    fn visits_registers(&self) -> bool {
+        false
+    }
+
     fn transform_operation(&mut self, instruction: SemanticOperation) -> SemanticExpression {
         let facts = ExpressionFacts {
             types: self.types,
             boolean_variables: &self.boolean_variables,
         };
-        for proof in self.proofs {
-            let Some(fact) = proof.prove(&instruction, &facts) else {
-                continue;
-            };
-            let Some(replacement) = fact.rewrite(&instruction) else {
-                continue;
-            };
+        let rewrite =
+            |proof: &dyn ExpressionProof| proof.prove(&instruction, &facts)?.rewrite(&instruction);
+        let replacement = match instruction.insn_type {
+            InsnType::If => rewrite(&CmpConditionProof).or_else(|| rewrite(&NumericPromotionProof)),
+            InsnType::Arith => {
+                rewrite(&BooleanXorProof).or_else(|| rewrite(&NumericPromotionProof))
+            }
+            InsnType::Invoke => rewrite(&StringConcatProof),
+            _ => None,
+        };
+        if let Some(replacement) = replacement {
             self.changed = true;
             if replacement.insn_type == InsnType::Not {
                 self.boolean_variables.extend(
@@ -856,6 +940,11 @@ impl ExpressionProof for NumericPromotionProof {
         let [left, right] = expression.operands() else {
             return None;
         };
+        let operands = [left, right];
+        let removable = operands.map(|operand| Self::widening_cast(operand, types));
+        if removable.iter().all(Option::is_none) {
+            return None;
+        }
         let target = if expression.insn_type == InsnType::Arith {
             JavaPrimitiveSemantics::numeric(Self::operation_type(expression, types)?)?
         } else {
@@ -865,8 +954,6 @@ impl ExpressionProof for NumericPromotionProof {
             )?
         };
 
-        let operands = [left, right];
-        let removable = operands.map(|operand| Self::widening_cast(operand, types));
         let mut selected = None::<(u32, u32)>;
         for mask in 1u32..4 {
             if (0..2).any(|index| mask & (1 << index) != 0 && removable[index].is_none()) {

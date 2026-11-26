@@ -13,21 +13,18 @@ use crate::ir::{
 };
 
 pub struct SourceSyntaxRecovery<'a> {
-    expressions: expression::ExpressionSyntax,
     loops: loops::JavaLoopSyntax<'a>,
     conditions: conditions::PathConditionSyntax,
     protection: protection::ProtectionSyntax<'a>,
 }
 
 pub struct JavaValueSyntax<'a> {
-    expressions: expression::ExpressionSyntax,
     loops: loops::JavaLoopSyntax<'a>,
 }
 
 impl<'a> JavaValueSyntax<'a> {
     pub fn new(hierarchy: &'a dyn TypeHierarchy) -> Self {
         Self {
-            expressions: expression::ExpressionSyntax::default(),
             loops: loops::JavaLoopSyntax::new(hierarchy),
         }
     }
@@ -37,7 +34,7 @@ impl<'a> JavaValueSyntax<'a> {
         method: &mut SemanticMethod<SourceSyntaxSemantics>,
     ) -> Result<bool, crate::ir::SemanticFoldError> {
         let (body, state) = method.parts_mut();
-        let recovery = self.expressions.apply(body, state.types())?;
+        let recovery = expression::ExpressionSyntax::apply(body, state.types())?;
         let loops = SyntaxSites::collect(body).loop_rewrite && self.loops.apply(body)?;
         Ok(recovery.changed || loops)
     }
@@ -46,7 +43,6 @@ impl<'a> JavaValueSyntax<'a> {
 impl<'a> SourceSyntaxRecovery<'a> {
     pub fn new(hierarchy: &'a dyn TypeHierarchy) -> Self {
         Self {
-            expressions: expression::ExpressionSyntax::default(),
             loops: loops::JavaLoopSyntax::new(hierarchy),
             conditions: conditions::PathConditionSyntax,
             protection: protection::ProtectionSyntax::new(hierarchy),
@@ -63,7 +59,7 @@ impl SemanticTransform<SourceSemantics> for SourceSyntaxRecovery<'_> {
         mut method: SemanticMethod<SourceSemantics>,
     ) -> Result<SemanticMethod<Self::Output>, Self::Error> {
         let (body, state) = method.parts_mut();
-        let expressions = self.expressions.apply(body, state.types())?;
+        let expressions = expression::ExpressionSyntax::apply(body, state.types())?;
         state
             .types_mut()
             .refine_booleans(expressions.boolean_variables);

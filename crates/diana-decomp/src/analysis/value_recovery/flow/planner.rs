@@ -261,7 +261,7 @@ impl<'a> ValuePlanner<'a> {
             let (Some(target), false) = (usage.point, relation.candidates.is_empty()) else {
                 return Ok(None);
             };
-            if !self.expression_visible_at(expression, &usage.scope) {
+            if !self.expression_visible_at(expression, usage.scope) {
                 return Ok(None);
             }
             for &candidate in &relation.candidates {
@@ -425,7 +425,7 @@ impl<'a> ValuePlanner<'a> {
                     .get(dependency)
                     .is_none_or(|definitions| {
                         definitions.iter().any(|definition| {
-                            definition.protections != usage.protections
+                            definition.protection != usage.protection
                                 || (usage.repetitive && !definition.repetitive)
                         })
                     })
@@ -978,9 +978,9 @@ impl<'a> ValuePlanner<'a> {
                 Some("repetitive-definition")
             } else if definition.event >= usage.event {
                 Some("definition-order")
-            } else if definition.protections != usage.protections {
+            } else if definition.protection != usage.protection {
                 Some("protection-boundary")
-            } else if definition.loop_owners != usage.loop_owners {
+            } else if definition.loop_owner != usage.loop_owner {
                 Some("loop-boundary")
             } else if !effect.can_predicate() {
                 Some("non-predicable")
@@ -1009,7 +1009,7 @@ impl<'a> ValuePlanner<'a> {
                 definition,
                 crate::ir::analysis::SemanticFlowPoint::before(site),
                 target,
-            ) || !self.expression_visible_at(definition.expression(), &usage.scope)
+            ) || !self.expression_visible_at(definition.expression(), usage.scope)
             {
                 return Ok(None);
             }
@@ -1089,7 +1089,7 @@ impl<'a> ValuePlanner<'a> {
                     return Ok(None);
                 }
             };
-        if !self.expression_visible_at(&expression, &usage.scope) {
+        if !self.expression_visible_at(&expression, usage.scope) {
             return Ok(None);
         }
         if self.expression_depends_on(&expression, definitions[0].key) {
@@ -1252,7 +1252,7 @@ impl<'a> ValuePlanner<'a> {
         Ok(definition.site.is_some()
             && definition.event + 1 == usage.event
             && definition.scope == usage.scope
-            && definition.loop_owners == usage.loop_owners
+            && definition.loop_owner == usage.loop_owner
             && self
                 .graph()
                 .logic
@@ -1370,8 +1370,8 @@ impl<'a> ValuePlanner<'a> {
     ) -> Result<bool, ValueRecoveryError> {
         if definition.site.is_none()
             || definition.event + 1 != usage.event
-            || definition.protections != usage.protections
-            || definition.loop_owners != usage.loop_owners
+            || definition.protection != usage.protection
+            || definition.loop_owner != usage.loop_owner
             || !self
                 .graph()
                 .logic
@@ -1454,10 +1454,10 @@ impl<'a> ValuePlanner<'a> {
         if definition.scope != usage.scope && !domain_sink {
             return Err(MovementRejection::ScopeBoundary);
         }
-        if definition.protections != usage.protections {
+        if definition.protection != usage.protection {
             return Err(MovementRejection::ProtectionBoundary);
         }
-        if definition.loop_owners != usage.loop_owners {
+        if definition.loop_owner != usage.loop_owner {
             return Err(MovementRejection::LoopBoundary);
         }
         if !same_domain && !domain_sink {
@@ -1630,7 +1630,11 @@ impl<'a> ValuePlanner<'a> {
         SelectedValue::Expression(ordinal)
     }
 
-    fn expression_visible_at(&self, expression: &SemanticExpression, scope: &[u32]) -> bool {
+    fn expression_visible_at(
+        &self,
+        expression: &SemanticExpression,
+        scope: super::ScopeId,
+    ) -> bool {
         let mut expressions = vec![expression];
         let mut predicates = Vec::new();
         while let Some(expression) = expressions.pop() {
@@ -1641,7 +1645,7 @@ impl<'a> ValuePlanner<'a> {
                     }
                 }
                 SemanticExpression::Operation(operation) => {
-                    let Ok(operands) = operation.evaluation_operands() else {
+                    let Ok(operands) = operation.evaluation_operands_iter() else {
                         return false;
                     };
                     expressions.extend(operands);
@@ -1661,7 +1665,7 @@ impl<'a> ValuePlanner<'a> {
         while let Some(predicate) = predicates.pop() {
             match predicate {
                 crate::ir::SemanticPredicate::Test(operation) => {
-                    let Ok(operands) = operation.evaluation_operands() else {
+                    let Ok(operands) = operation.evaluation_operands_iter() else {
                         return false;
                     };
                     expressions.extend(operands);
@@ -1677,7 +1681,11 @@ impl<'a> ValuePlanner<'a> {
             .all(|expression| self.expression_visible_at(expression, scope))
     }
 
-    fn register_visible_at(&self, register: &crate::ir::RegisterArg, scope: &[u32]) -> bool {
+    fn register_visible_at(
+        &self,
+        register: &crate::ir::RegisterArg,
+        scope: super::ScopeId,
+    ) -> bool {
         let Some(key) = self.graph().key(register) else {
             return true;
         };
@@ -1685,14 +1693,9 @@ impl<'a> ValuePlanner<'a> {
             .definitions
             .get(&key)
             .is_none_or(|definitions| {
-                definitions.iter().any(|definition| {
-                    definition.scope.len() <= scope.len()
-                        && definition
-                            .scope
-                            .iter()
-                            .zip(scope)
-                            .all(|(left, right)| left == right)
-                })
+                definitions
+                    .iter()
+                    .any(|definition| self.graph().scopes.contains(definition.scope, scope))
             })
     }
 
@@ -1732,10 +1735,8 @@ impl<'a> ValuePlanner<'a> {
     }
 
     fn operation_depends_on(&self, operation: &SemanticOperation, key: SsaVar) -> bool {
-        match operation.evaluation_operands() {
-            Ok(operands) => operands
-                .into_iter()
-                .any(|operand| self.expression_depends_on(operand, key)),
+        match operation.evaluation_operands_iter() {
+            Ok(mut operands) => operands.any(|operand| self.expression_depends_on(operand, key)),
             Err(_) => true,
         }
     }
@@ -1752,7 +1753,7 @@ impl<'a> ValuePlanner<'a> {
                 }
                 SemanticExpression::Register(_) | SemanticExpression::Literal(_) => {}
                 SemanticExpression::Operation(operation) => {
-                    let Ok(operands) = operation.evaluation_operands() else {
+                    let Ok(operands) = operation.evaluation_operands_iter() else {
                         return true;
                     };
                     expressions.extend(operands);

@@ -1,6 +1,7 @@
 //! Gated-SSA recovery for values selected by acyclic control flow.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use crate::ir::{
     analysis::{
@@ -24,7 +25,7 @@ pub(in crate::analysis::value_recovery) struct GatedControlFlow {
     regions: BTreeMap<BlockId, SelectionRegion>,
     tests: BTreeMap<BlockId, InsnNode>,
     loop_headers: BTreeSet<BlockId>,
-    dominators: DominatorTree,
+    dominators: Arc<DominatorTree>,
 }
 
 impl GatedControlFlow {
@@ -33,6 +34,18 @@ impl GatedControlFlow {
     pub(in crate::analysis::value_recovery) fn analyze(cfg: &CFG) -> Result<Self, DominanceError> {
         let predecessors = cfg.normal_predecessor_snapshot();
         let dominators = DominatorTree::compute_normal(cfg, cfg.block_ids(), &predecessors)?;
+        Ok(Self::from_normal_dominance(
+            cfg,
+            &predecessors,
+            Arc::new(dominators),
+        ))
+    }
+
+    pub(in crate::analysis::value_recovery) fn from_normal_dominance(
+        cfg: &CFG,
+        predecessors: &BTreeMap<BlockId, Vec<BlockId>>,
+        dominators: Arc<DominatorTree>,
+    ) -> Self {
         let phi_blocks = cfg
             .blocks_iter()
             .filter(|block| {
@@ -43,6 +56,14 @@ impl GatedControlFlow {
             })
             .map(|block| block.id)
             .collect::<BTreeSet<_>>();
+        if phi_blocks.is_empty() {
+            return Self {
+                regions: BTreeMap::new(),
+                tests: BTreeMap::new(),
+                loop_headers: BTreeSet::new(),
+                dominators,
+            };
+        }
         let loop_headers = phi_blocks
             .iter()
             .copied()
@@ -56,7 +77,7 @@ impl GatedControlFlow {
             .into_iter()
             .filter(|join| !loop_headers.contains(join))
             .filter_map(|join| {
-                SelectionRegion::analyze(cfg, &predecessors, &dominators, join)
+                SelectionRegion::analyze(cfg, predecessors, &dominators, join)
                     .map(|region| (join, region))
             })
             .collect();
@@ -70,12 +91,12 @@ impl GatedControlFlow {
                     .map(|instruction| (block.id, instruction))
             })
             .collect();
-        Ok(Self {
+        Self {
             regions,
             tests,
             loop_headers,
             dominators,
-        })
+        }
     }
 
     fn region(&self, join: BlockId) -> Option<&SelectionRegion> {
@@ -627,9 +648,7 @@ impl<'a> GatedPhiAnalysis<'a> {
         let mut live = BTreeSet::new();
         let mut pending = phis
             .keys()
-            .filter(|result| {
-                semantic_roots.contains(result) || self.graph.has_reaching_use(**result)
-            })
+            .filter(|result| semantic_roots.contains(result))
             .copied()
             .collect::<Vec<_>>();
         while let Some(result) = pending.pop() {

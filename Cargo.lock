@@ -1329,11 +1329,13 @@ version = "1.0.2"
 dependencies = [
  "bitflags 2.13.2",
  "crc32fast",
+ "foldhash",
  "memchr",
  "pretty_assertions",
  "rayon",
  "serde",
  "serde_json",
+ "smallvec",
  "smol_str",
  "tempfile",
  "thiserror 2.0.21",

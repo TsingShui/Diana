@@ -476,40 +476,43 @@ impl SemanticOperation {
     }
 
     pub fn evaluation_operands(&self) -> Result<Vec<&SemanticExpression>, SourceEvaluationError> {
+        Ok(self.evaluation_operands_iter()?.collect())
+    }
+
+    pub(crate) fn evaluation_operands_iter(
+        &self,
+    ) -> Result<impl DoubleEndedIterator<Item = &SemanticExpression> + Clone, SourceEvaluationError>
+    {
         let arity = || SourceEvaluationError::InvalidArity {
             instruction: self.insn_type,
             offset: self.offset,
             actual: self.operands.len(),
         };
-        Ok(match self.insn_type {
-            InsnType::Constructor => self
-                .operands
-                .get(1..)
-                .ok_or(SourceEvaluationError::MalformedConstructor(self.offset))?
-                .iter()
-                .collect(),
-            InsnType::Iput => {
-                if self.operands.len() != 2 {
+        let (first, last) = match self.insn_type {
+            InsnType::Constructor => (
+                self.operands
+                    .get(1..)
+                    .ok_or(SourceEvaluationError::MalformedConstructor(self.offset))?,
+                None,
+            ),
+            InsnType::Iput | InsnType::Aput => {
+                let expected = if self.insn_type == InsnType::Iput {
+                    2
+                } else {
+                    3
+                };
+                if self.operands.len() != expected {
                     return Err(arity());
                 }
-                vec![&self.operands[1], &self.operands[0]]
+                (&self.operands[1..], self.operands.first())
             }
-            InsnType::Aput => {
-                if self.operands.len() != 3 {
-                    return Err(arity());
-                }
-                vec![&self.operands[1], &self.operands[2], &self.operands[0]]
-            }
-            InsnType::CompoundAssign => vec![
-                self.compound_target.as_deref().ok_or_else(arity)?,
-                self.operands.last().ok_or_else(arity)?,
-            ],
-            _ => self
-                .operands
-                .iter()
-                .chain(self.compound_target.iter().map(Box::as_ref))
-                .collect(),
-        })
+            InsnType::CompoundAssign => (
+                std::slice::from_ref(self.compound_target.as_deref().ok_or_else(arity)?),
+                Some(self.operands.last().ok_or_else(arity)?),
+            ),
+            _ => (self.operands.as_slice(), self.compound_target.as_deref()),
+        };
+        Ok(first.iter().chain(last))
     }
 
     pub fn effects_before(
@@ -522,8 +525,7 @@ impl SemanticOperation {
         let mut effects = InstructionEffects::PURE;
         let mut pending = vec![EvaluationTask::Effect(self)];
         pending.extend(
-            self.evaluation_operands()?
-                .into_iter()
+            self.evaluation_operands_iter()?
                 .rev()
                 .map(EvaluationTask::Expression),
         );
@@ -536,8 +538,7 @@ impl SemanticOperation {
                     pending.push(EvaluationTask::Effect(operation));
                     pending.extend(
                         operation
-                            .evaluation_operands()?
-                            .into_iter()
+                            .evaluation_operands_iter()?
                             .rev()
                             .map(EvaluationTask::Expression),
                     );

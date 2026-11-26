@@ -233,8 +233,32 @@ impl BuilderReads {
     }
 
     fn of(root: &SemanticNode) -> Self {
+        struct Allocations<'a>(&'a mut BTreeMap<ValueKey, usize>);
+        impl SemanticVisitor for Allocations<'_> {
+            fn visits_values(&self) -> bool {
+                false
+            }
+
+            fn enter_node(&mut self, node: &SemanticNode) {
+                if let SemanticNode::BasicBlock(block) = node {
+                    // An append run must follow its allocation in this block.
+                    if let Some((_, prefix)) = block.statements.split_last() {
+                        for statement in prefix {
+                            if let Some(builder) =
+                                StringBuildingRecovery::allocated_builder(statement)
+                            {
+                                self.0.insert(BuilderReads::key(&builder), 0);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let mut builders = Self::default();
-        builders.visit_node(root);
+        Allocations(&mut builders.reads).visit_node(root);
+        if !builders.reads.is_empty() {
+            builders.visit_node(root);
+        }
         builders
     }
 
@@ -252,7 +276,9 @@ impl BuilderReads {
 
 impl SemanticVisitor for BuilderReads {
     fn visit_register(&mut self, register: &RegisterArg) {
-        *self.reads.entry(Self::key(register)).or_default() += 1;
+        if let Some(reads) = self.reads.get_mut(&Self::key(register)) {
+            *reads += 1;
+        }
     }
 
     fn enter_operation(&mut self, operation: &SemanticOperation) {
@@ -269,8 +295,10 @@ impl SemanticVisitor for BuilderReads {
             .operands()
             .first()
             .and_then(|operand| operand.as_register());
-        if let Some(receiver) = receiver {
-            self.read_back.insert(Self::key(receiver));
+        if let Some(key) = receiver.map(Self::key) {
+            if self.reads.contains_key(&key) {
+                self.read_back.insert(key);
+            }
         }
     }
 }

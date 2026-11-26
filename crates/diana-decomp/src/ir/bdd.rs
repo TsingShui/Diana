@@ -5,7 +5,9 @@
 //! expression symbols are validated before graph operations are evaluated.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
+
+use foldhash::{HashMap, HashMapExt, HashSet};
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -99,11 +101,22 @@ struct ArenaNode {
     complement: Option<u16>,
 }
 
+impl ArenaNode {
+    fn cofactors(&self, id: u16, variable: usize) -> (u16, u16) {
+        if self.variable == variable {
+            (self.low, self.high)
+        } else {
+            (id, id)
+        }
+    }
+}
+
 struct Manager {
     context: u64,
     nodes: Vec<ArenaNode>,
     unique: HashMap<(usize, u32), u16>,
     binary_cache: HashMap<u64, u16>,
+    apply_work: ApplyWork,
     complements: usize,
     implication_cache: HashMap<u32, bool>,
     limits: BddLimits,
@@ -129,6 +142,7 @@ impl Manager {
             ],
             unique: HashMap::new(),
             binary_cache: HashMap::new(),
+            apply_work: ApplyWork::default(),
             complements: 2,
             implication_cache: HashMap::new(),
             limits,
@@ -165,14 +179,20 @@ impl Manager {
     fn node(&mut self, variable: usize, low: Bdd, high: Bdd) -> Result<Bdd, BddError> {
         self.validate(low)?;
         self.validate(high)?;
+        self.intern(variable, low.node, high.node)
+            .map(|node| self.handle(node))
+    }
+
+    /// Both children originate in this arena. Public operations validate their
+    /// handles at entry and the arena only stores children it already owns.
+    fn intern(&mut self, variable: usize, low: u16, high: u16) -> Result<u16, BddError> {
         if low == high {
             return Ok(low);
         }
-        let key = (variable, low.pair(high));
+        let key = (variable, u32::from(low) << 16 | u32::from(high));
         let entry = self.unique.entry(key);
         if let std::collections::hash_map::Entry::Occupied(existing) = entry {
-            let node = *existing.get();
-            return Ok(self.handle(node));
+            return Ok(*existing.get());
         }
         if self.nodes.len() >= self.limits.nodes {
             return Err(BddError::ResourceLimit {
@@ -186,12 +206,12 @@ impl Manager {
         })?;
         self.nodes.push(ArenaNode {
             variable,
-            low: low.node,
-            high: high.node,
+            low,
+            high,
             complement: None,
         });
         entry.or_insert(id);
-        Ok(self.handle(id))
+        Ok(id)
     }
 
     fn and(&mut self, left: Bdd, right: Bdd) -> Result<Bdd, BddError> {
@@ -205,48 +225,68 @@ impl Manager {
     fn apply(&mut self, operation: BinaryOp, left: Bdd, right: Bdd) -> Result<Bdd, BddError> {
         self.validate(left)?;
         self.validate(right)?;
-        if let Some(result) = self.terminal(operation, left, right) {
-            return Ok(result);
-        }
-        let mut tasks = vec![ApplyTask::Visit(left, right)];
-        let mut results = Vec::new();
-        while let Some(task) = tasks.pop() {
-            match task {
+        let mut work = std::mem::take(&mut self.apply_work);
+        let result = self.apply_nodes(operation, left.node, right.node, &mut work);
+        work.pending.clear();
+        work.results.clear();
+        self.apply_work = work;
+        result.map(|id| self.handle(id))
+    }
+
+    fn apply_nodes(
+        &mut self,
+        operation: BinaryOp,
+        left: u16,
+        right: u16,
+        work: &mut ApplyWork,
+    ) -> Result<u16, BddError> {
+        let ApplyWork { pending, results } = work;
+        let mut task = ApplyTask::Visit(left, right);
+        loop {
+            let result = match task {
                 ApplyTask::Visit(left, right) => {
-                    let (left, right) = ordered(left, right);
-                    if let Some(result) = self.terminal(operation, left, right) {
-                        results.push(result);
-                        continue;
+                    let (left, right) = (left.min(right), left.max(right));
+                    // With sorted IDs the two terminals always appear first.
+                    match (operation, left) {
+                        (BinaryOp::And, 0) | (BinaryOp::Or, 1) => left,
+                        (BinaryOp::Or, 0) | (BinaryOp::And, 1) => right,
+                        _ if left == right => left,
+                        _ => {
+                            let key = ((operation as u64) << 32)
+                                | (u64::from(left) << 16)
+                                | u64::from(right);
+                            if let Some(&result) = self.binary_cache.get(&key) {
+                                result
+                            } else {
+                                self.charge_operation()?;
+                                let a = self.nodes[usize::from(left)];
+                                let b = self.nodes[usize::from(right)];
+                                let variable = a.variable.min(b.variable);
+                                let (a_low, a_high) = a.cofactors(left, variable);
+                                let (b_low, b_high) = b.cofactors(right, variable);
+                                pending.push(ApplyTask::Combine { key, variable });
+                                pending.push(ApplyTask::Visit(a_high, b_high));
+                                task = ApplyTask::Visit(a_low, b_low);
+                                continue;
+                            }
+                        }
                     }
-                    let key = ((operation as u64) << 32) | u64::from(left.pair(right));
-                    if let Some(&result) = self.binary_cache.get(&key) {
-                        results.push(self.handle(result));
-                        continue;
-                    }
-                    self.charge_operation()?;
-                    let variable = self.top_variable(left, right)?;
-                    let (left_low, left_high) = self.cofactors(left, variable)?;
-                    let (right_low, right_high) = self.cofactors(right, variable)?;
-                    tasks.push(ApplyTask::Combine { key, variable });
-                    tasks.push(ApplyTask::Visit(left_high, right_high));
-                    tasks.push(ApplyTask::Visit(left_low, right_low));
                 }
                 ApplyTask::Combine { key, variable } => {
                     let high = results.pop().ok_or(BddError::MalformedEvaluation)?;
                     let low = results.pop().ok_or(BddError::MalformedEvaluation)?;
-                    let result = self.node(variable, low, high)?;
-                    // Descending into a cofactor advances the top variable.
-                    // Neither child can have inserted this pending pair.
+                    let result = self.intern(variable, low, high)?;
                     self.reserve_cache_entries(1)?;
-                    self.binary_cache.insert(key, result.node);
-                    results.push(result);
+                    self.binary_cache.insert(key, result);
+                    result
                 }
-            }
+            };
+            let Some(next) = pending.pop() else {
+                return Ok(result);
+            };
+            results.push(result);
+            task = next;
         }
-        if results.len() != 1 {
-            return Err(BddError::MalformedEvaluation);
-        }
-        results.pop().ok_or(BddError::MalformedEvaluation)
     }
 
     fn negate(&mut self, value: Bdd) -> Result<Bdd, BddError> {
@@ -476,41 +516,38 @@ impl Manager {
         if let Some(result) = self.implication_cache.get(&key) {
             return Ok(*result);
         }
-        let mut pending = vec![(premise, consequence)];
-        let mut visited = BTreeSet::new();
-        let mut result = true;
-        while let Some((premise, consequence)) = pending.pop() {
-            if premise.is_false() || consequence.is_true() || premise == consequence {
-                continue;
-            }
-            if premise.is_true() || consequence.is_false() {
-                result = false;
-                break;
-            }
-            if !visited.insert((premise, consequence)) {
-                continue;
-            }
-            self.charge_operation()?;
-            let variable = self.top_variable(premise, consequence)?;
-            let (premise_low, premise_high) = self.cofactors(premise, variable)?;
-            let (consequence_low, consequence_high) = self.cofactors(consequence, variable)?;
-            pending.push((premise_low, consequence_low));
-            pending.push((premise_high, consequence_high));
-        }
+        let result = self.implies_nodes(premise.node, consequence.node)?;
         self.reserve_cache_entries(1)?;
         self.implication_cache.insert(key, result);
         Ok(result)
     }
 
-    fn terminal(&self, operation: BinaryOp, left: Bdd, right: Bdd) -> Option<Bdd> {
-        match operation {
-            BinaryOp::And if left.is_false() || right.is_false() => Some(self.handle(0)),
-            BinaryOp::And if left.is_true() => Some(right),
-            BinaryOp::And if right.is_true() || left == right => Some(left),
-            BinaryOp::Or if left.is_true() || right.is_true() => Some(self.handle(1)),
-            BinaryOp::Or if left.is_false() => Some(right),
-            BinaryOp::Or if right.is_false() || left == right => Some(left),
-            _ => None,
+    fn implies_nodes(&mut self, premise: u16, consequence: u16) -> Result<bool, BddError> {
+        let mut pending = Vec::new();
+        let mut visited = HashSet::default();
+        let mut next = (premise, consequence);
+        loop {
+            let (premise, consequence) = next;
+            if premise != 0 && consequence != 1 && premise != consequence {
+                if premise == 1 || consequence == 0 {
+                    return Ok(false);
+                }
+                if visited.insert(u32::from(premise) << 16 | u32::from(consequence)) {
+                    self.charge_operation()?;
+                    let a = self.nodes[usize::from(premise)];
+                    let b = self.nodes[usize::from(consequence)];
+                    let variable = a.variable.min(b.variable);
+                    let (a_low, a_high) = a.cofactors(premise, variable);
+                    let (b_low, b_high) = b.cofactors(consequence, variable);
+                    pending.push((a_low, b_low));
+                    next = (a_high, b_high);
+                    continue;
+                }
+            }
+            let Some(child) = pending.pop() else {
+                return Ok(true);
+            };
+            next = child;
         }
     }
 
@@ -562,8 +599,14 @@ impl Manager {
     }
 }
 
+#[derive(Default)]
+struct ApplyWork {
+    pending: Vec<ApplyTask>,
+    results: Vec<u16>,
+}
+
 enum ApplyTask {
-    Visit(Bdd, Bdd),
+    Visit(u16, u16),
     Combine { key: u64, variable: usize },
 }
 
@@ -686,14 +729,6 @@ impl DnfBuilder {
             }
         }
         Some(merged)
-    }
-}
-
-fn ordered(left: Bdd, right: Bdd) -> (Bdd, Bdd) {
-    if left.node <= right.node {
-        (left, right)
-    } else {
-        (right, left)
     }
 }
 

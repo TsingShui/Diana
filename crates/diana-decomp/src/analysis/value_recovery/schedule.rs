@@ -929,7 +929,7 @@ impl ExpressionDependencies {
                     values.extend(identity.key(register));
                 }
                 SemanticExpression::Operation(operation) => {
-                    expressions.extend(operation.evaluation_operands()?);
+                    expressions.extend(operation.evaluation_operands_iter()?);
                 }
                 SemanticExpression::Select {
                     condition,
@@ -946,7 +946,7 @@ impl ExpressionDependencies {
         while let Some(predicate) = predicates.pop() {
             match predicate {
                 SemanticPredicate::Test(operation) => {
-                    for operand in operation.evaluation_operands()? {
+                    for operand in operation.evaluation_operands_iter()? {
                         values.extend(Self::collect(operand, identity)?);
                     }
                 }

@@ -449,7 +449,14 @@ impl CFG {
     }
 
     pub fn incoming_edges(&self, target: BlockId) -> Vec<(BlockId, EdgeKind)> {
-        self.incoming.get(&target).cloned().unwrap_or_default()
+        self.predecessors_with_kind(target).to_vec()
+    }
+
+    pub fn predecessors_with_kind(&self, target: BlockId) -> &[(BlockId, EdgeKind)] {
+        self.incoming
+            .get(&target)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
     }
 
     fn predecessor_snapshot_for(

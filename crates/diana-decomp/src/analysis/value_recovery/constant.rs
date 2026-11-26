@@ -1,30 +1,46 @@
 //! Kotlin-compatible evaluation for the constant arm of the SSA value lattice.
 
 use crate::ir::{
-    ArgType, ArithOp, CmpBias, InsnArg, InsnNode, InsnType, LiteralArg, PrimitiveType, UnaryOp,
+    ArgType, ArithOp, CmpBias, InsnArg, InsnPayload, InsnType, LiteralArg, PrimitiveType,
+    RegisterArg, UnaryOp,
 };
 
 pub(super) struct ConstantEvaluator;
 
 impl ConstantEvaluator {
-    pub(super) fn fold(instruction: &InsnNode, arguments: &[InsnArg]) -> Option<InsnArg> {
-        let result = instruction.result.as_ref()?;
-        let value = match instruction.insn_type {
+    pub(super) fn accepts(kind: InsnType) -> bool {
+        matches!(
+            kind,
+            InsnType::Const
+                | InsnType::Arith
+                | InsnType::Neg
+                | InsnType::Not
+                | InsnType::Cast
+                | InsnType::Cmp
+                | InsnType::InstanceOf
+        )
+    }
+
+    pub(super) fn fold(
+        kind: InsnType,
+        payload: &InsnPayload,
+        result: Option<&RegisterArg>,
+        arguments: &[InsnArg],
+    ) -> Option<InsnArg> {
+        let result = result?;
+        let value = match kind {
             InsnType::Const => Self::value(arguments.first()?)?,
             InsnType::Arith => Self::arithmetic(
-                instruction.payload.arith_op?,
+                payload.arith_op?,
                 &result.ty,
                 Self::value(arguments.first()?)?,
                 Self::value(arguments.get(1)?)?,
             )?,
             InsnType::Neg => Self::negate(&result.ty, Self::value(arguments.first()?)?)?,
             InsnType::Not => Self::bitwise_not(&result.ty, Self::value(arguments.first()?)?)?,
-            InsnType::Cast => Self::cast(
-                instruction.payload.unary_op?,
-                Self::value(arguments.first()?)?,
-            )?,
+            InsnType::Cast => Self::cast(payload.unary_op?, Self::value(arguments.first()?)?)?,
             InsnType::Cmp => Self::compare(
-                instruction.payload.cmp_bias?,
+                payload.cmp_bias?,
                 arguments.first()?.declared_type()?,
                 Self::value(arguments.first()?)?,
                 Self::value(arguments.get(1)?)?,

@@ -23,7 +23,6 @@ impl ReachingCondition {
 
 pub struct ReachingConditions {
     order: Vec<BlockId>,
-    ranks: BTreeMap<BlockId, usize>,
     conditions: BTreeMap<BlockId, ReachingCondition>,
     reachability: ReachabilityMatrix,
     branch_variables: Vec<BlockId>,
@@ -100,15 +99,8 @@ impl ReachingConditions {
             conditions.insert(*block, ReachingCondition { domain });
         }
         let reachability = ReachabilityMatrix::analyze(cfg, nodes, &order)?;
-        let ranks = order
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(rank, block)| (block, rank))
-            .collect();
         Ok(Self {
             order,
-            ranks,
             conditions,
             reachability,
             branch_variables,
@@ -131,7 +123,7 @@ impl ReachingConditions {
     }
 
     pub fn rank(&self, block: BlockId) -> Option<usize> {
-        self.ranks.get(&block).copied()
+        self.reachability.indices.get(&block).copied()
     }
 
     pub fn condition(&self, block: BlockId) -> Option<&ReachingCondition> {
@@ -300,7 +292,8 @@ impl AcyclicTopology {
 
 struct ReachabilityMatrix {
     indices: BTreeMap<BlockId, usize>,
-    rows: Vec<Vec<u64>>,
+    row_words: usize,
+    bits: Vec<u64>,
 }
 
 impl ReachabilityMatrix {
@@ -332,28 +325,31 @@ impl ReachabilityMatrix {
                 limit: Self::BYTE_LIMIT,
             });
         }
-        let mut rows = vec![vec![0u64; words]; order.len()];
-        for source in order.iter().rev().copied() {
-            let Some(source_index) = indices.get(&source).copied() else {
-                continue;
-            };
-            let mut row = vec![0u64; words];
+        let mut bits = vec![0u64; bytes / std::mem::size_of::<u64>()];
+        for (source_index, &source) in order.iter().enumerate().rev() {
+            // A DAG successor has a strictly greater rank. Its completed row
+            // and the source row therefore occupy disjoint parts of the table.
+            let split = (source_index + 1) * words;
+            let (prefix, suffix) = bits.split_at_mut(split);
+            let row = &mut prefix[source_index * words..];
             for target in cfg
                 .normal_successors(source)
                 .filter(|target| nodes.contains(target))
             {
-                let Some(target_index) = indices.get(&target).copied() else {
-                    continue;
-                };
+                let target_index = indices[&target];
                 row[target_index / u64::BITS as usize] |=
                     1u64 << (target_index % u64::BITS as usize);
-                for (word, descendants) in row.iter_mut().zip(&rows[target_index]) {
+                let start = (target_index - source_index - 1) * words;
+                for (word, descendants) in row.iter_mut().zip(&suffix[start..start + words]) {
                     *word |= descendants;
                 }
             }
-            rows[source_index] = row;
         }
-        Ok(Self { indices, rows })
+        Ok(Self {
+            indices,
+            row_words: words,
+            bits,
+        })
     }
 
     fn reaches(&self, source: BlockId, target: BlockId) -> bool {
@@ -363,10 +359,9 @@ impl ReachabilityMatrix {
         ) else {
             return false;
         };
-        self.rows
-            .get(source)
-            .and_then(|row| row.get(target / u64::BITS as usize))
-            .is_some_and(|word| word & (1u64 << (target % u64::BITS as usize)) != 0)
+        self.bits[source * self.row_words + target / u64::BITS as usize]
+            & (1u64 << (target % u64::BITS as usize))
+            != 0
     }
 }
 

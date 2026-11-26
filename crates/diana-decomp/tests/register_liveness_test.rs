@@ -1,0 +1,77 @@
+use diana_decomp::ir::{
+    analysis::RegisterLiveness, ArgType, ArithOp, Block, BlockId, EdgeKind, IfOp, InsnArg,
+    InsnNode, RegisterArg, CFG,
+};
+
+#[test]
+fn exception_backedge_observes_the_last_value_defined_before_the_throw() {
+    let reg = |n| RegisterArg::new(n, ArgType::INT);
+    let arg = |n| InsnArg::reg(n, ArgType::INT);
+    let mut cfg = CFG::new("retry");
+    cfg.add_block(Block::new(0));
+    let length = InsnNode::array_length(reg(1), InsnArg::reg(2, ArgType::array(ArgType::INT)));
+    cfg.add_block(Block::with_instructions(
+        10,
+        10,
+        vec![InsnNode::const_value(reg(0), 3), length],
+    ));
+    cfg.add_block(Block::with_instructions(
+        20,
+        20,
+        vec![InsnNode::if_cmp(
+            IfOp::Eq,
+            arg(1),
+            InsnArg::lit(0, ArgType::INT),
+            10,
+        )],
+    ));
+    cfg.add_block(Block::with_instructions(
+        30,
+        30,
+        vec![InsnNode::return_value(arg(1))],
+    ));
+    let sum = InsnNode::arith(ArithOp::Add, reg(8), arg(0), arg(7), ArgType::INT);
+    cfg.add_block(Block::with_instructions(
+        40,
+        40,
+        vec![InsnNode::return_value(InsnArg::wrap(sum))],
+    ));
+    for (from, to, edge) in [
+        (0, 10, EdgeKind::Normal),
+        (10, 20, EdgeKind::Exception),
+        (10, 30, EdgeKind::Normal),
+        (20, 10, EdgeKind::True),
+        (20, 40, EdgeKind::False),
+    ] {
+        cfg.add_edge(BlockId::new(from), BlockId::new(to), edge);
+    }
+
+    let live = RegisterLiveness::analyze(&cfg);
+    for (id, expected) in [
+        (0, &[1, 2, 7][..]),
+        (10, &[1, 2, 7]),
+        (20, &[0, 1, 2, 7]),
+        (30, &[1]),
+        (40, &[0, 7]),
+    ] {
+        let actual: Vec<_> = (0..=8)
+            .filter(|&r| live.is_live_in(BlockId::new(id), r))
+            .collect();
+        assert_eq!(actual, expected, "block {id}");
+    }
+
+    // An earlier write supplies the exceptional handler even if the same
+    // register is also the result of the throwing instruction.
+    cfg.block_mut(10)
+        .unwrap()
+        .insns
+        .insert(1, InsnNode::const_value(reg(1), 11));
+    let overwritten = RegisterLiveness::analyze(&cfg);
+    assert!(!overwritten.is_live_in(BlockId::new(0), 1));
+    assert!(!overwritten.is_live_in(BlockId::new(10), 1));
+    assert!(overwritten.is_live_in(BlockId::new(20), 1));
+    assert_eq!(
+        overwritten.definition_blocks(1).collect::<Vec<_>>(),
+        [BlockId::new(10)]
+    );
+}

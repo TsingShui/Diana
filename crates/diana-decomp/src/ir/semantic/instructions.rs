@@ -9,6 +9,12 @@ use super::{
 
 /// Typed callbacks for bottom-up Semantic IR expression transformations.
 pub trait SemanticExpressionTransform {
+    /// Operation-only rewrites can keep registers in their original shared
+    /// storage and omit all input, result and binding callbacks.
+    fn visits_registers(&self) -> bool {
+        true
+    }
+
     fn transform_register(&mut self, register: RegisterArg) -> SemanticExpression {
         SemanticExpression::Register(register)
     }
@@ -181,7 +187,11 @@ impl SemanticInstructions {
                 *operation = *transformed;
             }
             SemanticStatementKind::Definition { result, value, .. } => {
-                *result = transform.transform_result(result.clone());
+                if transform.visits_registers() {
+                    let original =
+                        std::mem::replace(result, RegisterArg::new(0, crate::ir::ArgType::VOID));
+                    *result = transform.transform_result(original);
+                }
                 Self::transform_expression(value, transform)?;
             }
         }
@@ -219,7 +229,7 @@ impl SemanticInstructions {
         value: &mut SemanticExpression,
         transform: &mut T,
     ) {
-        if matches!(value, SemanticExpression::Register(_)) {
+        if transform.visits_registers() && matches!(value, SemanticExpression::Register(_)) {
             let SemanticExpression::Register(register) = Self::take_expression(value) else {
                 unreachable!()
             };
@@ -243,7 +253,7 @@ impl SemanticInstructions {
         mut op: SemanticOperation,
         transform: &mut T,
     ) -> SemanticExpression {
-        if op.result.is_some() {
+        if transform.visits_registers() && op.result.is_some() {
             op.result = op
                 .result
                 .take()
@@ -256,8 +266,10 @@ impl SemanticInstructions {
         mut op: SemanticOperation,
         transform: &mut T,
     ) -> SemanticExpression {
-        for child in op.children_mut() {
-            Self::transform_leaf(child, transform);
+        if transform.visits_registers() {
+            for child in op.children_mut() {
+                Self::transform_leaf(child, transform);
+            }
         }
         Self::finish_operation(op, transform)
     }
@@ -285,7 +297,11 @@ impl SemanticInstructions {
         while let Some(task) = pending.pop() {
             match task {
                 ExpressionTask::Visit(SemanticExpression::Register(register)) => {
-                    results.push(transform.transform_register(register));
+                    results.push(if transform.visits_registers() {
+                        transform.transform_register(register)
+                    } else {
+                        SemanticExpression::Register(register)
+                    });
                 }
                 ExpressionTask::Visit(SemanticExpression::Literal(literal)) => {
                     results.push(SemanticExpression::Literal(literal));
@@ -350,17 +366,23 @@ impl SemanticInstructions {
     where
         T: SemanticExpressionTransform + ?Sized,
     {
+        if matches!(
+            predicate,
+            SemanticPredicate::True | SemanticPredicate::False
+        ) {
+            return Ok(());
+        }
         let root = std::mem::replace(predicate, SemanticPredicate::True);
+        if let SemanticPredicate::Test(operation) = root {
+            *predicate = Self::transform_test(operation, transform)?;
+            return Ok(());
+        }
         let mut pending = vec![PredicateTask::Visit(root)];
         let mut results = Vec::new();
         while let Some(task) = pending.pop() {
             match task {
                 PredicateTask::Visit(SemanticPredicate::Test(operation)) => {
-                    let expression = Self::transform_root_operation(operation, transform)?;
-                    let SemanticExpression::Operation(operation) = expression else {
-                        return Err(SemanticFoldError::NonOperationPredicate);
-                    };
-                    results.push(SemanticPredicate::Test(*operation));
+                    results.push(Self::transform_test(operation, transform)?);
                 }
                 PredicateTask::Visit(SemanticPredicate::Not(inner)) => {
                     pending.push(PredicateTask::Not);
@@ -406,6 +428,16 @@ impl SemanticInstructions {
         Ok(())
     }
 
+    fn transform_test<T: SemanticExpressionTransform + ?Sized>(
+        operation: SemanticOperation,
+        transform: &mut T,
+    ) -> Result<SemanticPredicate, SemanticFoldError> {
+        match Self::transform_root_operation(operation, transform)? {
+            SemanticExpression::Operation(operation) => Ok(SemanticPredicate::Test(*operation)),
+            _ => Err(SemanticFoldError::NonOperationPredicate),
+        }
+    }
+
     fn transform_register_binding<T>(
         register: &mut RegisterArg,
         transform: &mut T,
@@ -413,7 +445,11 @@ impl SemanticInstructions {
     where
         T: SemanticExpressionTransform + ?Sized,
     {
-        *register = transform.transform_binding(register.clone());
+        if transform.visits_registers() {
+            let original =
+                std::mem::replace(register, RegisterArg::new(0, crate::ir::ArgType::VOID));
+            *register = transform.transform_binding(original);
+        }
         Ok(())
     }
 }

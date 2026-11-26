@@ -1,4 +1,4 @@
-use std::{borrow::Cow, cell::RefCell, sync::Arc};
+use std::{borrow::Cow, cell::RefCell};
 
 use crate::ir::semantic::{CompletionDomain, CompletionInterpreter};
 use crate::ir::{
@@ -8,8 +8,8 @@ use crate::ir::{
 };
 
 use super::{
-    effects::EffectSummary, DefinitionFact, EffectFact, PredicateUseFact, UseContext, UseFact,
-    UseSite, ValueFlowGraph,
+    effects::EffectSummary, DefinitionFact, EffectFact, PredicateUseFact, ScopeId, UseContext,
+    UseFact, UseSite, ValueFlowGraph,
 };
 use crate::analysis::value_recovery::{domain::ControlDomain, ValueRecoveryError};
 
@@ -20,15 +20,11 @@ use scheduler::NodeScheduler;
 pub(super) struct FlowCollector<'ir> {
     graph: ValueFlowGraph<'ir>,
     next_event: usize,
-    next_scope: u32,
     next_protection: u32,
-    scope: Vec<u32>,
-    scope_kinds: Vec<bool>,
+    scope: ScopeId,
+    loop_owner: ScopeId,
+    enclosing_scopes: Vec<(ScopeId, ScopeId)>,
     protections: Vec<u32>,
-    scope_path: Arc<[u32]>,
-    loop_path: Arc<[u32]>,
-    protection_path: Arc<[u32]>,
-    repetitive_depth: usize,
     fallthrough_domains: std::collections::BTreeMap<usize, ControlDomain>,
 }
 
@@ -37,15 +33,11 @@ impl<'ir> FlowCollector<'ir> {
         Self {
             graph,
             next_event: 0,
-            next_scope: 0,
             next_protection: 0,
-            scope: Vec::new(),
-            scope_kinds: Vec::new(),
+            scope: ScopeId::default(),
+            loop_owner: ScopeId::default(),
+            enclosing_scopes: Vec::new(),
             protections: Vec::new(),
-            scope_path: Arc::from([]),
-            loop_path: Arc::from([]),
-            protection_path: Arc::from([]),
-            repetitive_depth: 0,
             fallthrough_domains: std::collections::BTreeMap::new(),
         }
     }
@@ -82,11 +74,7 @@ impl<'ir> FlowCollector<'ir> {
                 FlowTask::LeaveProtection(protection) => self.leave_protection(protection)?,
             }
         }
-        if !self.scope.is_empty()
-            || !self.scope_kinds.is_empty()
-            || !self.protections.is_empty()
-            || self.repetitive_depth != 0
-        {
+        if !self.enclosing_scopes.is_empty() || !self.protections.is_empty() {
             return Err(ValueRecoveryError::UnclosedScope);
         }
         Ok(())
@@ -98,7 +86,6 @@ impl<'ir> FlowCollector<'ir> {
         domain: ControlDomain,
     ) -> Result<(), ValueRecoveryError> {
         let event = self.event();
-        let loop_owners = self.loop_owners();
         let point = statement
             .site
             .map(crate::ir::analysis::SemanticFlowPoint::before);
@@ -153,14 +140,7 @@ impl<'ir> FlowCollector<'ir> {
             }
         };
         if let Some((result, value)) = definition {
-            self.record_definition(
-                statement,
-                result,
-                value,
-                execution_domain,
-                loop_owners,
-                event,
-            );
+            self.record_definition(statement, result, value, execution_domain, event);
         }
         self.record_effect(
             statement.site,
@@ -176,7 +156,6 @@ impl<'ir> FlowCollector<'ir> {
         result: &'ir crate::ir::RegisterArg,
         value: Cow<'ir, SemanticExpression>,
         domain: ControlDomain,
-        loop_owners: Arc<[u32]>,
         event: usize,
     ) {
         let Some(key) = self.graph.key(result) else {
@@ -194,11 +173,11 @@ impl<'ir> FlowCollector<'ir> {
                 result,
                 value,
                 domain,
-                scope: self.scope_path.clone(),
-                protections: self.protection_path.clone(),
-                loop_owners,
+                scope: self.scope,
+                protection: self.protections.last().copied(),
+                loop_owner: self.loop_owner,
                 event,
-                repetitive: self.repetitive_depth != 0,
+                repetitive: self.loop_owner != ScopeId::default(),
             });
     }
 
@@ -421,44 +400,56 @@ impl<'ir> FlowCollector<'ir> {
         site: Option<UseSite>,
         origin: Option<&crate::ir::analysis::SemanticFlowPoint>,
     ) -> Result<(), ValueRecoveryError> {
-        let loop_owners = self.loop_owners();
+        let operands = operation.evaluation_operands_iter()?;
+        if operands.clone().all(|operand| {
+            matches!(
+                operand,
+                SemanticExpression::Register(_) | SemanticExpression::Literal(_)
+            )
+        }) {
+            for operand in operands {
+                if let SemanticExpression::Register(register) = operand {
+                    self.record_use(
+                        register,
+                        domain,
+                        event,
+                        prefix,
+                        context,
+                        Some(operation.insn_type),
+                        site,
+                        origin,
+                    );
+                }
+            }
+            *prefix = std::mem::take(prefix).join(EffectSummary::direct(operation));
+            return Ok(());
+        }
         let mut pending = vec![EvaluationTask::Effect(operation)];
         pending.extend(
-            operation
-                .evaluation_operands()?
-                .into_iter()
+            operands
                 .rev()
                 .map(|expression| EvaluationTask::Expression(expression, operation.insn_type)),
         );
         while let Some(task) = pending.pop() {
             match task {
                 EvaluationTask::Expression(SemanticExpression::Register(register), consumer) => {
-                    if let Some(key) = self.graph.key(register) {
-                        self.graph.uses.entry(key).or_default().push(UseFact {
-                            point: origin.cloned(),
-                            domain,
-                            scope: self.scope_path.clone(),
-                            protections: self.protection_path.clone(),
-                            loop_owners: loop_owners.clone(),
-                            event,
-                            repetitive: self.repetitive_depth != 0,
-                            evaluation_prefix: prefix.clone(),
-                            context,
-                            consumer: Some(consumer),
-                            site,
-                        });
-                    }
+                    self.record_use(
+                        register,
+                        domain,
+                        event,
+                        prefix,
+                        context,
+                        Some(consumer),
+                        site,
+                        origin,
+                    );
                 }
                 EvaluationTask::Expression(SemanticExpression::Operation(child), _) => {
                     pending.push(EvaluationTask::Effect(child));
                     pending.extend(
-                        child
-                            .evaluation_operands()?
-                            .into_iter()
-                            .rev()
-                            .map(|expression| {
-                                EvaluationTask::Expression(expression, child.insn_type)
-                            }),
+                        child.evaluation_operands_iter()?.rev().map(|expression| {
+                            EvaluationTask::Expression(expression, child.insn_type)
+                        }),
                     );
                 }
                 EvaluationTask::Expression(
@@ -502,11 +493,39 @@ impl<'ir> FlowCollector<'ir> {
                 }
                 EvaluationTask::Expression(SemanticExpression::Literal(_), _) => {}
                 EvaluationTask::Effect(operation) => {
-                    *prefix = prefix.clone().join(EffectSummary::direct(operation));
+                    *prefix = std::mem::take(prefix).join(EffectSummary::direct(operation));
                 }
             }
         }
         Ok(())
+    }
+
+    fn record_use(
+        &mut self,
+        register: &crate::ir::RegisterArg,
+        domain: ControlDomain,
+        event: usize,
+        prefix: &EffectSummary,
+        context: UseContext,
+        consumer: Option<InsnType>,
+        site: Option<UseSite>,
+        origin: Option<&crate::ir::analysis::SemanticFlowPoint>,
+    ) {
+        if let Some(key) = self.graph.key(register) {
+            self.graph.uses.entry(key).or_default().push(UseFact {
+                point: origin.cloned(),
+                domain,
+                scope: self.scope,
+                protection: self.protections.last().copied(),
+                loop_owner: self.loop_owner,
+                event,
+                repetitive: self.loop_owner != ScopeId::default(),
+                evaluation_prefix: prefix.clone(),
+                context,
+                consumer,
+                site,
+            });
+        }
     }
 
     fn visit_expression_in_order(
@@ -520,24 +539,11 @@ impl<'ir> FlowCollector<'ir> {
         site: Option<UseSite>,
         origin: Option<&crate::ir::analysis::SemanticFlowPoint>,
     ) -> Result<(), ValueRecoveryError> {
-        let loop_owners = self.loop_owners();
         match expression {
             SemanticExpression::Register(register) => {
-                if let Some(key) = self.graph.key(register) {
-                    self.graph.uses.entry(key).or_default().push(UseFact {
-                        point: origin.cloned(),
-                        domain,
-                        scope: self.scope_path.clone(),
-                        protections: self.protection_path.clone(),
-                        loop_owners,
-                        event,
-                        repetitive: self.repetitive_depth != 0,
-                        evaluation_prefix: prefix.clone(),
-                        context,
-                        consumer,
-                        site,
-                    });
-                }
+                self.record_use(
+                    register, domain, event, prefix, context, consumer, site, origin,
+                );
                 Ok(())
             }
             SemanticExpression::Operation(operation) => {
@@ -596,10 +602,6 @@ impl<'ir> FlowCollector<'ir> {
         protection
     }
 
-    fn loop_owners(&self) -> Arc<[u32]> {
-        self.loop_path.clone()
-    }
-
     pub(super) fn record_effect(
         &mut self,
         site: Option<crate::ir::SemanticSiteId>,
@@ -619,52 +621,35 @@ impl<'ir> FlowCollector<'ir> {
     }
 
     fn enter_scope(&mut self, repetitive: bool) {
-        let scope = self.next_scope;
-        self.next_scope += 1;
-        self.scope.push(scope);
-        self.scope_kinds.push(repetitive);
-        self.repetitive_depth += usize::from(repetitive);
-        self.refresh_scope_paths();
+        self.enclosing_scopes.push((self.scope, self.loop_owner));
+        self.scope = self.graph.scopes.enter();
+        if repetitive {
+            self.loop_owner = self.scope;
+        }
     }
 
     fn leave_scope(&mut self, repetitive: bool) -> Result<(), ValueRecoveryError> {
-        self.scope.pop().ok_or(ValueRecoveryError::ScopeUnderflow)?;
-        let actual = self
-            .scope_kinds
+        let (outer, outer_loop) = self
+            .enclosing_scopes
             .pop()
             .ok_or(ValueRecoveryError::ScopeUnderflow)?;
-        if actual != repetitive {
+        if (self.loop_owner == self.scope) != repetitive {
             return Err(ValueRecoveryError::ScopeKindMismatch);
         }
-        self.repetitive_depth = self
-            .repetitive_depth
-            .checked_sub(usize::from(repetitive))
-            .ok_or(ValueRecoveryError::ScopeUnderflow)?;
-        self.refresh_scope_paths();
+        self.graph.scopes.close(self.scope);
+        self.scope = outer;
+        self.loop_owner = outer_loop;
         Ok(())
-    }
-
-    fn refresh_scope_paths(&mut self) {
-        self.scope_path = Arc::from(self.scope.as_slice());
-        self.loop_path = self
-            .scope
-            .iter()
-            .zip(&self.scope_kinds)
-            .filter_map(|(scope, repetitive)| repetitive.then_some(*scope))
-            .collect::<Vec<_>>()
-            .into();
     }
 
     fn enter_protection(&mut self, protection: u32) {
         self.protections.push(protection);
-        self.protection_path = Arc::from(self.protections.as_slice());
     }
 
     fn leave_protection(&mut self, protection: u32) -> Result<(), ValueRecoveryError> {
         if self.protections.pop() != Some(protection) {
             return Err(ValueRecoveryError::ScopeKindMismatch);
         }
-        self.protection_path = Arc::from(self.protections.as_slice());
         Ok(())
     }
 }
