@@ -6,6 +6,46 @@ use crate::ir::{
 use std::collections::BTreeSet;
 
 #[test]
+fn reaching_class_with_an_unnumbered_definition_precedes_flow_errors() {
+    use super::reaching::SemanticReachingAnalysis;
+    use crate::ir::analysis::{SemanticFlowPoint, SsaVar};
+    use crate::ir::{InstructionId, LiteralArg, RegisterArg, SemanticExpression};
+
+    let mut local = RegisterArg::new(1, ArgType::INT);
+    local.code_var = Some(8);
+    let root = SemanticNode::BasicBlock(SemanticBlock {
+        id: BlockId::new(0),
+        statements: [Some(SemanticSiteId(2)), None, Some(SemanticSiteId(7))]
+            .into_iter()
+            .enumerate()
+            .map(|(i, site)| {
+                let mut statement = SemanticStatement::definition(
+                    InstructionId::new(i),
+                    local.clone(),
+                    SemanticExpression::Literal(LiteralArg::new(12, ArgType::INT)),
+                );
+                statement.site = site;
+                statement
+            })
+            .collect(),
+    });
+    let graph = ValueFlowGraph::build_source(&root, &BTreeSet::new()).unwrap();
+    let reaching = SemanticReachingAnalysis::new(&graph);
+    let point = SemanticFlowPoint::after(SemanticSiteId(7));
+    let local = SsaVar::new(8, 0);
+    let unknown = SsaVar::new(17, 0);
+    for key in [local, unknown] {
+        assert!(matches!(
+            reaching.candidates(key, point),
+            Err(ValueRecoveryError::MissingDefinitionSite(value)) if value == key
+        ));
+    }
+    assert!(!reaching.unchanged(local, point, point));
+    assert!(reaching.unchanged(unknown, point, point));
+    assert!(graph.semantic_flow.as_ref().unwrap().graph.get().is_none());
+}
+
+#[test]
 fn source_plan_preserves_operand_errors_without_definitions() {
     let mut first = InsnNode::new(InsnType::Aput, 1);
     first.offset = 17;
@@ -107,11 +147,11 @@ fn empty_source_schedule_reduces_selects_nested_in_an_operand() {
         SemanticExpression::Literal(LiteralArg::new(8, ArgType::INT)),
         SemanticExpression::Literal(LiteralArg::new(2, ArgType::INT)),
     );
-    let nested = SemanticExpression::Operation(Box::new(SemanticOperation::from_parts(
+    let nested = SemanticExpression::Operation(SemanticOperation::from_parts(
         InsnNode::new(InsnType::Neg, 1),
         vec![selected],
         None,
-    )));
+    ));
     let mut statement = SemanticStatement::definition(
         InstructionId::new(1),
         RegisterArg::new(0, ArgType::INT),

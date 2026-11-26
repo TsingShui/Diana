@@ -146,6 +146,12 @@ pub trait SemanticVisitor {
 pub trait SemanticFolder {
     type Error: std::error::Error + From<SemanticFoldError>;
 
+    /// True only when folding this entire subtree leaves both it and the
+    /// folder state unchanged. Such children stay in their parent's storage.
+    fn preserves_subtree(&self, _node: &SemanticNode) -> bool {
+        false
+    }
+
     fn enter_node(&mut self, _node: &SemanticNode) {}
 
     fn begin_node(&mut self, node: SemanticNode) -> Result<SemanticFoldControl, Self::Error> {
@@ -338,15 +344,19 @@ pub fn fold_node<F: SemanticFolder + ?Sized>(
 ) -> Result<SemanticNode, F::Error> {
     // A frame retains its child storage while the folder owns the child.
     // Only the active ancestor chain is on the stack, even for a wide switch.
+    if folder.preserves_subtree(&node) {
+        return Ok(node);
+    }
     let mut parents = Vec::<(SemanticNode, usize)>::new();
     loop {
         folder.enter_node(&node);
         let mut result = match folder.begin_node(node)? {
             SemanticFoldControl::Emit(node) => node,
             SemanticFoldControl::Descend(mut parent) => {
-                if let Some(first) = fold_child(&mut parent, 0) {
-                    node = std::mem::replace(first, SemanticNode::Empty);
-                    parents.push((parent, 0));
+                let mut index = 0;
+                if let Some(first) = take_fold_child(folder, &mut parent, &mut index) {
+                    node = first;
+                    parents.push((parent, index));
                     continue;
                 }
                 folder.finish_node(parent)?
@@ -358,13 +368,27 @@ pub fn fold_node<F: SemanticFolder + ?Sized>(
             };
             *fold_child(parent, *index).ok_or(SemanticFoldError::MalformedWorkStack)? = result;
             *index += 1;
-            if let Some(next) = fold_child(parent, *index) {
-                node = std::mem::replace(next, SemanticNode::Empty);
+            if let Some(next) = take_fold_child(folder, parent, index) {
+                node = next;
                 break;
             }
             let (parent, _) = parents.pop().ok_or(SemanticFoldError::MalformedWorkStack)?;
             result = folder.finish_node(parent)?;
         }
+    }
+}
+
+fn take_fold_child<F: SemanticFolder + ?Sized>(
+    folder: &F,
+    parent: &mut SemanticNode,
+    index: &mut usize,
+) -> Option<SemanticNode> {
+    loop {
+        let child = fold_child(parent, *index)?;
+        if !folder.preserves_subtree(child) {
+            return Some(std::mem::replace(child, SemanticNode::Empty));
+        }
+        *index += 1;
     }
 }
 

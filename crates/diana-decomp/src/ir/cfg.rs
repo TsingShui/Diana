@@ -261,7 +261,11 @@ impl CFG {
     ///
     /// Returns only blocks that have entries in the successors map.
     pub fn graph_node_ids(&self) -> Vec<BlockId> {
-        self.successors.keys().copied().collect()
+        self.graph_nodes().collect()
+    }
+
+    pub(crate) fn graph_nodes(&self) -> impl ExactSizeIterator<Item = BlockId> + Clone + '_ {
+        self.successors.keys().copied()
     }
 
     /// Remove graph-topology entries that are no longer reachable from the entry.

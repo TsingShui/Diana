@@ -1,7 +1,6 @@
 //! Compact indices for immutable occurrence graphs.
 
-use super::{SemanticFlowGraph, SemanticFlowPoint, SemanticSiteId};
-use std::sync::{Arc, OnceLock};
+use super::{GraphIndex, SemanticFlowPoint, SemanticSiteId};
 
 /// Numbered method sites and synthetic program points each occupy contiguous
 /// ranges. Publicly constructed graphs can also use arbitrary 64-bit IDs.
@@ -131,82 +130,8 @@ struct EdgeRows {
 }
 
 impl EdgeRows {
-    fn push(&mut self, targets: impl Iterator<Item = usize>) {
-        self.offsets.push(self.targets.len());
-        self.targets.extend(targets);
-    }
-
     fn get(&self, node: usize) -> &[usize] {
         &self.targets[self.offsets[node]..self.offsets[node + 1]]
-    }
-}
-
-#[derive(Debug)]
-pub(in crate::ir::analysis) struct GraphIndex {
-    pub(super) points: Arc<PointNumbers>,
-    successors: EdgeRows,
-    predecessors: EdgeRows,
-    pub(super) entries: Vec<usize>,
-    blocks: OnceLock<FlowBlocks>,
-}
-
-impl GraphIndex {
-    pub(in crate::ir::analysis) fn len(&self) -> usize {
-        self.points.len()
-    }
-
-    pub(in crate::ir::analysis) fn point(&self, node: usize) -> SemanticFlowPoint {
-        self.points.point(node)
-    }
-
-    pub(in crate::ir::analysis) fn id(&self, point: SemanticFlowPoint) -> Option<usize> {
-        self.points.get(point)
-    }
-
-    pub(super) fn new(graph: &SemanticFlowGraph) -> Self {
-        let points = Arc::clone(&graph.edges.points);
-        let mut successors = EdgeRows::default();
-        let mut predecessors = EdgeRows::default();
-        for node in 0..points.len() {
-            let point = points.point(node);
-            successors.push(
-                graph
-                    .successors(point)
-                    .iter()
-                    .map(|&target| points.get(target).expect("indexed successor")),
-            );
-            predecessors.push(
-                graph
-                    .predecessors(point)
-                    .map(|source| points.get(source).expect("indexed predecessor")),
-            );
-        }
-        successors.offsets.push(successors.targets.len());
-        predecessors.offsets.push(predecessors.targets.len());
-        let entries = graph
-            .entries
-            .iter()
-            .map(|&entry| points.get(entry).expect("indexed entry"))
-            .collect();
-        Self {
-            points,
-            successors,
-            predecessors,
-            entries,
-            blocks: OnceLock::new(),
-        }
-    }
-
-    pub(super) fn blocks(&self) -> &FlowBlocks {
-        self.blocks.get_or_init(|| FlowBlocks::new(self))
-    }
-
-    pub(super) fn successors(&self, node: usize) -> &[usize] {
-        self.successors.get(node)
-    }
-
-    pub(in crate::ir::analysis) fn predecessors(&self, node: usize) -> &[usize] {
-        self.predecessors.get(node)
     }
 }
 
@@ -220,7 +145,7 @@ pub(super) struct FlowBlocks {
 }
 
 impl FlowBlocks {
-    fn new(index: &GraphIndex) -> Self {
+    pub(super) fn new(index: &GraphIndex) -> Self {
         let mut owner = vec![usize::MAX; index.len()];
         let mut points = EdgeRows::default();
         let mut entry = vec![false; index.len()];

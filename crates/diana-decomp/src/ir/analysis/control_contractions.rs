@@ -17,17 +17,16 @@ impl NormalCopySite {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ControlContractions {
     domains: Vec<BTreeMap<BlockId, BTreeSet<BlockId>>>,
+    members: std::sync::OnceLock<BTreeMap<BlockId, BTreeSet<BlockId>>>,
 }
 
 impl ControlContractions {
     #[cfg(test)]
     pub(crate) fn identity() -> Self {
-        Self {
-            domains: Vec::new(),
-        }
+        Self::default()
     }
 
     pub fn from_regions(regions: &RegionGraph) -> Self {
@@ -90,31 +89,45 @@ impl ControlContractions {
     }
 
     pub fn terminal(&self, block: BlockId) -> Option<BlockId> {
-        let terminals = self
+        let mut terminals = self
             .domains
             .iter()
             .filter_map(|domain| domain.get(&block))
             .flatten()
-            .copied()
-            .collect::<BTreeSet<_>>();
-        if terminals.is_empty() {
+            .copied();
+        let Some(first) = terminals.next() else {
             return Some(block);
-        }
-        let mut terminals = terminals.iter().copied();
-        let terminal = terminals.next()?;
-        terminals.next().is_none().then_some(terminal)
+        };
+        terminals.all(|terminal| terminal == first).then_some(first)
     }
 
     pub fn component(&self, terminal: BlockId) -> BTreeSet<BlockId> {
-        self.domains
-            .iter()
-            .flat_map(|domain| domain.iter())
-            .filter_map(|(block, terminals)| terminals.contains(&terminal).then_some(*block))
-            .collect()
+        self.component_members(terminal).clone()
+    }
+
+    fn component_members(&self, terminal: BlockId) -> &BTreeSet<BlockId> {
+        static EMPTY: BTreeSet<BlockId> = BTreeSet::new();
+        self.members
+            .get_or_init(|| {
+                let mut members = BTreeMap::<BlockId, BTreeSet<BlockId>>::new();
+                for domain in &self.domains {
+                    for (&block, terminals) in domain {
+                        for &terminal in terminals {
+                            members.entry(terminal).or_default().insert(block);
+                        }
+                    }
+                }
+                members
+            })
+            .get(&terminal)
+            .unwrap_or(&EMPTY)
     }
 
     fn with_domain(mut self, other: Self) -> Self {
-        self.domains.extend(other.domains);
+        if !other.domains.is_empty() {
+            self.domains.extend(other.domains);
+            self.members.take();
+        }
         self
     }
 
@@ -132,86 +145,80 @@ impl ControlContractions {
         entry: BlockId,
         successor: BlockId,
     ) -> Option<NormalCopySite> {
-        let predecessor_targets = cfg.normal_successors(predecessor).collect::<BTreeSet<_>>();
-        if predecessor_targets == BTreeSet::from([entry]) {
+        // Several edge kinds can lead to one target. The first two tests
+        // compare endpoint sets, while the final test requires one actual edge.
+        let mut targets = cfg.normal_successors(predecessor);
+        if targets.next() == Some(entry) && targets.all(|target| target == entry) {
             return Some(NormalCopySite::Block(predecessor));
         }
 
-        let component = self.component(successor);
+        let component = self.component_members(successor);
         if !component.contains(&entry) {
             return None;
         }
-        let external_ingress = cfg
-            .incoming_edges(entry)
-            .into_iter()
+        let mut ingress = cfg
+            .predecessors_with_kind(entry)
+            .iter()
             .filter(|(source, kind)| !kind.is_exception() && !component.contains(source))
-            .map(|(source, _)| source)
-            .collect::<BTreeSet<_>>();
-        if external_ingress != BTreeSet::from([predecessor]) {
+            .map(|(source, _)| *source);
+        if ingress.next() != Some(predecessor) || !ingress.all(|source| source == predecessor) {
             return None;
         }
-        let entry_targets = cfg.normal_successors(entry).collect::<BTreeSet<_>>();
-        if entry_targets.is_empty() || !entry_targets.is_subset(&component) {
+        let mut targets = cfg.normal_successors(entry).peekable();
+        if targets.peek().is_none() || !targets.all(|target| component.contains(&target)) {
             return None;
         }
-        let edge = cfg
+        let mut edges = cfg
             .successors_with_kind(predecessor)
             .iter()
-            .filter(|(target, kind)| *target == entry && !kind.is_exception())
-            .copied()
-            .collect::<Vec<_>>();
-        let [(target, kind)] = edge.as_slice() else {
-            return None;
-        };
-        Some(NormalCopySite::Edge(RegionEdge {
-            source: predecessor,
-            target: *target,
-            kind: *kind,
-        }))
+            .filter(|(target, kind)| *target == entry && !kind.is_exception());
+        let &(target, kind) = edges.next()?;
+        edges
+            .next()
+            .is_none()
+            .then_some(NormalCopySite::Edge(RegionEdge {
+                source: predecessor,
+                target,
+                kind,
+            }))
     }
 
     pub fn phi_copy_anchors(&self, cfg: &CFG) -> BTreeSet<BlockId> {
         let mut anchors = BTreeSet::new();
         for (&successor, block) in &cfg.blocks {
-            let mut component = self.component(successor);
-            component.remove(&successor);
-            for phi in block
+            let mut predecessors: smallvec::SmallVec<[BlockId; 4]> = block
                 .insns
                 .iter()
                 .filter(|instruction| instruction.insn_type == InsnType::Phi)
-            {
-                for (predecessor, edge_kind) in &phi.payload.phi_edges {
-                    if *edge_kind != EdgeKind::Normal {
-                        continue;
-                    }
-                    // SSA destruction may conservatively fall back from a
-                    // contracted quotient edge to its concrete Phi inputs.
-                    // Keep every normal predecessor identifiable until that
-                    // decision has been made; empty identities disappear
-                    // during semantic compaction.
-                    anchors.insert(*predecessor);
-                    if component.contains(predecessor) {
-                        for entry in &component {
-                            for (source, _) in
-                                cfg.incoming_edges(*entry)
-                                    .into_iter()
-                                    .filter(|(source, kind)| {
-                                        !component.contains(source) && !kind.is_exception()
-                                    })
-                            {
-                                if let Some(site) =
-                                    self.normal_copy_site(cfg, source, *entry, successor)
-                                {
-                                    anchors.insert(site.predecessor());
-                                }
-                            }
+                .flat_map(|phi| &phi.payload.phi_edges)
+                .filter_map(|&(source, kind)| (kind == EdgeKind::Normal).then_some(source))
+                .collect();
+            if predecessors.is_empty() {
+                continue;
+            }
+            predecessors.sort_unstable();
+            predecessors.dedup();
+            // SSA destruction can fall back to the original concrete inputs.
+            // The copy sites depend on the edge, independently of Phi identity.
+            anchors.extend(predecessors.iter().copied());
+            let members = self.component_members(successor);
+            let internal = |block: &BlockId| *block != successor && members.contains(block);
+            if predecessors.iter().any(internal) {
+                for &entry in members.iter().filter(|block| **block != successor) {
+                    for &(source, kind) in cfg.predecessors_with_kind(entry) {
+                        if kind.is_exception() || internal(&source) {
+                            continue;
                         }
-                    } else if !self.shares_quotient_node(*predecessor, successor) {
-                        if let Some(site) =
-                            self.normal_copy_site(cfg, *predecessor, successor, successor)
-                        {
+                        if let Some(site) = self.normal_copy_site(cfg, source, entry, successor) {
                             anchors.insert(site.predecessor());
                         }
+                    }
+                }
+            }
+            for source in predecessors {
+                if !internal(&source) && !self.shares_quotient_node(source, successor) {
+                    if let Some(site) = self.normal_copy_site(cfg, source, successor, successor) {
+                        anchors.insert(site.predecessor());
                     }
                 }
             }
@@ -247,9 +254,13 @@ impl<'a> ExceptionEntryCorridors<'a> {
     }
 
     fn relations(&self) -> BTreeSet<(BlockId, BlockId)> {
+        if self.handler_entries.is_empty() {
+            return BTreeSet::new();
+        }
         self.cfg
-            .block_ids()
-            .into_iter()
+            .blocks
+            .keys()
+            .copied()
             .filter(|block| self.is_landing(*block))
             .filter_map(|landing| self.corridor(landing))
             .flat_map(|(corridor, destination)| {
@@ -259,7 +270,7 @@ impl<'a> ExceptionEntryCorridors<'a> {
     }
 
     fn corridor(&self, landing: BlockId) -> Option<(Vec<BlockId>, BlockId)> {
-        let incoming = self.cfg.incoming_edges(landing);
+        let incoming = self.cfg.predecessors_with_kind(landing);
         if !incoming.iter().any(|(_, kind)| kind.is_exception())
             || incoming.iter().any(|(_, kind)| !kind.is_exception())
         {
@@ -345,6 +356,9 @@ impl ContractionGraph {
     }
 
     fn solve(&self, cycle_policy: CyclePolicy) -> ControlContractions {
+        if self.edges.is_empty() {
+            return ControlContractions::default();
+        }
         let components = StrongComponents::analyze(&self.edges);
         let component_edges = self.component_edges(&components);
         let terminals = ComponentTerminals::analyze(&components, &component_edges);
@@ -365,6 +379,7 @@ impl ContractionGraph {
                     (*block, terminal)
                 })
                 .collect()],
+            members: Default::default(),
         }
     }
 
@@ -659,3 +674,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/contraction_components.rs"]
+mod contraction_components;

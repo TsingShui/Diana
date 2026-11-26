@@ -164,6 +164,9 @@ impl<'ir> FlowCollector<'ir> {
         let Some(key) = self.graph.key(result) else {
             return;
         };
+        if statement.site.is_none() {
+            self.graph.definitions_without_sites.insert(key);
+        }
         self.graph
             .definitions
             .entry(key)
@@ -680,6 +683,7 @@ fn evaluation_operands(
 struct SequenceFallthrough {
     starts: std::collections::BTreeMap<usize, usize>,
     states: Vec<ControlDomain>,
+    branch_conditions: foldhash::HashMap<usize, ControlDomain>,
 }
 
 impl SequenceFallthrough {
@@ -700,10 +704,27 @@ impl SequenceFallthrough {
             .and_then(|&start| self.states.get(start..start.checked_add(children.len())?))
             .ok_or(ValueRecoveryError::IncompleteSemanticFlow)
     }
+
+    fn branch_condition(
+        &self,
+        predicate: &SemanticPredicate,
+        logic: &mut crate::analysis::value_recovery::domain::DomainLogic,
+    ) -> Result<ControlDomain, ValueRecoveryError> {
+        if !self.branch_conditions.is_empty() {
+            if let Some(&domain) = self
+                .branch_conditions
+                .get(&std::ptr::from_ref(predicate).addr())
+            {
+                return Ok(domain);
+            }
+        }
+        logic.predicate(predicate)
+    }
 }
 
 struct ControlFallthrough<'a> {
     logic: RefCell<&'a mut crate::analysis::value_recovery::domain::DomainLogic>,
+    branch_conditions: RefCell<foldhash::HashMap<usize, ControlDomain>>,
 }
 
 impl<'a> ControlFallthrough<'a> {
@@ -712,13 +733,14 @@ impl<'a> ControlFallthrough<'a> {
         logic: &'a mut crate::analysis::value_recovery::domain::DomainLogic,
     ) -> Result<SequenceFallthrough, ValueRecoveryError> {
         let mut sequences = SequenceFallthrough::default();
-        CompletionInterpreter::analyze_sequences(
-            root,
-            &Self {
-                logic: RefCell::new(logic),
-            },
-            |children, states| sequences.record(children, states),
-        )?;
+        let analysis = Self {
+            logic: RefCell::new(logic),
+            branch_conditions: Default::default(),
+        };
+        CompletionInterpreter::analyze_sequences(root, &analysis, |children, states| {
+            sequences.record(children, states)
+        })?;
+        sequences.branch_conditions = analysis.branch_conditions.into_inner();
         Ok(sequences)
     }
 
@@ -726,7 +748,24 @@ impl<'a> ControlFallthrough<'a> {
         &self,
         predicate: &SemanticPredicate,
     ) -> Result<ControlDomain, ValueRecoveryError> {
-        self.logic.borrow_mut().predicate(predicate)
+        let domain = self.logic.borrow_mut().predicate(predicate)?;
+        // The completion interpreter and scheduler borrow the same tree for
+        // this collection. Its compound conditions already have interned
+        // domains when the second traversal visits their If occurrences.
+        let compound = match predicate {
+            SemanticPredicate::And(_) | SemanticPredicate::Or(_) => true,
+            SemanticPredicate::Not(child) => matches!(
+                child.as_ref(),
+                SemanticPredicate::And(_) | SemanticPredicate::Or(_) | SemanticPredicate::Not(_)
+            ),
+            _ => false,
+        };
+        if compound {
+            self.branch_conditions
+                .borrow_mut()
+                .insert(std::ptr::from_ref(predicate).addr(), domain);
+        }
+        Ok(domain)
     }
 }
 

@@ -101,7 +101,10 @@ impl<'collector, 'node> NodeScheduler<'collector, 'node> {
         else_node: Option<&'node SemanticNode>,
     ) -> Result<(), ValueRecoveryError> {
         self.record_predicate(condition, condition.site.map(UseSite::Predicate))?;
-        let condition_domain = self.collector.graph.logic.predicate(condition)?;
+        let condition_domain = self
+            .collector
+            .fallthrough_domains
+            .branch_condition(condition, &mut self.collector.graph.logic)?;
         if let Some(else_node) = else_node {
             let otherwise = self.collector.graph.logic.not(condition_domain)?;
             let domain = self.collector.graph.logic.and(self.domain, otherwise)?;

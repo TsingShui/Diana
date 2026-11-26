@@ -88,12 +88,6 @@ struct Node {
     high: Bdd,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum BinaryOp {
-    And,
-    Or,
-}
-
 #[derive(Clone, Copy)]
 struct ArenaNode {
     variable: usize,
@@ -136,7 +130,7 @@ struct Manager {
     // Nodes already own their immutable keys. Buckets only need their arena IDs.
     unique: hashbrown::HashTable<u16>,
     unique_hasher: foldhash::fast::RandomState,
-    binary_cache: HashMap<u64, u16>,
+    binary_cache: HashMap<u32, u16>,
     apply_work: Vec<ApplyFrame>,
     implication_work: ImplicationWork,
     complements: usize,
@@ -251,38 +245,39 @@ impl Manager {
     }
 
     fn and(&mut self, left: Bdd, right: Bdd) -> Result<Bdd, BddError> {
-        self.apply(BinaryOp::And, left, right)
+        self.apply::<true>(left, right)
     }
 
     fn or(&mut self, left: Bdd, right: Bdd) -> Result<Bdd, BddError> {
-        self.apply(BinaryOp::Or, left, right)
+        self.apply::<false>(left, right)
     }
 
-    fn apply(&mut self, operation: BinaryOp, left: Bdd, right: Bdd) -> Result<Bdd, BddError> {
+    fn apply<const AND: bool>(&mut self, left: Bdd, right: Bdd) -> Result<Bdd, BddError> {
         self.validate(left)?;
         self.validate(right)?;
-        let result = self.apply_nodes(operation, left.node, right.node);
+        let result = self.apply_nodes::<AND>(left.node, right.node);
         if result.is_err() {
             self.apply_work.clear();
         }
         result.map(|id| self.handle(id))
     }
 
-    fn apply_nodes(
+    fn apply_nodes<const AND: bool>(
         &mut self,
-        operation: BinaryOp,
         mut left: u16,
         mut right: u16,
     ) -> Result<u16, BddError> {
         loop {
             (left, right) = (left.min(right), left.max(right));
-            let mut result = match (operation, left) {
-                (BinaryOp::And, 0) | (BinaryOp::Or, 1) => left,
-                (BinaryOp::Or, 0) | (BinaryOp::And, 1) => right,
+            let mut result = match (AND, left) {
+                (true, 0) | (false, 1) => left,
+                (false, 0) | (true, 1) => right,
                 _ if left == right => left,
                 _ => {
-                    let key =
-                        ((operation as u64) << 32) | (u64::from(left) << 16) | u64::from(right);
+                    // Equal operands resolved above. The strict pair order
+                    // leaves one orientation for each commutative operation.
+                    let (first, second) = if AND { (left, right) } else { (right, left) };
+                    let key = u32::from(first) << 16 | u32::from(second);
                     if let Some(&result) = self.binary_cache.get(&key) {
                         result
                     } else {
@@ -662,7 +657,7 @@ impl Manager {
 }
 
 struct ApplyFrame {
-    key: u64,
+    key: u32,
     variable: usize,
     next: ApplyChild,
 }

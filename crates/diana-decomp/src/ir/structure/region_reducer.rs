@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::ir::analysis::ControlContractions;
 use crate::ir::semantic::SemanticFactory;
 use crate::ir::{
     BlockId, RegionGraph, RegionId, RegionKind, SemanticBlock, SemanticCatch, SemanticFinally,
@@ -46,6 +47,20 @@ impl<'a> RegionReducer<'a> {
         regions: &'a RegionGraph,
         observer: &'a dyn crate::ir::AnalysisObserver,
     ) -> Result<Self, StructureError> {
+        Self::with_edge_arguments(
+            cfg,
+            regions,
+            observer,
+            &ControlContractions::for_edge_arguments(cfg, regions),
+        )
+    }
+
+    pub(crate) fn with_edge_arguments(
+        cfg: &'a CFG,
+        regions: &'a RegionGraph,
+        observer: &'a dyn crate::ir::AnalysisObserver,
+        edge_arguments: &ControlContractions,
+    ) -> Result<Self, StructureError> {
         let handlers = HandlerReducer::new(regions);
         let handler_bodies = regions
             .tree()
@@ -58,12 +73,14 @@ impl<'a> RegionReducer<'a> {
                     .map(|handler| handlers.body_region(owner.id, handler))
             })
             .collect::<Result<BTreeSet<_>, _>>()?;
+        let anchors = RegionAnchors::analyze(cfg, regions, edge_arguments)?;
+        let entry_ports = RegionEntryPorts::analyze(cfg, regions, &anchors)?;
         Ok(Self {
             cfg,
             regions,
             observer,
-            anchors: RegionAnchors::analyze(cfg, regions)?,
-            entry_ports: RegionEntryPorts::analyze(cfg, regions)?,
+            anchors,
+            entry_ports,
             handler_bodies,
         })
     }

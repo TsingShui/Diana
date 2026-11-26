@@ -1172,15 +1172,11 @@ impl<'a> ValuePlanner<'a> {
         source: crate::ir::analysis::SemanticFlowPoint,
         target: crate::ir::analysis::SemanticFlowPoint,
     ) -> bool {
-        if !self.facts.reaching_supports(source, target) {
-            return false;
-        }
-        let mut inputs = ExpressionInputs::new(self.graph().identity());
-        inputs.visit_operation(predicate);
-        inputs
-            .keys
-            .into_iter()
-            .all(|key| self.facts.reaching_unchanged(key, source, target))
+        self.facts.operands_unchanged(source, target, || {
+            let mut inputs = ExpressionInputs::new(self.graph().identity());
+            inputs.visit_operation(predicate);
+            inputs.keys
+        })
     }
 
     fn match_definitions(
@@ -1476,13 +1472,11 @@ impl<'a> ValuePlanner<'a> {
         source: crate::ir::analysis::SemanticFlowPoint,
         target: crate::ir::analysis::SemanticFlowPoint,
     ) -> bool {
-        if !self.facts.reaching_supports(source, target) {
-            return false;
-        }
-        self.definition_variables(definition)
-            .into_iter()
-            .filter(|key| *key != definition.key)
-            .all(|key| self.facts.reaching_unchanged(key, source, target))
+        self.facts.operands_unchanged(source, target, || {
+            let mut variables = self.definition_variables(definition);
+            variables.remove(&definition.key);
+            variables
+        })
     }
 
     fn same_operation(&self, left: &SemanticOperation, right: &SemanticOperation) -> bool {

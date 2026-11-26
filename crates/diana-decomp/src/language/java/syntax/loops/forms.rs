@@ -44,9 +44,9 @@ impl LoopForm {
                 let update_statement = StatementBoundary::take(&mut body, Boundary::Last)?;
                 SemanticNode::For {
                     control,
-                    init,
+                    init: Box::new(init),
                     condition: test.condition,
-                    update: update_statement,
+                    update: Box::new(update_statement),
                     body,
                 }
             }
@@ -128,7 +128,7 @@ impl SemanticExpressionTransform for AdvanceUseRewrite {
         if operation.id == self.instruction {
             SemanticExpression::Register(self.variable.clone())
         } else {
-            SemanticExpression::Operation(Box::new(operation))
+            SemanticExpression::Operation(operation)
         }
     }
 }

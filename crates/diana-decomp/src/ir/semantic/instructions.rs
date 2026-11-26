@@ -20,7 +20,7 @@ pub trait SemanticExpressionTransform {
     }
 
     fn transform_operation(&mut self, operation: SemanticOperation) -> SemanticExpression {
-        SemanticExpression::Operation(Box::new(operation))
+        SemanticExpression::Operation(operation)
     }
 
     fn transform_select(
@@ -184,7 +184,7 @@ impl SemanticInstructions {
                 let SemanticExpression::Operation(transformed) = expression else {
                     return Err(SemanticFoldError::NonOperationStatement);
                 };
-                *operation = *transformed;
+                *operation = transformed;
             }
             SemanticStatementKind::Definition { result, value, .. } => {
                 if transform.visits_registers() {
@@ -281,7 +281,7 @@ impl SemanticInstructions {
         if Self::direct_operands(&op) {
             return Ok(Self::transform_direct_operation(op, transform));
         }
-        Self::transform_owned_expression(SemanticExpression::Operation(Box::new(op)), transform)
+        Self::transform_owned_expression(SemanticExpression::Operation(op), transform)
     }
 
     fn transform_owned_expression<T>(
@@ -306,8 +306,7 @@ impl SemanticInstructions {
                 ExpressionTask::Visit(SemanticExpression::Literal(literal)) => {
                     results.push(SemanticExpression::Literal(literal));
                 }
-                ExpressionTask::Visit(SemanticExpression::Operation(operation)) => {
-                    let mut operation = *operation;
+                ExpressionTask::Visit(SemanticExpression::Operation(mut operation)) => {
                     if Self::direct_operands(&operation) {
                         results.push(Self::transform_direct_operation(operation, transform));
                         continue;
@@ -433,7 +432,7 @@ impl SemanticInstructions {
         transform: &mut T,
     ) -> Result<SemanticPredicate, SemanticFoldError> {
         match Self::transform_root_operation(operation, transform)? {
-            SemanticExpression::Operation(operation) => Ok(SemanticPredicate::Test(*operation)),
+            SemanticExpression::Operation(operation) => Ok(SemanticPredicate::Test(operation)),
             _ => Err(SemanticFoldError::NonOperationPredicate),
         }
     }

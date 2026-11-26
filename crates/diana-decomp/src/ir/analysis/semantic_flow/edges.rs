@@ -6,7 +6,10 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
-use super::{index::PointNumbers, SemanticFlowEdgeKind, SemanticFlowPoint};
+use super::{
+    index::{FlowBlocks, PointNumbers},
+    SemanticFlowEdgeKind, SemanticFlowPoint,
+};
 
 pub(super) type FlowEdge = (SemanticFlowPoint, SemanticFlowPoint, SemanticFlowEdgeKind);
 
@@ -17,47 +20,50 @@ struct Rows<T> {
 }
 
 impl<T: Copy + Ord> Rows<T> {
-    fn build(count: usize, pairs: impl Iterator<Item = (usize, T)> + Clone) -> Self {
-        let mut offsets = vec![0; count + 1];
-        let Some((_, initial)) = pairs.clone().next() else {
-            return Self {
-                offsets,
-                items: Vec::new(),
-            };
-        };
-        for (row, _) in pairs.clone() {
-            offsets[row + 1] += 1;
+    fn counted(mut counts: Vec<usize>, initial: T) -> Self {
+        let mut total = 0;
+        for count in &mut counts {
+            let degree = *count;
+            *count = total;
+            total += degree;
         }
-        for i in 1..offsets.len() {
-            offsets[i] += offsets[i - 1];
+        Self {
+            offsets: counts,
+            items: vec![initial; total],
         }
-        let mut items = vec![initial; offsets[count]];
-        let mut cursor = offsets[..count].to_vec();
-        for (row, item) in pairs {
-            items[cursor[row]] = item;
-            cursor[row] += 1;
-        }
+    }
+
+    fn add(&mut self, row: usize, item: T) {
+        let next = &mut self.offsets[row];
+        self.items[*next] = item;
+        *next += 1;
+    }
+
+    fn finish(&mut self) {
+        // The insertion cursors now hold row ends. Recover each start and
+        // compact distinct entries in place, retaining the public row order.
+        let count = self.offsets.len() - 1;
+        let mut start = 0;
         let mut write = 0;
-        for row in 0..count {
-            let start = offsets[row];
-            let end = offsets[row + 1];
-            offsets[row] = write;
+        for cursor in &mut self.offsets[..count] {
+            let end = *cursor;
+            *cursor = write;
             if end == start + 1 {
-                items[write] = items[start];
+                self.items[write] = self.items[start];
                 write += 1;
             } else if end > start {
-                items[start..end].sort_unstable();
+                self.items[start..end].sort_unstable();
                 for read in start..end {
-                    if write == offsets[row] || items[read] != items[write - 1] {
-                        items[write] = items[read];
+                    if write == *cursor || self.items[read] != self.items[write - 1] {
+                        self.items[write] = self.items[read];
                         write += 1;
                     }
                 }
             }
+            start = end;
         }
-        offsets[count] = write;
-        items.truncate(write);
-        Self { offsets, items }
+        self.offsets[count] = write;
+        self.items.truncate(write);
     }
 
     fn get(&self, index: usize) -> &[T] {
@@ -65,22 +71,25 @@ impl<T: Copy + Ord> Rows<T> {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(super) struct FlowEdges {
+#[derive(Debug)]
+pub(in crate::ir::analysis) struct GraphIndex {
     pub(super) points: Arc<PointNumbers>,
-    successors: Rows<SemanticFlowPoint>,
-    predecessors: Rows<(SemanticFlowPoint, SemanticFlowEdgeKind)>,
+    successors: Rows<usize>,
+    predecessors: Rows<(usize, SemanticFlowEdgeKind)>,
+    successor_points: OnceLock<Box<[SemanticFlowPoint]>>,
+    pub(super) entries: Vec<usize>,
+    blocks: OnceLock<FlowBlocks>,
     pub(super) cleanup: bool,
-    mandatory_paths: OnceLock<Arc<Mutex<MandatoryPaths>>>,
+    mandatory_paths: OnceLock<Mutex<MandatoryPaths>>,
 }
 
-impl Default for FlowEdges {
+impl Default for GraphIndex {
     fn default() -> Self {
         Self::new(&[], &BTreeSet::new())
     }
 }
 
-impl FlowEdges {
+impl GraphIndex {
     pub(super) fn new(edges: &[FlowEdge], entries: &BTreeSet<SemanticFlowPoint>) -> Self {
         let observations = edges.len().saturating_mul(2).saturating_add(entries.len());
         let points = Arc::new(PointNumbers::from_occurrences(
@@ -91,65 +100,119 @@ impl FlowEdges {
             observations,
         ));
         let count = points.len();
-        let successors = Rows::build(
-            count,
-            edges.iter().map(|&(source, target, _)| {
-                (points.get(source).expect("edge source is indexed"), target)
-            }),
-        );
-        let predecessors = Rows::build(
-            count,
-            edges.iter().map(|&(source, target, kind)| {
-                (
-                    points.get(target).expect("edge target is indexed"),
-                    (source, kind),
-                )
-            }),
-        );
-        let cleanup = edges.iter().any(|&(_, _, edge)| {
-            matches!(
-                edge,
+        let mut outgoing = vec![0; count + 1];
+        let mut incoming = vec![0; count + 1];
+        let mut cleanup = false;
+        for &(source, target, kind) in edges {
+            outgoing[points.get(source).expect("indexed source")] += 1;
+            incoming[points.get(target).expect("indexed target")] += 1;
+            cleanup |= matches!(
+                kind,
                 SemanticFlowEdgeKind::FinallyEnter(_)
                     | SemanticFlowEdgeKind::FinallyResume(_)
                     | SemanticFlowEdgeKind::FinallyOverride
-            )
-        });
+            );
+        }
+        let mut successors = Rows::counted(outgoing, 0);
+        let mut predecessors = Rows::counted(incoming, (0, SemanticFlowEdgeKind::Normal));
+        for &(source, target, kind) in edges {
+            let source = points.get(source).expect("indexed source");
+            let target = points.get(target).expect("indexed target");
+            successors.add(source, target);
+            predecessors.add(target, (source, kind));
+        }
+        successors.finish();
+        predecessors.finish();
+        let entries = entries
+            .iter()
+            .map(|&entry| points.get(entry).expect("indexed entry"))
+            .collect();
         Self {
             points,
             successors,
             predecessors,
+            successor_points: OnceLock::new(),
+            entries,
+            blocks: OnceLock::new(),
             cleanup,
             mandatory_paths: OnceLock::new(),
         }
     }
 
-    pub(super) fn must_reach(&self, source: SemanticFlowPoint, target: SemanticFlowPoint) -> bool {
-        let (Some(source), Some(target)) = (self.points.get(source), self.points.get(target))
-        else {
-            return false;
-        };
+    pub(super) fn must_reach(&self, source: usize, target: usize) -> bool {
         self.mandatory_paths
-            .get_or_init(|| Arc::new(Mutex::default()))
+            .get_or_init(Mutex::default)
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .search(self, source, target)
     }
 
-    pub(super) fn successors(&self, point: SemanticFlowPoint) -> &[SemanticFlowPoint] {
-        self.points
-            .get(point)
-            .map(|row| self.successors.get(row))
-            .unwrap_or_default()
+    pub(in crate::ir::analysis) fn len(&self) -> usize {
+        self.points.len()
     }
 
-    pub(super) fn predecessors(
+    pub(in crate::ir::analysis) fn point(&self, node: usize) -> SemanticFlowPoint {
+        self.points.point(node)
+    }
+
+    pub(in crate::ir::analysis) fn id(&self, point: SemanticFlowPoint) -> Option<usize> {
+        self.points.get(point)
+    }
+
+    pub(super) fn blocks(&self) -> &FlowBlocks {
+        self.blocks.get_or_init(|| FlowBlocks::new(self))
+    }
+
+    pub(super) fn successor_count(&self) -> usize {
+        self.successors.items.len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn has_projected_successors(&self) -> bool {
+        self.successor_points.get().is_some()
+    }
+
+    pub(super) fn successors(&self, node: usize) -> &[usize] {
+        self.successors.get(node)
+    }
+
+    pub(in crate::ir::analysis) fn predecessors(
+        &self,
+        node: usize,
+    ) -> impl ExactSizeIterator<Item = usize> + '_ {
+        self.predecessors
+            .get(node)
+            .iter()
+            .map(|&(source, _)| source)
+    }
+
+    pub(super) fn successor_points(&self, point: SemanticFlowPoint) -> &[SemanticFlowPoint] {
+        let Some(row) = self.id(point) else {
+            return &[];
+        };
+        let start = self.successors.offsets[row];
+        let end = self.successors.offsets[row + 1];
+        if start == end {
+            return &[];
+        }
+        let points = self.successor_points.get_or_init(|| {
+            self.successors
+                .items
+                .iter()
+                .map(|&node| self.point(node))
+                .collect()
+        });
+        &points[start..end]
+    }
+
+    pub(super) fn incoming_points(
         &self,
         point: SemanticFlowPoint,
-    ) -> &[(SemanticFlowPoint, SemanticFlowEdgeKind)] {
-        self.points
-            .get(point)
-            .map(|row| self.predecessors.get(row))
-            .unwrap_or_default()
+    ) -> impl Iterator<Item = (SemanticFlowPoint, SemanticFlowEdgeKind)> + '_ {
+        self.id(point)
+            .into_iter()
+            .flat_map(|node| self.predecessors.get(node))
+            .map(|&(node, kind)| (self.point(node), kind))
     }
 }
 
@@ -164,7 +227,7 @@ struct MandatoryPaths {
 }
 
 impl MandatoryPaths {
-    fn search(&mut self, edges: &FlowEdges, source: usize, target: usize) -> bool {
+    fn search(&mut self, edges: &GraphIndex, source: usize, target: usize) -> bool {
         self.colors.resize(edges.points.len(), 0);
         if self.generation >= u32::MAX - 2 {
             self.colors.fill(0);
@@ -187,7 +250,6 @@ impl MandatoryPaths {
                 continue;
             };
             *cursor += 1;
-            let next = edges.points.get(next).expect("edge target is indexed");
             if next == target || self.colors[next] == complete {
                 continue;
             }

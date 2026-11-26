@@ -190,7 +190,7 @@ impl JavaTypeErasureIndex {
     }
 
     fn class_key(class: &JavaClassType) -> std::borrow::Cow<'_, str> {
-        if let [segment] = class.segments.as_slice() {
+        if let [segment] = class.segments.as_ref() {
             return std::borrow::Cow::Borrowed(segment.name.as_str());
         }
         let mut key = String::new();
@@ -455,7 +455,7 @@ impl<'a> JavaTypeRelations<'a> {
             && source
                 .segments
                 .iter()
-                .zip(&target.segments)
+                .zip(target.segments.iter())
                 .all(|(source, target)| {
                     source.name == target.name
                         && self.arguments_are_assignable(&source.arguments, &target.arguments)
@@ -1258,7 +1258,7 @@ impl<'a> GenericTypeSolver<'a> {
             .len()
             .saturating_sub(argument_groups.len());
         for (segment, arguments) in resolved
-            .segments
+            .segments_mut()
             .iter_mut()
             .skip(segment_offset)
             .zip(argument_groups.into_iter().skip(argument_offset))
@@ -1343,7 +1343,7 @@ impl<'a> GenericTypeSolver<'a> {
                     .saturating_sub(argument_groups.len());
                 let mut captured = false;
                 for (segment, arguments) in resolved
-                    .segments
+                    .segments_mut()
                     .iter_mut()
                     .skip(segment_offset)
                     .zip(argument_groups.into_iter().skip(argument_offset))
@@ -1979,7 +1979,8 @@ impl GenericTypeEvidence {
             }
             (JavaType::Class(left), JavaType::Class(right)) if left.same_name(right) => {
                 let mut merged = left.clone();
-                for (segment, right) in merged.segments.iter_mut().zip(&right.segments) {
+                for (segment, right) in merged.segments_mut().iter_mut().zip(right.segments.iter())
+                {
                     segment.arguments =
                         match (segment.arguments.is_empty(), right.arguments.is_empty()) {
                             (true, false) => right.arguments.clone(),
@@ -2024,7 +2025,8 @@ impl GenericTypeEvidence {
             }
             (JavaType::Class(left), JavaType::Class(right)) if left.same_name(right) => {
                 let mut merged = left.clone();
-                for (segment, right) in merged.segments.iter_mut().zip(&right.segments) {
+                for (segment, right) in merged.segments_mut().iter_mut().zip(right.segments.iter())
+                {
                     segment.arguments =
                         match (segment.arguments.is_empty(), right.arguments.is_empty()) {
                             (true, false) => right.arguments.clone(),
@@ -2082,7 +2084,8 @@ impl<'a> GenericRequirementLattice<'a> {
             }
             (JavaType::Class(left), JavaType::Class(right)) if left.same_name(right) => {
                 let mut joined = left.clone();
-                for (segment, right) in joined.segments.iter_mut().zip(&right.segments) {
+                for (segment, right) in joined.segments_mut().iter_mut().zip(right.segments.iter())
+                {
                     if right.arguments.is_empty() {
                         continue;
                     }
@@ -5760,7 +5763,8 @@ impl<'a> SourceTypeFlow<'a> {
                 else {
                     return None;
                 };
-                iterable.segments.last_mut()?.arguments = vec![JavaTypeArgument::Exact(element)];
+                iterable.segments_mut().last_mut()?.arguments =
+                    vec![JavaTypeArgument::Exact(element)];
                 Some(JavaType::Class(iterable))
             }
             JavaType::Variable(_) | JavaType::Primitive(_) => None,
@@ -5795,7 +5799,7 @@ impl<'a> SourceTypeFlow<'a> {
         else {
             return None;
         };
-        class.segments.last_mut()?.arguments = vec![JavaTypeArgument::Exact(represented)];
+        class.segments_mut().last_mut()?.arguments = vec![JavaTypeArgument::Exact(represented)];
         Some(JavaType::Class(class))
     }
 
@@ -6022,10 +6026,7 @@ impl SemanticVisitor for SourceTypeFlow<'_> {
 
     fn enter_operation(&mut self, operation: &SemanticOperation) {
         if let Some(result) = &operation.result {
-            self.record_equation(
-                result,
-                SemanticExpression::Operation(Box::new(operation.clone())),
-            );
+            self.record_equation(result, SemanticExpression::Operation(operation.clone()));
         }
         self.record_erased_generic_boundaries(operation);
         if matches!(
@@ -6134,7 +6135,7 @@ mod tests {
             JavaType::Class(ty) => ty,
             _ => unreachable!(),
         };
-        ty.segments.last_mut().unwrap().arguments = arguments;
+        ty.segments_mut().last_mut().unwrap().arguments = arguments;
         JavaType::Class(ty)
     }
 

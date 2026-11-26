@@ -189,9 +189,9 @@ impl LoopTestCycle {
         };
         SemanticNode::For {
             control,
-            init: statement.clone(),
+            init: Box::new(statement.clone()),
             condition: test.condition,
-            update: statement,
+            update: Box::new(statement),
             body,
         }
     }
@@ -236,7 +236,7 @@ impl SemanticExpressionTransform for ConditionValueInlining {
         if SsaVar::from_reg(&register) == Some(self.value) {
             self.expression
                 .take()
-                .map(|operation| SemanticExpression::Operation(Box::new(operation)))
+                .map(SemanticExpression::Operation)
                 .unwrap_or(SemanticExpression::Register(register))
         } else {
             SemanticExpression::Register(register)

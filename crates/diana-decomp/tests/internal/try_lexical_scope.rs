@@ -124,3 +124,36 @@ fn no_return_body_fallthrough_handler_or_finally_keeps_the_entire_tail_outside()
         assert_eq!(ids(&rest), [2, 3]);
     }
 }
+
+#[test]
+fn normalizer_keeps_normal_children_and_still_rewrites_their_siblings() {
+    use crate::ir::{SemanticFoldError, SemanticFolder};
+
+    struct RecordBlocks(Vec<u32>);
+    impl SemanticFolder for RecordBlocks {
+        type Error = SemanticFoldError;
+
+        fn preserves_subtree(&self, node: &SemanticNode) -> bool {
+            matches!(node, SemanticNode::BasicBlock(block) if block.id.raw() % 2 == 0)
+        }
+
+        fn finish_node(&mut self, node: SemanticNode) -> Result<SemanticNode, Self::Error> {
+            if let SemanticNode::BasicBlock(block) = &node {
+                self.0.push(block.id.raw());
+                if block.id.raw() == 3 {
+                    return Ok(ordinary(33));
+                }
+            }
+            Ok(node)
+        }
+    }
+    let mut folder = RecordBlocks(Vec::new());
+    let sequence = SemanticNode::Sequence((0..7).map(ordinary).collect());
+    let SemanticNode::Sequence(nodes) = folder.fold_node(sequence).unwrap() else {
+        panic!("expected sequence");
+    };
+    assert_eq!(folder.0, [1, 3, 5]);
+    assert_eq!(ids(&nodes), [0, 1, 2, 33, 4, 5, 6]);
+    assert_eq!(ids(&[folder.fold_node(ordinary(8)).unwrap()]), [8]);
+    assert_eq!(folder.0, [1, 3, 5]);
+}

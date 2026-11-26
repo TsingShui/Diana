@@ -1456,9 +1456,9 @@ enum ReductionFrame {
     },
     For {
         control: crate::ir::SemanticLoopControl,
-        init: crate::ir::SemanticStatement,
+        init: Box<crate::ir::SemanticStatement>,
         condition: crate::ir::SemanticOperand<SemanticPredicate>,
-        update: crate::ir::SemanticStatement,
+        update: Box<crate::ir::SemanticStatement>,
     },
     ForEach {
         control: crate::ir::SemanticLoopControl,

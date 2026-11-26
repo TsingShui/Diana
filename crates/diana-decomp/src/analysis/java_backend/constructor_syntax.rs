@@ -1002,7 +1002,7 @@ impl ConstructorSyntaxRecovery {
             unreachable!("a source carrier name always produces a class type")
         };
         carrier_class
-            .segments
+            .segments_mut()
             .last_mut()
             .expect("a source carrier name has one segment")
             .arguments = class_type_parameters

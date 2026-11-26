@@ -13,7 +13,7 @@ fn operation(kind: InsnType, operands: Vec<SemanticExpression>) -> SemanticOpera
 }
 
 fn nested(operation: SemanticOperation) -> SemanticExpression {
-    SemanticExpression::Operation(Box::new(operation))
+    SemanticExpression::Operation(operation)
 }
 
 fn literal() -> SemanticExpression {
@@ -167,4 +167,52 @@ fn malformed_receiver_is_reported_before_malformed_stored_value() {
             }
         ))
     ));
+}
+
+#[test]
+fn fallthrough_supplies_the_exact_compound_guard_of_each_if_occurrence() {
+    use crate::analysis::value_recovery::domain::DomainLogic;
+    use crate::ir::{BoolExpr, BoolVariable, SemanticOperand};
+
+    let atom = |id| {
+        let mut op = InsnNode::new(InsnType::If, 0);
+        op.id = InstructionId::new(id);
+        SemanticPredicate::Test(SemanticOperation::from_instruction(op).unwrap())
+    };
+    let branch = |condition| SemanticNode::If {
+        condition: SemanticOperand::new(condition),
+        then_node: Box::new(SemanticNode::Empty),
+        else_node: None,
+    };
+    let root = SemanticNode::Sequence(vec![
+        branch(SemanticPredicate::And(vec![
+            atom(0),
+            SemanticPredicate::Or(vec![atom(1), atom(2)]),
+        ])),
+        branch(SemanticPredicate::Or(vec![atom(0), atom(2)])),
+        branch(atom(1)),
+    ]);
+    let vars = (0..3)
+        .map(|i| BoolVariable::Instruction(InstructionId::new(i)))
+        .collect();
+    let mut logic = DomainLogic::new(&vars);
+    let output = ControlFallthrough::analyze(&root, &mut logic).unwrap();
+    let SemanticNode::Sequence(children) = &root else {
+        unreachable!()
+    };
+    assert_eq!(output.branch_conditions.len(), 2);
+    let symbol = |id| BoolExpr::instruction(InstructionId::new(id));
+    let expected = [
+        BoolExpr::and(vec![symbol(0), BoolExpr::or(vec![symbol(1), symbol(2)])]),
+        BoolExpr::or(vec![symbol(0), symbol(2)]),
+        symbol(1),
+    ];
+    for (child, expected) in children.iter().zip(expected) {
+        let SemanticNode::If { condition, .. } = child else {
+            unreachable!()
+        };
+        let domain = output.branch_condition(condition, &mut logic).unwrap();
+        let expected = logic.compile(&expected).unwrap();
+        assert_eq!(domain, expected);
+    }
 }

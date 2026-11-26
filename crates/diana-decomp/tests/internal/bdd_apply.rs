@@ -137,3 +137,31 @@ fn negation_can_resume_after_its_first_branch_used_the_last_cache_slots() {
         );
     }
 }
+
+#[test]
+fn ordered_junctions_flatten_only_the_supplied_level_and_keep_duplicate_tests() {
+    let a = BoolExpr::source(1);
+    let b = BoolExpr::source(2);
+    for (combine, raw, neutral, absorbing) in [
+        (
+            BoolExpr::and as fn(Vec<BoolExpr>) -> BoolExpr,
+            BoolExpr::And as fn(Vec<BoolExpr>) -> BoolExpr,
+            BoolExpr::True,
+            BoolExpr::False,
+        ),
+        (BoolExpr::or, BoolExpr::Or, BoolExpr::False, BoolExpr::True),
+    ] {
+        let nested = raw(vec![neutral.clone(), a.clone()]);
+        let prefix = raw(vec![b.clone(), nested.clone(), b.clone()]);
+        assert_eq!(
+            combine(vec![neutral.clone(), prefix.clone(), a.clone()]),
+            raw(vec![b.clone(), nested, b.clone(), a.clone()])
+        );
+        assert_eq!(
+            combine(vec![prefix, absorbing.clone(), a.clone()]),
+            absorbing
+        );
+        assert_eq!(combine(vec![neutral.clone(), neutral.clone()]), neutral);
+        assert_eq!(combine(vec![neutral.clone(), b.clone()]), b);
+    }
+}

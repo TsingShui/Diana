@@ -219,7 +219,7 @@ impl<'a> ValueNumbering<'a> {
                     });
                 }
                 ExpressionTask::Expression(SemanticExpression::Operation(operation)) => {
-                    pending.push(ExpressionTask::Operation(*operation));
+                    pending.push(ExpressionTask::Operation(operation));
                 }
                 ExpressionTask::Expression(SemanticExpression::Select { .. }) => return None,
                 ExpressionTask::Canonical(mut argument) => {

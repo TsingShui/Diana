@@ -31,6 +31,7 @@ pub(crate) use completion::{
     SemanticControlTopology, SemanticTransfer,
 };
 pub use dce::SemanticDeadCodeElimination;
+pub(crate) use expression::OperandShape;
 pub use expression::{SemanticExpression, SemanticOperation};
 pub use factory::SemanticBuildError;
 pub(crate) use factory::SemanticFactory;
@@ -39,7 +40,7 @@ pub use instructions::{SemanticExpressionTransform, SemanticInstructions};
 pub(crate) use sites::SemanticSiteNumbering;
 pub use string_building::{StringBuilderProtocol, StringBuildingRecovery};
 pub use verify::SemanticInvariantError;
-pub(crate) use visit::{walk_expression, walk_statement};
+pub(crate) use visit::{walk_expression, walk_operation, walk_statement};
 pub use visit::{
     SemanticBindingKind, SemanticFoldControl, SemanticFoldError, SemanticFolder, SemanticVisitor,
 };
@@ -434,7 +435,20 @@ impl SemanticPredicate {
     }
 
     pub fn domain(&self) -> Result<BoolExpr, SemanticFoldError> {
-        let mut pending = vec![PredicateDomainTask::Visit(self)];
+        let mut root = self;
+        let mut negate = false;
+        while let Self::Not(inner) = root {
+            root = inner;
+            negate = !negate;
+        }
+        let apply_sign = |value| if negate { BoolExpr::not(value) } else { value };
+        match root {
+            Self::True => return Ok(apply_sign(BoolExpr::True)),
+            Self::False => return Ok(apply_sign(BoolExpr::False)),
+            Self::Test(test) => return Ok(apply_sign(BoolExpr::instruction(test.id))),
+            _ => {}
+        }
+        let mut pending = vec![PredicateDomainTask::Visit(root)];
         let mut results = Vec::new();
         while let Some(task) = pending.pop() {
             match task {
@@ -475,7 +489,10 @@ impl SemanticPredicate {
         if results.len() != 1 {
             return Err(SemanticFoldError::MalformedWorkStack);
         }
-        results.pop().ok_or(SemanticFoldError::MalformedWorkStack)
+        results
+            .pop()
+            .map(apply_sign)
+            .ok_or(SemanticFoldError::MalformedWorkStack)
     }
 
     pub fn symbols(&self) -> std::collections::BTreeSet<BoolVariable> {
@@ -520,9 +537,9 @@ pub enum SemanticNode {
     },
     For {
         control: SemanticLoopControl,
-        init: SemanticStatement,
+        init: Box<SemanticStatement>,
         condition: SemanticOperand<SemanticPredicate>,
-        update: SemanticStatement,
+        update: Box<SemanticStatement>,
         body: Box<SemanticNode>,
     },
     ForEach {
@@ -739,9 +756,9 @@ enum SemanticCloneFrame {
     },
     For {
         control: SemanticLoopControl,
-        init: SemanticStatement,
+        init: Box<SemanticStatement>,
         condition: SemanticOperand<SemanticPredicate>,
-        update: SemanticStatement,
+        update: Box<SemanticStatement>,
     },
     ForEach {
         control: SemanticLoopControl,

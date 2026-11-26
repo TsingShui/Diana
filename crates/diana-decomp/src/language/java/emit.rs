@@ -1873,7 +1873,7 @@ mod tests {
             JavaType::Class(ty) => ty,
             _ => unreachable!(),
         };
-        ty.segments.last_mut().unwrap().arguments = vec![JavaTypeArgument::Exact(
+        ty.segments_mut().last_mut().unwrap().arguments = vec![JavaTypeArgument::Exact(
             JavaType::source_class("java.lang.String"),
         )];
         let ty = JavaType::Class(ty);
@@ -1897,7 +1897,7 @@ mod tests {
             JavaType::Class(owner) => owner,
             _ => unreachable!(),
         };
-        owner.segments.last_mut().unwrap().arguments = vec![JavaTypeArgument::Exact(
+        owner.segments_mut().last_mut().unwrap().arguments = vec![JavaTypeArgument::Exact(
             JavaType::source_class("java.lang.String"),
         )];
         let expression = JavaExpr::Call {
@@ -1921,7 +1921,7 @@ mod tests {
             JavaType::Class(owner) => owner,
             _ => unreachable!(),
         };
-        owner.segments.last_mut().unwrap().arguments = vec![JavaTypeArgument::Exact(
+        owner.segments_mut().last_mut().unwrap().arguments = vec![JavaTypeArgument::Exact(
             JavaType::source_class("java.lang.String"),
         )];
         let expression = JavaExpr::StaticField {
@@ -1942,7 +1942,7 @@ mod tests {
             JavaType::Class(class) => class,
             _ => unreachable!(),
         };
-        class.segments.last_mut().unwrap().arguments = vec![JavaTypeArgument::Exact(
+        class.segments_mut().last_mut().unwrap().arguments = vec![JavaTypeArgument::Exact(
             JavaType::source_class("java.lang.String"),
         )];
         let ty = JavaType::Class(class);

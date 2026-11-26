@@ -82,26 +82,20 @@ impl<'a> SemanticReachingAnalysis<'a> {
         })
     }
 
-    fn has_complete_definitions(&self, key: SsaVar) -> bool {
-        self.graph.definitions.get(&key).is_some_and(|definitions| {
-            definitions
-                .iter()
-                .all(|definition| definition.site.is_some())
-        })
-    }
-
     pub(super) fn candidates(
         &self,
         key: SsaVar,
         point: SemanticFlowPoint,
     ) -> Result<Vec<usize>, ValueRecoveryError> {
-        if !self.has_complete_definitions(key) {
-            return Err(ValueRecoveryError::MissingDefinitionSite(key));
-        }
+        let definitions = self
+            .graph
+            .definitions
+            .get(&key)
+            .filter(|_| !self.graph.definitions_without_sites.contains(&key))
+            .ok_or(ValueRecoveryError::MissingDefinitionSite(key))?;
         match self.model() {
             ReachingModel::Ssa(flow) => {
                 let reachability = flow.indexed_reachability();
-                let definitions = &self.graph.definitions[&key];
                 Ok(definitions
                     .iter()
                     .enumerate()
@@ -136,7 +130,7 @@ impl<'a> SemanticReachingAnalysis<'a> {
         if !self.graph.definitions.contains_key(&key) {
             return true;
         }
-        if !self.has_complete_definitions(key) {
+        if self.graph.definitions_without_sites.contains(&key) {
             return false;
         }
         match self.model() {
@@ -155,6 +149,27 @@ impl<'a> SemanticReachingAnalysis<'a> {
 
     pub(super) fn supports(&self, source: SemanticFlowPoint, target: SemanticFlowPoint) -> bool {
         source != target && !matches!(self.model(), ReachingModel::Incomplete)
+    }
+
+    /// On a complete SSA graph, every input version is invariant once all
+    /// definitions have sites. Source locals can have multiple versions.
+    pub(super) fn operands_unchanged<I: IntoIterator<Item = SsaVar>>(
+        &self,
+        source: SemanticFlowPoint,
+        target: SemanticFlowPoint,
+        values: impl FnOnce() -> I,
+    ) -> bool {
+        if !self.supports(source, target) {
+            return false;
+        }
+        if matches!(self.model(), ReachingModel::Ssa(_))
+            && self.graph.definitions_without_sites.is_empty()
+        {
+            return true;
+        }
+        values()
+            .into_iter()
+            .all(|value| self.unchanged(value, source, target))
     }
 }
 
@@ -352,9 +367,9 @@ mod tests {
             }),
             SemanticNode::For {
                 control: SemanticLoopControl::Region(region),
-                init: nop_statement(),
+                init: Box::new(nop_statement()),
                 condition: SemanticOperand::new(predicate(1)),
-                update: nop_statement(),
+                update: Box::new(nop_statement()),
                 body: Box::new(SemanticNode::guard(
                     predicate(2),
                     SemanticNode::BasicBlock(SemanticBlock {

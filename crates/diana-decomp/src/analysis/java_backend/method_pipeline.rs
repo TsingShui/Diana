@@ -84,8 +84,10 @@ impl<'a> MethodBodyPipeline<'a> {
             graph: &region_graph,
         });
         let t = stats.then(std::time::Instant::now);
+        let contractions =
+            crate::ir::analysis::ControlContractions::for_edge_arguments(cfg, &region_graph);
         let body = {
-            RegionReducer::new(cfg, &region_graph, self.observer)
+            RegionReducer::with_edge_arguments(cfg, &region_graph, self.observer, &contractions)
                 .and_then(|reducer| reducer.reduce())
                 .map_err(JavaDecompilerError::from)
         }?;
@@ -134,6 +136,7 @@ impl<'a> MethodBodyPipeline<'a> {
             &types,
             self.hierarchy,
             semantic.state().regions(),
+            contractions,
             || value_recovery.semantic_flow(semantic.body()),
         )?;
         mark(&mut stages, "source_analysis", t);

@@ -303,7 +303,7 @@ impl EnclosingOwnerQualifier<'_> {
         let JavaType::Class(class) = owner else {
             return owner;
         };
-        let [segment] = class.segments.as_slice() else {
+        let [segment] = class.segments.as_ref() else {
             return JavaType::Class(class);
         };
         let Some(index) = self.path.iter().rposition(|name| name == &segment.name) else {

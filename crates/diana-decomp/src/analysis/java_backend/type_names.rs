@@ -500,7 +500,7 @@ impl<'a> GenericTypeResolver<'a> {
             if resolved.segments[index].name != expected {
                 break;
             }
-            resolved.segments[index].arguments = arguments
+            resolved.segments_mut()[index].arguments = arguments
                 .iter()
                 .map(|argument| self.resolve_argument(argument))
                 .collect::<Result<Vec<_>, _>>()?;

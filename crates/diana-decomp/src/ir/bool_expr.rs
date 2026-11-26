@@ -73,26 +73,38 @@ impl BoolExpr {
         Self::junction(exprs, false)
     }
 
-    fn junction(exprs: Vec<Self>, conjunction: bool) -> Self {
-        let mut terms = Vec::new();
-        for expression in exprs {
-            match (conjunction, expression) {
-                (true, Self::False) | (false, Self::True) => {
-                    return if conjunction { Self::False } else { Self::True };
-                }
-                (true, Self::True) | (false, Self::False) => {}
-                (true, Self::And(nested)) | (false, Self::Or(nested)) => terms.extend(nested),
-                (_, term) => terms.push(term),
+    fn junction(mut terms: Vec<Self>, conjunction: bool) -> Self {
+        let neutral = if conjunction { Self::True } else { Self::False };
+        let mut nested = false;
+        for term in &terms {
+            match (conjunction, term) {
+                (true, Self::False) | (false, Self::True) => return Self::not(neutral),
+                (true, Self::And(_)) | (false, Self::Or(_)) => nested = true,
+                _ => {}
             }
         }
+        if nested {
+            let mut flattened = Vec::new();
+            for term in terms {
+                match (conjunction, term) {
+                    (true, Self::And(children)) | (false, Self::Or(children)) => {
+                        if flattened.is_empty() {
+                            flattened = children;
+                        } else {
+                            flattened.extend(children);
+                        }
+                    }
+                    (true, Self::True) | (false, Self::False) => {}
+                    (_, term) => flattened.push(term),
+                }
+            }
+            terms = flattened;
+        } else {
+            terms.retain(|term| *term != neutral);
+        }
         match terms.len() {
-            0 if conjunction => Self::True,
-            0 => Self::False,
-            1 => terms.into_iter().next().unwrap_or(if conjunction {
-                Self::True
-            } else {
-                Self::False
-            }),
+            0 => neutral,
+            1 => terms.pop().unwrap_or(neutral),
             _ if conjunction => Self::And(terms),
             _ => Self::Or(terms),
         }

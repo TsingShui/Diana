@@ -8,6 +8,77 @@ fn point(i: usize) -> SemanticFlowPoint {
 }
 
 #[test]
+fn linear_reaching_distinguishes_write_sites_even_with_repeated_ordinals() {
+    let chain = [7, 2, 9, 1, 6, 4].map(point);
+    let mut builder = SemanticFlowBuilder::new();
+    for edge in chain.windows(2) {
+        builder.add_edge(edge[0], edge[1], SemanticFlowEdgeKind::Normal);
+    }
+    let graph = builder.finish([chain[0]].into());
+    let defs = [
+        (chain[3], 0, 41),
+        (chain[1], 0, 41),
+        (chain[5], 1, 99),
+        (chain[3], 0, 8),
+        (point(99), 0, 123),
+        (chain[3], 0, 41),
+        (chain[2], 1, 99),
+    ]
+    .map(|(site, value, ordinal)| SemanticValueDefinition::new(site, value, ordinal));
+    let facts = graph.reaching_values(
+        &defs,
+        3,
+        &[chain[0], chain[1], chain[2], chain[3], chain[5], point(99)].into(),
+    );
+    assert_eq!(facts.at(0, chain[0]), Some(vec![]));
+    assert_eq!(facts.at(0, chain[2]), Some(vec![41]));
+    assert_eq!(facts.at(0, chain[5]), Some(vec![41, 8, 41]));
+    assert_eq!(facts.at(1, chain[2]), Some(vec![99]));
+    assert_eq!(facts.at(1, chain[5]), Some(vec![99]));
+    assert_eq!(facts.unchanged(1, chain[2], chain[5]), Some(false));
+    assert_eq!(facts.unchanged(1, chain[5], chain[2]), Some(false));
+    assert_eq!(facts.unchanged(0, chain[1], chain[2]), Some(true));
+    assert_eq!(facts.unchanged(2, chain[0], chain[5]), Some(true));
+    assert_eq!(facts.at(3, chain[1]), Some(vec![]));
+    assert_eq!(facts.unchanged(3, chain[0], chain[1]), None);
+    assert_eq!(facts.at(0, chain[4]), None);
+    assert_eq!(facts.at(0, point(99)), None);
+    assert_eq!(facts.unchanged(1, chain[4], chain[5]), None);
+}
+
+#[test]
+fn long_linear_flow_retains_one_record_per_write_for_all_target_snapshots() {
+    let count = 512;
+    let mut builder = SemanticFlowBuilder::new();
+    for i in 1..count {
+        builder.add_edge(point(i - 1), point(i), SemanticFlowEdgeKind::Normal);
+    }
+    let graph = builder.finish([point(0)].into());
+    let defs = (0..count)
+        .rev()
+        .map(|i| SemanticValueDefinition::new(point(i), i % 11, 1000 - i))
+        .collect::<Vec<_>>();
+    let facts = graph.reaching_values(&defs, 11, &(0..count).map(point).collect());
+    let super::super::ReachingStorage::Linear(storage) = &facts.0 else {
+        panic!("single chain");
+    };
+    assert_eq!(storage.writes.len(), count);
+    assert_eq!(storage.target_ranks.len(), count);
+    for i in 0..count {
+        for value in 0..11 {
+            let expected = (0..=i)
+                .rev()
+                .find(|last| last % 11 == value)
+                .map(|last| 1000 - last);
+            assert_eq!(
+                facts.at(value, point(i)),
+                Some(expected.into_iter().collect())
+            );
+        }
+    }
+}
+
+#[test]
 fn block_transfers_match_each_reachable_last_write() {
     // Two entries feed three diamonds, a reentering loop, a self-loop and a
     // shared exit. The last two nodes are a separate unreachable cycle.
@@ -46,7 +117,12 @@ fn block_transfers_match_each_reachable_last_write() {
     ];
     let mut builder = SemanticFlowBuilder::new();
     for (source, target) in edges {
-        builder.add_edge(point(source), point(target), SemanticFlowEdgeKind::Normal);
+        let kind = match (source, target) {
+            (3, 7) | (12, 14) | (20, 23) => SemanticFlowEdgeKind::Exceptional,
+            (16, 2) | (23, 23) => SemanticFlowEdgeKind::LoopBack,
+            _ => SemanticFlowEdgeKind::Normal,
+        };
+        builder.add_edge(point(source), point(target), kind);
     }
     let graph = builder.finish([point(0), point(18)].into());
     let definitions = (0..91)
@@ -54,7 +130,9 @@ fn block_transfers_match_each_reachable_last_write() {
         .chain([
             SemanticValueDefinition::new(point(8), 2, 4100),
             SemanticValueDefinition::new(point(8), 2, 4200),
-            SemanticValueDefinition::new(point(8), 2, 4300),
+            SemanticValueDefinition::new(point(8), 2, 4100),
+            SemanticValueDefinition::new(point(1), 2, 4100),
+            SemanticValueDefinition::new(point(55), 2, 8100),
         ])
         .collect::<Vec<_>>();
     for targets in [
@@ -73,7 +151,8 @@ fn block_transfers_match_each_reachable_last_write() {
         let solved = graph.reaching_values(&definitions, 8, &targets);
         for value in 0..8 {
             // Enumerate concrete paths to a fixed point, carrying exactly one
-            // last write (or the absence of a write) for this one value.
+            // last write identity (or its absence) for this one value. Its
+            // caller ordinal can repeat both at one point and across sites.
             let mut pending = VecDeque::from([(point(0), None), (point(18), None)]);
             let mut visited = BTreeSet::new();
             let mut expected = BTreeMap::<_, BTreeSet<usize>>::new();
@@ -83,8 +162,9 @@ fn block_transfers_match_each_reachable_last_write() {
                 }
                 let mut states = definitions
                     .iter()
-                    .filter(|def| def.point == site && def.value == value)
-                    .map(|def| Some(def.ordinal))
+                    .enumerate()
+                    .filter(|(_, def)| def.point == site && def.value == value)
+                    .map(|(identity, _)| Some(identity))
                     .collect::<Vec<_>>();
                 if states.is_empty() {
                     states.push(incoming);
@@ -93,19 +173,82 @@ fn block_transfers_match_each_reachable_last_write() {
                     .entry(site)
                     .or_default()
                     .extend(states.iter().flatten().copied());
-                for &successor in graph.successors(site) {
-                    pending.extend(states.iter().map(|&state| (successor, state)));
+                for &(_, successor) in edges.iter().filter(|&&(from, _)| point(from) == site) {
+                    pending.extend(states.iter().map(|&state| (point(successor), state)));
                 }
             }
+            let identities = |site| {
+                (targets.contains(&site) && site != point(27))
+                    .then(|| expected.get(&site).cloned().unwrap_or_default())
+            };
             for site in (0..28).map(point) {
-                let actual = solved
-                    .at(value, site)
-                    .map(|indices| indices.into_iter().collect::<BTreeSet<_>>());
-                let expected = (targets.contains(&site) && site != point(27))
-                    .then(|| expected.get(&site).cloned().unwrap_or_default());
-                assert_eq!(actual, expected, "value {value} at {site:?}");
+                let here = identities(site);
+                assert_eq!(
+                    solved.at(value, site),
+                    here.as_ref()
+                        .map(|ids| ids.iter().map(|&id| definitions[id].ordinal).collect()),
+                    "value {value} at {site:?}"
+                );
+                for other in (0..28).map(point) {
+                    assert_eq!(
+                        solved.unchanged(value, site, other),
+                        here.as_ref()
+                            .zip(identities(other).as_ref())
+                            .map(|(a, b)| a == b),
+                        "value {value} at {site:?} and {other:?}"
+                    );
+                }
             }
+            assert_eq!(
+                solved.at(usize::MAX, point(3)),
+                targets.contains(&point(3)).then(Vec::new)
+            );
+            assert_eq!(solved.unchanged(usize::MAX, point(3), point(3)), None);
         }
+    }
+}
+
+#[test]
+fn two_long_arms_and_a_back_edge_store_four_inputs_for_all_occurrences() {
+    const ARM: usize = 256;
+    let join = ARM * 2 + 1;
+    let mut builder = SemanticFlowBuilder::new();
+    for (first, kind) in [
+        (1, SemanticFlowEdgeKind::Normal),
+        (1 + ARM, SemanticFlowEdgeKind::Exceptional),
+    ] {
+        builder.add_edge(point(0), point(first), kind);
+        for i in first..first + ARM - 1 {
+            builder.add_edge(point(i), point(i + 1), SemanticFlowEdgeKind::Normal);
+        }
+        builder.add_edge(
+            point(first + ARM - 1),
+            point(join),
+            SemanticFlowEdgeKind::Normal,
+        );
+    }
+    builder.add_edge(point(join), point(0), SemanticFlowEdgeKind::LoopBack);
+    let graph = builder.finish([point(0)].into());
+    let defs = (1..join)
+        .rev()
+        .map(|i| SemanticValueDefinition::new(point(i), 0, i % ARM))
+        .collect::<Vec<_>>();
+    let facts = graph.reaching_values(&defs, 1, &(0..=join).map(point).collect());
+    let super::super::ReachingStorage::Blocks(storage) = &facts.0 else {
+        panic!("two arms with a common join");
+    };
+    assert_eq!(storage.inputs.len(), 4);
+    assert_eq!(storage.writes.len(), 2 * ARM);
+    assert_eq!(storage.target_ranks.len(), 2 * ARM + 2);
+    // Both last definitions carry ordinal zero. They may reach the join
+    // and the next iteration's entry, and remain distinct at their writes.
+    assert_eq!(facts.at(0, point(0)), Some(vec![0, 0]));
+    assert_eq!(facts.at(0, point(join)), Some(vec![0, 0]));
+    assert_eq!(facts.unchanged(0, point(join), point(0)), Some(true));
+    for i in 1..=ARM {
+        assert_eq!(facts.at(0, point(i)), Some(vec![i % ARM]));
+        assert_eq!(facts.at(0, point(ARM + i)), Some(vec![i % ARM]));
+        assert_eq!(facts.unchanged(0, point(i), point(ARM + i)), Some(false));
     }
 }
 
@@ -160,8 +303,8 @@ fn frozen_edges_sort_deduplicate_and_preserve_each_cleanup_transition() {
         [point(0), point(0), point(0), far]
     );
     assert_eq!(
-        graph.edges.predecessors(point(3)),
-        &[
+        graph.index.incoming_points(point(3)).collect::<Vec<_>>(),
+        [
             (point(0), Normal),
             (point(0), FinallyEnter(6)),
             (point(0), FinallyResume(6)),
@@ -242,7 +385,7 @@ fn chain_reachability_matches_independent_paths_inside_and_between_loops() {
         }
     }
     assert!(
-        graph.index.get().is_none(),
+        !graph.index.has_projected_successors(),
         "mandatory paths use the frozen edge rows"
     );
     for limit in [0, usize::MAX] {

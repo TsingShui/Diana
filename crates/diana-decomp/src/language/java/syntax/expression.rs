@@ -812,7 +812,7 @@ impl SemanticVisitor for BooleanValueAnalysis<'_> {
                 if let Some(result) = &operation.result {
                     self.record_definition(
                         result,
-                        &SemanticExpression::Operation(Box::new(operation.clone())),
+                        &SemanticExpression::Operation(operation.clone()),
                     );
                 } else {
                     for operand in operation.operands() {
@@ -877,9 +877,9 @@ impl SemanticExpressionTransform for ExpressionRewriter<'_> {
                         .and_then(|result| result.code_var),
                 );
             }
-            return SemanticExpression::Operation(Box::new(replacement));
+            return SemanticExpression::Operation(replacement);
         }
-        SemanticExpression::Operation(Box::new(instruction))
+        SemanticExpression::Operation(instruction)
     }
 }
 

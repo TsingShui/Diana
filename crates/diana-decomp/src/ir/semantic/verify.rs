@@ -368,6 +368,12 @@ impl<'a> SemanticVerifier<'a> {
 }
 
 impl SemanticVisitor for SemanticVerifier<'_> {
+    fn visit_operation(&mut self, operation: &crate::ir::SemanticOperation) {
+        if operation.contains_select() {
+            super::walk_operation(self, operation);
+        }
+    }
+
     fn visit_predicate(&mut self, predicate: &crate::ir::SemanticPredicate) {
         let mut pending = vec![predicate];
         while let Some(predicate) = pending.pop() {

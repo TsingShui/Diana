@@ -448,17 +448,19 @@ impl AnonymousClassRecovery {
         let JavaType::Class(owner) = owner else {
             return JavaType::Class(JavaClassType::raw(JavaClassName::simple(name.clone())));
         };
-        let mut nested = owner.clone();
+        let mut segments = owner.segments.to_vec();
         if is_static {
-            for segment in &mut nested.segments {
+            for segment in &mut segments {
                 segment.arguments.clear();
             }
         }
-        nested.segments.push(JavaClassTypeSegment {
+        segments.push(JavaClassTypeSegment {
             name: name.clone(),
             arguments: Vec::new(),
         });
-        JavaType::Class(nested)
+        JavaType::Class(JavaClassType {
+            segments: segments.into(),
+        })
     }
 
     fn rewrite_tree(declaration: &mut JavaTypeDeclaration, rewriter: &mut impl JavaAstRewriter) {
@@ -601,7 +603,7 @@ impl AnonymousTypeIdentity {
     }
 
     fn unqualified_matches(qualified: &JavaClassType, unqualified: &JavaClassType) -> bool {
-        let [actual] = unqualified.segments.as_slice() else {
+        let [actual] = unqualified.segments.as_ref() else {
             return false;
         };
         qualified
@@ -646,7 +648,7 @@ impl RecoveredAnonymousTypeBinding<'_> {
             JavaType::Array(element) => JavaType::Array(Box::new(self.ty(*element))),
             JavaType::Class(mut class) => {
                 for argument in class
-                    .segments
+                    .segments_mut()
                     .iter_mut()
                     .flat_map(|segment| &mut segment.arguments)
                 {

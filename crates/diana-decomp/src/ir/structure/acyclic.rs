@@ -114,8 +114,7 @@ impl<'a, 'semantic, 'seeded> AcyclicStructurer<'a, 'semantic, 'seeded> {
         };
         let closed = self
             .cfg
-            .graph_node_ids()
-            .into_iter()
+            .graph_nodes()
             .filter(|block| self.cfg.normal_successors(*block).next().is_none())
             .filter(|block| self.is_closed_block(*block))
             .collect();

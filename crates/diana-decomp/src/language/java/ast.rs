@@ -1,5 +1,6 @@
 use crate::ir::Utf16String;
 use smol_str::SmolStr;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum JavaPrimitiveType {
@@ -417,10 +418,14 @@ impl std::fmt::Display for JavaClassTypeSegment {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct JavaClassType {
-    pub segments: Vec<JavaClassTypeSegment>,
+    pub segments: Arc<[JavaClassTypeSegment]>,
 }
 
 impl JavaClassType {
+    pub fn segments_mut(&mut self) -> &mut [JavaClassTypeSegment] {
+        Arc::make_mut(&mut self.segments)
+    }
+
     pub fn raw(name: JavaClassName) -> Self {
         Self {
             segments: name
@@ -451,7 +456,7 @@ impl JavaClassType {
             && self
                 .segments
                 .iter()
-                .zip(&other.segments)
+                .zip(other.segments.iter())
                 .all(|(left, right)| left.name == right.name)
     }
 
@@ -528,7 +533,10 @@ impl JavaType {
             ty = element;
         }
         if let Self::Class(class) = ty {
-            for segment in &mut class.segments {
+            if class.segments.iter().all(|s| s.arguments.is_empty()) {
+                return self;
+            }
+            for segment in class.segments_mut() {
                 segment.arguments.clear();
             }
         }

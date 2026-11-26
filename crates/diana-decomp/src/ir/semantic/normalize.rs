@@ -252,6 +252,10 @@ impl SemanticNormalization {
 impl SemanticFolder for SemanticNormalization {
     type Error = SemanticFoldError;
 
+    fn preserves_subtree(&self, node: &SemanticNode) -> bool {
+        SemanticNormalization::already_normal(node)
+    }
+
     fn finish_node(&mut self, node: SemanticNode) -> Result<SemanticNode, Self::Error> {
         let node = SemanticNormalizer::new(self.reachability).finish_node(node)?;
         if self.reachability.preserves_cfg_topology() {
@@ -750,6 +754,10 @@ struct SourceSemanticNormalizer;
 impl SemanticFolder for SourceSemanticNormalizer {
     type Error = SemanticFoldError;
 
+    fn preserves_subtree(&self, node: &SemanticNode) -> bool {
+        SemanticNormalization::already_normal(node)
+    }
+
     fn finish_node(&mut self, node: SemanticNode) -> Result<SemanticNode, Self::Error> {
         let node = match node {
             SemanticNode::BasicBlock(block) if block.statements.is_empty() => SemanticNode::Empty,
@@ -787,7 +795,7 @@ impl SemanticExpressionTransform for OperationRegisterReplacement {
             self.replaced = true;
             SemanticExpression::Register(self.result.clone())
         } else {
-            SemanticExpression::Operation(Box::new(operation))
+            SemanticExpression::Operation(operation)
         }
     }
 }
@@ -882,7 +890,7 @@ impl RedundantVacuousPredicate {
         }
         let guard = Self::guard_for_test(condition, test_id)?;
         let value = if matches!(guard, SemanticPredicate::True) {
-            SemanticExpression::Operation(Box::new(target.clone()))
+            SemanticExpression::Operation(target.clone())
         } else {
             let fallback = result
                 .ty
@@ -890,7 +898,7 @@ impl RedundantVacuousPredicate {
                 .then(|| LiteralArg::new(0, result.ty.clone()))?;
             SemanticExpression::select(
                 guard,
-                SemanticExpression::Operation(Box::new(target.clone())),
+                SemanticExpression::Operation(target.clone()),
                 SemanticExpression::Literal(fallback),
             )
         };
@@ -949,7 +957,7 @@ impl RedundantVacuousPredicate {
                         && !operation.effects().without_control().is_pure()
                         && Self::operation_occurrences(following, operation.id) != 0 =>
                 {
-                    Some(operation.as_ref().clone())
+                    Some(operation.clone())
                 }
                 _ => None,
             })
@@ -1326,7 +1334,7 @@ impl NaturalLoopCompletion {
                 header,
                 kind,
                 test,
-                body: Box::new(Self::rewrite_loop(body, control)?),
+                body: Self::rewrite_loop(body, control)?,
             },
             SemanticNode::For {
                 control,
@@ -1339,7 +1347,7 @@ impl NaturalLoopCompletion {
                 init,
                 condition,
                 update,
-                body: Box::new(Self::rewrite_loop(body, control)?),
+                body: Self::rewrite_loop(body, control)?,
             },
             SemanticNode::ForEach {
                 control,
@@ -1350,7 +1358,7 @@ impl NaturalLoopCompletion {
                 control,
                 variable,
                 iterable,
-                body: Box::new(Self::rewrite_loop(body, control)?),
+                body: Self::rewrite_loop(body, control)?,
             },
             SemanticNode::Label { label, body } => {
                 let body = TerminalCompletionRewrite::rewrite(
@@ -1371,18 +1379,20 @@ impl NaturalLoopCompletion {
     }
 
     fn rewrite_loop(
-        body: Box<SemanticNode>,
+        mut body: Box<SemanticNode>,
         control: crate::ir::SemanticLoopControl,
-    ) -> Result<SemanticNode, SemanticFoldError> {
-        match control {
+    ) -> Result<Box<SemanticNode>, SemanticFoldError> {
+        let target = match control {
             crate::ir::SemanticLoopControl::Region(region) => {
-                TerminalCompletionRewrite::rewrite(*body, TerminalCompletionTarget::Region(region))
+                TerminalCompletionTarget::Region(region)
             }
-            crate::ir::SemanticLoopControl::Label(label) => TerminalCompletionRewrite::rewrite(
-                *body,
-                TerminalCompletionTarget::LoopLabel(label),
-            ),
-        }
+            crate::ir::SemanticLoopControl::Label(label) => {
+                TerminalCompletionTarget::LoopLabel(label)
+            }
+        };
+        let original = std::mem::replace(body.as_mut(), SemanticNode::Empty);
+        *body = TerminalCompletionRewrite::rewrite(original, target)?;
+        Ok(body)
     }
 }
 
@@ -2227,7 +2237,7 @@ mod redundant_vacuous_predicate_tests {
         SemanticPredicate::Test(SemanticOperation::from_parts(
             instruction,
             vec![
-                SemanticExpression::Operation(Box::new(value)),
+                SemanticExpression::Operation(value),
                 SemanticExpression::Literal(LiteralArg::int(0)),
             ],
             None,
@@ -2248,11 +2258,11 @@ mod redundant_vacuous_predicate_tests {
         instruction.id = InstructionId::new(id);
         instruction.payload.invoke_type = Some(InvokeType::Static);
         instruction.result = Some(RegisterArg::new_ssa(1, id as u32, ArgType::INT));
-        let value = SemanticExpression::Operation(Box::new(SemanticOperation::from_parts(
+        let value = SemanticExpression::Operation(SemanticOperation::from_parts(
             instruction,
-            vec![SemanticExpression::Operation(Box::new(prefix)), selected],
+            vec![SemanticExpression::Operation(prefix), selected],
             None,
-        )));
+        ));
         SemanticNode::BasicBlock(SemanticBlock {
             id: BlockId::new(id as u32),
             statements: vec![SemanticStatement::definition(
@@ -2420,7 +2430,7 @@ mod redundant_vacuous_predicate_tests {
             SemanticPredicate::Test(operation) => SemanticStatement::definition(
                 InstructionId::new(3),
                 RegisterArg::new_ssa(2, 3, ArgType::BOOLEAN),
-                SemanticExpression::Operation(Box::new(operation)),
+                SemanticExpression::Operation(operation),
             ),
             _ => unreachable!(),
         };
@@ -2455,10 +2465,10 @@ mod redundant_vacuous_predicate_tests {
     #[test]
     fn keeps_vacuous_predicate_when_an_effect_precedes_the_replay() {
         let predicate = invoke_predicate(1);
-        let prefix = SemanticExpression::Operation(Box::new(match invoke_predicate(3) {
+        let prefix = SemanticExpression::Operation(match invoke_predicate(3) {
             SemanticPredicate::Test(operation) => operation,
             _ => unreachable!(),
-        }));
+        });
         let following = vacuous(replaying_predicate(2, predicate.clone(), Some(prefix)));
         let rewritten = RedundantVacuousPredicate::rewrite(SemanticNode::Sequence(vec![
             vacuous(predicate),

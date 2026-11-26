@@ -3007,7 +3007,7 @@ impl DexJavaDialect {
 
     fn instantiation_type(mut ty: JavaType) -> JavaType {
         if let JavaType::Class(class) = &mut ty {
-            for segment in &mut class.segments {
+            for segment in class.segments_mut() {
                 if segment
                     .arguments
                     .iter()
@@ -3586,7 +3586,7 @@ impl DexJavaDialect {
         else {
             return None;
         };
-        class.segments.last_mut()?.arguments = vec![JavaTypeArgument::Exact(represented)];
+        class.segments_mut().last_mut()?.arguments = vec![JavaTypeArgument::Exact(represented)];
         Some(JavaType::Class(class))
     }
 
@@ -4696,7 +4696,7 @@ impl JavaDialect for DexJavaDialect {
         let JavaType::Class(mut iterable) = erased_source.clone() else {
             unreachable!("a source class always lowers to a class type");
         };
-        let Some(segment) = iterable.segments.last_mut() else {
+        let Some(segment) = iterable.segments_mut().last_mut() else {
             return self.arg(value);
         };
         segment.arguments = vec![match element_type {
@@ -4719,7 +4719,7 @@ impl JavaDialect for DexJavaDialect {
             unreachable!("an Iterable source type is always a class type");
         };
         recovery_type
-            .segments
+            .segments_mut()
             .last_mut()
             .expect("Iterable has a source type segment")
             .arguments = vec![JavaTypeArgument::Exact(element_type.clone())];
@@ -4828,7 +4828,7 @@ impl JavaDialect for DexJavaDialect {
             let expected = self.types.register_type(result)?.clone();
             let value = self.definition_value(
                 result,
-                &SemanticExpression::Operation(Box::new(insn.clone())),
+                &SemanticExpression::Operation(insn.clone()),
                 &expected,
             )?;
             self.assignment(result, value)?

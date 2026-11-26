@@ -60,6 +60,7 @@ impl SourceVariableAllocation {
             types,
             hierarchy,
             regions,
+            ControlContractions::for_edge_arguments(cfg, regions),
             || std::sync::Arc::new(super::SemanticFlowGraph::analyze(root)),
         )
     }
@@ -73,9 +74,9 @@ impl SourceVariableAllocation {
         types: &SsaTypeEnvironment,
         hierarchy: &dyn super::TypeHierarchy,
         regions: &RegionGraph,
+        contractions: ControlContractions,
         flow: impl FnOnce() -> std::sync::Arc<super::SemanticFlowGraph>,
     ) -> Result<Self, SourceVariableError> {
-        let contractions = ControlContractions::for_edge_arguments(cfg, regions);
         let semantic_values = SemanticSsaValues::collect(root);
         let required_phis = semantic_values.required(cfg, values, constants, &contractions)?;
         let (mut retained, statement_definitions) = semantic_values.into_retained_and_definitions();

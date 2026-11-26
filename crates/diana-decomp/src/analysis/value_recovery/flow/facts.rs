@@ -190,6 +190,15 @@ impl<'a> SparseValueFacts<'a> {
         self.reaching.supports(source, target)
     }
 
+    pub(super) fn operands_unchanged<I: IntoIterator<Item = SsaVar>>(
+        &self,
+        source: crate::ir::analysis::SemanticFlowPoint,
+        target: crate::ir::analysis::SemanticFlowPoint,
+        values: impl FnOnce() -> I,
+    ) -> bool {
+        self.reaching.operands_unchanged(source, target, values)
+    }
+
     pub(super) fn effect_stability(
         &self,
         effect: &EffectSummary,

@@ -1129,9 +1129,9 @@ enum RewriteFrame {
     },
     For {
         control: SemanticLoopControl,
-        init: SemanticStatement,
+        init: Box<SemanticStatement>,
         condition: crate::ir::SemanticOperand<SemanticPredicate>,
-        update: SemanticStatement,
+        update: Box<SemanticStatement>,
         parent: Option<ScopeId>,
         owner: OwnerId,
     },

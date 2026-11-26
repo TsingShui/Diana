@@ -7,7 +7,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use foldhash::{HashMap, HashMapExt};
+use foldhash::HashMap;
 use smallvec::SmallVec;
 
 use crate::ir::bdd::{Bdd, BddContext, BddError};
@@ -34,8 +34,7 @@ pub struct ReachingConditions {
 
 impl ReachingConditions {
     pub fn analyze(cfg: &CFG) -> Result<Self, ReachingConditionError> {
-        let nodes = cfg.graph_node_ids().into_iter().collect::<BTreeSet<_>>();
-        Self::analyze_slice(cfg, cfg.entry, &nodes)
+        Self::analyze_nodes(cfg, cfg.entry, cfg.graph_nodes())
     }
 
     /// Compute exact reaching conditions for an induced acyclic CFG slice.
@@ -48,11 +47,16 @@ impl ReachingConditions {
         entry: BlockId,
         nodes: &BTreeSet<BlockId>,
     ) -> Result<Self, ReachingConditionError> {
-        if !nodes.contains(&entry) {
-            return Err(ReachingConditionError::MissingEntry(entry));
-        }
-        let topology = AcyclicTopology { cfg, nodes };
-        let (order, ranks) = topology.sort(entry)?;
+        Self::analyze_nodes(cfg, entry, nodes.iter().copied())
+    }
+
+    fn analyze_nodes(
+        cfg: &CFG,
+        entry: BlockId,
+        nodes: impl ExactSizeIterator<Item = BlockId> + Clone,
+    ) -> Result<Self, ReachingConditionError> {
+        let topology = AcyclicTopology { cfg };
+        let (order, ranks) = topology.sort(entry, nodes)?;
         let branch_variables = order
             .iter()
             .copied()
@@ -71,7 +75,7 @@ impl ReachingConditions {
                 boolean_domain.truth()
             } else {
                 let terms = topology
-                    .incoming(*block)
+                    .incoming(*block, &ranks)
                     .map(|(source, edge)| {
                         let predecessor = ranks
                             .get(&source)
@@ -97,7 +101,7 @@ impl ReachingConditions {
             }
             conditions.push(ReachingCondition { domain });
         }
-        let reachability = ReachabilityMatrix::analyze(cfg, nodes, &order, ranks)?;
+        let reachability = ReachabilityMatrix::analyze(cfg, &order, ranks)?;
         Ok(Self {
             order,
             conditions,
@@ -181,28 +185,36 @@ impl ReachingConditions {
 
 struct AcyclicTopology<'a> {
     cfg: &'a CFG,
-    nodes: &'a BTreeSet<BlockId>,
 }
 
 impl AcyclicTopology<'_> {
     // The CFG already keeps incoming edges sorted by (source, kind), which
     // is also the canonical order for combining predecessor BDD terms.
-    fn incoming(&self, block: BlockId) -> impl Iterator<Item = (BlockId, EdgeKind)> + '_ {
+    fn incoming<'a>(
+        &'a self,
+        block: BlockId,
+        indices: &'a HashMap<BlockId, usize>,
+    ) -> impl Iterator<Item = (BlockId, EdgeKind)> + 'a {
         self.cfg
             .predecessors_with_kind(block)
             .iter()
             .copied()
-            .filter(|(source, kind)| !kind.is_exception() && self.nodes.contains(source))
+            .filter(|(source, kind)| !kind.is_exception() && indices.contains_key(source))
     }
 
     fn sort(
         &self,
         entry: BlockId,
+        nodes: impl ExactSizeIterator<Item = BlockId> + Clone,
     ) -> Result<(Vec<BlockId>, HashMap<BlockId, usize>), ReachingConditionError> {
-        let mut indegree = HashMap::with_capacity(self.nodes.len());
+        // Membership, indegree and final rank use the same keys throughout.
+        let mut indegree: HashMap<_, _> = nodes.clone().map(|block| (block, 0)).collect();
+        if !indegree.contains_key(&entry) {
+            return Err(ReachingConditionError::MissingEntry(entry));
+        }
         let mut ready = BTreeSet::new();
-        for &block in self.nodes {
-            let degree = self.incoming(block).count();
+        for block in nodes {
+            let degree = self.incoming(block, &indegree).count();
             indegree.insert(block, degree);
             if degree == 0 {
                 ready.insert(block);
@@ -214,7 +226,7 @@ impl AcyclicTopology<'_> {
                 actual: ready.first().copied(),
             });
         }
-        let mut order = Vec::with_capacity(self.nodes.len());
+        let mut order = Vec::with_capacity(indegree.len());
         while let Some(block) = ready.pop_first() {
             order.push(block);
             for target in self.cfg.normal_successors(block) {
@@ -229,7 +241,7 @@ impl AcyclicTopology<'_> {
                 }
             }
         }
-        if order.len() != self.nodes.len() {
+        if order.len() != indegree.len() {
             return Err(ReachingConditionError::CyclicGraph);
         }
         // The degree table is dead after Kahn's traversal. Reuse its keys
@@ -252,7 +264,6 @@ impl ReachabilityMatrix {
 
     fn analyze(
         cfg: &CFG,
-        nodes: &BTreeSet<BlockId>,
         order: &[BlockId],
         indices: HashMap<BlockId, usize>,
     ) -> Result<Self, ReachingConditionError> {
@@ -278,11 +289,10 @@ impl ReachabilityMatrix {
             let split = (source_index + 1) * words;
             let (prefix, suffix) = bits.split_at_mut(split);
             let row = &mut prefix[source_index * words..];
-            for target in cfg
+            for target_index in cfg
                 .normal_successors(source)
-                .filter(|target| nodes.contains(target))
+                .filter_map(|target| indices.get(&target).copied())
             {
-                let target_index = indices[&target];
                 row[target_index / u64::BITS as usize] |=
                     1u64 << (target_index % u64::BITS as usize);
                 let start = (target_index - source_index - 1) * words;

@@ -5,7 +5,7 @@
 //! Budget exhaustion makes subsequent proofs conservative without abandoning
 //! value recovery or expanding formulas into trees.
 
-use std::cell::Cell;
+use std::cell::{Cell, OnceCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::rc::Rc;
@@ -13,7 +13,7 @@ use std::rc::Rc;
 use crate::ir::bdd::{Bdd, BddContext, BddError};
 use crate::ir::{BoolExpr, BoolVariable};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct ControlDomain(u32);
 
 #[derive(Debug, Clone)]
@@ -89,8 +89,20 @@ enum DomainNode {
     False,
     Symbol,
     Not(ControlDomain),
+    AndPair([ControlDomain; 2]),
+    OrPair([ControlDomain; 2]),
     And(Rc<[ControlDomain]>),
     Or(Rc<[ControlDomain]>),
+}
+
+impl DomainNode {
+    fn terms(&self, conjunction: bool) -> Option<&[ControlDomain]> {
+        match (self, conjunction) {
+            (Self::AndPair(terms), true) | (Self::OrPair(terms), false) => Some(terms),
+            (Self::And(terms), true) | (Self::Or(terms), false) => Some(terms),
+            _ => None,
+        }
+    }
 }
 
 struct DomainRecord {
@@ -100,9 +112,10 @@ struct DomainRecord {
 }
 
 pub(super) struct DomainLogic {
-    bdd: BddContext,
+    bdd: OnceCell<BddContext>,
     nodes: Vec<DomainRecord>,
     symbols: BTreeMap<BoolVariable, ControlDomain>,
+    joins: foldhash::HashMap<(ControlDomain, ControlDomain, bool), ControlDomain>,
     conjunctions: BTreeMap<Rc<[ControlDomain]>, ControlDomain>,
     disjunctions: BTreeMap<Rc<[ControlDomain]>, ControlDomain>,
     saturated: Cell<bool>,
@@ -113,15 +126,27 @@ impl DomainLogic {
     const FALSE: ControlDomain = ControlDomain(1);
 
     pub(super) fn new(variables: &BTreeSet<BoolVariable>) -> Self {
-        let bdd = BddContext::new(variables);
+        let bdd = if variables.is_empty() {
+            OnceCell::new()
+        } else {
+            OnceCell::from(BddContext::new(variables))
+        };
         Self {
             nodes: Vec::new(),
             symbols: BTreeMap::new(),
+            joins: Default::default(),
             conjunctions: BTreeMap::new(),
             disjunctions: BTreeMap::new(),
             bdd,
             saturated: Cell::new(false),
         }
+    }
+
+    // A guard-free method normally uses the two structural terminals only.
+    // A later real proof or unknown symbol still uses the ordinary empty arena.
+    fn bdd(&self) -> &BddContext {
+        self.bdd
+            .get_or_init(|| BddContext::ordered(std::iter::empty()))
     }
 
     pub(super) fn proof_budget_exhausted(&self) -> bool {
@@ -147,6 +172,15 @@ impl DomainLogic {
             SemanticPredicate::Test(instruction) => {
                 Ok(self.symbol(BoolVariable::Instruction(instruction.id))?)
             }
+            SemanticPredicate::Not(inner) => match inner.as_ref() {
+                SemanticPredicate::True => Ok(Self::FALSE),
+                SemanticPredicate::False => Ok(Self::TRUE),
+                SemanticPredicate::Test(instruction) => {
+                    let symbol = self.symbol(BoolVariable::Instruction(instruction.id))?;
+                    Ok(self.not(symbol)?)
+                }
+                _ => Ok(self.compile(&predicate.domain()?)?),
+            },
             _ => Ok(self.compile(&predicate.domain()?)?),
         }
     }
@@ -215,7 +249,7 @@ impl DomainLogic {
                     return Ok(complement);
                 }
                 let proof = match (self.saturated.get(), record.proof) {
-                    (false, Some(value)) => self.proof(self.bdd.not(value))?,
+                    (false, Some(value)) => self.proof(self.bdd().not(value))?,
                     _ => None,
                 };
                 let complement = self.push_node(DomainNode::Not(domain), proof, Some(domain))?;
@@ -272,7 +306,7 @@ impl DomainLogic {
             return Ok(true);
         }
         match (self.exact(left), self.exact(right)) {
-            (Some(left), Some(right)) => match self.bdd.equivalent(left, right) {
+            (Some(left), Some(right)) => match self.bdd().equivalent(left, right) {
                 Ok(result) => Ok(result),
                 Err(error) if error.is_resource_limit() => {
                     self.saturated.set(true);
@@ -292,8 +326,14 @@ impl DomainLogic {
         if premise == consequence || consequence == Self::TRUE || premise == Self::FALSE {
             return Ok(true);
         }
-        if matches!(self.node(premise)?, DomainNode::And(terms) if terms.binary_search(&consequence).is_ok())
-            || matches!(self.node(consequence)?, DomainNode::Or(terms) if terms.binary_search(&premise).is_ok())
+        if self
+            .node(premise)?
+            .terms(true)
+            .is_some_and(|terms| terms.binary_search(&consequence).is_ok())
+            || self
+                .node(consequence)?
+                .terms(false)
+                .is_some_and(|terms| terms.binary_search(&premise).is_ok())
         {
             return Ok(true);
         }
@@ -304,7 +344,7 @@ impl DomainLogic {
         else {
             return Ok(false);
         };
-        match self.bdd.implies_bdd(premise, consequence) {
+        match self.bdd().implies_bdd(premise, consequence) {
             Ok(result) => Ok(result),
             Err(error) if error.is_resource_limit() => {
                 self.saturated.set(true);
@@ -322,12 +362,12 @@ impl DomainLogic {
         let Some(premise) = self.exact(premise) else {
             return Ok(false);
         };
-        let mut covered = self.bdd.falsity();
+        let mut covered = self.bdd().falsity();
         for consequence in consequences {
             let Some(consequence) = self.exact(consequence) else {
                 return Ok(false);
             };
-            covered = match self.bdd.or(covered, consequence) {
+            covered = match self.bdd().or(covered, consequence) {
                 Ok(value) => value,
                 Err(error) if error.is_resource_limit() => {
                     self.saturated.set(true);
@@ -336,7 +376,7 @@ impl DomainLogic {
                 Err(error) => return Err(error.into()),
             };
         }
-        match self.bdd.implies_bdd(premise, covered) {
+        match self.bdd().implies_bdd(premise, covered) {
             Ok(result) => Ok(result),
             Err(error) if error.is_resource_limit() => {
                 self.saturated.set(true);
@@ -354,7 +394,7 @@ impl DomainLogic {
         if left == Self::FALSE || right == Self::FALSE {
             return Ok(true);
         }
-        if self.saturated.get() {
+        if self.saturated.get() || (left == Self::TRUE && right == Self::TRUE) {
             return Ok(false);
         }
         let (Some(left), Some(right)) = (self.exact(left), self.exact(right)) else {
@@ -368,7 +408,7 @@ impl DomainLogic {
         if left == right || left.is_true() || right.is_true() {
             return Ok(false);
         }
-        match self.bdd.and(left, right) {
+        match self.bdd().and(left, right) {
             Ok(intersection) => Ok(intersection.is_false()),
             Err(error) if error.is_resource_limit() => {
                 self.saturated.set(true);
@@ -376,6 +416,17 @@ impl DomainLogic {
             }
             Err(error) => Err(error.into()),
         }
+    }
+
+    /// Disjointness with this operand cannot allocate an intersection or
+    /// exhaust a proof budget, regardless of its other operand.
+    pub(super) fn disjoint_without_bdd_work(&self, domain: ControlDomain) -> bool {
+        domain == Self::TRUE
+            || domain == Self::FALSE
+            || self.saturated.get()
+            || self
+                .exact(domain)
+                .is_none_or(|bdd| bdd.is_true() || bdd.is_false())
     }
 
     pub(super) fn expression_under(
@@ -390,7 +441,7 @@ impl DomainLogic {
         let (Some(value), Some(care)) = (self.exact(value), self.exact(care)) else {
             return Ok(None);
         };
-        let constrained = match self.bdd.constrain(value, care) {
+        let constrained = match self.bdd().constrain(value, care) {
             Ok(value) => value,
             Err(error) if error.is_resource_limit() => {
                 self.saturated.set(true);
@@ -398,7 +449,7 @@ impl DomainLogic {
             }
             Err(error) => return Err(error.into()),
         };
-        match self.bdd.expression(constrained, node_limit) {
+        match self.bdd().expression(constrained, node_limit) {
             Ok(expression) => Ok(expression.map(|(expression, _)| expression)),
             Err(error) if error.is_resource_limit() => {
                 self.saturated.set(true);
@@ -415,7 +466,7 @@ impl DomainLogic {
         let proof = if self.saturated.get() {
             None
         } else {
-            self.proof(self.bdd.compile(&BoolExpr::Symbol(symbol.clone())))?
+            self.proof(self.bdd().compile(&BoolExpr::Symbol(symbol.clone())))?
         };
         let domain = self.push_node(DomainNode::Symbol, proof, None)?;
         self.symbols.insert(symbol, domain);
@@ -440,6 +491,12 @@ impl DomainLogic {
             return Ok(left);
         }
 
+        let input_pair = (left.min(right), left.max(right), conjunction);
+        // Only the pair that created a domain is remembered. Replaying it
+        // cannot change its interned result or consume another BDD operation.
+        if let Some(&domain) = self.joins.get(&input_pair) {
+            return Ok(domain);
+        }
         let a = self.junction_terms(&left, conjunction)?;
         let b = self.junction_terms(&right, conjunction)?;
         let (shorter, longer, longer_domain) = if a.len() <= b.len() {
@@ -462,37 +519,44 @@ impl DomainLogic {
         if contained {
             return Ok(longer_domain);
         }
-        let pair;
-        let union;
-        let terms = if a.len() == 1 && b.len() == 1 {
-            pair = [left.min(right), left.max(right)];
-            pair.as_slice()
+        let domain = if a.len() == 1 && b.len() == 1 {
+            // After the containment check a two-term union can only be
+            // formed from its two singleton operands, in either order.
+            let pair = [input_pair.0, input_pair.1];
+            let proof = self.junction_proof(&pair, conjunction, [left, right])?;
+            let node = if conjunction {
+                DomainNode::AndPair(pair)
+            } else {
+                DomainNode::OrPair(pair)
+            };
+            self.push_node(node, proof, None)?
         } else {
-            union = Self::union_terms(a, b);
-            union.as_slice()
+            let terms = Self::union_terms(a, b);
+            let index = if conjunction {
+                &self.conjunctions
+            } else {
+                &self.disjunctions
+            };
+            if let Some(&domain) = index.get(terms.as_slice()) {
+                return Ok(domain);
+            }
+            let proof = self.junction_proof(&terms, conjunction, [left, right])?;
+            let terms: Rc<[ControlDomain]> = terms.into();
+            let node = if conjunction {
+                DomainNode::And(Rc::clone(&terms))
+            } else {
+                DomainNode::Or(Rc::clone(&terms))
+            };
+            let domain = self.push_node(node, proof, None)?;
+            let index = if conjunction {
+                &mut self.conjunctions
+            } else {
+                &mut self.disjunctions
+            };
+            index.insert(terms, domain);
+            domain
         };
-        let index = if conjunction {
-            &self.conjunctions
-        } else {
-            &self.disjunctions
-        };
-        if let Some(domain) = index.get(terms) {
-            return Ok(*domain);
-        }
-        let proof = self.junction_proof(terms, conjunction, [left, right])?;
-        let terms: Rc<[ControlDomain]> = terms.into();
-        let node = if conjunction {
-            DomainNode::And(Rc::clone(&terms))
-        } else {
-            DomainNode::Or(Rc::clone(&terms))
-        };
-        let domain = self.push_node(node, proof, None)?;
-        let index = if conjunction {
-            &mut self.conjunctions
-        } else {
-            &mut self.disjunctions
-        };
-        index.insert(terms, domain);
+        self.joins.insert(input_pair, domain);
         Ok(domain)
     }
 
@@ -501,14 +565,24 @@ impl DomainLogic {
         domain: &'a ControlDomain,
         conjunction: bool,
     ) -> Result<&'a [ControlDomain], DomainError> {
-        Ok(match (conjunction, self.node(*domain)?) {
-            (true, DomainNode::And(terms)) | (false, DomainNode::Or(terms)) => terms,
-            _ => std::slice::from_ref(domain),
-        })
+        Ok(self
+            .node(*domain)?
+            .terms(conjunction)
+            .unwrap_or(std::slice::from_ref(domain)))
     }
 
     fn union_terms(mut left: &[ControlDomain], mut right: &[ControlDomain]) -> Vec<ControlDomain> {
         let mut result = Vec::with_capacity(left.len() + right.len());
+        if left.last() < right.first() {
+            result.extend_from_slice(left);
+            result.extend_from_slice(right);
+            return result;
+        }
+        if right.last() < left.first() {
+            result.extend_from_slice(right);
+            result.extend_from_slice(left);
+            return result;
+        }
         while let ([a, more_left @ ..], [b, more_right @ ..]) = (left, right) {
             result.push((*a).min(*b));
             if a <= b {
@@ -540,9 +614,8 @@ impl DomainLogic {
             return Ok(None);
         };
         for operand in operands {
-            let prefix = match (conjunction, self.node(operand)?) {
-                (true, DomainNode::And(prefix)) | (false, DomainNode::Or(prefix)) => prefix,
-                _ => continue,
+            let Some(prefix) = self.node(operand)?.terms(conjunction) else {
+                continue;
             };
             if prefix.len() > start && terms.starts_with(prefix) {
                 let Some(proof) = self.exact(operand) else {
@@ -557,9 +630,9 @@ impl DomainLogic {
                 return Ok(None);
             };
             let result = if conjunction {
-                self.bdd.and(value, operand)
+                self.bdd().and(value, operand)
             } else {
-                self.bdd.or(value, operand)
+                self.bdd().or(value, operand)
             };
             let Some(exact) = self.proof(result)? else {
                 return Ok(None);
@@ -583,8 +656,8 @@ impl DomainLogic {
 
     fn exact(&self, domain: ControlDomain) -> Option<Bdd> {
         match domain {
-            Self::TRUE => Some(self.bdd.truth()),
-            Self::FALSE => Some(self.bdd.falsity()),
+            Self::TRUE => Some(self.bdd().truth()),
+            Self::FALSE => Some(self.bdd().falsity()),
             ControlDomain(id) => self
                 .nodes
                 .get((id - 2) as usize)
@@ -626,3 +699,7 @@ enum CompileTask<'a> {
     And(usize),
     Or(usize),
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/control_domain_joins.rs"]
+mod tests;

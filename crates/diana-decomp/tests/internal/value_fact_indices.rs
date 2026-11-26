@@ -97,3 +97,37 @@ fn coalesced_classes_use_their_last_event_and_preserve_incoming_bindings() {
         assert_eq!(canonical[&SsaVar::new(value, 0)].literal_value(), Some(-7));
     }
 }
+
+#[test]
+fn operand_versions_use_ssa_identity_only_after_flow_is_available() {
+    use crate::ir::analysis::{SemanticFlowPoint, SsaValueGraph};
+    use crate::ir::{block::Block, CFG};
+    let key = SsaVar::new(3, 2);
+    let mut result = RegisterArg::new_ssa(3, 2, ArgType::INT);
+    result.code_var = Some(3);
+    let mut op = InsnNode::new(InsnType::Const, 1);
+    op.result = Some(result);
+    op.args.push(InsnArg::lit(27, ArgType::INT));
+    let mut entry = Block::new(0u32);
+    entry.push(op.clone());
+    let mut cfg = CFG::new("operand_versions");
+    cfg.add_block(entry);
+    cfg.identify_instructions();
+    let values = SsaValueGraph::build(&cfg).unwrap();
+    let root = block([op]);
+    let canonical = Default::default();
+    let graph = ValueFlowGraph::build(&root, &values, &canonical).unwrap();
+    let facts = SparseValueFacts::analyze(&graph).unwrap();
+    let before = SemanticFlowPoint::before(SemanticSiteId(0));
+    let after = SemanticFlowPoint::after(SemanticSiteId(0));
+    assert!(facts.operands_unchanged(before, after, || -> [SsaVar; 1] {
+        panic!("complete SSA versions need no operand enumeration")
+    }));
+    assert!(!facts.operands_unchanged(before, before, || [key]));
+    let graph = ValueFlowGraph::build_source(&root, &BTreeSet::new()).unwrap();
+    let facts = SparseValueFacts::analyze(&graph).unwrap();
+    // before is not a movement target in this graph; the ordinary source
+    // query cannot establish a value fact there.
+    assert!(!facts.operands_unchanged(before, after, || [SsaVar::new(3, 0)]));
+    assert!(facts.operands_unchanged(before, after, || [SsaVar::new(8, 0)]));
+}

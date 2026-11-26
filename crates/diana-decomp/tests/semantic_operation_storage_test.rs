@@ -52,7 +52,7 @@ fn the_last_owner_releases_a_deep_operation_chain_on_a_small_stack() {
             let mut chain = SemanticOperation::from_instruction(InsnNode::return_void()).unwrap();
             for _ in 0..16_384 {
                 let mut node = parent.clone();
-                node.operands_mut()[0] = SemanticExpression::Operation(Box::new(chain));
+                node.operands_mut()[0] = SemanticExpression::Operation(chain);
                 chain = node;
             }
             let other_owner = chain.clone();

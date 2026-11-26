@@ -9,7 +9,7 @@ fn operation(
 }
 
 fn expression(kind: InsnType) -> SemanticExpression {
-    SemanticExpression::Operation(Box::new(operation(kind, Vec::new(), None)))
+    SemanticExpression::Operation(operation(kind, Vec::new(), None))
 }
 
 #[test]
@@ -64,7 +64,7 @@ fn predicate_masks_only_its_root_control_and_edge_copy_overrides_only_its_root()
     );
     let outer = operation(
         InsnType::Neg,
-        vec![SemanticExpression::Operation(Box::new(test))],
+        vec![SemanticExpression::Operation(test)],
         None,
     );
     assert!(outer.effects_ignoring_edge_copy().writes_memory());
@@ -76,7 +76,7 @@ fn deep_shared_operations_cache_their_operand_summaries() {
     for _ in 0..4096 {
         child = operation(
             InsnType::Neg,
-            vec![SemanticExpression::Operation(Box::new(child))],
+            vec![SemanticExpression::Operation(child)],
             None,
         );
     }
@@ -89,5 +89,61 @@ fn deep_shared_operations_cache_their_operand_summaries() {
     assert_eq!(
         current.operand_effects.get(),
         Some(InstructionEffects::PURE)
+    );
+}
+
+#[test]
+fn nested_shapes_distinguish_selects_and_arity_across_shared_edits() {
+    let mut root = operation(
+        InsnType::Neg,
+        vec![expression(InsnType::Nop)],
+        Some(expression(InsnType::Aput)),
+    );
+    assert_eq!(root.operand_shape(), OperandShape::InvalidEvaluation);
+    let original = root.clone();
+    *root.compound_target_mut().unwrap() = expression(InsnType::Nop);
+    assert_eq!(root.operand_shape(), OperandShape::Plain);
+    let plain = root.clone();
+    *root.operands_mut().first_mut().unwrap() = SemanticExpression::Select {
+        condition: SemanticPredicate::False,
+        when_true: Box::new(expression(InsnType::Iput)),
+        when_false: Box::new(expression(InsnType::Nop)),
+    };
+    assert!(root.contains_select());
+    assert!(!original.contains_select());
+    assert_eq!(plain.operand_shape(), OperandShape::Plain);
+    root.insn_type = InsnType::Aput;
+    assert!(root.contains_select());
+    *root.children_mut().next().unwrap() = expression(InsnType::Nop);
+    assert_eq!(root.operand_shape(), OperandShape::InvalidEvaluation);
+}
+
+#[test]
+fn shared_deep_expression_sets_structure_once_per_operation() {
+    let mut tree = operation(InsnType::Iput, vec![], None);
+    for _ in 0..4096 {
+        tree = operation(
+            InsnType::Neg,
+            vec![SemanticExpression::Operation(tree)],
+            None,
+        );
+    }
+    let root = operation(
+        InsnType::Move,
+        vec![SemanticExpression::Operation(tree.clone())],
+        Some(SemanticExpression::Operation(tree)),
+    );
+    assert_eq!(root.operand_shape(), OperandShape::InvalidEvaluation);
+    let mut current = &root;
+    while let [SemanticExpression::Operation(child)] = current.operands() {
+        assert_eq!(
+            current.operand_shape.get(),
+            Some(OperandShape::InvalidEvaluation)
+        );
+        current = child;
+    }
+    assert_eq!(
+        current.operand_shape.get(),
+        Some(OperandShape::InvalidEvaluation)
     );
 }

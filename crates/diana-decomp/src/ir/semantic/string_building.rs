@@ -207,7 +207,7 @@ impl StringBuilderProtocol {
     }
 
     fn empty_string() -> SemanticExpression {
-        SemanticExpression::Operation(Box::new(SemanticOperation::string_literal(String::new())))
+        SemanticExpression::Operation(SemanticOperation::string_literal(String::new()))
     }
 }
 
@@ -409,7 +409,7 @@ impl StringBuildingRecovery {
                 construction.discard_result();
                 construction
             });
-            operation.operands_mut()[0] = SemanticExpression::Operation(Box::new(receiver));
+            operation.operands_mut()[0] = SemanticExpression::Operation(receiver);
             chain = Some(operation);
         }
         let Some(mut chain) = chain else {

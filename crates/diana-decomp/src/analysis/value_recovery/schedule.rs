@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use crate::ir::{
     analysis::SsaVar, IfOp, InsnType, RegisterArg, SemanticExpression, SemanticExpressionTransform,
@@ -169,55 +170,18 @@ impl ValueSchedule {
     }
 
     fn canonicalize(&mut self) -> Result<(), ValueRecoveryError> {
-        let cyclic = ReplacementGraph::new(&self.replacements, self.identity)?.cyclic_values();
-        self.replacements.retain(|key, _| !cyclic.contains(key));
-        let raw = std::mem::take(&mut self.replacements);
-        let keys = raw.keys().copied().collect::<BTreeSet<_>>();
-        let dependencies = raw
-            .iter()
-            .map(|(key, value)| {
-                let dependencies = ExpressionDependencies::collect(value, self.identity)?
-                    .into_iter()
-                    .filter(|dependency| keys.contains(dependency))
-                    .collect::<BTreeSet<_>>();
-                Ok((*key, dependencies))
-            })
-            .collect::<Result<BTreeMap<_, _>, ValueRecoveryError>>()?;
-        let mut successors = BTreeMap::<SsaVar, BTreeSet<SsaVar>>::new();
-        let mut indegree = BTreeMap::<SsaVar, usize>::new();
-        for key in &keys {
-            indegree.insert(*key, dependencies.get(key).map(BTreeSet::len).unwrap_or(0));
-        }
-        for (key, inputs) in &dependencies {
-            for input in inputs {
-                successors.entry(*input).or_default().insert(*key);
-            }
-        }
-        let mut ready = indegree
-            .iter()
-            .filter_map(|(key, degree)| (*degree == 0).then_some(*key))
-            .collect::<BTreeSet<_>>();
+        let order = ReplacementGraph::new(&self.replacements, self.identity)?.into_order();
+        let mut raw = std::mem::take(&mut self.replacements);
         let mut canonical = BTreeMap::new();
-        while let Some(key) = ready.pop_first() {
-            let value = ExpressionDependencies::substitute(
-                raw.get(&key)
-                    .cloned()
-                    .ok_or(ValueRecoveryError::MissingReplacement(key))?,
-                &canonical,
-                self.identity,
-            )?;
-            canonical.insert(key, value);
-            for successor in successors.get(&key).into_iter().flatten() {
-                let degree = indegree
-                    .get_mut(successor)
-                    .ok_or(ValueRecoveryError::MissingDependency(*successor))?;
-                *degree -= 1;
-                if *degree == 0 {
-                    ready.insert(*successor);
-                }
-            }
+        for key in order {
+            let value = raw
+                .remove(&key)
+                .ok_or(ValueRecoveryError::MissingReplacement(key))?;
+            canonical.insert(
+                key,
+                ExpressionDependencies::substitute(value, &canonical, self.identity)?,
+            );
         }
-        debug_assert_eq!(canonical.len(), keys.len());
         for replacements in self.site_replacements.values_mut() {
             for replacement in replacements.values_mut() {
                 replacement.value = ExpressionDependencies::substitute(
@@ -227,17 +191,20 @@ impl ValueSchedule {
                 )?;
             }
         }
-        let required = canonical
-            .values()
-            .chain(self.site_replacements.values().flat_map(|replacements| {
-                replacements.values().map(|replacement| &replacement.value)
-            }))
-            .map(|value| ExpressionDependencies::collect(value, self.identity))
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .flatten()
-            .filter(|dependency| !canonical.contains_key(dependency))
-            .collect::<BTreeSet<_>>();
+        let mut required = BTreeSet::new();
+        for value in canonical.values().chain(
+            self.site_replacements
+                .values()
+                .flat_map(|sites| sites.values().map(|replacement| &replacement.value)),
+        ) {
+            ExpressionDependencies::visit(value, self.identity, &mut |key| {
+                if (self.removals.contains(&key) || self.discarded_results.contains(&key))
+                    && !canonical.contains_key(&key)
+                {
+                    required.insert(key);
+                }
+            })?;
+        }
         self.removals.retain(|value| !required.contains(value));
         self.discarded_results
             .retain(|value| !required.contains(value));
@@ -340,12 +307,10 @@ impl ValueSchedule {
         match &mut statement.kind {
             SemanticStatementKind::Instruction(instruction) => {
                 let replacements = self.site_replacements.get(&UseSite::Statement(site));
-                if replacements.is_none()
-                    && !SemanticExpressionReduction::operation_contains_select(instruction)
-                {
+                if replacements.is_none() && !instruction.contains_select() {
                     return Ok(());
                 }
-                let mut expression = SemanticExpression::Operation(Box::new(instruction.clone()));
+                let mut expression = SemanticExpression::Operation(instruction.clone());
                 if let Some(replacements) = replacements {
                     let mut substitution = SiteSubstitution {
                         replacements,
@@ -364,7 +329,7 @@ impl ValueSchedule {
                 let SemanticExpression::Operation(operation) = expression else {
                     return Err(crate::ir::SemanticFoldError::NonOperationStatement.into());
                 };
-                *instruction = *operation;
+                *instruction = operation;
                 self.changed |= reduced;
             }
             SemanticStatementKind::Definition { value, .. } => {
@@ -507,39 +472,10 @@ impl SemanticExpressionReduction {
         Self { identity }
     }
 
-    fn operation_contains_select(operation: &SemanticOperation) -> bool {
-        let mut pending = Vec::new();
-        for value in operation
-            .operands()
-            .iter()
-            .chain(operation.compound_target())
-        {
-            match value {
-                SemanticExpression::Select { .. } => return true,
-                SemanticExpression::Operation(operation) => pending.push(operation.as_ref()),
-                SemanticExpression::Register(_) | SemanticExpression::Literal(_) => {}
-            }
-        }
-        while let Some(operation) = pending.pop() {
-            for value in operation
-                .operands()
-                .iter()
-                .chain(operation.compound_target())
-            {
-                match value {
-                    SemanticExpression::Select { .. } => return true,
-                    SemanticExpression::Operation(operation) => pending.push(operation.as_ref()),
-                    SemanticExpression::Register(_) | SemanticExpression::Literal(_) => {}
-                }
-            }
-        }
-        false
-    }
-
     fn contains_select(value: &SemanticExpression) -> bool {
         match value {
             SemanticExpression::Select { .. } => true,
-            SemanticExpression::Operation(operation) => Self::operation_contains_select(operation),
+            SemanticExpression::Operation(operation) => operation.contains_select(),
             SemanticExpression::Register(_) | SemanticExpression::Literal(_) => false,
         }
     }
@@ -550,7 +486,7 @@ impl SemanticExpressionReduction {
         loop {
             match current {
                 SemanticPredicate::Test(operation) => {
-                    if Self::operation_contains_select(operation) {
+                    if operation.contains_select() {
                         return true;
                     }
                 }
@@ -569,9 +505,7 @@ impl SemanticExpressionReduction {
 
     fn statement_contains_select(statement: &crate::ir::SemanticStatement) -> bool {
         match &statement.kind {
-            SemanticStatementKind::Instruction(operation) => {
-                Self::operation_contains_select(operation)
-            }
+            SemanticStatementKind::Instruction(operation) => operation.contains_select(),
             SemanticStatementKind::Definition { value, .. } => Self::contains_select(value),
         }
     }
@@ -683,9 +617,9 @@ impl SemanticExpressionReduction {
                     if has_compound_target && compound_target.is_none() {
                         return Err(crate::ir::SemanticFoldError::MalformedWorkStack.into());
                     }
-                    results.push(SemanticExpression::Operation(Box::new(
+                    results.push(SemanticExpression::Operation(
                         SemanticOperation::from_parts(instruction, operands, compound_target),
-                    )));
+                    ));
                 }
             }
         }
@@ -816,117 +750,193 @@ enum ValueReductionTask {
     },
 }
 
-struct ReplacementGraph {
-    edges: BTreeMap<SsaVar, BTreeSet<SsaVar>>,
-    reverse: BTreeMap<SsaVar, BTreeSet<SsaVar>>,
+struct ReplacementEdges {
+    offsets: Vec<usize>,
+    targets: Vec<usize>,
 }
+
+impl ReplacementEdges {
+    fn row(&self, key: usize) -> &[usize] {
+        &self.targets[self.offsets[key]..self.offsets[key + 1]]
+    }
+
+    fn transpose(&self) -> Self {
+        let mut offsets = vec![0; self.offsets.len()];
+        for &target in &self.targets {
+            offsets[target + 1] += 1;
+        }
+        for i in 1..offsets.len() {
+            offsets[i] += offsets[i - 1];
+        }
+        let mut next = offsets[..offsets.len() - 1].to_vec();
+        let mut targets = vec![0; self.targets.len()];
+        for source in 0..next.len() {
+            for &target in self.row(source) {
+                targets[next[target]] = source;
+                next[target] += 1;
+            }
+        }
+        Self { offsets, targets }
+    }
+}
+
+struct ReplacementGraph {
+    keys: Vec<SsaVar>,
+    dependencies: ReplacementEdges,
+    ordered: bool,
+}
+
+#[cfg(test)]
+#[path = "../../../tests/internal/replacement_order.rs"]
+mod replacement_order_tests;
 
 impl ReplacementGraph {
     fn new(
         replacements: &BTreeMap<SsaVar, SemanticExpression>,
         identity: ValueIdentity,
     ) -> Result<Self, ValueRecoveryError> {
-        let nodes = replacements.keys().copied().collect::<BTreeSet<_>>();
-        let edges = replacements
-            .iter()
-            .map(|(key, replacement)| {
-                let dependencies = ExpressionDependencies::collect(replacement, identity)?
-                    .into_iter()
-                    .filter(|dependency| nodes.contains(dependency))
-                    .collect::<BTreeSet<_>>();
-                Ok((*key, dependencies))
-            })
-            .collect::<Result<BTreeMap<_, _>, ValueRecoveryError>>()?;
-        let mut reverse = nodes
-            .iter()
-            .copied()
-            .map(|node| (node, BTreeSet::new()))
-            .collect::<BTreeMap<_, _>>();
-        for (source, targets) in &edges {
-            for target in targets {
-                reverse.entry(*target).or_default().insert(*source);
-            }
+        let keys: Vec<_> = replacements.keys().copied().collect();
+        let mut offsets = Vec::with_capacity(keys.len() + 1);
+        let mut targets = Vec::new();
+        let mut row = Vec::new();
+        let mut ordered = true;
+        // Validate every original expression in key order, including ones
+        // that will later prove cyclic. Each unique internal edge is kept.
+        for (source, value) in replacements.values().enumerate() {
+            offsets.push(targets.len());
+            ExpressionDependencies::visit(value, identity, &mut |key| {
+                if let Ok(target) = keys.binary_search(&key) {
+                    ordered &= target < source;
+                    row.push(target);
+                }
+            })?;
+            row.sort_unstable();
+            row.dedup();
+            targets.append(&mut row);
         }
-        Ok(Self { edges, reverse })
+        offsets.push(targets.len());
+        Ok(Self {
+            keys,
+            dependencies: ReplacementEdges { offsets, targets },
+            ordered,
+        })
     }
 
-    fn cyclic_values(&self) -> BTreeSet<SsaVar> {
-        let mut visited = BTreeSet::new();
+    fn into_order(self) -> Vec<SsaVar> {
+        // If every dependency precedes its consumer, ascending keys are
+        // already exactly the smallest-ready-key topological order.
+        if self.ordered {
+            return self.keys;
+        }
+        let dependents = self.dependencies.transpose();
+        let mut cyclic = vec![false; self.keys.len()];
+        let mut order = self.sorted_ready(&dependents, &cyclic);
+        if order.len() < self.keys.len() {
+            // Only unprocessed nodes can be cyclic. Their dependents may be
+            // legal once the actual cycle members retain their definitions.
+            self.mark_cycles(&dependents, &order, &mut cyclic);
+            order = self.sorted_ready(&dependents, &cyclic);
+        }
+        order.into_iter().map(|node| self.keys[node]).collect()
+    }
+
+    fn sorted_ready(&self, dependents: &ReplacementEdges, cyclic: &[bool]) -> Vec<usize> {
+        let mut degrees = Vec::with_capacity(self.keys.len());
+        let mut ready = BinaryHeap::new();
+        for (node, &excluded) in cyclic.iter().enumerate() {
+            let count = self
+                .dependencies
+                .row(node)
+                .iter()
+                .filter(|&&input| !cyclic[input])
+                .count();
+            degrees.push(count);
+            if !excluded && count == 0 {
+                ready.push(Reverse(node));
+            }
+        }
+        let mut order = Vec::with_capacity(self.keys.len());
+        while let Some(Reverse(node)) = ready.pop() {
+            order.push(node);
+            for &target in dependents.row(node) {
+                if !cyclic[target] {
+                    degrees[target] -= 1;
+                    if degrees[target] == 0 {
+                        ready.push(Reverse(target));
+                    }
+                }
+            }
+        }
+        order
+    }
+
+    fn mark_cycles(&self, dependents: &ReplacementEdges, solved: &[usize], cyclic: &mut [bool]) {
+        let mut visited = vec![false; self.keys.len()];
+        for &node in solved {
+            visited[node] = true;
+        }
+        let mut assigned = visited.clone();
         let mut finish = Vec::new();
-        for node in self.edges.keys().copied() {
-            self.finish_from(node, &mut visited, &mut finish);
-        }
-
-        visited.clear();
-        let mut cyclic = BTreeSet::new();
-        for node in finish.into_iter().rev() {
-            if visited.contains(&node) {
+        let mut stack = Vec::new();
+        for root in 0..visited.len() {
+            if std::mem::replace(&mut visited[root], true) {
                 continue;
             }
-            let component = self.component_from(node, &mut visited);
-            let self_edge = component.len() == 1
-                && self
-                    .edges
-                    .get(&node)
-                    .is_some_and(|targets| targets.contains(&node));
-            if component.len() > 1 || self_edge {
-                cyclic.extend(component);
+            stack.push((root, 0));
+            while let Some((node, index)) = stack.last_mut() {
+                if let Some(&child) = self.dependencies.row(*node).get(*index) {
+                    *index += 1;
+                    if !std::mem::replace(&mut visited[child], true) {
+                        stack.push((child, 0));
+                    }
+                } else {
+                    finish.push(*node);
+                    stack.pop();
+                }
             }
         }
-        cyclic
-    }
-
-    fn finish_from(&self, start: SsaVar, visited: &mut BTreeSet<SsaVar>, finish: &mut Vec<SsaVar>) {
-        let mut pending = vec![(start, false)];
-        while let Some((node, exiting)) = pending.pop() {
-            if exiting {
-                finish.push(node);
+        let mut pending = Vec::new();
+        let mut component = Vec::new();
+        for root in finish.into_iter().rev() {
+            if std::mem::replace(&mut assigned[root], true) {
                 continue;
             }
-            if !visited.insert(node) {
-                continue;
+            component.clear();
+            pending.push(root);
+            while let Some(node) = pending.pop() {
+                component.push(node);
+                for &dependent in dependents.row(node) {
+                    if !std::mem::replace(&mut assigned[dependent], true) {
+                        pending.push(dependent);
+                    }
+                }
             }
-            pending.push((node, true));
-            pending.extend(
-                self.edges
-                    .get(&node)
-                    .into_iter()
-                    .flatten()
-                    .rev()
-                    .copied()
-                    .map(|target| (target, false)),
-            );
+            if component.len() > 1 || self.dependencies.row(root).binary_search(&root).is_ok() {
+                for &node in &component {
+                    cyclic[node] = true;
+                }
+            }
         }
-    }
-
-    fn component_from(&self, start: SsaVar, visited: &mut BTreeSet<SsaVar>) -> BTreeSet<SsaVar> {
-        let mut component = BTreeSet::new();
-        let mut pending = vec![start];
-        while let Some(node) = pending.pop() {
-            if !visited.insert(node) {
-                continue;
-            }
-            component.insert(node);
-            pending.extend(self.reverse.get(&node).into_iter().flatten().rev().copied());
-        }
-        component
     }
 }
 
 struct ExpressionDependencies;
 
 impl ExpressionDependencies {
-    fn collect(
+    fn visit(
         value: &SemanticExpression,
         identity: ValueIdentity,
-    ) -> Result<BTreeSet<SsaVar>, ValueRecoveryError> {
-        let mut values = BTreeSet::new();
-        let mut expressions = vec![value];
+        visit: &mut impl FnMut(SsaVar),
+    ) -> Result<(), ValueRecoveryError> {
+        let mut expressions = smallvec::SmallVec::<[&SemanticExpression; 4]>::new();
+        expressions.push(value);
         let mut predicates = Vec::new();
         while let Some(expression) = expressions.pop() {
             match expression {
                 SemanticExpression::Register(register) => {
-                    values.extend(identity.key(register));
+                    if let Some(key) = identity.key(register) {
+                        visit(key);
+                    }
                 }
                 SemanticExpression::Operation(operation) => {
                     expressions.extend(operation.evaluation_operands_iter()?);
@@ -947,7 +957,7 @@ impl ExpressionDependencies {
             match predicate {
                 SemanticPredicate::Test(operation) => {
                     for operand in operation.evaluation_operands_iter()? {
-                        values.extend(Self::collect(operand, identity)?);
+                        Self::visit(operand, identity, visit)?;
                     }
                 }
                 SemanticPredicate::Not(inner) => predicates.push(inner),
@@ -957,7 +967,7 @@ impl ExpressionDependencies {
                 SemanticPredicate::True | SemanticPredicate::False => {}
             }
         }
-        Ok(values)
+        Ok(())
     }
 
     fn substitute(
@@ -1037,7 +1047,7 @@ impl SemanticExpressionTransform for ValueSubstitution<'_> {
             operation.discard_result();
             self.changed = true;
         }
-        SemanticExpression::Operation(Box::new(operation))
+        SemanticExpression::Operation(operation)
     }
 
     fn transform_select(
@@ -1064,9 +1074,7 @@ mod tests {
             |value| SemanticExpression::from_argument(InsnArg::lit(value, ArgType::INT)).unwrap();
         let flat =
             SemanticOperation::from_parts(InsnNode::new(InsnType::Move, 1), vec![literal(1)], None);
-        assert!(!SemanticExpressionReduction::operation_contains_select(
-            &flat
-        ));
+        assert!(!flat.contains_select());
 
         let nested = SemanticOperation::from_parts(
             InsnNode::new(InsnType::Move, 1),
@@ -1077,9 +1085,7 @@ mod tests {
             )],
             None,
         );
-        assert!(SemanticExpressionReduction::operation_contains_select(
-            &nested
-        ));
+        assert!(nested.contains_select());
     }
 
     #[test]
@@ -1144,8 +1150,11 @@ mod tests {
         constructor.add_arg(register(second, ArgType::INT));
 
         let expression = SemanticExpression::from_argument(InsnArg::wrap(constructor)).unwrap();
-        let dependencies =
-            ExpressionDependencies::collect(&expression, ValueIdentity::Ssa).unwrap();
+        let mut dependencies = BTreeSet::new();
+        ExpressionDependencies::visit(&expression, ValueIdentity::Ssa, &mut |key| {
+            dependencies.insert(key);
+        })
+        .unwrap();
 
         assert_eq!(dependencies, BTreeSet::from([first, second]));
     }
@@ -1165,9 +1174,9 @@ mod tests {
                 ValueAction::Inline {
                     event: 0,
                     key: value,
-                    expression: SemanticExpression::Operation(Box::new(
+                    expression: SemanticExpression::Operation(
                         SemanticOperation::from_instruction(expression).unwrap(),
-                    )),
+                    ),
                 },
                 ValueAction::DiscardResult {
                     event: 1,

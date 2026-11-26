@@ -1633,7 +1633,7 @@ impl<'a> JavaTypeLowering<'a> {
         }
         let mut ty = self.names.resolve_type(owner)?;
         if let (Some(signature), JavaType::Class(class)) = (class_signature, &mut ty) {
-            if let Some(segment) = class.segments.last_mut() {
+            if let Some(segment) = class.segments_mut().last_mut() {
                 segment.arguments = signature
                     .type_parameters
                     .iter()

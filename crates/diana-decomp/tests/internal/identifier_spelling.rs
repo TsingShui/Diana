@@ -34,3 +34,22 @@ fn long_dex_names_and_hints_retain_their_distinct_printing_rules_after_renaming(
         "a-b"
     );
 }
+
+#[test]
+fn raw_and_parameterized_nested_types_keep_independent_arguments_after_cloning() {
+    let raw = JavaClassType::from_source("pkg.Outer.Inner");
+    let mut parameterized = raw.clone();
+    assert!(Arc::ptr_eq(&raw.segments, &parameterized.segments));
+    parameterized.segments_mut()[1]
+        .arguments
+        .push(JavaTypeArgument::Exact(JavaType::int()));
+    parameterized.segments_mut()[2]
+        .arguments
+        .push(JavaTypeArgument::Super(JavaType::source_class("T")));
+    let qualified = JavaType::array(JavaType::Class(parameterized.clone()));
+    let erased = qualified.clone().into_raw();
+    assert_eq!(raw.to_string(), "pkg.Outer.Inner");
+    assert_eq!(parameterized.to_string(), "pkg.Outer<int>.Inner<? super T>");
+    assert_eq!(qualified.to_string(), "pkg.Outer<int>.Inner<? super T>[]");
+    assert_eq!(erased.to_string(), "pkg.Outer.Inner[]");
+}

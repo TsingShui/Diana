@@ -21,7 +21,7 @@ use super::{SemanticFoldError, SemanticPredicate};
 pub enum SemanticExpression {
     Register(RegisterArg),
     Literal(LiteralArg),
-    Operation(Box<SemanticOperation>),
+    Operation(SemanticOperation),
     Select {
         condition: SemanticPredicate,
         when_true: Box<SemanticExpression>,
@@ -49,6 +49,7 @@ pub struct SemanticOperationData {
     operands: Vec<SemanticExpression>,
     compound_target: Option<Box<SemanticExpression>>,
     operand_effects: CachedOperandEffects,
+    operand_shape: CachedOperandShape,
 }
 
 /// All readers of a shared operation see the same immutable operands. Only
@@ -78,6 +79,42 @@ impl Clone for CachedOperandEffects {
     }
 }
 
+/// Without a selection, an expression cannot introduce any new predicate
+/// symbols. Keep invalid evaluation layouts distinct so the ordinary
+/// collector can still report the first error in source evaluation order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum OperandShape {
+    Plain = 0,
+    InvalidEvaluation = 1,
+    Select = 2,
+}
+
+struct CachedOperandShape(AtomicU8);
+
+impl CachedOperandShape {
+    const EMPTY: u8 = u8::MAX;
+
+    fn get(&self) -> Option<OperandShape> {
+        match self.0.load(Ordering::Relaxed) {
+            0 => Some(OperandShape::Plain),
+            1 => Some(OperandShape::InvalidEvaluation),
+            2 => Some(OperandShape::Select),
+            _ => None,
+        }
+    }
+
+    fn set(&self, shape: OperandShape) {
+        self.0.store(shape as u8, Ordering::Relaxed);
+    }
+}
+
+impl Clone for CachedOperandShape {
+    fn clone(&self) -> Self {
+        Self(AtomicU8::new(self.0.load(Ordering::Relaxed)))
+    }
+}
+
 impl Drop for SemanticOperationData {
     fn drop(&mut self) {
         if !self
@@ -102,7 +139,7 @@ impl Drop for SemanticOperationData {
         while let Some(expression) = expressions.pop() {
             match expression {
                 SemanticExpression::Operation(operation) => {
-                    Self::release(*operation, &mut expressions)
+                    Self::release(operation, &mut expressions)
                 }
                 SemanticExpression::Select {
                     condition,
@@ -152,6 +189,7 @@ impl std::ops::DerefMut for SemanticOperation {
     fn deref_mut(&mut self) -> &mut Self::Target {
         let data = Arc::make_mut(&mut self.0);
         *data.operand_effects.0.get_mut() = CachedOperandEffects::EMPTY;
+        *data.operand_shape.0.get_mut() = CachedOperandShape::EMPTY;
         data
     }
 }
@@ -311,11 +349,11 @@ impl SemanticExpression {
                         };
                         (operands, compound_target)
                     };
-                    results.push(Self::Operation(Box::new(SemanticOperation::from_parts(
+                    results.push(Self::Operation(SemanticOperation::from_parts(
                         instruction,
                         operands,
                         compound_target,
-                    ))));
+                    )));
                 }
             }
         }
@@ -326,7 +364,7 @@ impl SemanticExpression {
     }
 
     pub fn operation(instruction: InsnNode) -> Result<Self, SemanticFoldError> {
-        SemanticOperation::from_instruction(instruction).map(|op| Self::Operation(Box::new(op)))
+        SemanticOperation::from_instruction(instruction).map(Self::Operation)
     }
 
     fn schedule_operation(instruction: InsnNode, pending: &mut Vec<ExpressionTask>) {
@@ -455,6 +493,76 @@ impl SemanticOperation {
             .map(|target| SemanticExpression::from_argument(*target))
             .transpose()?;
         Ok(Self::from_parts(instruction, operands, target))
+    }
+
+    fn shape_from_children(&self) -> Option<OperandShape> {
+        let mut valid = self.evaluation_operands_iter().is_ok();
+        let mut complete = true;
+        for child in self.operands.iter().chain(self.compound_target.as_deref()) {
+            match child {
+                SemanticExpression::Register(_) | SemanticExpression::Literal(_) => {}
+                SemanticExpression::Select { .. } => return Some(OperandShape::Select),
+                SemanticExpression::Operation(operation) => match operation.operand_shape.get() {
+                    Some(OperandShape::Select) => return Some(OperandShape::Select),
+                    Some(OperandShape::InvalidEvaluation) => valid = false,
+                    Some(OperandShape::Plain) => {}
+                    None => complete = false,
+                },
+            }
+        }
+        complete.then_some(if valid {
+            OperandShape::Plain
+        } else {
+            OperandShape::InvalidEvaluation
+        })
+    }
+
+    pub(crate) fn operand_shape(&self) -> OperandShape {
+        if let Some(shape) = self.operand_shape.get() {
+            return shape;
+        }
+        let mut parents = smallvec::SmallVec::<[&SemanticOperation; 8]>::new();
+        let mut current = self;
+        loop {
+            if let Some(shape) = current
+                .operand_shape
+                .get()
+                .or_else(|| current.shape_from_children())
+            {
+                current.operand_shape.set(shape);
+                let Some(parent) = parents.pop() else {
+                    return shape;
+                };
+                current = parent;
+            } else {
+                // Process all missing children before the parent's next visit.
+                // A shared child is evaluated at most once for an immutable tree.
+                parents.push(current);
+                let mut missing = current
+                    .operands
+                    .iter()
+                    .chain(current.compound_target.as_deref())
+                    .filter_map(|child| match child {
+                        SemanticExpression::Operation(child)
+                            if child.operand_shape.get().is_none() =>
+                        {
+                            Some(child)
+                        }
+                        _ => None,
+                    });
+                let Some(first) = missing.next() else {
+                    // Another reader may have published the last child.
+                    parents.pop();
+                    continue;
+                };
+                parents.extend(missing);
+                current = first;
+            }
+        }
+    }
+
+    pub(crate) fn contains_select(&self) -> bool {
+        self.operand_shape() == OperandShape::Select
     }
 
     pub fn operands(&self) -> &[SemanticExpression] {
@@ -673,6 +781,7 @@ impl SemanticOperation {
             operands,
             compound_target: compound_target.map(Box::new),
             operand_effects: CachedOperandEffects::new(),
+            operand_shape: CachedOperandShape(AtomicU8::new(CachedOperandShape::EMPTY)),
         }))
     }
 

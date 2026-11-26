@@ -499,7 +499,7 @@ impl SemanticLiveness {
                         }
                     }
                 }
-                for &predecessor in points.predecessors(index) {
+                for predecessor in points.predecessors(index) {
                     if visited[predecessor] == stamp {
                         continue;
                     }

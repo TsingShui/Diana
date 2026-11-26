@@ -116,7 +116,7 @@ impl DefinitionFact<'_> {
         match &self.statement.kind {
             crate::ir::SemanticStatementKind::Definition { value, .. } => value.clone(),
             crate::ir::SemanticStatementKind::Instruction(operation) => {
-                SemanticExpression::Operation(Box::new(operation.clone()))
+                SemanticExpression::Operation(operation.clone())
             }
         }
     }
@@ -426,6 +426,7 @@ pub(super) struct ValueFlowGraph<'ir> {
     identity: ValueIdentity,
     logic: DomainLogic,
     definitions: BTreeMap<SsaVar, Vec<DefinitionFact<'ir>>>,
+    definitions_without_sites: BTreeSet<SsaVar>,
     /// Values introduced by lexical binders rather than executable statements.
     /// Their definition classes are intentionally open to statement scheduling.
     bindings: BTreeSet<SsaVar>,
@@ -525,6 +526,7 @@ impl<'ir> ValueFlowGraph<'ir> {
             has_predicate_uses: false,
             scopes: LexicalScopes::default(),
             definitions: BTreeMap::new(),
+            definitions_without_sites: BTreeSet::new(),
             bindings: BTreeSet::new(),
             uses: BTreeMap::new(),
             semantic_roots: OnceCell::new(),
@@ -589,6 +591,7 @@ impl<'ir> ValueFlowGraph<'ir> {
             has_predicate_uses: false,
             scopes: LexicalScopes::default(),
             definitions: BTreeMap::new(),
+            definitions_without_sites: BTreeSet::new(),
             bindings: bindings.clone(),
             uses: BTreeMap::new(),
             semantic_roots: OnceCell::new(),
@@ -1198,6 +1201,21 @@ impl SemanticVisitor for ControlSymbolClosure<'_> {
         }
     }
 
+    fn visit_operation(&mut self, operation: &SemanticOperation) {
+        use crate::ir::semantic::OperandShape;
+        if self.plan_required || self.ssa_inputs.is_none() {
+            match operation.operand_shape() {
+                OperandShape::Plain => return,
+                OperandShape::InvalidEvaluation => {
+                    self.plan_required = true;
+                    return;
+                }
+                OperandShape::Select => {}
+            }
+        }
+        crate::ir::semantic::walk_operation(self, operation);
+    }
+
     fn enter_operation(&mut self, operation: &SemanticOperation) {
         if !self.plan_required && operation.evaluation_operands_iter().is_err() {
             self.plan_required = true;
@@ -1261,8 +1279,8 @@ mod tests {
         let nested = SemanticPredicate::Test(operation(21, InsnType::If, Vec::new()));
         let selected = SemanticExpression::select(
             nested,
-            SemanticExpression::Operation(Box::new(operation(22, InsnType::Const, Vec::new()))),
-            SemanticExpression::Operation(Box::new(operation(23, InsnType::Const, Vec::new()))),
+            SemanticExpression::Operation(operation(22, InsnType::Const, Vec::new())),
+            SemanticExpression::Operation(operation(23, InsnType::Const, Vec::new())),
         );
         let outer = SemanticPredicate::Test(operation(20, InsnType::If, vec![selected]));
 

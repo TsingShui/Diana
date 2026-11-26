@@ -18,9 +18,12 @@ pub(super) struct RegionAnchors {
 }
 
 impl RegionAnchors {
-    pub(super) fn analyze(cfg: &CFG, graph: &RegionGraph) -> Result<Self, StructureError> {
-        let phi_predecessors =
-            ControlContractions::for_edge_arguments(cfg, graph).phi_copy_anchors(cfg);
+    pub(super) fn analyze(
+        cfg: &CFG,
+        graph: &RegionGraph,
+        edge_arguments: &ControlContractions,
+    ) -> Result<Self, StructureError> {
+        let phi_predecessors = edge_arguments.phi_copy_anchors(cfg);
         // Region layout may contract only blocks that denote the same lexical
         // region node. Exceptional edge-argument contractions additionally
         // relate throw sites to cleanup destinations for Phi evaluation; using
@@ -82,8 +85,12 @@ pub(super) struct RegionEntryPorts {
 }
 
 impl RegionEntryPorts {
-    pub(super) fn analyze(cfg: &CFG, graph: &RegionGraph) -> Result<Self, StructureError> {
-        let contractions = ControlContractions::from_regions(graph);
+    pub(super) fn analyze(
+        cfg: &CFG,
+        graph: &RegionGraph,
+        anchors: &RegionAnchors,
+    ) -> Result<Self, StructureError> {
+        let contractions = &anchors.contractions;
         let mut entries = graph
             .tree()
             .regions()
@@ -109,7 +116,7 @@ impl RegionEntryPorts {
             })
             .collect::<Result<BTreeMap<_, _>, StructureError>>()?;
         let body_reachability = RegionBodyReachability::analyze(cfg, graph)?;
-        for source in cfg.block_ids() {
+        for source in cfg.blocks.keys().copied() {
             if contractions.is_contracted(source) {
                 continue;
             }
@@ -634,7 +641,7 @@ impl<'a> RegionScope<'a> {
     fn layout(&self, cfg: &CFG) -> Result<RegionLayout, StructureError> {
         let mut mapping = BTreeMap::new();
         let mut representatives = BTreeSet::new();
-        for block in cfg.block_ids() {
+        for block in cfg.blocks.keys().copied() {
             if let Some(representative) = self.representative(block)? {
                 mapping.insert(block, representative);
                 representatives.insert(representative);
@@ -731,7 +738,7 @@ impl<'a> RegionCfgBuilder<'a> {
             .copied()
             .map(|block| (block, BTreeSet::new()))
             .collect::<BTreeMap<_, _>>();
-        for source in cfg.block_ids() {
+        for source in cfg.blocks.keys().copied() {
             let Some(from) = layout.mapping.get(&source).copied() else {
                 continue;
             };
@@ -798,10 +805,9 @@ impl RegionCfgState {
             cfg.add_block(block);
         }
         let source_entry = source
-            .block_ids()
-            .into_iter()
-            .map(|block| block.0)
-            .max()
+            .blocks
+            .last_key_value()
+            .map(|(block, _)| block.0)
             .unwrap_or(0);
         let next_boundary = source_entry
             .checked_add(1)
@@ -837,7 +843,7 @@ impl RegionCfgState {
             .get(&entry)
             .copied()
             .ok_or(StructureError::RegionEntryMissing { region, entry })?;
-        for source_block in source.block_ids() {
+        for source_block in source.blocks.keys().copied() {
             let Some(&from) = self.layout.mapping.get(&source_block) else {
                 continue;
             };
