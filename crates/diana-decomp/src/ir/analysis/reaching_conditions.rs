@@ -178,7 +178,21 @@ impl ReachingConditions {
     }
 
     pub fn any_reaches(&self, sources: &BTreeSet<BlockId>, targets: &BTreeSet<BlockId>) -> bool {
-        self.reachability.any_reaches(sources, targets)
+        self.reachability.any_reaches(
+            sources.len(),
+            sources.iter().filter_map(|source| self.rank(*source)),
+            targets.len(),
+            targets.iter().filter_map(|target| self.rank(*target)),
+        )
+    }
+
+    pub(in crate::ir) fn any_rank_reaches(&self, sources: &[usize], targets: &[usize]) -> bool {
+        self.reachability.any_reaches(
+            sources.len(),
+            sources.iter().copied(),
+            targets.len(),
+            targets.iter().copied(),
+        )
     }
 }
 
@@ -307,37 +321,33 @@ impl ReachabilityMatrix {
         })
     }
 
-    fn any_reaches(&self, sources: &BTreeSet<BlockId>, targets: &BTreeSet<BlockId>) -> bool {
-        if sources.is_empty() || targets.is_empty() {
+    fn any_reaches(
+        &self,
+        source_count: usize,
+        sources: impl Iterator<Item = usize>,
+        target_count: usize,
+        mut targets: impl Iterator<Item = usize>,
+    ) -> bool {
+        if source_count == 0 || target_count == 0 {
             return false;
         }
-        let mut rows = sources.iter().filter_map(|source| {
-            let start = self.indices.get(source)? * self.row_words;
-            Some(&self.bits[start..start + self.row_words])
+        let mut rows = sources.map(|rank| {
+            let start = rank * self.row_words;
+            &self.bits[start..start + self.row_words]
         });
-        // A single row needs no combined target mask.
-        if sources.len() == 1 {
-            return rows.next().is_some_and(|row| {
-                targets.iter().any(|target| {
-                    self.indices
-                        .get(target)
-                        .is_some_and(|&bit| row[bit / 64] & (1 << (bit % 64)) != 0)
-                })
-            });
+        if source_count == 1 {
+            return rows
+                .next()
+                .is_some_and(|row| targets.any(|bit| row[bit / 64] & (1 << (bit % 64)) != 0));
         }
-        if targets.len() == 1 {
+        if target_count == 1 {
             return targets
-                .first()
-                .and_then(|target| self.indices.get(target))
-                .is_some_and(|&bit| rows.any(|row| row[bit / 64] & (1 << (bit % 64)) != 0));
+                .next()
+                .is_some_and(|bit| rows.any(|row| row[bit / 64] & (1 << (bit % 64)) != 0));
         }
-        // Index each target only once, even when two large branch arms have
-        // no edges between them. Small methods keep the mask on the stack.
         let mut mask = SmallVec::<[u64; 4]>::from_elem(0, self.row_words);
-        for target in targets {
-            if let Some(&bit) = self.indices.get(target) {
-                mask[bit / 64] |= 1 << (bit % 64);
-            }
+        for bit in targets {
+            mask[bit / 64] |= 1 << (bit % 64);
         }
         rows.any(|row| row.iter().zip(&mask).any(|(word, mask)| word & mask != 0))
     }

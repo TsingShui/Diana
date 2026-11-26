@@ -70,6 +70,37 @@ fn store_uses_receiver_before_value_and_keeps_both_field_locations() {
 }
 
 #[test]
+fn a_wide_call_resumes_siblings_after_a_deep_store_in_evaluation_order() {
+    let read = operation(InsnType::Sget, Vec::new());
+    let store = operation(InsnType::Iput, vec![value(), nested(read.clone())]);
+    let after_store = EffectSummary::direct(&read).join(EffectSummary::direct(&store));
+    let mut receiver_store = nested(store);
+    for _ in 0..16 {
+        receiver_store = nested(operation(InsnType::Neg, vec![receiver_store]));
+    }
+    let mut arguments = vec![value(); 48];
+    arguments.push(receiver_store);
+    arguments.extend(vec![value(); 48]);
+    let call = operation(InsnType::Invoke, arguments);
+    let total = after_store.clone().join(EffectSummary::direct(&call));
+    let root = block(vec![SemanticStatementKind::Instruction(call)]);
+    let graph = ValueFlowGraph::build_source(&root, &BTreeSet::new()).unwrap();
+
+    let uses = &graph.uses[&SsaVar::new(3, 0)];
+    assert_eq!(uses.len(), 97);
+    assert!(uses[..48].iter().all(|usage| {
+        usage.consumer == Some(InsnType::Invoke) && usage.evaluation_prefix.is_pure()
+    }));
+    assert_eq!(uses[48].consumer, Some(InsnType::Iput));
+    assert_eq!(uses[48].evaluation_prefix, EffectSummary::direct(&read));
+    assert!(uses[49..].iter().all(|usage| {
+        usage.consumer == Some(InsnType::Invoke) && usage.evaluation_prefix == after_store
+    }));
+    assert_eq!(graph.effects.len(), 1);
+    assert_eq!(graph.effects[0].effect, total);
+}
+
+#[test]
 fn selected_condition_control_applies_to_its_arm_use_only() {
     let condition = operation(InsnType::If, Vec::new());
     let selected = SemanticExpression::select(

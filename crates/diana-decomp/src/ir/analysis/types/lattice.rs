@@ -32,11 +32,22 @@ impl TypeLattice {
             && constraints.upper_flows.is_empty()
             && constraints.arrays.is_empty())
         {
-            // Preserve the initial root order even for as-yet unconstrained components.
-            for &root in constraints.members.values() {
-                states.entry(root).or_default();
-            }
+            // Propagation may introduce an unobserved relation endpoint. Keep it
+            // available to transitive constraints, then exclude it from the result.
+            let observed = if let Some(members) = &constraints.members {
+                for &root in members.values() {
+                    states.entry(root).or_default();
+                }
+                None
+            } else {
+                Some(states.keys().copied().collect::<Vec<_>>())
+            };
             Self::propagate(&constraints, &mut states, hierarchy);
+            if let Some(observed) = observed {
+                if states.len() != observed.len() {
+                    states.retain(|value, _| observed.binary_search(value).is_ok());
+                }
+            }
         }
 
         let mut types = BTreeMap::new();
@@ -47,14 +58,17 @@ impl TypeLattice {
         }
         // A root belongs to its own equivalence class. Expand only genuine
         // copies, so singleton components move directly into the result.
-        for (&value, &root) in &constraints.members {
+        let Some(members) = constraints.members else {
+            return types;
+        };
+        for (&value, &root) in &members {
             if value != root {
                 if let Some(ty) = types.get(&root) {
                     types.insert(value, ty.clone());
                 }
             }
         }
-        types.retain(|value, _| constraints.members.contains_key(value));
+        types.retain(|value, _| members.contains_key(value));
         types
     }
 
@@ -494,7 +508,7 @@ mod tests {
         let source = SsaVar::new(2, 5);
         let target = SsaVar::new(2, 7);
         let constraints = NormalizedTypeConstraints {
-            members: BTreeMap::from([(source, source), (target, target)]),
+            members: Some(BTreeMap::from([(source, source), (target, target)])),
             bounds: BTreeMap::from([
                 (
                     source,
@@ -528,7 +542,7 @@ mod tests {
         let value = SsaVar::new(1, 0);
         let value_type = ArgType::object("android/content/pm/ActivityInfo");
         let constraints = NormalizedTypeConstraints {
-            members: BTreeMap::from([(array, array), (value, value)]),
+            members: Some(BTreeMap::from([(array, array), (value, value)])),
             bounds: BTreeMap::from([
                 (
                     array,
@@ -559,7 +573,11 @@ mod tests {
         let value = SsaVar::new(2, 0);
         let element = ArgType::object("androidx/compose/ui/node/LayoutNode");
         let constraints = NormalizedTypeConstraints {
-            members: BTreeMap::from([(source, source), (destination, destination), (value, value)]),
+            members: Some(BTreeMap::from([
+                (source, source),
+                (destination, destination),
+                (value, value),
+            ])),
             bounds: BTreeMap::from([
                 (
                     source,
@@ -612,7 +630,7 @@ mod tests {
     fn incompatible_primitive_producer_does_not_use_the_consumer_type() {
         let value = SsaVar::new(0, 0);
         let constraints = NormalizedTypeConstraints {
-            members: BTreeMap::from([(value, value)]),
+            members: Some(BTreeMap::from([(value, value)])),
             bounds: BTreeMap::from([(
                 value,
                 TypeBounds::from([
@@ -636,7 +654,7 @@ mod tests {
         let view = ArgType::object("android/view/View");
         let callback = ArgType::object("com/example/SelectionCallback");
         let constraints = NormalizedTypeConstraints {
-            members: BTreeMap::from([(value, value)]),
+            members: Some(BTreeMap::from([(value, value)])),
             bounds: BTreeMap::from([(
                 value,
                 TypeBounds::from([
@@ -667,3 +685,7 @@ mod tests {
 #[cfg(test)]
 #[path = "../../../../tests/internal/type_domains.rs"]
 mod type_domains;
+
+#[cfg(test)]
+#[path = "../../../../tests/internal/singleton_type_roots.rs"]
+mod singleton_type_roots;

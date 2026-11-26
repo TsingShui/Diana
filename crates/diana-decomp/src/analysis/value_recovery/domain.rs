@@ -747,10 +747,8 @@ impl DomainLogic {
                 return Ok(existing);
             }
             let proof = self.new_junction_proof(&terms, conjunction, [left, right])?;
-            let start = self.term_arena.len();
-            self.term_arena.extend_from_slice(&terms);
+            let range = self.store_union_terms(&terms, longer_domain, conjunction)?;
             self.term_work = terms;
-            let range = start..self.term_arena.len();
             let node = if conjunction {
                 DomainNode::And(range)
             } else {
@@ -763,6 +761,34 @@ impl DomainLogic {
         };
         self.joins.insert(input_pair, domain);
         Ok(domain)
+    }
+
+    fn store_union_terms(
+        &mut self,
+        terms: &[ControlDomain],
+        operand: ControlDomain,
+        conjunction: bool,
+    ) -> Result<Range<usize>, DomainError> {
+        let prefix = match (self.node(operand)?, conjunction) {
+            (DomainNode::And(range), true) | (DomainNode::Or(range), false) => Some(range.clone()),
+            _ => None,
+        };
+        if let Some(range) = prefix {
+            // The union contains every sorted operand term. If its maximum
+            // retains its ordinal, the entire operand is an unchanged prefix.
+            if self.term_arena[range.end - 1] == terms[range.len() - 1] {
+                let end = range.start + terms.len();
+                let shared_end = end.min(self.term_arena.len());
+                let shared = shared_end - range.start;
+                if self.term_arena[range.end..shared_end] == terms[range.len()..shared] {
+                    self.term_arena.extend_from_slice(&terms[shared..]);
+                    return Ok(range.start..end);
+                }
+            }
+        }
+        let start = self.term_arena.len();
+        self.term_arena.extend_from_slice(terms);
+        Ok(start..self.term_arena.len())
     }
 
     fn junction_terms<'a>(

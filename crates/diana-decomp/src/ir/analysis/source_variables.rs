@@ -98,7 +98,6 @@ impl SourceVariableAllocation {
         }
         retained.extend(required_phis.iter().copied());
         retained.extend(cleanup_values.iter().copied());
-        let liveness = SsaLiveness::analyze(cfg, &retained)?;
         let edge_arguments =
             edge_arguments::ContractedEdgeArguments::new(cfg, values, constants, &contractions);
         let inputs = SourceInputs::of(cfg);
@@ -124,6 +123,25 @@ impl SourceVariableAllocation {
                 .iter()
                 .any(|&(left, right, _)| undeclared(left) || undeclared(right));
         let groups = (!has_unowned).then(|| candidates.groups());
+        // Copies can require any live name at their placement edge. Without
+        // required Phi results the only physical live ranges consumed are
+        // the endpoints of possible coalescing conflicts. Each name has an
+        // independent gen/kill transfer, so projection commutes with liveness.
+        let live_names = if let Some(groups) = groups.as_ref().filter(|_| required_phis.is_empty())
+        {
+            if groups.is_empty() {
+                Box::default()
+            } else {
+                retained
+                    .iter()
+                    .filter(|name| groups.contains_key(name))
+                    .copied()
+                    .collect()
+            }
+        } else {
+            retained.iter().copied().collect()
+        };
+        let liveness = SsaLiveness::from_names(cfg, live_names)?;
         let mut interference = InterferenceGraph::build(
             cfg,
             root,

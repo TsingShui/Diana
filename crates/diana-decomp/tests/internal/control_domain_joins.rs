@@ -42,6 +42,13 @@ fn growing_and_replayed_joins_keep_one_derivation_each_across_saturation() {
         }
         assert_eq!(logic.joins.len(), atoms.len() - 1);
         assert_eq!(logic.junction_index.len(), atoms.len() - 2);
+        assert_eq!(logic.term_arena.len(), atoms.len());
+        for (i, &prefix) in prefixes.iter().enumerate().skip(2) {
+            assert_eq!(
+                logic.junction_terms(&prefix, conjunction).unwrap(),
+                &atoms[..=i]
+            );
+        }
         let pair = logic.node(prefixes[1]).unwrap();
         assert!(matches!(
             pair,
@@ -205,6 +212,33 @@ fn collection_checks_an_unknown_symbol_after_the_bounded_prefix() {
                     kind: DomainFailure::Boolean(BddError::UnknownVariable(_))
                 })
             ));
+        }
+    }
+}
+
+#[test]
+fn branching_term_prefixes_preserve_each_sibling() {
+    let names = (0..8).map(BoolVariable::Atom).collect::<BTreeSet<_>>();
+    for conjunction in [false, true] {
+        let mut logic = DomainLogic::new(&names);
+        let atoms: Vec<_> = names
+            .iter()
+            .map(|name| logic.symbol(name.clone()).unwrap())
+            .collect();
+        let pair = logic.junction(atoms[1], atoms[2], conjunction).unwrap();
+        let parent = logic.junction(pair, atoms[3], conjunction).unwrap();
+        for extra in [5, 6, 0, 4, 7] {
+            let sibling = logic.junction(parent, atoms[extra], conjunction).unwrap();
+            let mut expected = vec![atoms[1], atoms[2], atoms[3], atoms[extra]];
+            expected.sort_unstable();
+            assert_eq!(
+                logic.junction_terms(&sibling, conjunction).unwrap(),
+                expected
+            );
+            assert_eq!(
+                logic.junction_terms(&parent, conjunction).unwrap(),
+                &atoms[1..4]
+            );
         }
     }
 }

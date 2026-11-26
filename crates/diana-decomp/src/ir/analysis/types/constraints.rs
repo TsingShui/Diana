@@ -19,8 +19,9 @@ pub(super) struct TypeConstraintGraph {
 }
 
 pub(super) struct NormalizedTypeConstraints {
-    /// Each observed SSA value and the root whose bounds determine its type.
-    pub(super) members: BTreeMap<SsaVar, SsaVar>,
+    /// Maps observed values to roots when copies merge identities. Otherwise the
+    /// original bounds keys are precisely the observed singleton values.
+    pub(super) members: Option<BTreeMap<SsaVar, SsaVar>>,
     pub(super) bounds: BTreeMap<SsaVar, TypeBounds>,
     pub(super) flows: BTreeSet<(SsaVar, SsaVar)>,
     pub(super) upper_flows: BTreeSet<(SsaVar, SsaVar)>,
@@ -87,28 +88,22 @@ impl TypeConstraintGraph {
     }
 
     pub(super) fn normalize(mut self) -> NormalizedTypeConstraints {
-        let roots: BTreeMap<_, _> = self
-            .bounds
-            .keys()
-            .map(|&value| {
-                let root = self
-                    .classes
-                    .as_mut()
-                    .map_or(value, |classes| classes.root(value));
-                (value, root)
-            })
-            .collect();
-        if self.classes.is_none() {
+        let Some(classes) = self.classes.as_mut() else {
             self.flows.retain(|(source, target)| source != target);
             self.upper_flows.retain(|(source, target)| source != target);
             return NormalizedTypeConstraints {
-                members: roots,
+                members: None,
                 bounds: self.bounds,
                 flows: self.flows,
                 upper_flows: self.upper_flows,
                 arrays: self.arrays,
             };
-        }
+        };
+        let roots: BTreeMap<_, _> = self
+            .bounds
+            .keys()
+            .map(|&value| (value, classes.root(value)))
+            .collect();
         let bounds = {
             let mut merged = BTreeMap::<SsaVar, TypeBounds>::new();
             for (value, bounds) in self.bounds {
@@ -157,7 +152,7 @@ impl TypeConstraintGraph {
             })
             .collect();
         NormalizedTypeConstraints {
-            members: roots,
+            members: Some(roots),
             bounds,
             flows,
             upper_flows,

@@ -133,7 +133,7 @@ fn assert_overloads_match_walk(
     (method, indexed)
 }
 
-fn class_with_methods(
+pub(super) fn class_with_methods(
     descriptor: &str,
     super_class: Option<&str>,
     methods: &[(&str, Vec<ArgType>, ArgType)],

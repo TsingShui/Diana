@@ -76,7 +76,12 @@ impl<State> SemanticMethod<State> {
     }
 
     fn normalize_with(&mut self, reachability: ReachabilityMode) -> Result<(), SemanticFoldError> {
-        if SemanticNormalization::already_normal(&self.body) {
+        let canonical = if reachability.preserves_cfg_topology() {
+            SemanticNormalization::canonical_cfg(&mut self.body)
+        } else {
+            SemanticNormalization::already_normal(&self.body)
+        };
+        if canonical {
             return Ok(());
         }
         let required_cfg = reachability
@@ -238,6 +243,74 @@ impl SemanticNormalization {
             }
             _ => leaf(root),
         }
+    }
+
+    /// In CFG-preserving mode, empty basic blocks keep their identities and
+    /// unreachable suffixes remain in place. A canonical tree only loses the
+    /// temporary predicate sites that rebuilding its branches would clear.
+    /// Defer those edits until the entire tree qualifies.
+    fn canonical_cfg(root: &mut SemanticNode) -> bool {
+        let mut pending = smallvec::SmallVec::<[&mut SemanticNode; 8]>::new();
+        let mut sites = smallvec::SmallVec::<[&mut Option<super::SemanticSiteId>; 8]>::new();
+        pending.push(root);
+        while let Some(node) = pending.pop() {
+            match node {
+                SemanticNode::Empty | SemanticNode::BasicBlock(_) | SemanticNode::Leave(_) => {}
+                SemanticNode::Sequence(nodes) => {
+                    if nodes.len() < 2 {
+                        return false;
+                    }
+                    for child in nodes {
+                        match child {
+                            SemanticNode::Empty | SemanticNode::Sequence(_) => return false,
+                            SemanticNode::BasicBlock(_) | SemanticNode::Leave(_) => {}
+                            child => pending.push(child),
+                        }
+                    }
+                }
+                SemanticNode::If {
+                    condition,
+                    then_node,
+                    else_node,
+                } => {
+                    if matches!(then_node.as_ref(), SemanticNode::Empty)
+                        || matches!(else_node.as_deref(), Some(SemanticNode::Empty))
+                    {
+                        return false;
+                    }
+                    if condition.site.is_some() {
+                        sites.push(&mut condition.site);
+                    }
+                    pending.push(then_node);
+                    pending.extend(else_node.as_deref_mut());
+                }
+                SemanticNode::Loop { test, body, .. } => {
+                    pending.push(&mut test.setup);
+                    pending.push(body);
+                }
+                SemanticNode::For { body, .. }
+                | SemanticNode::ForEach { body, .. }
+                | SemanticNode::Synchronized { body, .. } => pending.push(body),
+                SemanticNode::Try {
+                    body,
+                    catches,
+                    finally,
+                    ..
+                } => {
+                    pending.push(body);
+                    pending.extend(catches.iter_mut().map(|catch| &mut catch.body));
+                    pending.extend(finally.iter_mut().map(|cleanup| cleanup.body.as_mut()));
+                }
+                SemanticNode::Switch { cases, .. } => {
+                    pending.extend(cases.iter_mut().map(|case| &mut case.body));
+                }
+                SemanticNode::Label { .. } => return false,
+            }
+        }
+        for site in sites {
+            *site = None;
+        }
+        true
     }
 
     fn new(reachability: ReachabilityMode) -> Self {

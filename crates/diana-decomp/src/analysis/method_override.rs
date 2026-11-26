@@ -888,21 +888,29 @@ impl LoadedClassHierarchy {
 }
 
 type MethodOverloadKey = (ArgType, String, usize);
-type MethodOverloadIndex = RwLock<HashMap<MethodOverloadKey, Vec<MethodDescriptor>>>;
+#[derive(Debug)]
+struct OwnerOverloads {
+    descriptors: Vec<MethodDescriptor>,
+    used_loaded: bool,
+}
+type MethodOverloadIndex = RwLock<HashMap<MethodOverloadKey, OwnerOverloads>>;
 
-fn remap_overloads(
-    owner: &ArgType,
-    name: &str,
-    descriptors: &[MethodDescriptor],
-) -> Vec<crate::ir::MethodReference> {
-    descriptors
-        .iter()
-        .map(|descriptor| crate::ir::MethodReference {
-            owner: owner.clone(),
-            name: name.to_string(),
-            descriptor: descriptor.clone(),
-        })
-        .collect()
+impl OwnerOverloads {
+    fn extend(
+        &self,
+        method: &crate::ir::MethodReference,
+        output: &mut BTreeSet<crate::ir::MethodReference>,
+    ) {
+        output.extend(
+            self.descriptors
+                .iter()
+                .map(|descriptor| crate::ir::MethodReference {
+                    owner: method.owner.clone(),
+                    name: method.name.clone(),
+                    descriptor: descriptor.clone(),
+                }),
+        );
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1086,26 +1094,53 @@ impl GenericTypeHierarchy {
             .ok()
     }
 
-    pub(crate) fn method_overloads(
+    pub(crate) fn extend_method_overloads(
         &self,
         method: &crate::ir::MethodReference,
-    ) -> Vec<crate::ir::MethodReference> {
+        platform: Option<&Self>,
+        output: &mut BTreeSet<crate::ir::MethodReference>,
+    ) {
+        let used_loaded = self.extend_owner_overloads(method, output);
+        if let Some(platform) = platform {
+            if used_loaded || !self.same_platform_fallback(platform) {
+                platform.extend_owner_overloads(method, output);
+            }
+        }
+    }
+
+    fn extend_owner_overloads(
+        &self,
+        method: &crate::ir::MethodReference,
+        output: &mut BTreeSet<crate::ir::MethodReference>,
+    ) -> bool {
         let key = (
             method.owner.clone(),
             method.name.clone(),
             method.descriptor.parameters.len(),
         );
         if let Ok(index) = self.method_overloads.read() {
-            if let Some(descriptors) = index.get(&key) {
-                return remap_overloads(&method.owner, &method.name, descriptors);
+            if let Some(overloads) = index.get(&key) {
+                overloads.extend(method, output);
+                return overloads.used_loaded;
             }
         }
-        let descriptors = self.collect_owner_overloads(method);
-        let result = remap_overloads(&method.owner, &method.name, &descriptors);
+        let overloads = self.collect_owner_overloads(method);
+        overloads.extend(method, output);
+        let used_loaded = overloads.used_loaded;
         if let Ok(mut index) = self.method_overloads.write() {
-            index.entry(key).or_insert(descriptors);
+            index.entry(key).or_insert(overloads);
         }
-        result
+        used_loaded
+    }
+
+    #[cfg(test)]
+    fn method_overloads(
+        &self,
+        method: &crate::ir::MethodReference,
+    ) -> Vec<crate::ir::MethodReference> {
+        let mut output = BTreeSet::new();
+        self.extend_owner_overloads(method, &mut output);
+        output.into_iter().collect()
     }
 
     #[cfg(test)]
@@ -1144,10 +1179,8 @@ impl GenericTypeHierarchy {
         overloads.into_iter().collect()
     }
 
-    fn collect_owner_overloads(
-        &self,
-        method: &crate::ir::MethodReference,
-    ) -> Vec<MethodDescriptor> {
+    fn collect_owner_overloads(&self, method: &crate::ir::MethodReference) -> OwnerOverloads {
+        let query = ContractHierarchy::new(&self.hierarchy);
         let mut overloads = Vec::new();
         let mut pending = vec![method.owner.clone()];
         let mut visited = BTreeSet::new();
@@ -1155,7 +1188,7 @@ impl GenericTypeHierarchy {
             if !visited.insert(current.clone()) {
                 continue;
             }
-            let Some(declared) = self.hierarchy.class_details(&current) else {
+            let Some(declared) = query.class_details(&current) else {
                 continue;
             };
             overloads.extend(
@@ -1169,7 +1202,10 @@ impl GenericTypeHierarchy {
         }
         overloads.sort();
         overloads.dedup();
-        overloads
+        OwnerOverloads {
+            descriptors: overloads,
+            used_loaded: query.used_loaded.get(),
+        }
     }
 
     pub(crate) fn method_contract(
@@ -1188,19 +1224,22 @@ impl GenericTypeHierarchy {
         Self::lookup_method_contract(&query, method).or_else(|| {
             // If every class lookup saw the same platform, the second search
             // would revisit identical owner, parent and lexical binding facts.
-            let same_platform = platform.hierarchy.loaded.classes.is_empty()
-                && self
-                    .hierarchy
-                    .platform
-                    .as_ref()
-                    .zip(platform.hierarchy.platform.as_ref())
-                    .is_some_and(|(left, right)| Arc::ptr_eq(left, right));
-            if query.used_loaded.get() || !same_platform {
+            if query.used_loaded.get() || !self.same_platform_fallback(platform) {
                 platform.method_contract(method)
             } else {
                 None
             }
         })
+    }
+
+    fn same_platform_fallback(&self, platform: &Self) -> bool {
+        platform.hierarchy.loaded.classes.is_empty()
+            && self
+                .hierarchy
+                .platform
+                .as_ref()
+                .zip(platform.hierarchy.platform.as_ref())
+                .is_some_and(|(left, right)| Arc::ptr_eq(left, right))
     }
 
     fn lookup_method_contract(

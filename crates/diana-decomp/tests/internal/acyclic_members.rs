@@ -109,16 +109,13 @@ fn terminal_condition_errors_keep_their_block_order_during_membership_transfer()
     };
     let item = StructureItem {
         condition: assumption.clone(),
-        blocks: closed,
+        roots: smallvec![0],
+        terminals: closed,
         lexical_rank: 0,
         structure: block_fact(0),
     };
-    let mut members = BTreeSet::new();
-    assert!(
-        matches!(analysis.finish(vec![item], &assumption, Some(&mut members)),
-        Err(AcyclicStructureError::MissingCondition(block)) if block == BlockId::new(4))
-    );
-    assert!(members.is_empty());
+    assert!(matches!(analysis.finish(vec![item], &assumption),
+        Err(AcyclicStructureError::MissingCondition(block)) if block == BlockId::new(4)));
 }
 
 #[test]
@@ -219,4 +216,74 @@ fn suspended_branch_queries_preserve_eligibility_order_and_bdd_capacity() {
         panic!("expected to exhaust the bounded implication cache");
     }
     assert_eq!(exercise(&cfg, false), exercise(&cfg, true));
+}
+
+#[test]
+fn sibling_root_groups_preserve_paths_between_their_full_dominator_subtrees() {
+    for seed in 0..12usize {
+        let count = 73 + seed * 6;
+        let blocks = (0..count)
+            .map(|index| BlockId::new((((index * 37 + seed * 13) % 251) * 17) as u32))
+            .collect::<Vec<_>>();
+        let mut cfg = CFG::new("sparse_sibling_groups");
+        cfg.entry = blocks[0];
+        for (index, &id) in blocks.iter().enumerate() {
+            let mut block = Block::new(id);
+            let limit = count.min((index / 8 + 1) * 8 + 1);
+            if index + 2 < limit && (index + seed) % 4 != 0 {
+                block.push(InsnNode::new(InsnType::If, 0));
+                let target = index + 2 + (index * 11 + seed * 7) % (limit - index - 2);
+                cfg.add_edge(id, blocks[target], EdgeKind::True);
+                cfg.add_edge(id, blocks[index + 1], EdgeKind::False);
+            } else if index + 1 < count {
+                cfg.add_edge(id, blocks[index + 1], EdgeKind::Normal);
+            }
+            cfg.add_block(block);
+        }
+        let facts = ReachingConditions::analyze(&cfg).unwrap();
+        let dom = DominatorTree::for_reaching_conditions(&cfg, &facts).unwrap();
+        for &parent in &blocks {
+            let children = dom.children(parent).collect::<Vec<_>>();
+            if children.len() < 2 {
+                continue;
+            }
+            for offset in 0..3 {
+                let mut left = Vec::new();
+                let mut right = Vec::new();
+                for (index, &child) in children.iter().enumerate() {
+                    match (index + offset) % 3 {
+                        0 => left.push(child),
+                        1 => right.push(child),
+                        _ => {}
+                    }
+                }
+                let mut queue = blocks
+                    .iter()
+                    .copied()
+                    .filter(|&block| left.iter().any(|&child| dom.dominates(child, block)))
+                    .collect::<Vec<_>>();
+                let mut seen = BTreeSet::new();
+                let mut reaches = false;
+                while let Some(source) = queue.pop() {
+                    if !seen.insert(source) {
+                        continue;
+                    }
+                    for target in cfg.normal_successors(source) {
+                        reaches |= right.iter().any(|&child| dom.dominates(child, target));
+                        queue.push(target);
+                    }
+                }
+                let ranks = |group: &[BlockId]| {
+                    group
+                        .iter()
+                        .map(|&block| facts.rank(block).unwrap())
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(
+                    facts.any_rank_reaches(&ranks(&left), &ranks(&right)),
+                    reaches
+                );
+            }
+        }
+    }
 }

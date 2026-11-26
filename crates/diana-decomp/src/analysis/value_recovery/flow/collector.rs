@@ -413,8 +413,12 @@ impl<'ir> FlowCollector<'ir> {
         context: UseContext,
         location: UseLocation,
     ) -> Result<bool, ValueRecoveryError> {
+        let mut operation = operation;
         let (mut operands, mut covers_operation) = evaluation_operands(operation)?;
-        let nested = loop {
+        // The evaluation cursor already orders the children, including field
+        // and array stores. Only a nested operation suspends that cursor.
+        let mut parents = smallvec::SmallVec::<[_; 3]>::new();
+        loop {
             match operands.next() {
                 Some(SemanticExpression::Register(register)) => self.record_use(
                     register,
@@ -426,51 +430,18 @@ impl<'ir> FlowCollector<'ir> {
                     location,
                 ),
                 Some(SemanticExpression::Literal(_)) => {}
-                Some(nested) => break nested,
-                None => {
-                    *prefix = std::mem::take(prefix).join(EffectSummary::direct(operation));
-                    return Ok(covers_operation);
-                }
-            }
-        };
-        let mut pending = vec![EvaluationTask::Effect(operation)];
-        pending.extend(
-            operands
-                .rev()
-                .map(|expression| EvaluationTask::Expression(expression, operation.insn_type)),
-        );
-        pending.push(EvaluationTask::Expression(nested, operation.insn_type));
-        while let Some(task) = pending.pop() {
-            match task {
-                EvaluationTask::Expression(SemanticExpression::Register(register), consumer) => {
-                    self.record_use(
-                        register,
-                        domain,
-                        event,
-                        prefix,
-                        context,
-                        Some(consumer),
-                        location,
-                    );
-                }
-                EvaluationTask::Expression(SemanticExpression::Operation(child), _) => {
-                    pending.push(EvaluationTask::Effect(child));
-                    let (operands, covers_child) = evaluation_operands(child)?;
+                Some(SemanticExpression::Operation(child)) => {
+                    let (children, covers_child) = evaluation_operands(child)?;
                     covers_operation &= covers_child;
-                    pending.extend(
-                        operands.rev().map(|expression| {
-                            EvaluationTask::Expression(expression, child.insn_type)
-                        }),
-                    );
+                    parents.push((operation, operands));
+                    operation = child;
+                    operands = children;
                 }
-                EvaluationTask::Expression(
-                    SemanticExpression::Select {
-                        condition,
-                        when_true,
-                        when_false,
-                    },
-                    consumer,
-                ) => {
+                Some(SemanticExpression::Select {
+                    condition,
+                    when_true,
+                    when_false,
+                }) => {
                     covers_operation = false;
                     *prefix = prefix
                         .clone()
@@ -486,7 +457,7 @@ impl<'ir> FlowCollector<'ir> {
                         event,
                         &mut true_prefix,
                         context,
-                        Some(consumer),
+                        Some(operation.insn_type),
                         location,
                     )?;
                     let mut false_prefix = prefix.clone();
@@ -496,18 +467,21 @@ impl<'ir> FlowCollector<'ir> {
                         event,
                         &mut false_prefix,
                         context,
-                        Some(consumer),
+                        Some(operation.insn_type),
                         location,
                     )?;
                     *prefix = true_prefix.join(false_prefix);
                 }
-                EvaluationTask::Expression(SemanticExpression::Literal(_), _) => {}
-                EvaluationTask::Effect(operation) => {
+                None => {
                     *prefix = std::mem::take(prefix).join(EffectSummary::direct(operation));
+                    let Some((parent, remaining)) = parents.pop() else {
+                        return Ok(covers_operation);
+                    };
+                    operation = parent;
+                    operands = remaining;
                 }
             }
         }
-        Ok(covers_operation)
     }
 
     fn record_use(
@@ -877,11 +851,6 @@ enum FlowTask<'a> {
     LeaveScope(bool),
     EnterProtection(u32),
     LeaveProtection(u32),
-}
-
-enum EvaluationTask<'a> {
-    Expression(&'a SemanticExpression, InsnType),
-    Effect(&'a SemanticOperation),
 }
 
 #[cfg(test)]

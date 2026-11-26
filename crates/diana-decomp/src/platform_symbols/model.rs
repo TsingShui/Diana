@@ -858,8 +858,32 @@ impl PlatformSymbolSet {
         name: &str,
         descriptor: &str,
     ) -> Option<(&PlatformClass, &PlatformMethod)> {
-        let mut pending = std::collections::VecDeque::from([owner]);
-        let mut seen = std::collections::BTreeSet::new();
+        self.resolve_class_method(self.class(owner)?, name, descriptor)
+    }
+
+    pub(crate) fn resolve_class_method<'a>(
+        &'a self,
+        class: &'a PlatformClass,
+        name: &str,
+        descriptor: &str,
+    ) -> Option<(&'a PlatformClass, &'a PlatformMethod)> {
+        let declared = |class: &'a PlatformClass| {
+            class
+                .methods
+                .iter()
+                .find(|method| method.name == name && method.descriptor == descriptor)
+                .map(|method| (class, method))
+        };
+        if let Some(found) = declared(class) {
+            return Some(found);
+        }
+        let mut pending: std::collections::VecDeque<_> = class
+            .super_class
+            .iter()
+            .chain(&class.interfaces)
+            .map(String::as_str)
+            .collect();
+        let mut seen = std::collections::BTreeSet::from([class.descriptor.as_str()]);
         while let Some(owner) = pending.pop_front() {
             if !seen.insert(owner) {
                 continue;
@@ -867,12 +891,8 @@ impl PlatformSymbolSet {
             let Some(class) = self.class(owner) else {
                 continue;
             };
-            if let Some(method) = class
-                .methods
-                .iter()
-                .find(|method| method.name == name && method.descriptor == descriptor)
-            {
-                return Some((class, method));
+            if let Some(found) = declared(class) {
+                return Some(found);
             }
             pending.extend(class.super_class.iter().map(String::as_str));
             pending.extend(class.interfaces.iter().map(String::as_str));

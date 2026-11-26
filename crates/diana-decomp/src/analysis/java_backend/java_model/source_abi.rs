@@ -666,7 +666,11 @@ fn platform_method_exceptions(
     };
     let owner = format!("L{owner};");
     let declaration = symbols
-        .resolve_method(&owner, &method.name, &method.descriptor.to_string())?
+        .resolve_class_method(
+            symbols.class(&owner)?,
+            &method.name,
+            &method.descriptor.to_string(),
+        )?
         .1;
     if declaration.exceptions.is_empty() {
         return None;
@@ -1390,10 +1394,13 @@ impl JavaSourceAbi {
             }
             overloads.insert(method.clone());
             if let Some(hierarchy) = &self.generic_hierarchy {
-                overloads.extend(hierarchy.method_overloads(method));
-            }
-            if let Some(hierarchy) = &self.platform_generic_hierarchy {
-                overloads.extend(hierarchy.method_overloads(method));
+                hierarchy.extend_method_overloads(
+                    method,
+                    self.platform_generic_hierarchy.as_ref(),
+                    &mut overloads,
+                );
+            } else if let Some(platform) = &self.platform_generic_hierarchy {
+                platform.extend_method_overloads(method, None, &mut overloads);
             }
         }
         overloads

@@ -192,3 +192,67 @@ fn flat_sequences_prune_a_no_return_suffix_only_after_phi_lowering() {
         assert_eq!(ids(&nodes), expected);
     }
 }
+
+#[test]
+fn canonical_cfg_retires_only_if_sites_and_keeps_both_block_identities() {
+    use super::SemanticNormalization;
+    use crate::ir::{SemanticOperand, SemanticPredicate, SemanticSiteId};
+
+    let mut first = ordinary(6);
+    let SemanticNode::BasicBlock(block) = &mut first else {
+        unreachable!()
+    };
+    block.statements[0].site = Some(SemanticSiteId(7));
+    let mut body = SemanticNode::If {
+        condition: SemanticOperand {
+            site: Some(SemanticSiteId(23)),
+            value: SemanticPredicate::True,
+        },
+        then_node: Box::new(first),
+        else_node: Some(Box::new(SemanticNode::BasicBlock(SemanticBlock {
+            id: BlockId::new(17),
+            statements: Vec::new(),
+        }))),
+    };
+    assert!(SemanticNormalization::canonical_cfg(&mut body));
+    let SemanticNode::If {
+        condition,
+        then_node,
+        else_node: Some(else_node),
+    } = body
+    else {
+        panic!("both original branches must remain");
+    };
+    assert_eq!(condition.site, None);
+    assert!(matches!(condition.value, SemanticPredicate::True));
+    let SemanticNode::BasicBlock(first) = *then_node else {
+        unreachable!()
+    };
+    let SemanticNode::BasicBlock(second) = *else_node else {
+        unreachable!()
+    };
+    assert_eq!(first.id.raw(), 6);
+    assert_eq!(first.statements[0].site, Some(SemanticSiteId(7)));
+    assert_eq!(second.id.raw(), 17);
+    assert!(second.statements.is_empty());
+}
+
+#[test]
+fn noncanonical_cfg_keeps_sites_for_the_ordinary_normalizer() {
+    use super::SemanticNormalization;
+    use crate::ir::{SemanticOperand, SemanticPredicate, SemanticSiteId};
+
+    let mut body = SemanticNode::If {
+        condition: SemanticOperand {
+            site: Some(SemanticSiteId(41)),
+            value: SemanticPredicate::False,
+        },
+        then_node: Box::new(SemanticNode::Sequence(vec![ordinary(2)])),
+        else_node: None,
+    };
+    assert!(!SemanticNormalization::canonical_cfg(&mut body));
+    let SemanticNode::If { condition, .. } = body else {
+        unreachable!()
+    };
+    assert_eq!(condition.site, Some(SemanticSiteId(41)));
+}

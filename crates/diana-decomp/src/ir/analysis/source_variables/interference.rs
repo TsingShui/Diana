@@ -46,12 +46,39 @@ pub(super) struct SsaLiveness {
 }
 
 impl SsaLiveness {
+    #[cfg(test)]
     pub(super) fn analyze(
         cfg: &CFG,
         retained: &BTreeSet<SsaVar>,
     ) -> Result<Self, SourceVariableError> {
-        let names: Box<[_]> = retained.iter().copied().collect();
-        let id = |name: SsaVar| names.binary_search(&name).ok();
+        Self::from_names(cfg, retained.iter().copied().collect())
+    }
+
+    pub(super) fn from_names(cfg: &CFG, names: Box<[SsaVar]>) -> Result<Self, SourceVariableError> {
+        if names.is_empty() {
+            // Empty live ranges still distinguish existing blocks from absent
+            // successors for edge queries and malformed graph diagnostics.
+            for &source in cfg.blocks.keys().rev() {
+                for &(target, _) in cfg.successors_with_kind(source) {
+                    if !cfg.blocks.contains_key(&target) {
+                        return Err(SourceVariableError::MissingBlock(target));
+                    }
+                }
+            }
+            return Ok(Self {
+                names,
+                transfers: Vec::new(),
+                operands: Vec::new(),
+                phi_uses: BTreeMap::new(),
+                blocks: cfg
+                    .blocks
+                    .keys()
+                    .map(|&block| (block, BlockLiveness::default()))
+                    .collect(),
+            });
+        }
+        let rows = super::super::ssa::RegisterRows::new(&names, |&name| name);
+        let id = |name: SsaVar| rows.position(&names, name, |&value| value);
         let mut blocks = BTreeMap::new();
         let mut phi_uses = BTreeMap::<_, LiveSet>::new();
         let mut transfers = Vec::new();

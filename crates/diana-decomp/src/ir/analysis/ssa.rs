@@ -511,10 +511,10 @@ impl SsaValueBuilder {
 /// Sparse register identities keep the ordinary sorted lookup. Dense version
 /// rows also support direct addressing without filling missing versions.
 #[derive(Debug, Clone, Default)]
-struct RegisterRows(Box<[usize]>);
+pub(super) struct RegisterRows(Box<[usize]>);
 
 impl RegisterRows {
-    fn new<T>(values: &[T], key: impl Fn(&T) -> SsaVar) -> Self {
+    pub(super) fn new<T>(values: &[T], key: impl Fn(&T) -> SsaVar) -> Self {
         let Some(last) = values.last() else {
             return Self::default();
         };
@@ -539,20 +539,29 @@ impl RegisterRows {
         variable: SsaVar,
         key: impl Fn(&T) -> SsaVar,
     ) -> Option<&'a T> {
-        let row = if self.0.is_empty() {
-            values
-        } else {
-            let starts = self.0.get(variable.reg_num as usize..)?.get(..2)?;
-            let row = &values[starts[0]..starts[1]];
-            let direct = variable.version.checked_sub(key(row.first()?).version)? as usize;
-            if let Some(value) = row.get(direct).filter(|value| key(value) == variable) {
-                return Some(value);
-            }
-            row
-        };
+        self.position(values, variable, key)
+            .map(|index| &values[index])
+    }
+
+    pub(super) fn position<T>(
+        &self,
+        values: &[T],
+        variable: SsaVar,
+        key: impl Fn(&T) -> SsaVar,
+    ) -> Option<usize> {
+        if self.0.is_empty() {
+            return values.binary_search_by_key(&variable, key).ok();
+        }
+        let starts = self.0.get(variable.reg_num as usize..)?.get(..2)?;
+        let start = starts[0];
+        let row = &values[start..starts[1]];
+        let direct = variable.version.checked_sub(key(row.first()?).version)? as usize;
+        if row.get(direct).is_some_and(|value| key(value) == variable) {
+            return Some(start + direct);
+        }
         row.binary_search_by_key(&variable, key)
             .ok()
-            .map(|index| &row[index])
+            .map(|index| start + index)
     }
 }
 

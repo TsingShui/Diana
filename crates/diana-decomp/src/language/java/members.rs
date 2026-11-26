@@ -26,14 +26,6 @@ impl JavaFieldSymbol {
             field_type,
         }
     }
-
-    fn key(&self) -> FieldSymbolKey {
-        FieldSymbolKey {
-            owner: self.owner.clone(),
-            name: self.name.clone(),
-            field_type: self.field_type.clone(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -93,38 +85,6 @@ impl JavaMethodSymbol {
             descriptor,
         }
     }
-
-    fn key(&self) -> MethodSymbolKey {
-        MethodSymbolKey {
-            owner: self.owner.clone(),
-            name: self.name.clone(),
-            descriptor: self.descriptor.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct FieldSymbolKey {
-    owner: ArgType,
-    name: JavaIdentifier,
-    field_type: ArgType,
-}
-
-impl From<&FieldReference> for FieldSymbolKey {
-    fn from(reference: &FieldReference) -> Self {
-        Self {
-            owner: reference.owner.clone(),
-            name: JavaIdentifier::from_dex(&reference.name),
-            field_type: reference.field_type.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct MethodSymbolKey {
-    owner: ArgType,
-    name: JavaIdentifier,
-    descriptor: MethodDescriptor,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -149,20 +109,10 @@ impl From<&MethodReference> for ConstructorKey {
     }
 }
 
-impl From<&MethodReference> for MethodSymbolKey {
-    fn from(reference: &MethodReference) -> Self {
-        Self {
-            owner: reference.owner.clone(),
-            name: JavaIdentifier::from_dex(&reference.name),
-            descriptor: reference.descriptor.clone(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct JavaMemberNames {
-    fields: BTreeMap<FieldSymbolKey, JavaIdentifier>,
-    methods: BTreeMap<MethodSymbolKey, JavaIdentifier>,
+    fields: BTreeMap<JavaFieldSymbol, JavaIdentifier>,
+    methods: Vec<(JavaMethodSymbol, JavaIdentifier)>,
     overloads: BTreeMap<MethodOverloadKey, BTreeSet<MethodDescriptor>>,
     constructors: BTreeMap<ConstructorKey, ConstructorSourceLayout>,
 }
@@ -178,27 +128,30 @@ impl JavaMemberNames {
         fields: impl IntoIterator<Item = JavaFieldSymbol>,
         methods: impl IntoIterator<Item = JavaMethodSymbol>,
     ) -> Self {
-        let fields = fields.into_iter().collect::<BTreeSet<_>>();
-        let methods = methods.into_iter().collect::<BTreeSet<_>>();
-        let method_names = MethodNameAllocation::new(&methods).allocate(methods.clone());
+        let fields = allocate_names(
+            fields.into_iter().collect(),
+            |field: &JavaFieldSymbol| (&field.owner, &field.name),
+            |_, _| true,
+        );
+        let methods = allocate_names(
+            methods.into_iter().collect(),
+            |method: &JavaMethodSymbol| (&method.owner, &method.name),
+            |a, b| a.descriptor.parameters == b.descriptor.parameters,
+        );
         let mut overloads = BTreeMap::<MethodOverloadKey, BTreeSet<MethodDescriptor>>::new();
-        for method in &methods {
-            let name = method_names
-                .get(&method.key())
-                .cloned()
-                .unwrap_or_else(|| method.name.clone());
+        for (method, name) in &methods {
             overloads
                 .entry(MethodOverloadKey {
                     owner: method.owner.clone(),
-                    name,
+                    name: name.clone(),
                     arity: method.descriptor.parameters.len(),
                 })
                 .or_default()
                 .insert(method.descriptor.clone());
         }
         Self {
-            fields: FieldNameAllocation::new(&fields).allocate(fields),
-            methods: method_names,
+            fields: fields.into_iter().collect(),
+            methods,
             overloads,
             constructors: BTreeMap::new(),
         }
@@ -237,25 +190,25 @@ impl JavaMemberNames {
                 .reserve(name.clone());
         }
         for field in fields.into_iter().collect::<BTreeSet<_>>() {
-            let key = field.key();
-            if self.fields.contains_key(&key) {
+            if self.fields.contains_key(&field) {
                 continue;
             }
             let name = scopes
                 .entry(field.owner.clone())
                 .or_default()
                 .claim(field.name.clone());
-            self.fields.insert(key, name);
+            self.fields.insert(field, name);
         }
         self
     }
 
     pub fn with_overloads(mut self, methods: impl IntoIterator<Item = MethodReference>) -> Self {
         for method in methods {
+            let name = self.method(&method);
             self.overloads
                 .entry(MethodOverloadKey {
-                    owner: method.owner.clone(),
-                    name: self.method(&method),
+                    owner: method.owner,
+                    name,
                     arity: method.descriptor.parameters.len(),
                 })
                 .or_default()
@@ -280,13 +233,17 @@ impl JavaMemberNames {
     }
 
     pub fn field(&self, reference: &FieldReference) -> JavaIdentifier {
-        let key = FieldSymbolKey::from(reference);
+        let key = JavaFieldSymbol::new(
+            reference.owner.clone(),
+            JavaIdentifier::from_dex(&reference.name),
+            reference.field_type.clone(),
+        );
         self.fields.get(&key).cloned().unwrap_or(key.name)
     }
 
     pub fn field_symbol(&self, symbol: &JavaFieldSymbol) -> JavaIdentifier {
         self.fields
-            .get(&symbol.key())
+            .get(symbol)
             .cloned()
             .unwrap_or_else(|| symbol.name.clone())
     }
@@ -300,8 +257,13 @@ impl JavaMemberNames {
     }
 
     pub fn method(&self, reference: &MethodReference) -> JavaIdentifier {
-        let key = MethodSymbolKey::from(reference);
-        self.methods.get(&key).cloned().unwrap_or(key.name)
+        let name = JavaIdentifier::from_dex(&reference.name);
+        let key = (&reference.owner, &name, &reference.descriptor);
+        self.methods
+            .binary_search_by(|(symbol, _)| {
+                (&symbol.owner, &symbol.name, &symbol.descriptor).cmp(&key)
+            })
+            .map_or(name, |index| self.methods[index].1.clone())
     }
 
     pub fn null_argument_requires_cast(
@@ -339,94 +301,57 @@ impl JavaMemberNames {
 
     pub fn method_symbol(&self, symbol: &JavaMethodSymbol) -> JavaIdentifier {
         self.methods
-            .get(&symbol.key())
-            .cloned()
-            .unwrap_or_else(|| symbol.name.clone())
+            .binary_search_by(|(key, _)| key.cmp(symbol))
+            .map_or_else(
+                |_| symbol.name.clone(),
+                |index| self.methods[index].1.clone(),
+            )
     }
 }
 
-struct FieldNameAllocation {
-    scopes: BTreeMap<ArgType, JavaNameScope>,
-}
-
-impl FieldNameAllocation {
-    fn new(fields: &BTreeSet<JavaFieldSymbol>) -> Self {
-        let mut scopes = BTreeMap::<ArgType, JavaNameScope>::new();
-        for field in fields {
+/// DEX symbols are ordered by owner, source spelling and descriptor. All
+/// declarations competing for one source name are adjacent in this order.
+fn allocate_names<T: Ord>(
+    members: BTreeSet<T>,
+    names: fn(&T) -> (&ArgType, &JavaIdentifier),
+    same_parameters: fn(&T, &T) -> bool,
+) -> Vec<(T, JavaIdentifier)> {
+    let same_group = |a: &T, b: &T| names(a) == names(b) && same_parameters(a, b);
+    let mut scopes = BTreeMap::<ArgType, JavaNameScope>::new();
+    if members
+        .iter()
+        .zip(members.iter().skip(1))
+        .any(|(a, b)| same_group(a, b))
+    {
+        for member in &members {
+            let (owner, name) = names(member);
             scopes
-                .entry(field.owner.clone())
+                .entry(owner.clone())
                 .or_default()
-                .reserve(field.name.clone());
+                .reserve(name.clone());
         }
-        Self { scopes }
     }
-
-    fn allocate(
-        mut self,
-        fields: BTreeSet<JavaFieldSymbol>,
-    ) -> BTreeMap<FieldSymbolKey, JavaIdentifier> {
-        let mut occurrences = BTreeMap::<(ArgType, JavaIdentifier), usize>::new();
-        fields
-            .into_iter()
-            .map(|field| {
-                let group = (field.owner.clone(), field.name.clone());
-                let occurrence = occurrences.entry(group).or_default();
-                let name = if *occurrence == 0 {
-                    field.name.clone()
-                } else {
-                    self.scopes.entry(field.owner.clone()).or_default().claim(
-                        JavaIdentifier::from_dex(&format!("{}${}", field.name, *occurrence + 1)),
-                    )
-                };
-                *occurrence += 1;
-                (field.key(), name)
-            })
-            .collect()
-    }
-}
-
-struct MethodNameAllocation {
-    scopes: BTreeMap<ArgType, JavaNameScope>,
-}
-
-impl MethodNameAllocation {
-    fn new(methods: &BTreeSet<JavaMethodSymbol>) -> Self {
-        let mut scopes = BTreeMap::<ArgType, JavaNameScope>::new();
-        for method in methods {
+    let mut result = Vec::with_capacity(members.len());
+    let mut members = members.into_iter().peekable();
+    let mut occurrence = 1;
+    while let Some(member) = members.next() {
+        let (owner, name) = names(&member);
+        let allocated = if occurrence == 1 {
+            name.clone()
+        } else {
             scopes
-                .entry(method.owner.clone())
+                .entry(owner.clone())
                 .or_default()
-                .reserve(method.name.clone());
-        }
-        Self { scopes }
+                .claim(JavaIdentifier::from_dex(&format!("{name}${occurrence}")))
+        };
+        occurrence = if members.peek().is_some_and(|next| same_group(&member, next)) {
+            occurrence + 1
+        } else {
+            1
+        };
+        result.push((member, allocated));
     }
-
-    fn allocate(
-        mut self,
-        methods: BTreeSet<JavaMethodSymbol>,
-    ) -> BTreeMap<MethodSymbolKey, JavaIdentifier> {
-        let mut occurrences = BTreeMap::<(ArgType, JavaIdentifier, Vec<ArgType>), usize>::new();
-        methods
-            .into_iter()
-            .map(|method| {
-                let signature = (
-                    method.owner.clone(),
-                    method.name.clone(),
-                    method.descriptor.parameters.clone(),
-                );
-                let occurrence = occurrences.entry(signature).or_default();
-                let name = if *occurrence == 0 {
-                    method.name.clone()
-                } else {
-                    self.scopes.entry(method.owner.clone()).or_default().claim(
-                        JavaIdentifier::from_dex(&format!("{}${}", method.name, *occurrence + 1)),
-                    )
-                };
-                *occurrence += 1;
-                (method.key(), name)
-            })
-            .collect()
-    }
+    result
 }
 
 #[cfg(test)]
@@ -458,3 +383,7 @@ mod tests {
         assert_ne!(names.field_symbol(&hidden), names.field_symbol(&declared));
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/member_name_allocation.rs"]
+mod allocation_tests;

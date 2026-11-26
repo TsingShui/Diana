@@ -43,9 +43,9 @@ impl PathConditionSyntax {
 }
 
 struct PredicateCatalog {
-    symbols: BTreeSet<BoolVariable>,
     tests: BTreeMap<InstructionId, crate::ir::SemanticOperation>,
-    occurrences: BTreeMap<InstructionId, usize>,
+    repeated: BTreeSet<InstructionId>,
+    assignment_variables: BTreeSet<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -146,6 +146,9 @@ struct PredicateAliases {
 
 impl PredicateAliases {
     fn analyze(tests: &BTreeMap<InstructionId, SemanticOperation>) -> Self {
+        if tests.len() < 2 {
+            return Self::default();
+        }
         let mut representatives = BTreeMap::<ComparisonAtom, (InstructionId, bool)>::new();
         let mut aliases = Self::default();
         for (&instruction, operation) in tests {
@@ -155,6 +158,9 @@ impl PredicateAliases {
             let (representative, polarity) = *representatives
                 .entry(test.atom)
                 .or_insert((instruction, test.polarity));
+            if representative == instruction {
+                continue;
+            }
             aliases.by_instruction.insert(
                 instruction,
                 PredicateAlias {
@@ -177,6 +183,18 @@ impl PredicateAliases {
         }
     }
 
+    fn instruction(&self, id: InstructionId) -> BoolExpr {
+        let Some(alias) = self.by_instruction.get(&id) else {
+            return BoolExpr::instruction(id);
+        };
+        let symbol = BoolExpr::instruction(alias.representative);
+        if alias.negated {
+            BoolExpr::not(symbol)
+        } else {
+            symbol
+        }
+    }
+
     fn rewrite(&self, expression: BoolExpr) -> BoolExpr {
         let mut tasks = vec![PredicateAliasTask::Visit(expression)];
         let mut results = Vec::new();
@@ -185,18 +203,7 @@ impl PredicateAliases {
                 PredicateAliasTask::Visit(BoolExpr::Symbol(BoolVariable::Instruction(
                     instruction,
                 ))) => {
-                    let expression = self.by_instruction.get(&instruction).map_or_else(
-                        || BoolExpr::instruction(instruction),
-                        |alias| {
-                            let symbol = BoolExpr::instruction(alias.representative);
-                            if alias.negated {
-                                BoolExpr::not(symbol)
-                            } else {
-                                symbol
-                            }
-                        },
-                    );
-                    results.push(expression);
+                    results.push(self.instruction(instruction));
                 }
                 PredicateAliasTask::Visit(BoolExpr::Symbol(symbol)) => {
                     results.push(BoolExpr::Symbol(symbol));
@@ -253,34 +260,52 @@ enum PredicateAliasTask {
 impl PredicateCatalog {
     fn collect(root: &SemanticNode) -> Self {
         let mut catalog = Self {
-            symbols: BTreeSet::new(),
             tests: BTreeMap::new(),
-            occurrences: BTreeMap::new(),
+            repeated: BTreeSet::new(),
+            assignment_variables: BTreeSet::new(),
         };
         catalog.visit_node(root);
         catalog
     }
 
     fn record(&mut self, predicate: &SemanticPredicate) {
-        self.symbols.extend(predicate.symbols());
-        let mut pending = vec![predicate];
-        while let Some(predicate) = pending.pop() {
-            match predicate {
+        let mut pending = smallvec::SmallVec::<[&SemanticPredicate; 4]>::new();
+        let mut current = predicate;
+        loop {
+            match current {
                 SemanticPredicate::Test(test) => {
-                    self.tests.insert(test.id, test.clone());
-                    *self.occurrences.entry(test.id).or_default() += 1;
+                    if self.tests.insert(test.id, test.clone()).is_some() {
+                        self.repeated.insert(test.id);
+                    }
                 }
-                SemanticPredicate::Not(inner) => pending.push(inner),
+                SemanticPredicate::Not(inner) => {
+                    current = inner;
+                    continue;
+                }
                 SemanticPredicate::And(terms) | SemanticPredicate::Or(terms) => {
                     pending.extend(terms)
                 }
                 SemanticPredicate::True | SemanticPredicate::False => {}
             }
+            let Some(next) = pending.pop() else { break };
+            current = next;
         }
     }
 }
 
 impl SemanticVisitor for PredicateCatalog {
+    fn visit_statement(&mut self, statement: &crate::ir::SemanticStatement) {
+        if let Some(assignment) = BooleanAssignment::analyze(statement) {
+            self.assignment_variables.insert(assignment.variable);
+        }
+        crate::ir::semantic::walk_statement(self, statement);
+    }
+
+    fn visit_operation(&mut self, operation: &SemanticOperation) {
+        if operation.contains_select() {
+            crate::ir::semantic::walk_operation(self, operation);
+        }
+    }
     fn visit_predicate(&mut self, predicate: &SemanticPredicate) {
         self.record(predicate);
     }
@@ -292,39 +317,42 @@ struct PathConditionDomain {
     aliases: PredicateAliases,
     volatile_tests: BTreeSet<InstructionId>,
     boolean_tests: BTreeMap<InstructionId, BooleanTest>,
+    has_assignments: bool,
 }
 
 impl PathConditionDomain {
     fn new(catalog: PredicateCatalog, types: &SourceTypeEnvironment) -> Self {
         let aliases = PredicateAliases::analyze(&catalog.tests);
         let symbols = catalog
-            .symbols
-            .iter()
-            .cloned()
-            .map(|symbol| aliases.symbol(symbol))
+            .tests
+            .keys()
+            .map(|id| aliases.symbol(BoolVariable::Instruction(*id)))
             .collect::<BTreeSet<_>>();
         let volatile_tests = catalog
-            .occurrences
+            .repeated
             .into_iter()
-            .filter_map(|(instruction, occurrences)| {
-                (occurrences > 1
-                    && catalog.tests.get(&instruction).is_some_and(|test| {
-                        test.operands()
-                            .iter()
-                            .any(|operand| !operand.effects().is_pure())
-                            || test
-                                .compound_target()
-                                .is_some_and(|target| !target.effects().is_pure())
-                    }))
-                .then_some(instruction)
+            .filter(|id| {
+                catalog.tests.get(id).is_some_and(|test| {
+                    test.operands()
+                        .iter()
+                        .any(|operand| !operand.effects().is_pure())
+                        || test
+                            .compound_target()
+                            .is_some_and(|target| !target.effects().is_pure())
+                })
             })
-            .collect::<BTreeSet<_>>();
+            .collect();
         let mut boolean_tests = BTreeMap::new();
-        for (&instruction, test) in &catalog.tests {
-            let Some(test) = BooleanTest::analyze(test, types) else {
-                continue;
-            };
-            boolean_tests.insert(instruction, test);
+        let has_assignments = !catalog.assignment_variables.is_empty();
+        if has_assignments {
+            for (&instruction, test) in &catalog.tests {
+                let Some(test) = BooleanTest::analyze(test, types) else {
+                    continue;
+                };
+                if catalog.assignment_variables.contains(&test.variable) {
+                    boolean_tests.insert(instruction, test);
+                }
+            }
         }
         Self {
             bdd: BddContext::new(&symbols),
@@ -332,16 +360,12 @@ impl PathConditionDomain {
             aliases,
             volatile_tests,
             boolean_tests,
+            has_assignments,
         }
     }
 
     fn truth(&self) -> Bdd {
         self.bdd.truth()
-    }
-
-    fn normal_after(&self, root: &SemanticNode, care: Bdd) -> Result<Bdd, SemanticFoldError> {
-        let completion = CompletionInterpreter::analyze(root, self)?;
-        Ok(self.bdd.and(care, completion.normal)?)
     }
 
     fn simplify(&self, predicate: SemanticPredicate, care: Bdd) -> PredicateFact {
@@ -378,6 +402,12 @@ impl PathConditionDomain {
     }
 
     fn is_volatile(&self, predicate: &SemanticPredicate) -> bool {
+        if self.volatile_tests.is_empty() {
+            return false;
+        }
+        if let (SemanticPredicate::Test(test), _) = predicate.without_negations() {
+            return self.volatile_tests.contains(&test.id);
+        }
         predicate.symbols().iter().any(|symbol| {
             matches!(
                 symbol,
@@ -418,6 +448,18 @@ impl PathConditionDomain {
         &self,
         predicate: &SemanticPredicate,
     ) -> Result<BoolExpr, SemanticFoldError> {
+        if self.aliases.by_instruction.is_empty() {
+            return predicate.domain();
+        }
+        let (base, negated) = predicate.without_negations();
+        if let SemanticPredicate::Test(test) = base {
+            let symbol = self.aliases.instruction(test.id);
+            return Ok(if negated {
+                BoolExpr::not(symbol)
+            } else {
+                symbol
+            });
+        }
         Ok(self.aliases.rewrite(predicate.domain()?))
     }
 
@@ -438,6 +480,9 @@ impl PathConditionDomain {
         predicate: &SemanticPredicate,
         expected: bool,
     ) {
+        if self.boolean_tests.is_empty() {
+            return;
+        }
         match predicate {
             SemanticPredicate::Test(test) => {
                 let Some(test) = self.boolean_tests.get(&test.id) else {
@@ -466,8 +511,8 @@ impl PathConditionDomain {
     }
 
     fn invalidate_after(&self, known: &mut BooleanState, node: &SemanticNode) {
-        for variable in BooleanWrites::collect(node) {
-            known.values.remove(&variable);
+        if !known.values.is_empty() {
+            BooleanWrites(known).visit_node(node);
         }
     }
 
@@ -479,51 +524,66 @@ impl PathConditionDomain {
         known.invalidate(statement.result().and_then(|result| result.code_var));
     }
 
-    fn variables_after(
+    fn after_child(
         &self,
-        mut known: BooleanState,
         node: &SemanticNode,
-    ) -> Result<BooleanState, SemanticFoldError> {
-        match node {
-            SemanticNode::BasicBlock(block) => {
-                for statement in &block.statements {
-                    if let Some(assignment) = BooleanAssignment::analyze(statement) {
-                        known.values.insert(assignment.variable, assignment.value);
-                    } else {
-                        known.invalidate(statement.result().and_then(|result| result.code_var));
-                    }
-                }
-            }
-            SemanticNode::If {
-                condition,
-                then_node,
-                else_node,
-            } => {
-                let then_abrupt = CompletionInterpreter::analyze(then_node, self)?
-                    .normal
-                    .is_false();
-                let else_abrupt = else_node
-                    .as_deref()
-                    .map(|node| CompletionInterpreter::analyze(node, self))
-                    .transpose()?
-                    .is_some_and(|completion| completion.normal.is_false());
-                if then_abrupt != else_abrupt {
-                    let follows_true = else_abrupt;
-                    known = self.assume_variables(&known, condition, follows_true);
-                    if let Some(completing) = if follows_true {
-                        Some(then_node.as_ref())
-                    } else {
-                        else_node.as_deref()
-                    } {
-                        self.invalidate_after(&mut known, completing);
-                    }
-                } else {
-                    self.invalidate_after(&mut known, node);
-                }
-            }
-            _ => self.invalidate_after(&mut known, node),
+        care: Bdd,
+        mut known: BooleanState,
+    ) -> Result<(Bdd, BooleanState), SemanticFoldError> {
+        // Incoming boolean values are read only when retaining or removing
+        // a literal assignment in this method.
+        if !self.has_assignments {
+            let completion = CompletionInterpreter::analyze(node, self)?;
+            return Ok((self.bdd.and(care, completion.normal)?, known));
         }
-        Ok(known)
+        if let SemanticNode::If {
+            condition,
+            then_node,
+            else_node,
+        } = node
+        {
+            // Both the next care condition and the boolean facts use the
+            // original arms' completions, before this child is rewritten.
+            let then_state = CompletionInterpreter::analyze(then_node, self)?;
+            let else_state = else_node
+                .as_deref()
+                .map(|node| CompletionInterpreter::analyze(node, self))
+                .transpose()?;
+            let then_abrupt = then_state.normal.is_false();
+            let else_abrupt = else_state
+                .as_ref()
+                .is_some_and(|state| state.normal.is_false());
+            let completion = self.branch(condition, then_state, else_state)?;
+            let next_care = self.bdd.and(care, completion.normal)?;
+            if then_abrupt != else_abrupt {
+                let follows_true = else_abrupt;
+                self.assume_predicate(&mut known, condition, follows_true);
+                if let Some(completing) = if follows_true {
+                    Some(then_node.as_ref())
+                } else {
+                    else_node.as_deref()
+                } {
+                    self.invalidate_after(&mut known, completing);
+                }
+            } else {
+                self.invalidate_after(&mut known, node);
+            }
+            return Ok((next_care, known));
+        }
+        let completion = CompletionInterpreter::analyze(node, self)?;
+        let next_care = self.bdd.and(care, completion.normal)?;
+        if let SemanticNode::BasicBlock(block) = node {
+            for statement in &block.statements {
+                if let Some(assignment) = BooleanAssignment::analyze(statement) {
+                    known.values.insert(assignment.variable, assignment.value);
+                } else {
+                    self.invalidate_after_statement(&mut known, statement);
+                }
+            }
+        } else {
+            self.invalidate_after(&mut known, node);
+        }
+        Ok((next_care, known))
     }
 
     fn lower(&self, expression: BoolExpr) -> Option<SemanticPredicate> {
@@ -612,24 +672,16 @@ impl BooleanState {
     }
 }
 
-#[derive(Default)]
-struct BooleanWrites {
-    variables: BTreeSet<u32>,
-}
+struct BooleanWrites<'a>(&'a mut BooleanState);
 
-impl BooleanWrites {
-    fn collect(node: &SemanticNode) -> BTreeSet<u32> {
-        let mut writes = Self::default();
-        writes.visit_node(node);
-        writes.variables
-    }
-}
-
-impl SemanticVisitor for BooleanWrites {
+impl SemanticVisitor for BooleanWrites<'_> {
     fn visit_statement(&mut self, statement: &crate::ir::SemanticStatement) {
-        self.variables
-            .extend(statement.result().and_then(|result| result.code_var));
+        self.0
+            .invalidate(statement.result().and_then(|result| result.code_var));
     }
+
+    fn visit_predicate(&mut self, _: &SemanticPredicate) {}
+    fn visit_expression(&mut self, _: &SemanticExpression) {}
 }
 
 #[derive(Clone, Copy)]
@@ -1058,31 +1110,32 @@ impl PathConditionReduction {
             match task {
                 ReductionTask::Visit { node, care, known } => match node {
                     SemanticNode::Sequence(children) => {
-                        let mut child_cares = Vec::with_capacity(children.len());
-                        let mut child_states = Vec::with_capacity(children.len());
-                        let mut next_care = care;
-                        let mut next_state = known;
-                        for child in &children {
-                            child_cares.push(next_care);
-                            child_states.push(next_state.clone());
-                            next_care = self.domain.normal_after(child, next_care)?;
-                            next_state = self.domain.variables_after(next_state, child)?;
+                        let mut inputs = Vec::with_capacity(children.len());
+                        // Leaves are emitted without reading path or boolean state.
+                        // Blocks also ignore it when no assignment can be removed.
+                        let end = children
+                            .iter()
+                            .rposition(|node| match node {
+                                SemanticNode::Empty | SemanticNode::Leave(_) => false,
+                                SemanticNode::BasicBlock(_) => self.domain.has_assignments,
+                                _ => true,
+                            })
+                            .map_or(0, |index| index + 1);
+                        if let Some((_, prefix)) = children[..end].split_last() {
+                            let mut next = (care, known);
+                            for child in prefix {
+                                inputs.push((next.0, next.1.clone()));
+                                next = self.domain.after_child(child, next.0, next.1)?;
+                            }
+                            inputs.push(next);
                         }
+                        inputs.resize_with(children.len(), || (care, BooleanState::default()));
                         tasks.push(ReductionTask::Rebuild(ReductionFrame::Sequence(
                             children.len(),
                         )));
-                        tasks.extend(
-                            children
-                                .into_iter()
-                                .zip(child_cares)
-                                .zip(child_states)
-                                .rev()
-                                .map(|((node, care), known)| ReductionTask::Visit {
-                                    node,
-                                    care,
-                                    known,
-                                }),
-                        );
+                        tasks.extend(children.into_iter().zip(inputs).rev().map(
+                            |(node, (care, known))| ReductionTask::Visit { node, care, known },
+                        ));
                     }
                     SemanticNode::If {
                         condition,
@@ -1295,24 +1348,20 @@ impl PathConditionReduction {
                         });
                     }
                     SemanticNode::BasicBlock(mut block) => {
-                        let before = block.statements.len();
-                        let mut retained = Vec::with_capacity(before);
-                        let mut known = known;
-                        for statement in block.statements {
-                            let redundant =
-                                BooleanAssignment::analyze(&statement).is_some_and(|assignment| {
+                        if !known.values.is_empty() {
+                            let mut known = known;
+                            block.statements.retain(|statement| {
+                                if BooleanAssignment::analyze(statement).is_some_and(|assignment| {
                                     known.proves(assignment.variable, assignment.value)
-                                });
-                            if redundant {
-                                self.changed = true;
-                            } else {
-                                known.invalidate(
-                                    statement.result().and_then(|result| result.code_var),
-                                );
-                                retained.push(statement);
-                            }
+                                }) {
+                                    self.changed = true;
+                                    return false;
+                                }
+                                self.domain
+                                    .invalidate_after_statement(&mut known, statement);
+                                true
+                            });
                         }
-                        block.statements = retained;
                         results.push(SemanticNode::BasicBlock(block));
                     }
                     SemanticNode::Label { label, body } => {
@@ -1325,18 +1374,14 @@ impl PathConditionReduction {
                     }
                     node => results.push(node),
                 },
-                ReductionTask::Rebuild(mut frame) => {
+                ReductionTask::Rebuild(frame) => {
                     let count = frame.child_count();
                     let start = results
                         .len()
                         .checked_sub(count)
                         .ok_or(SemanticFoldError::MalformedWorkStack)?;
-                    let mut children = results.drain(start..).collect();
-                    if matches!(frame, ReductionFrame::Sequence(_)) {
-                        children = self.cluster_conditions(children)?;
-                        frame = ReductionFrame::Sequence(children.len());
-                    }
-                    results.push(frame.rebuild(children)?);
+                    let node = frame.rebuild(results.drain(start..), self)?;
+                    results.push(node);
                 }
             }
         }
@@ -1348,7 +1393,7 @@ impl PathConditionReduction {
 
     fn cluster_conditions(
         &mut self,
-        children: Vec<SemanticNode>,
+        children: impl ExactSizeIterator<Item = SemanticNode>,
     ) -> Result<Vec<SemanticNode>, SemanticFoldError> {
         let mut clustered = Vec::with_capacity(children.len());
         for child in children {
@@ -1506,13 +1551,18 @@ impl ReductionFrame {
         }
     }
 
-    fn rebuild(self, children: Vec<SemanticNode>) -> Result<SemanticNode, SemanticFoldError> {
+    fn rebuild(
+        self,
+        mut children: impl ExactSizeIterator<Item = SemanticNode>,
+        reduction: &mut PathConditionReduction,
+    ) -> Result<SemanticNode, SemanticFoldError> {
         if children.len() != self.child_count() {
             return Err(SemanticFoldError::MalformedWorkStack);
         }
-        let mut children = children.into_iter();
         let node = match self {
-            Self::Sequence(_) => SemanticNode::sequence(&mut children),
+            Self::Sequence(_) => {
+                SemanticNode::sequence(reduction.cluster_conditions(children.by_ref())?)
+            }
             Self::If {
                 condition,
                 has_else,
@@ -1663,3 +1713,7 @@ mod tests {
         assert_ne!(greater.polarity, less_or_equal.polarity);
     }
 }
+
+#[cfg(test)]
+#[path = "../../../../tests/internal/path_condition_inputs.rs"]
+mod path_condition_inputs;

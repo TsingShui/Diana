@@ -89,3 +89,32 @@ fn a_primary_without_platform_facts_uses_the_independent_platform_provider() {
         GenericSignatures::method("(TT;TT;)I").unwrap(),
     );
 }
+
+#[test]
+fn overload_fallback_preserves_shadowed_and_independent_declarations_on_cache_hits() {
+    let platform = GenericTypeHierarchy::from_classes(std::iter::empty()).unwrap();
+    let local = super::tests::class_with_methods(
+        "Ljava/util/ArrayList;",
+        None,
+        &[("remove", vec![ArgType::LONG], ArgType::VOID)],
+    );
+    let primary = GenericTypeHierarchy::from_classes([&local]).unwrap();
+    let method = "Ljava/util/ArrayList;->remove(I)Ljava/lang/Object;"
+        .parse()
+        .unwrap();
+    let local = "Ljava/util/ArrayList;->remove(J)V".parse().unwrap();
+    let erased = "Ljava/util/ArrayList;->remove(Ljava/lang/Object;)Z"
+        .parse()
+        .unwrap();
+    let mut expected: std::collections::BTreeSet<_> = platform
+        .method_overloads_walk(&method)
+        .into_iter()
+        .collect();
+    assert!(expected.contains(&erased));
+    assert!(expected.insert(local));
+    for _ in 0..2 {
+        let mut output = Default::default();
+        primary.extend_method_overloads(&method, Some(&platform), &mut output);
+        assert_eq!(output, expected);
+    }
+}

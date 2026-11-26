@@ -102,18 +102,18 @@ impl<'a> SourceSignatureInference<'a> {
         }
     }
 
-    fn cfg(&mut self, cfg: &CFG, owners: &BTreeSet<&ArgType>) {
-        let incoming = ReachingCastTypes::analyze(cfg);
+    fn cfg<'cfg>(&mut self, cfg: &'cfg CFG, owners: &BTreeSet<&ArgType>) {
+        let evidence = SignatureEvidence::needed(cfg, owners);
+        if matches!(evidence, SignatureEvidence::None) {
+            return;
+        }
         let current_method = MethodReference {
             owner: cfg.method().owner().clone(),
             name: cfg.method().name().to_string(),
             descriptor: cfg.method().descriptor().clone(),
         };
-        let parameter_registers = Self::parameter_registers(cfg);
-        for (block_id, mut types) in incoming {
-            let Some(block) = cfg.block(block_id) else {
-                continue;
-            };
+        let parameter_registers = std::cell::LazyCell::new(|| Self::parameter_registers(cfg));
+        let mut visit = |block: &'cfg crate::ir::Block, mut types: RegisterTypes<'cfg>| {
             let mut pending_result = None;
             for instruction in &block.insns {
                 if instruction.insn_type == InsnType::CheckCast {
@@ -141,7 +141,9 @@ impl<'a> SourceSignatureInference<'a> {
                         }
                     }
                 }
-                if instruction.insn_type == InsnType::Return {
+                if instruction.insn_type == InsnType::Return
+                    && matches!(current_method.descriptor.return_type, ArgType::Object(_))
+                {
                     let actual = instruction
                         .args
                         .first()
@@ -192,7 +194,20 @@ impl<'a> SourceSignatureInference<'a> {
                         }
                     }
                 }
-                ReachingCastTypes::transfer(instruction, &mut types, &mut pending_result);
+                if evidence.needs_types() {
+                    ReachingCastTypes::transfer(instruction, &mut types, &mut pending_result);
+                }
+            }
+        };
+        if cfg.normal_successors(cfg.entry).next().is_none() {
+            if let Some(block) = cfg.block(cfg.entry) {
+                visit(block, RegisterTypes::new());
+            }
+        } else {
+            for (id, types) in ReachingCastTypes::analyze(cfg, evidence.needs_types()) {
+                if let Some(block) = cfg.block(id) {
+                    visit(block, types);
+                }
             }
         }
     }
@@ -216,6 +231,9 @@ impl<'a> SourceSignatureInference<'a> {
         actual: Option<&ArgType>,
         erased: &ArgType,
     ) -> TypeConstraint {
+        if matches!(current, TypeConstraint::Conflict) {
+            return TypeConstraint::Conflict;
+        }
         let Some(actual) = actual.filter(|actual| Self::refines(hierarchy, actual, erased)) else {
             return TypeConstraint::Conflict;
         };
@@ -263,10 +281,58 @@ impl<'a> SourceSignatureInference<'a> {
 
 type RegisterTypes<'cfg> = BTreeMap<u32, &'cfg ArgType>;
 
+/// A cast on a method parameter records its declared target directly. Only
+/// an object return or a represented object parameter at a call site can
+/// consume types propagated between instructions and blocks.
+#[derive(Clone, Copy)]
+enum SignatureEvidence {
+    None,
+    Declarations,
+    Types,
+}
+
+impl SignatureEvidence {
+    fn needs_types(self) -> bool {
+        matches!(self, Self::Types)
+    }
+
+    fn needed(cfg: &CFG, owners: &BTreeSet<&ArgType>) -> Self {
+        if matches!(cfg.method().descriptor().return_type, ArgType::Object(_)) {
+            return Self::Types;
+        }
+        let mut need = Self::None;
+        for instruction in cfg.blocks_iter().flat_map(|block| &block.insns) {
+            match instruction.insn_type {
+                InsnType::CheckCast => need = Self::Declarations,
+                InsnType::Invoke => {
+                    let Some(MemberReference::Method(method)) =
+                        instruction.payload.reference.as_deref()
+                    else {
+                        continue;
+                    };
+                    if !method.descriptor.parameters.is_empty() && owners.contains(&method.owner) {
+                        if method
+                            .descriptor
+                            .parameters
+                            .iter()
+                            .any(|ty| matches!(ty, ArgType::Object(_)))
+                        {
+                            return Self::Types;
+                        }
+                        need = Self::Declarations;
+                    }
+                }
+                _ => {}
+            }
+        }
+        need
+    }
+}
+
 struct ReachingCastTypes;
 
 impl ReachingCastTypes {
-    fn analyze(cfg: &CFG) -> BTreeMap<BlockId, RegisterTypes<'_>> {
+    fn analyze(cfg: &CFG, needs_types: bool) -> BTreeMap<BlockId, RegisterTypes<'_>> {
         let mut incoming = BTreeMap::from([(cfg.entry, RegisterTypes::new())]);
         let mut pending = VecDeque::from([cfg.entry]);
         let mut queued = BTreeSet::from([cfg.entry]);
@@ -279,7 +345,7 @@ impl ReachingCastTypes {
             let Some(mut outgoing) = incoming.get(&block).cloned() else {
                 continue;
             };
-            if let Some(body) = cfg.block(block) {
+            if let Some(body) = cfg.block(block).filter(|_| needs_types) {
                 let mut pending_result = None;
                 for instruction in &body.insns {
                     Self::transfer(instruction, &mut outgoing, &mut pending_result);
@@ -386,3 +452,7 @@ impl ReachingCastTypes {
         current.len() != before
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/signature_evidence.rs"]
+mod signature_evidence;
