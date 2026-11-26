@@ -171,7 +171,10 @@ impl SsaTypeEnvironment {
 #[derive(Debug, Clone, Default)]
 pub struct SourceTypeEnvironment {
     ssa: SsaTypeEnvironment,
-    variables: BTreeMap<u32, ArgType>,
+    // Source allocation numbers its variables contiguously. Later passes can
+    // bind additional identities, including sparse IDs from a caller.
+    allocated: Box<[Option<ArgType>]>,
+    additional: BTreeMap<u32, ArgType>,
 }
 
 impl SourceTypeEnvironment {
@@ -229,12 +232,27 @@ impl SourceTypeEnvironment {
         }
         Ok(Self {
             ssa,
-            variables: source_types
+            allocated: source_types
                 .into_iter()
-                .enumerate()
-                .filter_map(|(variable, state)| state.map(|(ty, _)| (variable as u32, ty)))
+                .map(|state| state.map(|(ty, _)| ty))
                 .collect(),
+            additional: BTreeMap::new(),
         })
+    }
+
+    fn variable(&self, id: u32) -> Option<&ArgType> {
+        match self.allocated.get(id as usize) {
+            Some(slot) => slot.as_ref(),
+            None => self.additional.get(&id),
+        }
+    }
+
+    fn set_variable(&mut self, id: u32, ty: ArgType) {
+        if let Some(slot) = self.allocated.get_mut(id as usize) {
+            *slot = Some(ty);
+        } else {
+            self.additional.insert(id, ty);
+        }
     }
 
     pub(super) fn bind_variable(
@@ -242,7 +260,7 @@ impl SourceTypeEnvironment {
         variable: u32,
         ty: ArgType,
     ) -> Result<(), TypeConstraintError> {
-        match self.variables.get(&variable) {
+        match self.variable(variable) {
             Some(existing) if existing != &ty => {
                 Err(TypeConstraintError::ConflictingSourceVariable {
                     variable,
@@ -252,7 +270,7 @@ impl SourceTypeEnvironment {
             }
             Some(_) => Ok(()),
             None => {
-                self.variables.insert(variable, ty);
+                self.set_variable(variable, ty);
                 Ok(())
             }
         }
@@ -264,7 +282,7 @@ impl SourceTypeEnvironment {
         ty: ArgType,
         hierarchy: &dyn TypeHierarchy,
     ) -> Result<(), TypeConstraintError> {
-        if let Some(existing) = self.variables.get(&variable) {
+        if let Some(existing) = self.variable(variable) {
             SourceTypeLattice::new(hierarchy)
                 .join(existing, &ty)
                 .ok_or_else(|| TypeConstraintError::ConflictingSourceVariable {
@@ -273,7 +291,7 @@ impl SourceTypeEnvironment {
                     right: ty.clone(),
                 })?;
         }
-        self.variables.insert(variable, ty);
+        self.set_variable(variable, ty);
         Ok(())
     }
 
@@ -283,8 +301,8 @@ impl SourceTypeEnvironment {
         ty: ArgType,
         hierarchy: &dyn TypeHierarchy,
     ) -> Result<(), TypeConstraintError> {
-        let Some(existing) = self.variables.get(&variable).cloned() else {
-            self.variables.insert(variable, ty);
+        let Some(existing) = self.variable(variable).cloned() else {
+            self.set_variable(variable, ty);
             return Ok(());
         };
         let joined = SourceTypeLattice::new(hierarchy)
@@ -294,7 +312,7 @@ impl SourceTypeEnvironment {
                 left: existing,
                 right: ty,
             })?;
-        self.variables.insert(variable, joined);
+        self.set_variable(variable, joined);
         Ok(())
     }
 
@@ -303,7 +321,7 @@ impl SourceTypeEnvironment {
         variable: u32,
         ty: ArgType,
     ) -> Result<(), TypeConstraintError> {
-        if let Some(existing) = self.variables.get(&variable) {
+        if let Some(existing) = self.variable(variable) {
             if !existing.is_reference() || !ty.is_reference() {
                 return Err(TypeConstraintError::ConflictingSourceVariable {
                     variable,
@@ -312,13 +330,17 @@ impl SourceTypeEnvironment {
                 });
             }
         }
-        self.variables.insert(variable, ty);
+        self.set_variable(variable, ty);
         Ok(())
     }
 
     pub(crate) fn refine_booleans(&mut self, variables: impl IntoIterator<Item = u32>) {
         for variable in variables {
-            let Some(ty) = self.variables.get_mut(&variable) else {
+            let ty = match self.allocated.get_mut(variable as usize) {
+                Some(slot) => slot.as_mut(),
+                None => self.additional.get_mut(&variable),
+            };
+            let Some(ty) = ty else {
                 continue;
             };
             if matches!(
@@ -331,7 +353,11 @@ impl SourceTypeEnvironment {
     }
 
     pub fn known_types(&self) -> impl Iterator<Item = &ArgType> {
-        self.variables.values().chain(self.ssa.known_types())
+        self.allocated
+            .iter()
+            .flatten()
+            .chain(self.additional.values())
+            .chain(self.ssa.known_types())
     }
 
     pub fn ssa_type<'a>(
@@ -348,7 +374,7 @@ impl SourceTypeEnvironment {
     ) -> Result<&'a ArgType, TypeConstraintError> {
         if let Some(ty) = register
             .code_var
-            .and_then(|variable| self.variables.get(&variable))
+            .and_then(|variable| self.variable(variable))
         {
             return Ok(ty);
         }
@@ -485,3 +511,7 @@ impl<'a> TypeSolver<'a> {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/allocated_variable_types.rs"]
+mod allocated_variable_types;

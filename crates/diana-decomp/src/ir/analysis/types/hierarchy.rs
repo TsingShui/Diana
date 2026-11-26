@@ -40,10 +40,16 @@ pub trait TypeHierarchy: Send + Sync {
     fn ancestor_names(&self, class: &str) -> Vec<String>;
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct AncestorDistances {
+    by_name: BTreeMap<String, usize>,
+    complete: bool,
+}
+
 #[derive(Debug)]
 enum DistanceTable {
-    Building(RwLock<HashMap<String, Arc<BTreeMap<String, usize>>>>),
-    Frozen(Arc<HashMap<String, Arc<BTreeMap<String, usize>>>>),
+    Building(RwLock<HashMap<String, Arc<AncestorDistances>>>),
+    Frozen(Arc<HashMap<String, Arc<AncestorDistances>>>),
 }
 
 impl Default for DistanceTable {
@@ -191,7 +197,7 @@ impl ClassHierarchyIndex {
         }
     }
 
-    fn distances(&self, start: &str) -> Arc<BTreeMap<String, usize>> {
+    fn distances(&self, start: &str) -> Arc<AncestorDistances> {
         match &self.distances {
             DistanceTable::Frozen(map) => {
                 if let Some(distances) = map.get(start) {
@@ -215,11 +221,16 @@ impl ClassHierarchyIndex {
         }
     }
 
-    fn compute_distances(&self, start: &str) -> Arc<BTreeMap<String, usize>> {
+    fn compute_distances(&self, start: &str) -> Arc<AncestorDistances> {
         let mut distances = BTreeMap::from([(start.to_string(), 0)]);
         let mut pending = VecDeque::from([(start.to_string(), 0)]);
+        let mut complete = true;
         while let Some((class, distance)) = pending.pop_front() {
-            for parent in self.direct_parents(&class) {
+            let Some(parents) = self.parents_of(&class) else {
+                complete = false;
+                continue;
+            };
+            for parent in parents {
                 if distances.contains_key(&parent) {
                     continue;
                 }
@@ -230,7 +241,10 @@ impl ClassHierarchyIndex {
         distances
             .entry("java/lang/Object".to_string())
             .or_insert(usize::MAX / 4);
-        Arc::new(distances)
+        Arc::new(AncestorDistances {
+            by_name: distances,
+            complete,
+        })
     }
 
     fn distance_start_names(&self) -> HashSet<String> {
@@ -258,8 +272,8 @@ impl ClassHierarchyIndex {
     }
 
     fn read_cache(
-        cache: &RwLock<HashMap<String, Arc<BTreeMap<String, usize>>>>,
-    ) -> std::sync::RwLockReadGuard<'_, HashMap<String, Arc<BTreeMap<String, usize>>>> {
+        cache: &RwLock<HashMap<String, Arc<AncestorDistances>>>,
+    ) -> std::sync::RwLockReadGuard<'_, HashMap<String, Arc<AncestorDistances>>> {
         match cache.read() {
             Ok(cache) => cache,
             Err(poisoned) => poisoned.into_inner(),
@@ -267,16 +281,12 @@ impl ClassHierarchyIndex {
     }
 
     fn write_cache(
-        cache: &RwLock<HashMap<String, Arc<BTreeMap<String, usize>>>>,
-    ) -> std::sync::RwLockWriteGuard<'_, HashMap<String, Arc<BTreeMap<String, usize>>>> {
+        cache: &RwLock<HashMap<String, Arc<AncestorDistances>>>,
+    ) -> std::sync::RwLockWriteGuard<'_, HashMap<String, Arc<AncestorDistances>>> {
         match cache.write() {
             Ok(cache) => cache,
             Err(poisoned) => poisoned.into_inner(),
         }
-    }
-
-    fn direct_parents(&self, class: &str) -> impl Iterator<Item = String> {
-        self.parents_of(class).into_iter().flatten()
     }
 
     fn parents_of(&self, class: &str) -> Option<Vec<String>> {
@@ -309,14 +319,11 @@ impl ClassHierarchyIndex {
 
 impl ClassHierarchyIndex {
     /// True when `expected` is a recorded ancestor of `value`.
-    ///
-    /// A hit is definitive Yes. A miss still has to BFS so incomplete graphs
-    /// can return Unknown instead of No.
     fn recorded_ancestor(&self, value: &str, expected: &str) -> bool {
         if value == expected || expected == "java/lang/Object" {
             return true;
         }
-        self.distances(value).contains_key(expected)
+        self.distances(value).by_name.contains_key(expected)
     }
 
     /// Recorded ancestor names of `class` — the same closure its subtype
@@ -324,35 +331,34 @@ impl ClassHierarchyIndex {
     /// by membership instead of per-pair walks. Includes `class` itself and
     /// the `java/lang/Object` fallback entry.
     pub fn ancestor_names(&self, class: &str) -> Vec<String> {
-        self.distances(class).keys().cloned().collect()
+        self.distances(class).by_name.keys().cloned().collect()
     }
 }
 
 impl TypeHierarchy for ClassHierarchyIndex {
     fn subtype_relation(&self, value: &str, expected: &str) -> SubtypeRelation {
-        if self.recorded_ancestor(value, expected) {
+        if value == expected || expected == "java/lang/Object" {
             return SubtypeRelation::Yes;
         }
-        let mut visited = BTreeSet::new();
-        let mut pending = VecDeque::from([value.to_string()]);
-        let mut incomplete = false;
-        while let Some(class) = pending.pop_front() {
-            if !visited.insert(class.clone()) {
-                continue;
-            }
-            let Some(parents) = self.parents_of(&class) else {
-                incomplete = true;
-                continue;
-            };
-            if parents.iter().any(|parent| parent == expected) {
+        let mut ancestors = self.distances(value);
+        if ancestors.by_name.contains_key(expected) {
+            return SubtypeRelation::Yes;
+        }
+        // A frozen layer delegates unowned starts to its base. A reachable
+        // ancestor can still have a local declaration with different parents.
+        if matches!(&self.distances, DistanceTable::Frozen(_))
+            && self.base.is_some()
+            && !self.owns_start(value)
+        {
+            ancestors = self.compute_distances(value);
+            if ancestors.by_name.contains_key(expected) {
                 return SubtypeRelation::Yes;
             }
-            pending.extend(parents);
         }
-        if incomplete {
-            SubtypeRelation::Unknown
-        } else {
+        if ancestors.complete {
             SubtypeRelation::No
+        } else {
+            SubtypeRelation::Unknown
         }
     }
 
@@ -370,9 +376,10 @@ impl TypeHierarchy for ClassHierarchyIndex {
         let left_distances = self.distances(left);
         let right_distances = self.distances(right);
         let candidates = left_distances
+            .by_name
             .iter()
             .filter_map(|(candidate, left_distance)| {
-                let right_distance = right_distances.get(candidate)?;
+                let right_distance = right_distances.by_name.get(candidate)?;
                 Some((
                     (*left_distance).max(*right_distance),
                     left_distance.saturating_add(*right_distance),
@@ -427,6 +434,7 @@ mod tests {
         assert_eq!(
             index
                 .distances("pkg/Orphan")
+                .by_name
                 .get("java/lang/Object")
                 .copied(),
             Some(usize::MAX / 4)
@@ -434,6 +442,7 @@ mod tests {
         assert_eq!(
             index
                 .distances("java/lang/Object")
+                .by_name
                 .get("java/lang/Object")
                 .copied(),
             Some(0)
@@ -499,7 +508,7 @@ mod tests {
         assert!(!keys_before.contains("not/A/Key"));
         let first = index.distances("not/A/Key");
         let second = index.distances("not/A/Key");
-        assert_eq!(first.get("not/A/Key").copied(), Some(0));
+        assert_eq!(first.by_name.get("not/A/Key").copied(), Some(0));
         assert_eq!(*first, *second);
         assert_eq!(frozen_keys(&index), keys_before);
     }
@@ -522,6 +531,7 @@ mod tests {
         assert_eq!(
             index
                 .distances("android/view/View")
+                .by_name
                 .get("java/lang/Object")
                 .copied(),
             Some(1)
@@ -554,3 +564,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../../../tests/internal/ancestor_distance_coverage.rs"]
+mod ancestor_distance_coverage;

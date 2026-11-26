@@ -104,7 +104,9 @@ pub struct ValueCopy {
 
 #[derive(Debug, Clone, Default)]
 pub struct SsaValueGraph {
-    values: BTreeMap<SsaVar, SsaValue>,
+    values: Box<[SsaValue]>,
+    // Offsets into the ordered values, when register numbers fit a compact table.
+    register_starts: Box<[usize]>,
     phis: Vec<PhiMerge>,
     phi_indices: foldhash::HashMap<SsaVar, usize>,
     copies: Vec<ValueCopy>,
@@ -212,14 +214,14 @@ impl SsaValueGraph {
         cfg: &CFG,
         dominators: Option<super::DominatorTree>,
     ) -> Result<(Self, super::DominatorTree), SsaInvariantError> {
-        let mut graph = Self::default();
+        let mut builder = SsaValueBuilder::default();
         for (&block, body) in &cfg.blocks {
             for (index, instruction) in body.insns.iter().enumerate() {
                 let position = InsnPosition { block, index };
                 if let Some(result) = &instruction.result {
                     let variable = SsaVar::from_reg(result)
                         .ok_or(SsaInvariantError::DefinitionWithoutIdentity(position))?;
-                    let value = graph.value_mut(variable);
+                    let value = builder.value_mut(variable);
                     if let Some(first) = value.definition.replace(position) {
                         return Err(SsaInvariantError::MultipleDefinitions {
                             value: variable,
@@ -237,7 +239,7 @@ impl SsaValueGraph {
                     &instruction.args
                 };
                 for (argument, value) in arguments.iter().enumerate() {
-                    graph.collect_use(
+                    builder.collect_use(
                         value,
                         UsePosition {
                             instruction: position,
@@ -247,7 +249,7 @@ impl SsaValueGraph {
                     )?;
                 }
                 if let Some(target) = &instruction.payload.compound_target {
-                    graph.collect_use(
+                    builder.collect_use(
                         target,
                         UsePosition {
                             instruction: position,
@@ -257,7 +259,7 @@ impl SsaValueGraph {
                     )?;
                 }
                 if instruction.insn_type == InsnType::Phi {
-                    graph.collect_phi(cfg, block, instruction)?;
+                    builder.collect_phi(cfg, block, instruction)?;
                 } else if instruction.insn_type == InsnType::Move {
                     if let (Some(result), Some(source)) = (
                         instruction.result.as_ref().and_then(SsaVar::from_reg),
@@ -267,11 +269,12 @@ impl SsaValueGraph {
                             .and_then(InsnArg::as_register)
                             .and_then(SsaVar::from_reg),
                     ) {
-                        graph.copies.push(ValueCopy { result, source });
+                        builder.graph.copies.push(ValueCopy { result, source });
                     }
                 }
             }
         }
+        let graph = builder.finish();
         graph.validate_phi_edges(cfg)?;
         let dominators = match dominators {
             Some(tree) => tree,
@@ -299,11 +302,27 @@ impl SsaValueGraph {
     }
 
     pub fn values(&self) -> impl Iterator<Item = &SsaValue> {
-        self.values.values()
+        self.values.iter()
     }
 
     pub fn value(&self, variable: SsaVar) -> Option<&SsaValue> {
-        self.values.get(&variable)
+        let register = variable.reg_num as usize;
+        let values = if self.register_starts.is_empty() {
+            &self.values[..]
+        } else {
+            let starts = self.register_starts.get(register..)?.get(..2)?;
+            let row = &self.values[starts[0]..starts[1]];
+            let first = row.first()?.variable.version;
+            let dense = variable.version.checked_sub(first)? as usize;
+            if let Some(value) = row.get(dense).filter(|value| value.variable == variable) {
+                return Some(value);
+            }
+            row
+        };
+        values
+            .binary_search_by_key(&variable, |value| value.variable)
+            .ok()
+            .map(|index| &values[index])
     }
 
     pub fn use_site<'a>(
@@ -349,11 +368,91 @@ impl SsaValueGraph {
     }
 
     pub fn copy_classes(&self) -> SsaClasses {
-        let mut classes = SsaClasses::new(self.values.keys().copied());
+        let mut classes = SsaClasses::new(self.values.iter().map(|value| value.variable));
         for copy in &self.copies {
             classes.union(copy.result, copy.source);
         }
         classes
+    }
+
+    fn validate_phi_edges(&self, cfg: &CFG) -> Result<(), SsaInvariantError> {
+        for phi in &self.phis {
+            let expected = cfg.predecessors_with_kind(phi.block);
+            let edges = phi
+                .inputs
+                .iter()
+                .map(|input| (input.predecessor, input.edge_kind));
+            if !edges.clone().eq(expected.iter().copied()) {
+                return Err(SsaInvariantError::PhiTopology {
+                    block: phi.block,
+                    actual: edges.collect(),
+                    expected: expected.to_vec(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_dominance(
+        &self,
+        cfg: &CFG,
+        dominators: &super::DominatorTree,
+    ) -> Result<(), SsaInvariantError> {
+        let first_input = cfg.registers.saturating_sub(cfg.ins);
+        for value in &self.values {
+            let Some(definition) = value.definition else {
+                let method_input = value.variable.version == 0
+                    && first_input <= value.variable.reg_num
+                    && value.variable.reg_num < cfg.registers;
+                if method_input {
+                    continue;
+                }
+                return Err(SsaInvariantError::UndefinedValue(value.variable));
+            };
+            for usage in &value.uses {
+                let dominated = if definition.block == usage.instruction.block {
+                    definition.index < usage.instruction.index
+                } else {
+                    dominators.dominates(definition.block, usage.instruction.block)
+                };
+                if !dominated {
+                    return Err(SsaInvariantError::NonDominatingDefinition {
+                        value: value.variable,
+                        definition,
+                        usage: usage.instruction,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct SsaValueBuilder {
+    values: BTreeMap<SsaVar, SsaValue>,
+    graph: SsaValueGraph,
+}
+
+impl SsaValueBuilder {
+    fn finish(mut self) -> SsaValueGraph {
+        let values: Box<[_]> = self.values.into_values().collect();
+        if let Some(last) = values.last() {
+            let max = last.variable.reg_num as usize;
+            if values.len() >= 8 && max < values.len() {
+                let mut starts = Vec::with_capacity(max + 2);
+                for (index, value) in values.iter().enumerate() {
+                    let register = value.variable.reg_num as usize;
+                    if register >= starts.len() {
+                        starts.resize(register + 1, index);
+                    }
+                }
+                starts.push(values.len());
+                self.graph.register_starts = starts.into_boxed_slice();
+            }
+        }
+        self.graph.values = values;
+        self.graph
     }
 
     fn value_mut(&mut self, variable: SsaVar) -> &mut SsaValue {
@@ -426,65 +525,13 @@ impl SsaValueGraph {
                 value,
             });
         }
-        self.phi_indices.insert(result, self.phis.len());
-        self.phis.push(PhiMerge {
+        self.graph.phi_indices.insert(result, self.graph.phis.len());
+        self.graph.phis.push(PhiMerge {
             block,
             instruction: instruction.id,
             result,
             inputs,
         });
-        Ok(())
-    }
-
-    fn validate_phi_edges(&self, cfg: &CFG) -> Result<(), SsaInvariantError> {
-        for phi in &self.phis {
-            let expected = cfg.predecessors_with_kind(phi.block);
-            let edges = phi
-                .inputs
-                .iter()
-                .map(|input| (input.predecessor, input.edge_kind));
-            if !edges.clone().eq(expected.iter().copied()) {
-                return Err(SsaInvariantError::PhiTopology {
-                    block: phi.block,
-                    actual: edges.collect(),
-                    expected: expected.to_vec(),
-                });
-            }
-        }
-        Ok(())
-    }
-
-    fn validate_dominance(
-        &self,
-        cfg: &CFG,
-        dominators: &super::DominatorTree,
-    ) -> Result<(), SsaInvariantError> {
-        let first_input = cfg.registers.saturating_sub(cfg.ins);
-        for value in self.values.values() {
-            let Some(definition) = value.definition else {
-                let method_input = value.variable.version == 0
-                    && first_input <= value.variable.reg_num
-                    && value.variable.reg_num < cfg.registers;
-                if method_input {
-                    continue;
-                }
-                return Err(SsaInvariantError::UndefinedValue(value.variable));
-            };
-            for usage in &value.uses {
-                let dominated = if definition.block == usage.instruction.block {
-                    definition.index < usage.instruction.index
-                } else {
-                    dominators.dominates(definition.block, usage.instruction.block)
-                };
-                if !dominated {
-                    return Err(SsaInvariantError::NonDominatingDefinition {
-                        value: value.variable,
-                        definition,
-                        usage: usage.instruction,
-                    });
-                }
-            }
-        }
         Ok(())
     }
 }
@@ -498,7 +545,7 @@ pub struct CodeVariables {
 impl CodeVariables {
     pub(super) fn from_singletons(values: &SsaValueGraph, inputs: &[SsaVar]) -> Self {
         // SSA values and declared inputs each arrive in register/version order.
-        let mut values = values.values.keys().copied().peekable();
+        let mut values = values.values.iter().map(|value| value.variable).peekable();
         let mut inputs = inputs.iter().copied().peekable();
         let mut assignments = Vec::with_capacity(values.len());
         loop {
@@ -596,7 +643,7 @@ impl CodeVariables {
 }
 
 struct UseCollector<'a> {
-    graph: &'a mut SsaValueGraph,
+    graph: &'a mut SsaValueBuilder,
     position: UsePosition,
     error: Option<SsaInvariantError>,
 }
@@ -698,3 +745,7 @@ fn parameter_slots(parameter: &ArgType) -> u32 {
         1
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/ssa_value_layout.rs"]
+mod ssa_value_layout;

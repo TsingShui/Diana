@@ -127,6 +127,7 @@ impl ArenaNode {
 /// Arena keys are immutable and IDs 0 and 1 are the two terminals. Zero
 /// therefore marks an empty slot without a separate occupancy byte. The
 /// arena itself supplies a dense insertion-order sequence when growing.
+#[derive(Clone)]
 struct UniqueNodes {
     slots: smallvec::SmallVec<[u16; 8]>,
     hasher: foldhash::fast::RandomState,
@@ -170,6 +171,7 @@ impl UniqueNodes {
 
 /// Nonterminal binary cache keys are strictly ordered node pairs. In
 /// particular zero is never a key, although either terminal is a valid result.
+#[derive(Clone)]
 struct BinaryMemo {
     slots: smallvec::SmallVec<[u64; 4]>,
     len: usize,
@@ -236,6 +238,7 @@ impl BinaryMemo {
     }
 }
 
+#[derive(Clone)]
 struct Manager {
     context: u64,
     nodes: Vec<ArenaNode>,
@@ -821,19 +824,21 @@ impl Manager {
     }
 }
 
+#[derive(Clone)]
 struct ApplyFrame {
     key: u32,
     variable: usize,
     next: ApplyChild,
 }
 
+#[derive(Clone)]
 enum ApplyChild {
     High(u16, u16),
     LowResult(u16),
     HighResult(u16),
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct ImplicationWork {
     pending: Vec<(u16, u16)>,
     first: [u32; 8],
@@ -984,6 +989,7 @@ impl DnfBuilder {
     }
 }
 
+#[derive(Clone)]
 struct Variable {
     index: usize,
     positive: Cell<Option<u16>>,
@@ -1049,6 +1055,53 @@ impl BddContext {
             compiled_literals: Cell::new(0),
             limits,
         }
+    }
+
+    pub(crate) fn variable_order(&self) -> &[BoolVariable] {
+        &self.variables_by_index
+    }
+
+    pub(crate) fn variable_index(&self, name: &BoolVariable) -> Option<usize> {
+        self.variables.get(name).map(|variable| variable.index)
+    }
+
+    /// Fork the exact bounded arena, rebinding only handles owned by this
+    /// context. The two branches can subsequently intern different nodes at
+    /// the same numeric position and must retain distinct handle identities.
+    pub(crate) fn fork(
+        &self,
+        roots: impl IntoIterator<Item = Option<Bdd>>,
+    ) -> Result<(Self, Vec<Option<Bdd>>), BddError> {
+        let manager = self.manager.borrow();
+        let context = NEXT_CONTEXT.fetch_add(1, Ordering::Relaxed);
+        let rebind = |value: Bdd| {
+            manager.validate(value)?;
+            Ok(Bdd { context, ..value })
+        };
+        let roots = roots
+            .into_iter()
+            .map(|root| root.map(rebind).transpose())
+            .collect::<Result<Vec<_>, BddError>>()?;
+        let expressions = self
+            .expressions
+            .borrow()
+            .iter()
+            .map(|(expression, &proof)| Ok((expression.clone(), rebind(proof)?)))
+            .collect::<Result<_, BddError>>()?;
+        let mut manager = manager.clone();
+        manager.context = context;
+        Ok((
+            Self {
+                context,
+                variables: self.variables.clone(),
+                variables_by_index: self.variables_by_index.clone(),
+                manager: RefCell::new(manager),
+                expressions: RefCell::new(expressions),
+                compiled_literals: self.compiled_literals.clone(),
+                limits: self.limits,
+            },
+            roots,
+        ))
     }
 
     pub fn truth(&self) -> Bdd {

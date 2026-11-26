@@ -1,76 +1,43 @@
 //! Register liveness used by pruned SSA construction.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+
+use super::live_set::LiveSet;
 
 use crate::ir::{BlockId, EdgeKind, InstructionTree, InstructionVisitor, RegisterArg, CFG};
 
 #[derive(Debug, Clone)]
 pub struct RegisterLiveness {
-    live_in: BTreeMap<BlockId, LiveRegisters>,
+    live_in: BTreeMap<BlockId, LiveSet>,
     definition_blocks: BTreeMap<u32, Vec<BlockId>>,
-}
-
-/// DEX methods commonly address only the first word of registers. Keep
-/// higher, potentially sparse register numbers independent of that fast path.
-#[derive(Debug, Clone, Default)]
-struct LiveRegisters {
-    low: u64,
-    high: BTreeSet<u32>,
-}
-
-impl LiveRegisters {
-    fn insert(&mut self, register: u32) -> bool {
-        if register >= u64::BITS {
-            return self.high.insert(register);
-        }
-        let bit = 1u64 << register;
-        let new = self.low & bit == 0;
-        self.low |= bit;
-        new
-    }
-
-    fn contains(&self, register: u32) -> bool {
-        if register < u64::BITS {
-            self.low & (1u64 << register) != 0
-        } else {
-            self.high.contains(&register)
-        }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.low == 0 && self.high.is_empty()
-    }
 }
 
 #[derive(Default)]
 struct BlockLiveness {
-    first_definitions: foldhash::HashMap<u32, usize>,
-    exceptional_boundary: Option<usize>,
-    live_in: LiveRegisters,
-    pending: Vec<u32>,
+    definitions: LiveSet,
+    // Only a definition first made at or after the throwing instruction
+    // fails to kill the incoming register on an exception edge.
+    late_definitions: Option<Box<LiveSet>>,
+    live_in: LiveSet,
 }
 
 impl BlockLiveness {
-    fn observe(&mut self, register: u32) {
-        if self.live_in.insert(register) {
-            self.pending.push(register);
+    fn propagate(&mut self, word: usize, bits: u64, edge: EdgeKind) -> u64 {
+        let mut killed = self.definitions.word(word);
+        if edge.is_exception() {
+            if let Some(late) = &self.late_definitions {
+                killed &= !late.word(word);
+            }
         }
-    }
-
-    fn kills(&self, register: u32, edge: EdgeKind) -> bool {
-        self.first_definitions.get(&register).is_some_and(|&first| {
-            !edge.is_exception()
-                || self
-                    .exceptional_boundary
-                    .is_none_or(|boundary| first < boundary)
-        })
+        self.live_in.add(word, bits & !killed)
     }
 }
 
 impl InstructionVisitor for BlockLiveness {
     fn visit_register(&mut self, register: &RegisterArg) {
-        if !self.first_definitions.contains_key(&register.reg_num) {
-            self.observe(register.reg_num);
+        let id = register.reg_num as usize;
+        if !self.definitions.contains(id) {
+            self.live_in.insert(id);
         }
     }
 }
@@ -82,60 +49,59 @@ impl RegisterLiveness {
         for block in cfg.blocks.values() {
             let mut state = BlockLiveness::default();
             // An exception edge sees only writes before its throwing instruction.
-            if cfg
+            let exceptional_boundary = cfg
                 .successors_with_kind(block.id)
                 .iter()
                 .any(|(_, edge)| edge.is_exception())
-            {
-                state.exceptional_boundary = block.insns.iter().rposition(|insn| insn.can_throw());
-            }
+                .then(|| block.insns.iter().rposition(|insn| insn.can_throw()))
+                .flatten();
             for (index, instruction) in block.insns.iter().enumerate() {
                 InstructionTree::visit_args(instruction, &mut state);
                 if let Some(result) = &instruction.result {
-                    state
-                        .first_definitions
-                        .entry(result.reg_num)
-                        .or_insert(index);
+                    let id = result.reg_num as usize;
+                    let first = state.definitions.add(id / 64, 1 << (id % 64));
+                    if first != 0 && exceptional_boundary.is_some_and(|boundary| index >= boundary)
+                    {
+                        state
+                            .late_definitions
+                            .get_or_insert_with(Default::default)
+                            .insert(id);
+                    }
                 }
             }
-            if !state.pending.is_empty() {
-                pending.push(block.id);
-            }
+            pending.extend(
+                state
+                    .live_in
+                    .words()
+                    .map(|(word, bits)| (block.id, word, bits)),
+            );
             blocks.insert(block.id, state);
         }
 
         // Each newly-live (block, register) pair propagates once, including
         // through loops. A write blocks propagation only on the relevant edge.
-        let mut delta = Vec::new();
-        while let Some(target) = pending.pop() {
-            std::mem::swap(
-                &mut blocks.get_mut(&target).expect("queued block").pending,
-                &mut delta,
-            );
+        while let Some((target, word, bits)) = pending.pop() {
             for &(source, edge) in cfg.predecessors_with_kind(target) {
                 let Some(state) = blocks.get_mut(&source) else {
                     continue;
                 };
-                let was_empty = state.pending.is_empty();
-                for &register in &delta {
-                    if !state.kills(register, edge) {
-                        state.observe(register);
-                    }
-                }
-                if was_empty && !state.pending.is_empty() {
-                    pending.push(source);
+                let added = state.propagate(word, bits, edge);
+                if added != 0 {
+                    pending.push((source, word, added));
                 }
             }
-            delta.clear();
         }
 
         let mut live_in = BTreeMap::new();
         let mut definition_blocks = BTreeMap::<u32, Vec<BlockId>>::new();
         for (id, block) in blocks {
-            for register in block.first_definitions.into_keys() {
-                definition_blocks.entry(register).or_default().push(id);
+            for register in block.definitions.ids() {
+                definition_blocks
+                    .entry(register as u32)
+                    .or_default()
+                    .push(id);
             }
-            if !block.live_in.is_empty() {
+            if block.live_in.words().next().is_some() {
                 live_in.insert(id, block.live_in);
             }
         }
@@ -148,7 +114,7 @@ impl RegisterLiveness {
     pub fn is_live_in(&self, block: BlockId, register: u32) -> bool {
         self.live_in
             .get(&block)
-            .is_some_and(|values| values.contains(register))
+            .is_some_and(|values| values.contains(register as usize))
     }
 
     pub(crate) fn definitions(&self) -> impl Iterator<Item = (u32, &[BlockId])> {

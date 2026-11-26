@@ -289,6 +289,7 @@ impl SemanticTransform<SsaSemantics> for ValueRecovery {
                 method.body(),
                 method.state().values(),
                 &self.ssa_constants,
+                &self.source_flow_cache,
             )?;
             let saturated = graph.proof_budget_exhausted();
             let recovery =

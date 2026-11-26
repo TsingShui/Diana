@@ -134,3 +134,64 @@ fn malformed_original_and_site_expressions_keep_their_error_order() {
         );
     }
 }
+
+#[test]
+fn global_substitution_shares_untouched_children_and_updates_targets_and_results() {
+    let reg = |n| RegisterArg::new_ssa(key(n).reg_num, key(n).version, ArgType::INT);
+    let lit = |value| SemanticExpression::Literal(crate::ir::LiteralArg::int(value));
+    let mut raw = InsnNode::new(InsnType::FilledNewArray, 1);
+    raw.result = Some(reg(4));
+    let unaffected = SemanticOperation::from_parts(
+        raw.clone(),
+        vec![SemanticExpression::Register(reg(1))],
+        None,
+    );
+    let compound = SemanticOperation::from_parts(
+        raw,
+        vec![SemanticExpression::Register(reg(1))],
+        Some(SemanticExpression::Register(reg(2))),
+    );
+    let mut discarded = InsnNode::new(InsnType::Invoke, 0);
+    discarded.result = Some(reg(3));
+    let discarded = SemanticOperation::from_parts(discarded, vec![], None);
+    let mut tree = SemanticExpression::Operation(SemanticOperation::from_parts(
+        InsnNode::new(InsnType::FilledNewArray, 3),
+        vec![
+            SemanticExpression::Operation(unaffected.clone()),
+            SemanticExpression::Operation(compound.clone()),
+            SemanticExpression::Operation(discarded.clone()),
+        ],
+        None,
+    ));
+    let replacements = BTreeMap::from([(key(2), lit(17))]);
+    let discarded_results = BTreeSet::from([key(3)]);
+    let mut substitution = ValueSubstitution {
+        replacements: &replacements,
+        discarded_results: &discarded_results,
+        identity: ValueIdentity::Ssa,
+        changed: false,
+    };
+    let mut alone = SemanticExpression::Operation(unaffected.clone());
+    SemanticInstructions::transform_expression(&mut alone, &mut substitution).unwrap();
+    assert!(!substitution.changed);
+    SemanticInstructions::transform_expression(&mut tree, &mut substitution).unwrap();
+    assert!(substitution.changed);
+    let SemanticExpression::Operation(tree) = tree else {
+        panic!("expected outer array")
+    };
+    let [SemanticExpression::Operation(first), SemanticExpression::Operation(second), SemanticExpression::Operation(third)] =
+        tree.operands()
+    else {
+        panic!("expected three original operations")
+    };
+    assert!(std::ptr::eq(&**first, &*unaffected));
+    assert!(
+        matches!(second.compound_target(), Some(SemanticExpression::Literal(value)) if *value == crate::ir::LiteralArg::int(17))
+    );
+    assert_eq!(second.result, Some(reg(4)));
+    assert!(
+        matches!(compound.compound_target(), Some(SemanticExpression::Register(value)) if *value == reg(2))
+    );
+    assert_eq!(third.result, None);
+    assert_eq!(discarded.result, Some(reg(3)));
+}

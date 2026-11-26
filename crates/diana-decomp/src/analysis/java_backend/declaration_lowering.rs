@@ -528,11 +528,19 @@ impl crate::language::java::GenericTypeProjection for SourceGenericTypeProjectio
         supertype: &ArgType,
     ) -> crate::ir::analysis::SubtypeRelation {
         use crate::ir::analysis::{SubtypeRelation, TypeHierarchy};
+        if subtype == supertype {
+            return SubtypeRelation::Yes;
+        }
         let key = (subtype.clone(), supertype.clone());
         if let Some(result) = self.cache.subtype_relations.borrow().get(&key).copied() {
             return result;
         }
-        let source_relation = (self.source_abi.is_subtype(subtype, supertype)
+        let erased = match (subtype.as_object(), supertype.as_object()) {
+            (Some(subtype), Some(supertype)) => self.hierarchy.subtype_relation(subtype, supertype),
+            _ => SubtypeRelation::Unknown,
+        };
+        let result = if erased == SubtypeRelation::Yes
+            || self.source_abi.is_subtype(subtype, supertype)
             || self
                 .names
                 .resolve_type(subtype)
@@ -540,15 +548,12 @@ impl crate::language::java::GenericTypeProjection for SourceGenericTypeProjectio
                 .map(JavaType::into_raw)
                 .and_then(|subtype| self.names.source_signature(&subtype))
                 .and_then(|subtype| self.source_abi.project_supertype(&subtype, supertype))
-                .is_some())
-        .then_some(SubtypeRelation::Yes);
-        let result =
-            source_relation.unwrap_or_else(|| match (subtype.as_object(), supertype.as_object()) {
-                (Some(subtype), Some(supertype)) => {
-                    self.hierarchy.subtype_relation(subtype, supertype)
-                }
-                _ => SubtypeRelation::Unknown,
-            });
+                .is_some()
+        {
+            SubtypeRelation::Yes
+        } else {
+            erased
+        };
         self.cache
             .subtype_relations
             .borrow_mut()

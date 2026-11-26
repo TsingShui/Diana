@@ -325,3 +325,35 @@ fn distributing_a_proven_tail_preserves_statement_order_and_the_other_exit() {
         matches!(*otherwise, SemanticNode::Leave(exit) if matches!(exit.kind, SemanticLeaveKind::Return(None)))
     );
 }
+
+#[test]
+fn named_predicate_domains_preserve_short_circuit_constants_and_atom_aliases() {
+    use crate::ir::BoolExpr;
+    let syntax = SemanticPredicate::And(vec![
+        SemanticPredicate::Or(vec![SemanticPredicate::False, predicate(8)]),
+        SemanticPredicate::Or(vec![predicate(9), predicate(7).negate()]),
+        SemanticPredicate::Or(vec![predicate(44), SemanticPredicate::True]),
+    ]);
+    let atom = |v| BoolExpr::Symbol(BoolVariable::Atom(v));
+    assert_eq!(
+        syntax
+            .domain_with(|id| Some(BoolVariable::Atom((id.raw() % 2) as u32)))
+            .unwrap(),
+        BoolExpr::and(vec![
+            atom(0),
+            BoolExpr::or(vec![atom(1), BoolExpr::not(atom(1))])
+        ]),
+    );
+    let equivalent = predicate(2);
+    let other = predicate(8);
+    for (left, right, expected) in [
+        (equivalent.clone(), other.clone(), true),
+        (equivalent.clone().negate(), other.clone(), false),
+        (equivalent.negate(), other.negate(), true),
+    ] {
+        assert_eq!(
+            PredicateRegionFormation::equivalent(&left, &right).unwrap(),
+            expected
+        );
+    }
+}

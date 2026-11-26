@@ -1,5 +1,4 @@
-mod live_set;
-use live_set::LiveSet;
+use super::super::live_set::LiveSet;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ir::analysis::{SemanticFlowGraph, SemanticFlowPoint};

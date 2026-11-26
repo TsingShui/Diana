@@ -15,6 +15,13 @@ pub trait SemanticExpressionTransform {
         true
     }
 
+    /// For an operation with only literal or register children, the transform
+    /// can keep the original shared operation when all its callbacks would be
+    /// identities and none would update the transform's own state.
+    fn preserves_direct_operation(&self, _operation: &SemanticOperation) -> bool {
+        false
+    }
+
     fn transform_register(&mut self, register: RegisterArg) -> SemanticExpression {
         SemanticExpression::Register(register)
     }
@@ -266,6 +273,9 @@ impl SemanticInstructions {
         mut op: SemanticOperation,
         transform: &mut T,
     ) -> SemanticExpression {
+        if transform.preserves_direct_operation(&op) {
+            return SemanticExpression::Operation(op);
+        }
         if transform.visits_registers() {
             for child in op.children_mut() {
                 Self::transform_leaf(child, transform);

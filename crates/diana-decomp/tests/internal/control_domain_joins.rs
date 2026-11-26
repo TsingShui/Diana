@@ -82,3 +82,129 @@ fn growing_and_replayed_joins_keep_one_derivation_each_across_saturation() {
         }
     }
 }
+
+#[test]
+fn collected_proofs_require_the_same_inputs_and_keep_planner_mutations_private() {
+    let cache = DomainProofCache::default();
+    let names = (0..20).map(BoolVariable::Atom).collect::<Vec<_>>();
+    let mut previous = None;
+    for (reverse, conjunction, reuse) in [
+        (false, false, false),
+        (false, false, true),
+        (false, true, false),
+        (true, true, false),
+        (true, true, true),
+    ] {
+        let mut order = names.clone();
+        if reverse {
+            order.reverse();
+        }
+        let mut logic = DomainLogic::ordered(order.into_iter());
+        logic.begin_collection(Some(&cache));
+        let a = logic.symbol(BoolVariable::Atom(2)).unwrap();
+        let b = logic.symbol(BoolVariable::Atom(7)).unwrap();
+        let c = logic.symbol(BoolVariable::Atom(11)).unwrap();
+        let ab = logic.and(a, b).unwrap();
+        let not_a = logic.not(a).unwrap();
+        let nc = logic.and(not_a, c).unwrap();
+        let value = logic.junction(ab, nc, conjunction).unwrap();
+        logic.finish_collection(Some(&cache)).unwrap();
+        let checkpoint = cache.0.lock().unwrap().as_ref().unwrap().bdd.truth();
+        assert_eq!(previous == Some(checkpoint), reuse);
+        previous = Some(checkpoint);
+        assert!(matches!(
+            logic.bdd().and(logic.bdd().truth(), checkpoint),
+            Err(BddError::ForeignHandle)
+        ));
+        // The formula is either (a && b) || (!a && c), or false.
+        for mask in 0..8 {
+            let mut valuation = logic.truth();
+            for (bit, atom) in [a, b, c].into_iter().enumerate() {
+                let literal = if mask & (1 << bit) == 0 {
+                    logic.not(atom).unwrap()
+                } else {
+                    atom
+                };
+                valuation = logic.and(valuation, literal).unwrap();
+            }
+            let expected = !conjunction
+                && if mask & 1 == 1 {
+                    mask & 2 != 0
+                } else {
+                    mask & 4 != 0
+                };
+            assert_eq!(logic.disjoint(valuation, value).unwrap(), !expected);
+        }
+    }
+}
+
+#[test]
+fn collection_checks_an_unknown_symbol_after_the_bounded_prefix() {
+    let names = (0..28).map(BoolVariable::Atom).collect::<BTreeSet<_>>();
+    let cache = DomainProofCache::default();
+    for deferred in [true, false] {
+        let mut unsaturated = DomainLogic::new(&names);
+        if deferred {
+            unsaturated.begin_collection(Some(&cache));
+        }
+        let first = unsaturated.symbol(BoolVariable::Atom(0)).unwrap();
+        let second = unsaturated.symbol(BoolVariable::Atom(14)).unwrap();
+        unsaturated.or(first, second).unwrap();
+        assert!(matches!(
+            unsaturated.symbol(BoolVariable::Atom(99)),
+            Err(DomainError {
+                kind: DomainFailure::Boolean(BddError::UnknownVariable(BoolVariable::Atom(99)))
+            })
+        ));
+
+        // All left-hand variables precede all right-hand variables. The BDD
+        // needs to distinguish the possible left-hand assignments before
+        // testing the matching right-hand bits and reaches the node budget.
+        for check_after_finish in [false, true, true] {
+            let mut logic = DomainLogic::new(&names);
+            if deferred {
+                logic.begin_collection(Some(&cache));
+            }
+            let first = logic.symbol(BoolVariable::Atom(0)).unwrap();
+            let mut equal = logic.truth();
+            for i in 0..14 {
+                let x = logic.symbol(BoolVariable::Atom(i)).unwrap();
+                let y = logic.symbol(BoolVariable::Atom(14 + i)).unwrap();
+                let xy = logic.and(x, y).unwrap();
+                let nx = logic.not(x).unwrap();
+                let ny = logic.not(y).unwrap();
+                let both_clear = logic.and(nx, ny).unwrap();
+                let same = logic.or(xy, both_clear).unwrap();
+                equal = logic.and(equal, same).unwrap();
+            }
+            if check_after_finish {
+                logic.finish_collection(deferred.then_some(&cache)).unwrap();
+                assert!(logic.proof_budget_exhausted());
+            }
+            let unknown = logic.symbol(BoolVariable::Atom(99)).unwrap();
+            assert!(logic.proof_budget_exhausted());
+            assert!(logic.exact(unknown).is_none());
+            assert!(logic.exact(equal).is_none());
+            assert!(logic.covered_by(first, [first]).unwrap());
+        }
+        if deferred {
+            // The new collection ends before the old equality diagram grew
+            // large. It must retain exactly the budget after these three nodes.
+            let mut shorter = DomainLogic::new(&names);
+            shorter.begin_collection(Some(&cache));
+            let x = shorter.symbol(BoolVariable::Atom(0)).unwrap();
+            let y = shorter.symbol(BoolVariable::Atom(14)).unwrap();
+            let xy = shorter.and(x, y).unwrap();
+            shorter.finish_collection(Some(&cache)).unwrap();
+            assert!(!shorter.proof_budget_exhausted());
+            assert!(shorter.implies(xy, x).unwrap());
+            assert!(shorter.exact(xy).is_some());
+            assert!(matches!(
+                shorter.symbol(BoolVariable::Atom(99)),
+                Err(DomainError {
+                    kind: DomainFailure::Boolean(BddError::UnknownVariable(_))
+                })
+            ));
+        }
+    }
+}

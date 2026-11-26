@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
 thread_local! {
-    static DISABLE_TRIVIAL_EARLY_RETURNS: Cell<bool> = const { Cell::new(false) };
+    static METHOD_EARLY_RETURNS: Cell<Option<bool>> = const { Cell::new(None) };
 }
 
 /// Candidate for skip-only shortcuts. Not a license to drop SSA, source
@@ -38,9 +38,12 @@ pub(crate) fn is_straight_line(cfg: &CFG, values: &SsaValueGraph) -> bool {
 ///   can compare printed method text against the unskipped algorithms.
 ///   Any value counts, including `=0`.
 pub(crate) fn trivial_early_returns() -> bool {
-    if DISABLE_TRIVIAL_EARLY_RETURNS.with(Cell::get) {
-        return false;
-    }
+    METHOD_EARLY_RETURNS
+        .with(Cell::get)
+        .unwrap_or_else(configured_early_returns)
+}
+
+fn configured_early_returns() -> bool {
     if std::env::var_os("DEXDEC_TRIVIAL_CROSSCHECK").is_some() {
         return false;
     }
@@ -59,13 +62,25 @@ fn env_flag_disabled(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Resolve process options once for all stages analyzing the same method.
+pub(crate) fn with_method_early_returns<T>(f: impl FnOnce() -> T) -> T {
+    if METHOD_EARLY_RETURNS.with(Cell::get).is_some() {
+        return f();
+    }
+    with_early_returns(configured_early_returns(), f)
+}
+
 pub(crate) fn disable_trivial_early_returns<T>(f: impl FnOnce() -> T) -> T {
-    DISABLE_TRIVIAL_EARLY_RETURNS.with(|flag| {
-        let previous = flag.replace(true);
-        struct Reset(bool);
+    with_early_returns(false, f)
+}
+
+fn with_early_returns<T>(enabled: bool, f: impl FnOnce() -> T) -> T {
+    METHOD_EARLY_RETURNS.with(|flag| {
+        let previous = flag.replace(Some(enabled));
+        struct Reset(Option<bool>);
         impl Drop for Reset {
             fn drop(&mut self) {
-                DISABLE_TRIVIAL_EARLY_RETURNS.with(|flag| flag.set(self.0));
+                METHOD_EARLY_RETURNS.with(|flag| flag.set(self.0));
             }
         }
         let _reset = Reset(previous);

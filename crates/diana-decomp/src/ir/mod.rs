@@ -65,7 +65,7 @@ pub use passes::{Pass, PassResult, PruneUnreachable, ValidateCFG};
 pub use splitter::Splitter;
 
 // Exception handling
-pub(crate) use exception::trivial_early_returns;
+pub(crate) use exception::{trivial_early_returns, with_method_early_returns};
 pub use exception::{
     CatchHandler, ExceptionAnalysis, ExceptionAnalyzer, ExceptionInvariantError, HandlerKind,
     TryRegion,

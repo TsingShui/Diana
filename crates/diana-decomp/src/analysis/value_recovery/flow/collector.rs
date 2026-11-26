@@ -45,9 +45,13 @@ impl<'ir> FlowCollector<'ir> {
     pub(super) fn collect(
         mut self,
         root: &'ir SemanticNode,
+        cache: Option<&super::super::source::SourceFlowCache>,
     ) -> Result<ValueFlowGraph<'ir>, ValueRecoveryError> {
+        let proofs = cache.map(|cache| &cache.proofs);
+        self.graph.logic.begin_collection(proofs);
         self.fallthrough_domains = ControlFallthrough::analyze(root, &mut self.graph.logic)?;
         self.collect_facts(root)?;
+        self.graph.logic.finish_collection(proofs)?;
         Ok(self.graph)
     }
 

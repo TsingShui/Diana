@@ -1,7 +1,7 @@
 //! Structured region formation from predicated semantic fragments.
 
 use crate::ir::{
-    analysis::SsaVar, semantic::SemanticCompletion, BlockId, BoolExpr, BoolVariable, InstructionId,
+    analysis::SsaVar, semantic::SemanticCompletion, BlockId, BoolVariable, InstructionId,
     SemanticBlock, SemanticExpressionFacts, SemanticFoldError, SemanticFolder, SemanticNode,
     SemanticPredicate, SemanticStatement, SemanticVisitor,
 };
@@ -174,6 +174,20 @@ impl PredicateRegionFormation {
         left: &SemanticPredicate,
         right: &SemanticPredicate,
     ) -> Result<bool, ValueRecoveryError> {
+        let (left_atom, left_negated) = left.without_negations();
+        let (right_atom, right_negated) = right.without_negations();
+        if let (SemanticPredicate::Test(first), SemanticPredicate::Test(second)) =
+            (left_atom, right_atom)
+        {
+            // A pair of distinct instructions has at most two symbols. Their
+            // equivalence is exactly the interner's operand comparison.
+            if PredicateEquivalence::instruction(first, second) {
+                return Ok(left_negated == right_negated);
+            }
+            if first.id != second.id {
+                return Ok(false);
+            }
+        }
         match PredicateEquivalence::new(left, right).equivalent(left, right)? {
             Ok(equivalent) => Ok(equivalent),
             Err(error) if error.is_resource_limit() => Ok(false),
@@ -182,6 +196,12 @@ impl PredicateRegionFormation {
     }
 
     fn predicate_is_pure(predicate: &SemanticPredicate) -> bool {
+        let (predicate, _) = predicate.without_negations();
+        match predicate {
+            SemanticPredicate::True | SemanticPredicate::False => return true,
+            SemanticPredicate::Test(test) => return test.effects().without_control().is_pure(),
+            _ => {}
+        }
         let mut pending = vec![predicate];
         while let Some(predicate) = pending.pop() {
             match predicate {
@@ -304,67 +324,10 @@ impl PredicateEquivalence {
         left: &SemanticPredicate,
         right: &SemanticPredicate,
     ) -> Result<Result<bool, crate::ir::bdd::BddError>, SemanticFoldError> {
-        let left = self.expression(left.domain()?)?;
-        let right = self.expression(right.domain()?)?;
+        let symbol = |id| self.symbols.get(&id).cloned();
+        let left = left.domain_with(symbol)?;
+        let right = right.domain_with(symbol)?;
         Ok(left.equivalent(&right))
-    }
-
-    fn expression(&self, expression: BoolExpr) -> Result<BoolExpr, SemanticFoldError> {
-        let mut pending = vec![PredicateRemapTask::Visit(expression)];
-        let mut results = Vec::new();
-        while let Some(task) = pending.pop() {
-            match task {
-                PredicateRemapTask::Visit(expression) => match expression {
-                    BoolExpr::Symbol(BoolVariable::Instruction(instruction)) => {
-                        results.push(BoolExpr::Symbol(
-                            self.symbols
-                                .get(&instruction)
-                                .cloned()
-                                .ok_or(SemanticFoldError::MalformedWorkStack)?,
-                        ));
-                    }
-                    BoolExpr::Not(inner) => {
-                        pending.push(PredicateRemapTask::Not);
-                        pending.push(PredicateRemapTask::Visit(*inner));
-                    }
-                    BoolExpr::And(terms) => {
-                        pending.push(PredicateRemapTask::Junction {
-                            count: terms.len(),
-                            conjunction: true,
-                        });
-                        pending.extend(terms.into_iter().rev().map(PredicateRemapTask::Visit));
-                    }
-                    BoolExpr::Or(terms) => {
-                        pending.push(PredicateRemapTask::Junction {
-                            count: terms.len(),
-                            conjunction: false,
-                        });
-                        pending.extend(terms.into_iter().rev().map(PredicateRemapTask::Visit));
-                    }
-                    expression => results.push(expression),
-                },
-                PredicateRemapTask::Not => {
-                    let inner = results.pop().ok_or(SemanticFoldError::MalformedWorkStack)?;
-                    results.push(BoolExpr::not(inner));
-                }
-                PredicateRemapTask::Junction { count, conjunction } => {
-                    let start = results
-                        .len()
-                        .checked_sub(count)
-                        .ok_or(SemanticFoldError::MalformedWorkStack)?;
-                    let terms = results.drain(start..).collect();
-                    results.push(if conjunction {
-                        BoolExpr::and(terms)
-                    } else {
-                        BoolExpr::or(terms)
-                    });
-                }
-            }
-        }
-        if results.len() != 1 {
-            return Err(SemanticFoldError::MalformedWorkStack);
-        }
-        results.pop().ok_or(SemanticFoldError::MalformedWorkStack)
     }
 
     fn instruction(
@@ -424,12 +387,6 @@ impl PredicateEquivalence {
         }
         true
     }
-}
-
-enum PredicateRemapTask {
-    Visit(BoolExpr),
-    Not,
-    Junction { count: usize, conjunction: bool },
 }
 
 impl SemanticFolder for PredicateRegionFormation {

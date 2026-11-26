@@ -434,18 +434,37 @@ impl SemanticPredicate {
         }
     }
 
-    pub fn domain(&self) -> Result<BoolExpr, SemanticFoldError> {
+    pub(crate) fn without_negations(&self) -> (&Self, bool) {
         let mut root = self;
         let mut negate = false;
         while let Self::Not(inner) = root {
             root = inner;
             negate = !negate;
         }
+        (root, negate)
+    }
+
+    pub fn domain(&self) -> Result<BoolExpr, SemanticFoldError> {
+        self.domain_with(|id| Some(BoolVariable::Instruction(id)))
+    }
+
+    /// Builds the ordered domain in the caller's predicate namespace. Boolean
+    /// normalization depends on constants and junctions, never on symbol names.
+    pub(crate) fn domain_with(
+        &self,
+        symbol: impl Fn(super::InstructionId) -> Option<BoolVariable>,
+    ) -> Result<BoolExpr, SemanticFoldError> {
+        let test_domain = |id| {
+            symbol(id)
+                .map(BoolExpr::Symbol)
+                .ok_or(SemanticFoldError::MalformedWorkStack)
+        };
+        let (root, negate) = self.without_negations();
         let apply_sign = |value| if negate { BoolExpr::not(value) } else { value };
         match root {
             Self::True => return Ok(apply_sign(BoolExpr::True)),
             Self::False => return Ok(apply_sign(BoolExpr::False)),
-            Self::Test(test) => return Ok(apply_sign(BoolExpr::instruction(test.id))),
+            Self::Test(test) => return Ok(apply_sign(test_domain(test.id)?)),
             _ => {}
         }
         let mut pending = vec![PredicateDomainTask::Visit(root)];
@@ -455,7 +474,7 @@ impl SemanticPredicate {
                 PredicateDomainTask::Visit(predicate) => match predicate {
                     Self::True => results.push(BoolExpr::True),
                     Self::False => results.push(BoolExpr::False),
-                    Self::Test(insn) => results.push(BoolExpr::instruction(insn.id)),
+                    Self::Test(insn) => results.push(test_domain(insn.id)?),
                     Self::Not(inner) => {
                         pending.push(PredicateDomainTask::CombineNot);
                         pending.push(PredicateDomainTask::Visit(inner));

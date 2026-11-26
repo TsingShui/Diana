@@ -105,3 +105,61 @@ fn exceptional_and_normal_edges_preserve_distinct_low_and_sparse_registers() {
         }
     }
 }
+
+#[test]
+fn loop_backedges_propagate_word_and_sparse_registers_across_distinct_kill_sets() {
+    // Normal and exceptional successors read disjoint registers. Only writes
+    // before the throwing instruction reach both successors.
+    let registers: Vec<u32> = (0..80).chain([u32::MAX - 3, u32::MAX - 2]).collect();
+    let mut body = Vec::new();
+    for &r in registers.iter().filter(|&&r| r % 3 == 0) {
+        body.push(InsnNode::const_value(RegisterArg::new(r, ArgType::INT), 8));
+    }
+    body.push(InsnNode::array_length(
+        RegisterArg::new(1000, ArgType::INT),
+        InsnArg::reg(2000, ArgType::array(ArgType::INT)),
+    ));
+    for &r in registers.iter().filter(|&&r| r % 3 != 2) {
+        body.push(InsnNode::const_value(RegisterArg::new(r, ArgType::INT), 12));
+    }
+    let mut cfg = CFG::new("mixedLiveness");
+    cfg.add_block(Block::new(0));
+    cfg.add_block(Block::with_instructions(1, 1, body));
+    for (id, parity) in [(2, 0), (3, 1)] {
+        let uses = registers
+            .iter()
+            .filter(|&&r| r % 2 == parity)
+            .map(|&r| {
+                InsnNode::arith(
+                    ArithOp::Add,
+                    RegisterArg::new(3000, ArgType::INT),
+                    InsnArg::reg(r, ArgType::INT),
+                    InsnArg::lit(1, ArgType::INT),
+                    ArgType::INT,
+                )
+            })
+            .collect();
+        cfg.add_block(Block::with_instructions(id, id, uses));
+    }
+    for (from, to, edge) in [
+        (0, 1, EdgeKind::Normal),
+        (1, 2, EdgeKind::Normal),
+        (1, 3, EdgeKind::Exception),
+        (2, 1, EdgeKind::Normal),
+        (3, 1, EdgeKind::Normal),
+    ] {
+        cfg.add_edge(BlockId(from), BlockId(to), edge);
+    }
+    let live = RegisterLiveness::analyze(&cfg);
+    for r in registers {
+        let at_head = r % 3 == 2 || (r % 3 == 1 && r % 2 == 1);
+        assert_eq!(live.is_live_in(BlockId(0), r), at_head);
+        assert_eq!(live.is_live_in(BlockId(1), r), at_head);
+        assert_eq!(live.is_live_in(BlockId(2), r), at_head || r % 2 == 0);
+        assert_eq!(live.is_live_in(BlockId(3), r), at_head || r % 2 == 1);
+        assert_eq!(
+            live.definition_blocks(r).collect::<Vec<_>>(),
+            if r % 3 == 2 { vec![] } else { vec![BlockId(1)] }
+        );
+    }
+}

@@ -272,3 +272,48 @@ fn implication_checks_the_high_proof_before_reporting_a_false_low_cofactor() {
     context.manager.borrow_mut().limits.operations = 0;
     assert_eq!(context.implies_bdd(premise, consequence), Ok(false));
 }
+
+#[test]
+fn fork_rebinds_cached_compounds_and_preserves_the_remaining_cache_budget() {
+    let names = (0..3).map(BoolVariable::Atom).collect::<BTreeSet<_>>();
+    let bdd = BddContext::new(&names);
+    let expression = BoolExpr::And(vec![
+        BoolExpr::Symbol(BoolVariable::Atom(0)),
+        BoolExpr::Or(vec![
+            BoolExpr::Symbol(BoolVariable::Atom(1)),
+            BoolExpr::Symbol(BoolVariable::Atom(2)),
+        ]),
+    ]);
+    let value = bdd.compile(&expression).unwrap();
+    let limit = {
+        let mut manager = bdd.manager.borrow_mut();
+        let used = manager.binary_cache.len() + manager.complements;
+        manager.limits.cache_entries = used;
+        used
+    };
+    let (fork, roots) = bdd.fork([Some(value), None]).unwrap();
+    let copy = roots[0].unwrap();
+    assert_eq!(roots[1], None);
+    assert_ne!(copy, value);
+    assert_eq!(fork.compile(&expression).unwrap(), copy);
+    assert_eq!(fork.and(copy, value), Err(BddError::ForeignHandle));
+    assert!(matches!(
+        bdd.fork([Some(copy)]),
+        Err(BddError::ForeignHandle)
+    ));
+    for (arena, root) in [(&bdd, value), (&fork, copy)] {
+        assert_eq!(
+            arena.implies_bdd(root, root),
+            Err(BddError::ResourceLimit {
+                resource: BddResource::CacheEntries,
+                limit
+            })
+        );
+    }
+    bdd.manager.borrow_mut().limits.cache_entries += 1;
+    assert!(bdd.implies_bdd(value, value).unwrap());
+    assert!(fork
+        .implies_bdd(copy, copy)
+        .unwrap_err()
+        .is_resource_limit());
+}

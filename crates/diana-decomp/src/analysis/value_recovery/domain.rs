@@ -111,8 +111,43 @@ struct DomainRecord {
     complement: Option<ControlDomain>,
 }
 
+/// A collector creates structural domains before the planner observes any
+/// exact proof. These are the successful creating operands, in order. Repeated
+/// structural lookups and terminal shortcuts leave the bounded arena untouched.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProofStep {
+    Symbol(usize),
+    Not(ControlDomain),
+    And([ControlDomain; 2]),
+    Or([ControlDomain; 2]),
+}
+
+struct Collection {
+    steps: Vec<ProofStep>,
+    previous: Option<Box<CollectedProofs>>,
+}
+
+struct CollectedProofs {
+    steps: Vec<ProofStep>,
+    bdd: BddContext,
+    roots: Vec<Option<Bdd>>,
+    saturated: bool,
+}
+
+#[derive(Default)]
+pub(super) struct DomainProofCache(std::sync::Mutex<Option<Box<CollectedProofs>>>);
+
+impl fmt::Debug for DomainProofCache {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DomainProofCache")
+            .finish_non_exhaustive()
+    }
+}
+
 pub(super) struct DomainLogic {
     bdd: OnceCell<BddContext>,
+    collection: Option<Box<Collection>>,
     nodes: Vec<DomainRecord>,
     symbols: BTreeMap<BoolVariable, ControlDomain>,
     joins: foldhash::HashMap<(ControlDomain, ControlDomain, bool), ControlDomain>,
@@ -122,6 +157,7 @@ pub(super) struct DomainLogic {
 }
 
 impl DomainLogic {
+    const MAX_COLLECTION_STEPS: usize = 65_536;
     const TRUE: ControlDomain = ControlDomain(0);
     const FALSE: ControlDomain = ControlDomain(1);
 
@@ -136,6 +172,7 @@ impl DomainLogic {
             OnceCell::from(BddContext::ordered(variables))
         };
         Self {
+            collection: None,
             nodes: Vec::new(),
             symbols: BTreeMap::new(),
             joins: Default::default(),
@@ -151,6 +188,138 @@ impl DomainLogic {
     fn bdd(&self) -> &BddContext {
         self.bdd
             .get_or_init(|| BddContext::ordered(std::iter::empty()))
+    }
+
+    pub(super) fn begin_collection(&mut self, cache: Option<&DomainProofCache>) {
+        // Small Boolean arenas are cheaper to build directly. Only one
+        // previous collection is retained by this method's recovery pipeline.
+        let Some(cache) = cache else { return };
+        let Some(bdd) = self
+            .bdd
+            .get()
+            .filter(|b| (17..=Self::MAX_COLLECTION_STEPS).contains(&b.variable_order().len()))
+        else {
+            return;
+        };
+        let previous = cache
+            .0
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take()
+            .filter(|p| p.bdd.variable_order() == bdd.variable_order());
+        self.collection = Some(Box::new(Collection {
+            steps: Vec::new(),
+            previous,
+        }));
+    }
+
+    pub(super) fn finish_collection(
+        &mut self,
+        cache: Option<&DomainProofCache>,
+    ) -> Result<(), DomainError> {
+        let Some(collection) = self.collection.take() else {
+            return Ok(());
+        };
+        let Collection { steps, previous } = *collection;
+        let snapshot = match previous {
+            // Every creating step matched as it happened. A shorter prefix
+            // has a different budget and must be built in its original order.
+            Some(previous) if steps.len() == previous.steps.len() => {
+                let (bdd, roots) = previous.bdd.fork(previous.roots.iter().copied())?;
+                self.bdd = OnceCell::from(bdd);
+                for (record, proof) in self.nodes.iter_mut().zip(roots) {
+                    record.proof = proof;
+                }
+                self.saturated.set(previous.saturated);
+                previous
+            }
+            different => {
+                if different.is_some() {
+                    drop(different);
+                    self.materialize(&steps)?;
+                }
+                let Some(_) = cache else { return Ok(()) };
+                let (bdd, roots) = self
+                    .bdd()
+                    .fork(self.nodes.iter().map(|record| record.proof))?;
+                Box::new(CollectedProofs {
+                    steps,
+                    bdd,
+                    roots,
+                    saturated: self.saturated.get(),
+                })
+            }
+        };
+        if let Some(cache) = cache {
+            *cache.0.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(snapshot);
+        }
+        Ok(())
+    }
+
+    fn record(&mut self, step: ProofStep) -> Result<bool, DomainError> {
+        let Some(mut collection) = self.collection.take() else {
+            return Ok(false);
+        };
+        // Bound additional recipe space even for a hostile structural DAG much
+        // larger than its method-local BDD budget. Only a previously completed
+        // prefix can be deferred. A novel operation runs at its original site.
+        let full = collection.steps.len() >= Self::MAX_COLLECTION_STEPS;
+        if collection.previous.as_ref().is_some_and(|previous| {
+            full || previous.steps.get(collection.steps.len()) != Some(&step)
+        }) {
+            collection.previous = None;
+            self.materialize(&collection.steps)?;
+        }
+        if full {
+            return Ok(false);
+        }
+        let reused = collection.previous.is_some();
+        collection.steps.push(step);
+        self.collection = Some(collection);
+        Ok(reused)
+    }
+
+    fn flush_collection(&mut self) -> Result<(), DomainError> {
+        if let Some(collection) = self.collection.take() {
+            if collection.previous.is_some() {
+                let Collection { steps, previous } = *collection;
+                drop(previous);
+                self.materialize(&steps)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn materialize(&mut self, steps: &[ProofStep]) -> Result<(), DomainError> {
+        for (i, &step) in steps.iter().enumerate() {
+            if self.saturated.get() {
+                break;
+            }
+            let proof = match step {
+                ProofStep::Symbol(index) => {
+                    let bdd = self.bdd();
+                    let name = bdd
+                        .variable_order()
+                        .get(index)
+                        .ok_or_else(DomainError::malformed_evaluation)?;
+                    self.proof(bdd.compile_literal(name, true))?
+                }
+                ProofStep::Not(domain) => match self.exact(domain) {
+                    Some(proof) => self.proof(self.bdd().not(proof))?,
+                    None => None,
+                },
+                ProofStep::And(pair) | ProofStep::Or(pair) => {
+                    let conjunction = matches!(step, ProofStep::And(_));
+                    let terms = self.nodes[i]
+                        .node
+                        .terms(conjunction)
+                        .ok_or_else(DomainError::malformed_evaluation)?;
+                    self.junction_proof(terms, conjunction, pair)?
+                }
+            };
+            self.nodes[i].proof = proof;
+        }
+        Ok(())
     }
 
     pub(super) fn proof_budget_exhausted(&self) -> bool {
@@ -252,9 +421,15 @@ impl DomainLogic {
                 if let Some(complement) = record.complement {
                     return Ok(complement);
                 }
-                let proof = match (self.saturated.get(), record.proof) {
-                    (false, Some(value)) => self.proof(self.bdd().not(value))?,
-                    _ => None,
+                let proof = if self.collection.is_some() && self.record(ProofStep::Not(domain))? {
+                    None
+                } else if !self.saturated.get() {
+                    match self.nodes[index].proof {
+                        Some(value) => self.proof(self.bdd().not(value))?,
+                        None => None,
+                    }
+                } else {
+                    None
                 };
                 let complement = self.push_node(DomainNode::Not(domain), proof, Some(domain))?;
                 self.nodes[index].complement = Some(complement);
@@ -467,10 +642,20 @@ impl DomainLogic {
         if let Some(domain) = self.symbols.get(&symbol).copied() {
             return Ok(domain);
         }
-        let proof = if self.saturated.get() {
+        let mut deferred = false;
+        if self.collection.is_some() {
+            if let Some(index) = self.bdd().variable_index(&symbol) {
+                deferred = self.record(ProofStep::Symbol(index))?;
+            } else {
+                // An unknown variable is a construction error unless earlier
+                // operations exhausted the arena. Determine that at this site.
+                self.flush_collection()?;
+            }
+        }
+        let proof = if deferred || self.saturated.get() {
             None
         } else {
-            self.proof(self.bdd().compile(&BoolExpr::Symbol(symbol.clone())))?
+            self.proof(self.bdd().compile_literal(&symbol, true))?
         };
         let domain = self.push_node(DomainNode::Symbol, proof, None)?;
         self.symbols.insert(symbol, domain);
@@ -527,7 +712,7 @@ impl DomainLogic {
             // After the containment check a two-term union can only be
             // formed from its two singleton operands, in either order.
             let pair = [input_pair.0, input_pair.1];
-            let proof = self.junction_proof(&pair, conjunction, [left, right])?;
+            let proof = self.new_junction_proof(&pair, conjunction, [left, right])?;
             let node = if conjunction {
                 DomainNode::AndPair(pair)
             } else {
@@ -544,7 +729,7 @@ impl DomainLogic {
             if let Some(&domain) = index.get(terms.as_slice()) {
                 return Ok(domain);
             }
-            let proof = self.junction_proof(&terms, conjunction, [left, right])?;
+            let proof = self.new_junction_proof(&terms, conjunction, [left, right])?;
             let terms: Rc<[ControlDomain]> = terms.into();
             let node = if conjunction {
                 DomainNode::And(Rc::clone(&terms))
@@ -599,6 +784,25 @@ impl DomainLogic {
         result.extend_from_slice(left);
         result.extend_from_slice(right);
         result
+    }
+
+    fn new_junction_proof(
+        &mut self,
+        terms: &[ControlDomain],
+        conjunction: bool,
+        operands: [ControlDomain; 2],
+    ) -> Result<Option<Bdd>, DomainError> {
+        if self.collection.is_some() {
+            let step = if conjunction {
+                ProofStep::And(operands)
+            } else {
+                ProofStep::Or(operands)
+            };
+            if self.record(step)? {
+                return Ok(None);
+            }
+        }
+        self.junction_proof(terms, conjunction, operands)
     }
 
     fn junction_proof(

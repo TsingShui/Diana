@@ -13,7 +13,7 @@ mod reaching;
 pub(super) use edges::GraphIndex;
 use index::PointNumbers;
 use reaching::{BlockReaching, LinearReaching};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
 use crate::ir::{
     RegionId, SemanticExpression, SemanticLabel, SemanticLeave, SemanticLeaveKind,
@@ -47,9 +47,11 @@ pub enum SemanticFlowEdgeKind {
     FinallyOverride,
 }
 
-#[derive(Debug, Clone, Default)]
+type LazyGraphIndex = LazyLock<GraphIndex, Box<dyn FnOnce() -> GraphIndex + Send + Sync>>;
+
+#[derive(Debug, Clone)]
 pub struct SemanticFlowGraph {
-    index: Arc<GraphIndex>,
+    index: Arc<LazyGraphIndex>,
     complete: bool,
     reachability: OnceLock<SemanticReachability>,
     linear_order: OnceLock<Option<LinearOrder>>,
@@ -643,7 +645,26 @@ impl SparseReachability {
     }
 }
 
+impl Default for SemanticFlowGraph {
+    fn default() -> Self {
+        Self::with_index(false, GraphIndex::default)
+    }
+}
+
 impl SemanticFlowGraph {
+    fn with_index(
+        complete: bool,
+        build: impl FnOnce() -> GraphIndex + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            index: Arc::new(LazyLock::new(Box::new(build))),
+            complete,
+            reachability: OnceLock::new(),
+            linear_order: OnceLock::new(),
+            last_reaching: OnceLock::new(),
+        }
+    }
+
     pub fn analyze(root: &SemanticNode) -> Self {
         SemanticFlowBuilder::new().build(root)
     }
@@ -661,7 +682,8 @@ impl SemanticFlowGraph {
     }
 
     pub(super) fn ordered_points(&self) -> impl Iterator<Item = SemanticFlowPoint> + Clone + '_ {
-        (0..self.index.points.len()).map(|node| self.index.points.point(node))
+        let index = self.index();
+        (0..index.points.len()).map(|node| index.points.point(node))
     }
 
     pub fn successors(&self, point: SemanticFlowPoint) -> &[SemanticFlowPoint] {
@@ -693,16 +715,17 @@ impl SemanticFlowGraph {
         if self.linear_order().is_some() {
             return self.indexed_reachability().reaches(source, target);
         }
-        let (Some(from), Some(to)) = (self.index.id(source), self.index.id(target)) else {
+        let index = self.index();
+        let (Some(from), Some(to)) = (index.id(source), index.id(target)) else {
             return false;
         };
-        let mut visited = vec![false; self.index.len()];
+        let mut visited = vec![false; index.len()];
         let mut pending = vec![from];
         while let Some(node) = pending.pop() {
             if std::mem::replace(&mut visited[node], true) {
                 continue;
             }
-            let successors = self.index.successors(node);
+            let successors = index.successors(node);
             if successors.contains(&to) {
                 return true;
             }
@@ -740,22 +763,21 @@ impl SemanticFlowGraph {
     fn linear_order(&self) -> Option<&LinearOrder> {
         self.linear_order
             .get_or_init(|| {
-                if self.index.entries.len() != 1
-                    || self.index.successor_count() != self.index.len() - 1
-                {
+                let index = self.index();
+                if index.entries.len() != 1 || index.successor_count() != index.len() - 1 {
                     return None;
                 }
-                let count = self.index.points.len();
-                let mut point = *self.index.entries.first()?;
+                let count = index.points.len();
+                let mut point = *index.entries.first()?;
                 let mut ranks = vec![0; count];
                 for rank in 0..count - 1 {
                     ranks[point] = rank;
-                    let [next] = self.index.successors(point) else {
+                    let [next] = index.successors(point) else {
                         return None;
                     };
                     point = *next;
                 }
-                if !self.index.successors(point).is_empty() {
+                if !index.successors(point).is_empty() {
                     return None;
                 }
                 ranks[point] = count - 1;
@@ -771,9 +793,10 @@ impl SemanticFlowGraph {
         &self,
     ) -> Option<impl Iterator<Item = SemanticFlowPoint> + '_> {
         let last = self.linear_order()?.last;
+        let index = self.index();
         Some(
-            std::iter::successors(Some(last), |&node| self.index.predecessors(node).next())
-                .map(|node| self.index.point(node)),
+            std::iter::successors(Some(last), |&node| index.predecessors(node).next())
+                .map(|node| index.point(node)),
         )
     }
 
@@ -1298,13 +1321,13 @@ impl SemanticFlowBuilder {
     }
 
     fn finish(self, entries: &[SemanticFlowPoint]) -> SemanticFlowGraph {
-        SemanticFlowGraph {
-            index: Arc::new(GraphIndex::new(&self.edges, entries)),
-            complete: self.complete,
-            reachability: OnceLock::new(),
-            linear_order: OnceLock::new(),
-            last_reaching: OnceLock::new(),
-        }
+        // SSA can establish operand stability from a complete semantic flow
+        // without querying any adjacency. Retain the original edges until a
+        // graph query needs point numbering or either direction of the index.
+        let entries = smallvec::SmallVec::<[_; 1]>::from_slice(entries);
+        SemanticFlowGraph::with_index(self.complete, move || {
+            GraphIndex::new(&self.edges, &entries)
+        })
     }
 
     fn schedule<'a>(

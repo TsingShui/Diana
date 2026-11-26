@@ -38,7 +38,7 @@ impl<'a> MethodBodyPipeline<'a> {
     }
 
     pub(super) fn analyze(&self, cfg: &mut CFG) -> Result<MethodBodyAnalysis, JavaDecompilerError> {
-        self.analyze_impl(cfg)
+        crate::ir::with_method_early_returns(|| self.analyze_impl(cfg))
     }
 
     fn analyze_impl(&self, cfg: &mut CFG) -> Result<MethodBodyAnalysis, JavaDecompilerError> {

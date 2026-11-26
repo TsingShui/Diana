@@ -1026,7 +1026,32 @@ impl SemanticExpressionTransform for SiteSubstitution<'_> {
     }
 }
 
+impl ValueSubstitution<'_> {
+    fn discards_result(&self, operation: &SemanticOperation) -> bool {
+        operation
+            .result
+            .as_ref()
+            .and_then(|register| self.identity.key(register))
+            .is_some_and(|key| self.discarded_results.contains(&key))
+    }
+}
+
 impl SemanticExpressionTransform for ValueSubstitution<'_> {
+    fn preserves_direct_operation(&self, operation: &SemanticOperation) -> bool {
+        !self.discards_result(operation)
+            && !operation
+                .operands()
+                .iter()
+                .chain(operation.compound_target())
+                .any(|value| match value {
+                    SemanticExpression::Register(register) => self
+                        .identity
+                        .key(register)
+                        .is_some_and(|key| self.replacements.contains_key(&key)),
+                    _ => false,
+                })
+    }
+
     fn transform_register(&mut self, register: RegisterArg) -> SemanticExpression {
         let replacement = self
             .identity
@@ -1038,12 +1063,7 @@ impl SemanticExpressionTransform for ValueSubstitution<'_> {
     }
 
     fn transform_operation(&mut self, mut operation: SemanticOperation) -> SemanticExpression {
-        let discard = operation
-            .result
-            .as_ref()
-            .and_then(|register| self.identity.key(register))
-            .is_some_and(|key| self.discarded_results.contains(&key));
-        if discard {
+        if self.discards_result(&operation) {
             operation.discard_result();
             self.changed = true;
         }

@@ -11,6 +11,7 @@ mod dominator_tree;
 mod effects;
 mod evaluation;
 mod lexical_boundary;
+mod live_set;
 mod objects;
 mod post_dominators;
 mod reaching_conditions;

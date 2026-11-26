@@ -28,6 +28,7 @@ mod tests;
 
 #[derive(Debug, Default)]
 pub(super) struct SourceFlowCache {
+    pub(super) proofs: super::domain::DomainProofCache,
     entry: Mutex<Option<StoredFlow>>,
 }
 

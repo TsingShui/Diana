@@ -459,3 +459,27 @@ fn occurrence_numbers_match_ordered_site_identities_across_holes_and_overflow() 
         }
     }
 }
+
+#[test]
+fn completeness_is_available_before_clones_share_the_frozen_adjacency() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let builds = Arc::new(AtomicUsize::new(0));
+    let count = Arc::clone(&builds);
+    let graph = super::super::SemanticFlowGraph::with_index(false, move || {
+        count.fetch_add(1, Ordering::Relaxed);
+        super::super::GraphIndex::new(
+            &[(point(0), point(1), SemanticFlowEdgeKind::Normal)],
+            &[point(0)],
+        )
+    });
+    assert!(!graph.is_complete());
+    let copy = graph.clone();
+    assert_eq!(builds.load(Ordering::Relaxed), 0);
+    std::thread::scope(|scope| {
+        scope.spawn(|| assert_eq!(copy.successors(point(0)), &[point(1)]));
+        assert_eq!(graph.predecessors(point(1)).next(), Some(point(0)));
+    });
+    assert_eq!(builds.load(Ordering::Relaxed), 1);
+}

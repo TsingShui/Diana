@@ -423,14 +423,15 @@ impl<'a> JavaTypeRelations<'a> {
                 return true;
             }
         }
-        let erased_subtype = source_erasure
-            .as_ref()
-            .zip(target_erasure.as_ref())
-            .is_some_and(|(source, target)| {
-                self.hierarchy
-                    .is_some_and(|hierarchy| hierarchy.is_subtype(source, target))
-            });
-        if erased_subtype && Self::class_is_reifiable(target) {
+        if Self::class_is_reifiable(target)
+            && source_erasure
+                .as_ref()
+                .zip(target_erasure.as_ref())
+                .is_some_and(|(source, target)| {
+                    self.hierarchy
+                        .is_some_and(|hierarchy| hierarchy.is_subtype(source, target))
+                })
+        {
             return true;
         }
         let projected;

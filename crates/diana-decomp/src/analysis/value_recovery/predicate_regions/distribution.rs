@@ -5,7 +5,7 @@ use crate::ir::{
     analysis::SsaVar,
     bdd::{Bdd, BddContext, BddError},
     semantic::SemanticCompletion,
-    BoolExpr, BoolVariable, InstructionId, SemanticFoldError, SemanticNode, SemanticOperand,
+    BoolVariable, InstructionId, SemanticFoldError, SemanticNode, SemanticOperand,
     SemanticOperation, SemanticPredicate,
 };
 
@@ -91,6 +91,12 @@ impl GuardDistribution {
     }
 
     fn predicate_cost(predicate: &SemanticPredicate) -> usize {
+        let (atom, negated) = predicate.without_negations();
+        match atom {
+            SemanticPredicate::Test(_) => return 1 + usize::from(negated),
+            SemanticPredicate::True | SemanticPredicate::False => return 1,
+            _ => {}
+        }
         predicate
             .domain()
             .map(|value| value.node_count())
@@ -244,68 +250,11 @@ impl PredicateDomain {
     }
 
     fn compile(&self, predicate: &SemanticPredicate) -> Result<Bdd, BddError> {
-        let expression = self
-            .expression(
-                predicate
-                    .domain()
-                    .map_err(|_| BddError::MalformedEvaluation)?,
-            )
-            .ok_or(BddError::MalformedEvaluation)?;
+        let expression = predicate
+            .domain_with(|id| self.symbols.get(&id).cloned())
+            .map_err(|_| BddError::MalformedEvaluation)?;
         self.bdd.compile(&expression)
     }
-
-    fn expression(&self, expression: BoolExpr) -> Option<BoolExpr> {
-        let mut pending = vec![ExpressionTask::Visit(expression)];
-        let mut results = Vec::new();
-        while let Some(task) = pending.pop() {
-            match task {
-                ExpressionTask::Visit(expression) => match expression {
-                    BoolExpr::Symbol(BoolVariable::Instruction(instruction)) => {
-                        results.push(BoolExpr::Symbol(self.symbols.get(&instruction)?.clone()));
-                    }
-                    BoolExpr::Not(inner) => {
-                        pending.push(ExpressionTask::Not);
-                        pending.push(ExpressionTask::Visit(*inner));
-                    }
-                    BoolExpr::And(terms) => {
-                        pending.push(ExpressionTask::Junction {
-                            count: terms.len(),
-                            conjunction: true,
-                        });
-                        pending.extend(terms.into_iter().rev().map(ExpressionTask::Visit));
-                    }
-                    BoolExpr::Or(terms) => {
-                        pending.push(ExpressionTask::Junction {
-                            count: terms.len(),
-                            conjunction: false,
-                        });
-                        pending.extend(terms.into_iter().rev().map(ExpressionTask::Visit));
-                    }
-                    expression => results.push(expression),
-                },
-                ExpressionTask::Not => {
-                    let inner = results.pop()?;
-                    results.push(BoolExpr::not(inner));
-                }
-                ExpressionTask::Junction { count, conjunction } => {
-                    let start = results.len().checked_sub(count)?;
-                    let terms = results.drain(start..).collect();
-                    results.push(if conjunction {
-                        BoolExpr::and(terms)
-                    } else {
-                        BoolExpr::or(terms)
-                    });
-                }
-            }
-        }
-        (results.len() == 1).then(|| results.pop()).flatten()
-    }
-}
-
-enum ExpressionTask {
-    Visit(BoolExpr),
-    Not,
-    Junction { count: usize, conjunction: bool },
 }
 
 struct PathInjector<'a> {

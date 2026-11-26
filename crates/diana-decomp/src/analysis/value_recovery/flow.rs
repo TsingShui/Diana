@@ -490,6 +490,7 @@ impl<'ir> ValueFlowGraph<'ir> {
             values,
             canonical,
             Some(ScheduledFlow::new(root, None)),
+            None,
             ControlSymbolClosure::analyze(root),
         )
     }
@@ -526,6 +527,7 @@ impl<'ir> ValueFlowGraph<'ir> {
             values,
             canonical,
             Some(ScheduledFlow::new(root, Some(cache))),
+            Some(cache),
             symbols,
         )?)
     }
@@ -534,12 +536,14 @@ impl<'ir> ValueFlowGraph<'ir> {
         root: &'ir SemanticNode,
         values: &'ir SsaValueGraph,
         canonical: &'ir BTreeMap<SsaVar, InsnArg>,
+        cache: &SourceFlowCache,
     ) -> Result<Self, ValueRecoveryError> {
         Self::build_ssa(
             root,
             values,
             canonical,
             None,
+            Some(cache),
             ControlSymbolClosure::analyze(root),
         )
     }
@@ -549,6 +553,7 @@ impl<'ir> ValueFlowGraph<'ir> {
         values: &'ir SsaValueGraph,
         canonical: &'ir BTreeMap<SsaVar, InsnArg>,
         semantic_flow: Option<ScheduledFlow<'ir>>,
+        cache: Option<&SourceFlowCache>,
         symbols: ControlSymbolClosure<'_>,
     ) -> Result<Self, ValueRecoveryError> {
         let logic = DomainLogic::ordered(symbols.tests.variables());
@@ -576,7 +581,7 @@ impl<'ir> ValueFlowGraph<'ir> {
             identity_statements: Vec::new(),
             semantic_flow,
         };
-        let mut graph = FlowCollector::new(graph).collect(root)?;
+        let mut graph = FlowCollector::new(graph).collect(root, cache)?;
         graph.copies = SsaCopyFlow::analyze(values, &graph.definitions);
         graph.validate(values)?;
         Ok(graph)
@@ -641,7 +646,7 @@ impl<'ir> ValueFlowGraph<'ir> {
             identity_statements: Vec::new(),
             semantic_flow: Some(ScheduledFlow::new(root, cache)),
         };
-        FlowCollector::new(graph).collect(root)
+        FlowCollector::new(graph).collect(root, cache)
     }
 
     pub(super) fn attach_semantic_flow(
