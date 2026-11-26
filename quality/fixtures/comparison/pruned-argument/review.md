@@ -1,0 +1,7 @@
+# Semantic review
+
+The old helper's get-class output names two arguments but references only the first. The new helper has exactly one argument. Both call Integer.reverse first, store the XOR result in one local and add Integer.bitCount of that same local to it. Reading both expressions exposes the independent literal edit and the lack of dependency on the removed argument. The four caller outputs show highestOneBit or reverseBytes applied after the helper returns. Each old call passes 7 as its second argument, whereas each new call has a single original argument.
+
+The bitCount and reverse operations and the two externally distinguishable callers provide corroborating evidence despite the prototype disagreement. The independent outcomes at zero exercise the observable literal change and show why an equal highestOneBit result is insufficient on its own. All scenarios were reviewed on actual get-class output against Smali. No Android execution was performed.
+
+The revised comparison recovered the helper correspondence, the prototype change from (II)I to (I)I and the input register words changing from two to one. The changed XOR is located at offset 4 on both sides. Both public caller results retain the old two-word and new one-word invokes at offset 1, including the different target signatures. These observations account for the confirmed paths without labeling an unrelated method as the removed argument's replacement.

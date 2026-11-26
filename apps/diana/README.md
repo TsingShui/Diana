@@ -20,6 +20,7 @@ get-method  Decompile one method
 outline-class   Show class members and structured method outlines
 outline-method  Show one method outline, with optional call expansion
 entries     List physical archive entries
+diff        Compare DEX methods in two APK or standalone DEX inputs
 export      Export all root DEX classes and APK resources to a new directory
 extract     Extract one physical entry
 strings     List original string values
@@ -120,6 +121,49 @@ CPU count, capped by the number of roots. Workers claim roots dynamically, with
 larger query roots started first. Logical headers within a root retain their own
 identities. `get-class --jobs` instead sets Engine's
 method worker count; its default is one. Explicit job counts must be positive.
+
+## Comparing two versions
+
+```sh
+diana diff old.apk new.apk
+diana diff old.dex new.dex --format json -o changes.json --jobs 4
+```
+
+`diff OLD NEW` compares methods across the root DEX images of both inputs.
+It accepts APKs and standalone DEX files and reads checked DEX facts directly.
+Each method location includes its original signature and an `at` locator.
+Pass an old locator to `get-method` on the old input and a new locator to
+`get-method` on the new input.
+
+Text and JSON carry the full comparison. JSON schema 1 includes the input
+labels, method counts, candidate-pair count, matched pairs with their evidence
+and changes, unresolved groups, matching fragments and local issues. Change
+sites and fragments use DEX code-unit offsets within their respective methods.
+The evidence list identifies what supported a pairing, such as normalized
+instructions, a rare reference, a paired owner or paired callers and callees.
+An original signature can contribute evidence. Independently paired structure
+and references can establish a correspondence after renaming or relocation.
+A change to parameter shape requires both body evidence and a paired caller.
+
+Read `unchanged` and `changed` as comparisons of the inspected method facts.
+The old and new signatures remain visible when the normalized bodies agree.
+Instruction comparisons retain constants, argument order, branch destinations
+and ordered exception handlers. Different bytecode for equivalent source can
+still appear as a change.
+`unknown` retains any observed changes alongside local issues.
+An unmatched method has no established counterpart. An ambiguous group retains
+potential counterparts on both sides. An unavailable group includes a method
+or inventory whose inspection stopped. A fragment records an instruction range
+from an unmatched old method that corresponds to a range in a new caller.
+When the surrounding calls and the fragment both correspond, this evidence
+can pair the enclosing methods across a static inline. Optimizer outlining
+can separate the instructions into several methods and leave the fragment
+relationship unresolved.
+
+Ordinary differences exit 0. A comparison with local read issues publishes the
+available result and exits 1.
+An output file can replace an existing regular file when it is distinct from
+both inputs.
 
 ## Directory export
 

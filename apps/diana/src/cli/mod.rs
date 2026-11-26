@@ -5,6 +5,7 @@
 //! rendering stop retains its prefix but exits nonzero; a sink failure does not
 //! replace an existing output file.
 
+mod diff;
 mod export;
 mod extract_cli;
 mod get;
@@ -37,6 +38,7 @@ const AFTER_HELP: &str = "Examples:
   diana xref app.apk string Authorization
   diana manifest app.apk
   diana export app.apk -o project
+  diana diff old.apk new.apk
 Copy classes.at to get-class, methods.at to get-method/outline-method; locators (entry:index) skip the APK-wide scan.
 Root DEX only: classes.dex and classes<N>.dex at the archive root, or a bare DEX; DEX in assets/, res/raw/ or nested archives needs extract, then a bare-DEX run.
 Lists show 50 rows by default and warn on truncation; --no-limit reaches several MB on a large APK, so prefer --filter or -o.
@@ -59,6 +61,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Compare DEX methods across two APK or standalone DEX inputs
+    #[command(
+        long_about = "Compare DEX methods in OLD and NEW. Reports paired methods, evidence for each pairing, changes within methods, unresolved groups, matching fragments and local read issues. Each method locator belongs to its own input. APK scans include classes.dex and classes<N>.dex at the archive root."
+    )]
+    Diff(diff::Args),
     /// Print the Diana Agent Skill, or install it with -i
     Skill {
         #[arg(short = 'i', long)]
@@ -376,6 +383,7 @@ enum MethodRelationArg {
 pub fn run() -> std::process::ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
+        Command::Diff(args) => diff::run(args),
         Command::Skill { install } => skill::run(install),
         Command::Resources {
             input,

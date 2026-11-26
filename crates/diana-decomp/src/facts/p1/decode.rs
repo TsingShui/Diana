@@ -27,6 +27,22 @@ impl<'a> ProgramIndex<'a> {
         &self,
         source: &MethodSource<'_, 'a>,
     ) -> Result<DecodedOutcome<'a>, MethodError> {
+        let mut outcome = self.disassemble_method_source(source)?;
+        if let Some(decoded) = &mut outcome.decoded {
+            match super::ir::build(decoded) {
+                Ok(ir) => decoded.set_ir(ir),
+                Err(error) => decoded.set_ir_error(error),
+            }
+        }
+        Ok(outcome)
+    }
+
+    /// Publishes the checked original instruction directory, references and
+    /// protection. Bytecode consumers need no recovery IR or inferred source.
+    pub fn disassemble_method_source(
+        &self,
+        source: &MethodSource<'_, 'a>,
+    ) -> Result<DecodedOutcome<'a>, MethodError> {
         let RawPrintable::Method(code) = source.raw() else {
             return Err(MethodError::InternalInvariant(
                 "P1 was asked to decode a declaration-only source",
@@ -63,7 +79,7 @@ impl<'a> ProgramIndex<'a> {
             Ok(declaration) => declaration,
             Err(error) => return outcome(code, items, error),
         };
-        let mut decoded = crate::input::ProgramIndex::assemble_decoded(
+        let decoded = crate::input::ProgramIndex::assemble_decoded(
             code,
             layout,
             protection,
@@ -81,10 +97,6 @@ impl<'a> ProgramIndex<'a> {
                 issues: references.issues,
             },
         );
-        match super::ir::build(&decoded) {
-            Ok(ir) => decoded.set_ir(ir),
-            Err(error) => decoded.set_ir_error(error),
-        }
         Ok(DecodedOutcome {
             decoded: Some(decoded),
             prefix: Vec::new(),

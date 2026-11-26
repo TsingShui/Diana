@@ -117,7 +117,7 @@ impl<'a> ProgramIndex<'a> {
 
     /// Opens the directory position already selected by the class request.
     /// Selecting through the owning facts keeps the member bound to this class.
-    pub(crate) fn method_source_by_ordinal<'i>(
+    pub fn method_source_by_ordinal<'i>(
         &'i self,
         facts: &'i crate::p0::ClassFacts,
         ordinal: usize,
