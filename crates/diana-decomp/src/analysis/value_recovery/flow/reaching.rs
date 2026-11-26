@@ -13,7 +13,7 @@ use crate::ir::analysis::{
 
 pub(super) struct SemanticReachingAnalysis<'a> {
     graph: &'a ValueFlowGraph<'a>,
-    model: ReachingModel<'a>,
+    model: OnceCell<ReachingModel<'a>>,
 }
 
 enum ReachingModel<'a> {
@@ -61,20 +61,25 @@ impl SourceReaching {
 
 impl<'a> SemanticReachingAnalysis<'a> {
     pub(super) fn new(graph: &'a ValueFlowGraph<'a>) -> Self {
-        let Some(flow) = graph.semantic_flow().filter(|flow| flow.is_complete()) else {
-            return Self {
-                graph,
-                model: ReachingModel::Incomplete,
+        Self {
+            graph,
+            model: OnceCell::new(),
+        }
+    }
+
+    fn model(&self) -> &ReachingModel<'a> {
+        self.model.get_or_init(|| {
+            let Some(flow) = self.graph.semantic_flow().filter(|flow| flow.is_complete()) else {
+                return ReachingModel::Incomplete;
             };
-        };
-        let model = match graph.identity() {
-            ValueIdentity::Ssa => ReachingModel::Ssa(flow),
-            ValueIdentity::Source => ReachingModel::Source {
-                flow,
-                reaching: OnceCell::new(),
-            },
-        };
-        Self { graph, model }
+            match self.graph.identity() {
+                ValueIdentity::Ssa => ReachingModel::Ssa(flow),
+                ValueIdentity::Source => ReachingModel::Source {
+                    flow,
+                    reaching: OnceCell::new(),
+                },
+            }
+        })
     }
 
     fn has_complete_definitions(&self, key: SsaVar) -> bool {
@@ -93,7 +98,7 @@ impl<'a> SemanticReachingAnalysis<'a> {
         if !self.has_complete_definitions(key) {
             return Err(ValueRecoveryError::MissingDefinitionSite(key));
         }
-        match &self.model {
+        match self.model() {
             ReachingModel::Ssa(flow) => {
                 let reachability = flow.indexed_reachability();
                 let definitions = &self.graph.definitions[&key];
@@ -134,7 +139,7 @@ impl<'a> SemanticReachingAnalysis<'a> {
         if !self.has_complete_definitions(key) {
             return false;
         }
-        match &self.model {
+        match self.model() {
             ReachingModel::Ssa(_) => true,
             ReachingModel::Source { flow, reaching } => {
                 let reaching = reaching.get_or_init(|| SourceReaching::analyze(self.graph, flow));
@@ -149,7 +154,7 @@ impl<'a> SemanticReachingAnalysis<'a> {
     }
 
     pub(super) fn supports(&self, source: SemanticFlowPoint, target: SemanticFlowPoint) -> bool {
-        source != target && !matches!(&self.model, ReachingModel::Incomplete)
+        source != target && !matches!(self.model(), ReachingModel::Incomplete)
     }
 }
 
@@ -374,7 +379,7 @@ mod tests {
             ),
         ]);
         SemanticSiteNumbering::assign(&mut root).unwrap();
-        let graph = ValueFlowGraph::build_source(&root, &BTreeSet::new(), &mut None).unwrap();
+        let graph = ValueFlowGraph::build_source(&root, &BTreeSet::new()).unwrap();
         let key = SsaVar::new(variable, 0);
         let definitions = &graph.definitions[&key];
         let uses = &graph.uses[&key];

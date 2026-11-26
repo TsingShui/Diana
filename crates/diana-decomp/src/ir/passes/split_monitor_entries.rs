@@ -226,7 +226,7 @@ mod tests {
 
     fn finally_marker(name: &str) -> InsnNode {
         let mut instruction = InsnNode::invoke(InvokeType::Static, 0, Vec::new());
-        instruction.payload.reference = Some(Box::new(MemberReference::Method(
+        instruction.payload.reference = Some(std::sync::Arc::new(MemberReference::Method(
             format!("Lkotlin/jvm/internal/InlineMarker;->{name}(I)V")
                 .parse::<MethodReference>()
                 .unwrap(),

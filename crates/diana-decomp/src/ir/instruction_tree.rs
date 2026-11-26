@@ -87,7 +87,50 @@ impl InstructionTree {
         }
     }
 
+    /// Edit register uses without rebuilding argument vectors. Wrapped result
+    /// definitions belong to their instruction; only operands and the compound
+    /// target participate in the same use walk as `visit_args`.
+    pub(crate) fn edit_register_uses(
+        instruction: &mut InsnNode,
+        mut edit: impl FnMut(&mut RegisterArg),
+    ) {
+        let mut pending = smallvec::SmallVec::<[&mut InsnArg; 4]>::new();
+        for mut argument in instruction
+            .args
+            .iter_mut()
+            .chain(instruction.payload.compound_target.as_deref_mut())
+        {
+            loop {
+                match argument {
+                    InsnArg::Reg(register) => edit(register),
+                    InsnArg::Lit(_) => {}
+                    InsnArg::Wrapped(shared) => {
+                        let nested = std::sync::Arc::make_mut(shared);
+                        pending.extend(nested.payload.compound_target.as_deref_mut());
+                        pending.extend(nested.args.iter_mut().rev());
+                    }
+                }
+                let Some(next) = pending.pop() else { break };
+                argument = next;
+            }
+        }
+    }
+
     pub fn transform_arg<T>(
+        argument: InsnArg,
+        transform: &mut T,
+    ) -> Result<InsnArg, InstructionTreeError>
+    where
+        T: InstructionTransform + ?Sized,
+    {
+        match argument {
+            InsnArg::Reg(register) => Ok(transform.transform_register(register)),
+            InsnArg::Lit(_) => Ok(argument),
+            InsnArg::Wrapped(_) => Self::transform_tree(argument, transform),
+        }
+    }
+
+    fn transform_tree<T>(
         argument: InsnArg,
         transform: &mut T,
     ) -> Result<InsnArg, InstructionTreeError>
@@ -104,7 +147,7 @@ impl InstructionTree {
                     }
                     InsnArg::Lit(literal) => results.push(InsnArg::Lit(literal)),
                     InsnArg::Wrapped(instruction) => {
-                        let mut instruction = (*instruction).clone();
+                        let mut instruction = std::sync::Arc::unwrap_or_clone(instruction);
                         let argument_count = instruction.args.len();
                         let has_target = instruction.payload.compound_target.is_some();
                         let mut children = std::mem::take(&mut instruction.args);
@@ -133,8 +176,7 @@ impl InstructionTree {
                         .len()
                         .checked_sub(child_count)
                         .ok_or(InstructionTreeError::MalformedWorkStack)?;
-                    let children = results.drain(start..).collect::<Vec<_>>();
-                    let mut children = children.into_iter();
+                    let mut children = results.drain(start..);
                     instruction
                         .args
                         .extend(children.by_ref().take(argument_count));
@@ -149,6 +191,7 @@ impl InstructionTree {
                                 .map(Box::new)?,
                         );
                     }
+                    drop(children);
                     results.push(transform.transform_wrapped(instruction));
                 }
             }
@@ -203,3 +246,7 @@ enum TransformTask {
         has_target: bool,
     },
 }
+
+#[cfg(test)]
+#[path = "../../tests/internal/instruction_tree_uses.rs"]
+mod register_use_tests;

@@ -66,7 +66,7 @@ jobs:
             target: x86_64-unknown-linux-musl
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
-          - runner: macos-latest
+          - runner: macos-15-intel
             target: x86_64-apple-darwin
           - runner: macos-latest
             target: aarch64-apple-darwin
@@ -92,26 +92,30 @@ jobs:
 
       - name: Rust toolchain
         run: |
-          rustup toolchain install 1.93.0 --profile minimal --target "$TARGET"
+          rustup toolchain install 1.93.0 --profile minimal --target "$TARGET" --component llvm-tools-preview
           rustup default 1.93.0
 
       - uses: Swatinem/rust-cache@v2
         with:
           key: diana-release-${{ matrix.target }}
 
-      - name: Build the CLI only
-        run: cargo build -p diana --bin diana --release --locked --target "$TARGET"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the profile-guided CLI
+        run: python tools/release/build_cli.py --target "$TARGET"
 
       - name: Package
         run: |
           mkdir -p package dist
           cp LICENSE package/
           if [[ "$TARGET" == *-windows-* ]]; then
-            cp "target/$TARGET/release/diana.exe" package/
+            cp "target/release-pgo/$TARGET/diana.exe" package/
             archive="$PWD/dist/diana-$VERSION-$TARGET.zip"
             (cd package && 7z a -tzip "$archive" diana.exe LICENSE)
           else
-            cp "target/$TARGET/release/diana" package/
+            cp "target/release-pgo/$TARGET/diana" package/
             chmod 755 package/diana
             archive="$PWD/dist/diana-$VERSION-$TARGET.tar.gz"
             tar -C package -czf "$archive" diana LICENSE

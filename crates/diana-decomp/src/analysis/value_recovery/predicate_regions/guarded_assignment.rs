@@ -11,14 +11,17 @@
 //! instead of leaving each one to re-derive its predicate inside an expression.
 
 use crate::ir::{
-    semantic::SemanticCompletion, BlockId, SemanticBlock, SemanticExpression, SemanticNode,
-    SemanticPredicate, SemanticStatement,
+    semantic::SemanticCompletion, BlockId, InstructionId, RegisterArg, SemanticBlock,
+    SemanticExpression, SemanticNode, SemanticPredicate, SemanticStatement, SemanticStatementKind,
+    StatementOrigin,
 };
 
 /// A definition whose selection tree reads its own destination.
 pub(super) struct GuardedAssignment {
     block: BlockId,
-    statement: SemanticStatement,
+    id: InstructionId,
+    result: RegisterArg,
+    origin: Option<StatementOrigin>,
     variable: u32,
 }
 
@@ -46,36 +49,29 @@ impl GuardedAssignment {
         statement: SemanticStatement,
         block: BlockId,
     ) -> Result<SemanticNode, SemanticStatement> {
-        let Some(variable) = statement.result().and_then(|result| result.code_var) else {
+        let SemanticStatementKind::Definition { id, result, value } = &statement.kind else {
             return Err(statement);
         };
-        if statement.value().is_none() {
+        let Some(variable) = result.code_var else {
+            return Err(statement);
+        };
+        if !Self::selects_variable(variable, value) {
             return Err(statement);
         }
-        Self {
+        let mut result = result.clone();
+        result.ssa_version = None;
+        let assignment = Self {
             block,
-            statement,
+            id: *id,
+            result,
+            origin: statement.origin.clone(),
             variable,
-        }
-        .lower()
-    }
-
-    fn lower(self) -> Result<SemanticNode, SemanticStatement> {
-        let Some(value) = self.statement.value() else {
-            return Err(self.statement);
         };
-        if !self.selects_destination(value) {
-            return Err(self.statement);
-        }
-        let Some(recovered) = self.regions(value) else {
-            return Err(self.statement);
+        let Some(recovered) = assignment.regions(value) else {
+            return Err(statement);
         };
-        // Guarding a store whose value cannot complete normally would give the
-        // statement a normal exit it never had.
-        if SemanticCompletion::analyze(&self.assignment(value.clone()))
-            != SemanticCompletion::analyze(&recovered)
-        {
-            return Err(self.statement);
+        if SemanticCompletion::statement(&statement) != SemanticCompletion::analyze(&recovered) {
+            return Err(statement);
         }
         Ok(recovered)
     }
@@ -166,14 +162,8 @@ impl GuardedAssignment {
     /// Dropping the SSA version keeps value-keyed analyses from typing the
     /// variable by one arm instead of joining every definition.
     fn assignment(&self, value: SemanticExpression) -> SemanticNode {
-        let mut statement = self.statement.clone();
-        statement.site = None;
-        if let Some(target) = statement.value_mut() {
-            *target = value;
-        }
-        if let Some(result) = statement.result_mut() {
-            result.ssa_version = None;
-        }
+        let mut statement = SemanticStatement::definition(self.id, self.result.clone(), value);
+        statement.origin = self.origin.clone();
         SemanticNode::BasicBlock(SemanticBlock {
             id: self.block,
             statements: vec![statement],
@@ -189,24 +179,29 @@ impl GuardedAssignment {
     }
 
     fn selects_variable(variable: u32, value: &SemanticExpression) -> bool {
-        let mut pending = vec![value];
-        while let Some(value) = pending.pop() {
-            let SemanticExpression::Select {
+        let mut value = value;
+        let mut pending = Vec::new();
+        loop {
+            if let SemanticExpression::Select {
                 when_true,
                 when_false,
                 ..
             } = value
-            else {
-                continue;
-            };
-            if Self::reads_variable(variable, when_true)
-                || Self::reads_variable(variable, when_false)
             {
-                return true;
+                if Self::reads_variable(variable, when_true)
+                    || Self::reads_variable(variable, when_false)
+                {
+                    return true;
+                }
+                pending.push(when_true.as_ref());
+                value = when_false;
+                continue;
             }
-            pending.extend([when_true.as_ref(), when_false.as_ref()]);
+            let Some(next) = pending.pop() else {
+                return false;
+            };
+            value = next;
         }
-        false
     }
 
     fn reads_variable(variable: u32, value: &SemanticExpression) -> bool {

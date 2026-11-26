@@ -61,6 +61,7 @@ pub struct SemanticFlowGraph {
 pub struct SemanticReachability {
     points: Arc<PointNumbers>,
     components: Vec<usize>,
+    chain_of: Vec<usize>,
     store: ReachabilityStore,
 }
 
@@ -318,29 +319,15 @@ impl SemanticReachability {
             }
         }
 
-        let mut successors = vec![Vec::new(); component_count];
-        // Kosaraju assigns each component before all its outgoing neighbors.
-        for (node, &source) in components.iter().enumerate() {
-            for &successor in index.successors(node) {
-                let target = components[successor];
-                if source != target {
-                    debug_assert!(source < target);
-                    successors[source].push(target);
-                }
-            }
-        }
-        for row in &mut successors {
-            row.sort_unstable();
-            row.dedup();
-        }
-
-        let words_per_row = component_count.div_ceil(u64::BITS as usize);
-        let dense_bytes = component_count
+        let (chain_of, successors) = Self::component_chains(index, &components, component_count);
+        let chain_count = successors.len();
+        let words_per_row = chain_count.div_ceil(u64::BITS as usize);
+        let dense_bytes = chain_count
             .saturating_mul(words_per_row)
             .saturating_mul(std::mem::size_of::<u64>());
         let store = if dense_bytes <= max_dense_bytes {
-            let mut bits = vec![0u64; component_count * words_per_row];
-            for component in (0..component_count).rev() {
+            let mut bits = vec![0u64; chain_count * words_per_row];
+            for component in (0..chain_count).rev() {
                 let (earlier, later) = bits.split_at_mut((component + 1) * words_per_row);
                 let row = &mut earlier[component * words_per_row..];
                 row[component / 64] |= 1u64 << (component % 64);
@@ -356,7 +343,7 @@ impl SemanticReachability {
                 bits,
             }
         } else {
-            let mut predecessors = vec![Vec::new(); component_count];
+            let mut predecessors = vec![Vec::new(); chain_count];
             for (source, targets) in successors.iter().enumerate() {
                 for target in targets {
                     predecessors[*target].push(source);
@@ -372,8 +359,82 @@ impl SemanticReachability {
         Self {
             points: Arc::clone(&index.points),
             components,
+            chain_of,
             store,
         }
+    }
+
+    // A maximal chain of components has a single entry at its head and a
+    // single exit at its tail. Store one reachability row per chain. Within
+    // each chain, SCC numbers are already in exact topological order.
+    fn component_chains(
+        index: &GraphIndex,
+        components: &[usize],
+        count: usize,
+    ) -> (Vec<usize>, Vec<Vec<usize>>) {
+        #[derive(Clone, Copy, Default)]
+        enum Neighbor {
+            #[default]
+            None,
+            One(usize),
+            Multiple,
+        }
+        impl Neighbor {
+            fn observe(&mut self, neighbor: usize) {
+                match *self {
+                    Self::None => *self = Self::One(neighbor),
+                    Self::One(previous) if previous != neighbor => *self = Self::Multiple,
+                    _ => {}
+                }
+            }
+        }
+        let mut incoming = vec![Neighbor::None; count];
+        let mut outgoing = vec![Neighbor::None; count];
+        for (point, &source) in components.iter().enumerate() {
+            for &next in index.successors(point) {
+                let target = components[next];
+                if source != target {
+                    debug_assert!(source < target);
+                    outgoing[source].observe(target);
+                    incoming[target].observe(source);
+                }
+            }
+        }
+        let mut chain_of = vec![usize::MAX; count];
+        let mut chain_count = 0;
+        for root in 0..count {
+            if chain_of[root] != usize::MAX {
+                continue;
+            }
+            let mut component = root;
+            loop {
+                chain_of[component] = chain_count;
+                match outgoing[component] {
+                    Neighbor::One(next) if matches!(incoming[next], Neighbor::One(_)) => {
+                        component = next;
+                    }
+                    _ => break,
+                }
+            }
+            chain_count += 1;
+        }
+        drop(incoming);
+        drop(outgoing);
+        let mut successors = vec![Vec::new(); chain_count];
+        for (point, &component) in components.iter().enumerate() {
+            let source = chain_of[component];
+            for &next in index.successors(point) {
+                let target = chain_of[components[next]];
+                if source != target {
+                    successors[source].push(target);
+                }
+            }
+        }
+        for row in &mut successors {
+            row.sort_unstable();
+            row.dedup();
+        }
+        (chain_of, successors)
     }
 
     // A straight-line method has one path. Its point order answers all
@@ -388,6 +449,7 @@ impl SemanticReachability {
         Some(Self {
             points: numbers,
             components: ranks,
+            chain_of: Vec::new(),
             store: ReachabilityStore::Linear,
         })
     }
@@ -400,38 +462,50 @@ impl SemanticReachability {
         let (Some(source), Some(target)) = (self.component(source), self.component(target)) else {
             return false;
         };
+        self.component_reaches(source, target)
+    }
+
+    fn component_reaches(&self, source: usize, target: usize) -> bool {
+        if source >= target {
+            return source == target;
+        }
         match &self.store {
-            ReachabilityStore::Linear => source <= target,
+            ReachabilityStore::Linear => true,
             ReachabilityStore::Dense { row_words, bits } => {
+                let (source, target) = (self.chain_of[source], self.chain_of[target]);
                 bits[source * row_words + target / 64] & (1u64 << (target % 64)) != 0
             }
-            ReachabilityStore::Sparse(reachable) => reachable.reaches(source, target),
+            ReachabilityStore::Sparse(reachable) => {
+                reachable.reaches(self.chain_of[source], self.chain_of[target])
+            }
         }
     }
 
-    pub fn reaches_any_between(
+    pub fn reaches_any_between<'a>(
         &self,
         source: SemanticFlowPoint,
         target: SemanticFlowPoint,
-        candidates: &BTreeSet<SemanticFlowPoint>,
+        candidates: impl IntoIterator<Item = &'a SemanticFlowPoint>,
     ) -> bool {
+        let (Some(source), Some(target)) = (self.component(source), self.component(target)) else {
+            return false;
+        };
+        let mut candidates = candidates
+            .into_iter()
+            .filter_map(|&point| self.component(point))
+            .filter(|&candidate| source <= candidate && candidate <= target);
         match &self.store {
-            ReachabilityStore::Dense { .. } | ReachabilityStore::Linear => {
-                candidates.iter().any(|candidate| {
-                    self.reaches(source, *candidate) && self.reaches(*candidate, target)
-                })
-            }
+            ReachabilityStore::Linear => candidates.next().is_some(),
+            ReachabilityStore::Dense { .. } => candidates.any(|candidate| {
+                self.component_reaches(source, candidate)
+                    && self.component_reaches(candidate, target)
+            }),
             ReachabilityStore::Sparse(reachable) => {
-                let (Some(source), Some(target)) = (self.component(source), self.component(target))
-                else {
-                    return false;
-                };
-                let from_source = reachable.forward_row(source);
-                let to_target = reachable.backward_row(target);
-                candidates.iter().any(|candidate| {
-                    self.component(*candidate).is_some_and(|candidate| {
-                        from_source.contains(candidate) && to_target.contains(candidate)
-                    })
+                let from_source = reachable.forward_row(self.chain_of[source]);
+                let to_target = reachable.backward_row(self.chain_of[target]);
+                candidates.any(|candidate| {
+                    let chain = self.chain_of[candidate];
+                    from_source.contains(chain) && to_target.contains(chain)
                 })
             }
         }
@@ -520,7 +594,7 @@ impl SemanticFlowGraph {
         self.ordered_points().collect()
     }
 
-    fn ordered_points(&self) -> impl Iterator<Item = SemanticFlowPoint> + Clone + '_ {
+    pub(super) fn ordered_points(&self) -> impl Iterator<Item = SemanticFlowPoint> + Clone + '_ {
         (0..self.edges.points.len()).map(|node| self.edges.points.point(node))
     }
 
@@ -578,45 +652,21 @@ impl SemanticFlowGraph {
         if source == target {
             return true;
         }
+        match self.successors(source) {
+            [] => return false,
+            [next] if *next == target => return true,
+            _ => {}
+        }
         if self.linear_points().is_some() {
             return self.indexed_reachability().reaches(source, target);
         }
-        let mut colors = BTreeMap::<SemanticFlowPoint, VisitColor>::new();
-        let mut pending = vec![(source, false)];
-        while let Some((point, leaving)) = pending.pop() {
-            if point == target {
-                continue;
-            }
-            if leaving {
-                colors.insert(point, VisitColor::Complete);
-                continue;
-            }
-            match colors.get(&point) {
-                Some(VisitColor::Active) => return false,
-                Some(VisitColor::Complete) => continue,
-                None => {}
-            }
-            let successors = self.successors(point);
-            if successors.is_empty() {
-                return false;
-            }
-            colors.insert(point, VisitColor::Active);
-            pending.push((point, true));
-            pending.extend(
-                successors
-                    .iter()
-                    .rev()
-                    .copied()
-                    .map(|successor| (successor, false)),
-            );
-        }
-        true
+        self.edges.must_reach(source, target)
     }
 
     // A single entry and one successor per edge source give a chain exactly
     // when its walk ends after visiting all edge sources. The bound also
     // detects a cycle without allocating a visited set.
-    fn linear_points(&self) -> Option<&[SemanticFlowPoint]> {
+    pub(super) fn linear_points(&self) -> Option<&[SemanticFlowPoint]> {
         self.linear_points
             .get_or_init(|| {
                 if self.entries.len() != 1 {
@@ -893,12 +943,6 @@ impl SemanticFlowGraph {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum VisitColor {
-    Active,
-    Complete,
-}
-
 impl SemanticFlowEdgeKind {
     fn transfer(self, continuation: &[u64]) -> Option<Vec<u64>> {
         let mut result = continuation.to_vec();
@@ -940,13 +984,71 @@ enum FinallyContinuation {
     Throwing,
 }
 
+/// Straight-line fragments and individual transfers have at most one endpoint.
+/// Keep it inline until a real control-flow join needs an ordered set.
+#[derive(Default, Clone)]
+enum FlowPoints {
+    #[default]
+    Empty,
+    One(SemanticFlowPoint),
+    Many(BTreeSet<SemanticFlowPoint>),
+}
+
+impl FlowPoints {
+    fn is_empty(&self) -> bool {
+        matches!(self, Self::Empty)
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &SemanticFlowPoint> {
+        let (single, multiple) = match self {
+            Self::Empty => (None, None),
+            Self::One(point) => (Some(point), None),
+            Self::Many(points) => (None, Some(points)),
+        };
+        single.into_iter().chain(multiple.into_iter().flatten())
+    }
+
+    fn insert(&mut self, point: SemanticFlowPoint) {
+        match self {
+            Self::Empty => *self = Self::One(point),
+            Self::One(current) if *current != point => {
+                *self = Self::Many(BTreeSet::from([*current, point]));
+            }
+            Self::One(_) => {}
+            Self::Many(points) => {
+                points.insert(point);
+            }
+        }
+    }
+
+    fn extend(&mut self, other: Self) {
+        match other {
+            Self::Empty => {}
+            Self::One(point) => self.insert(point),
+            Self::Many(mut incoming) => match self {
+                Self::Empty => *self = Self::Many(incoming),
+                Self::One(point) => {
+                    incoming.insert(*point);
+                    *self = Self::Many(incoming);
+                }
+                Self::Many(existing) => {
+                    if incoming.len() > existing.len() {
+                        std::mem::swap(existing, &mut incoming);
+                    }
+                    existing.extend(incoming);
+                }
+            },
+        }
+    }
+}
+
 #[derive(Default)]
 struct FlowFragment {
     entry: Option<SemanticFlowPoint>,
     normal: bool,
-    exits: BTreeSet<SemanticFlowPoint>,
-    abrupt: BTreeMap<Completion, BTreeSet<SemanticFlowPoint>>,
-    throwing: BTreeSet<SemanticFlowPoint>,
+    exits: FlowPoints,
+    abrupt: BTreeMap<Completion, FlowPoints>,
+    throwing: FlowPoints,
 }
 
 impl FlowFragment {
@@ -969,10 +1071,10 @@ impl FlowFragment {
         Self {
             entry: Some(before),
             normal: true,
-            exits: BTreeSet::from([after]),
+            exits: FlowPoints::One(after),
             abrupt: BTreeMap::new(),
             throwing: if may_throw {
-                BTreeSet::from([before])
+                FlowPoints::One(before)
             } else {
                 Default::default()
             },
@@ -983,13 +1085,13 @@ impl FlowFragment {
         self.abrupt.entry(completion).or_default().insert(point);
     }
 
-    fn merge_abrupt(&mut self, other: BTreeMap<Completion, BTreeSet<SemanticFlowPoint>>) {
+    fn merge_abrupt(&mut self, other: BTreeMap<Completion, FlowPoints>) {
         for (completion, points) in other {
             self.abrupt.entry(completion).or_default().extend(points);
         }
     }
 
-    fn take_abrupt(&mut self, completion: &Completion) -> BTreeSet<SemanticFlowPoint> {
+    fn take_abrupt(&mut self, completion: &Completion) -> FlowPoints {
         self.abrupt.remove(completion).unwrap_or_default()
     }
 }
@@ -1090,8 +1192,9 @@ impl SemanticFlowBuilder {
                         self.mark_incomplete("semantic flow combine stack underflow");
                         continue;
                     }
-                    let children = results.split_off(results.len() - count);
-                    results.push(self.combine(frame, children));
+                    let children = results.drain(results.len() - count..);
+                    let fragment = self.combine(frame, children);
+                    results.push(fragment);
                 }
             }
         }
@@ -1232,15 +1335,20 @@ impl SemanticFlowBuilder {
         }
     }
 
-    fn combine(&mut self, frame: BuildFrame<'_>, mut children: Vec<FlowFragment>) -> FlowFragment {
+    fn combine(
+        &mut self,
+        frame: BuildFrame<'_>,
+        mut children: std::vec::Drain<'_, FlowFragment>,
+    ) -> FlowFragment {
         match frame {
             BuildFrame::Sequence(_) => self.sequence(children),
             BuildFrame::If {
                 condition,
                 has_else,
             } => {
-                let then_fragment = children.remove(0);
-                let else_fragment = has_else.then(|| children.remove(0));
+                let then_fragment = children.next().expect("frame child count checked");
+                let else_fragment =
+                    has_else.then(|| children.next().expect("frame child count checked"));
                 self.branch(condition, then_fragment, else_fragment)
             }
             BuildFrame::Loop {
@@ -1248,8 +1356,8 @@ impl SemanticFlowBuilder {
                 kind,
                 condition,
             } => {
-                let setup = children.remove(0);
-                let body = children.remove(0);
+                let setup = children.next().expect("frame child count checked");
+                let body = children.next().expect("frame child count checked");
                 self.loop_node(control, kind, condition, setup, body)
             }
             BuildFrame::For {
@@ -1257,21 +1365,24 @@ impl SemanticFlowBuilder {
                 init,
                 condition,
                 update,
-            } => self.for_node(control, init, condition, update, children.remove(0)),
-            BuildFrame::ForEach { control, iterable } => {
-                self.for_each_node(control, iterable, children.remove(0))
-            }
+            } => self.for_node(
+                control,
+                init,
+                condition,
+                update,
+                children.next().expect("frame child count checked"),
+            ),
+            BuildFrame::ForEach { control, iterable } => self.for_each_node(
+                control,
+                iterable,
+                children.next().expect("frame child count checked"),
+            ),
             BuildFrame::Switch {
                 region,
                 selector,
-                cases,
                 has_default,
-            } => self.switch_node(
-                region,
-                selector,
-                children.drain(..cases).collect(),
-                has_default,
-            ),
+                ..
+            } => self.switch_node(region, selector, children, has_default),
             BuildFrame::Try {
                 catches,
                 has_finally,
@@ -1281,9 +1392,11 @@ impl SemanticFlowBuilder {
             }
             BuildFrame::Synchronized { lock } => {
                 let lock = self.site(lock.site, || expression_may_throw(&lock.value));
-                self.sequence(vec![lock, children.remove(0)])
+                self.sequence([lock, children.next().expect("frame child count checked")])
             }
-            BuildFrame::Label(label) => self.label(label, children.remove(0)),
+            BuildFrame::Label(label) => {
+                self.label(label, children.next().expect("frame child count checked"))
+            }
         }
     }
 
@@ -1331,7 +1444,9 @@ impl SemanticFlowBuilder {
                 fragment.throwing.insert(before);
             }
         }
-        fragment.exits.extend(previous);
+        if let Some(point) = previous {
+            fragment.exits = FlowPoints::One(point);
+        }
         fragment
     }
 
@@ -1345,7 +1460,7 @@ impl SemanticFlowBuilder {
             return fragment;
         };
         fragment.normal = false;
-        fragment.exits.clear();
+        fragment.exits = FlowPoints::Empty;
         fragment.add_abrupt(
             match &leave.kind {
                 SemanticLeaveKind::Return(_) => Completion::Return,
@@ -1364,7 +1479,7 @@ impl SemanticFlowBuilder {
         fragment
     }
 
-    fn sequence(&mut self, fragments: Vec<FlowFragment>) -> FlowFragment {
+    fn sequence(&mut self, fragments: impl IntoIterator<Item = FlowFragment>) -> FlowFragment {
         let mut result = FlowFragment::identity();
         for fragment in fragments {
             if !result.normal {
@@ -1392,11 +1507,11 @@ impl SemanticFlowBuilder {
     ) -> FlowFragment {
         let mut condition_fragment =
             self.site(condition.site, || predicate_may_throw(&condition.value));
-        let sources = condition_fragment.exits.clone();
+        let sources = condition_fragment.exits;
         let mut result = FlowFragment {
             entry: condition_fragment.entry,
             normal: false,
-            exits: BTreeSet::new(),
+            exits: FlowPoints::Empty,
             abrupt: std::mem::take(&mut condition_fragment.abrupt),
             throwing: condition_fragment.throwing,
         };
@@ -1429,7 +1544,7 @@ impl SemanticFlowBuilder {
 
         match kind {
             SemanticLoopKind::PreTested => {
-                let header = self.sequence(vec![setup, condition_fragment]);
+                let header = self.sequence([setup, condition_fragment]);
                 if !condition_false {
                     self.connect_to_fragment(&header.exits, &body, SemanticFlowEdgeKind::Normal);
                 }
@@ -1449,7 +1564,7 @@ impl SemanticFlowBuilder {
                 }
             }
             SemanticLoopKind::PostTested => {
-                let test = self.sequence(vec![setup, condition_fragment]);
+                let test = self.sequence([setup, condition_fragment]);
                 result.entry = body.entry.or(test.entry);
                 result.throwing.extend(body.throwing);
                 result.throwing.extend(test.throwing);
@@ -1471,7 +1586,7 @@ impl SemanticFlowBuilder {
                 }
             }
             SemanticLoopKind::Endless => {
-                let iteration = self.sequence(vec![setup, body]);
+                let iteration = self.sequence([setup, body]);
                 result.entry = iteration.entry;
                 result.throwing = iteration.throwing;
                 result.abrupt = iteration.abrupt;
@@ -1501,9 +1616,9 @@ impl SemanticFlowBuilder {
         let update = self.site(update.site, || update.effects().may_throw());
         let break_points = body.take_abrupt(&break_completion(control));
         let continue_points = body.take_abrupt(&continue_completion(control));
-        let prefix = self.sequence(vec![init, condition_fragment]);
+        let prefix = self.sequence([init, condition_fragment]);
         self.connect_to_fragment(&prefix.exits, &body, SemanticFlowEdgeKind::Normal);
-        let mut reaches_update = body.exits.clone();
+        let mut reaches_update = body.exits;
         reaches_update.extend(continue_points);
         self.connect_to_fragment(&reaches_update, &update, SemanticFlowEdgeKind::Normal);
         if let Some(condition_entry) = prefix
@@ -1547,9 +1662,9 @@ impl SemanticFlowBuilder {
             &body,
             SemanticFlowEdgeKind::Normal,
         );
-        let mut back = body.exits.clone();
+        let mut back = body.exits;
         back.extend(continue_points);
-        for point in &iterable_fragment.exits {
+        for point in iterable_fragment.exits.iter() {
             self.connect(&back, *point, SemanticFlowEdgeKind::LoopBack);
         }
         let mut result = FlowFragment {
@@ -1569,7 +1684,7 @@ impl SemanticFlowBuilder {
         &mut self,
         region: Option<RegionId>,
         selector: &crate::ir::SemanticOperand<SemanticExpression>,
-        mut cases: Vec<FlowFragment>,
+        cases: impl Iterator<Item = FlowFragment>,
         has_default: bool,
     ) -> FlowFragment {
         let selector = self.site(selector.site, || expression_may_throw(&selector.value));
@@ -1577,14 +1692,14 @@ impl SemanticFlowBuilder {
             entry: selector.entry,
             normal: !has_default,
             exits: if has_default {
-                BTreeSet::new()
+                FlowPoints::Empty
             } else {
                 selector.exits.clone()
             },
             abrupt: selector.abrupt,
             throwing: selector.throwing,
         };
-        for mut case in cases.drain(..) {
+        for mut case in cases {
             if let Some(region) = region {
                 let breaks = case.take_abrupt(&Completion::Break(region));
                 if !breaks.is_empty() {
@@ -1601,11 +1716,12 @@ impl SemanticFlowBuilder {
         &mut self,
         catches: usize,
         has_finally: bool,
-        mut children: Vec<FlowFragment>,
+        mut children: std::vec::Drain<'_, FlowFragment>,
     ) -> FlowFragment {
-        let body = children.remove(0);
-        let mut catch_fragments = children.drain(..catches).collect::<Vec<_>>();
-        for catch in &catch_fragments {
+        let body = children.next().expect("frame child count checked");
+        let finally = has_finally.then(|| children.next_back().expect("frame child count checked"));
+        debug_assert_eq!(children.len(), catches);
+        for catch in children.as_slice() {
             if let Some(entry) = catch.entry {
                 self.connect(&body.throwing, entry, SemanticFlowEdgeKind::Exceptional);
                 if let Some(throws) = body.abrupt.get(&Completion::Throw) {
@@ -1620,17 +1736,15 @@ impl SemanticFlowBuilder {
             abrupt: body.abrupt,
             throwing: body.throwing,
         };
-        for catch in catch_fragments.drain(..) {
+        for catch in children {
             result.normal |= catch.normal;
             result.exits.extend(catch.exits);
             result.merge_abrupt(catch.abrupt);
             result.throwing.extend(catch.throwing);
         }
-        if !has_finally {
+        let Some(finally) = finally else {
             return result;
-        }
-
-        let finally = children.remove(0);
+        };
         let Some(finally_entry) = finally.entry else {
             if finally.is_identity() {
                 return result;
@@ -1641,9 +1755,9 @@ impl SemanticFlowBuilder {
         let mut output = FlowFragment {
             entry: result.entry,
             normal: false,
-            exits: BTreeSet::new(),
+            exits: FlowPoints::Empty,
             abrupt: BTreeMap::new(),
-            throwing: BTreeSet::new(),
+            throwing: FlowPoints::Empty,
         };
 
         if result.normal {
@@ -1693,7 +1807,7 @@ impl SemanticFlowBuilder {
 
     fn resume_after_finally(
         &mut self,
-        sources: &BTreeSet<SemanticFlowPoint>,
+        sources: &FlowPoints,
         finally_entry: SemanticFlowPoint,
         finally: &FlowFragment,
         continuation: FinallyContinuation,
@@ -1743,7 +1857,7 @@ impl SemanticFlowBuilder {
 
     fn add_alternative(
         &mut self,
-        sources: &BTreeSet<SemanticFlowPoint>,
+        sources: &FlowPoints,
         fragment: FlowFragment,
         result: &mut FlowFragment,
     ) {
@@ -1755,7 +1869,9 @@ impl SemanticFlowBuilder {
             }
         } else if fragment.normal {
             result.normal = true;
-            result.exits.extend(sources);
+            for &point in sources.iter() {
+                result.exits.insert(point);
+            }
         }
         result.merge_abrupt(fragment.abrupt);
         result.throwing.extend(fragment.throwing);
@@ -1766,9 +1882,9 @@ impl SemanticFlowBuilder {
         FlowFragment {
             entry: Some(point),
             normal: true,
-            exits: BTreeSet::from([point]),
+            exits: FlowPoints::One(point),
             abrupt: BTreeMap::new(),
-            throwing: BTreeSet::new(),
+            throwing: FlowPoints::Empty,
         }
     }
 
@@ -1780,7 +1896,7 @@ impl SemanticFlowBuilder {
 
     fn connect_to_fragment(
         &mut self,
-        sources: &BTreeSet<SemanticFlowPoint>,
+        sources: &FlowPoints,
         fragment: &FlowFragment,
         kind: SemanticFlowEdgeKind,
     ) {
@@ -1791,11 +1907,11 @@ impl SemanticFlowBuilder {
 
     fn connect(
         &mut self,
-        sources: &BTreeSet<SemanticFlowPoint>,
+        sources: &FlowPoints,
         target: SemanticFlowPoint,
         kind: SemanticFlowEdgeKind,
     ) {
-        for source in sources {
+        for source in sources.iter() {
             self.add_edge(*source, target, kind);
         }
     }

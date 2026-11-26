@@ -7,10 +7,7 @@ mod hierarchy;
 #[path = "types/lattice.rs"]
 mod lattice;
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fmt,
-};
+use std::{collections::BTreeMap, fmt};
 
 use crate::ir::{
     analysis::{SsaValueGraph, SsaVar},
@@ -184,53 +181,56 @@ impl SourceTypeEnvironment {
         hierarchy: &dyn TypeHierarchy,
     ) -> Result<Self, TypeConstraintError> {
         let lattice = SourceTypeLattice::new(hierarchy);
-        let mut source_types = BTreeMap::<u32, (ArgType, SsaVar)>::new();
-        for (&value, &variable) in variables.assignments() {
-            let observed_types = values.value(value).map(|value| &value.observed_types);
-            let observed = observed_types.and_then(|types| lattice.select_observed(types));
+        let mut source_types = vec![None::<(ArgType, SsaVar)>; variables.next_id() as usize];
+        for &(value, variable) in variables.assignments() {
+            let observed = values.value(value).map(|fact| &fact.observed_types);
             let null_reference = (constants.get(&value).and_then(InsnArg::literal_value)
                 == Some(0))
             .then(|| {
-                observed_types
-                    .into_iter()
-                    .flatten()
-                    .filter(|ty| ty.is_reference())
-                    .cloned()
-                    .collect::<BTreeSet<_>>()
+                lattice.select_known(
+                    observed
+                        .into_iter()
+                        .flatten()
+                        .filter(|ty| ty.is_reference()),
+                )
             })
-            .filter(|types| !types.is_empty())
-            .and_then(|types| lattice.select_observed(&types));
-            let inferred = match (ssa.value_type(value).cloned(), observed) {
-                (Some(inferred), Some(observed)) => {
-                    lattice.meet(&inferred, &observed).or(Some(inferred))
+            .flatten();
+            let ty = null_reference.or_else(|| {
+                let inferred = ssa.value_type(value);
+                let observed = observed.and_then(|types| lattice.select_observed(types));
+                match (inferred, observed) {
+                    (Some(inferred), Some(observed)) if inferred != &observed => lattice
+                        .meet(inferred, &observed)
+                        .or_else(|| Some(inferred.clone())),
+                    (_, Some(observed)) => Some(observed),
+                    (inferred, None) => inferred.cloned(),
                 }
-                (Some(inferred), None) => Some(inferred),
-                (None, observed) => observed,
-            };
-            let selected = null_reference.or(inferred);
-            let Some(ty) = selected else {
-                continue;
-            };
-            if let Some((existing, existing_value)) = source_types.get_mut(&variable) {
-                let Some(joined) = lattice.join(existing, &ty) else {
-                    return Err(TypeConstraintError::ConflictingSourceValues {
-                        variable,
-                        left_value: *existing_value,
-                        left: existing.clone(),
-                        right_value: value,
-                        right: ty,
-                    });
-                };
-                *existing = joined;
+            });
+            let Some(ty) = ty else { continue };
+            let slot = &mut source_types[variable as usize];
+            if let Some((existing, first)) = slot {
+                if *existing != ty {
+                    let Some(joined) = lattice.join(existing, &ty) else {
+                        return Err(TypeConstraintError::ConflictingSourceValues {
+                            variable,
+                            left_value: *first,
+                            left: existing.clone(),
+                            right_value: value,
+                            right: ty,
+                        });
+                    };
+                    *existing = joined;
+                }
             } else {
-                source_types.insert(variable, (ty, value));
+                *slot = Some((ty, value));
             }
         }
         Ok(Self {
             ssa,
             variables: source_types
                 .into_iter()
-                .map(|(variable, (ty, _))| (variable, ty))
+                .enumerate()
+                .filter_map(|(variable, state)| state.map(|(ty, _)| (variable as u32, ty)))
                 .collect(),
         })
     }
@@ -384,7 +384,11 @@ impl<'a> SourceTypeLattice<'a> {
         &self,
         types: &std::collections::BTreeSet<ArgType>,
     ) -> Option<ArgType> {
-        let mut known = types.iter().filter(|ty| ty.is_known());
+        self.select_known(types.iter())
+    }
+
+    fn select_known<'t>(&self, types: impl Iterator<Item = &'t ArgType>) -> Option<ArgType> {
+        let mut known = types.filter(|ty| ty.is_known());
         let mut selected = known.next()?.clone();
         for ty in known {
             selected = self.meet(&selected, ty)?;
@@ -475,7 +479,7 @@ impl<'a> TypeSolver<'a> {
     ) -> Result<SsaTypeEnvironment, TypeConstraintError> {
         let constraints = TypeConstraintGraph::collect(cfg, values, constants)?.normalize();
         Ok(SsaTypeEnvironment {
-            types: TypeLattice::solve(&constraints, self.hierarchy),
+            types: TypeLattice::solve(constraints, self.hierarchy),
         })
     }
 }

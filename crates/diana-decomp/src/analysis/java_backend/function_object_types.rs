@@ -186,7 +186,7 @@ impl FunctionObjectMethodInference {
     fn signature(ty: &ArgType) -> Option<JvmTypeSignature> {
         match ty {
             ArgType::Object(name) => Some(JvmTypeSignature::ClassType(ClassTypeSignature {
-                raw_name: name.clone(),
+                raw_name: name.to_string(),
                 type_arguments: Vec::new(),
                 inner_segments: Vec::new(),
             })),

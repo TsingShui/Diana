@@ -1,5 +1,7 @@
 //! Source-observable instruction effects shared by dataflow analyses.
 
+use std::fmt;
+
 use crate::ir::{
     ArgType, InsnArg, InsnNode, InsnPayload, InsnType, InvokeType, MemberReference,
     MethodReference, RegisterArg,
@@ -51,45 +53,44 @@ impl ThrowEffect {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub struct InstructionEffects {
-    reads: bool,
-    writes: bool,
-    calls: bool,
-    may_throw: bool,
-    synchronizes: bool,
-    controls: bool,
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InstructionEffects(u8);
+
+impl fmt::Debug for InstructionEffects {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InstructionEffects")
+            .field("reads", &self.reads_memory())
+            .field("writes", &self.writes_memory())
+            .field("calls", &self.calls())
+            .field("may_throw", &self.may_throw())
+            .field("synchronizes", &self.synchronizes())
+            .field("controls", &self.controls())
+            .finish()
+    }
 }
 
 impl InstructionEffects {
-    pub const PURE: Self = Self {
-        reads: false,
-        writes: false,
-        calls: false,
-        may_throw: false,
-        synchronizes: false,
-        controls: false,
-    };
+    // Most significant first, preserving lexicographic ordering of the fields.
+    const READS: u8 = 1 << 5;
+    const WRITES: u8 = 1 << 4;
+    const CALLS: u8 = 1 << 3;
+    const MAY_THROW: u8 = 1 << 2;
+    const SYNCHRONIZES: u8 = 1 << 1;
+    const CONTROLS: u8 = 1;
 
-    pub const CONTROL: Self = Self {
-        controls: true,
-        ..Self::PURE
-    };
+    pub const PURE: Self = Self(0);
+    pub const CONTROL: Self = Self(Self::CONTROLS);
+    pub const SYNCHRONIZATION: Self = Self(Self::SYNCHRONIZES | Self::MAY_THROW);
+    const UNKNOWN_CALL: Self = Self(Self::READS | Self::WRITES | Self::CALLS | Self::MAY_THROW);
 
-    pub const SYNCHRONIZATION: Self = Self {
-        synchronizes: true,
-        may_throw: true,
-        ..Self::PURE
-    };
+    pub(in crate::ir) const fn bits(self) -> u8 {
+        self.0
+    }
 
-    const UNKNOWN_CALL: Self = Self {
-        reads: true,
-        writes: true,
-        calls: true,
-        may_throw: true,
-        synchronizes: false,
-        controls: false,
-    };
+    /// Reconstitutes the six stored effects, excluding cache metadata.
+    pub(in crate::ir) const fn from_bits(bits: u8) -> Self {
+        Self(bits & 0b11_1111)
+    }
 
     pub fn of(instruction: &InsnNode) -> Self {
         Self::direct(
@@ -107,11 +108,7 @@ impl InstructionEffects {
         edge_copy: bool,
     ) -> Self {
         if edge_copy {
-            return Self {
-                writes: true,
-                controls: true,
-                ..Self::PURE
-            };
+            return Self(Self::WRITES | Self::CONTROLS);
         }
         if insn_type == InsnType::Invoke {
             if let Some(effects) = IntrinsicMethodEffects::resolve(payload.reference.as_deref()) {
@@ -131,46 +128,25 @@ impl InstructionEffects {
             | InsnType::Phi
             | InsnType::Arith
             | InsnType::Ternary => Self::PURE,
-            InsnType::ConstClass => Self {
-                reads: true,
-                ..Self::PURE
-            },
+            InsnType::ConstClass => Self(Self::READS),
             InsnType::CheckCast
             | InsnType::ArrayLength
             | InsnType::Aget
             | InsnType::Iget
-            | InsnType::Sget => Self {
-                reads: true,
-                may_throw: true,
-                ..Self::PURE
-            },
+            | InsnType::Sget => Self(Self::READS | Self::MAY_THROW),
             InsnType::CompoundAssign
             | InsnType::FillArray
             | InsnType::Aput
             | InsnType::Iput
-            | InsnType::Sput => Self {
-                writes: true,
-                may_throw: true,
-                ..Self::PURE
-            },
-            InsnType::Invoke => Self::UNKNOWN_CALL,
-            InsnType::StringConcat
+            | InsnType::Sput => Self(Self::WRITES | Self::MAY_THROW),
+            InsnType::Invoke
+            | InsnType::StringConcat
             | InsnType::FilledNewArray
             | InsnType::NewArray
             | InsnType::NewInstance
             | InsnType::MoveResult
-            | InsnType::Constructor => Self {
-                reads: true,
-                writes: true,
-                calls: true,
-                may_throw: true,
-                ..Self::PURE
-            },
-            InsnType::MonitorEnter | InsnType::MonitorExit => Self {
-                synchronizes: true,
-                may_throw: true,
-                ..Self::PURE
-            },
+            | InsnType::Constructor => Self::UNKNOWN_CALL,
+            InsnType::MonitorEnter | InsnType::MonitorExit => Self::SYNCHRONIZATION,
             InsnType::Return
             | InsnType::Goto
             | InsnType::Throw
@@ -180,7 +156,9 @@ impl InstructionEffects {
             | InsnType::Break
             | InsnType::Continue => Self::CONTROL,
         };
-        effects.may_throw |= insn_type.can_throw(result, payload.arith_op);
+        if insn_type.can_throw(result, payload.arith_op) {
+            effects.0 |= Self::MAY_THROW;
+        }
         effects
     }
 
@@ -213,14 +191,7 @@ impl InstructionEffects {
     }
 
     pub fn join(self, other: Self) -> Self {
-        Self {
-            reads: self.reads || other.reads,
-            writes: self.writes || other.writes,
-            calls: self.calls || other.calls,
-            may_throw: self.may_throw || other.may_throw,
-            synchronizes: self.synchronizes || other.synchronizes,
-            controls: self.controls || other.controls,
-        }
+        Self(self.0 | other.0)
     }
 
     pub fn is_pure(self) -> bool {
@@ -228,27 +199,27 @@ impl InstructionEffects {
     }
 
     pub fn may_throw(self) -> bool {
-        self.may_throw
+        self.0 & Self::MAY_THROW != 0
     }
 
     pub fn reads_memory(self) -> bool {
-        self.reads
+        self.0 & Self::READS != 0
     }
 
     pub fn writes_memory(self) -> bool {
-        self.writes
+        self.0 & Self::WRITES != 0
     }
 
     pub fn calls(self) -> bool {
-        self.calls
+        self.0 & Self::CALLS != 0
     }
 
     pub fn synchronizes(self) -> bool {
-        self.synchronizes
+        self.0 & Self::SYNCHRONIZES != 0
     }
 
     pub fn controls(self) -> bool {
-        self.controls
+        self.0 & Self::CONTROLS != 0
     }
 
     pub fn is_ssa_bookkeeping(instruction: &InsnNode) -> bool {
@@ -273,14 +244,14 @@ impl InstructionEffects {
         let Some(MemberReference::Method(method)) = instruction.payload.reference.as_deref() else {
             return false;
         };
-        method.owner == ArgType::object("kotlin/jvm/internal/InlineMarker")
+        method.owner.as_object() == Some("kotlin/jvm/internal/InlineMarker")
             && matches!(method.name.as_str(), "finallyStart" | "finallyEnd")
             && method.descriptor.parameters == [ArgType::INT]
             && method.descriptor.return_type == ArgType::VOID
     }
 
     pub fn can_relocate(self) -> bool {
-        !self.synchronizes && !self.controls
+        self.0 & (Self::SYNCHRONIZES | Self::CONTROLS) == 0
     }
 
     /// Whether an instruction can remain inside an explicit execution domain.
@@ -290,34 +261,30 @@ impl InstructionEffects {
     /// calls, synchronization, and control transfers still require their
     /// original structured node.
     pub fn can_predicate(self) -> bool {
-        !self.writes && !self.calls && !self.synchronizes && !self.controls
+        self.0 & (Self::WRITES | Self::CALLS | Self::SYNCHRONIZES | Self::CONTROLS) == 0
     }
 
-    pub fn without_control(mut self) -> Self {
-        self.controls = false;
-        self
+    pub fn without_control(self) -> Self {
+        Self(self.0 & !Self::CONTROLS)
     }
 
     pub fn is_control_only(self) -> bool {
-        self.controls && self.without_control().is_pure()
+        self == Self::CONTROL
     }
 
     pub fn conflicts_with(self, other: Self) -> bool {
         if self.is_pure() || other.is_pure() {
             return false;
         }
-        if self.controls || other.controls || self.synchronizes || other.synchronizes {
+        if self.join(other).0 & (Self::CONTROLS | Self::SYNCHRONIZES | Self::CALLS) != 0 {
             return true;
         }
-        if self.calls || other.calls {
-            return true;
-        }
-        if (self.writes && (other.reads || other.writes))
-            || (other.writes && (self.reads || self.writes))
+        if (self.writes_memory() && other.0 & (Self::READS | Self::WRITES) != 0)
+            || (other.writes_memory() && self.0 & (Self::READS | Self::WRITES) != 0)
         {
             return true;
         }
-        self.may_throw && other.may_throw
+        self.may_throw() && other.may_throw()
     }
 }
 
@@ -332,15 +299,17 @@ impl IntrinsicMethodEffects {
     }
 
     fn floating_predicate(method: &MethodReference) -> bool {
-        let operand = if method.owner == ArgType::object("java/lang/Float") {
-            ArgType::FLOAT
-        } else if method.owner == ArgType::object("java/lang/Double") {
-            ArgType::DOUBLE
-        } else {
-            return false;
+        let operand = match method.owner.as_object() {
+            Some("java/lang/Float") => ArgType::FLOAT,
+            Some("java/lang/Double") => ArgType::DOUBLE,
+            _ => return false,
         };
         matches!(method.name.as_str(), "isNaN" | "isInfinite")
             && method.descriptor.parameters == [operand]
             && method.descriptor.return_type == ArgType::BOOLEAN
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/instruction_effects.rs"]
+mod tests;

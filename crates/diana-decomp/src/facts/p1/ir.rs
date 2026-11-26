@@ -5,15 +5,17 @@
 //! instruction list and exception handlers the recovery backend consumes, so
 //! the engine performs no second decode or symbol mapping.
 
-use crate::ir::ExceptionHandler;
+use crate::input::operands::RawRegisters;
+use crate::ir::{ArgType, ExceptionHandler, RegNum, RegisterArg};
 use crate::ir::{
     FieldReference, InsnArg, InsnNode, InsnType, InvokeType, LambdaSite, MemberReference,
     MethodDescriptor, MethodReference,
 };
 use crate::p1::{
     BootstrapDeclaration, CheckedBootstrapFact, CheckedMemberFact, CheckedPrototype,
-    CheckedReferenceFact, DecodedMethod,
+    CheckedReferenceFact, DecodedMethod, InvokeLayout, MethodError,
 };
+use crate::raw::ReferenceSlot;
 use crate::{CodeUnitOffset, TypeId};
 
 use super::MethodIr;
@@ -25,13 +27,38 @@ mod decode;
 /// the method result.
 pub(super) fn build(facts: &DecodedMethod<'_>) -> Result<MethodIr, String> {
     let mut instructions = Vec::new();
+    instructions
+        .try_reserve_exact(facts.instructions().count())
+        .map_err(|_| "IR instruction allocation failed".to_owned())?;
+    let mut references = facts.reference_facts().peekable();
+    let mut layouts = facts.layout().invoke_layouts().peekable();
     for item in facts.instructions() {
+        let pc = item.pc();
+        // Both checked directories are in original instruction and slot order.
+        // Reading a directory entry need not require its fact (for example a
+        // const-method-handle currently contributes only an instruction boundary).
+        let first = references
+            .next_if(|(site, slot, _)| *site == pc && *slot == ReferenceSlot::First)
+            .map(|(_, _, fact)| fact);
+        let second = references
+            .next_if(|(site, slot, _)| *site == pc && *slot == ReferenceSlot::Second)
+            .map(|(_, _, fact)| fact);
+        let layout = layouts
+            .next_if(|(site, _)| *site == pc)
+            .and_then(|(_, state)| state.ok());
         if let Some(mut instruction) = decode::decode(facts, item) {
-            instruction.set_offset(item.pc().0);
+            instruction.set_offset(pc.0);
+            bind_instruction(
+                &mut instruction,
+                item.operands().registers(),
+                pc,
+                first,
+                second,
+                layout,
+            )?;
             instructions.push(instruction);
         }
     }
-    resolve_symbols(facts, &mut instructions)?;
     Ok(MethodIr::new(
         instructions,
         handlers(facts),
@@ -40,142 +67,156 @@ pub(super) fn build(facts: &DecodedMethod<'_>) -> Result<MethodIr, String> {
     ))
 }
 
-fn resolve_symbols(facts: &DecodedMethod<'_>, insns: &mut [InsnNode]) -> Result<(), String> {
-    for insn in insns {
-        let pc = CodeUnitOffset(insn.offset);
-        if insn.insn_type == InsnType::Invoke {
-            match insn.payload.invoke_type {
-                Some(InvokeType::Polymorphic) => {
-                    let fact = reference(facts, pc)?;
-                    let CheckedReferenceFact::Method { owner, name, .. } = fact else {
-                        return Err(format!("polymorphic invoke at {pc:?} has another kind"));
-                    };
-                    let proto = reference_slot(facts, pc, crate::raw::ReferenceSlot::Second)?;
-                    let CheckedReferenceFact::Proto { prototype } = proto else {
-                        return Err(format!(
-                            "polymorphic invoke at {pc:?} has no checked prototype"
-                        ));
-                    };
-                    let method = MethodReference {
-                        owner: descriptor(*owner)?,
-                        name: text(*name)?,
-                        descriptor: prototype_descriptor(prototype)?,
-                    };
-                    apply_invoke_return_type(insn, &method);
-                    regroup_invoke_args(insn, facts, pc, &method.descriptor)?;
-                    insn.payload.reference = Some(Box::new(MemberReference::Method(method)));
-                    continue;
-                }
-                Some(InvokeType::Custom) => {
-                    let fact = reference(facts, pc)?;
-                    let CheckedReferenceFact::CallSite {
-                        name: sam_name,
-                        prototype,
-                        handle,
-                        declarations,
-                        ..
-                    } = fact
-                    else {
-                        return Err(format!("custom invoke at {pc:?} has another kind"));
-                    };
-                    let mut bootstrap = None;
-                    for declaration in declarations {
-                        if declaration.reference != handle.member() {
-                            continue;
-                        }
-                        if let CheckedBootstrapFact::Member(CheckedMemberFact::Method {
-                            owner,
-                            name,
-                            ..
-                        }) = &declaration.fact
-                        {
-                            bootstrap = Some((*owner, *name));
-                        }
-                        break;
-                    }
-                    let Some((owner, name)) = bootstrap else {
-                        return Err(format!(
-                            "custom invoke at {pc:?} has no bootstrap method declaration"
-                        ));
-                    };
-                    let bootstrap_owner = text(owner)?;
-                    let bootstrap_name = text(name)?;
-                    let bootstrap_owner_name = bootstrap_owner
-                        .strip_prefix('L')
-                        .and_then(|owner| owner.strip_suffix(';'))
-                        .unwrap_or(&bootstrap_owner);
-                    if bootstrap_owner_name == "java/lang/invoke/LambdaMetafactory"
-                        && matches!(bootstrap_name.as_str(), "metafactory" | "altMetafactory")
-                    {
-                        insn.payload.lambda =
-                            lambda_site(*sam_name, prototype, declarations)?.map(Box::new);
-                    }
-                    let method = MethodReference {
-                        owner: descriptor(owner)?,
-                        name: bootstrap_name,
-                        descriptor: prototype_descriptor(prototype)?,
-                    };
-                    apply_invoke_return_type(insn, &method);
-                    regroup_invoke_args(insn, facts, pc, &method.descriptor)?;
-                    insn.payload.reference = Some(Box::new(MemberReference::Method(method)));
-                    continue;
-                }
-                _ => {}
+type ReferenceRead<'a, 'image> = Result<&'a CheckedReferenceFact<'image>, &'a MethodError>;
+
+fn required_reference<'a, 'image>(
+    read: Option<ReferenceRead<'a, 'image>>,
+    pc: CodeUnitOffset,
+) -> Result<&'a CheckedReferenceFact<'image>, String> {
+    read.ok_or_else(|| format!("missing reference fact at {pc:?}"))?
+        .map_err(|error| error.to_string())
+}
+
+fn bind_instruction(
+    insn: &mut InsnNode,
+    registers: &RawRegisters,
+    pc: CodeUnitOffset,
+    first: Option<ReferenceRead<'_, '_>>,
+    second: Option<ReferenceRead<'_, '_>>,
+    layout: Option<&InvokeLayout>,
+) -> Result<(), String> {
+    if insn.insn_type == InsnType::Invoke {
+        match insn.payload.invoke_type {
+            Some(InvokeType::Polymorphic) => {
+                let fact = required_reference(first, pc)?;
+                let CheckedReferenceFact::Method { owner, name, .. } = fact else {
+                    return Err(format!("polymorphic invoke at {pc:?} has another kind"));
+                };
+                let proto = required_reference(second, pc)?;
+                let CheckedReferenceFact::Proto { prototype } = proto else {
+                    return Err(format!(
+                        "polymorphic invoke at {pc:?} has no checked prototype"
+                    ));
+                };
+                let method = MethodReference {
+                    owner: descriptor(*owner)?,
+                    name: text(*name)?,
+                    descriptor: prototype_descriptor(prototype)?,
+                };
+                apply_invoke_return_type(insn, &method);
+                bind_invoke_args(insn, registers, layout, pc, &method.descriptor)?;
+                insn.payload.reference = Some(std::sync::Arc::new(MemberReference::Method(method)));
+                return Ok(());
             }
+            Some(InvokeType::Custom) => {
+                let fact = required_reference(first, pc)?;
+                let CheckedReferenceFact::CallSite {
+                    name: sam_name,
+                    prototype,
+                    handle,
+                    declarations,
+                    ..
+                } = fact
+                else {
+                    return Err(format!("custom invoke at {pc:?} has another kind"));
+                };
+                let mut bootstrap = None;
+                for declaration in declarations {
+                    if declaration.reference != handle.member() {
+                        continue;
+                    }
+                    if let CheckedBootstrapFact::Member(CheckedMemberFact::Method {
+                        owner,
+                        name,
+                        ..
+                    }) = &declaration.fact
+                    {
+                        bootstrap = Some((*owner, *name));
+                    }
+                    break;
+                }
+                let Some((owner, name)) = bootstrap else {
+                    return Err(format!(
+                        "custom invoke at {pc:?} has no bootstrap method declaration"
+                    ));
+                };
+                let bootstrap_owner = text(owner)?;
+                let bootstrap_name = text(name)?;
+                let bootstrap_owner_name = bootstrap_owner
+                    .strip_prefix('L')
+                    .and_then(|owner| owner.strip_suffix(';'))
+                    .unwrap_or(&bootstrap_owner);
+                if bootstrap_owner_name == "java/lang/invoke/LambdaMetafactory"
+                    && matches!(bootstrap_name.as_str(), "metafactory" | "altMetafactory")
+                {
+                    insn.payload.lambda =
+                        lambda_site(*sam_name, prototype, declarations)?.map(Box::new);
+                }
+                let method = MethodReference {
+                    owner: descriptor(owner)?,
+                    name: bootstrap_name,
+                    descriptor: prototype_descriptor(prototype)?,
+                };
+                apply_invoke_return_type(insn, &method);
+                bind_invoke_args(insn, registers, layout, pc, &method.descriptor)?;
+                insn.payload.reference = Some(std::sync::Arc::new(MemberReference::Method(method)));
+                return Ok(());
+            }
+            _ => {}
         }
-        if insn.payload.method_index.is_some() {
-            let fact = reference(facts, pc)?;
-            let CheckedReferenceFact::Method {
-                owner,
-                name,
-                prototype,
-                ..
-            } = fact
-            else {
-                return Err(format!("method reference at {pc:?} has another kind"));
-            };
-            let method = MethodReference {
-                owner: descriptor(*owner)?,
-                name: text(*name)?,
-                descriptor: prototype_descriptor(prototype)?,
-            };
-            apply_invoke_return_type(insn, &method);
-            regroup_invoke_args(insn, facts, pc, &method.descriptor)?;
-            insn.payload.reference = Some(Box::new(MemberReference::Method(method)));
-        }
-        if insn.payload.field_index.is_some() {
-            let fact = reference(facts, pc)?;
-            let CheckedReferenceFact::Field {
-                owner,
-                name,
-                field_type,
-                ..
-            } = fact
-            else {
-                return Err(format!("field reference at {pc:?} has another kind"));
-            };
-            let field = FieldReference {
-                owner: descriptor(*owner)?,
-                name: text(*name)?,
-                field_type: descriptor(*field_type)?,
-            };
-            insn.payload.reference = Some(Box::new(MemberReference::Field(field)));
-        }
-        if insn.payload.string_index.is_some() && insn.payload.string_value.is_none() {
-            let fact = reference(facts, pc)?;
-            let CheckedReferenceFact::String { value } = fact else {
-                return Err(format!("string reference at {pc:?} has another kind"));
-            };
-            let units = value.units().map_err(|error| error.to_string())?;
-            insn.payload.string_value = Some(Box::new(crate::ir::Utf16String::from_utf16(units)));
-        }
-        if insn.payload.type_index.is_some() && insn.payload.class_type.is_none() {
-            let fact = reference(facts, pc)?;
-            let CheckedReferenceFact::Type { descriptor, .. } = fact else {
-                return Err(format!("type reference at {pc:?} has another kind"));
-            };
-            insn.payload.class_type = Some(Box::new(self::descriptor(*descriptor)?));
-        }
+    }
+    if insn.payload.method_index.is_some() {
+        let fact = required_reference(first, pc)?;
+        let CheckedReferenceFact::Method {
+            owner,
+            name,
+            prototype,
+            ..
+        } = fact
+        else {
+            return Err(format!("method reference at {pc:?} has another kind"));
+        };
+        let method = MethodReference {
+            owner: descriptor(*owner)?,
+            name: text(*name)?,
+            descriptor: prototype_descriptor(prototype)?,
+        };
+        apply_invoke_return_type(insn, &method);
+        bind_invoke_args(insn, registers, layout, pc, &method.descriptor)?;
+        insn.payload.reference = Some(std::sync::Arc::new(MemberReference::Method(method)));
+    }
+    if insn.payload.field_index.is_some() {
+        let fact = required_reference(first, pc)?;
+        let CheckedReferenceFact::Field {
+            owner,
+            name,
+            field_type,
+            ..
+        } = fact
+        else {
+            return Err(format!("field reference at {pc:?} has another kind"));
+        };
+        let field = FieldReference {
+            owner: descriptor(*owner)?,
+            name: text(*name)?,
+            field_type: descriptor(*field_type)?,
+        };
+        insn.payload.reference = Some(std::sync::Arc::new(MemberReference::Field(field)));
+    }
+    if insn.payload.string_index.is_some() && insn.payload.string_value.is_none() {
+        let fact = required_reference(first, pc)?;
+        let CheckedReferenceFact::String { value } = fact else {
+            return Err(format!("string reference at {pc:?} has another kind"));
+        };
+        let units = value.units().map_err(|error| error.to_string())?;
+        insn.payload.string_value = Some(Box::new(crate::ir::Utf16String::from_utf16(units)));
+    }
+    if insn.payload.type_index.is_some() && insn.payload.class_type.is_none() {
+        let fact = required_reference(first, pc)?;
+        let CheckedReferenceFact::Type { descriptor, .. } = fact else {
+            return Err(format!("type reference at {pc:?} has another kind"));
+        };
+        insn.payload.class_type = Some(Box::new(self::descriptor(*descriptor)?));
     }
     Ok(())
 }
@@ -235,52 +276,45 @@ fn lambda_site<'a>(
     }))
 }
 
-/// Collapse the flat encoded register list into one IR operand per declared
-/// parameter, using P1's checked layout. A wide parameter keeps its first
-/// register and drops the high half.
-fn regroup_invoke_args(
+/// Bind the first word of each declared parameter. When P1 could not
+/// establish the layout, preserve every original encoded operand.
+fn bind_invoke_args(
     insn: &mut InsnNode,
-    facts: &DecodedMethod<'_>,
+    registers: &RawRegisters,
+    layout: Option<&InvokeLayout>,
     pc: CodeUnitOffset,
     descriptor: &MethodDescriptor,
 ) -> Result<(), String> {
-    let Some(Ok(layout)) = facts.invoke_layout_at(pc) else {
+    let Some(layout) = layout else {
+        insn.args = decode::raw_arguments(registers).collect();
         return Ok(());
     };
-    if layout.has_receiver() && insn.args.is_empty() {
-        return Err(format!("invoke at {pc:?} lost its receiver"));
+    let parameters = layout.arguments().iter().zip(&descriptor.parameters);
+    insn.args
+        .reserve_exact(usize::from(layout.has_receiver()) + parameters.len());
+    let mut words = registers.iter();
+    if layout.has_receiver() {
+        let receiver = words
+            .next()
+            .ok_or_else(|| format!("invoke at {pc:?} lost its receiver"))?;
+        insn.add_arg(InsnArg::Reg(RegisterArg::new(
+            receiver.0 as RegNum,
+            ArgType::unknown(),
+        )));
     }
-    let mut word = usize::from(layout.has_receiver());
-    let mut argument = word;
-    for (width, parameter) in layout.arguments().iter().zip(&descriptor.parameters) {
-        let Some(InsnArg::Reg(register)) = insn.args.get_mut(word) else {
-            return Err(format!("invoke at {pc:?} lost a declared argument"));
-        };
-        register.ty = parameter.clone();
-        insn.args.swap(argument, word);
-        argument += 1;
-        word += width.words() as usize;
+    for (width, parameter) in parameters {
+        let register = words
+            .next()
+            .ok_or_else(|| format!("invoke at {pc:?} lost a declared argument"))?;
+        insn.add_arg(InsnArg::Reg(RegisterArg::new(
+            register.0 as RegNum,
+            parameter.clone(),
+        )));
+        if width.words() == 2 {
+            words.next();
+        }
     }
-    insn.args.truncate(argument);
     Ok(())
-}
-
-fn reference<'a>(
-    facts: &'a DecodedMethod<'_>,
-    pc: CodeUnitOffset,
-) -> Result<&'a CheckedReferenceFact<'a>, String> {
-    reference_slot(facts, pc, crate::raw::ReferenceSlot::First)
-}
-
-fn reference_slot<'a>(
-    facts: &'a DecodedMethod<'_>,
-    pc: CodeUnitOffset,
-    slot: crate::raw::ReferenceSlot,
-) -> Result<&'a CheckedReferenceFact<'a>, String> {
-    facts
-        .reference_fact(pc, slot)
-        .ok_or_else(|| format!("missing reference fact at {pc:?}"))?
-        .map_err(|error| error.to_string())
 }
 
 fn text(value: crate::input::DexString<'_>) -> Result<String, String> {
@@ -316,20 +350,18 @@ fn apply_invoke_return_type(insn: &mut InsnNode, method: &MethodReference) {
     if insn.insn_type != InsnType::Invoke {
         return;
     }
-    let return_type = method.descriptor.return_type.clone();
-    if return_type == crate::ir::ArgType::VOID {
+    if method.descriptor.return_type == crate::ir::ArgType::VOID {
         return;
     }
     if let Some(result) = insn.result.as_mut() {
-        result.ty = return_type;
+        result.ty = method.descriptor.return_type.clone();
     }
 }
 
 fn handlers(facts: &DecodedMethod<'_>) -> Vec<ExceptionHandler> {
-    let boundaries: Vec<u32> = facts.try_boundaries().collect();
+    let mut boundaries = facts.try_boundaries();
     let mut handlers = Vec::new();
-    for pair in boundaries.as_chunks::<2>().0 {
-        let (start, end) = (pair[0], pair[1]);
+    while let (Some(start), Some(end)) = (boundaries.next(), boundaries.next()) {
         let clauses = facts
             .catch_clauses_at(CodeUnitOffset(start))
             .unwrap_or_default();

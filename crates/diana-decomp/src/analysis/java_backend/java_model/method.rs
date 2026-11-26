@@ -162,7 +162,7 @@ impl JavaMethodBody {
     }
 
     pub fn lower(
-        &self,
+        self,
         parameter_names: &[JavaIdentifier],
         type_names: &JavaTypeNameResolver,
         member_names: std::sync::Arc<crate::language::java::JavaMemberNames>,
@@ -196,12 +196,12 @@ impl JavaMethodBody {
         class_initializer: bool,
         observer: std::sync::Arc<dyn crate::ir::AnalysisObserver>,
     ) -> Result<crate::language::java::JavaMethodBody, JavaDecompilerError> {
+        let returns_void = self.return_type.as_ref() == Some(&ArgType::VOID);
         let semantically_terminal = self
             .return_type
             .as_ref()
             .is_some_and(|return_type| return_type != &ArgType::VOID)
-            && !crate::ir::semantic::SemanticCompletion::analyze(&self.body)
-                .can_complete_normally();
+            && !crate::ir::semantic::ControlCompletion::normally_completes(&self.body);
         let completion_type = source_return_type.clone();
         let (source_field_types, source_types) = {
             let source_field_types = if outer_instances.is_empty() {
@@ -212,18 +212,24 @@ impl JavaMethodBody {
                 std::sync::Arc::new(fields)
             };
             let object = ArgType::object("java/lang/Object");
-            let used_types = self
-                .type_uses
-                .uses
+            let mut used_types = self.type_uses.uses;
+            for ty in BodyTypeUses::required_types()
                 .iter()
                 .chain(self.current_type.iter())
                 .chain(self.return_type.iter())
                 .chain(std::iter::once(&object))
                 .chain(generic_uses)
-                .collect::<std::collections::BTreeSet<_>>();
+            {
+                if !used_types.contains(ty) {
+                    used_types.insert(ty.clone());
+                }
+            }
             let source_types = used_types
                 .into_iter()
-                .map(|ty| Ok((ty.clone(), type_names.resolve_type(ty)?)))
+                .map(|ty| {
+                    let source = type_names.resolve_type(&ty)?;
+                    Ok((ty, source))
+                })
                 .collect::<Result<std::collections::BTreeMap<_, _>, JavaDecompilerError>>()?;
             Ok::<_, JavaDecompilerError>((source_field_types, source_types))
         }?;
@@ -237,12 +243,12 @@ impl JavaMethodBody {
             )
         };
         let dialect = {
-            crate::language::java::DexJavaDialect::new(
+            crate::language::java::DexJavaDialect::from_types(
                 self.is_static,
                 self.this_code_var,
                 &self.parameter_code_vars,
                 parameter_names,
-                &self.types,
+                std::borrow::Cow::Owned(self.types),
                 source_types,
                 member_names,
             )
@@ -254,15 +260,15 @@ impl JavaMethodBody {
                     .with_source_object_types(source_object_types)
                     .with_generic_type_projection(generic_type_projection)
                     .with_source_parameter_types(&self.parameter_code_vars, source_parameter_types)
-                    .with_current_type(self.current_type.clone())
+                    .with_current_type(self.current_type)
                     .with_source_current_type(source_current_type)
                     .with_source_super_type(source_super_type)
-                    .with_return_type(self.return_type.clone())
+                    .with_return_type(self.return_type)
                     .with_source_return_type(source_return_type)
                     .with_source_type_erasures(source_type_erasures)
                     .with_source_type_bounds(source_type_bounds)
                     .with_generic_throw_types(generic_throw_types)
-                    .with_outer_instance(self.outer_instance.clone())
+                    .with_outer_instance(self.outer_instance)
                     .with_outer_instance_fields(outer_instances)
                     .with_reserved_local_names(reserved_local_names)
                     .with_analysis_observer(observer)
@@ -300,7 +306,7 @@ impl JavaMethodBody {
                 .apply(&mut ast)
                 .map_err(crate::language::java::JavaLoweringError::from)?;
         }
-        if !class_initializer && self.return_type.as_ref() == Some(&ArgType::VOID) {
+        if !class_initializer && returns_void {
             let mut tail = JavaVoidTailLinearizer;
             match tail.apply(&mut ast) {
                 Ok(_) => {}
@@ -320,11 +326,7 @@ impl JavaMethodBody {
     }
 
     pub fn type_uses(&self) -> impl Iterator<Item = &ArgType> {
-        self.type_uses.uses.iter()
-    }
-
-    pub(in crate::analysis::java_backend) fn current_type(&self) -> Option<&ArgType> {
-        self.current_type.as_ref()
+        self.type_uses.iter()
     }
 
     pub fn is_empty(body: &crate::language::java::JavaMethodBody) -> bool {
@@ -569,7 +571,7 @@ impl JavaMethodDeclaration {
             if class.is_enum()
                 && parameters
                     .first()
-                    .is_some_and(|parameter| parameter.ty == ArgType::string())
+                    .is_some_and(|parameter| parameter.ty.as_object() == Some("java/lang/String"))
                 && parameters
                     .get(1)
                     .is_some_and(|parameter| parameter.ty == ArgType::INT)

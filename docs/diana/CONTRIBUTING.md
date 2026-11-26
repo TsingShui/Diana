@@ -354,3 +354,25 @@ build succeeds. The engine and GUI retain independent development versions.
 Publishing a tag or release still requires an explicit operator request.
 The old rasc workflow/scripts remain archived; contributors MUST NOT reactivate
 them or couple Diana versions to rasc.
+
+### Build a profile-guided release CLI
+
+Use a host that can run the target binary. Install the target's native C build
+tools and linker, then run the following commands from a Git checkout.
+
+```sh
+rustup toolchain install 1.93.0 --profile minimal --component llvm-tools-preview
+rustup run 1.93.0 python3 tools/release/build_cli.py
+```
+
+Pass `--target <triple>` to select a runnable target explicitly. The build
+writes `target/release-pgo/<triple>/diana` (or `diana.exe` on Windows).
+Ordinary development builds use `cargo build --locked -p diana`.
+
+The script packages the tracked `quality/fixtures/<theme>/<slug>/classes.dex`
+files into one multidex APK and runs a two-worker export. The training run
+checks the Java file count and the identities of deliberately unrecoverable
+methods against the fixture expectations. LLVM merges the resulting counters
+before Cargo recompiles the CLI with the profile. Both compilations use full
+link-time optimization and one code-generation unit by default. Each invocation owns its
+temporary build directory and publishes the binary after both builds succeed.

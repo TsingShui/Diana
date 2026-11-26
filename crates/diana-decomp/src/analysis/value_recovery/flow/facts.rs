@@ -5,10 +5,10 @@
 //! no independent analysis state.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::{borrow::Cow, cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc};
 
 use crate::analysis::value_recovery::{
-    numbering::{SyntheticUse, ValueAvailability, ValueNumbering, ValueNumberingResult},
+    numbering::{SyntheticUse, ValueAvailability, ValueNumbering},
     ValueRecoveryError,
 };
 use crate::ir::{analysis::SsaVar, InsnArg};
@@ -29,8 +29,8 @@ struct CachedRelations {
 pub(super) struct SparseValueFacts<'a> {
     graph: &'a ValueFlowGraph<'a>,
     canonical: BTreeMap<SsaVar, InsnArg>,
-    numbering: ValueNumberingResult,
-    uses: Cow<'a, BTreeMap<SsaVar, Vec<UseFact>>>,
+    numbered_replacements: BTreeMap<SsaVar, InsnArg>,
+    uses_with_aliases: BTreeMap<SsaVar, Vec<UseFact>>,
     required_phi_inputs: BTreeSet<SsaVar>,
     reaching: SemanticReachingAnalysis<'a>,
     last_relations: RefCell<Option<CachedRelations>>,
@@ -39,27 +39,25 @@ pub(super) struct SparseValueFacts<'a> {
 
 impl<'a> SparseValueFacts<'a> {
     pub(super) fn analyze(graph: &'a ValueFlowGraph<'a>) -> Result<Self, ValueRecoveryError> {
-        let canonical = graph.canonical_values();
+        let classes = graph.classes_by_last_definition();
+        let canonical = graph.canonical_values(&classes);
         let reaching = SemanticReachingAnalysis::new(graph);
         let availability = (graph.identity() == ValueIdentity::Source)
             .then_some(&reaching as &dyn ValueAvailability);
-        let numbering = {
-            ValueNumbering::analyze(
-                graph.identity(),
-                &graph.logic,
-                &graph.scopes,
-                graph
-                    .definitions
-                    .values()
-                    .filter_map(|definitions| match definitions.as_slice() {
-                        [definition] => Some(definition),
-                        _ => None,
-                    }),
-                &canonical,
-                availability,
-            )
-        }?;
-        let uses = Self::effective_uses(graph, &numbering.synthetic_uses);
+        let numbering = ValueNumbering::analyze_ordered(
+            graph.identity(),
+            &graph.logic,
+            &graph.scopes,
+            classes
+                .into_iter()
+                .filter_map(|class| match class.definitions {
+                    [definition] => Some(definition),
+                    _ => None,
+                }),
+            &canonical,
+            availability,
+        )?;
+        let uses_with_aliases = Self::uses_with_aliases(graph, &numbering.synthetic_uses);
         let required_phi_inputs = if graph.identity() == ValueIdentity::Ssa {
             graph.required_phi_inputs()
         } else {
@@ -69,8 +67,8 @@ impl<'a> SparseValueFacts<'a> {
         Ok(Self {
             graph,
             canonical,
-            numbering,
-            uses,
+            numbered_replacements: numbering.replacements,
+            uses_with_aliases,
             required_phi_inputs,
             reaching,
             last_relations: RefCell::new(None),
@@ -78,22 +76,27 @@ impl<'a> SparseValueFacts<'a> {
         })
     }
 
-    fn effective_uses(
+    /// Use order is the representative's own occurrences followed by the
+    /// original occurrences of each eliminated value, in numbering order.
+    fn uses_with_aliases(
         graph: &'a ValueFlowGraph<'a>,
         links: &[SyntheticUse],
-    ) -> Cow<'a, BTreeMap<SsaVar, Vec<UseFact>>> {
-        if links.is_empty() {
-            return Cow::Borrowed(&graph.uses);
-        }
-        let mut uses = graph.uses.clone();
+    ) -> BTreeMap<SsaVar, Vec<UseFact>> {
+        let mut uses = BTreeMap::new();
         for link in links {
             if let Some(eliminated) = graph.uses.get(&link.eliminated) {
                 uses.entry(link.representative)
-                    .or_default()
+                    .or_insert_with(|| {
+                        graph
+                            .uses
+                            .get(&link.representative)
+                            .cloned()
+                            .unwrap_or_default()
+                    })
                     .extend(eliminated.iter().cloned());
             }
         }
-        Cow::Owned(uses)
+        uses
     }
 
     pub(super) fn graph(&self) -> &'a ValueFlowGraph<'a> {
@@ -104,26 +107,27 @@ impl<'a> SparseValueFacts<'a> {
         &self.canonical
     }
 
-    pub(super) fn constants(&self) -> BTreeMap<SsaVar, InsnArg> {
+    pub(super) fn into_ssa_constants(mut self) -> BTreeMap<SsaVar, InsnArg> {
+        if self.graph.identity() == ValueIdentity::Source {
+            return BTreeMap::new();
+        }
         self.canonical
-            .iter()
-            .filter(|(_, value)| ValueFlowGraph::is_constant(value))
-            .map(|(key, value)| (*key, value.clone()))
-            .collect()
+            .retain(|_, value| ValueFlowGraph::is_constant(value));
+        self.canonical
     }
 
     pub(super) fn replacement(&self, key: SsaVar) -> Option<&InsnArg> {
         self.canonical
             .get(&key)
-            .or_else(|| self.numbering.replacements.get(&key))
-    }
-
-    pub(super) fn uses(&self) -> &BTreeMap<SsaVar, Vec<UseFact>> {
-        self.uses.as_ref()
+            .or_else(|| self.numbered_replacements.get(&key))
     }
 
     pub(super) fn uses_of(&self, key: SsaVar) -> &[UseFact] {
-        self.uses.get(&key).map(Vec::as_slice).unwrap_or_default()
+        self.uses_with_aliases
+            .get(&key)
+            .or_else(|| self.graph.uses.get(&key))
+            .map(Vec::as_slice)
+            .unwrap_or_default()
     }
 
     pub(super) fn required_phi_input(&self, key: SsaVar) -> bool {
@@ -225,3 +229,7 @@ impl ValueAvailability for SemanticReachingAnalysis<'_> {
         SemanticReachingAnalysis::unchanged(self, value, source, target)
     }
 }
+
+#[cfg(test)]
+#[path = "../../../../tests/internal/value_fact_indices.rs"]
+mod tests;

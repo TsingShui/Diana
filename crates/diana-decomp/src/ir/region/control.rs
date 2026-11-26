@@ -7,7 +7,7 @@ use crate::ir::{BlockId, InsnType, CFG};
 
 use super::{LoopRegion, RegionId, RegionInvariantError, RegionKind, RegionTree, SwitchRegion};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct ControlCandidate {
     kind: RegionKind,
     entry: BlockId,
@@ -328,45 +328,66 @@ pub(super) struct ControlRegionAnalysis<'a> {
     facts: &'a ControlFlowFacts,
 }
 
+pub(super) struct PreparedControlRegions {
+    loops: Vec<ControlCandidate>,
+    switches: Vec<ControlCandidate>,
+    exceptional_latches: BTreeMap<BlockId, BTreeSet<BlockId>>,
+}
+
 impl<'a> ControlRegionAnalysis<'a> {
     pub(super) fn new(cfg: &'a CFG, facts: &'a ControlFlowFacts) -> Self {
         Self { cfg, facts }
     }
 
-    pub(super) fn apply(&self, tree: &mut RegionTree) -> Result<(), RegionInvariantError> {
-        self.apply_loops(tree)?;
-        self.apply_switches(tree)
-    }
-
-    pub(super) fn apply_loops(&self, tree: &mut RegionTree) -> Result<(), RegionInvariantError> {
-        let mut loops = Vec::new();
-        self.loop_candidates(
-            self.cfg.block_ids().into_iter().collect(),
-            LoopConnectivity::Normal,
-            &mut loops,
-        )?;
-        Self::insert_candidates(self.cfg, tree, loops, &BTreeMap::new(), self.facts)
-    }
-
-    pub(super) fn apply_loops_with_handlers(
+    pub(super) fn apply(
         &self,
         tree: &mut RegionTree,
-        handlers: &BTreeMap<RegionId, Vec<RegionId>>,
-    ) -> Result<(), RegionInvariantError> {
-        let mut loops = Vec::new();
-        self.loop_candidates(
-            self.cfg.block_ids().into_iter().collect(),
-            LoopConnectivity::ExceptionAware,
-            &mut loops,
-        )?;
-        Self::insert_candidates(self.cfg, tree, loops, handlers, self.facts)
-    }
-
-    pub(super) fn apply_switches(&self, tree: &mut RegionTree) -> Result<(), RegionInvariantError> {
+    ) -> Result<PreparedControlRegions, RegionInvariantError> {
+        let mut prepared = self.normal_loops()?;
         Self::insert_candidates(
             self.cfg,
             tree,
-            self.switch_candidates()?,
+            prepared.loops.clone(),
+            &BTreeMap::new(),
+            self.facts,
+        )?;
+        prepared.switches = self.switch_candidates()?;
+        Self::insert_candidates(
+            self.cfg,
+            tree,
+            prepared.switches.clone(),
+            &BTreeMap::new(),
+            self.facts,
+        )?;
+        Ok(prepared)
+    }
+
+    pub(super) fn apply_with_handlers(
+        &self,
+        tree: &mut RegionTree,
+        handlers: &BTreeMap<RegionId, Vec<RegionId>>,
+        mut prepared: PreparedControlRegions,
+    ) -> Result<(), RegionInvariantError> {
+        // Candidates depend on the same immutable CFG in both passes. An
+        // exception-aware search is needed only for a header whose latches
+        // could not be reached through any normal path.
+        for (entry, mut latches) in prepared.exceptional_latches {
+            let reachable = self.reachable(entry, LoopConnectivity::ExceptionAware);
+            latches.retain(|latch| reachable.contains(latch));
+            if !latches.is_empty() {
+                prepared.loops.push(self.loop_candidate(
+                    entry,
+                    latches,
+                    &reachable,
+                    LoopConnectivity::ExceptionAware,
+                )?);
+            }
+        }
+        Self::insert_candidates(self.cfg, tree, prepared.loops, handlers, self.facts)?;
+        Self::insert_candidates(
+            self.cfg,
+            tree,
+            prepared.switches,
             &BTreeMap::new(),
             self.facts,
         )
@@ -387,68 +408,66 @@ impl<'a> ControlRegionAnalysis<'a> {
         Ok(())
     }
 
-    fn loop_candidates(
-        &self,
-        nodes: BTreeSet<BlockId>,
-        connectivity: LoopConnectivity,
-        candidates: &mut Vec<ControlCandidate>,
-    ) -> Result<(), RegionInvariantError> {
+    fn normal_loops(&self) -> Result<PreparedControlRegions, RegionInvariantError> {
         let mut back_edges = BTreeMap::<BlockId, BTreeSet<BlockId>>::new();
-        for source in nodes.iter().copied() {
+        for source in self.cfg.block_ids() {
             for target in self.cfg.normal_successors(source) {
-                if nodes.contains(&target)
+                if self.cfg.block(target).is_some()
                     && self.facts.semantic_dominators().dominates(target, source)
                 {
                     back_edges.entry(target).or_default().insert(source);
                 }
             }
         }
-        for (entry, mut latches) in back_edges {
-            let normal_reachable = self.reachable(&nodes, entry, LoopConnectivity::Normal);
+        let mut loops = Vec::new();
+        let mut exceptional_latches = BTreeMap::new();
+        for (entry, latches) in back_edges {
+            let reachable = self.reachable(entry, LoopConnectivity::Normal);
             let normal_latches = latches
-                .iter()
+                .intersection(&reachable)
                 .copied()
-                .filter(|latch| normal_reachable.contains(latch))
                 .collect::<BTreeSet<_>>();
-            let connectivity = if normal_latches.is_empty()
-                && matches!(connectivity, LoopConnectivity::ExceptionAware)
-            {
-                LoopConnectivity::ExceptionAware
+            if normal_latches.is_empty() {
+                exceptional_latches.insert(entry, latches);
             } else {
-                latches = normal_latches;
-                LoopConnectivity::Normal
-            };
-            let reachable = match connectivity {
-                LoopConnectivity::Normal => normal_reachable,
-                LoopConnectivity::ExceptionAware => {
-                    self.reachable(&nodes, entry, LoopConnectivity::ExceptionAware)
-                }
-            };
-            latches.retain(|latch| reachable.contains(latch));
-            if latches.is_empty() {
-                continue;
+                loops.push(self.loop_candidate(
+                    entry,
+                    normal_latches,
+                    &reachable,
+                    LoopConnectivity::Normal,
+                )?);
             }
-            let core =
-                self.natural_loop_nodes(&nodes, &reachable, connectivity, entry, &latches)?;
-            let successors = self.loop_successors(&core);
-            let follow =
-                LoopFollow::new(self.cfg, self.facts, &core, &successors, &latches).analyze();
-            let blocks = LoopBody::new(self.cfg, self.facts, &nodes, entry, follow).analyze(&core);
-            let mut kind = RegionKind::Loop(LoopRegion { follow, latches });
-            ControlCandidate::refresh_loop_follow(self.cfg, self.facts, &mut kind, &blocks);
-            candidates.push(ControlCandidate {
-                kind,
-                entry,
-                core,
-                blocks,
-            });
         }
-        Ok(())
+        Ok(PreparedControlRegions {
+            loops,
+            exceptional_latches,
+            switches: Vec::new(),
+        })
+    }
+
+    fn loop_candidate(
+        &self,
+        entry: BlockId,
+        latches: BTreeSet<BlockId>,
+        reachable: &BTreeSet<BlockId>,
+        connectivity: LoopConnectivity,
+    ) -> Result<ControlCandidate, RegionInvariantError> {
+        let core = self.natural_loop_nodes(reachable, connectivity, entry, &latches)?;
+        let successors = self.loop_successors(&core);
+        let follow = LoopFollow::new(self.cfg, self.facts, &core, &successors, &latches).analyze();
+        let blocks = LoopBody::new(self.cfg, self.facts, entry, follow).analyze(&core);
+        let mut kind = RegionKind::Loop(LoopRegion { follow, latches });
+        ControlCandidate::refresh_loop_follow(self.cfg, self.facts, &mut kind, &blocks);
+        Ok(ControlCandidate {
+            kind,
+            entry,
+            core,
+            blocks,
+        })
     }
 
     fn natural_loop_nodes(
         &self,
-        universe: &BTreeSet<BlockId>,
         reachable: &BTreeSet<BlockId>,
         connectivity: LoopConnectivity,
         header: BlockId,
@@ -457,8 +476,7 @@ impl<'a> ControlRegionAnalysis<'a> {
         let mut blocks = BTreeSet::from([header]);
         let mut pending = latches.iter().copied().collect::<Vec<_>>();
         while let Some(block) = pending.pop() {
-            if !universe.contains(&block)
-                || !reachable.contains(&block)
+            if !reachable.contains(&block)
                 || !self.facts.semantic_dominators().dominates(header, block)
                 || !blocks.insert(block)
             {
@@ -472,19 +490,17 @@ impl<'a> ControlRegionAnalysis<'a> {
         Ok(blocks)
     }
 
-    fn reachable(
-        &self,
-        universe: &BTreeSet<BlockId>,
-        entry: BlockId,
-        connectivity: LoopConnectivity,
-    ) -> BTreeSet<BlockId> {
+    fn reachable(&self, entry: BlockId, connectivity: LoopConnectivity) -> BTreeSet<BlockId> {
         let mut reachable = BTreeSet::new();
         let mut pending = vec![entry];
         while let Some(block) = pending.pop() {
-            if !universe.contains(&block) || !reachable.insert(block) {
+            if self.cfg.block(block).is_none() || !reachable.insert(block) {
                 continue;
             }
-            pending.extend(connectivity.successors(self.cfg, block));
+            match connectivity {
+                LoopConnectivity::Normal => pending.extend(self.cfg.normal_successors(block)),
+                LoopConnectivity::ExceptionAware => pending.extend(self.cfg.successors(block)),
+            }
         }
         reachable
     }
@@ -550,13 +566,6 @@ enum LoopConnectivity {
 }
 
 impl LoopConnectivity {
-    fn successors(self, cfg: &CFG, block: BlockId) -> Vec<BlockId> {
-        match self {
-            Self::Normal => cfg.normal_successors(block).collect(),
-            Self::ExceptionAware => cfg.successors(block).collect(),
-        }
-    }
-
     fn predecessors(self, facts: &ControlFlowFacts, block: BlockId) -> Option<&[BlockId]> {
         match self {
             Self::Normal => facts.predecessors(block),
@@ -661,12 +670,20 @@ impl<'a> LoopFollow<'a> {
             .iter()
             .copied()
             .filter(|candidate| {
-                !self.core.contains(candidate)
-                    && !LoopExit::is_terminal(self.cfg, *candidate)
-                    && self
-                        .exits
-                        .iter()
-                        .all(|start| self.covers(*start, *candidate))
+                !self.core.contains(candidate) && !LoopExit::is_terminal(self.cfg, *candidate) && {
+                    let mut active = BTreeSet::new();
+                    let mut memo = BTreeMap::new();
+                    self.exits.iter().all(|start| {
+                        Self::cover_node(
+                            self.cfg,
+                            self.core,
+                            *start,
+                            *candidate,
+                            &mut active,
+                            &mut memo,
+                        )
+                    })
+                }
             })
             .collect::<BTreeSet<_>>();
         let earliest = valid
@@ -696,26 +713,6 @@ impl<'a> LoopFollow<'a> {
         domain
     }
 
-    fn covers(&self, start: BlockId, candidate: BlockId) -> bool {
-        Self::covers_path(self.cfg, self.core, start, candidate)
-    }
-
-    fn covers_path(
-        cfg: &CFG,
-        core: &BTreeSet<BlockId>,
-        start: BlockId,
-        candidate: BlockId,
-    ) -> bool {
-        Self::cover_node(
-            cfg,
-            core,
-            start,
-            candidate,
-            &mut BTreeSet::new(),
-            &mut BTreeMap::new(),
-        )
-    }
-
     fn cover_node(
         cfg: &CFG,
         core: &BTreeSet<BlockId>,
@@ -736,10 +733,9 @@ impl<'a> LoopFollow<'a> {
         if !active.insert(block) {
             return false;
         }
-        let successors = cfg.normal_successors(block).collect::<Vec<_>>();
-        let result = !successors.is_empty()
+        let mut successors = cfg.normal_successors(block).peekable();
+        let result = successors.peek().is_some()
             && successors
-                .into_iter()
                 .all(|successor| Self::cover_node(cfg, core, successor, candidate, active, memo));
         active.remove(&block);
         memo.insert(block, result);
@@ -772,7 +768,6 @@ impl<'a> LoopFollow<'a> {
 struct LoopBody<'a> {
     cfg: &'a CFG,
     facts: &'a ControlFlowFacts,
-    universe: &'a BTreeSet<BlockId>,
     header: BlockId,
     follow: Option<BlockId>,
 }
@@ -781,14 +776,12 @@ impl<'a> LoopBody<'a> {
     fn new(
         cfg: &'a CFG,
         facts: &'a ControlFlowFacts,
-        universe: &'a BTreeSet<BlockId>,
         header: BlockId,
         follow: Option<BlockId>,
     ) -> Self {
         Self {
             cfg,
             facts,
-            universe,
             header,
             follow,
         }
@@ -806,6 +799,8 @@ impl<'a> LoopBody<'a> {
             return;
         };
         let mut candidates = BTreeSet::new();
+        let mut active = BTreeSet::new();
+        let mut memo = BTreeMap::new();
         let mut pending = self
             .successors(core)
             .into_iter()
@@ -813,14 +808,14 @@ impl<'a> LoopBody<'a> {
             .collect::<Vec<_>>();
         while let Some(block) = pending.pop() {
             if block == follow
-                || !self.universe.contains(&block)
+                || self.cfg.block(block).is_none()
                 || body.contains(&block)
                 || candidates.contains(&block)
                 || !self
                     .facts
                     .semantic_dominators()
                     .dominates(self.header, block)
-                || !LoopFollow::covers_path(self.cfg, core, block, follow)
+                || !LoopFollow::cover_node(self.cfg, core, block, follow, &mut active, &mut memo)
             {
                 continue;
             }
@@ -832,31 +827,8 @@ impl<'a> LoopBody<'a> {
             );
         }
 
-        loop {
-            let owned = body
-                .iter()
-                .chain(candidates.iter())
-                .copied()
-                .collect::<BTreeSet<_>>();
-            let foreign = candidates
-                .iter()
-                .copied()
-                .filter(|block| {
-                    self.facts
-                        .predecessors(*block)
-                        .into_iter()
-                        .flatten()
-                        .any(|predecessor| !owned.contains(predecessor))
-                })
-                .collect::<Vec<_>>();
-            if foreign.is_empty() {
-                body.extend(candidates);
-                return;
-            }
-            for block in foreign {
-                candidates.remove(&block);
-            }
-        }
+        self.remove_foreign_entries(body, &mut candidates);
+        body.extend(candidates);
     }
 
     fn abrupt(
@@ -882,65 +854,72 @@ impl<'a> LoopBody<'a> {
             );
         }
 
-        loop {
-            let owned = normal_body
-                .iter()
-                .chain(abrupt.iter())
-                .copied()
-                .collect::<BTreeSet<_>>();
-            let foreign = abrupt
-                .iter()
-                .copied()
-                .filter(|block| {
-                    self.facts
-                        .predecessors(*block)
-                        .into_iter()
-                        .flatten()
-                        .any(|predecessor| !owned.contains(predecessor))
-                })
-                .collect::<Vec<_>>();
-            if foreign.is_empty() {
-                return abrupt;
-            }
-            for block in foreign {
-                abrupt.remove(&block);
+        self.remove_foreign_entries(normal_body, &mut abrupt);
+        abrupt
+    }
+
+    fn remove_foreign_entries(&self, body: &BTreeSet<BlockId>, candidates: &mut BTreeSet<BlockId>) {
+        let mut foreign = candidates
+            .iter()
+            .copied()
+            .filter(|block| {
+                self.facts
+                    .predecessors(*block)
+                    .into_iter()
+                    .flatten()
+                    .any(|parent| !body.contains(parent) && !candidates.contains(parent))
+            })
+            .collect::<Vec<_>>();
+        while let Some(block) = foreign.pop() {
+            if candidates.remove(&block) && !body.contains(&block) {
+                foreign.extend(
+                    self.cfg
+                        .normal_successors(block)
+                        .filter(|target| candidates.contains(target)),
+                );
             }
         }
     }
 
     fn terminating(&self) -> BTreeSet<BlockId> {
-        let dominated = |block: BlockId| {
-            Some(block) != self.follow
-                && self
+        let mut terminating = BTreeSet::new();
+        let mut remaining = BTreeMap::new();
+        for block in self.cfg.block_ids() {
+            if Some(block) == self.follow
+                || !self
                     .facts
                     .semantic_dominators()
                     .dominates(self.header, block)
-        };
-        let mut terminating = self
-            .universe
-            .iter()
-            .copied()
-            .filter(|block| dominated(*block) && LoopExit::is_terminal(self.cfg, *block))
-            .collect::<BTreeSet<_>>();
-        loop {
-            let additions = self
-                .universe
-                .iter()
-                .copied()
-                .filter(|block| dominated(*block) && !terminating.contains(block))
-                .filter(|block| {
-                    let successors = self.cfg.normal_successors(*block).collect::<Vec<_>>();
-                    !successors.is_empty()
-                        && successors
-                            .iter()
-                            .all(|successor| terminating.contains(successor))
-                })
-                .collect::<Vec<_>>();
-            if additions.is_empty() {
-                return terminating;
+            {
+                continue;
             }
-            terminating.extend(additions);
+            if LoopExit::is_terminal(self.cfg, block) {
+                terminating.insert(block);
+            } else {
+                let count = self.cfg.normal_successors(block).count();
+                if count != 0 {
+                    remaining.insert(block, count);
+                }
+            }
         }
+        let mut pending = terminating.iter().copied().collect::<Vec<_>>();
+        while let Some(block) = pending.pop() {
+            // Count edge occurrences on both sides. A switch may have several
+            // distinct case edges leading to the same successor.
+            for &(predecessor, kind) in self.cfg.predecessors_with_kind(block) {
+                if kind.is_exception() {
+                    continue;
+                }
+                if let Some(count) = remaining.get_mut(&predecessor) {
+                    *count -= 1;
+                    if *count == 0 {
+                        terminating.insert(predecessor);
+                        pending.push(predecessor);
+                    }
+                }
+            }
+        }
+        terminating
     }
 
     fn successors(&self, blocks: &BTreeSet<BlockId>) -> BTreeSet<BlockId> {
@@ -1034,14 +1013,7 @@ mod tests {
 
         let facts = ControlFlowFacts::analyze(&cfg).unwrap();
         let analysis = ControlRegionAnalysis::new(&cfg, &facts);
-        let mut candidates = Vec::new();
-        analysis
-            .loop_candidates(
-                cfg.block_ids().into_iter().collect(),
-                LoopConnectivity::Normal,
-                &mut candidates,
-            )
-            .unwrap();
+        let candidates = analysis.normal_loops().unwrap().loops;
 
         let candidate = candidates
             .iter()
@@ -1101,14 +1073,7 @@ mod tests {
         );
 
         let analysis = ControlRegionAnalysis::new(&cfg, &facts);
-        let mut candidates = Vec::new();
-        analysis
-            .loop_candidates(
-                cfg.block_ids().into_iter().collect(),
-                LoopConnectivity::Normal,
-                &mut candidates,
-            )
-            .unwrap();
+        let candidates = analysis.normal_loops().unwrap().loops;
 
         let candidate = candidates
             .iter()
@@ -1140,14 +1105,7 @@ mod tests {
 
         let facts = ControlFlowFacts::analyze(&cfg).unwrap();
         let analysis = ControlRegionAnalysis::new(&cfg, &facts);
-        let mut candidates = Vec::new();
-        analysis
-            .loop_candidates(
-                cfg.block_ids().into_iter().collect(),
-                LoopConnectivity::Normal,
-                &mut candidates,
-            )
-            .unwrap();
+        let candidates = analysis.normal_loops().unwrap().loops;
 
         let candidate = candidates
             .iter()
@@ -1181,14 +1139,7 @@ mod tests {
 
         let facts = ControlFlowFacts::analyze(&cfg).unwrap();
         let analysis = ControlRegionAnalysis::new(&cfg, &facts);
-        let mut candidates = Vec::new();
-        analysis
-            .loop_candidates(
-                cfg.block_ids().into_iter().collect(),
-                LoopConnectivity::Normal,
-                &mut candidates,
-            )
-            .unwrap();
+        let candidates = analysis.normal_loops().unwrap().loops;
 
         let candidate = candidates
             .iter()
@@ -1221,14 +1172,7 @@ mod tests {
 
         let facts = ControlFlowFacts::analyze(&cfg).unwrap();
         let analysis = ControlRegionAnalysis::new(&cfg, &facts);
-        let mut candidates = Vec::new();
-        analysis
-            .loop_candidates(
-                cfg.block_ids().into_iter().collect(),
-                LoopConnectivity::Normal,
-                &mut candidates,
-            )
-            .unwrap();
+        let candidates = analysis.normal_loops().unwrap().loops;
 
         let candidate = candidates
             .iter()
@@ -1262,14 +1206,7 @@ mod tests {
 
         let facts = ControlFlowFacts::analyze(&cfg).unwrap();
         let analysis = ControlRegionAnalysis::new(&cfg, &facts);
-        let mut candidates = Vec::new();
-        analysis
-            .loop_candidates(
-                cfg.block_ids().into_iter().collect(),
-                LoopConnectivity::Normal,
-                &mut candidates,
-            )
-            .unwrap();
+        let candidates = analysis.normal_loops().unwrap().loops;
 
         let candidate = candidates
             .iter()

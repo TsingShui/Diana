@@ -462,6 +462,10 @@ impl LabelReferenceCount {
 }
 
 impl crate::ir::SemanticVisitor for LabelReferenceCount {
+    fn visits_values(&self) -> bool {
+        false
+    }
+
     fn enter_node(&mut self, node: &SemanticNode) {
         if matches!(node, SemanticNode::Leave(leave) if matches!(leave.kind, SemanticLeaveKind::BreakLabel(label) if label == self.target))
         {

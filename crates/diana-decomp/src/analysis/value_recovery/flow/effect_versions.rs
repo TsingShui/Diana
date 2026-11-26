@@ -1,7 +1,5 @@
 //! Path-sensitive source-observable effect stability.
 
-use std::collections::BTreeSet;
-
 use crate::ir::analysis::SemanticFlowPoint;
 
 use super::{effects::EffectSummary, ControlDomain, ValueFlowGraph};
@@ -64,7 +62,7 @@ impl<'a> EffectVersions<'a> {
                         .unwrap_or(false)
             })
             .map(|fact| fact.point)
-            .collect::<BTreeSet<_>>();
+            .collect::<Vec<_>>();
         if !conflicting.is_empty()
             && flow
                 .indexed_reachability()

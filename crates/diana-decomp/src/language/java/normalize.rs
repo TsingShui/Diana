@@ -100,9 +100,9 @@ impl JavaAstTransform for JavaVoidTailLinearizer {
             return Ok(false);
         };
         let Some(JavaStmt::If {
-            condition,
             then_stmt,
             else_stmt: Some(else_stmt),
+            ..
         }) = statements.last()
         else {
             return Ok(false);
@@ -120,16 +120,15 @@ impl JavaAstTransform for JavaVoidTailLinearizer {
             return Ok(false);
         }
 
-        let condition = condition.clone();
         let choose_then = if then_terminal != else_terminal {
             then_terminal
         } else {
             then_cost <= else_cost
         };
         let Some(JavaStmt::If {
+            condition,
             then_stmt,
             else_stmt: Some(else_stmt),
-            ..
         }) = statements.pop()
         else {
             unreachable!("void tail candidate changed before rewrite");
@@ -568,44 +567,46 @@ impl JavaAstNormalizer {
                 false,
             );
         }
-        let nested = match &then_stmt {
+        let then_stmt = match then_stmt {
+            JavaStmt::Block(mut statements)
+                if matches!(
+                    statements.as_slice(),
+                    [JavaStmt::If {
+                        else_stmt: None,
+                        ..
+                    }]
+                ) =>
+            {
+                statements.pop().expect("single nested conditional")
+            }
+            statement => statement,
+        };
+        match then_stmt {
             JavaStmt::If {
-                condition,
+                condition: nested,
                 then_stmt,
                 else_stmt: None,
-            } => Some((condition.clone(), then_stmt.as_ref().clone())),
-            JavaStmt::Block(statements) => match statements.as_slice() {
-                [JavaStmt::If {
-                    condition,
-                    then_stmt,
-                    else_stmt: None,
-                }] => Some((condition.clone(), then_stmt.as_ref().clone())),
-                _ => None,
-            },
-            _ => None,
-        };
-        if let Some((nested_condition, nested_body)) = nested {
-            return (
+            } => (
                 JavaStmt::If {
                     condition: JavaExpr::Binary {
                         left: Box::new(condition),
                         op: JavaBinaryOp::LogicalAnd,
-                        right: Box::new(nested_condition),
+                        right: Box::new(nested),
                     },
-                    then_stmt: Box::new(nested_body),
+                    then_stmt,
                     else_stmt: None,
                 },
                 true,
-            );
+            ),
+            statement => (
+                JavaStmt::If {
+                    condition,
+                    then_stmt: Box::new(statement),
+                    else_stmt: None,
+                },
+                false,
+            ),
         }
-        (
-            JavaStmt::If {
-                condition,
-                then_stmt: Box::new(then_stmt),
-                else_stmt: None,
-            },
-            false,
-        )
     }
 
     fn is_empty(statement: &JavaStmt) -> bool {
@@ -1322,9 +1323,10 @@ impl TerminalBranchLinearizer {
         else {
             unreachable!("terminal branch candidate changed during linearization");
         };
+        let repeated_tail = candidate.duplicates_tail.then(|| tail.clone());
         statements.push(JavaStmt::If {
             condition: condition.negated(),
-            then_stmt: Box::new(JavaStmt::Block(tail.clone())),
+            then_stmt: Box::new(JavaStmt::Block(tail)),
             else_stmt: None,
         });
         match *then_stmt {
@@ -1332,7 +1334,7 @@ impl TerminalBranchLinearizer {
             JavaStmt::Empty => {}
             statement => statements.push(statement),
         }
-        if candidate.duplicates_tail {
+        if let Some(tail) = repeated_tail {
             statements.extend(tail);
         }
     }
@@ -1359,8 +1361,8 @@ impl TerminalBranchLinearizer {
         let original_depth = (then_depth + 1).max(tail_depth);
         let linearized_depth = then_depth.max(tail_depth + 1);
         let lowers_nesting = linearized_depth < original_depth;
-        let lowers_condition_cost = linearized_depth == original_depth
-            && condition.clone().negated().cost() < condition.cost();
+        let lowers_condition_cost =
+            linearized_depth == original_depth && condition.negation_reduces_cost();
         if !lowers_nesting && !lowers_condition_cost {
             return None;
         }

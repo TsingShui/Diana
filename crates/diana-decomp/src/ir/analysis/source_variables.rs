@@ -4,6 +4,7 @@
 //! This analysis first assigns non-interfering values to source variables,
 //! then lowers Phi edge copies into identified Semantic IR basic blocks.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -28,10 +29,7 @@ mod phi;
 
 use interference::{ClassInterference, InterferenceGraph, SsaLiveness};
 use lexical_exits::LexicalExitLowering;
-use phi::{
-    ExceptionalCopyPlacement, PhiCopies, PhiLowering, PhiTypeAnalysis, RequiredPhiValues,
-    RetainedSsaValues, StatementDefinitions,
-};
+use phi::{ExceptionalCopyPlacement, PhiCopies, PhiLowering, PhiTypeAnalysis, SemanticSsaValues};
 
 pub struct SourceVariableAllocation {
     variables: CodeVariables,
@@ -78,22 +76,17 @@ impl SourceVariableAllocation {
         flow: impl FnOnce() -> std::sync::Arc<super::SemanticFlowGraph>,
     ) -> Result<Self, SourceVariableError> {
         let contractions = ControlContractions::for_edge_arguments(cfg, regions);
-        let required_phis =
-            RequiredPhiValues::collect(cfg, values, root, constants, &contractions)?;
-        let statement_definitions = StatementDefinitions::collect(root);
+        let semantic_values = SemanticSsaValues::collect(root);
+        let required_phis = semantic_values.required(cfg, values, constants, &contractions)?;
+        let (mut retained, statement_definitions) = semantic_values.into_retained_and_definitions();
         let mut cleanup_values = regions
             .cleanup_value_bindings()
             .iter()
             .flat_map(|(handler, normal)| [*handler, *normal])
             .collect::<BTreeSet<_>>();
-        let phis_by_result = values
-            .phis()
-            .iter()
-            .map(|phi| (phi.result, phi))
-            .collect::<BTreeMap<_, _>>();
         let mut pending = cleanup_values.iter().copied().collect::<Vec<_>>();
         while let Some(value) = pending.pop() {
-            let Some(phi) = phis_by_result.get(&value) else {
+            let Some(phi) = values.phi(value) else {
                 continue;
             };
             for input in &phi.inputs {
@@ -102,98 +95,77 @@ impl SourceVariableAllocation {
                 }
             }
         }
-        let mut retained = RetainedSsaValues::collect(root);
         retained.extend(required_phis.iter().copied());
         retained.extend(cleanup_values.iter().copied());
         let liveness = SsaLiveness::analyze(cfg, &retained)?;
         let edge_arguments =
             edge_arguments::ContractedEdgeArguments::new(cfg, values, constants, &contractions);
-        let mut interference =
-            InterferenceGraph::build(cfg, root, &liveness, &required_phis, flow)?;
-        interference.add_exceptional_edge_interference(cfg, &liveness, &edge_arguments)?;
         let inputs = SourceInputs::of(cfg);
-        let exception_types = ExceptionValueTypes::collect(root, hierarchy);
+        let candidates = CoalescingCandidates::collect(
+            cfg,
+            values,
+            constants,
+            regions,
+            &cleanup_values,
+            &required_phis,
+            recovered_phis,
+        );
+        // Interference also introduces identities that exist only in recovered
+        // code. Preserve those edges when the CFG does not own every endpoint.
+        let undeclared = |value: SsaVar| values.value(value).is_none() && !inputs.contains(&value);
+        let has_unowned = retained
+            .iter()
+            .chain(&statement_definitions)
+            .copied()
+            .any(undeclared)
+            || candidates
+                .0
+                .iter()
+                .any(|&(left, right, _)| undeclared(left) || undeclared(right));
+        let groups = (!has_unowned).then(|| candidates.groups());
+        let mut interference = InterferenceGraph::build(
+            cfg,
+            root,
+            &liveness,
+            &retained,
+            &required_phis,
+            groups,
+            flow,
+        )?;
+        interference.add_exceptional_edge_interference(
+            cfg,
+            &liveness,
+            &retained,
+            &edge_arguments,
+        )?;
         let phi_types =
             PhiTypeAnalysis::solve(cfg, &required_phis, values, types, constants, hierarchy)?;
-        let mut coalescer = SourceClassCoalescer::new(
-            &inputs,
-            interference,
-            types,
-            values,
-            &exception_types,
-            &phi_types,
-            hierarchy,
-        );
-        if !cfg.method().is_static() {
-            if let Some(this) = inputs.first().copied() {
-                coalescer.fix(this);
-            }
-        }
-        for input in inputs {
-            coalescer.pin(input);
-        }
-        for (handler, normal) in regions.cleanup_value_bindings() {
-            coalescer.coalesce_proven(*handler, *normal);
-        }
-        for phi in values
-            .phis()
-            .iter()
-            .filter(|phi| cleanup_values.contains(&phi.result))
-        {
-            for input in &phi.inputs {
-                coalescer.coalesce_proven(phi.result, input.value);
-            }
-        }
-        let mut coalescing_phis = required_phis
-            .iter()
-            .chain(recovered_phis)
-            .copied()
-            .collect::<BTreeSet<_>>();
-        let mut pending_phis = coalescing_phis.iter().copied().collect::<Vec<_>>();
-        while let Some(result) = pending_phis.pop() {
-            let Some(phi) = phis_by_result.get(&result) else {
-                continue;
-            };
-            for input in &phi.inputs {
-                if phis_by_result.contains_key(&input.value) && coalescing_phis.insert(input.value)
-                {
-                    pending_phis.push(input.value);
+        let variables = if has_unowned || !candidates.0.is_empty() {
+            let exception_types = CatchVariableTypes::collect(root, hierarchy, SsaVar::from_reg);
+            let mut coalescer = SourceClassCoalescer::new(
+                &inputs,
+                interference,
+                types,
+                values,
+                &exception_types,
+                &phi_types,
+                hierarchy,
+            );
+            if !cfg.method().is_static() {
+                if let Some(this) = inputs.first().copied() {
+                    coalescer.fix(this);
                 }
             }
-        }
-        for phi in values
-            .phis()
-            .iter()
-            .filter(|phi| coalescing_phis.contains(&phi.result))
-        {
-            let acyclic = phi
-                .inputs
-                .iter()
-                .filter(|input| !constants.contains_key(&input.value))
-                .all(|input| !regions.semantic_dominates(phi.block, input.predecessor));
-            for input in &phi.inputs {
-                if !constants.contains_key(&input.value) {
-                    let phi_only = values.value(input.value).is_some_and(|value| {
-                        value.uses.iter().all(|usage| {
-                            matches!(
-                                values.use_site(cfg, input.value, *usage),
-                                Some(SsaUseSite::Phi(_))
-                            )
-                        })
-                    });
-                    coalescer.coalesce_phi(phi.result, input.value, acyclic, phi_only);
-                }
+            for &input in &inputs {
+                coalescer.pin(input);
             }
-        }
-        CanonicalCatchParameters::collect(cfg, regions).coalesce(&mut coalescer);
-        for copy in values
-            .copies()
-            .iter()
-            .filter(|copy| !constants.contains_key(&copy.source))
-        {
-            coalescer.coalesce_copy(copy.result, copy.source);
-        }
-        let variables = CodeVariables::from_classes(coalescer.finish());
+            for (left, right, policy) in candidates.0 {
+                coalescer.coalesce(left, right, policy);
+            }
+            CodeVariables::from_classes(coalescer.finish())
+        } else {
+            CodeVariables::from_singletons(values, &inputs)
+        };
         for value in retained {
             if variables.variable_of(value).is_none() {
                 return Err(SourceVariableError::MissingCodeVariable(value));
@@ -278,6 +250,107 @@ impl SourceVariableAllocation {
     }
 }
 
+type CoalescingPairs = smallvec::SmallVec<[(SsaVar, SsaVar, CoalescingPolicy); 4]>;
+
+struct CoalescingCandidates(CoalescingPairs);
+
+impl CoalescingCandidates {
+    fn collect(
+        cfg: &CFG,
+        values: &SsaValueGraph,
+        constants: &BTreeMap<SsaVar, InsnArg>,
+        regions: &RegionGraph,
+        cleanup_values: &BTreeSet<SsaVar>,
+        required_phis: &BTreeSet<SsaVar>,
+        recovered_phis: &BTreeSet<SsaVar>,
+    ) -> Self {
+        let mut pairs = CoalescingPairs::new();
+        for (handler, normal) in regions.cleanup_value_bindings() {
+            pairs.push((*handler, *normal, CoalescingPolicy::SemanticCongruence));
+        }
+        for phi in values
+            .phis()
+            .iter()
+            .filter(|phi| cleanup_values.contains(&phi.result))
+        {
+            for input in &phi.inputs {
+                pairs.push((
+                    phi.result,
+                    input.value,
+                    CoalescingPolicy::SemanticCongruence,
+                ));
+            }
+        }
+        let mut coalescing_phis = required_phis
+            .iter()
+            .chain(recovered_phis)
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let mut pending_phis = coalescing_phis.iter().copied().collect::<Vec<_>>();
+        while let Some(result) = pending_phis.pop() {
+            let Some(phi) = values.phi(result) else {
+                continue;
+            };
+            for input in &phi.inputs {
+                if values.phi(input.value).is_some() && coalescing_phis.insert(input.value) {
+                    pending_phis.push(input.value);
+                }
+            }
+        }
+        for phi in values
+            .phis()
+            .iter()
+            .filter(|phi| coalescing_phis.contains(&phi.result))
+        {
+            let acyclic = phi
+                .inputs
+                .iter()
+                .filter(|input| !constants.contains_key(&input.value))
+                .all(|input| !regions.semantic_dominates(phi.block, input.predecessor));
+            for input in &phi.inputs {
+                if !constants.contains_key(&input.value) {
+                    let phi_only = values.value(input.value).is_some_and(|value| {
+                        value.uses.iter().all(|usage| {
+                            matches!(
+                                values.use_site(cfg, input.value, *usage),
+                                Some(SsaUseSite::Phi(_))
+                            )
+                        })
+                    });
+                    let policy = if acyclic {
+                        CoalescingPolicy::AcyclicPhi { phi_only }
+                    } else {
+                        CoalescingPolicy::AllInterference
+                    };
+                    pairs.push((phi.result, input.value, policy));
+                }
+            }
+        }
+        CanonicalCatchParameters::collect(cfg, regions).append_to(&mut pairs);
+        for copy in values
+            .copies()
+            .iter()
+            .filter(|copy| !constants.contains_key(&copy.source))
+        {
+            pairs.push((copy.result, copy.source, CoalescingPolicy::AllInterference));
+        }
+        Self(pairs)
+    }
+
+    /// Every accepted union is one of these pairs. Even after any sequence of
+    /// accepted and rejected proposals, two roots in different components
+    /// cannot participate in the same interference query.
+    fn groups(&self) -> foldhash::HashMap<SsaVar, SsaVar> {
+        let mut groups = SsaClasses::default();
+        for &(left, right, _) in &self.0 {
+            if left != right {
+                groups.union(left, right);
+            }
+        }
+        groups.into_roots()
+    }
+}
+
 struct CanonicalCatchParameters {
     groups: Vec<Vec<SsaVar>>,
 }
@@ -300,13 +373,13 @@ impl CanonicalCatchParameters {
         }
     }
 
-    fn coalesce(self, coalescer: &mut SourceClassCoalescer<'_>) {
+    fn append_to(self, pairs: &mut CoalescingPairs) {
         for group in self.groups {
             let Some((&representative, rest)) = group.split_first() else {
                 continue;
             };
             for &value in rest {
-                coalescer.coalesce_proven(representative, value);
+                pairs.push((representative, value, CoalescingPolicy::SemanticCongruence));
             }
         }
     }
@@ -355,9 +428,13 @@ impl<'a> ExceptionTypeBinding<'a> {
         types: &'a mut SourceTypeEnvironment,
         hierarchy: &'a dyn super::TypeHierarchy,
     ) -> Result<(), TypeConstraintError> {
+        let seeds = CatchVariableTypes::collect(root, hierarchy, |register| register.code_var);
+        if seeds.is_empty() {
+            return Ok(());
+        }
         let mut binding = Self {
             exception_types: ExceptionTypes::new(hierarchy),
-            seeds: BTreeMap::new(),
+            seeds,
             definitions: BTreeMap::new(),
         };
         binding.visit_node(root);
@@ -413,16 +490,6 @@ impl<'a> ExceptionTypeBinding<'a> {
         }
     }
 
-    fn record_definition(&mut self, result: &RegisterArg, value: &SemanticExpression) {
-        let Some(variable) = result.code_var else {
-            return;
-        };
-        self.definitions
-            .entry(variable)
-            .or_default()
-            .push(Self::classify(value));
-    }
-
     fn classify(mut value: &SemanticExpression) -> ExceptionDefinition {
         loop {
             match value {
@@ -452,85 +519,78 @@ impl<'a> ExceptionTypeBinding<'a> {
 }
 
 impl SemanticVisitor for ExceptionTypeBinding<'_> {
-    fn enter_node(&mut self, node: &SemanticNode) {
-        let SemanticNode::Try { catches, .. } = node else {
-            return;
-        };
-        for catch in catches {
-            let Some(variable) = catch
-                .exception_value
-                .as_ref()
-                .and_then(|exception| exception.code_var)
-            else {
-                continue;
-            };
-            let ty = self.exception_types.merge(&catch.exception_types);
-            self.seeds
-                .entry(variable)
-                .and_modify(|current| {
-                    *current = self.exception_types.merge_pair(current, &ty);
-                })
-                .or_insert(ty);
-        }
-    }
-
     fn visit_statement(&mut self, statement: &crate::ir::SemanticStatement) {
-        match &statement.kind {
+        let (result, definition) = match &statement.kind {
             crate::ir::SemanticStatementKind::Definition { result, value, .. } => {
-                self.record_definition(result, value);
+                (result, Self::classify(value))
             }
             crate::ir::SemanticStatementKind::Instruction(operation) => {
                 let Some(result) = operation.result.as_ref() else {
                     return;
                 };
-                self.record_definition(
-                    result,
-                    &SemanticExpression::Operation(Box::new(operation.clone())),
-                );
+                let definition = match operation.operands() {
+                    [operand] if operation.insn_type == crate::ir::InsnType::Move => {
+                        Self::classify(operand)
+                    }
+                    _ => ExceptionDefinition::Other,
+                };
+                (result, definition)
             }
+        };
+        if let Some(variable) = result.code_var {
+            self.definitions
+                .entry(variable)
+                .or_default()
+                .push(definition);
         }
     }
+
+    fn visit_predicate(&mut self, _: &crate::ir::SemanticPredicate) {}
+
+    fn visit_expression(&mut self, _: &SemanticExpression) {}
 }
 
-struct ExceptionValueTypes;
+struct CatchVariableTypes<'a, K> {
+    types: ExceptionTypes<'a>,
+    key: fn(&RegisterArg) -> Option<K>,
+    values: BTreeMap<K, crate::ir::ArgType>,
+}
 
-impl ExceptionValueTypes {
+impl<'a, K: Ord> CatchVariableTypes<'a, K> {
     fn collect(
         root: &SemanticNode,
-        hierarchy: &dyn super::TypeHierarchy,
-    ) -> BTreeMap<SsaVar, crate::ir::ArgType> {
-        struct Collector<'a> {
-            types: ExceptionTypes<'a>,
-            values: BTreeMap<SsaVar, crate::ir::ArgType>,
-        }
-
-        impl SemanticVisitor for Collector<'_> {
-            fn enter_node(&mut self, node: &SemanticNode) {
-                let SemanticNode::Try { catches, .. } = node else {
-                    return;
-                };
-                for catch in catches {
-                    let Some(value) = catch.exception_value.as_ref().and_then(SsaVar::from_reg)
-                    else {
-                        continue;
-                    };
-                    let ty = self.types.merge(&catch.exception_types);
-                    self.values
-                        .entry(value)
-                        .and_modify(|existing| {
-                            *existing = self.types.merge_pair(existing, &ty);
-                        })
-                        .or_insert(ty);
-                }
-            }
-        }
-
-        let mut collector = Collector {
+        hierarchy: &'a dyn super::TypeHierarchy,
+        key: fn(&RegisterArg) -> Option<K>,
+    ) -> BTreeMap<K, crate::ir::ArgType> {
+        let mut collector = Self {
             types: ExceptionTypes::new(hierarchy),
+            key,
             values: BTreeMap::new(),
         };
         collector.visit_node(root);
         collector.values
+    }
+}
+
+impl<K: Ord> SemanticVisitor for CatchVariableTypes<'_, K> {
+    fn visits_values(&self) -> bool {
+        false
+    }
+
+    fn enter_node(&mut self, node: &SemanticNode) {
+        let SemanticNode::Try { catches, .. } = node else {
+            return;
+        };
+        for catch in catches {
+            let Some(key) = catch.exception_value.as_ref().and_then(self.key) else {
+                continue;
+            };
+            let ty = self.types.merge(&catch.exception_types);
+            self.values
+                .entry(key)
+                .and_modify(|current| *current = self.types.merge_pair(current, &ty))
+                .or_insert(ty);
+        }
     }
 }
 
@@ -546,11 +606,12 @@ impl<'a> ExceptionTypes<'a> {
     }
 
     fn merge(&self, types: &[crate::ir::ArgType]) -> crate::ir::ArgType {
-        types
-            .iter()
-            .cloned()
-            .reduce(|left, right| self.merge_pair(&left, &right))
-            .unwrap_or_else(crate::ir::ArgType::throwable)
+        match types.split_first() {
+            Some((first, rest)) => rest
+                .iter()
+                .fold(first.clone(), |left, right| self.merge_pair(&left, right)),
+            None => crate::ir::ArgType::throwable(),
+        }
     }
 
     fn merge_pair(
@@ -560,7 +621,7 @@ impl<'a> ExceptionTypes<'a> {
     ) -> crate::ir::ArgType {
         self.lattice
             .join(left, right)
-            .filter(|ty| ty != &crate::ir::ArgType::object("java/lang/Object"))
+            .filter(|ty| ty.as_object() != Some("java/lang/Object"))
             .unwrap_or_else(crate::ir::ArgType::throwable)
     }
 }
@@ -568,7 +629,12 @@ impl<'a> ExceptionTypes<'a> {
 struct SourceClassCoalescer<'a> {
     classes: SsaClasses,
     interference: ClassInterference,
-    class_types: BTreeMap<SsaVar, crate::ir::ArgType>,
+    inputs: &'a [SsaVar],
+    types: &'a SsaTypeEnvironment,
+    values: &'a SsaValueGraph,
+    exception_types: &'a BTreeMap<SsaVar, crate::ir::ArgType>,
+    phi_types: &'a BTreeMap<SsaVar, crate::ir::ArgType>,
+    merged_types: BTreeMap<SsaVar, crate::ir::ArgType>,
     type_lattice: SourceTypeLattice<'a>,
     pinned: BTreeSet<SsaVar>,
     fixed: BTreeSet<SsaVar>,
@@ -576,12 +642,12 @@ struct SourceClassCoalescer<'a> {
 
 impl<'a> SourceClassCoalescer<'a> {
     fn new(
-        inputs: &[SsaVar],
+        inputs: &'a [SsaVar],
         interference: InterferenceGraph,
-        types: &SsaTypeEnvironment,
-        values: &SsaValueGraph,
-        exception_types: &BTreeMap<SsaVar, crate::ir::ArgType>,
-        phi_types: &BTreeMap<SsaVar, crate::ir::ArgType>,
+        types: &'a SsaTypeEnvironment,
+        values: &'a SsaValueGraph,
+        exception_types: &'a BTreeMap<SsaVar, crate::ir::ArgType>,
+        phi_types: &'a BTreeMap<SsaVar, crate::ir::ArgType>,
         hierarchy: &'a dyn super::TypeHierarchy,
     ) -> Self {
         let mut classes = SsaClasses::new(
@@ -590,34 +656,17 @@ impl<'a> SourceClassCoalescer<'a> {
                 .map(|value| value.variable)
                 .chain(inputs.iter().copied()),
         );
-        let lattice = SourceTypeLattice::new(hierarchy);
-        let mut class_types: BTreeMap<SsaVar, crate::ir::ArgType> = classes
-            .values()
-            .into_iter()
-            .filter_map(|value| {
-                types
-                    .value_type(value)
-                    .cloned()
-                    .or_else(|| {
-                        values
-                            .value(value)
-                            .and_then(|value| lattice.select_observed(&value.observed_types))
-                    })
-                    .map(|ty| (value, ty))
-            })
-            .collect();
-        class_types.extend(
-            exception_types
-                .iter()
-                .map(|(value, ty)| (*value, ty.clone())),
-        );
-        class_types.extend(phi_types.iter().map(|(value, ty)| (*value, ty.clone())));
         let interference = ClassInterference::from_singletons(interference, &mut classes);
         Self {
             classes,
             interference,
-            class_types,
-            type_lattice: lattice,
+            inputs,
+            types,
+            values,
+            exception_types,
+            phi_types,
+            merged_types: BTreeMap::new(),
+            type_lattice: SourceTypeLattice::new(hierarchy),
             pinned: BTreeSet::new(),
             fixed: BTreeSet::new(),
         }
@@ -633,50 +682,26 @@ impl<'a> SourceClassCoalescer<'a> {
         self.fixed.insert(root);
     }
 
-    fn coalesce_copy(&mut self, left: SsaVar, right: SsaVar) {
-        self.coalesce(left, right, CoalescingPolicy::AllInterference);
-    }
-
-    fn coalesce_proven(&mut self, left: SsaVar, right: SsaVar) {
-        self.coalesce(left, right, CoalescingPolicy::SemanticCongruence);
-    }
-
-    fn coalesce_phi(&mut self, left: SsaVar, right: SsaVar, acyclic: bool, phi_only: bool) {
-        let policy = if acyclic {
-            CoalescingPolicy::AcyclicPhi { phi_only }
-        } else {
-            CoalescingPolicy::AllInterference
-        };
-        self.coalesce(left, right, policy);
-    }
-
     fn coalesce(&mut self, left: SsaVar, right: SsaVar, policy: CoalescingPolicy) {
         let left = self.classes.root(left);
         let right = self.classes.root(right);
-        let merged_type = policy.merged_type(self, left, right);
-        let decision = if left == right {
-            CoalescingDecision::Identical
-        } else if self.fixed.contains(&left) || self.fixed.contains(&right) {
-            CoalescingDecision::Fixed
-        } else if self.pinned.contains(&left) && self.pinned.contains(&right) {
-            CoalescingDecision::Pinned
-        } else if policy.interferes(&self.interference, left, right) {
-            CoalescingDecision::Interference
-        } else if merged_type.is_err() {
-            CoalescingDecision::IncompatibleTypes
-        } else {
-            CoalescingDecision::Merge
-        };
-        if decision != CoalescingDecision::Merge {
+        if left == right
+            || self.fixed.contains(&left)
+            || self.fixed.contains(&right)
+            || (self.pinned.contains(&left) && self.pinned.contains(&right))
+            || policy.interferes(&self.interference, left, right)
+        {
             return;
         }
+        let Ok(merged_type) = policy.merged_type(self, left, right) else {
+            return;
+        };
         self.classes.union(left, right);
         let root = self.classes.root(left);
         let absorbed = if root == left { right } else { left };
-        self.class_types.remove(&left);
-        self.class_types.remove(&right);
-        if let Ok(Some(ty)) = merged_type {
-            self.class_types.insert(root, ty);
+        self.merged_types.remove(&absorbed);
+        if let Some(ty) = merged_type {
+            self.merged_types.insert(root, ty);
         }
         if self.pinned.remove(&absorbed) {
             self.pinned.insert(root);
@@ -687,27 +712,32 @@ impl<'a> SourceClassCoalescer<'a> {
         self.interference.merge(root, absorbed);
     }
 
-    fn merged_type(&self, left: SsaVar, right: SsaVar) -> Result<Option<crate::ir::ArgType>, ()> {
-        match (self.class_types.get(&left), self.class_types.get(&right)) {
-            (Some(left), Some(right)) => self.type_lattice.meet(left, right).map(Some).ok_or(()),
-            (Some(ty), None) | (None, Some(ty)) => Ok(Some(ty.clone())),
-            (None, None) => Ok(None),
+    fn class_type(&self, variable: SsaVar) -> Option<Cow<'_, crate::ir::ArgType>> {
+        if let Some(ty) = self
+            .merged_types
+            .get(&variable)
+            .or_else(|| self.phi_types.get(&variable))
+            .or_else(|| self.exception_types.get(&variable))
+        {
+            return Some(Cow::Borrowed(ty));
         }
+        let value = self.values.value(variable);
+        if value.is_none() && !self.inputs.contains(&variable) {
+            return None;
+        }
+        self.types
+            .value_type(variable)
+            .map(Cow::Borrowed)
+            .or_else(|| {
+                self.type_lattice
+                    .select_observed(&value?.observed_types)
+                    .map(Cow::Owned)
+            })
     }
 
     fn finish(self) -> SsaClasses {
         self.classes
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CoalescingDecision {
-    Identical,
-    Fixed,
-    Pinned,
-    Interference,
-    IncompatibleTypes,
-    Merge,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -736,20 +766,23 @@ impl CoalescingPolicy {
         left: SsaVar,
         right: SsaVar,
     ) -> Result<Option<crate::ir::ArgType>, ()> {
-        match self {
-            Self::AllInterference | Self::SemanticCongruence => coalescer.merged_type(left, right),
-            Self::AcyclicPhi { phi_only } => match (
-                coalescer.class_types.get(&left),
-                coalescer.class_types.get(&right),
-            ) {
-                (Some(left), Some(right)) if left == right => Ok(Some(left.clone())),
-                (Some(left), Some(right)) if phi_only => {
-                    coalescer.type_lattice.join(left, right).map(Some).ok_or(())
-                }
-                (Some(_), Some(_)) => Err(()),
-                (Some(ty), None) | (None, Some(ty)) => Ok(Some(ty.clone())),
-                (None, None) => Ok(None),
+        match (coalescer.class_type(left), coalescer.class_type(right)) {
+            (Some(left), Some(right)) => match self {
+                Self::AllInterference | Self::SemanticCongruence => coalescer
+                    .type_lattice
+                    .meet(&left, &right)
+                    .map(Some)
+                    .ok_or(()),
+                Self::AcyclicPhi { .. } if left == right => Ok(Some(left.into_owned())),
+                Self::AcyclicPhi { phi_only: true } => coalescer
+                    .type_lattice
+                    .join(&left, &right)
+                    .map(Some)
+                    .ok_or(()),
+                Self::AcyclicPhi { phi_only: false } => Err(()),
             },
+            (Some(ty), None) | (None, Some(ty)) => Ok(Some(ty.into_owned())),
+            (None, None) => Ok(None),
         }
     }
 }

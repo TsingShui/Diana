@@ -14,7 +14,7 @@ use crate::ir::{
     ValueRecoveryDiagnostics, CFG,
 };
 
-use super::{UseSite, ValueFlowGraph};
+use super::{UseSite, ValueFlowGraph, ValueRef};
 use crate::analysis::value_recovery::{
     domain::{ControlDomain, DomainLogic},
     ValueRecoveryError,
@@ -224,33 +224,33 @@ struct SelectionCost;
 impl SelectionCost {
     fn of(value: &SemanticExpression) -> usize {
         let mut cost = 0usize;
-        let mut pending = vec![CostNode::Expression(value)];
+        let mut pending = vec![CostNode::expression(value)];
         while let Some(node) = pending.pop() {
             match node {
-                CostNode::Expression(SemanticExpression::Operation(operation)) => {
+                CostNode::Expression(ValueRef::Operation(operation)) => {
                     if !matches!(
                         operation.insn_type,
                         InsnType::Move | InsnType::Const | InsnType::ConstStr
                     ) {
                         cost = cost.saturating_add(1);
                     }
-                    pending.extend(operation.operands().iter().map(CostNode::Expression));
-                    pending.extend(operation.compound_target().map(CostNode::Expression));
+                    pending.extend(operation.operands().iter().map(CostNode::expression));
+                    pending.extend(operation.compound_target().map(CostNode::expression));
                 }
-                CostNode::Expression(SemanticExpression::Select {
+                CostNode::Expression(ValueRef::Select {
                     condition,
                     when_true,
                     when_false,
                 }) => {
                     cost = cost.saturating_add(1);
                     pending.push(CostNode::Predicate(condition));
-                    pending.push(CostNode::Expression(when_false));
-                    pending.push(CostNode::Expression(when_true));
+                    pending.push(CostNode::expression(when_false));
+                    pending.push(CostNode::expression(when_true));
                 }
                 CostNode::Predicate(SemanticPredicate::Test(operation)) => {
                     cost = cost.saturating_add(1);
-                    pending.extend(operation.operands().iter().map(CostNode::Expression));
-                    pending.extend(operation.compound_target().map(CostNode::Expression));
+                    pending.extend(operation.operands().iter().map(CostNode::expression));
+                    pending.extend(operation.compound_target().map(CostNode::expression));
                 }
                 CostNode::Predicate(SemanticPredicate::Not(inner)) => {
                     pending.push(CostNode::Predicate(inner));
@@ -259,8 +259,8 @@ impl SelectionCost {
                 | CostNode::Predicate(SemanticPredicate::Or(terms)) => {
                     pending.extend(terms.iter().map(CostNode::Predicate));
                 }
-                CostNode::Expression(SemanticExpression::Register(_))
-                | CostNode::Expression(SemanticExpression::Literal(_))
+                CostNode::Expression(ValueRef::Register(_))
+                | CostNode::Expression(ValueRef::Literal(_))
                 | CostNode::Predicate(SemanticPredicate::True)
                 | CostNode::Predicate(SemanticPredicate::False) => {}
             }
@@ -271,10 +271,10 @@ impl SelectionCost {
     fn expanded(graph: &ValueFlowGraph<'_>, value: &SemanticExpression) -> usize {
         let mut cost = 0usize;
         let mut expanded = BTreeSet::<SsaVar>::new();
-        let mut pending = vec![CostNode::Expression(value)];
+        let mut pending = vec![CostNode::expression(value)];
         while let Some(node) = pending.pop() {
             match node {
-                CostNode::Expression(SemanticExpression::Register(register)) => {
+                CostNode::Expression(ValueRef::Register(register)) => {
                     let Some(key) = graph.key(register) else {
                         continue;
                     };
@@ -286,30 +286,30 @@ impl SelectionCost {
                         pending.push(CostNode::Expression(definition.expression()));
                     }
                 }
-                CostNode::Expression(SemanticExpression::Operation(operation)) => {
+                CostNode::Expression(ValueRef::Operation(operation)) => {
                     if !matches!(
                         operation.insn_type,
                         InsnType::Move | InsnType::Const | InsnType::ConstStr
                     ) {
                         cost = cost.saturating_add(1);
                     }
-                    pending.extend(operation.operands().iter().map(CostNode::Expression));
-                    pending.extend(operation.compound_target().map(CostNode::Expression));
+                    pending.extend(operation.operands().iter().map(CostNode::expression));
+                    pending.extend(operation.compound_target().map(CostNode::expression));
                 }
-                CostNode::Expression(SemanticExpression::Select {
+                CostNode::Expression(ValueRef::Select {
                     condition,
                     when_true,
                     when_false,
                 }) => {
                     cost = cost.saturating_add(1);
                     pending.push(CostNode::Predicate(condition));
-                    pending.push(CostNode::Expression(when_false));
-                    pending.push(CostNode::Expression(when_true));
+                    pending.push(CostNode::expression(when_false));
+                    pending.push(CostNode::expression(when_true));
                 }
                 CostNode::Predicate(SemanticPredicate::Test(operation)) => {
                     cost = cost.saturating_add(1);
-                    pending.extend(operation.operands().iter().map(CostNode::Expression));
-                    pending.extend(operation.compound_target().map(CostNode::Expression));
+                    pending.extend(operation.operands().iter().map(CostNode::expression));
+                    pending.extend(operation.compound_target().map(CostNode::expression));
                 }
                 CostNode::Predicate(SemanticPredicate::Not(inner)) => {
                     pending.push(CostNode::Predicate(inner));
@@ -318,7 +318,7 @@ impl SelectionCost {
                 | CostNode::Predicate(SemanticPredicate::Or(terms)) => {
                     pending.extend(terms.iter().map(CostNode::Predicate));
                 }
-                CostNode::Expression(SemanticExpression::Literal(_))
+                CostNode::Expression(ValueRef::Literal(_))
                 | CostNode::Predicate(SemanticPredicate::True)
                 | CostNode::Predicate(SemanticPredicate::False) => {}
             }
@@ -328,8 +328,14 @@ impl SelectionCost {
 }
 
 enum CostNode<'a> {
-    Expression(&'a SemanticExpression),
+    Expression(ValueRef<'a>),
     Predicate(&'a SemanticPredicate),
+}
+
+impl<'a> CostNode<'a> {
+    fn expression(value: &'a SemanticExpression) -> Self {
+        Self::Expression(value.into())
+    }
 }
 
 struct SelectionMaterialization<'a> {
@@ -501,15 +507,11 @@ impl<'a> GatedPhiAnalysis<'a> {
     }
 
     pub(super) fn analyze(self) -> Result<GatedPhiRecovery, ValueRecoveryError> {
-        let canonical = self.graph.canonical_values();
+        let canonical = self
+            .graph
+            .canonical_values(&self.graph.classes_by_last_definition());
         let live = self.live_phis();
         let roots = self.graph.semantic_use_roots();
-        let phis = self
-            .graph
-            .phis
-            .iter()
-            .map(|phi| (phi.result, phi))
-            .collect::<BTreeMap<_, _>>();
         let mut expressions = Vec::new();
         let mut specializations = Vec::new();
         let mut eliminated = BTreeSet::new();
@@ -561,9 +563,7 @@ impl<'a> GatedPhiAnalysis<'a> {
                         diagnostics.gated_recovered += 1;
                         recovered_results.insert(expression.result);
                         expressions.push(expression);
-                        for result in
-                            self.materialization_cut(phi, &phis, &pending_materializations)
-                        {
+                        for result in self.materialization_cut(phi, &pending_materializations) {
                             if !committed_materializations.insert(result) {
                                 continue;
                             }
@@ -620,15 +620,18 @@ impl<'a> GatedPhiAnalysis<'a> {
                 .into_iter()
                 .filter(|result| !roots.contains(result) && !required.contains(result)),
         );
-        let ordinal = self
-            .graph
-            .phis
-            .iter()
-            .enumerate()
-            .map(|(index, phi)| (phi.result, index))
-            .collect::<BTreeMap<_, _>>();
-        expressions.sort_by_key(|expression| ordinal.get(&expression.result).copied());
-        specializations.sort_by_key(|specialization| ordinal.get(&specialization.result).copied());
+        if expressions.len() > 1 || specializations.len() > 1 {
+            let ordinal = self
+                .values
+                .phis()
+                .iter()
+                .enumerate()
+                .map(|(index, phi)| (phi.result, index))
+                .collect::<BTreeMap<_, _>>();
+            expressions.sort_by_key(|expression| ordinal.get(&expression.result).copied());
+            specializations
+                .sort_by_key(|specialization| ordinal.get(&specialization.result).copied());
+        }
         Ok(GatedPhiRecovery {
             expressions,
             specializations,
@@ -638,31 +641,25 @@ impl<'a> GatedPhiAnalysis<'a> {
     }
 
     fn live_phis(&self) -> BTreeSet<SsaVar> {
-        let phis = self
-            .graph
-            .phis
-            .iter()
-            .map(|phi| (phi.result, phi))
-            .collect::<BTreeMap<_, _>>();
         let semantic_roots = self.graph.semantic_use_roots();
         let mut live = BTreeSet::new();
-        let mut pending = phis
-            .keys()
-            .filter(|result| semantic_roots.contains(result))
+        let mut pending = semantic_roots
+            .iter()
             .copied()
+            .filter(|&result| self.values.phi(result).is_some())
             .collect::<Vec<_>>();
         while let Some(result) = pending.pop() {
             if !live.insert(result) {
                 continue;
             }
-            let Some(phi) = phis.get(&result) else {
+            let Some(phi) = self.values.phi(result) else {
                 continue;
             };
             pending.extend(
                 phi.inputs
                     .iter()
                     .map(|input| self.graph.copy_source(input.value))
-                    .filter(|input| phis.contains_key(input)),
+                    .filter(|input| self.values.phi(*input).is_some()),
             );
         }
         live
@@ -679,7 +676,6 @@ impl<'a> GatedPhiAnalysis<'a> {
     fn materialization_cut(
         &self,
         root: &crate::ir::analysis::PhiMerge,
-        phis: &BTreeMap<SsaVar, &crate::ir::analysis::PhiMerge>,
         candidates: &BTreeMap<SsaVar, PhiExpression>,
     ) -> BTreeSet<SsaVar> {
         let mut cut = BTreeSet::new();
@@ -693,7 +689,8 @@ impl<'a> GatedPhiAnalysis<'a> {
                 continue;
             }
             pending.extend(
-                phis.get(&result)
+                self.values
+                    .phi(result)
                     .into_iter()
                     .flat_map(|phi| &phi.inputs)
                     .map(|input| self.graph.copy_source(input.value)),
@@ -716,17 +713,12 @@ impl<'a> GatedPhiAnalysis<'a> {
     }
 
     fn phi_order(&self, live: &BTreeSet<SsaVar>) -> Vec<&crate::ir::analysis::PhiMerge> {
-        let phis = self
-            .graph
-            .phis
-            .iter()
-            .map(|phi| (phi.result, phi))
-            .collect::<BTreeMap<_, _>>();
         let mut indegree = live
             .iter()
             .map(|result| {
-                let dependencies = phis
-                    .get(result)
+                let dependencies = self
+                    .values
+                    .phi(*result)
                     .into_iter()
                     .flat_map(|phi| &phi.inputs)
                     .map(|input| self.graph.copy_source(input.value))
@@ -737,8 +729,9 @@ impl<'a> GatedPhiAnalysis<'a> {
             .collect::<BTreeMap<_, _>>();
         let mut successors = BTreeMap::<SsaVar, BTreeSet<SsaVar>>::new();
         for result in live {
-            for input in phis
-                .get(result)
+            for input in self
+                .values
+                .phi(*result)
                 .into_iter()
                 .flat_map(|phi| &phi.inputs)
                 .map(|input| self.graph.copy_source(input.value))
@@ -751,10 +744,10 @@ impl<'a> GatedPhiAnalysis<'a> {
             .iter()
             .filter_map(|(result, degree)| (*degree == 0).then_some(*result))
             .collect::<BTreeSet<_>>();
-        let mut order = Vec::with_capacity(self.graph.phis.len());
+        let mut order = Vec::with_capacity(self.values.phis().len());
         while let Some(result) = ready.pop_first() {
-            if let Some(phi) = phis.get(&result) {
-                order.push(*phi);
+            if let Some(phi) = self.values.phi(result) {
+                order.push(phi);
             }
             for successor in successors.get(&result).into_iter().flatten() {
                 let Some(degree) = indegree.get_mut(successor) else {
@@ -768,8 +761,8 @@ impl<'a> GatedPhiAnalysis<'a> {
         }
         let ordered = order.iter().map(|phi| phi.result).collect::<BTreeSet<_>>();
         order.extend(
-            self.graph
-                .phis
+            self.values
+                .phis()
                 .iter()
                 .filter(|phi| !live.contains(&phi.result) || !ordered.contains(&phi.result)),
         );
@@ -781,12 +774,6 @@ impl<'a> GatedPhiAnalysis<'a> {
         live: &BTreeSet<SsaVar>,
         recovered: &BTreeSet<SsaVar>,
     ) -> BTreeSet<SsaVar> {
-        let phis = self
-            .graph
-            .phis
-            .iter()
-            .map(|phi| (phi.result, phi))
-            .collect::<BTreeMap<_, _>>();
         let mut required = BTreeSet::new();
         let mut pending = live
             .iter()
@@ -794,7 +781,7 @@ impl<'a> GatedPhiAnalysis<'a> {
             .copied()
             .collect::<Vec<_>>();
         while let Some(result) = pending.pop() {
-            let Some(phi) = phis.get(&result) else {
+            let Some(phi) = self.values.phi(result) else {
                 continue;
             };
             for input in &phi.inputs {

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ir::{
-    BoolExpr, InsnArg, InsnType, SemanticExpression, SemanticExpressionFacts, SemanticOperation,
+    BoolExpr, InsnArg, InsnType, SemanticExpression, SemanticOperation, SemanticVisitor,
 };
 
 use super::{
@@ -14,7 +14,7 @@ use super::{
 };
 use super::{
     CanonicalKey, DefinitionFact, RecoveryMode, UseContext, UseFact, UseSite, ValueAction,
-    ValueExpression, ValueFlowGraph, ValueIdentity, ValuePlan,
+    ValueExpression, ValueFlowGraph, ValueIdentity, ValuePlan, ValueRef,
 };
 use crate::analysis::value_recovery::ValueRecoveryError;
 use crate::ir::analysis::SsaVar;
@@ -22,7 +22,6 @@ use crate::ir::analysis::SsaVar;
 pub(super) struct ValuePlanner<'a> {
     facts: SparseValueFacts<'a>,
     mode: RecoveryMode,
-    has_predicate_uses: bool,
     early_returns: bool,
 }
 
@@ -45,6 +44,30 @@ enum DefinitionProvenance {
     Value(crate::ir::InstructionId),
 }
 
+/// Only uses in the current identity space participate in a replacement
+/// dependency. Source and SSA identities use the same operand visitor.
+struct ExpressionInputs {
+    identity: ValueIdentity,
+    keys: BTreeSet<SsaVar>,
+}
+
+impl ExpressionInputs {
+    fn new(identity: ValueIdentity) -> Self {
+        Self {
+            identity,
+            keys: BTreeSet::new(),
+        }
+    }
+}
+
+impl SemanticVisitor for ExpressionInputs {
+    fn visit_register(&mut self, register: &crate::ir::RegisterArg) {
+        if let Some(key) = self.identity.key(register) {
+            self.keys.insert(key);
+        }
+    }
+}
+
 /// Bounded source-level cost model for duplicating a value at control uses.
 ///
 /// Predicate rematerialization is useful for VM instructions such as `cmp-*`:
@@ -58,7 +81,7 @@ impl RematerializationModel {
     const MAX_OPERATIONS: usize = 3;
     const MAX_TRANSPARENT_USES: usize = 4;
 
-    fn accepts(expression: &SemanticExpression) -> bool {
+    fn accepts(expression: ValueRef<'_>) -> bool {
         let mut pending = vec![expression];
         let mut nodes = 0usize;
         let mut operations = 0usize;
@@ -68,16 +91,16 @@ impl RematerializationModel {
                 return false;
             }
             match expression {
-                SemanticExpression::Register(_) | SemanticExpression::Literal(_) => {}
-                SemanticExpression::Operation(operation) => {
+                ValueRef::Register(_) | ValueRef::Literal(_) => {}
+                ValueRef::Operation(operation) => {
                     operations += 1;
                     if operations > Self::MAX_OPERATIONS {
                         return false;
                     }
-                    pending.extend(operation.operands());
-                    pending.extend(operation.compound_target());
+                    pending.extend(operation.operands().iter().map(ValueRef::from));
+                    pending.extend(operation.compound_target().map(ValueRef::from));
                 }
-                SemanticExpression::Select { .. } => return false,
+                ValueRef::Select { .. } => return false,
             }
         }
         true
@@ -90,14 +113,9 @@ impl<'a> ValuePlanner<'a> {
         mode: RecoveryMode,
     ) -> Result<Self, ValueRecoveryError> {
         let facts = SparseValueFacts::analyze(graph)?;
-        let has_predicate_uses = facts.uses().values().any(|uses| {
-            uses.iter()
-                .any(|usage| usage.context == UseContext::Predicate)
-        });
         Ok(Self {
             facts,
             mode,
-            has_predicate_uses,
             early_returns: crate::ir::trivial_early_returns(),
         })
     }
@@ -106,7 +124,7 @@ impl<'a> ValuePlanner<'a> {
         self.facts.graph()
     }
 
-    pub(super) fn schedule(&self) -> Result<ValuePlan, ValueRecoveryError> {
+    pub(super) fn schedule(self) -> Result<ValuePlan, ValueRecoveryError> {
         let mut actions = self
             .graph()
             .identity_statements
@@ -120,24 +138,21 @@ impl<'a> ValuePlanner<'a> {
             if self.graph().is_retained(*key) || self.graph().is_bound(*key) {
                 continue;
             }
-            if let Some(action) =
-                self.dead_source_definitions_action(definitions, self.facts.uses_of(*key))?
-            {
+            let uses = self.facts.uses_of(*key);
+            if let Some(action) = self.dead_source_definitions_action(definitions, uses)? {
                 actions.push(action);
                 continue;
             }
-            if let Some(action) =
-                self.redundant_merge_action(definitions, self.facts.uses_of(*key))?
-            {
+            if let Some(action) = self.redundant_merge_action(definitions, uses)? {
                 actions.push(action);
                 continue;
             }
             if definitions.len() > 1
-                && !self.facts.uses().contains_key(key)
+                && uses.is_empty()
                 && !self.facts.required_phi_input(*key)
                 && definitions
                     .iter()
-                    .all(|definition| EffectSummary::expression(definition.expression()).is_pure())
+                    .all(|definition| definition.effects().is_pure())
             {
                 actions.push(ValueAction::Remove {
                     event: definitions
@@ -150,38 +165,29 @@ impl<'a> ValuePlanner<'a> {
                 continue;
             }
             if definitions.len() > 1 {
-                if let Some(action) = self.constant_class_action(
-                    definitions,
-                    self.facts.uses_of(*key),
-                    self.facts.replacement(*key),
-                ) {
+                if let Some(action) =
+                    self.constant_class_action(definitions, uses, self.facts.replacement(*key))
+                {
                     actions.push(action);
                     continue;
                 }
-                if let Some(action) =
-                    self.congruent_class_action(definitions, self.facts.uses_of(*key))?
-                {
+                if let Some(action) = self.congruent_class_action(definitions, uses)? {
                     actions.push(action);
                     continue;
                 }
             }
             let [definition] = definitions.as_slice() else {
                 if Self::has_replicated_origin(definitions) {
-                    if let Some(action) =
-                        self.source_selection_action(definitions, self.facts.uses_of(*key))?
-                    {
+                    if let Some(action) = self.source_selection_action(definitions, uses)? {
                         actions.push(action);
                     }
                     continue;
                 }
-                if let Some(action) =
-                    self.action_for_class(definitions, self.facts.uses_of(*key))?
-                {
+                if let Some(action) = self.action_for_class(definitions, uses)? {
                     actions.push(action);
                 }
                 continue;
             };
-            let uses = self.facts.uses_of(definition.key);
             let replacement = self.facts.replacement(definition.key);
             if let Some(action) = self.action_for(definition, uses, replacement)? {
                 actions.push(action);
@@ -192,11 +198,10 @@ impl<'a> ValuePlanner<'a> {
         self.phi_actions(&mut actions);
         self.retain_replacement_frontier(&mut actions)?;
         actions.sort_by_key(|action| std::cmp::Reverse(action.event()));
-        let constants = self.facts.constants();
         Ok(ValuePlan {
             has_select: self.graph().has_select,
             actions,
-            constants,
+            constants: self.facts.into_ssa_constants(),
         })
     }
 
@@ -210,7 +215,7 @@ impl<'a> ValuePlanner<'a> {
         if uses.is_empty()
             || !definitions
                 .iter()
-                .all(|definition| EffectSummary::expression(definition.expression()).is_pure())
+                .all(|definition| definition.effects().is_pure())
         {
             return None;
         }
@@ -255,7 +260,7 @@ impl<'a> ValuePlanner<'a> {
         if definitions
             .iter()
             .skip(1)
-            .any(|definition| !self.same_expression(expression, definition.expression()))
+            .any(|definition| !self.same_argument(expression, definition.expression()))
         {
             return Ok(None);
         }
@@ -290,7 +295,7 @@ impl<'a> ValuePlanner<'a> {
                 .max()
                 .unwrap_or_default(),
             key: definitions[0].key,
-            expression: expression.clone(),
+            expression: definitions[0].owned_expression(),
         }))
     }
 
@@ -314,103 +319,83 @@ impl<'a> ValuePlanner<'a> {
         if replacement_keys.len() < 2 {
             return Ok(());
         }
-        let blocking_keys = if self.graph().identity() == ValueIdentity::Source {
-            replacement_keys.clone()
-        } else {
-            let mut keys = BTreeSet::new();
-            for action in actions.iter() {
-                let Some(key) = Self::replacement_key(action) else {
-                    continue;
-                };
-                if Self::replacement_has_effect(action)? {
-                    keys.insert(key);
-                }
-            }
-            loop {
-                let mut discovered = BTreeSet::new();
-                for action in actions.iter() {
-                    let Some(key) = Self::replacement_key(action) else {
-                        continue;
-                    };
-                    if keys.contains(&key) {
-                        continue;
-                    }
-                    let mut dependencies = self.replacement_dependencies(action)?;
-                    dependencies.remove(&key);
-                    if !dependencies.is_disjoint(&keys) {
-                        discovered.insert(key);
-                    }
-                }
-                if discovered.is_empty() {
-                    break;
-                }
-                keys.extend(discovered);
-            }
-            keys
-        };
-        if blocking_keys.is_empty() {
-            return Ok(());
-        }
-        let ssa_identity = self.graph().identity() == ValueIdentity::Ssa;
-        let mut deferred_keys = BTreeSet::new();
+        let ssa = self.graph().identity() == ValueIdentity::Ssa;
+        let mut dependencies = Vec::with_capacity(replacement_keys.len());
+        let mut blocking = BTreeSet::new();
         for action in actions.iter() {
             let Some(key) = Self::replacement_key(action) else {
                 continue;
             };
-            let mut dependencies = self.replacement_dependencies(action)?;
-            dependencies.remove(&key);
-            if dependencies.is_disjoint(&blocking_keys) {
-                continue;
+            let mut inputs = ExpressionInputs::new(self.graph().identity());
+            let mut effectful = false;
+            Self::visit_replacements(action, |expression| {
+                inputs.visit_expression(expression);
+                effectful = effectful || (ssa && !EffectSummary::expression(expression).is_pure());
+            })?;
+            inputs.keys.remove(&key);
+            if !ssa || effectful {
+                blocking.insert(key);
             }
-            if !ssa_identity
-                || self.facts.uses_of(key).len() > 1
-                || self.replacement_changes_execution_context(key, &dependencies, &blocking_keys)
-            {
-                deferred_keys.insert(key);
-            }
+            dependencies.push((key, inputs.keys));
         }
-        if ssa_identity {
-            // A canonical replacement may jump over register moves.  If an
-            // intermediate alias fans out, composing every replacement in one
-            // round would clone the effectful producer at those uses.
-            // Carry that boundary through the actual move chain, including
-            // aliases whose canonical replacement points straight at the
-            // producer.  Do not cross arithmetic or Phi definitions: those
-            // are distinct state transitions whose old/new ordering must stay
-            // available to the current schedule.
-            loop {
-                let discovered = actions
-                    .iter()
-                    .filter_map(Self::replacement_key)
-                    .filter(|key| !deferred_keys.contains(key))
-                    .filter(|key| {
-                        self.graph()
-                            .definitions
-                            .get(key)
-                            .into_iter()
-                            .flatten()
-                            .filter_map(|definition| self.register_move_source(definition))
-                            .any(|dependency| deferred_keys.contains(&dependency))
-                    })
-                    .collect::<BTreeSet<_>>();
-                if discovered.is_empty() {
-                    break;
+        if blocking.is_empty() {
+            return Ok(());
+        }
+        if ssa && blocking.len() < replacement_keys.len() {
+            let mut dependents = BTreeMap::new();
+            for (key, inputs) in &dependencies {
+                for input in inputs.intersection(&replacement_keys) {
+                    dependents.entry(*input).or_insert_with(Vec::new).push(*key);
                 }
-                deferred_keys.extend(discovered);
+            }
+            Self::extend_dependents(&mut blocking, &dependents);
+        }
+        let mut deferred = BTreeSet::new();
+        for (key, inputs) in dependencies {
+            if !inputs.is_disjoint(&blocking)
+                && (!ssa
+                    || self.facts.uses_of(key).len() > 1
+                    || self.replacement_changes_execution_context(key, &inputs, &blocking))
+            {
+                deferred.insert(key);
             }
         }
-        let mut retained = Vec::with_capacity(actions.len());
-        for action in std::mem::take(actions) {
-            let Some(key) = Self::replacement_key(&action) else {
-                retained.push(action);
-                continue;
-            };
-            if !deferred_keys.contains(&key) {
-                retained.push(action);
-            }
+        if deferred.is_empty() {
+            return Ok(());
         }
-        *actions = retained;
+        if ssa {
+            // A canonical alias can bypass an intermediate move that fans out.
+            // Carry its execution boundary through actual copy edges only.
+            let mut copies = BTreeMap::new();
+            for &key in &replacement_keys {
+                for source in self
+                    .graph()
+                    .definitions
+                    .get(&key)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|definition| self.register_move_source(definition))
+                {
+                    copies.entry(source).or_insert_with(Vec::new).push(key);
+                }
+            }
+            Self::extend_dependents(&mut deferred, &copies);
+        }
+        actions.retain(|action| {
+            Self::replacement_key(action).is_none_or(|key| !deferred.contains(&key))
+        });
         Ok(())
+    }
+
+    fn extend_dependents(keys: &mut BTreeSet<SsaVar>, dependents: &BTreeMap<SsaVar, Vec<SsaVar>>) {
+        let mut pending = keys.iter().copied().collect::<Vec<_>>();
+        while let Some(key) = pending.pop() {
+            for &next in dependents.get(&key).into_iter().flatten() {
+                if keys.insert(next) {
+                    pending.push(next);
+                }
+            }
+        }
     }
 
     // A register copy can acquire a throwing producer when replacements are
@@ -459,42 +444,30 @@ impl<'a> ValuePlanner<'a> {
         }
     }
 
-    fn replacement_dependencies(
-        &self,
+    fn visit_replacements(
         action: &ValueAction,
-    ) -> Result<BTreeSet<SsaVar>, ValueRecoveryError> {
-        Ok(Self::replacement_expressions(action)?
-            .iter()
-            .flat_map(|expression| self.expression_variables(expression))
-            .collect())
-    }
-
-    fn replacement_has_effect(action: &ValueAction) -> Result<bool, ValueRecoveryError> {
-        Ok(Self::replacement_expressions(action)?
-            .iter()
-            .any(|expression| !EffectSummary::expression(expression).is_pure()))
-    }
-
-    fn replacement_expressions(
-        action: &ValueAction,
-    ) -> Result<Vec<SemanticExpression>, ValueRecoveryError> {
-        Ok(match action {
+        mut visit: impl FnMut(&SemanticExpression),
+    ) -> Result<(), ValueRecoveryError> {
+        match action {
             ValueAction::Propagate { replacement, .. } => {
-                vec![SemanticExpression::from_argument(replacement.clone())?]
+                visit(&SemanticExpression::from_argument(replacement.clone())?);
             }
-            ValueAction::Inline { expression, .. } => vec![expression.clone()],
-            ValueAction::InlineAt { replacements, .. } => replacements
-                .iter()
-                .map(|(_, replacement)| replacement.value.clone())
-                .collect(),
-            ValueAction::ReplaceAt { replacements, .. } => replacements
-                .iter()
-                .map(|(_, replacement)| SemanticExpression::from_argument(replacement.clone()))
-                .collect::<Result<Vec<_>, _>>()?,
+            ValueAction::Inline { expression, .. } => visit(expression),
+            ValueAction::InlineAt { replacements, .. } => {
+                for (_, replacement) in replacements {
+                    visit(&replacement.value);
+                }
+            }
+            ValueAction::ReplaceAt { replacements, .. } => {
+                for (_, replacement) in replacements {
+                    visit(&SemanticExpression::from_argument(replacement.clone())?);
+                }
+            }
             ValueAction::EliminateStatements { .. }
             | ValueAction::Remove { .. }
-            | ValueAction::DiscardResult { .. } => Vec::new(),
-        })
+            | ValueAction::DiscardResult { .. } => {}
+        }
+        Ok(())
     }
 
     /// Removes individual source definitions killed before every feasible use.
@@ -553,8 +526,8 @@ impl<'a> ValuePlanner<'a> {
             let Some(site) = current.site else {
                 continue;
             };
-            let value = Self::canonical_expression(&current.value);
-            let SemanticExpression::Select {
+            let value = Self::canonical_expression(current.expression());
+            let ValueRef::Select {
                 when_true,
                 when_false,
                 ..
@@ -562,7 +535,7 @@ impl<'a> ValuePlanner<'a> {
             else {
                 continue;
             };
-            if !EffectSummary::expression(&current.value).is_pure() {
+            if !current.effects().is_pure() {
                 continue;
             }
             let true_key = self.expression_key(when_true);
@@ -571,13 +544,13 @@ impl<'a> ValuePlanner<'a> {
                 true_key == Some(current.key),
                 false_key == Some(current.key),
             ) {
-                (true, false) => when_false.as_ref(),
-                (false, true) => when_true.as_ref(),
+                (true, false) => when_false,
+                (false, true) => when_true,
                 _ => {
                     continue;
                 }
             };
-            if self.expression_depends_on(replacement, current.key) {
+            if self.expression_depends_on(replacement.into(), current.key) {
                 continue;
             }
             let selected_uses = uses
@@ -666,11 +639,11 @@ impl<'a> ValuePlanner<'a> {
         replacement: &SemanticExpression,
         current: &DefinitionFact,
     ) -> bool {
-        if self.same_expression(&candidate.value, replacement) {
+        if self.same_argument(candidate.expression(), replacement.into()) {
             return true;
         }
         current.result.ty.is_reference()
-            && candidate.value.literal_value() == Some(0)
+            && matches!(Self::canonical_expression(candidate.expression()), ValueRef::Literal(literal) if literal.value == 0)
             && replacement.literal_value() == Some(0)
     }
 
@@ -701,7 +674,9 @@ impl<'a> ValuePlanner<'a> {
             return Ok(Some(action));
         }
         let inline = match self.mode {
-            RecoveryMode::Structural if !self.has_predicate_uses && self.early_returns => false,
+            RecoveryMode::Structural if !self.graph().has_predicate_uses && self.early_returns => {
+                false
+            }
             RecoveryMode::Structural => uses
                 .first()
                 .is_some_and(|usage| usage.context == UseContext::Predicate),
@@ -778,7 +753,7 @@ impl<'a> ValuePlanner<'a> {
         let mut expanded = BTreeSet::new();
         while let Some(expression) = pending.pop() {
             match expression {
-                SemanticExpression::Register(register) => {
+                ValueRef::Register(register) => {
                     let Some(key) = self.graph().key(register) else {
                         continue;
                     };
@@ -793,16 +768,16 @@ impl<'a> ValuePlanner<'a> {
                         pending.push(producer.expression());
                     }
                 }
-                SemanticExpression::Literal(_) => {}
-                SemanticExpression::Operation(operation)
+                ValueRef::Literal(_) => {}
+                ValueRef::Operation(operation)
                     if matches!(
                         operation.insn_type,
                         InsnType::Move | InsnType::Const | InsnType::Cast
                     ) && operation.operands().len() == 1 =>
                 {
-                    pending.push(&operation.operands()[0]);
+                    pending.push((&operation.operands()[0]).into());
                 }
-                SemanticExpression::Operation(_) | SemanticExpression::Select { .. } => {
+                ValueRef::Operation(_) | ValueRef::Select { .. } => {
                     return false;
                 }
             }
@@ -932,11 +907,11 @@ impl<'a> ValuePlanner<'a> {
         }
         let mut value = definition.expression();
         loop {
-            let SemanticExpression::Operation(operation) = value else {
+            let ValueRef::Operation(operation) = value else {
                 return None;
             };
             if operation.insn_type == InsnType::Move && operation.operands().len() == 1 {
-                value = &operation.operands()[0];
+                value = (&operation.operands()[0]).into();
                 continue;
             }
             return operation
@@ -1093,10 +1068,10 @@ impl<'a> ValuePlanner<'a> {
                     return Ok(None);
                 }
             };
-        if !self.expression_visible_at(&expression, usage.scope) {
+        if !self.expression_visible_at((&expression).into(), usage.scope) {
             return Ok(None);
         }
-        if self.expression_depends_on(&expression, definitions[0].key) {
+        if self.expression_depends_on((&expression).into(), definitions[0].key) {
             return Ok(None);
         };
         Ok(Some(ValueAction::InlineAt {
@@ -1200,16 +1175,12 @@ impl<'a> ValuePlanner<'a> {
         if !self.facts.reaching_supports(source, target) {
             return false;
         }
-        let facts = SemanticExpressionFacts::of_operation(predicate);
-        match self.graph().identity() {
-            ValueIdentity::Ssa => facts
-                .used_ssa_variables()
-                .all(|key| self.facts.reaching_unchanged(key, source, target)),
-            ValueIdentity::Source => facts
-                .used_variables()
-                .map(|variable| SsaVar::new(variable, 0))
-                .all(|key| self.facts.reaching_unchanged(key, source, target)),
-        }
+        let mut inputs = ExpressionInputs::new(self.graph().identity());
+        inputs.visit_operation(predicate);
+        inputs
+            .keys
+            .into_iter()
+            .all(|key| self.facts.reaching_unchanged(key, source, target))
     }
 
     fn match_definitions(
@@ -1309,7 +1280,7 @@ impl<'a> ValuePlanner<'a> {
     }
 
     fn unused_action(&self, definition: &DefinitionFact) -> Option<ValueAction> {
-        if EffectSummary::expression(definition.expression()).is_pure() {
+        if definition.effects().is_pure() {
             return Some(ValueAction::Remove {
                 event: definition.event,
                 key: definition.key,
@@ -1508,7 +1479,7 @@ impl<'a> ValuePlanner<'a> {
         if !self.facts.reaching_supports(source, target) {
             return false;
         }
-        self.expression_variables(definition.expression())
+        self.definition_variables(definition)
             .into_iter()
             .filter(|key| *key != definition.key)
             .all(|key| self.facts.reaching_unchanged(key, source, target))
@@ -1526,60 +1497,55 @@ impl<'a> ValuePlanner<'a> {
             && left
                 .into_iter()
                 .zip(right)
-                .all(|(left, right)| self.same_argument(left, right))
+                .all(|(left, right)| self.same_argument(left.into(), right.into()))
     }
 
-    fn same_argument(&self, left: &SemanticExpression, right: &SemanticExpression) -> bool {
+    fn same_argument(&self, left: ValueRef<'_>, right: ValueRef<'_>) -> bool {
         let left = Self::canonical_expression(left);
         let right = Self::canonical_expression(right);
         match (left, right) {
-            (SemanticExpression::Register(left), SemanticExpression::Register(right)) => {
+            (ValueRef::Register(left), ValueRef::Register(right)) => {
                 self.graph().key(left) == self.graph().key(right)
             }
-            (SemanticExpression::Literal(left), SemanticExpression::Literal(right)) => {
-                left == right
-            }
-            (SemanticExpression::Operation(left), SemanticExpression::Operation(right)) => {
+            (ValueRef::Literal(left), ValueRef::Literal(right)) => left == right,
+            (ValueRef::Operation(left), ValueRef::Operation(right)) => {
                 self.same_operation(left, right)
             }
             (
-                SemanticExpression::Select {
+                ValueRef::Select {
                     condition: left_condition,
                     when_true: left_true,
                     when_false: left_false,
                 },
-                SemanticExpression::Select {
+                ValueRef::Select {
                     condition: right_condition,
                     when_true: right_true,
                     when_false: right_false,
                 },
             ) => {
                 self.same_predicate(left_condition, right_condition)
-                    && self.same_argument(left_true, right_true)
-                    && self.same_argument(left_false, right_false)
+                    && self.same_argument(left_true.into(), right_true.into())
+                    && self.same_argument(left_false.into(), right_false.into())
             }
             _ => false,
         }
     }
 
-    fn same_expression(&self, left: &SemanticExpression, right: &SemanticExpression) -> bool {
-        self.same_argument(left, right)
-    }
-
     fn expression_key(&self, value: &SemanticExpression) -> Option<SsaVar> {
-        Self::canonical_expression(value)
-            .as_register()
-            .and_then(|register| self.graph().key(register))
+        match Self::canonical_expression(value.into()) {
+            ValueRef::Register(register) => self.graph().key(register),
+            _ => None,
+        }
     }
 
-    fn canonical_expression(mut value: &SemanticExpression) -> &SemanticExpression {
-        while let SemanticExpression::Operation(operation) = value {
+    fn canonical_expression(mut value: ValueRef<'_>) -> ValueRef<'_> {
+        while let ValueRef::Operation(operation) = value {
             if !matches!(operation.insn_type, InsnType::Const | InsnType::Move)
                 || operation.operands().len() != 1
             {
                 break;
             }
-            value = &operation.operands()[0];
+            value = (&operation.operands()[0]).into();
         }
         value
     }
@@ -1638,36 +1604,32 @@ impl<'a> ValuePlanner<'a> {
         SelectedValue::Expression(ordinal)
     }
 
-    fn expression_visible_at(
-        &self,
-        expression: &SemanticExpression,
-        scope: super::ScopeId,
-    ) -> bool {
+    fn expression_visible_at(&self, expression: ValueRef<'_>, scope: super::ScopeId) -> bool {
         let mut expressions = vec![expression];
         let mut predicates = Vec::new();
         while let Some(expression) = expressions.pop() {
             match expression {
-                SemanticExpression::Register(register) => {
+                ValueRef::Register(register) => {
                     if !self.register_visible_at(register, scope) {
                         return false;
                     }
                 }
-                SemanticExpression::Operation(operation) => {
+                ValueRef::Operation(operation) => {
                     let Ok(operands) = operation.evaluation_operands_iter() else {
                         return false;
                     };
-                    expressions.extend(operands);
+                    expressions.extend(operands.map(ValueRef::from));
                 }
-                SemanticExpression::Select {
+                ValueRef::Select {
                     condition,
                     when_true,
                     when_false,
                 } => {
                     predicates.push(condition);
-                    expressions.push(when_false);
-                    expressions.push(when_true);
+                    expressions.push(when_false.into());
+                    expressions.push(when_true.into());
                 }
-                SemanticExpression::Literal(_) => {}
+                ValueRef::Literal(_) => {}
             }
         }
         while let Some(predicate) = predicates.pop() {
@@ -1676,7 +1638,7 @@ impl<'a> ValuePlanner<'a> {
                     let Ok(operands) = operation.evaluation_operands_iter() else {
                         return false;
                     };
-                    expressions.extend(operands);
+                    expressions.extend(operands.map(ValueRef::from));
                 }
                 crate::ir::SemanticPredicate::Not(inner) => predicates.push(inner),
                 crate::ir::SemanticPredicate::And(terms)
@@ -1737,43 +1699,43 @@ impl<'a> ValuePlanner<'a> {
         if !self.facts.reaching_supports(source, target_point) {
             return false;
         }
-        self.expression_variables(definition.expression())
+        self.definition_variables(definition)
             .into_iter()
             .all(|key| key != target && self.facts.reaching_unchanged(key, source, target_point))
     }
 
     fn operation_depends_on(&self, operation: &SemanticOperation, key: SsaVar) -> bool {
         match operation.evaluation_operands_iter() {
-            Ok(mut operands) => operands.any(|operand| self.expression_depends_on(operand, key)),
+            Ok(mut operands) => {
+                operands.any(|operand| self.expression_depends_on(operand.into(), key))
+            }
             Err(_) => true,
         }
     }
 
-    fn expression_depends_on(&self, expression: &SemanticExpression, key: SsaVar) -> bool {
+    fn expression_depends_on(&self, expression: ValueRef<'_>, key: SsaVar) -> bool {
         let mut expressions = vec![expression];
         let mut predicates = Vec::new();
         while let Some(expression) = expressions.pop() {
             match expression {
-                SemanticExpression::Register(register)
-                    if self.graph().key(register) == Some(key) =>
-                {
+                ValueRef::Register(register) if self.graph().key(register) == Some(key) => {
                     return true;
                 }
-                SemanticExpression::Register(_) | SemanticExpression::Literal(_) => {}
-                SemanticExpression::Operation(operation) => {
+                ValueRef::Register(_) | ValueRef::Literal(_) => {}
+                ValueRef::Operation(operation) => {
                     let Ok(operands) = operation.evaluation_operands_iter() else {
                         return true;
                     };
-                    expressions.extend(operands);
+                    expressions.extend(operands.map(ValueRef::from));
                 }
-                SemanticExpression::Select {
+                ValueRef::Select {
                     condition,
                     when_true,
                     when_false,
                 } => {
                     predicates.push(condition);
-                    expressions.push(when_false);
-                    expressions.push(when_true);
+                    expressions.push(when_false.into());
+                    expressions.push(when_true.into());
                 }
             }
         }
@@ -1782,15 +1744,10 @@ impl<'a> ValuePlanner<'a> {
             .any(|predicate| self.predicate_depends_on(predicate, key))
     }
 
-    fn expression_variables(&self, expression: &SemanticExpression) -> BTreeSet<SsaVar> {
-        let facts = SemanticExpressionFacts::of_expression(expression);
-        match self.graph().identity() {
-            ValueIdentity::Ssa => facts.used_ssa_variables().collect(),
-            ValueIdentity::Source => facts
-                .used_variables()
-                .map(|variable| SsaVar::new(variable, 0))
-                .collect(),
-        }
+    fn definition_variables(&self, definition: &DefinitionFact) -> BTreeSet<SsaVar> {
+        let mut inputs = ExpressionInputs::new(self.graph().identity());
+        inputs.visit_statement(definition.statement);
+        inputs.keys
     }
 
     fn predicate_depends_on(&self, predicate: &crate::ir::SemanticPredicate, key: SsaVar) -> bool {
@@ -1815,7 +1772,7 @@ impl<'a> ValuePlanner<'a> {
         match definition.operation() {
             Some(operation) => Self::relocatable_effect(operation),
             None => {
-                let effect = EffectSummary::expression(definition.expression());
+                let effect = definition.effects();
                 effect.can_relocate().then_some(effect)
             }
         }
@@ -1829,12 +1786,12 @@ impl<'a> ValuePlanner<'a> {
         &self,
         definition: &DefinitionFact,
     ) -> Option<EffectSummary> {
-        let mut effect = EffectSummary::expression(definition.expression());
+        let mut effect = definition.effects();
         let mut pending = vec![definition.expression()];
         let mut visited = BTreeSet::new();
         while let Some(expression) = pending.pop() {
             match expression {
-                SemanticExpression::Register(register) => {
+                ValueRef::Register(register) => {
                     let Some(key) = self.graph().key(register) else {
                         continue;
                     };
@@ -1845,28 +1802,28 @@ impl<'a> ValuePlanner<'a> {
                         continue;
                     };
                     for dependency in definitions {
-                        effect = effect.join(EffectSummary::expression(dependency.expression()));
+                        effect = effect.join(dependency.effects());
                         pending.push(dependency.expression());
                     }
                 }
-                SemanticExpression::Operation(operation) => {
-                    pending.extend(operation.operands());
-                    pending.extend(operation.compound_target());
+                ValueRef::Operation(operation) => {
+                    pending.extend(operation.operands().iter().map(ValueRef::from));
+                    pending.extend(operation.compound_target().map(ValueRef::from));
                 }
-                SemanticExpression::Select {
+                ValueRef::Select {
                     condition,
                     when_true,
                     when_false,
                 } => {
-                    pending.push(when_true);
-                    pending.push(when_false);
+                    pending.push(when_true.into());
+                    pending.push(when_false.into());
                     let mut predicates = vec![condition];
                     while let Some(predicate) = predicates.pop() {
                         match predicate {
                             crate::ir::SemanticPredicate::Test(operation) => {
                                 effect = effect.join(EffectSummary::operation(operation));
-                                pending.extend(operation.operands());
-                                pending.extend(operation.compound_target());
+                                pending.extend(operation.operands().iter().map(ValueRef::from));
+                                pending.extend(operation.compound_target().map(ValueRef::from));
                             }
                             crate::ir::SemanticPredicate::Not(inner) => predicates.push(inner),
                             crate::ir::SemanticPredicate::And(terms)
@@ -1876,7 +1833,7 @@ impl<'a> ValuePlanner<'a> {
                         }
                     }
                 }
-                SemanticExpression::Literal(_) => {}
+                ValueRef::Literal(_) => {}
             }
         }
         effect.can_relocate().then_some(effect)
@@ -1887,7 +1844,7 @@ impl<'a> ValuePlanner<'a> {
             Some(operation) if operation.payload.edge_copy => {
                 EffectSummary::operation_ignoring_edge_copy(operation)
             }
-            _ => EffectSummary::expression(definition.expression()),
+            _ => definition.effects(),
         }
     }
 
@@ -1910,11 +1867,11 @@ impl<'a> ValuePlanner<'a> {
     }
 
     fn phi_actions(&self, actions: &mut Vec<ValueAction>) {
-        for phi in &self.graph().phis {
+        for phi in self.graph().phis() {
             let Some(replacement) = self.facts.canonical().get(&phi.result).cloned() else {
                 continue;
             };
-            if !self.facts.uses().contains_key(&phi.result)
+            if self.facts.uses_of(phi.result).is_empty()
                 || matches!(self.graph().canonical_key(&replacement), Some(CanonicalKey::Value(value)) if value == phi.result)
             {
                 continue;
@@ -1934,7 +1891,7 @@ impl<'a> ValuePlanner<'a> {
     fn cfg_constant_actions(&self, actions: &mut Vec<ValueAction>) {
         for (&key, replacement) in self.facts.canonical() {
             if self.graph().definitions.contains_key(&key)
-                || !self.facts.uses().contains_key(&key)
+                || self.facts.uses_of(key).is_empty()
                 || !ValueFlowGraph::is_constant(replacement)
                 || matches!(
                     self.graph().canonical_key(replacement),
@@ -1962,7 +1919,7 @@ impl<'a> ValuePlanner<'a> {
             actions.push(ValueAction::Propagate {
                 event: usize::MAX,
                 key: result,
-                replacement: self.graph().copies.argument(source),
+                replacement: self.graph().copy_argument(source),
             });
         }
     }
@@ -2019,7 +1976,8 @@ mod tests {
         });
         crate::ir::SemanticSiteNumbering::assign(&mut root).expect("semantic sites");
 
-        let graph = ValueFlowGraph::build(&root, &values, &BTreeMap::new()).expect("value graph");
+        let canonical = BTreeMap::new();
+        let graph = ValueFlowGraph::build(&root, &values, &canonical).expect("value graph");
         graph
             .schedule(RecoveryMode::Full)
             .expect("value plan")
@@ -2212,7 +2170,8 @@ mod tests {
         ]);
         crate::ir::SemanticSiteNumbering::assign(&mut root).expect("semantic sites");
 
-        let graph = ValueFlowGraph::build(&root, &values, &BTreeMap::new()).expect("value graph");
+        let canonical = BTreeMap::new();
+        let graph = ValueFlowGraph::build(&root, &values, &canonical).expect("value graph");
         let scheduled = graph
             .schedule(RecoveryMode::Full)
             .expect("value plan")

@@ -1,9 +1,9 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::ir::CFG;
+use crate::ir::{BlockId, CFG};
 
 use super::{
-    RegionEdge, RegionGraph, RegionInvariantError, RegionTransfer, RegionTransferKind,
+    RegionEdge, RegionGraph, RegionId, RegionInvariantError, RegionTransfer, RegionTransferKind,
     ResolvedRegionExit,
 };
 
@@ -18,11 +18,18 @@ impl<'a> RegionGraphVerifier<'a> {
     }
 
     pub(super) fn verify(&self) -> Result<(), RegionInvariantError> {
-        self.graph.tree.verify(self.cfg)?;
+        let owners = self.graph.tree.verified_owners(self.cfg)?;
+        self.verify_exits_and_ownership(&owners)
+    }
+
+    pub(super) fn verify_exits_and_ownership(
+        &self,
+        owners: &BTreeMap<BlockId, RegionId>,
+    ) -> Result<(), RegionInvariantError> {
         self.verify_leave_index()?;
         self.verify_elisions()?;
         self.verify_ownership()?;
-        self.verify_transfers()?;
+        self.verify_transfers(owners)?;
         self.verify_leaves()
     }
 
@@ -86,14 +93,21 @@ impl<'a> RegionGraphVerifier<'a> {
         Ok(())
     }
 
-    fn verify_transfers(&self) -> Result<(), RegionInvariantError> {
+    fn verify_transfers(
+        &self,
+        owners: &BTreeMap<BlockId, RegionId>,
+    ) -> Result<(), RegionInvariantError> {
         for transfer in &self.graph.transfers {
-            self.verify_transfer(transfer)?;
+            self.verify_transfer(transfer, owners)?;
         }
         Ok(())
     }
 
-    fn verify_transfer(&self, transfer: &RegionTransfer) -> Result<(), RegionInvariantError> {
+    fn verify_transfer(
+        &self,
+        transfer: &RegionTransfer,
+        owners: &BTreeMap<BlockId, RegionId>,
+    ) -> Result<(), RegionInvariantError> {
         let source = self
             .graph
             .owner_of(transfer.source_block)
@@ -116,10 +130,13 @@ impl<'a> RegionGraphVerifier<'a> {
                 actual: transfer.target_region,
             });
         }
-        let destination = self
-            .graph
-            .tree
-            .enter_destination(transfer.source_region, transfer.destination_block)?;
+        let destination = self.graph.tree.enter_destination(
+            transfer.source_region,
+            transfer.destination_block,
+            self.graph
+                .tree
+                .indexed_owner(owners, transfer.destination_block)?,
+        )?;
         if destination != transfer.destination_region {
             return Err(RegionInvariantError::TransferTargetMismatch {
                 block: transfer.destination_block,

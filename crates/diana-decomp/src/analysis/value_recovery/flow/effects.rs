@@ -18,6 +18,7 @@ enum MemoryLocation {
 /// Unions need a set only when a compound expression touches distinct fields
 /// or both fields and an array. An unknown heap access aliases every location.
 #[derive(Debug, Clone, Default)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 enum Locations {
     #[default]
     Empty,
@@ -61,6 +62,7 @@ impl Locations {
 }
 
 #[derive(Debug, Clone, Default)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 pub(super) struct EffectSummary {
     instruction: InstructionEffects,
     reads: Locations,

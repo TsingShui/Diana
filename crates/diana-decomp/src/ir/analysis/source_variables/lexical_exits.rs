@@ -26,6 +26,22 @@ impl LexicalExitLowering {
         types: &mut SourceTypeEnvironment,
     ) -> Result<(), SourceVariableError> {
         let identities = MethodIdentities::scan(root)?;
+        // Without a lexical owner a leave keeps its original transfer. A
+        // canonical flat sequence also needs no flattening during rebuilding.
+        match root {
+            SemanticNode::Empty | SemanticNode::BasicBlock(_) | SemanticNode::Leave(_) => {
+                return Ok(())
+            }
+            SemanticNode::Sequence(children)
+                if children.len() >= 2
+                    && children.iter().all(|node| {
+                        matches!(node, SemanticNode::BasicBlock(_) | SemanticNode::Leave(_))
+                    }) =>
+            {
+                return Ok(())
+            }
+            _ => {}
+        }
         let selection = ExitFacts::analyze(root).select();
         let mut rewriter = LexicalExitRewriter {
             next_variable,
@@ -789,6 +805,10 @@ impl ExitFacts {
 }
 
 impl SemanticVisitor for ExitFacts {
+    fn visits_values(&self) -> bool {
+        false
+    }
+
     fn enter_node(&mut self, node: &SemanticNode) {
         if let SemanticNode::Leave(leave) = node {
             self.record_leave(leave);
@@ -802,7 +822,8 @@ impl SemanticVisitor for ExitFacts {
         let Some(scope) = Self::scope(node) else {
             return;
         };
-        debug_assert_eq!(self.active.pop().map(|bound| bound.kind), Some(scope));
+        let exited = self.active.pop();
+        debug_assert_eq!(exited.map(|bound| bound.kind), Some(scope));
     }
 }
 

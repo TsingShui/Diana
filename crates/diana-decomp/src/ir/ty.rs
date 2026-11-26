@@ -9,6 +9,7 @@
 //! - Array types ([I, [Ljava/lang/Object;)
 //! - Unknown types (used during type inference)
 
+use std::borrow::Cow;
 use std::{fmt, str::FromStr};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,9 +91,10 @@ impl fmt::Display for MethodDescriptor {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("(")?;
         for parameter in &self.parameters {
-            formatter.write_str(&parameter.to_descriptor())?;
+            parameter.write_descriptor(formatter)?;
         }
-        write!(formatter, "){}", self.return_type.to_descriptor())
+        formatter.write_str(")")?;
+        self.return_type.write_descriptor(formatter)
     }
 }
 
@@ -171,7 +173,7 @@ impl<'a> DescriptorParser<'a> {
                     }
                 })?;
                 self.offset = end + 1;
-                ArgType::Object(name.to_string())
+                ArgType::Object(smol_str::SmolStr::new(name))
             }
             byte => {
                 return Err(DescriptorParseError::UnexpectedByte {
@@ -258,13 +260,13 @@ pub enum ArgType {
     Primitive(PrimitiveType),
 
     /// Object type with class name (e.g., "java/lang/String")
-    Object(String),
+    Object(smol_str::SmolStr),
 
-    /// Array type with element type
-    Array(Box<ArgType>),
+    /// Array type with an immutable element shared by type propagation and IR clones.
+    Array(std::sync::Arc<ArgType>),
 
-    /// Unknown type (one of the possible types)
-    Unknown(Vec<PrimitiveType>),
+    /// Ordered candidate categories. The common DEX operand sets are static slices.
+    Unknown(Cow<'static, [PrimitiveType]>),
 }
 
 impl ArgType {
@@ -282,7 +284,7 @@ impl ArgType {
 
     /// Unknown narrow type (int, float, boolean, short, byte, char, object, array)
     pub fn narrow() -> ArgType {
-        ArgType::Unknown(vec![
+        ArgType::Unknown(Cow::Borrowed(&[
             PrimitiveType::Int,
             PrimitiveType::Float,
             PrimitiveType::Boolean,
@@ -291,22 +293,25 @@ impl ArgType {
             PrimitiveType::Char,
             PrimitiveType::Object,
             PrimitiveType::Array,
-        ])
+        ]))
     }
 
     /// Unknown wide type (long, double)
     pub fn wide() -> ArgType {
-        ArgType::Unknown(vec![PrimitiveType::Long, PrimitiveType::Double])
+        ArgType::Unknown(Cow::Borrowed(&[PrimitiveType::Long, PrimitiveType::Double]))
     }
 
     /// Unknown object type (object or array)
     pub fn unknown_object() -> ArgType {
-        ArgType::Unknown(vec![PrimitiveType::Object, PrimitiveType::Array])
+        ArgType::Unknown(Cow::Borrowed(&[
+            PrimitiveType::Object,
+            PrimitiveType::Array,
+        ]))
     }
 
     /// DEX equality operands may be integral values, references, or null.
     pub fn equality_operand() -> ArgType {
-        ArgType::Unknown(vec![
+        ArgType::Unknown(Cow::Borrowed(&[
             PrimitiveType::Int,
             PrimitiveType::Boolean,
             PrimitiveType::Short,
@@ -314,12 +319,12 @@ impl ArgType {
             PrimitiveType::Char,
             PrimitiveType::Object,
             PrimitiveType::Array,
-        ])
+        ]))
     }
 
     /// Any unknown type
     pub fn unknown() -> ArgType {
-        ArgType::Unknown(vec![
+        ArgType::Unknown(Cow::Borrowed(&[
             PrimitiveType::Int,
             PrimitiveType::Long,
             PrimitiveType::Float,
@@ -330,31 +335,31 @@ impl ArgType {
             PrimitiveType::Char,
             PrimitiveType::Object,
             PrimitiveType::Array,
-        ])
+        ]))
     }
 
     // ==================== Common Object Types ====================
 
     pub fn object(name: &str) -> ArgType {
-        ArgType::Object(name.to_string())
+        ArgType::Object(smol_str::SmolStr::new(name))
     }
 
     pub fn string() -> ArgType {
-        ArgType::Object("java/lang/String".to_string())
+        ArgType::Object(smol_str::SmolStr::new("java/lang/String"))
     }
 
     pub fn class() -> ArgType {
-        ArgType::Object("java/lang/Class".to_string())
+        ArgType::Object(smol_str::SmolStr::new("java/lang/Class"))
     }
 
     pub fn throwable() -> ArgType {
-        ArgType::Object("java/lang/Throwable".to_string())
+        ArgType::Object(smol_str::SmolStr::new("java/lang/Throwable"))
     }
 
     // ==================== Array Types ====================
 
     pub fn array(element: ArgType) -> ArgType {
-        ArgType::Array(Box::new(element))
+        ArgType::Array(std::sync::Arc::new(element))
     }
 
     pub fn int_array() -> ArgType {
@@ -362,7 +367,7 @@ impl ArgType {
     }
 
     pub fn object_array() -> ArgType {
-        ArgType::array(ArgType::Object("java/lang/Object".to_string()))
+        ArgType::array(ArgType::Object(smol_str::SmolStr::new("java/lang/Object")))
     }
 
     // ==================== Type Queries ====================
@@ -435,25 +440,39 @@ impl ArgType {
     }
 
     pub(crate) fn descriptor_len(&self) -> usize {
-        match self {
-            Self::Primitive(_) | Self::Unknown(_) => 1,
-            Self::Object(name) => name.len() + 2,
-            Self::Array(element) => 1 + element.descriptor_len(),
+        let mut element = self;
+        let mut dimensions = 0;
+        while let Self::Array(child) = element {
+            dimensions += 1;
+            element = child;
         }
+        dimensions
+            + match element {
+                Self::Object(name) => name.len() + 2,
+                _ => 1,
+            }
     }
 
     pub(crate) fn append_descriptor(&self, out: &mut String) {
-        match self {
-            Self::Primitive(p) => out.push(p.descriptor()),
-            Self::Unknown(_) => out.push('?'),
-            Self::Object(name) => {
-                out.push('L');
-                out.push_str(name);
-                out.push(';');
-            }
-            Self::Array(element) => {
-                out.push('[');
-                element.append_descriptor(out);
+        self.write_descriptor(out)
+            .expect("writing to a String cannot fail");
+    }
+
+    fn write_descriptor(&self, out: &mut impl fmt::Write) -> fmt::Result {
+        let mut element = self;
+        loop {
+            match element {
+                Self::Primitive(primitive) => return out.write_char(primitive.descriptor()),
+                Self::Unknown(_) => return out.write_char('?'),
+                Self::Object(name) => {
+                    out.write_char('L')?;
+                    out.write_str(name)?;
+                    return out.write_char(';');
+                }
+                Self::Array(child) => {
+                    out.write_char('[')?;
+                    element = child;
+                }
             }
         }
     }

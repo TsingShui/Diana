@@ -84,18 +84,13 @@ impl<'collector, 'node> NodeScheduler<'collector, 'node> {
         children: &'node [SemanticNode],
     ) -> Result<(), ValueRecoveryError> {
         let mut domain = self.domain;
-        let mut scheduled = Vec::with_capacity(children.len());
-        for child in children {
-            scheduled.push((child, domain));
-            let fallthrough = self.collector.fallthrough_domain(child)?;
+        let states = self.collector.fallthrough_domains.children(children)?;
+        let start = self.pending.len();
+        for (child, &fallthrough) in children.iter().zip(states) {
+            self.pending.push(FlowTask::Node(child, domain));
             domain = self.collector.graph.logic.and(domain, fallthrough)?;
         }
-        self.pending.extend(
-            scheduled
-                .into_iter()
-                .rev()
-                .map(|(child, domain)| FlowTask::Node(child, domain)),
-        );
+        self.pending[start..].reverse();
         Ok(())
     }
 

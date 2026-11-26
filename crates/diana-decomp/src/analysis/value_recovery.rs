@@ -18,7 +18,7 @@ mod source;
 mod ssa_constants;
 
 use crate::analysis::SemanticTransform;
-use crate::ir::analysis::{DominanceError, PhiMerge, SsaVar};
+use crate::ir::analysis::{DominanceError, SsaVar};
 use crate::ir::{
     BlockId, SemanticFoldError, SemanticMethod, SourceVariableContext, SsaSemantics,
     ValueSemantics, CFG,
@@ -38,7 +38,7 @@ pub struct ValueRecovery {
     ssa_constants: BTreeMap<SsaVar, crate::ir::InsnArg>,
     source_bindings: BTreeSet<SsaVar>,
     diagnostics: crate::ir::ValueRecoveryDiagnostics,
-    source_flow_cache: Option<source::SourceFlowCache>,
+    source_flow_cache: source::SourceFlowCache,
 }
 
 #[derive(Debug, Clone)]
@@ -193,7 +193,7 @@ impl ValueRecovery {
             ssa_constants: SparseConstantPropagation::new(cfg).solve(),
             source_bindings: BTreeSet::new(),
             diagnostics: crate::ir::ValueRecoveryDiagnostics::default(),
-            source_flow_cache: None,
+            source_flow_cache: Default::default(),
         }
     }
 
@@ -215,7 +215,7 @@ impl ValueRecovery {
         &mut self,
         root: &crate::ir::SemanticNode,
     ) -> std::sync::Arc<crate::ir::analysis::SemanticFlowGraph> {
-        source::SourceFlowCache::get_or_analyze(&mut self.source_flow_cache, root)
+        self.source_flow_cache.get_or_analyze(root)
     }
 
     pub fn recover_source<State: SourceVariableContext>(
@@ -281,7 +281,7 @@ impl SemanticTransform<SsaSemantics> for ValueRecovery {
                 && !has_select
                 && graph.proof_budget_exhausted() == saturated
             {
-                graph.attach_semantic_flow(method.body(), &mut self.source_flow_cache);
+                graph.attach_semantic_flow(method.body(), &self.source_flow_cache);
                 first_plan = Some(
                     SsaValueSolver::new(&recovered_phis, &self.ssa_constants, &retained)
                         .plan(graph)?,
@@ -309,7 +309,7 @@ impl SemanticTransform<SsaSemantics> for ValueRecovery {
             }
         }
         let constants = SsaValueSolver::new(&recovered_phis, &self.ssa_constants, &retained)
-            .solve(&mut method, &mut self.source_flow_cache, first_plan)?;
+            .solve(&mut method, &self.source_flow_cache, first_plan)?;
         Ok(method.into_values(constants, recovered_phis))
     }
 }
@@ -324,12 +324,12 @@ fn cleanup_state_values(
         .cleanup_value_bindings()
         .iter()
         .flat_map(|(handler, normal)| [*handler, *normal]);
-    cleanup_state_closure(roots, method.state().values().phis(), constants)
+    cleanup_state_closure(roots, method.state().values(), constants)
 }
 
 fn cleanup_state_closure(
     roots: impl IntoIterator<Item = SsaVar>,
-    phis: &[PhiMerge],
+    graph: &crate::ir::analysis::SsaValueGraph,
     constants: &BTreeMap<SsaVar, crate::ir::InsnArg>,
 ) -> BTreeSet<SsaVar> {
     // Shared null/zero roots can be inlined, but a cleanup root that is a
@@ -341,13 +341,9 @@ fn cleanup_state_closure(
     if values.is_empty() {
         return values;
     }
-    let phis = phis
-        .iter()
-        .map(|phi| (phi.result, phi))
-        .collect::<BTreeMap<_, _>>();
     let mut pending = values.iter().copied().collect::<Vec<_>>();
     while let Some(value) = pending.pop() {
-        let Some(phi) = phis.get(&value) else {
+        let Some(phi) = graph.phi(value) else {
             continue;
         };
         for input in &phi.inputs {
@@ -439,7 +435,7 @@ impl<'a> SsaValueSolver<'a> {
     fn solve(
         self,
         method: &mut SemanticMethod<SsaSemantics>,
-        flow_cache: &mut Option<source::SourceFlowCache>,
+        flow_cache: &source::SourceFlowCache,
         mut first_plan: Option<ValuePlan>,
     ) -> Result<BTreeMap<SsaVar, crate::ir::InsnArg>, ValueRecoveryError> {
         let mut constants = BTreeMap::new();
@@ -473,7 +469,7 @@ impl<'a> SsaValueSolver<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::analysis::PhiInput;
+    use crate::ir::analysis::{PhiInput, PhiMerge};
     use crate::ir::{ArgType, EdgeKind, InsnArg, InstructionId};
 
     #[test]
@@ -482,7 +478,7 @@ mod tests {
         let live_input = SsaVar::new(1, 25);
         let normal = SsaVar::new(12, 3);
         let null = SsaVar::new(1, 8);
-        let phis = [PhiMerge {
+        let phis = vec![PhiMerge {
             block: BlockId::new(118),
             instruction: InstructionId::new(0),
             result,
@@ -502,7 +498,11 @@ mod tests {
         let constants = BTreeMap::from([(null, InsnArg::lit(0, ArgType::unknown_object()))]);
 
         assert_eq!(
-            cleanup_state_closure([result, normal], &phis, &constants),
+            cleanup_state_closure(
+                [result, normal],
+                &crate::ir::analysis::SsaValueGraph::with_phis_for_test(phis),
+                &constants
+            ),
             BTreeSet::from([result, live_input, normal])
         );
     }
@@ -518,7 +518,11 @@ mod tests {
         ]);
 
         assert_eq!(
-            cleanup_state_closure([catch_result, normal, zero], &[], &constants),
+            cleanup_state_closure(
+                [catch_result, normal, zero],
+                &Default::default(),
+                &constants
+            ),
             BTreeSet::from([catch_result, normal])
         );
     }

@@ -747,6 +747,10 @@ impl BlockIdentity<'_> {
 }
 
 impl SemanticVisitor for BlockIdentity<'_> {
+    fn visits_values(&self) -> bool {
+        false
+    }
+
     fn enter_node(&mut self, node: &SemanticNode) {
         match node {
             SemanticNode::BasicBlock(block) if self.required.contains(&block.id) => {

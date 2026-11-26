@@ -43,49 +43,37 @@ pub(super) struct JavaTypeNameResolver {
 }
 
 impl JavaTypeNameResolver {
-    pub(super) fn new(
+    #[cfg(test)]
+    pub(super) fn for_test(
+        class: Option<&JavaClassModel>,
         current_package: Option<&str>,
         current_type: Option<&ArgType>,
         types: impl IntoIterator<Item = ArgType>,
     ) -> Result<Self, JavaTypeNameError> {
-        Self::build(
+        let mut collector = JavaTypeImportCollector::default();
+        for ty in types {
+            collector.collect_type(&ty)?;
+        }
+        Ok(Self::from_imports(
+            class,
             current_package,
             current_type,
-            types,
-            DeclaredTypes::default(),
-        )
+            collector,
+        ))
     }
 
-    pub(super) fn for_class(
-        class: &JavaClassModel,
+    pub(super) fn from_imports(
+        class: Option<&JavaClassModel>,
         current_package: Option<&str>,
         current_type: Option<&ArgType>,
-        types: impl IntoIterator<Item = ArgType>,
-    ) -> Result<Self, JavaTypeNameError> {
-        Self::build(
-            current_package,
-            current_type,
-            types,
-            DeclaredTypes::collect(class),
-        )
-    }
-
-    fn build(
-        current_package: Option<&str>,
-        current_type: Option<&ArgType>,
-        types: impl IntoIterator<Item = ArgType>,
-        declarations: DeclaredTypes,
-    ) -> Result<Self, JavaTypeNameError> {
+        collector: JavaTypeImportCollector,
+    ) -> Self {
+        let declarations = class.map(DeclaredTypes::collect).unwrap_or_default();
         let current_package = current_package
             .filter(|package| !package.is_empty())
             .map(ToOwned::to_owned);
         let lexical_scope =
             JavaLexicalTypeScope::new(current_type.and_then(Self::type_binary_name));
-        let mut collector = JavaTypeImportCollector::default();
-        for ty in types {
-            collector.collect_type(&ty)?;
-        }
-
         let simple_counts = collector.simple_counts();
         let mut imports = BTreeSet::new();
         let mut simple_names = BTreeMap::new();
@@ -94,7 +82,7 @@ impl JavaTypeNameResolver {
                 continue;
             }
             let Some(name) = name else {
-                simple_names.insert(binary_name.clone(), binary_name.clone());
+                simple_names.insert(binary_name.clone(), binary_name);
                 continue;
             };
             let has_conflicting_simple_name = simple_counts
@@ -115,13 +103,13 @@ impl JavaTypeNameResolver {
             simple_names.insert(binary_name, name.source_name());
         }
 
-        Ok(Self {
+        Self {
             imports,
             simple_names,
             declarations,
             lexical_scope,
             resolved_objects: Default::default(),
-        })
+        }
     }
 
     pub(super) fn imports(&self) -> impl Iterator<Item = JavaClassName> + '_ {
@@ -580,12 +568,12 @@ impl JavaLexicalTypeScope {
 }
 
 #[derive(Default)]
-struct JavaTypeImportCollector {
+pub(super) struct JavaTypeImportCollector {
     binary_names: BTreeMap<String, Option<JavaTypeName>>,
 }
 
 impl JavaTypeImportCollector {
-    fn collect_type(&mut self, ty: &ArgType) -> Result<(), JavaTypeNameError> {
+    pub(super) fn collect_type(&mut self, ty: &ArgType) -> Result<(), JavaTypeNameError> {
         let mut ty = ty;
         loop {
             match ty {
@@ -769,7 +757,8 @@ mod tests {
     #[test]
     fn formats_named_inner_classes_with_source_member_separator() {
         let resolver =
-            JavaTypeNameResolver::new(None, None, [ArgType::object("pkg/Outer$Inner")]).unwrap();
+            JavaTypeNameResolver::for_test(None, None, None, [ArgType::object("pkg/Outer$Inner")])
+                .unwrap();
 
         assert_eq!(
             resolver
@@ -786,7 +775,8 @@ mod tests {
         // `Outer.AnonymousN` so that references line up with the synthetic
         // declaration name produced by `simple_inner_class_name`.
         let resolver =
-            JavaTypeNameResolver::new(None, None, [ArgType::object("pkg/Outer$1")]).unwrap();
+            JavaTypeNameResolver::for_test(None, None, None, [ArgType::object("pkg/Outer$1")])
+                .unwrap();
 
         assert_eq!(
             resolver
@@ -802,7 +792,8 @@ mod tests {
         // `ObjectTypeAdapter$2` is a numeric-named synthetic inner class; it
         // now renders as `ObjectTypeAdapter.Anonymous2` rather than the binary
         // `ObjectTypeAdapter$2` form, matching its declaration name.
-        let resolver = JavaTypeNameResolver::new(
+        let resolver = JavaTypeNameResolver::for_test(
+            None,
             None,
             None,
             [ArgType::object(
@@ -824,7 +815,8 @@ mod tests {
 
     #[test]
     fn renders_outer_member_type_relative_to_top_level_scope() {
-        let resolver = JavaTypeNameResolver::new(
+        let resolver = JavaTypeNameResolver::for_test(
+            None,
             Some("pkg"),
             Some(&ArgType::object("pkg/Outer")),
             [ArgType::object("pkg/Outer$Node")],
@@ -842,7 +834,8 @@ mod tests {
 
     #[test]
     fn renders_sibling_member_type_relative_to_enclosing_outer_scope() {
-        let resolver = JavaTypeNameResolver::new(
+        let resolver = JavaTypeNameResolver::for_test(
+            None,
             Some("pkg"),
             Some(&ArgType::object("pkg/Outer$EntrySet")),
             [ArgType::object("pkg/Outer$LinkedTreeMapIterator")],
@@ -865,7 +858,8 @@ mod tests {
             "Ljava/util/List<Lpkg/Outer$TypeMatcher;>;",
         )
         .expect("generic field signature");
-        let resolver = JavaTypeNameResolver::new(
+        let resolver = JavaTypeNameResolver::for_test(
+            None,
             Some("pkg"),
             Some(&current),
             [
@@ -884,7 +878,8 @@ mod tests {
 
     #[test]
     fn renders_enclosing_outer_type_relative_to_nested_scope() {
-        let resolver = JavaTypeNameResolver::new(
+        let resolver = JavaTypeNameResolver::for_test(
+            None,
             Some("pkg"),
             Some(&ArgType::object("pkg/Outer$EntrySet")),
             [ArgType::object("pkg/Outer")],
@@ -902,7 +897,8 @@ mod tests {
 
     #[test]
     fn keeps_non_enclosing_nested_types_qualified() {
-        let resolver = JavaTypeNameResolver::new(
+        let resolver = JavaTypeNameResolver::for_test(
+            None,
             Some("pkg"),
             Some(&ArgType::object("pkg/Outer$EntrySet")),
             [ArgType::object("pkg/Other$Node")],
@@ -940,8 +936,8 @@ mod tests {
         };
         let current_type = ArgType::object("com/google/MatroskaExtractor");
         let metadata_inner = ArgType::object("com/facebook/ads/redexgen/X/Vz");
-        let resolver = JavaTypeNameResolver::for_class(
-            &root,
+        let resolver = JavaTypeNameResolver::for_test(
+            Some(&root),
             Some("com.google"),
             Some(&current_type),
             [metadata_inner.clone()],

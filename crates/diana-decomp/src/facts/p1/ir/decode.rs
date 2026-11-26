@@ -225,7 +225,7 @@ mod opcode {
     pub const USHR_INT_LIT8: u8 = 0xe2;
 }
 
-use crate::input::operands::RawLiteral;
+use crate::input::operands::{RawLiteral, RawRegisters};
 use crate::ir::insn::FillArrayData;
 use crate::ir::{
     ArgType, ArithOp, CmpBias, IfOp, InsnArg, InsnNode, InvokeType, RegNum, RegisterArg, UnaryOp,
@@ -241,23 +241,16 @@ pub(super) fn decode(facts: &DecodedMethod<'_>, item: &DecodedInstruction) -> Op
     use opcode::*;
 
     let op = item.opcode();
-    let registers: Vec<RegisterId> = item.operands().registers().iter().collect();
-    let register = |index: usize| registers.get(index).copied().unwrap_or(RegisterId(0)).0;
+    let registers = item.operands().registers();
+    // Fixed-arity opcodes use at most three list operands. Invoke and
+    // filled-array instructions consume the complete original iterator below.
+    let register = |index: usize| registers.iter().nth(index).unwrap_or(RegisterId(0)).0;
     let reg = |index: usize, ty: ArgType| RegisterArg::new(register(index) as RegNum, ty);
     let target = item
         .branch_target()
         .map_or(item.pc().0 as i32, |target| target.0 as i32);
     let payload = item.payload_target().map_or(0, |target| target.0);
     let reference = reference_index(item);
-    let invoke_args = || {
-        registers
-            .iter()
-            .map(|register| {
-                InsnArg::Reg(RegisterArg::new(register.0 as RegNum, ArgType::unknown()))
-            })
-            .collect::<Vec<_>>()
-    };
-
     match op {
         NOP => Some(InsnNode::nop()),
 
@@ -457,22 +450,19 @@ pub(super) fn decode(facts: &DecodedMethod<'_>, item: &DecodedInstruction) -> Op
             reference,
         )),
 
-        INVOKE_VIRTUAL..=INVOKE_INTERFACE => {
-            Some(InsnNode::invoke(invoke_type(op), reference, invoke_args()))
-        }
-        INVOKE_VIRTUAL_RANGE..=INVOKE_INTERFACE_RANGE => {
-            Some(InsnNode::invoke(invoke_type(op), reference, invoke_args()))
+        // The binder constructs invoke operands directly from the checked
+        // parameter widths and the original register words.
+        INVOKE_VIRTUAL..=INVOKE_INTERFACE | INVOKE_VIRTUAL_RANGE..=INVOKE_INTERFACE_RANGE => {
+            Some(InsnNode::invoke(invoke_type(op), reference, Vec::new()))
         }
         INVOKE_POLYMORPHIC | INVOKE_POLYMORPHIC_RANGE => Some(InsnNode::invoke(
             InvokeType::Polymorphic,
             reference,
-            invoke_args(),
+            Vec::new(),
         )),
-        INVOKE_CUSTOM | INVOKE_CUSTOM_RANGE => Some(InsnNode::invoke(
-            InvokeType::Custom,
-            reference,
-            invoke_args(),
-        )),
+        INVOKE_CUSTOM | INVOKE_CUSTOM_RANGE => {
+            Some(InsnNode::invoke(InvokeType::Custom, reference, Vec::new()))
+        }
 
         // Constant method handles and types have no IR value model yet; keep
         // the instruction boundary and leave the value as an explicit gap.
@@ -533,11 +523,21 @@ pub(super) fn decode(facts: &DecodedMethod<'_>, item: &DecodedInstruction) -> Op
         )),
 
         FILLED_NEW_ARRAY | FILLED_NEW_ARRAY_RANGE => {
-            Some(InsnNode::filled_new_array(reference, invoke_args()))
+            let mut array = InsnNode::filled_new_array(reference, Vec::new());
+            array.args = raw_arguments(registers).collect();
+            Some(array)
         }
 
         _ => Some(InsnNode::nop()),
     }
+}
+
+pub(super) fn raw_arguments(
+    registers: &RawRegisters,
+) -> impl ExactSizeIterator<Item = InsnArg> + '_ {
+    registers
+        .iter()
+        .map(|register| InsnArg::Reg(RegisterArg::new(register.0 as RegNum, ArgType::unknown())))
 }
 
 fn reference_index(item: &DecodedInstruction) -> u32 {

@@ -4,14 +4,14 @@
 //! The same control-domain and effect scheduler used for SSA can therefore run
 //! again with source identities, without a second propagation or DCE algorithm.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::ir::{
     SemanticControlTopology, SemanticMethod, SemanticNode, SemanticSiteId, SemanticVisitor,
     SourceVariableContext,
 };
 
-#[cfg(debug_assertions)]
+#[cfg(test)]
 use crate::ir::SemanticFoldError;
 
 use super::{
@@ -26,8 +26,13 @@ use super::{
 #[path = "../../../tests/internal/source_flow_cache.rs"]
 mod tests;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Default)]
 pub(super) struct SourceFlowCache {
+    entry: Mutex<Option<StoredFlow>>,
+}
+
+#[derive(Debug)]
+struct StoredFlow {
     inputs: FlowInputs,
     flow: Arc<crate::ir::analysis::SemanticFlowGraph>,
 }
@@ -129,22 +134,30 @@ impl SemanticVisitor for FlowInputs {
 
 impl SourceFlowCache {
     pub(super) fn get_or_analyze(
-        cache: &mut Option<Self>,
+        &self,
         root: &SemanticNode,
     ) -> Arc<crate::ir::analysis::SemanticFlowGraph> {
         let mut inputs = FlowInputs::default();
         inputs.visit_node(root);
+        let mut cache = self.entry.lock().unwrap_or_else(|error| error.into_inner());
         if let Some(cached) = cache.as_ref() {
             if cached.inputs == inputs {
                 return Arc::clone(&cached.flow);
             }
         }
         let flow = Arc::new(crate::ir::analysis::SemanticFlowGraph::analyze(root));
-        *cache = Some(Self {
+        *cache = Some(StoredFlow {
             inputs,
             flow: Arc::clone(&flow),
         });
         flow
+    }
+
+    fn clear(&mut self) {
+        *self
+            .entry
+            .get_mut()
+            .unwrap_or_else(|error| error.into_inner()) = None;
     }
 }
 
@@ -155,7 +168,7 @@ impl SourceValueRecovery {
         method: &mut SemanticMethod<State>,
         mode: RecoveryMode,
         bindings: &std::collections::BTreeSet<crate::ir::analysis::SsaVar>,
-        cache: &mut Option<SourceFlowCache>,
+        cache: &mut SourceFlowCache,
     ) -> Result<bool, ValueRecoveryError> {
         method.normalize_source()?;
         let mut changed = false;
@@ -164,19 +177,19 @@ impl SourceValueRecovery {
                 let initialization = SourceInitializationRecovery::apply(method.body_mut())?;
                 if initialization {
                     method.normalize_source_variables()?;
-                    *cache = None;
+                    cache.clear();
                 }
                 crate::ir::SemanticSiteNumbering::assign(method.body_mut())?;
                 let plan = ValueFlowGraph::plan_source(method.body(), bindings, cache, mode)?;
-                #[cfg(debug_assertions)]
+                #[cfg(test)]
                 let before_schedule =
                     crate::ir::semantic::SemanticControlTopology::analyze(method.body());
                 let source = plan.apply(method.body_mut(), ValueIdentity::Source)?;
-                #[cfg(debug_assertions)]
+                #[cfg(test)]
                 Self::verify_topology(method, &before_schedule, "source-value-schedule")?;
                 let motion = LoopInvariantMotion::apply(method.body_mut())?;
                 if motion {
-                    *cache = None;
+                    cache.clear();
                 }
                 changed |= initialization || source || motion;
                 if !initialization && !source && !motion {
@@ -189,13 +202,13 @@ impl SourceValueRecovery {
             if !predicates {
                 break;
             }
-            *cache = None;
+            cache.clear();
             method.normalize_source()?;
         }
         Ok(changed)
     }
 
-    #[cfg(debug_assertions)]
+    #[cfg(test)]
     fn verify_topology<State: SourceVariableContext>(
         method: &SemanticMethod<State>,
         before: &crate::ir::semantic::SemanticControlTopology,

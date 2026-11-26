@@ -2,12 +2,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::ir::analysis::StrongComponents;
+use crate::ir::analysis::{ReachingConditionError, StrongComponents};
 use crate::ir::semantic::SemanticFactory;
 use crate::ir::{BlockId, RegionId, SemanticNode, CFG};
 
 use super::{
-    acyclic::{AcyclicStructure, AcyclicStructurer},
+    acyclic::{AcyclicStructure, AcyclicStructureError, AcyclicStructurer},
     flow_graph::SemanticFlowGraph,
     StructureError,
 };
@@ -69,19 +69,32 @@ impl<'a, 'semantic> GraphStructurer<'a, 'semantic> {
         {
             return Ok(node);
         }
-        if !StrongComponents::analyze(self.cfg, self.cfg.graph_node_ids()).is_acyclic() {
-            return self.reduce_graph();
-        }
-        let acyclic =
-            structurer
-                .structure_branches()
-                .map_err(|source| StructureError::Acyclic {
+        match structurer.structure_branches() {
+            Ok(AcyclicStructure::Structured(node)) => Ok(node),
+            Ok(AcyclicStructure::RequiresGraphReduction(_))
+            | Err(AcyclicStructureError::ReachingCondition(ReachingConditionError::CyclicGraph)) => {
+                self.reduce_graph()
+            }
+            Err(source) => {
+                // Kahn's traversal establishes acyclicity before any BDD or
+                // lowering work. A root/degree error can preempt that traversal
+                // even in a cyclic graph; retain cycle reduction in this case.
+                if matches!(
+                    source,
+                    AcyclicStructureError::ReachingCondition(
+                        ReachingConditionError::MissingEntry(_)
+                            | ReachingConditionError::MultipleEntries { .. }
+                            | ReachingConditionError::MalformedTopology(_)
+                    )
+                ) && !StrongComponents::analyze(self.cfg, self.cfg.graph_node_ids()).is_acyclic()
+                {
+                    return self.reduce_graph();
+                }
+                Err(StructureError::Acyclic {
                     region: self.region,
                     source,
-                })?;
-        match acyclic {
-            AcyclicStructure::Structured(node) => Ok(node),
-            AcyclicStructure::RequiresGraphReduction(_) => self.reduce_graph(),
+                })
+            }
         }
     }
 

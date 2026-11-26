@@ -392,7 +392,7 @@ impl JavaAstRewriter for StatementWrites {
 }
 
 #[derive(Debug, Default)]
-struct Declarations(BTreeMap<JavaIdentifier, JavaType>);
+struct Declarations(BTreeMap<JavaIdentifier, usize>);
 
 impl Declarations {
     fn collect(root: &JavaStmt) -> Self {
@@ -401,11 +401,10 @@ impl Declarations {
         while let Some(statement) = pending.pop() {
             match statement {
                 JavaStmt::Variable {
-                    ty,
-                    name,
-                    value: None,
+                    name, value: None, ..
                 } => {
-                    declarations.0.insert(name.clone(), ty.clone());
+                    let index = declarations.0.len();
+                    declarations.0.entry(name.clone()).or_insert(index);
                 }
                 JavaStmt::Block(children) => pending.extend(children),
                 JavaStmt::Labeled { body, .. }
@@ -453,8 +452,8 @@ impl Declarations {
         declarations
     }
 
-    fn is_candidate(&self, name: &JavaIdentifier) -> bool {
-        self.0.contains_key(name)
+    fn index(&self, name: &JavaIdentifier) -> Option<usize> {
+        self.0.get(name).copied()
     }
 
     fn is_empty(&self) -> bool {
@@ -462,16 +461,52 @@ impl Declarations {
     }
 }
 
+/// Only declarations with a missing initializer can require a default value.
+/// Dense indices let branches copy and intersect words instead of identifier trees.
+#[derive(Clone, Debug, Default)]
+struct Assigned {
+    words: smallvec::SmallVec<[u64; 1]>,
+}
+
+impl Assigned {
+    fn set(&mut self, candidate: Option<usize>, present: bool) {
+        let Some(index) = candidate else { return };
+        let word = index / 64;
+        let mask = 1u64 << (index % 64);
+        if present {
+            if word >= self.words.len() {
+                self.words.resize(word + 1, 0);
+            }
+            self.words[word] |= mask;
+        } else if let Some(bits) = self.words.get_mut(word) {
+            *bits &= !mask;
+        }
+    }
+
+    fn contains(&self, index: usize) -> bool {
+        self.words
+            .get(index / 64)
+            .is_some_and(|bits| bits & (1u64 << (index % 64)) != 0)
+    }
+
+    fn intersect(&mut self, other: &Self) {
+        self.words.truncate(other.words.len());
+        for (bits, other) in self.words.iter_mut().zip(&other.words) {
+            *bits &= other;
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Flow {
-    assigned: BTreeSet<JavaIdentifier>,
+    assigned: Assigned,
     completes: bool,
 }
 
 impl Default for Flow {
     fn default() -> Self {
         Self {
-            assigned: BTreeSet::new(),
+            assigned: Assigned::default(),
             completes: true,
         }
     }
@@ -482,12 +517,12 @@ impl Flow {
         let mut normal = flows.into_iter().filter(|flow| flow.completes);
         let Some(mut joined) = normal.next() else {
             return Self {
-                assigned: BTreeSet::new(),
+                assigned: Assigned::default(),
                 completes: false,
             };
         };
         for flow in normal {
-            joined.assigned.retain(|name| flow.assigned.contains(name));
+            joined.assigned.intersect(&flow.assigned);
         }
         joined
     }
@@ -514,7 +549,7 @@ impl AssignmentAnalysis {
     fn statement(&mut self, statement: &JavaStmt, mut flow: Flow) -> Flow {
         match statement {
             JavaStmt::RecoveryFailure(_) => {
-                flow.assigned.clear();
+                flow.assigned.words.clear();
                 flow
             }
             JavaStmt::Empty => flow,
@@ -524,10 +559,10 @@ impl AssignmentAnalysis {
                 Flow::normal_join([flow, body_flow])
             }
             JavaStmt::Variable { name, value, .. } => {
-                flow.assigned.remove(name);
+                flow.assigned.set(self.declarations.index(name), false);
                 if let Some(value) = value {
                     self.expression(value, &mut flow.assigned);
-                    flow.assigned.insert(name.clone());
+                    flow.assigned.set(self.declarations.index(name), true);
                 }
                 flow
             }
@@ -550,10 +585,10 @@ impl AssignmentAnalysis {
             } => {
                 self.expression(condition, &mut flow.assigned);
                 let when_true = self.statement(then_stmt, flow.clone());
-                let when_false = else_stmt
-                    .as_deref()
-                    .map(|statement| self.statement(statement, flow.clone()))
-                    .unwrap_or(flow);
+                let when_false = match else_stmt {
+                    Some(statement) => self.statement(statement, flow),
+                    None => flow,
+                };
                 Flow::normal_join([when_true, when_false])
             }
             JavaStmt::While {
@@ -604,7 +639,9 @@ impl AssignmentAnalysis {
             } => {
                 self.expression(iterable, &mut flow.assigned);
                 let mut iteration = flow.clone();
-                iteration.assigned.insert(variable.clone());
+                iteration
+                    .assigned
+                    .set(self.declarations.index(variable), true);
                 self.statement(body, iteration);
                 flow
             }
@@ -627,7 +664,9 @@ impl AssignmentAnalysis {
                 let body_flow = self.statement(body, flow.clone());
                 let branches = std::iter::once(body_flow).chain(catches.iter().map(|catch| {
                     let mut catch_flow = flow.clone();
-                    catch_flow.assigned.insert(catch.variable.clone());
+                    catch_flow
+                        .assigned
+                        .set(self.declarations.index(&catch.variable), true);
                     self.statement(&catch.body, catch_flow)
                 }));
                 let joined = Flow::normal_join(branches);
@@ -643,7 +682,7 @@ impl AssignmentAnalysis {
                     finally_flow
                 } else {
                     Flow {
-                        assigned: BTreeSet::new(),
+                        assigned: Assigned::default(),
                         completes: false,
                     }
                 }
@@ -681,13 +720,13 @@ impl AssignmentAnalysis {
         flow
     }
 
-    fn expressions(&mut self, expressions: &[JavaExpr], assigned: &mut BTreeSet<JavaIdentifier>) {
+    fn expressions(&mut self, expressions: &[JavaExpr], assigned: &mut Assigned) {
         for expression in expressions {
             self.expression(expression, assigned);
         }
     }
 
-    fn expression(&mut self, expression: &JavaExpr, assigned: &mut BTreeSet<JavaIdentifier>) {
+    fn expression(&mut self, expression: &JavaExpr, assigned: &mut Assigned) {
         match expression {
             JavaExpr::Allocate(_) => {}
             JavaExpr::DirectInit { receiver, args, .. } => {
@@ -753,15 +792,14 @@ impl AssignmentAnalysis {
                     target => self.expression(target, assigned),
                 }
                 if let JavaExpr::Name(name) = target.as_ref() {
-                    assigned.insert(name.clone());
+                    assigned.set(self.declarations.index(name), true);
                 }
             }
             JavaExpr::Binary { left, op, right } => {
                 self.expression(left, assigned);
                 if matches!(op, JavaBinaryOp::LogicalAnd | JavaBinaryOp::LogicalOr) {
-                    let skipped = assigned.clone();
-                    self.expression(right, assigned);
-                    assigned.retain(|name| skipped.contains(name));
+                    // The right operand can add assignments only on the path that evaluates it.
+                    self.expression(right, &mut assigned.clone());
                 } else {
                     self.expression(right, assigned);
                 }
@@ -774,10 +812,8 @@ impl AssignmentAnalysis {
                 self.expression(condition, assigned);
                 let mut true_state = assigned.clone();
                 self.expression(when_true, &mut true_state);
-                let mut false_state = assigned.clone();
-                self.expression(when_false, &mut false_state);
-                true_state.retain(|name| false_state.contains(name));
-                *assigned = true_state;
+                self.expression(when_false, assigned);
+                assigned.intersect(&true_state);
             }
             JavaExpr::Assignment { target, op, value } => {
                 self.assignment(target, *op, value, assigned);
@@ -790,7 +826,7 @@ impl AssignmentAnalysis {
         target: &JavaExpr,
         op: JavaAssignOp,
         value: &JavaExpr,
-        assigned: &mut BTreeSet<JavaIdentifier>,
+        assigned: &mut Assigned,
     ) {
         match target {
             JavaExpr::Name(name) => {
@@ -802,12 +838,16 @@ impl AssignmentAnalysis {
         }
         self.expression(value, assigned);
         if let JavaExpr::Name(name) = target {
-            assigned.insert(name.clone());
+            assigned.set(self.declarations.index(name), true);
         }
     }
 
-    fn read(&mut self, name: &JavaIdentifier, assigned: &BTreeSet<JavaIdentifier>) {
-        if self.declarations.is_candidate(name) && !assigned.contains(name) {
+    fn read(&mut self, name: &JavaIdentifier, assigned: &Assigned) {
+        if self
+            .declarations
+            .index(name)
+            .is_some_and(|index| !assigned.contains(index))
+        {
             self.required.insert(name.clone());
         }
     }
@@ -906,3 +946,7 @@ impl AssignmentAnalysis {
         JavaExpr::Literal(literal)
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/definite_assignment.rs"]
+mod tests;

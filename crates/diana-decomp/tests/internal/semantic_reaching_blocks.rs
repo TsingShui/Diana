@@ -175,3 +175,95 @@ fn frozen_edges_sort_deduplicate_and_preserve_each_cleanup_transition() {
     assert!(graph.successors(isolated).is_empty());
     assert!(graph.has_cleanup_continuations());
 }
+
+#[test]
+fn chain_reachability_matches_independent_paths_inside_and_between_loops() {
+    use super::super::{ReachabilityStore, SemanticReachability};
+
+    // The two long arms cannot reach each other. Both meet a cycle whose
+    // outgoing tail contains another diamond. The last arm is disconnected.
+    let mut edges = (0..48)
+        .filter(|n| !matches!(n, 12 | 24 | 32 | 41))
+        .map(|n| (n, n + 1))
+        .collect::<Vec<_>>();
+    edges.extend([
+        (0, 13),
+        (12, 25),
+        (24, 25),
+        (31, 27),
+        (32, 33),
+        (32, 37),
+        (36, 39),
+        (41, 47),
+    ]);
+    let points = (0..49).map(point).collect::<Vec<_>>();
+    let mut builder = SemanticFlowBuilder::new();
+    for &(from, to) in &edges {
+        builder.add_edge(points[from], points[to], SemanticFlowEdgeKind::Normal);
+    }
+    let graph = builder.finish([points[0]].into());
+    let mut expected = vec![vec![false; points.len()]; points.len()];
+    for (from, reachable) in expected.iter_mut().enumerate() {
+        let mut pending = vec![from];
+        while let Some(node) = pending.pop() {
+            if std::mem::replace(&mut reachable[node], true) {
+                continue;
+            }
+            pending.extend(edges.iter().filter_map(|&(u, v)| (u == node).then_some(v)));
+        }
+    }
+    // Every maximal path reaches the target exactly on the least fixed
+    // point obtained by admitting nodes whose nonempty exits all qualify.
+    for (target, &target_point) in points.iter().enumerate() {
+        let mut mandatory = vec![false; points.len()];
+        mandatory[target] = true;
+        loop {
+            let mut changed = false;
+            for node in 0..points.len() {
+                let mut exits = edges.iter().filter(|&&(source, _)| source == node);
+                let Some(&(_, first)) = exits.next() else {
+                    continue;
+                };
+                if !mandatory[node] && mandatory[first] && exits.all(|&(_, to)| mandatory[to]) {
+                    mandatory[node] = true;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        for (source, &source_point) in points.iter().enumerate() {
+            assert_eq!(
+                graph.must_reach(source_point, target_point),
+                mandatory[source],
+                "mandatory {source} to {target}"
+            );
+        }
+    }
+    assert!(
+        graph.index.get().is_none(),
+        "mandatory paths use the frozen edge rows"
+    );
+    for limit in [0, usize::MAX] {
+        let index = SemanticReachability::analyze_with_dense_limit(&graph, limit);
+        let chains = match &index.store {
+            ReachabilityStore::Sparse(cache) => cache.successors.len(),
+            ReachabilityStore::Dense { bits, row_words } => bits.len() / row_words,
+            ReachabilityStore::Linear => panic!("branched graph"),
+        };
+        assert!(chains < index.chain_of.len() / 2);
+        for (from, reachable) in expected.iter().enumerate() {
+            for (to, &can_reach) in reachable.iter().enumerate() {
+                assert_eq!(index.reaches(points[from], points[to]), can_reach);
+                for middle in [0, 4, 13, 19, 26, 29, 32, 39, 48] {
+                    assert_eq!(
+                        index.reaches_any_between(points[from], points[to], [&points[middle]]),
+                        reachable[middle] && expected[middle][to],
+                        "from {from} via {middle} to {to}",
+                    );
+                }
+            }
+        }
+    }
+}

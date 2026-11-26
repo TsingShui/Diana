@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -30,7 +31,7 @@ use super::members::JavaMemberNames;
 use super::source_types::{
     invocation_expression_signature, GenericInvocationCompatibility, GenericTypeEvidence,
     GenericTypeProjection, GenericTypeRelation, GenericTypeSolver, JavaTypeErasureIndex,
-    JavaTypeRelations, SourceObjectTypes, SourceTypeFlow,
+    JavaTypeRelations, SourceObjectTypes, SourceTypeFlow, SourceTypeStates,
 };
 use input::JavaInputBindings;
 
@@ -189,10 +190,8 @@ pub struct DexJavaDialect {
     names: BTreeMap<SourceVariable, JavaIdentifier>,
     source_names: BTreeMap<u32, JavaIdentifier>,
     binding_types: JavaBindingTypes,
-    source_variable_definition_types: BTreeMap<u32, JavaType>,
-    source_value_definition_types: BTreeMap<crate::ir::analysis::SsaVar, JavaType>,
-    source_variable_types: BTreeMap<u32, JavaType>,
-    source_value_types: BTreeMap<crate::ir::analysis::SsaVar, JavaType>,
+    source_variable_types: SourceTypeStates<u32, JavaType>,
+    source_value_types: SourceTypeStates<crate::ir::analysis::SsaVar, JavaType>,
     source_variable_requirements: BTreeMap<u32, JavaType>,
     source_value_requirements: BTreeMap<crate::ir::analysis::SsaVar, JavaType>,
     primitive_expression_types: RefCell<BTreeMap<InstructionId, Option<PrimitiveType>>>,
@@ -336,6 +335,26 @@ impl DexJavaDialect {
         source_types: BTreeMap<ArgType, JavaType>,
         member_names: Arc<JavaMemberNames>,
     ) -> Result<Self, JavaLoweringError> {
+        Self::from_types(
+            is_static,
+            this_code_var,
+            parameter_code_vars,
+            parameter_names,
+            Cow::Borrowed(types),
+            source_types,
+            member_names,
+        )
+    }
+
+    pub(crate) fn from_types(
+        is_static: bool,
+        this_code_var: Option<u32>,
+        parameter_code_vars: &[Option<u32>],
+        parameter_names: &[JavaIdentifier],
+        types: Cow<'_, SourceTypeEnvironment>,
+        source_types: BTreeMap<ArgType, JavaType>,
+        member_names: Arc<JavaMemberNames>,
+    ) -> Result<Self, JavaLoweringError> {
         if parameter_code_vars.len() != parameter_names.len() {
             return Err(JavaLoweringError::ParameterBindingArity {
                 variables: parameter_code_vars.len(),
@@ -347,10 +366,8 @@ impl DexJavaDialect {
             names: BTreeMap::new(),
             source_names: BTreeMap::new(),
             binding_types: JavaBindingTypes::default(),
-            source_variable_definition_types: BTreeMap::new(),
-            source_value_definition_types: BTreeMap::new(),
-            source_variable_types: BTreeMap::new(),
-            source_value_types: BTreeMap::new(),
+            source_variable_types: SourceTypeStates::default(),
+            source_value_types: SourceTypeStates::default(),
             source_variable_requirements: BTreeMap::new(),
             source_value_requirements: BTreeMap::new(),
             primitive_expression_types: RefCell::new(BTreeMap::new()),
@@ -370,7 +387,7 @@ impl DexJavaDialect {
             source_type_bounds: BTreeMap::new(),
             generic_throw_types: Vec::new(),
             this_code_var,
-            types: types.clone(),
+            types: types.into_owned(),
             source_types,
             source_erasures,
             inline_declarations: BTreeSet::new(),
@@ -1732,7 +1749,7 @@ impl DexJavaDialect {
                     .result
                     .as_ref()
                     .and_then(crate::ir::analysis::SsaVar::from_reg)
-                    .and_then(|value| self.source_value_definition_types.get(&value))
+                    .and_then(|value| self.source_value_types.definition(&value))
                     .filter(|ty| self.source_erasure(ty).as_ref() == Some(allocation_owner))
                     .filter(|ty| !self.is_raw_generic_type(ty))
                     .cloned();
@@ -3370,11 +3387,11 @@ impl DexJavaDialect {
         match value {
             SemanticExpression::Register(register) => {
                 crate::ir::analysis::SsaVar::from_reg(register)
-                    .and_then(|value| self.source_value_definition_types.get(&value))
+                    .and_then(|value| self.source_value_types.definition(&value))
                     .or_else(|| {
-                        register.code_var.and_then(|variable| {
-                            self.source_variable_definition_types.get(&variable)
-                        })
+                        register
+                            .code_var
+                            .and_then(|variable| self.source_variable_types.definition(&variable))
                     })
                     .cloned()
             }
@@ -3384,7 +3401,7 @@ impl DexJavaDialect {
                         .result
                         .as_ref()
                         .and_then(crate::ir::analysis::SsaVar::from_reg)
-                        .and_then(|value| self.source_value_definition_types.get(&value))
+                        .and_then(|value| self.source_value_types.definition(&value))
                         .cloned()
                 })
             }
@@ -5062,7 +5079,7 @@ impl JavaDialect for DexJavaDialect {
                 self.current_type.as_ref(),
                 self.source_current_type.as_ref(),
                 self.this_code_var,
-                &self.source_variable_types,
+                self.source_variable_types.current(),
                 diagnostics_enabled,
             )
         };
@@ -5072,8 +5089,6 @@ impl JavaDialect for DexJavaDialect {
                 .observe(crate::ir::AnalysisEvent::SourceTypes(&diagnostics));
         }
         (
-            self.source_variable_definition_types,
-            self.source_value_definition_types,
             self.source_variable_types,
             self.source_value_types,
             self.source_variable_requirements,

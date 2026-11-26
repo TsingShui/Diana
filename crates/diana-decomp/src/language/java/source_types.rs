@@ -2377,6 +2377,105 @@ impl TypeState {
     }
 }
 
+/// Definition facts and contextual facts share one entry until a constraint
+/// changes that identity. The first overwrite moves its old value into the log.
+#[derive(Debug, Clone)]
+pub(super) struct SourceTypeStates<K, T> {
+    current: BTreeMap<K, T>,
+    before_change: BTreeMap<K, Option<T>>,
+    definitions_sealed: bool,
+}
+
+impl<K, T> Default for SourceTypeStates<K, T> {
+    fn default() -> Self {
+        Self {
+            current: BTreeMap::new(),
+            before_change: BTreeMap::new(),
+            definitions_sealed: false,
+        }
+    }
+}
+
+impl<K: Ord + Copy, T> SourceTypeStates<K, T> {
+    pub(super) fn current(&self) -> &BTreeMap<K, T> {
+        &self.current
+    }
+
+    pub(super) fn get(&self, key: &K) -> Option<&T> {
+        self.current.get(key)
+    }
+
+    fn seal_definitions(&mut self) {
+        self.definitions_sealed = true;
+    }
+
+    pub(super) fn definition(&self, key: &K) -> Option<&T> {
+        if !self.definitions_sealed {
+            return None;
+        }
+        match self.before_change.get(key) {
+            Some(original) => original.as_ref(),
+            None => self.current.get(key),
+        }
+    }
+
+    pub(super) fn insert(&mut self, key: K, state: T) {
+        let previous = self.current.insert(key, state);
+        if self.definitions_sealed {
+            self.before_change.entry(key).or_insert(previous);
+        }
+    }
+
+    /// Build an ordered view only when a source-type diagnostic was requested.
+    fn definitions(&self) -> BTreeMap<K, &T> {
+        if !self.definitions_sealed {
+            return BTreeMap::new();
+        }
+        let mut definitions: BTreeMap<_, _> =
+            self.current.iter().map(|(&key, ty)| (key, ty)).collect();
+        for (&key, original) in &self.before_change {
+            match original {
+                Some(ty) => {
+                    definitions.insert(key, ty);
+                }
+                None => {
+                    definitions.remove(&key);
+                }
+            }
+        }
+        definitions
+    }
+}
+
+impl<K: Ord + Copy> SourceTypeStates<K, TypeState> {
+    fn retained(self, contextual: &BTreeSet<K>) -> SourceTypeStates<K, JavaType> {
+        let retain = |key: &K, state| match state {
+            TypeState::Exact(ty)
+                if !matches!(ty, JavaType::Primitive(_)) || contextual.contains(key) =>
+            {
+                Some(ty)
+            }
+            TypeState::Exact(_) | TypeState::Conflict => None,
+        };
+        SourceTypeStates {
+            current: self
+                .current
+                .into_iter()
+                .filter_map(|(key, state)| retain(&key, state).map(|ty| (key, ty)))
+                .collect(),
+            before_change: self
+                .before_change
+                .into_iter()
+                .map(|(key, original)| {
+                    // A missing or filtered definition still masks a retained current type.
+                    (key, original.and_then(|state| retain(&key, state)))
+                })
+                .collect(),
+            definitions_sealed: self.definitions_sealed,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TypeConstraintKind {
     Definition,
@@ -2612,10 +2711,8 @@ struct ElementEquation {
 
 pub(super) struct SourceTypeFacts {
     object_types: Vec<(String, String)>,
-    definition_variables: BTreeMap<u32, JavaType>,
-    definition_values: BTreeMap<SsaVar, JavaType>,
-    variables: BTreeMap<u32, JavaType>,
-    values: BTreeMap<SsaVar, JavaType>,
+    variables: SourceTypeStates<u32, JavaType>,
+    values: SourceTypeStates<SsaVar, JavaType>,
     requirements: BTreeMap<u32, JavaType>,
     value_requirements: BTreeMap<SsaVar, JavaType>,
     equations: Vec<crate::ir::SourceTypeEquationDiagnostic>,
@@ -2627,16 +2724,12 @@ impl SourceTypeFacts {
     pub(super) fn into_parts(
         self,
     ) -> (
-        BTreeMap<u32, JavaType>,
-        BTreeMap<SsaVar, JavaType>,
-        BTreeMap<u32, JavaType>,
-        BTreeMap<SsaVar, JavaType>,
+        SourceTypeStates<u32, JavaType>,
+        SourceTypeStates<SsaVar, JavaType>,
         BTreeMap<u32, JavaType>,
         BTreeMap<SsaVar, JavaType>,
     ) {
         (
-            self.definition_variables,
-            self.definition_values,
             self.variables,
             self.values,
             self.requirements,
@@ -2648,22 +2741,26 @@ impl SourceTypeFacts {
         crate::ir::SourceTypeDiagnostics {
             object_types: self.object_types.clone(),
             definition_variables: self
-                .definition_variables
-                .iter()
-                .map(|(variable, ty)| (*variable, ty.to_string()))
+                .variables
+                .definitions()
+                .into_iter()
+                .map(|(variable, ty)| (variable, ty.to_string()))
                 .collect(),
             definition_values: self
-                .definition_values
-                .iter()
+                .values
+                .definitions()
+                .into_iter()
                 .map(|(value, ty)| (value.reg_num, value.version, ty.to_string()))
                 .collect(),
             variables: self
                 .variables
+                .current()
                 .iter()
                 .map(|(variable, ty)| (*variable, ty.to_string()))
                 .collect(),
             values: self
                 .values
+                .current()
                 .iter()
                 .map(|(value, ty)| (value.reg_num, value.version, ty.to_string()))
                 .collect(),
@@ -2707,15 +2804,13 @@ pub(super) struct SourceTypeFlow<'a> {
     abi_fixed: BTreeSet<u32>,
     fixed: BTreeSet<u32>,
     fixed_values: BTreeSet<SsaVar>,
-    states: BTreeMap<u32, TypeState>,
-    definition_states: BTreeMap<u32, TypeState>,
+    states: SourceTypeStates<u32, TypeState>,
     requirements: BTreeMap<u32, TypeState>,
     value_requirements: BTreeMap<SsaVar, TypeState>,
     receiver_requirements: BTreeMap<u32, TypeState>,
     receiver_value_requirements: BTreeMap<SsaVar, TypeState>,
     requirement_candidates: BTreeMap<u32, BTreeSet<String>>,
-    value_states: BTreeMap<SsaVar, TypeState>,
-    value_definition_states: BTreeMap<SsaVar, TypeState>,
+    value_states: SourceTypeStates<SsaVar, TypeState>,
     value_erased_types: BTreeMap<SsaVar, ArgType>,
     contextual_variables: BTreeSet<u32>,
     contextual_values: BTreeSet<SsaVar>,
@@ -2769,18 +2864,19 @@ impl<'a> SourceTypeFlow<'a> {
             abi_fixed: seeds.keys().copied().collect(),
             fixed: seeds.keys().copied().collect(),
             fixed_values: BTreeSet::new(),
-            states: seeds
-                .iter()
-                .map(|(variable, ty)| (*variable, TypeState::Exact(ty.clone())))
-                .collect(),
-            definition_states: BTreeMap::new(),
+            states: SourceTypeStates {
+                current: seeds
+                    .iter()
+                    .map(|(variable, ty)| (*variable, TypeState::Exact(ty.clone())))
+                    .collect(),
+                ..Default::default()
+            },
             requirements: BTreeMap::new(),
             value_requirements: BTreeMap::new(),
             receiver_requirements: BTreeMap::new(),
             receiver_value_requirements: BTreeMap::new(),
             requirement_candidates: BTreeMap::new(),
-            value_states: BTreeMap::new(),
-            value_definition_states: BTreeMap::new(),
+            value_states: SourceTypeStates::default(),
             value_erased_types: BTreeMap::new(),
             contextual_variables: BTreeSet::new(),
             contextual_values: BTreeSet::new(),
@@ -2825,14 +2921,6 @@ impl<'a> SourceTypeFlow<'a> {
         } else {
             Vec::new()
         };
-        let definition_variables = Self::retained_states(
-            std::mem::take(&mut flow.definition_states),
-            &flow.contextual_variables,
-        );
-        let definition_values = Self::retained_states(
-            std::mem::take(&mut flow.value_definition_states),
-            &flow.contextual_values,
-        );
         let requirements = Self::preferred_requirement_states(
             flow.source_types,
             Some(&flow.source_erasures),
@@ -2870,10 +2958,8 @@ impl<'a> SourceTypeFlow<'a> {
         };
         SourceTypeFacts {
             object_types,
-            definition_variables,
-            definition_values,
-            variables: Self::retained_states(flow.states, &flow.contextual_variables),
-            values: Self::retained_states(flow.value_states, &flow.contextual_values),
+            variables: flow.states.retained(&flow.contextual_variables),
+            values: flow.value_states.retained(&flow.contextual_values),
             requirements: requirements
                 .into_iter()
                 .filter_map(|(variable, state)| match state {
@@ -2948,24 +3034,6 @@ impl<'a> SourceTypeFlow<'a> {
                     owner_parameters,
                     owner_bounds_satisfied,
                 })
-            })
-            .collect()
-    }
-
-    fn retained_states<K: Ord>(
-        states: BTreeMap<K, TypeState>,
-        contextual: &BTreeSet<K>,
-    ) -> BTreeMap<K, JavaType> {
-        states
-            .into_iter()
-            .filter_map(|(identity, state)| match state {
-                TypeState::Exact(ty)
-                    if !matches!(ty, JavaType::Primitive(_)) || contextual.contains(&identity) =>
-                {
-                    Some((identity, ty))
-                }
-                TypeState::Exact(_) => None,
-                TypeState::Conflict => None,
             })
             .collect()
     }
@@ -3068,8 +3136,8 @@ impl<'a> SourceTypeFlow<'a> {
 
     fn converge(&mut self, invocations: &[SemanticOperation]) {
         self.converge_definition_facts();
-        self.value_definition_states = self.value_states.clone();
-        self.definition_states = self.states.clone();
+        self.value_states.seal_definitions();
+        self.states.seal_definitions();
         self.constrain_runtime_type_tests();
 
         let elements = std::mem::take(&mut self.elements);
@@ -3126,8 +3194,8 @@ impl<'a> SourceTypeFlow<'a> {
             return None;
         };
         let principal = self
-            .value_definition_states
-            .get(&value)
+            .value_states
+            .definition(&value)
             .and_then(TypeState::exact);
         if !self.fact_differs(SourceTypeFact::Value(value), requirement)
             && principal.is_none_or(|ty| ty == requirement)
@@ -3261,23 +3329,9 @@ impl<'a> SourceTypeFlow<'a> {
                 if self.fact_is_fixed(output) {
                     continue;
                 }
-                let Some(next) = self.equation_output_state(output) else {
+                let Some(next) = self.changed_equation_output(output) else {
                     continue;
                 };
-                let next = match next {
-                    TypeState::Exact(incoming) => Self::join_type_state(
-                        self.source_types,
-                        Some(&self.source_erasures),
-                        self.type_variable_erasures,
-                        self.generic_projection,
-                        self.fact_state(output),
-                        incoming,
-                    ),
-                    TypeState::Conflict => TypeState::Conflict,
-                };
-                if self.fact_state(output) == Some(&next) {
-                    continue;
-                }
                 self.set_fact_state(output, next);
                 self.equation_graph.mark_changed(output);
                 any_changed = true;
@@ -3286,27 +3340,54 @@ impl<'a> SourceTypeFlow<'a> {
         any_changed
     }
 
-    fn equation_output_state(&self, output: SourceTypeFact) -> Option<TypeState> {
-        let mut state = None;
-        for &index in self.equation_graph.equations_for_output(output) {
-            let Some(candidate) = self.equation_graph.candidates[index].as_ref() else {
-                continue;
-            };
-            if let SourceTypeFact::Variable(variable) = output {
-                if self.join_variables.contains(&variable) && !candidate.is_join {
-                    continue;
-                }
-            }
-            state = Some(Self::join_type_state(
+    fn changed_equation_output(&self, output: SourceTypeFact) -> Option<TypeState> {
+        let current = match self.fact_state(output) {
+            Some(TypeState::Conflict) => return None,
+            Some(TypeState::Exact(current)) => Some(current),
+            None => None,
+        };
+        let joins_only =
+            matches!(output, SourceTypeFact::Variable(var) if self.join_variables.contains(&var));
+        let mut candidates = self
+            .equation_graph
+            .equations_for_output(output)
+            .iter()
+            .filter_map(|&index| self.equation_graph.candidates[index].as_ref())
+            .filter(|candidate| !joins_only || candidate.is_join)
+            .map(|candidate| &candidate.ty);
+        let join = |left: &JavaType, right: &JavaType| {
+            Self::least_common_source_type(
                 self.source_types,
                 Some(&self.source_erasures),
                 self.type_variable_erasures,
                 self.generic_projection,
-                state.as_ref(),
-                candidate.ty.clone(),
-            ));
+                left,
+                right,
+            )
+        };
+        // A single producer and equal incoming types need no owned copy until
+        // the result actually changes the stored fact.
+        let mut common = Cow::Borrowed(candidates.next()?);
+        for next in candidates {
+            if common.as_ref() == next {
+                common = Cow::Borrowed(next);
+            } else if let Some(joined) = join(&common, next) {
+                common = Cow::Owned(joined);
+            } else {
+                return Some(TypeState::Conflict);
+            }
         }
-        state
+        let Some(current) = current else {
+            return Some(TypeState::Exact(common.into_owned()));
+        };
+        if current == common.as_ref() {
+            return None;
+        }
+        match join(current, &common) {
+            Some(joined) if &joined == current => None,
+            Some(joined) => Some(TypeState::Exact(joined)),
+            None => Some(TypeState::Conflict),
+        }
     }
 
     fn fact_is_fixed(&self, fact: SourceTypeFact) -> bool {
@@ -3383,10 +3464,7 @@ impl<'a> SourceTypeFlow<'a> {
         if self.abi_fixed.contains(&variable) {
             return None;
         }
-        let definition = self
-            .definition_states
-            .get(&variable)
-            .and_then(TypeState::exact);
+        let definition = self.states.definition(&variable).and_then(TypeState::exact);
         // A replacement can only come from the requirement or either principal.
         // Specialization requires a raw principal and a parameterized requirement.
         if !self.fact_differs(SourceTypeFact::Variable(variable), requirement)
@@ -3502,7 +3580,7 @@ impl<'a> SourceTypeFlow<'a> {
         self.equations_for_fact(SourceTypeFact::Variable(variable))
             .filter_map(|equation| {
                 SsaVar::from_reg(&equation.result)
-                    .and_then(|value| self.value_definition_states.get(&value))
+                    .and_then(|value| self.value_states.definition(&value))
                     .and_then(TypeState::exact)
             })
     }
@@ -3900,12 +3978,12 @@ impl<'a> SourceTypeFlow<'a> {
         requirement: &JavaType,
     ) -> bool {
         let definition_has_generic_evidence = SsaVar::from_reg(&equation.result)
-            .and_then(|value| self.value_definition_states.get(&value))
+            .and_then(|value| self.value_states.definition(&value))
             .or_else(|| {
                 equation
                     .result
                     .code_var
-                    .and_then(|variable| self.definition_states.get(&variable))
+                    .and_then(|variable| self.states.definition(&variable))
             })
             .is_some_and(|state| match state {
                 TypeState::Exact(ty) => Self::has_source_specific_type(ty),
@@ -4227,12 +4305,12 @@ impl<'a> SourceTypeFlow<'a> {
         result
     }
 
-    fn merge_state<K: Ord>(
+    fn merge_state<K: Ord + Copy>(
         source_types: &BTreeMap<ArgType, JavaType>,
         source_erasures: Option<&JavaTypeErasureIndex>,
         type_variable_erasures: &BTreeMap<JavaIdentifier, ArgType>,
         generic_projection: Option<&dyn GenericTypeProjection>,
-        states: &mut BTreeMap<K, TypeState>,
+        states: &mut SourceTypeStates<K, TypeState>,
         identity: K,
         incoming: JavaType,
     ) -> bool {
@@ -4261,31 +4339,6 @@ impl<'a> SourceTypeFlow<'a> {
                 }
             }
             Some(TypeState::Conflict) => false,
-        }
-    }
-
-    fn join_type_state(
-        source_types: &BTreeMap<ArgType, JavaType>,
-        source_erasures: Option<&JavaTypeErasureIndex>,
-        type_variable_erasures: &BTreeMap<JavaIdentifier, ArgType>,
-        generic_projection: Option<&dyn GenericTypeProjection>,
-        current: Option<&TypeState>,
-        incoming: JavaType,
-    ) -> TypeState {
-        match current {
-            None => TypeState::Exact(incoming),
-            Some(TypeState::Exact(current)) if current == &incoming => TypeState::Exact(incoming),
-            Some(TypeState::Exact(current)) => Self::least_common_source_type(
-                source_types,
-                source_erasures,
-                type_variable_erasures,
-                generic_projection,
-                current,
-                &incoming,
-            )
-            .map(TypeState::Exact)
-            .unwrap_or(TypeState::Conflict),
-            Some(TypeState::Conflict) => TypeState::Conflict,
         }
     }
 
@@ -4414,12 +4467,12 @@ impl<'a> SourceTypeFlow<'a> {
             .eq(right.segments.iter().flat_map(|segment| &segment.arguments))
     }
 
-    fn merge_constraint<K: Ord>(
+    fn merge_constraint<K: Ord + Copy>(
         source_types: &BTreeMap<ArgType, JavaType>,
         source_erasures: Option<&JavaTypeErasureIndex>,
         type_variable_erasures: &BTreeMap<JavaIdentifier, ArgType>,
         generic_projection: Option<&dyn GenericTypeProjection>,
-        states: &mut BTreeMap<K, TypeState>,
+        states: &mut SourceTypeStates<K, TypeState>,
         identity: K,
         incoming: JavaType,
         kind: TypeConstraintKind,
@@ -4876,14 +4929,14 @@ impl<'a> SourceTypeFlow<'a> {
             return self.exact(variable).cloned();
         }
         SsaVar::from_reg(register)
-            .and_then(|value| match self.value_definition_states.get(&value) {
+            .and_then(|value| match self.value_states.definition(&value) {
                 Some(TypeState::Exact(ty)) => Some(ty.clone()),
                 Some(TypeState::Conflict) | None => None,
             })
             .or_else(|| {
                 register.code_var.and_then(|variable| {
-                    self.definition_states
-                        .get(&variable)
+                    self.states
+                        .definition(&variable)
                         .and_then(|state| match state {
                             TypeState::Exact(ty) => Some(ty.clone()),
                             TypeState::Conflict => None,
@@ -6423,7 +6476,8 @@ mod tests {
             "example/Entry",
             vec![JavaTypeArgument::Any, JavaTypeArgument::Any],
         );
-        let mut states = BTreeMap::from([(0u32, TypeState::Exact(precise.clone()))]);
+        let mut states = SourceTypeStates::default();
+        states.insert(0u32, TypeState::Exact(precise.clone()));
 
         assert!(!SourceTypeFlow::merge_constraint(
             &source_types,
@@ -7036,3 +7090,7 @@ mod tests {
         assert!(!types.contains_key(&ArgType::object("example/OtherFn")));
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/source_type_states.rs"]
+mod source_type_states;

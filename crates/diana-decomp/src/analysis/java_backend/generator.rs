@@ -11,7 +11,6 @@ use super::java_model::{
     JavaClassModel, JavaMethodDeclaration, JavaMethodModel, OuterInstanceField,
 };
 use super::method_pipeline::{MethodBodyAnalysis, MethodBodyPipeline};
-use super::type_uses::JavaMethodTypeUses;
 use super::{JavaDecompiler, JavaDecompilerError};
 use crate::language::java::JavaPrinter;
 
@@ -28,10 +27,9 @@ impl JavaDecompiler {
         let current_type = cfg.method().owner().clone();
         let method = self.build_method_model(cfg)?;
         let declaration = JavaSingleMethodLowering::lower(
-            &method,
+            method,
             None,
-            Some(&current_type),
-            method_type_uses(&method),
+            &current_type,
             &self.source_abi,
             self.type_hierarchy.clone(),
             self.observer.clone(),
@@ -71,10 +69,9 @@ impl JavaDecompiler {
             OuterInstanceField::analyze(class).as_ref(),
         )?;
         let declaration = JavaSingleMethodLowering::lower(
-            &method,
+            method,
             source_package_name(class),
-            Some(class.class_type()),
-            method_type_uses(&method),
+            class.class_type(),
             &self.source_abi,
             self.type_hierarchy.clone(),
             self.observer.clone(),
@@ -581,10 +578,6 @@ fn method_model_from_body_analysis(
 fn source_package_name(class: &ClassNode) -> Option<&str> {
     let package = class.package();
     (!package.is_empty()).then_some(package)
-}
-
-fn method_type_uses(method: &JavaMethodModel) -> Vec<crate::ir::ty::ArgType> {
-    JavaMethodTypeUses::collect(method)
 }
 
 #[cfg(test)]

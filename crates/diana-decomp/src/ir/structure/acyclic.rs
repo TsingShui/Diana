@@ -5,14 +5,14 @@
 //! separate, mechanical translation from the resulting fact tree to semantic IR.
 
 use std::cell::Cell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
 use crate::ir::analysis::{
     DominanceError, DominatorTree, ReachingConditionError, ReachingConditions,
 };
 use crate::ir::bdd::Bdd;
-use crate::ir::semantic::{SemanticCompletion, SemanticFactory};
+use crate::ir::semantic::{ControlCompletion, SemanticFactory};
 use crate::ir::{
     BlockId, BoolExpr, BoolVariable, EdgeKind, InsnType, SemanticBuildError, SemanticNode,
     SemanticPredicate, CFG,
@@ -143,7 +143,7 @@ impl<'a, 'semantic, 'seeded> AcyclicStructurer<'a, 'semantic, 'seeded> {
 
     fn is_closed_block(&self, block: BlockId) -> bool {
         if let Some(node) = self.seeded.get(&block) {
-            return !SemanticCompletion::analyze(node).can_complete_normally();
+            return !ControlCompletion::normally_completes(node);
         }
         self.cfg
             .block(block)
@@ -173,15 +173,9 @@ impl<'a> AcyclicStructureAnalysis<'a> {
     }
 
     fn analyze(&self) -> Result<Option<AcyclicStructureFact>, AcyclicStructureError> {
-        let nodes = self.cfg.graph_node_ids();
-        let predecessors = self.cfg.normal_predecessor_snapshot();
-        let dominators = DominatorTree::compute_with_predecessors(
-            self.cfg,
-            self.cfg.entry,
-            nodes,
-            &predecessors,
-        )?;
+        let dominators = DominatorTree::for_reaching_conditions(self.cfg, self.facts)?;
         let mut subtrees = BTreeMap::<BlockId, StructureItem>::new();
+        let mut root_variables = BranchVariables::default();
         for block in dominators.postorder() {
             let assumption = ConditionDomain {
                 domain: self
@@ -199,18 +193,22 @@ impl<'a> AcyclicStructureAnalysis<'a> {
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             children.sort_by_key(|child| child.lexical_rank);
-            let mut blocks = BTreeSet::from([block]);
-            for child in &children {
-                blocks.extend(&child.blocks);
-            }
+            let mut blocks = BTreeSet::new();
             let descendants = if children.is_empty() {
                 AcyclicStructureFact::Empty
             } else {
-                let Some(structure) = self.refine(children, assumption.clone())? else {
+                let Some(structure) = self.refine(
+                    children,
+                    assumption.clone(),
+                    &mut root_variables,
+                    &mut blocks,
+                )?
+                else {
                     return Ok(None);
                 };
                 structure
             };
+            blocks.insert(block);
             let block_structure = self.block_structure(block)?;
             subtrees.insert(
                 block,
@@ -238,14 +236,32 @@ impl<'a> AcyclicStructureAnalysis<'a> {
         &self,
         items: Vec<StructureItem>,
         assumption: ConditionDomain,
+        root_variables: &mut BranchVariables,
+        blocks: &mut BTreeSet<BlockId>,
     ) -> Result<Option<AcyclicStructureFact>, AcyclicStructureError> {
         let mut tasks = vec![RefineTask::Refine { items, assumption }];
         let mut results = Vec::new();
+        let mut local_variables = None::<(Bdd, BranchVariables)>;
         while let Some(task) = tasks.pop() {
             match task {
                 RefineTask::Refine { items, assumption } => {
-                    let Some(cluster) = self.cluster(&items, &assumption)? else {
-                        let Some(structure) = self.finish(items, &assumption)? else {
+                    let variables = if assumption.domain == self.facts.truth() {
+                        &mut *root_variables
+                    } else {
+                        let (cached, variables) = local_variables
+                            .get_or_insert_with(|| (assumption.domain, BranchVariables::default()));
+                        if *cached != assumption.domain {
+                            *cached = assumption.domain;
+                            variables.reset();
+                        }
+                        variables
+                    };
+                    let Some(cluster) = self.cluster(&items, &assumption, variables)? else {
+                        // A suspended refinement owns its cluster's member
+                        // set. Only the final result transfers it to the
+                        // enclosing dominator, after all proofs have read it.
+                        let members = tasks.is_empty().then_some(&mut *blocks);
+                        let Some(structure) = self.finish(items, &assumption, members)? else {
                             return Ok(None);
                         };
                         results.push(structure);
@@ -361,22 +377,13 @@ impl<'a> AcyclicStructureAnalysis<'a> {
         &self,
         items: &[StructureItem],
         assumption: &ConditionDomain,
+        variables: &mut BranchVariables,
     ) -> Result<Option<ConditionCluster>, AcyclicStructureError> {
-        for condition in self.facts.branch_variables().iter().copied() {
-            let owner = self
-                .facts
-                .condition(condition)
-                .ok_or(AcyclicStructureError::MissingCondition(condition))?;
-            if !self.facts.implies(assumption.domain, owner.domain())? {
-                continue;
-            }
-            let domain = self.facts.compile(&BoolExpr::block(condition))?;
-            let negated = self.facts.not(domain)?;
-            if self.facts.implies(assumption.domain, domain)?
-                || self.facts.implies(assumption.domain, negated)?
-            {
-                continue;
-            }
+        let mut next = 0;
+        while let Some((condition, domain, negated)) =
+            variables.candidate(next, assumption.domain, self.facts)?
+        {
+            next += 1;
             let classes = items
                 .iter()
                 .map(|item| self.classify(item, domain, negated))
@@ -516,10 +523,11 @@ impl<'a> AcyclicStructureAnalysis<'a> {
         &self,
         items: Vec<StructureItem>,
         assumption: &ConditionDomain,
+        mut members: Option<&mut BTreeSet<BlockId>>,
     ) -> Result<Option<AcyclicStructureFact>, AcyclicStructureError> {
         let mut structures = Vec::with_capacity(items.len());
         let mut active = assumption.domain;
-        for item in items {
+        for mut item in items {
             let structure = if self.facts.implies(active, item.condition.domain)? {
                 item.structure
             } else {
@@ -547,6 +555,12 @@ impl<'a> AcyclicStructureAnalysis<'a> {
             )?;
             active = self.facts.and(active, self.facts.not(terminal)?)?;
             structures.push(structure);
+            if let Some(members) = members.as_deref_mut() {
+                if item.blocks.len() > members.len() {
+                    std::mem::swap(members, &mut item.blocks);
+                }
+                members.extend(item.blocks);
+            }
         }
         Ok(Some(AcyclicStructureFact::sequence(structures)))
     }
@@ -555,6 +569,51 @@ impl<'a> AcyclicStructureAnalysis<'a> {
 #[derive(Clone)]
 struct ConditionDomain {
     domain: Bdd,
+}
+
+/// The branch variables available under one assumption, in evaluation order.
+/// Extend only as far as each cluster search actually goes: the first BDD
+/// queries populate bounded caches, even for variables that get rejected.
+#[derive(Default)]
+struct BranchVariables {
+    tested: usize,
+    available: Vec<(BlockId, Bdd, Bdd)>,
+}
+
+impl BranchVariables {
+    fn reset(&mut self) {
+        self.tested = 0;
+        self.available.clear();
+    }
+
+    fn candidate(
+        &mut self,
+        rank: usize,
+        assumption: Bdd,
+        facts: &ReachingConditions,
+    ) -> Result<Option<(BlockId, Bdd, Bdd)>, AcyclicStructureError> {
+        if let Some(candidate) = self.available.get(rank) {
+            return Ok(Some(*candidate));
+        }
+        for &condition in &facts.branch_variables()[self.tested..] {
+            self.tested += 1;
+            let owner = facts
+                .condition(condition)
+                .ok_or(AcyclicStructureError::MissingCondition(condition))?;
+            if !facts.implies(assumption, owner.domain())? {
+                continue;
+            }
+            let domain = facts.compile(&BoolExpr::block(condition))?;
+            let negated = facts.not(domain)?;
+            if facts.implies(assumption, domain)? || facts.implies(assumption, negated)? {
+                continue;
+            }
+            let candidate = (condition, domain, negated);
+            self.available.push(candidate);
+            return Ok(Some(candidate));
+        }
+        Ok(None)
+    }
 }
 
 struct StructureItem {
@@ -586,7 +645,7 @@ enum AcyclicStructureFact {
         block: BlockId,
         prefix_only: bool,
     },
-    Sequence(Vec<AcyclicStructureFact>),
+    Sequence(VecDeque<AcyclicStructureFact>),
     Guard {
         condition: BoolExpr,
         body: Box<AcyclicStructureFact>,
@@ -600,17 +659,28 @@ enum AcyclicStructureFact {
 
 impl AcyclicStructureFact {
     fn sequence(structures: Vec<Self>) -> Self {
-        let mut flattened = Vec::new();
-        for structure in structures {
+        let mut flattened = VecDeque::new();
+        // Dominator lowering most often prepends one block to a long child
+        // sequence. Keep the larger buffer when joining two sequences.
+        for structure in structures.into_iter().rev() {
             match structure {
                 Self::Empty => {}
-                Self::Sequence(children) => flattened.extend(children),
-                other => flattened.push(other),
+                Self::Sequence(mut children) if children.len() > flattened.len() => {
+                    children.extend(flattened);
+                    flattened = children;
+                }
+                Self::Sequence(children) => {
+                    flattened.reserve(children.len());
+                    for child in children.into_iter().rev() {
+                        flattened.push_front(child);
+                    }
+                }
+                other => flattened.push_front(other),
             }
         }
         match flattened.len() {
             0 => Self::Empty,
-            1 => flattened.into_iter().next().unwrap_or(Self::Empty),
+            1 => flattened.pop_front().unwrap_or(Self::Empty),
             _ => Self::Sequence(flattened),
         }
     }
@@ -899,3 +969,7 @@ impl From<SemanticBuildError> for AcyclicStructureError {
         Self::Semantic(source)
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/acyclic_members.rs"]
+mod tests;

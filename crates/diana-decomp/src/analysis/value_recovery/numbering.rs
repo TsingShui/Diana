@@ -50,7 +50,8 @@ pub(super) struct ValueNumbering<'a> {
 }
 
 impl<'a> ValueNumbering<'a> {
-    pub(super) fn analyze(
+    /// Visits single-definition classes in the collector's event order.
+    pub(super) fn analyze_ordered(
         identity: ValueIdentity,
         logic: &'a DomainLogic,
         scopes: &'a LexicalScopes,
@@ -58,8 +59,6 @@ impl<'a> ValueNumbering<'a> {
         canonical_values: &'a BTreeMap<SsaVar, InsnArg>,
         availability: Option<&'a dyn ValueAvailability>,
     ) -> Result<ValueNumberingResult, ValueRecoveryError> {
-        let mut definitions = definitions.into_iter().collect::<Vec<_>>();
-        definitions.sort_by_key(|definition| definition.event);
         let mut numbering = Self {
             identity,
             logic,
@@ -182,19 +181,7 @@ impl<'a> ValueNumbering<'a> {
     }
 
     fn expression(&self, instruction: &SemanticOperation) -> Option<ValueExpression> {
-        if !instruction.effects().is_pure()
-            || !matches!(
-                instruction.insn_type,
-                InsnType::Const
-                    | InsnType::ConstStr
-                    | InsnType::Arith
-                    | InsnType::Neg
-                    | InsnType::Not
-                    | InsnType::Cast
-                    | InsnType::Cmp
-                    | InsnType::InstanceOf
-            )
-        {
+        if !Self::pure_root(instruction) {
             return None;
         }
         let mut pending = vec![ExpressionTask::Operation(instruction.clone())];
@@ -202,8 +189,7 @@ impl<'a> ValueNumbering<'a> {
         while let Some(task) = pending.pop() {
             match task {
                 ExpressionTask::Operation(instruction) => {
-                    if !instruction.effects().is_pure() || !Self::numberable(instruction.insn_type)
-                    {
+                    if !Self::numberable(instruction.insn_type) {
                         return None;
                     }
                     let frame = ExpressionFrame::of(&instruction)?;
@@ -248,10 +234,13 @@ impl<'a> ValueNumbering<'a> {
                                 break;
                             }
                             InsnArg::Wrapped(instruction) => {
-                                pending.push(ExpressionTask::Operation(
+                                let operation =
                                     SemanticOperation::from_instruction((*instruction).clone())
-                                        .ok()?,
-                                ));
+                                        .ok()?;
+                                if !Self::pure_root(&operation) {
+                                    return None;
+                                }
+                                pending.push(ExpressionTask::Operation(operation));
                                 break;
                             }
                             InsnArg::Reg(register) => {
@@ -276,10 +265,16 @@ impl<'a> ValueNumbering<'a> {
                 }
             }
         }
-        let [ValueOperand::Expression(expression)] = values.as_slice() else {
-            return None;
-        };
-        Some((**expression).clone())
+        match values.pop()? {
+            ValueOperand::Expression(expression) if values.is_empty() => Some(*expression),
+            _ => None,
+        }
+    }
+
+    /// Transitive effects include each nested operand, compound target and
+    /// edge copy. A replacement taken from the CFG starts a separate tree.
+    fn pure_root(operation: &SemanticOperation) -> bool {
+        Self::numberable(operation.insn_type) && operation.effects().is_pure()
     }
 
     fn numberable(instruction: InsnType) -> bool {
@@ -298,10 +293,10 @@ impl<'a> ValueNumbering<'a> {
 
     fn root(&self, mut value: SsaVar) -> SsaVar {
         let mut visited = BTreeSet::new();
-        while visited.insert(value) {
-            let Some(parent) = self.aliases.get(&value).copied() else {
+        while let Some(&parent) = self.aliases.get(&value) {
+            if !visited.insert(value) {
                 break;
-            };
+            }
             value = parent;
         }
         value
@@ -414,3 +409,7 @@ enum ExpressionTask {
     Canonical(InsnArg),
     Build(ExpressionFrame),
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/numbering_effects.rs"]
+mod tests;

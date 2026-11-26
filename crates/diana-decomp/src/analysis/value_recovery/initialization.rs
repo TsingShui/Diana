@@ -24,14 +24,14 @@ impl SourceInitializationRecovery {
             return Ok(false);
         }
         let original = std::mem::replace(root, SemanticNode::Empty);
-        let before = crate::ir::semantic::SemanticCompletion::analyze(&original);
+        let before = crate::ir::semantic::ControlCompletion::analyze(&original);
         let mut recovery = Self { changed: false };
         let rewritten = recovery.fold_node(original)?;
         if recovery.changed {
             // Only a rewrite can change completion; verifying an untouched
             // fold result would compare the tree against itself.
-            let after = crate::ir::semantic::SemanticCompletion::analyze(&rewritten);
-            if !before.same_control_outcomes(&after) {
+            let after = crate::ir::semantic::ControlCompletion::analyze(&rewritten);
+            if before != after {
                 return Err(SemanticFoldError::CompletionChanged {
                     transform: "source-initialization",
                 }
@@ -303,7 +303,7 @@ impl DefiniteValues {
                 self.assume(condition, false)
             }
             node => {
-                if !crate::ir::semantic::SemanticCompletion::analyze(node).can_complete_normally() {
+                if !crate::ir::semantic::ControlCompletion::normally_completes(node) {
                     return None;
                 }
                 for variable in SemanticExpressionFacts::of_node(node).defined_variables() {
@@ -498,9 +498,7 @@ impl DefiniteAssignment {
                 let facts = SemanticExpressionFacts::of_node(node);
                 if facts.uses(variable) || facts.definition_count(variable) != 0 {
                     Err(())
-                } else if crate::ir::semantic::SemanticCompletion::analyze(node)
-                    .can_complete_normally()
-                {
+                } else if crate::ir::semantic::ControlCompletion::normally_completes(node) {
                     Ok(Some(defined))
                 } else {
                     Ok(None)

@@ -3,8 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ir::{
-    ArgType, BlockId, InsnArg, InsnNode, InsnType, InstructionTransform, InstructionTree,
-    InstructionVisitor, RegisterArg, CFG,
+    ArgType, BlockId, InsnArg, InsnNode, InsnType, InstructionTree, InstructionVisitor,
+    RegisterArg, CFG,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -74,6 +74,11 @@ impl SsaValue {
             observed_types: BTreeSet::new(),
         }
     }
+    fn observe_type(&mut self, ty: &ArgType) {
+        if !self.observed_types.contains(ty) {
+            self.observed_types.insert(ty.clone());
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -101,6 +106,7 @@ pub struct ValueCopy {
 pub struct SsaValueGraph {
     values: BTreeMap<SsaVar, SsaValue>,
     phis: Vec<PhiMerge>,
+    phi_indices: foldhash::HashMap<SsaVar, usize>,
     copies: Vec<ValueCopy>,
 }
 
@@ -221,7 +227,7 @@ impl SsaValueGraph {
                             second: position,
                         });
                     }
-                    value.observed_types.insert(result.ty.clone());
+                    value.observe_type(&result.ty);
                 }
                 let arguments: &[InsnArg] = if instruction.insn_type == InsnType::Phi {
                     &[]
@@ -307,13 +313,10 @@ impl SsaValueGraph {
         usage: UsePosition,
     ) -> Option<SsaUseSite<'a>> {
         if let Some(result) = usage.phi {
-            return self.phis.iter().find_map(|phi| {
-                let input = phi.inputs.get(usage.argument)?;
-                (phi.result == result
-                    && input.value == value
-                    && input.predecessor == usage.instruction.block)
-                    .then_some(SsaUseSite::Phi(phi))
-            });
+            let phi = self.phi(result)?;
+            let input = phi.inputs.get(usage.argument)?;
+            return (input.value == value && input.predecessor == usage.instruction.block)
+                .then_some(SsaUseSite::Phi(phi));
         }
         cfg.block(usage.instruction.block)
             .and_then(|block| block.insns.get(usage.instruction.index))
@@ -324,9 +327,18 @@ impl SsaValueGraph {
         &self.phis
     }
 
+    pub(crate) fn phi(&self, result: SsaVar) -> Option<&PhiMerge> {
+        self.phis.get(*self.phi_indices.get(&result)?)
+    }
+
     #[cfg(test)]
     pub(crate) fn with_phis_for_test(phis: Vec<PhiMerge>) -> Self {
         Self {
+            phi_indices: phis
+                .iter()
+                .enumerate()
+                .map(|(i, phi)| (phi.result, i))
+                .collect(),
             phis,
             ..Self::default()
         }
@@ -406,7 +418,7 @@ impl SsaValueGraph {
             let input = self.value_mut(value);
             input.uses.push(position);
             if let Some(register) = argument.as_register() {
-                input.observed_types.insert(register.ty.clone());
+                input.observe_type(&register.ty);
             }
             inputs.push(PhiInput {
                 predecessor,
@@ -414,6 +426,7 @@ impl SsaValueGraph {
                 value,
             });
         }
+        self.phi_indices.insert(result, self.phis.len());
         self.phis.push(PhiMerge {
             block,
             instruction: instruction.id,
@@ -425,17 +438,16 @@ impl SsaValueGraph {
 
     fn validate_phi_edges(&self, cfg: &CFG) -> Result<(), SsaInvariantError> {
         for phi in &self.phis {
-            let expected = cfg.incoming_edges(phi.block);
-            let actual = phi
+            let expected = cfg.predecessors_with_kind(phi.block);
+            let edges = phi
                 .inputs
                 .iter()
-                .map(|input| (input.predecessor, input.edge_kind))
-                .collect::<Vec<_>>();
-            if actual != expected {
+                .map(|input| (input.predecessor, input.edge_kind));
+            if !edges.clone().eq(expected.iter().copied()) {
                 return Err(SsaInvariantError::PhiTopology {
                     block: phi.block,
-                    actual,
-                    expected,
+                    actual: edges.collect(),
+                    expected: expected.to_vec(),
                 });
             }
         }
@@ -479,21 +491,48 @@ impl SsaValueGraph {
 
 #[derive(Debug, Clone)]
 pub struct CodeVariables {
-    classes: BTreeMap<SsaVar, u32>,
+    assignments: Vec<(SsaVar, u32)>,
+    count: u32,
 }
 
 impl CodeVariables {
+    pub(super) fn from_singletons(values: &SsaValueGraph, inputs: &[SsaVar]) -> Self {
+        // SSA values and declared inputs each arrive in register/version order.
+        let mut values = values.values.keys().copied().peekable();
+        let mut inputs = inputs.iter().copied().peekable();
+        let mut assignments = Vec::with_capacity(values.len());
+        loop {
+            let variable = match (values.peek(), inputs.peek()) {
+                (Some(left), Some(right)) if left == right => {
+                    inputs.next();
+                    values.next()
+                }
+                (Some(left), Some(right)) if right < left => inputs.next(),
+                (Some(_), _) => values.next(),
+                (None, _) => inputs.next(),
+            };
+            let Some(variable) = variable else { break };
+            assignments.push((variable, assignments.len() as u32));
+        }
+        Self {
+            count: assignments.len() as u32,
+            assignments,
+        }
+    }
+
     pub(super) fn from_classes(mut classes: SsaClasses) -> Self {
-        let mut roots = BTreeMap::new();
-        let mut assignments = BTreeMap::new();
-        for variable in classes.values() {
+        let variables = classes.values();
+        let mut roots = foldhash::HashMap::default();
+        let mut assignments = Vec::with_capacity(variables.len());
+        for variable in variables {
             let root = classes.root(variable);
             let next = roots.len() as u32;
             let id = *roots.entry(root).or_insert(next);
-            assignments.insert(variable, id);
+            assignments.push((variable, id));
         }
         Self {
-            classes: assignments,
+            assignments,
+            count: roots.len() as u32,
         }
     }
 
@@ -503,10 +542,9 @@ impl CodeVariables {
                 if let Some(result) = &mut instruction.result {
                     result.code_var = self.class_of(result);
                 }
-                InstructionTree::transform_args(
-                    instruction,
-                    &mut CodeVariableAnnotation { variables: self },
-                )?;
+                InstructionTree::edit_register_uses(instruction, |register| {
+                    register.code_var = self.class_of(register);
+                });
             }
         }
         self.bind_inputs(cfg);
@@ -514,19 +552,19 @@ impl CodeVariables {
     }
 
     pub(super) fn next_id(&self) -> u32 {
-        self.classes
-            .values()
-            .copied()
-            .max()
-            .map_or(0, |variable| variable + 1)
+        self.count
     }
 
     pub(super) fn variable_of(&self, value: SsaVar) -> Option<u32> {
-        self.classes.get(&value).copied()
+        let index = self
+            .assignments
+            .binary_search_by_key(&value, |(key, _)| *key)
+            .ok()?;
+        Some(self.assignments[index].1)
     }
 
-    pub(super) fn assignments(&self) -> impl Iterator<Item = (&SsaVar, &u32)> {
-        self.classes.iter()
+    pub(super) fn assignments(&self) -> &[(SsaVar, u32)] {
+        &self.assignments
     }
 
     fn class_of(&self, register: &RegisterArg) -> Option<u32> {
@@ -536,7 +574,7 @@ impl CodeVariables {
     fn bind_inputs(&self, cfg: &mut CFG) {
         let mut register = cfg.registers.saturating_sub(cfg.ins);
         let this_variable = if !cfg.method().is_static() && register < cfg.registers {
-            let variable = self.classes.get(&SsaVar::new(register, 0)).copied();
+            let variable = self.variable_of(SsaVar::new(register, 0));
             register += 1;
             variable
         } else {
@@ -548,7 +586,7 @@ impl CodeVariables {
             .parameters
             .iter()
             .map(|parameter| {
-                let value = self.classes.get(&SsaVar::new(register, 0)).copied();
+                let value = self.variable_of(SsaVar::new(register, 0));
                 register += parameter_slots(parameter);
                 value
             })
@@ -576,23 +614,7 @@ impl InstructionVisitor for UseCollector<'_> {
         };
         let value = self.graph.value_mut(variable);
         value.uses.push(self.position);
-        value.observed_types.insert(register.ty.clone());
-    }
-}
-
-struct CodeVariableAnnotation<'a> {
-    variables: &'a CodeVariables,
-}
-
-impl InstructionTransform for CodeVariableAnnotation<'_> {
-    fn transform_register(&mut self, mut register: RegisterArg) -> InsnArg {
-        register.code_var = self.variables.class_of(&register);
-        InsnArg::Reg(register)
-    }
-
-    fn transform_result(&mut self, mut result: RegisterArg) -> RegisterArg {
-        result.code_var = self.variables.class_of(&result);
-        result
+        value.observe_type(&register.ty);
     }
 }
 
@@ -649,6 +671,15 @@ impl SsaClasses {
         let mut values: Vec<_> = self.parents.keys().copied().collect();
         values.sort_unstable();
         values
+    }
+
+    pub(super) fn into_roots(mut self) -> foldhash::HashMap<SsaVar, SsaVar> {
+        let keys: Vec<_> = self.parents.keys().copied().collect();
+        for value in keys {
+            let root = self.root(value);
+            self.parents.insert(value, root);
+        }
+        self.parents
     }
 
     pub fn groups(&mut self) -> BTreeMap<SsaVar, BTreeSet<SsaVar>> {

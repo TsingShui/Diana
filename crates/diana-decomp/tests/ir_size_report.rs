@@ -67,3 +67,76 @@ fn report_core_ir_sizes() {
         std::mem::size_of::<InsnNode>()
     );
 }
+
+#[test]
+fn cloned_instruction_metadata_keeps_ordered_edges_and_independent_edits() {
+    use diana_decomp::ir::{BlockId, EdgeKind, InsnType, InstructionEquivalence};
+    let mut original = InsnNode::new(InsnType::Switch, 0);
+    original.payload.switch_cases = Some(Box::new(vec![(3, 1), (9, 5)]));
+    original.payload.switch_default = Some(4);
+    original.payload.phi_edges = vec![(BlockId::new(3), EdgeKind::Exception)];
+    let mut changed = original.clone();
+    changed
+        .payload
+        .phi_edges
+        .push((BlockId::new(9), EdgeKind::Normal));
+    changed.payload.switch_cases.as_mut().unwrap()[1].1 = 16;
+    changed.payload.switch_default = Some(11);
+    assert_eq!(original.payload.switch_cases.as_deref().unwrap()[1], (9, 5));
+    assert_eq!(
+        original.payload.phi_edges,
+        [(BlockId::new(3), EdgeKind::Exception)]
+    );
+    assert_eq!(original.payload.switch_default, Some(4));
+    // Operation equivalence ignores physical successor offsets and Phi edges.
+    assert!(original.operation_equivalent(&changed));
+    changed.payload.switch_cases.as_mut().unwrap().swap(0, 1);
+    assert!(!original.operation_equivalent(&changed));
+
+    let plain = InsnNode::new(InsnType::Nop, 0);
+    let mut explicit = plain.clone();
+    explicit.payload.switch_default = None;
+    assert!(plain.operation_equivalent(&explicit));
+    assert_eq!(
+        format!("{:?}", plain.payload),
+        format!("{:?}", explicit.payload)
+    );
+}
+
+#[test]
+fn immutable_operand_types_and_reference_clones_preserve_dex_identity() {
+    use diana_decomp::ir::{InsnType, MemberReference};
+    use std::sync::Arc;
+    let array: ArgType = "[[Lexample/LongOriginalClassName;".parse().unwrap();
+    let method: MethodReference = "Lexample/Owner;->read([[Lexample/LongOriginalClassName;)I"
+        .parse()
+        .unwrap();
+    let mut instruction = InsnNode::new(InsnType::Invoke, 0);
+    instruction.payload.reference = Some(Arc::new(MemberReference::Method(method)));
+    let duplicate = instruction.clone();
+    assert!(Arc::ptr_eq(
+        instruction.payload.reference.as_ref().unwrap(),
+        duplicate.payload.reference.as_ref().unwrap()
+    ));
+    assert_eq!(
+        duplicate.payload.reference.unwrap().to_string(),
+        "Lexample/Owner;->read([[Lexample/LongOriginalClassName;)I"
+    );
+    assert_eq!(
+        array.clone().to_descriptor(),
+        "[[Lexample/LongOriginalClassName;"
+    );
+    for ty in [
+        ArgType::narrow(),
+        ArgType::wide(),
+        ArgType::unknown(),
+        ArgType::unknown_object(),
+        ArgType::equality_operand(),
+    ] {
+        let ArgType::Unknown(candidates) = ty else {
+            unreachable!()
+        };
+        assert!(matches!(candidates, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(candidates.as_ref(), candidates.clone().as_ref());
+    }
+}

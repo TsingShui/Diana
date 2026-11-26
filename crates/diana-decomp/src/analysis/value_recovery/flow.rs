@@ -1,5 +1,4 @@
 use std::{
-    borrow::Cow,
     cell::OnceCell,
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -21,6 +20,7 @@ mod reaching;
 
 use super::constant::ConstantEvaluator;
 use super::domain::{ControlDomain, DomainLogic};
+use super::source::SourceFlowCache;
 use super::ValueRecoveryError;
 use collector::FlowCollector;
 use effects::EffectSummary;
@@ -60,7 +60,7 @@ pub(super) struct DefinitionFact<'ir> {
     pub(super) origin: Option<&'ir StatementOrigin>,
     pub(super) instruction: crate::ir::InstructionId,
     pub(super) result: &'ir crate::ir::RegisterArg,
-    pub(super) value: Cow<'ir, SemanticExpression>,
+    statement: &'ir crate::ir::SemanticStatement,
     pub(super) domain: ControlDomain,
     pub(super) scope: ScopeId,
     pub(super) protection: Option<u32>,
@@ -69,17 +69,74 @@ pub(super) struct DefinitionFact<'ir> {
     pub(super) repetitive: bool,
 }
 
+/// A source instruction with a result can be the root of a value without
+/// having an enclosing SemanticExpression. Its operands remain in the IR.
+#[derive(Clone, Copy)]
+enum ValueRef<'a> {
+    Register(&'a crate::ir::RegisterArg),
+    Literal(&'a crate::ir::LiteralArg),
+    Operation(&'a SemanticOperation),
+    Select {
+        condition: &'a SemanticPredicate,
+        when_true: &'a SemanticExpression,
+        when_false: &'a SemanticExpression,
+    },
+}
+
+impl<'a> From<&'a SemanticExpression> for ValueRef<'a> {
+    fn from(value: &'a SemanticExpression) -> Self {
+        match value {
+            SemanticExpression::Register(value) => Self::Register(value),
+            SemanticExpression::Literal(value) => Self::Literal(value),
+            SemanticExpression::Operation(value) => Self::Operation(value),
+            SemanticExpression::Select {
+                condition,
+                when_true,
+                when_false,
+            } => Self::Select {
+                condition,
+                when_true,
+                when_false,
+            },
+        }
+    }
+}
+
 impl DefinitionFact<'_> {
-    pub(super) fn expression(&self) -> &SemanticExpression {
-        self.value.as_ref()
+    fn expression(&self) -> ValueRef<'_> {
+        match &self.statement.kind {
+            crate::ir::SemanticStatementKind::Definition { value, .. } => value.into(),
+            crate::ir::SemanticStatementKind::Instruction(operation) => {
+                ValueRef::Operation(operation)
+            }
+        }
     }
 
-    pub(super) fn owned_expression(&self) -> SemanticExpression {
-        self.value.clone().into_owned()
+    fn owned_expression(&self) -> SemanticExpression {
+        match &self.statement.kind {
+            crate::ir::SemanticStatementKind::Definition { value, .. } => value.clone(),
+            crate::ir::SemanticStatementKind::Instruction(operation) => {
+                SemanticExpression::Operation(Box::new(operation.clone()))
+            }
+        }
     }
 
     pub(super) fn operation(&self) -> Option<&SemanticOperation> {
-        self.expression().as_operation()
+        match self.expression() {
+            ValueRef::Operation(operation) => Some(operation),
+            _ => None,
+        }
+    }
+
+    fn effects(&self) -> EffectSummary {
+        match &self.statement.kind {
+            crate::ir::SemanticStatementKind::Definition { value, .. } => {
+                EffectSummary::expression(value)
+            }
+            crate::ir::SemanticStatementKind::Instruction(operation) => {
+                EffectSummary::operation(operation)
+            }
+        }
     }
 
     fn edge_copy(&self) -> bool {
@@ -209,11 +266,12 @@ pub(super) enum ValueIdentity {
     Source,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 struct SsaCopyFlow {
     sources: BTreeMap<SsaVar, SsaVar>,
     omitted: BTreeSet<SsaVar>,
-    types: BTreeMap<SsaVar, crate::ir::ArgType>,
+    all_origins: OnceCell<foldhash::HashMap<SsaVar, SsaVar>>,
+    omitted_origins: OnceCell<foldhash::HashMap<SsaVar, SsaVar>>,
 }
 
 impl SsaCopyFlow {
@@ -221,75 +279,83 @@ impl SsaCopyFlow {
         values: &SsaValueGraph,
         definitions: &BTreeMap<SsaVar, Vec<DefinitionFact>>,
     ) -> Self {
-        if values.copies().is_empty() {
-            return Self::default();
-        }
-        let sources = values
+        let sources: BTreeMap<_, _> = values
             .copies()
             .iter()
             .map(|copy| (copy.result, copy.source))
-            .collect::<BTreeMap<_, _>>();
-        let omitted: BTreeSet<_> = sources
+            .collect();
+        let omitted = sources
             .keys()
             .filter(|result| !definitions.contains_key(result))
             .copied()
             .collect();
-        if omitted.is_empty() {
-            return Self {
-                sources,
-                omitted,
-                types: BTreeMap::new(),
-            };
-        }
-        let types = values
-            .values()
-            .filter_map(|value| {
-                value
-                    .observed_types
-                    .iter()
-                    .find(|ty| ty.is_known())
-                    .cloned()
-                    .map(|ty| (value.variable, ty))
-            })
-            .collect();
         Self {
             sources,
             omitted,
-            types,
+            ..Default::default()
         }
     }
 
-    fn source(&self, mut value: SsaVar) -> SsaVar {
-        let mut visited = BTreeSet::new();
-        while let Some(source) = self.sources.get(&value).copied() {
-            if !visited.insert(value) {
-                break;
+    fn source(&self, value: SsaVar) -> SsaVar {
+        self.origin(value, false)
+    }
+
+    fn omitted_source(&self, value: SsaVar) -> SsaVar {
+        self.origin(value, true)
+    }
+
+    fn origin(&self, value: SsaVar, omitted_only: bool) -> SsaVar {
+        let next = |v: SsaVar| {
+            if omitted_only && !self.omitted.contains(&v) {
+                return None;
             }
-            value = source;
+            self.sources.get(&v).copied()
+        };
+        let Some(direct) = next(value) else {
+            return value;
+        };
+        if direct == value || next(direct).is_none() {
+            return direct;
         }
-        value
-    }
-
-    fn omitted_source(&self, mut value: SsaVar) -> SsaVar {
-        let mut visited = BTreeSet::new();
-        while self.omitted.contains(&value) && visited.insert(value) {
-            let Some(source) = self.sources.get(&value).copied() else {
-                break;
-            };
-            value = source;
-        }
-        value
-    }
-
-    fn argument(&self, value: SsaVar) -> InsnArg {
-        InsnArg::reg_ssa(
-            value.reg_num,
-            value.version,
-            self.types
-                .get(&value)
-                .cloned()
-                .unwrap_or_else(crate::ir::ArgType::unknown),
-        )
+        let origins = if omitted_only {
+            &self.omitted_origins
+        } else {
+            &self.all_origins
+        };
+        let origins = origins.get_or_init(|| {
+            let mut resolved = foldhash::HashMap::default();
+            let mut path = Vec::new();
+            for &start in self.sources.keys() {
+                if resolved.contains_key(&start) {
+                    continue;
+                }
+                let mut cursor = start;
+                let root = loop {
+                    if let Some(&known) = resolved.get(&cursor) {
+                        // Active vertices temporarily point to themselves. A cycle
+                        // member's first repeated vertex is itself, while every
+                        // incoming tail reaches the first cycle vertex it entered.
+                        if known == cursor {
+                            if let Some(cycle) = path.iter().position(|v| *v == cursor) {
+                                path.truncate(cycle);
+                            }
+                        }
+                        break known;
+                    }
+                    let Some(parent) = next(cursor) else {
+                        break cursor;
+                    };
+                    resolved.insert(cursor, cursor);
+                    path.push(cursor);
+                    cursor = parent;
+                };
+                for vertex in path.drain(..) {
+                    resolved.insert(vertex, root);
+                }
+            }
+            resolved
+        });
+        origins[&value]
     }
 
     fn aliases(&self) -> impl Iterator<Item = (SsaVar, SsaVar)> + '_ {
@@ -327,8 +393,35 @@ impl UseSite {
     }
 }
 
+/// Scheduling rules for constants, dead definitions and retained values can
+/// finish without a control-flow query. Build the ordinary graph only when a
+/// movement, effect or reaching proof requests it.
+struct ScheduledFlow<'ir> {
+    root: &'ir SemanticNode,
+    shared: Option<&'ir SourceFlowCache>,
+    graph: OnceCell<Arc<crate::ir::analysis::SemanticFlowGraph>>,
+}
+
+impl<'ir> ScheduledFlow<'ir> {
+    fn new(root: &'ir SemanticNode, shared: Option<&'ir SourceFlowCache>) -> Self {
+        Self {
+            root,
+            shared,
+            graph: OnceCell::new(),
+        }
+    }
+
+    fn get(&self) -> &crate::ir::analysis::SemanticFlowGraph {
+        self.graph.get_or_init(|| match self.shared {
+            Some(cache) => cache.get_or_analyze(self.root),
+            None => Arc::new(crate::ir::analysis::SemanticFlowGraph::analyze(self.root)),
+        })
+    }
+}
+
 pub(super) struct ValueFlowGraph<'ir> {
     has_select: bool,
+    has_predicate_uses: bool,
     scopes: LexicalScopes,
     identity: ValueIdentity,
     logic: DomainLogic,
@@ -338,7 +431,8 @@ pub(super) struct ValueFlowGraph<'ir> {
     bindings: BTreeSet<SsaVar>,
     uses: BTreeMap<SsaVar, Vec<UseFact>>,
     semantic_roots: OnceCell<BTreeSet<SsaVar>>,
-    phis: Vec<PhiMerge>,
+    ssa_values: Option<&'ir SsaValueGraph>,
+    excluded_phis: BTreeSet<SsaVar>,
     copies: SsaCopyFlow,
     retained_phi_inputs: BTreeSet<SsaVar>,
     retained_values: BTreeSet<SsaVar>,
@@ -346,32 +440,31 @@ pub(super) struct ValueFlowGraph<'ir> {
     block_domains: BTreeMap<crate::ir::BlockId, ControlDomain>,
     predicate_tests: BTreeMap<crate::ir::InstructionId, SemanticOperation>,
     predicate_uses: BTreeMap<crate::ir::InstructionId, BTreeSet<PredicateUseFact>>,
-    canonical: BTreeMap<SsaVar, InsnArg>,
+    canonical: Option<&'ir BTreeMap<SsaVar, InsnArg>>,
     identity_statements: Vec<(crate::ir::SemanticSiteId, usize)>,
-    semantic_flow: Option<Arc<crate::ir::analysis::SemanticFlowGraph>>,
+    semantic_flow: Option<ScheduledFlow<'ir>>,
 }
 
 impl<'ir> ValueFlowGraph<'ir> {
     pub(super) fn build(
         root: &'ir SemanticNode,
-        values: &SsaValueGraph,
-        canonical: &BTreeMap<SsaVar, InsnArg>,
+        values: &'ir SsaValueGraph,
+        canonical: &'ir BTreeMap<SsaVar, InsnArg>,
     ) -> Result<Self, ValueRecoveryError> {
         Self::build_ssa(
             root,
             values,
             canonical,
-            true,
-            &mut None,
+            Some(ScheduledFlow::new(root, None)),
             ControlSymbolClosure::analyze(root),
         )
     }
 
     pub(super) fn plan_ssa(
         root: &'ir SemanticNode,
-        values: &SsaValueGraph,
-        canonical: &BTreeMap<SsaVar, InsnArg>,
-        cache: &mut Option<super::source::SourceFlowCache>,
+        values: &'ir SsaValueGraph,
+        canonical: &'ir BTreeMap<SsaVar, InsnArg>,
+        cache: &'ir SourceFlowCache,
         schedule: impl FnOnce(Self) -> Result<ValuePlan, ValueRecoveryError>,
     ) -> Result<ValuePlan, ValueRecoveryError> {
         let mut symbols = ControlSymbolClosure {
@@ -395,31 +488,33 @@ impl<'ir> ValueFlowGraph<'ir> {
             });
         }
         schedule(Self::build_ssa(
-            root, values, canonical, true, cache, symbols,
+            root,
+            values,
+            canonical,
+            Some(ScheduledFlow::new(root, Some(cache))),
+            symbols,
         )?)
     }
 
     pub(super) fn build_gated(
         root: &'ir SemanticNode,
-        values: &SsaValueGraph,
-        canonical: &BTreeMap<SsaVar, InsnArg>,
+        values: &'ir SsaValueGraph,
+        canonical: &'ir BTreeMap<SsaVar, InsnArg>,
     ) -> Result<Self, ValueRecoveryError> {
         Self::build_ssa(
             root,
             values,
             canonical,
-            false,
-            &mut None,
+            None,
             ControlSymbolClosure::analyze(root),
         )
     }
 
     fn build_ssa(
         root: &'ir SemanticNode,
-        values: &SsaValueGraph,
-        canonical: &BTreeMap<SsaVar, InsnArg>,
-        semantic_flow: bool,
-        cache: &mut Option<super::source::SourceFlowCache>,
+        values: &'ir SsaValueGraph,
+        canonical: &'ir BTreeMap<SsaVar, InsnArg>,
+        semantic_flow: Option<ScheduledFlow<'ir>>,
         symbols: ControlSymbolClosure<'_>,
     ) -> Result<Self, ValueRecoveryError> {
         let logic = DomainLogic::new(&symbols.variables);
@@ -427,12 +522,14 @@ impl<'ir> ValueFlowGraph<'ir> {
             identity: ValueIdentity::Ssa,
             logic,
             has_select: symbols.has_select,
+            has_predicate_uses: false,
             scopes: LexicalScopes::default(),
             definitions: BTreeMap::new(),
             bindings: BTreeSet::new(),
             uses: BTreeMap::new(),
             semantic_roots: OnceCell::new(),
-            phis: Vec::new(),
+            ssa_values: Some(values),
+            excluded_phis: BTreeSet::new(),
             copies: SsaCopyFlow::default(),
             retained_phi_inputs: BTreeSet::new(),
             retained_values: BTreeSet::new(),
@@ -440,24 +537,20 @@ impl<'ir> ValueFlowGraph<'ir> {
             block_domains: BTreeMap::new(),
             predicate_tests: symbols.tests,
             predicate_uses: BTreeMap::new(),
-            canonical: canonical.clone(),
+            canonical: Some(canonical),
             identity_statements: Vec::new(),
-            semantic_flow: None,
+            semantic_flow,
         };
         let mut graph = FlowCollector::new(graph).collect(root)?;
-        graph.phis = values.phis().to_vec();
         graph.copies = SsaCopyFlow::analyze(values, &graph.definitions);
         graph.validate(values)?;
-        if semantic_flow {
-            graph.attach_semantic_flow(root, cache);
-        }
         Ok(graph)
     }
 
     pub(super) fn plan_source(
         root: &'ir SemanticNode,
         bindings: &BTreeSet<SsaVar>,
-        cache: &mut Option<super::source::SourceFlowCache>,
+        cache: &'ir SourceFlowCache,
         mode: RecoveryMode,
     ) -> Result<ValuePlan, ValueRecoveryError> {
         let symbols = ControlSymbolClosure::for_source(root);
@@ -471,22 +564,21 @@ impl<'ir> ValueFlowGraph<'ir> {
                 ..Default::default()
             });
         }
-        Self::build_allocated(root, bindings, cache, symbols)?.schedule(mode)
+        Self::build_allocated(root, bindings, Some(cache), symbols)?.schedule(mode)
     }
 
     #[cfg(test)]
     fn build_source(
         root: &'ir SemanticNode,
         bindings: &BTreeSet<SsaVar>,
-        cache: &mut Option<super::source::SourceFlowCache>,
     ) -> Result<Self, ValueRecoveryError> {
-        Self::build_allocated(root, bindings, cache, ControlSymbolClosure::analyze(root))
+        Self::build_allocated(root, bindings, None, ControlSymbolClosure::analyze(root))
     }
 
     fn build_allocated(
         root: &'ir SemanticNode,
         bindings: &BTreeSet<SsaVar>,
-        cache: &mut Option<super::source::SourceFlowCache>,
+        cache: Option<&'ir SourceFlowCache>,
         symbols: ControlSymbolClosure<'_>,
     ) -> Result<Self, ValueRecoveryError> {
         let logic = DomainLogic::new(&symbols.variables);
@@ -494,12 +586,14 @@ impl<'ir> ValueFlowGraph<'ir> {
             identity: ValueIdentity::Source,
             logic,
             has_select: symbols.has_select,
+            has_predicate_uses: false,
             scopes: LexicalScopes::default(),
             definitions: BTreeMap::new(),
             bindings: bindings.clone(),
             uses: BTreeMap::new(),
             semantic_roots: OnceCell::new(),
-            phis: Vec::new(),
+            ssa_values: None,
+            excluded_phis: BTreeSet::new(),
             copies: SsaCopyFlow::default(),
             retained_phi_inputs: BTreeSet::new(),
             retained_values: BTreeSet::new(),
@@ -507,23 +601,19 @@ impl<'ir> ValueFlowGraph<'ir> {
             block_domains: BTreeMap::new(),
             predicate_tests: symbols.tests,
             predicate_uses: BTreeMap::new(),
-            canonical: BTreeMap::new(),
+            canonical: None,
             identity_statements: Vec::new(),
-            semantic_flow: None,
+            semantic_flow: Some(ScheduledFlow::new(root, cache)),
         };
-        let mut graph = FlowCollector::new(graph).collect(root)?;
-        graph.attach_semantic_flow(root, cache);
-        Ok(graph)
+        FlowCollector::new(graph).collect(root)
     }
 
     pub(super) fn attach_semantic_flow(
         &mut self,
-        root: &SemanticNode,
-        cache: &mut Option<super::source::SourceFlowCache>,
+        root: &'ir SemanticNode,
+        cache: &'ir SourceFlowCache,
     ) {
-        if self.has_plan_inputs() {
-            self.semantic_flow = Some(super::source::SourceFlowCache::get_or_analyze(cache, root));
-        }
+        self.semantic_flow = Some(ScheduledFlow::new(root, Some(cache)));
     }
 
     pub(super) fn proof_budget_exhausted(&self) -> bool {
@@ -532,9 +622,9 @@ impl<'ir> ValueFlowGraph<'ir> {
 
     fn has_plan_inputs(&self) -> bool {
         !self.definitions.is_empty()
-            || !self.phis.is_empty()
+            || self.phis().next().is_some()
             || !self.copies.omitted.is_empty()
-            || !self.canonical.is_empty()
+            || self.canonical.is_some_and(|values| !values.is_empty())
             || !self.identity_statements.is_empty()
     }
 
@@ -557,18 +647,34 @@ impl<'ir> ValueFlowGraph<'ir> {
         GatedPhiAnalysis::new(self, values, control).analyze()
     }
 
+    fn phis(&self) -> impl Iterator<Item = &PhiMerge> {
+        self.ssa_values
+            .into_iter()
+            .flat_map(SsaValueGraph::phis)
+            .filter(move |phi| !self.excluded_phis.contains(&phi.result))
+    }
+
+    fn phi(&self, result: SsaVar) -> Option<&PhiMerge> {
+        if self.excluded_phis.contains(&result) {
+            return None;
+        }
+        self.ssa_values?.phi(result)
+    }
+
     pub(super) fn exclude_phis(&mut self, recovered: &BTreeSet<SsaVar>) {
         if recovered.is_empty() {
             return;
         }
-        let excluded = self
-            .phis
+        let Some(values) = self.ssa_values else {
+            return;
+        };
+        let excluded = recovered
             .iter()
-            .filter(|phi| recovered.contains(&phi.result))
-            .map(|phi| (phi.result, phi))
-            .collect::<BTreeMap<_, _>>();
+            .copied()
+            .filter(|&result| self.phi(result).is_some())
+            .collect::<BTreeSet<_>>();
         let mut pending = excluded
-            .keys()
+            .iter()
             .filter(|result| {
                 self.semantic_use_roots().contains(result) && !self.definitions.contains_key(result)
             })
@@ -579,22 +685,22 @@ impl<'ir> ValueFlowGraph<'ir> {
             if !visited.insert(result) {
                 continue;
             }
-            let Some(phi) = excluded.get(&result) else {
+            let Some(phi) = values.phi(result) else {
                 continue;
             };
             for input in &phi.inputs {
                 self.retained_phi_inputs.insert(input.value);
                 let source = self.copies.omitted_source(input.value);
                 self.retained_phi_inputs.insert(source);
-                if excluded.contains_key(&input.value) {
+                if excluded.contains(&input.value) {
                     pending.push(input.value);
                 }
-                if source != input.value && excluded.contains_key(&source) {
+                if source != input.value && excluded.contains(&source) {
                     pending.push(source);
                 }
             }
         }
-        self.phis.retain(|phi| !recovered.contains(&phi.result));
+        self.excluded_phis.extend(excluded);
     }
 
     pub(super) fn retain_values(&mut self, values: impl IntoIterator<Item = SsaVar>) {
@@ -611,6 +717,16 @@ impl<'ir> ValueFlowGraph<'ir> {
 
     pub(super) fn identity(&self) -> ValueIdentity {
         self.identity
+    }
+
+    fn copy_argument(&self, value: SsaVar) -> InsnArg {
+        let ty = self
+            .ssa_values
+            .and_then(|values| values.value(value))
+            .and_then(|value| value.observed_types.iter().find(|ty| ty.is_known()))
+            .cloned()
+            .unwrap_or_else(crate::ir::ArgType::unknown);
+        InsnArg::reg_ssa(value.reg_num, value.version, ty)
     }
 
     fn copy_source(&self, value: SsaVar) -> SsaVar {
@@ -680,7 +796,7 @@ impl<'ir> ValueFlowGraph<'ir> {
     }
 
     fn semantic_flow(&self) -> Option<&crate::ir::analysis::SemanticFlowGraph> {
-        self.semantic_flow.as_deref()
+        self.semantic_flow.as_ref().map(ScheduledFlow::get)
     }
 
     fn movement_points(&self) -> BTreeSet<crate::ir::analysis::SemanticFlowPoint> {
@@ -738,41 +854,46 @@ impl<'ir> ValueFlowGraph<'ir> {
         })
     }
 
-    fn canonical_values(&self) -> BTreeMap<SsaVar, InsnArg> {
-        let mut definition_classes = self
+    fn classes_by_last_definition(&self) -> Vec<DefinitionClass<'_>> {
+        let mut classes = self
             .definitions
             .iter()
-            // A parameter or catch variable has an incoming definition outside
-            // the statement list. Its value can still reach a use when a
-            // conditional assignment to the same source local is bypassed.
-            .filter(|(key, definitions)| !definitions.is_empty() && !self.is_bound(**key))
+            .filter_map(|(&key, definitions)| {
+                Some(DefinitionClass {
+                    definitions,
+                    // The collector appends one definition per statement event.
+                    last_event: definitions.last()?.event,
+                    bound: self.is_bound(key),
+                })
+            })
             .collect::<Vec<_>>();
-        definition_classes.sort_by_key(|(_, definitions)| {
-            definitions
-                .iter()
-                .map(|definition| definition.event)
-                .max()
-                .unwrap_or_default()
-        });
-        let mut values = self.canonical.clone();
+        classes.sort_unstable_by_key(|class| class.last_event);
+        classes
+    }
+
+    fn canonical_values(&self, classes: &[DefinitionClass<'_>]) -> BTreeMap<SsaVar, InsnArg> {
+        let mut values = self.canonical.cloned().unwrap_or_default();
         for (result, source) in self.copies.aliases() {
             values
                 .entry(result)
-                .or_insert_with(|| self.copies.argument(source));
+                .or_insert_with(|| self.copy_argument(source));
         }
         loop {
             let mut changed = false;
-            for (&key, definitions) in &definition_classes {
-                let Some(value) = self.canonical_class_value(definitions, &values) else {
+            // Bound parameters and catch locals also have an incoming
+            // definition outside their conditional statement assignments.
+            for class in classes.iter().filter(|class| !class.bound) {
+                let Some(value) = self.canonical_class_value(class.definitions, &values) else {
                     continue;
                 };
+                let key = class.definitions[0].key;
                 let value_key = self.canonical_key(&value);
                 if values.get(&key).and_then(|value| self.canonical_key(value)) != value_key {
                     values.insert(key, value);
                     changed = true;
                 }
             }
-            for phi in &self.phis {
+            for phi in self.phis() {
                 let Some((replacement_key, replacement)) =
                     self.trivial_phi_replacement(phi, &values)
                 else {
@@ -853,7 +974,7 @@ impl<'ir> ValueFlowGraph<'ir> {
         definition: &DefinitionFact,
         values: &BTreeMap<SsaVar, InsnArg>,
     ) -> Option<InsnArg> {
-        if let SemanticExpression::Literal(literal) = definition.expression() {
+        if let ValueRef::Literal(literal) = definition.expression() {
             return Some(InsnArg::Lit(literal.clone()));
         }
         let expression = definition.operation()?;
@@ -960,13 +1081,12 @@ impl<'ir> ValueFlowGraph<'ir> {
 
     fn required_phi_inputs(&self) -> BTreeSet<SsaVar> {
         let pending = self
-            .phis
-            .iter()
+            .phis()
             .filter(|phi| self.semantic_use_roots().contains(&phi.result))
             .map(|phi| phi.result)
             .collect::<Vec<_>>();
         required_phi_input_closure(
-            &self.phis,
+            |result| self.phi(result),
             &self.copies,
             pending,
             self.retained_phi_inputs.clone(),
@@ -974,32 +1094,28 @@ impl<'ir> ValueFlowGraph<'ir> {
     }
 }
 
-fn required_phi_input_closure(
-    phis: &[PhiMerge],
+fn required_phi_input_closure<'a>(
+    phi_for: impl Fn(SsaVar) -> Option<&'a PhiMerge>,
     copies: &SsaCopyFlow,
     mut pending: Vec<SsaVar>,
     mut required: BTreeSet<SsaVar>,
 ) -> BTreeSet<SsaVar> {
-    let phis = phis
-        .iter()
-        .map(|phi| (phi.result, phi))
-        .collect::<BTreeMap<_, _>>();
     let mut visited = BTreeSet::new();
     while let Some(result) = pending.pop() {
         if !visited.insert(result) {
             continue;
         }
-        let Some(phi) = phis.get(&result) else {
+        let Some(phi) = phi_for(result) else {
             continue;
         };
         for input in &phi.inputs {
             required.insert(input.value);
             let source = copies.omitted_source(input.value);
             required.insert(source);
-            if phis.contains_key(&input.value) {
+            if phi_for(input.value).is_some() {
                 pending.push(input.value);
             }
-            if source != input.value && phis.contains_key(&source) {
+            if source != input.value && phi_for(source).is_some() {
                 pending.push(source);
             }
         }
@@ -1012,6 +1128,12 @@ enum CanonicalKey {
     Value(SsaVar),
     Literal { value: i64, ty: crate::ir::ArgType },
     String(Utf16String),
+}
+
+struct DefinitionClass<'a> {
+    definitions: &'a [DefinitionFact<'a>],
+    last_event: usize,
+    bound: bool,
 }
 
 #[derive(Default)]
@@ -1087,10 +1209,18 @@ impl SemanticVisitor for ControlSymbolClosure<'_> {
         while let Some(predicate) = pending.pop() {
             match predicate {
                 SemanticPredicate::Test(instruction) => {
-                    self.plan_required = true;
                     self.variables
                         .insert(BoolVariable::Instruction(instruction.id));
-                    self.tests.insert(instruction.id, instruction.clone());
+                    // Over one Boolean symbol, all combinations of not/and/or
+                    // reduce to true, false, the symbol or its complement. No
+                    // domain allocation or proof limit can be reached solely
+                    // by this control flow. Keep evaluating every operand.
+                    self.plan_required |= self.variables.len() > 1;
+                    if self.ssa_inputs.is_none() {
+                        // Ordinary SSA scheduling has no predicate placement.
+                        // Gated SSA and both source modes consume these tests.
+                        self.tests.insert(instruction.id, instruction.clone());
+                    }
                     self.visit_operation(instruction);
                 }
                 SemanticPredicate::Not(inner) => pending.push(inner),
@@ -1169,7 +1299,7 @@ mod tests {
             finally: None,
         };
 
-        let graph = ValueFlowGraph::build_source(&root, &BTreeSet::new(), &mut None).unwrap();
+        let graph = ValueFlowGraph::build_source(&root, &BTreeSet::new()).unwrap();
 
         assert!(graph.is_bound(SsaVar::new(7, 0)));
     }
@@ -1177,12 +1307,8 @@ mod tests {
     #[test]
     fn method_inputs_are_lexical_value_bindings() {
         let binding = SsaVar::new(7, 0);
-        let graph = ValueFlowGraph::build_source(
-            &SemanticNode::Empty,
-            &BTreeSet::from([binding]),
-            &mut None,
-        )
-        .unwrap();
+        let graph =
+            ValueFlowGraph::build_source(&SemanticNode::Empty, &BTreeSet::from([binding])).unwrap();
 
         assert!(graph.is_bound(binding));
     }
@@ -1214,7 +1340,13 @@ mod tests {
         copies.sources.insert(handler_copy, headers);
         copies.omitted.insert(handler_copy);
 
-        let required = required_phi_input_closure(&phis, &copies, vec![merged], BTreeSet::new());
+        let values = crate::ir::analysis::SsaValueGraph::with_phis_for_test(phis);
+        let required = required_phi_input_closure(
+            |key| values.phi(key),
+            &copies,
+            vec![merged],
+            BTreeSet::new(),
+        );
 
         assert!(required.contains(&handler_copy));
         assert!(required.contains(&headers));

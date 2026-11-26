@@ -207,6 +207,10 @@ impl LabelAnalysis {
 }
 
 impl SemanticVisitor for LabelAnalysis {
+    fn visits_values(&self) -> bool {
+        false
+    }
+
     fn enter_node(&mut self, node: &SemanticNode) {
         self.record_leave(node);
         if let Some(scope) = Self::scope(node) {

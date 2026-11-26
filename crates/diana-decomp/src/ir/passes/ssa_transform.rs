@@ -24,7 +24,7 @@
 //! 3. Update PHI operands in successor blocks
 //! 4. Visit dominator tree children
 
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ir::{
     analysis::{DominanceError, DominanceFrontier, DominatorTree, RegisterLiveness},
@@ -34,7 +34,7 @@ use crate::ir::{
     insn::{InsnNode, InsnType},
     passes::{Pass, PassResult},
     ty::ArgType,
-    InstructionTransform, InstructionTree, InstructionTreeError, InstructionVisitor,
+    InstructionTree, InstructionTreeError, InstructionVisitor,
 };
 
 /// SSA transformation pass.
@@ -184,26 +184,13 @@ impl SSATransform {
         let dom_frontier =
             DominanceFrontier::compute(cfg, &dom_tree).map_err(SsaTransformError::Dominance)?;
 
-        // A join needs the complete register domain for iterated placement.
-        // Otherwise a declared input or result already proves renaming is
-        // required; its individual uses will be visited by the renamer.
-        if exceptional_definitions || !dom_frontier.is_empty() {
-            let variables = PhiPlacement::variables(cfg);
-            if variables.is_empty() {
-                return Ok((PassResult::Unchanged, dom_tree));
-            }
-            let liveness = RegisterLiveness::analyze(cfg);
-            let placements = PhiPlacement::compute(cfg, &dom_frontier, &liveness, &variables);
-            PhiPlacement::insert(cfg, &placements)?;
-        } else if cfg.ins.min(cfg.registers) == 0
-            && !cfg
-                .blocks
-                .values()
-                .flat_map(|block| &block.insns)
-                .any(|insn| insn.result.is_some())
-            && PhiPlacement::variables(cfg).is_empty()
-        {
+        if !PhiPlacement::has_registers(cfg) {
             return Ok((PassResult::Unchanged, dom_tree));
+        }
+        if exceptional_definitions || !dom_frontier.is_empty() {
+            let liveness = RegisterLiveness::analyze(cfg);
+            let placements = PhiPlacement::compute(cfg, &dom_frontier, &liveness);
+            PhiPlacement::insert(cfg, &placements)?;
         }
 
         // Step 4: Rename variables
@@ -262,36 +249,27 @@ impl SSATransform {
 struct PhiPlacement;
 
 impl PhiPlacement {
-    /// Collect all registers that participate in the CFG.
-    ///
-    /// Dalvik method inputs are often only used, not defined, especially in
-    /// constructors that just initialize fields. They still need SSA identities so
-    /// later code-var recovery can bind them to `this` and declared parameters.
-    fn variables(cfg: &CFG) -> Vec<u32> {
-        #[derive(Default)]
-        struct Variables(BTreeSet<u32>);
-
-        impl InstructionVisitor for Variables {
-            fn visit_register(&mut self, register: &RegisterArg) {
-                self.0.insert(register.reg_num);
+    fn has_registers(cfg: &CFG) -> bool {
+        if cfg.ins.min(cfg.registers) != 0 {
+            return true;
+        }
+        struct RegisterUse(bool);
+        impl InstructionVisitor for RegisterUse {
+            fn visit_register(&mut self, _: &RegisterArg) {
+                self.0 = true;
             }
         }
-
-        let mut vars = Variables::default();
-
-        for block in cfg.blocks.values() {
-            for insn in &block.insns {
-                if let Some(result) = &insn.result {
-                    vars.visit_register(result);
+        cfg.blocks
+            .values()
+            .flat_map(|block| &block.insns)
+            .any(|instruction| {
+                if instruction.result.is_some() {
+                    return true;
                 }
-                InstructionTree::visit_args(insn, &mut vars);
-            }
-        }
-
-        let first_input = cfg.registers.saturating_sub(cfg.ins);
-        vars.0.extend(first_input..cfg.registers);
-
-        vars.0.into_iter().collect()
+                let mut used = RegisterUse(false);
+                InstructionTree::visit_args(instruction, &mut used);
+                used.0
+            })
     }
 
     /// Determine where to place PHI nodes for each variable.
@@ -301,74 +279,56 @@ impl PhiPlacement {
         cfg: &CFG,
         dom_frontier: &DominanceFrontier,
         liveness: &RegisterLiveness,
-        variables: &[u32],
     ) -> BTreeMap<BlockId, BTreeSet<u32>> {
         let mut phi_placements: BTreeMap<BlockId, BTreeSet<u32>> = BTreeMap::new();
         let mut exceptional_definitions = BTreeMap::<u32, BTreeSet<BlockId>>::new();
-        for block in cfg.block_ids() {
-            let edge_clobbers = cfg
-                .predecessors_with_kind(block)
-                .iter()
-                .filter(|(_, kind)| *kind == crate::ir::EdgeKind::Exception)
-                .filter_map(|(source, _)| {
-                    cfg.block(*source)
-                        .and_then(|body| body.insns.last())
-                        .and_then(|throwing| throwing.result.as_ref())
-                        .map(|result| result.reg_num)
-                })
-                .collect::<BTreeSet<_>>();
-            for variable in edge_clobbers {
-                if liveness.is_live_in(block, variable) {
+        for &block in cfg.blocks.keys() {
+            for &(predecessor, kind) in cfg.predecessors_with_kind(block) {
+                if !kind.is_exception() {
+                    continue;
+                }
+                let Some(register) = cfg
+                    .block(predecessor)
+                    .and_then(|body| body.insns.last())
+                    .and_then(|throwing| throwing.result.as_ref())
+                    .map(|result| result.reg_num)
+                else {
+                    continue;
+                };
+                if liveness.is_live_in(block, register) {
                     exceptional_definitions
-                        .entry(variable)
+                        .entry(register)
                         .or_default()
                         .insert(block);
                 }
             }
         }
 
-        for &var in variables {
-            // Find all blocks where this variable is defined
-            let def_blocks: Vec<_> = liveness.definition_blocks(var).collect();
-            let edge_definitions = exceptional_definitions
-                .get(&var)
-                .cloned()
-                .unwrap_or_default();
-
-            if def_blocks.is_empty() && edge_definitions.is_empty() {
-                continue;
+        // Every exceptional clobber is also an instruction definition. Inputs
+        // and read-only registers have no definition frontier to propagate.
+        let mut pending = Vec::new();
+        let mut queued = foldhash::HashSet::default();
+        for (register, definitions) in liveness.definitions() {
+            queued.clear();
+            for &block in definitions {
+                queued.insert(block);
+                pending.push(block);
             }
-
-            // Compute iterated dominance frontier
-            let mut work_list: VecDeque<_> = def_blocks
-                .into_iter()
-                .chain(edge_definitions.iter().copied())
-                .collect();
-            let mut processed = HashSet::new();
-            let mut phi_blocks = edge_definitions.iter().copied().collect::<HashSet<_>>();
-            for block in edge_definitions {
-                phi_placements.entry(block).or_default().insert(var);
-            }
-
-            while let Some(block) = work_list.pop_front() {
-                if processed.contains(&block) {
-                    continue;
+            if let Some(edges) = exceptional_definitions.get(&register) {
+                for &block in edges {
+                    phi_placements.entry(block).or_default().insert(register);
+                    if queued.insert(block) {
+                        pending.push(block);
+                    }
                 }
-                processed.insert(block);
-
-                // Add PHI nodes at dominance frontier
-                for df_block in dom_frontier.frontier(block) {
-                    if !phi_blocks.contains(&df_block) {
-                        // Only add PHI if the variable is live at entry
-                        if liveness.is_live_in(df_block, var) {
-                            phi_blocks.insert(df_block);
-                            phi_placements.entry(df_block).or_default().insert(var);
-
-                            // Add to work list for iterated frontier
-                            if !processed.contains(&df_block) {
-                                work_list.push_back(df_block);
-                            }
-                        }
+            }
+            while let Some(block) = pending.pop() {
+                for join in dom_frontier.frontier(block) {
+                    if liveness.is_live_in(join, register)
+                        && phi_placements.entry(join).or_default().insert(register)
+                        && queued.insert(join)
+                    {
+                        pending.push(join);
                     }
                 }
             }
@@ -383,24 +343,14 @@ impl PhiPlacement {
         cfg: &mut CFG,
         phi_placements: &BTreeMap<BlockId, BTreeSet<u32>>,
     ) -> Result<(), SsaTransformError> {
-        let incoming: BTreeMap<BlockId, Vec<(BlockId, crate::ir::EdgeKind)>> = phi_placements
-            .keys()
-            .map(|&block_id| (block_id, cfg.incoming_edges(block_id)))
-            .collect();
-
-        // Now do the mutable operations
         for (&block_id, vars) in phi_placements {
+            let edges = cfg.incoming_edges(block_id);
             let block = cfg
                 .blocks
                 .get_mut(&block_id)
                 .ok_or(SsaTransformError::MissingPhiPlacement(block_id))?;
-            let edges = incoming
-                .get(&block_id)
-                .cloned()
-                .ok_or(SsaTransformError::MissingPhiTopology(block_id))?;
-
             // Create PHI nodes at the beginning of the block
-            let mut phi_insns = Vec::new();
+            let mut phi_insns = Vec::with_capacity(vars.len() + block.insns.len());
             for &var in vars {
                 let mut phi = InsnNode::new(InsnType::Phi, edges.len());
                 phi.set_result(RegisterArg::new(var, ArgType::unknown()));
@@ -558,7 +508,7 @@ impl VariableRenamer {
 
     fn rename_insn_uses(&mut self, insn: &mut InsnNode) -> Result<(), SsaTransformError> {
         self.missing_use = None;
-        InstructionTree::transform_args(insn, self).map_err(SsaTransformError::InstructionTree)?;
+        InstructionTree::edit_register_uses(insn, |register| self.rename_use(register));
         if let Some(register) = self.missing_use.take() {
             return Err(SsaTransformError::MissingDefinition {
                 register,
@@ -567,19 +517,16 @@ impl VariableRenamer {
         }
         Ok(())
     }
-}
 
-impl InstructionTransform for VariableRenamer {
-    fn transform_register(&mut self, mut register: RegisterArg) -> InsnArg {
+    fn rename_use(&mut self, register: &mut RegisterArg) {
         if let Some(value) = self.active(register.reg_num) {
             register.ssa_version = Some(value.version);
-            if !register.ty.is_known() {
+            if !register.ty.is_known() && register.ty != value.ty {
                 register.ty = value.ty.clone();
             }
         } else {
             self.missing_use.get_or_insert(register.reg_num);
         }
-        InsnArg::Reg(register)
     }
 }
 

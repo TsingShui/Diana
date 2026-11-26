@@ -75,3 +75,33 @@ fn exception_backedge_observes_the_last_value_defined_before_the_throw() {
         [BlockId::new(10)]
     );
 }
+
+#[test]
+fn exceptional_and_normal_edges_preserve_distinct_low_and_sparse_registers() {
+    let mut cfg = CFG::new("registerBounds");
+    for (block, register) in [(10, 63), (20, 64), (30, u32::MAX)] {
+        cfg.add_block(Block::with_instructions(
+            block,
+            block,
+            vec![InsnNode::return_value(InsnArg::reg(register, ArgType::INT))],
+        ));
+    }
+    cfg.add_block(Block::new(0));
+    for (target, kind) in [
+        (10, EdgeKind::Exception),
+        (20, EdgeKind::True),
+        (30, EdgeKind::False),
+    ] {
+        cfg.add_edge(BlockId::new(0), BlockId::new(target), kind);
+    }
+    let live = RegisterLiveness::analyze(&cfg);
+    for (block, register) in [(10, 63), (20, 64), (30, u32::MAX)] {
+        assert!(live.is_live_in(BlockId::new(0), register));
+        for other in [62, 63, 64, 65, u32::MAX] {
+            assert_eq!(
+                live.is_live_in(BlockId::new(block), other),
+                register == other
+            );
+        }
+    }
+}

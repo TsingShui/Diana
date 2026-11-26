@@ -143,7 +143,8 @@ impl<'a> SemanticCleanupResolver<'a> {
     }
 
     fn pop_region(&mut self, region: RegionId) {
-        debug_assert_eq!(self.regions.pop(), Some(region));
+        let exited = self.regions.pop();
+        debug_assert_eq!(exited, Some(region));
     }
 
     fn push_cleanup(&mut self, cleanup: RegionId) {

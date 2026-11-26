@@ -110,26 +110,37 @@ impl VariableNode {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OperationNode {
-    identity: InstructionId,
-    kind: InsnType,
-    reference: Option<MemberReference>,
+    operation: SemanticOperation,
     operands: Vec<OperationOperand>,
     loop_depth: usize,
 }
 
+impl std::fmt::Debug for OperationNode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OperationNode")
+            .field("identity", &self.identity())
+            .field("kind", &self.kind())
+            .field("reference", &self.reference())
+            .field("operands", &self.operands)
+            .field("loop_depth", &self.loop_depth)
+            .finish()
+    }
+}
+
 impl OperationNode {
     pub fn identity(&self) -> InstructionId {
-        self.identity
+        self.operation.id
     }
 
     pub fn kind(&self) -> InsnType {
-        self.kind
+        self.operation.insn_type
     }
 
     pub fn reference(&self) -> Option<&MemberReference> {
-        self.reference.as_ref()
+        self.operation.payload.reference.as_deref()
     }
 
     pub fn operands(&self) -> &[OperationOperand] {
@@ -145,7 +156,7 @@ impl OperationNode {
 pub struct OperationOperand {
     ty: Option<ArgType>,
     literal: Option<i64>,
-    reference: Option<MemberReference>,
+    reference: Option<std::sync::Arc<MemberReference>>,
 }
 
 impl OperationOperand {
@@ -158,7 +169,7 @@ impl OperationOperand {
     }
 
     pub fn reference(&self) -> Option<&MemberReference> {
-        self.reference.as_ref()
+        self.reference.as_deref()
     }
 }
 
@@ -283,7 +294,7 @@ impl VariableRoleAnalysis for StructuralVariableRoleAnalysis {
             if variable.ty() == &ArgType::BOOLEAN {
                 scores.add(variable.identity(), VariableRole::Condition, 20);
             }
-            if variable.ty() == &ArgType::object("java/util/Iterator") {
+            if variable.ty().as_object() == Some("java/util/Iterator") {
                 scores.add(variable.identity(), VariableRole::Iterator, 80);
             }
             for edge in graph.edges_for(variable.identity()) {
@@ -409,63 +420,72 @@ impl<'a> VariableSemanticGraphBuilder<'a> {
         self.graph
     }
 
-    fn ensure_variable(&mut self, register: &RegisterArg) -> Option<u32> {
+    fn ensure_variable(&mut self, register: &RegisterArg) -> Option<&mut VariableNode> {
         let identity = register.code_var?;
-        let ty = self
-            .types
-            .register_type(register)
-            .unwrap_or(&register.ty)
-            .clone();
-        self.graph
-            .variables
-            .entry(identity)
-            .and_modify(|variable| {
-                if !variable.ty.is_known() && ty.is_known() {
-                    variable.ty = ty.clone();
+        let observed_type = || self.types.register_type(register).unwrap_or(&register.ty);
+        Some(match self.graph.variables.entry(identity) {
+            std::collections::btree_map::Entry::Occupied(entry) => {
+                let variable = entry.into_mut();
+                if !variable.ty.is_known() {
+                    let ty = observed_type();
+                    if ty.is_known() {
+                        variable.ty = ty.clone();
+                    }
                 }
-            })
-            .or_insert(VariableNode {
+                variable
+            }
+            std::collections::btree_map::Entry::Vacant(entry) => entry.insert(VariableNode {
                 identity,
-                ty,
+                ty: observed_type().clone(),
                 definitions: 0,
                 uses: 0,
                 source_binding: false,
-            });
-        Some(identity)
+            }),
+        })
     }
 
-    fn expression_type(&self, expression: &SemanticExpression) -> Option<ArgType> {
-        match expression {
-            SemanticExpression::Register(register) => Some(
-                self.types
+    fn expression_type(
+        types: &SourceTypeEnvironment,
+        expression: &SemanticExpression,
+    ) -> Option<ArgType> {
+        let mut expression = expression;
+        loop {
+            let register = match expression {
+                SemanticExpression::Register(register) => register,
+                SemanticExpression::Literal(literal) => return Some(literal.ty.clone()),
+                SemanticExpression::Operation(operation) => operation.result.as_ref()?,
+                SemanticExpression::Select { when_true, .. } => {
+                    expression = when_true;
+                    continue;
+                }
+            };
+            return Some(
+                types
                     .register_type(register)
                     .unwrap_or(&register.ty)
                     .clone(),
-            ),
-            SemanticExpression::Literal(literal) => Some(literal.ty.clone()),
-            SemanticExpression::Operation(operation) => operation.result.as_ref().map(|result| {
-                self.types
-                    .register_type(result)
-                    .unwrap_or(&result.ty)
-                    .clone()
-            }),
-            SemanticExpression::Select { when_true, .. } => self.expression_type(when_true),
+            );
         }
     }
 
-    fn operation_operands(&self, operation: &SemanticOperation) -> Vec<OperationOperand> {
+    fn operation_operands(
+        types: &SourceTypeEnvironment,
+        operation: &SemanticOperation,
+    ) -> Vec<OperationOperand> {
         operation
             .operands()
             .iter()
             .map(|operand| OperationOperand {
-                ty: self.expression_type(operand),
+                ty: Self::expression_type(types, operand),
                 literal: operand.literal_value(),
                 reference: Self::expression_reference(operand),
             })
             .collect()
     }
 
-    fn expression_reference(expression: &SemanticExpression) -> Option<MemberReference> {
+    fn expression_reference(
+        expression: &SemanticExpression,
+    ) -> Option<std::sync::Arc<MemberReference>> {
         let mut expression = expression;
         loop {
             let SemanticExpression::Operation(operation) = expression else {
@@ -477,27 +497,22 @@ impl<'a> VariableSemanticGraphBuilder<'a> {
                 expression = &operation.operands()[0];
                 continue;
             }
-            return operation.payload.reference.as_deref().cloned();
+            return operation.payload.reference.clone();
         }
     }
 
     fn source_binding(&mut self, register: &RegisterArg) {
-        let Some(variable) = self.ensure_variable(register) else {
-            return;
-        };
-        self.graph
-            .variables
-            .get_mut(&variable)
-            .unwrap()
-            .source_binding = true;
+        if let Some(variable) = self.ensure_variable(register) {
+            variable.source_binding = true;
+        }
     }
 
     fn definition(&mut self, register: &RegisterArg, operation: Option<InstructionId>) {
-        let Some(variable) = self.ensure_variable(register) else {
-            return;
-        };
-        self.graph.variables.get_mut(&variable).unwrap().definitions += 1;
-        self.edge(variable, operation, VariableEdgeKind::Definition);
+        if let Some(variable) = self.ensure_variable(register) {
+            variable.definitions += 1;
+            let identity = variable.identity;
+            self.edge(identity, operation, VariableEdgeKind::Definition);
+        }
     }
 
     fn edge(&mut self, variable: u32, operation: Option<InstructionId>, kind: VariableEdgeKind) {
@@ -711,15 +726,12 @@ impl SemanticVisitor for VariableSemanticGraphBuilder<'_> {
     }
 
     fn visit_operation(&mut self, operation: &SemanticOperation) {
-        let operands = self.operation_operands(operation);
         self.graph
             .operations
             .entry(operation.id)
             .or_insert_with(|| OperationNode {
-                identity: operation.id,
-                kind: operation.insn_type,
-                reference: operation.payload.reference.as_deref().cloned(),
-                operands,
+                operation: operation.clone(),
+                operands: Self::operation_operands(self.types, operation),
                 loop_depth: self.loop_depth,
             });
         if let Some(result) = &operation.result {
@@ -772,23 +784,18 @@ impl SemanticVisitor for VariableSemanticGraphBuilder<'_> {
     }
 
     fn visit_register(&mut self, register: &RegisterArg) {
-        let Some(variable) = self.ensure_variable(register) else {
-            return;
-        };
-        self.graph.variables.get_mut(&variable).unwrap().uses += 1;
+        if let Some(variable) = self.ensure_variable(register) {
+            variable.uses += 1;
+        }
     }
 
     fn visit_binding(&mut self, kind: SemanticBindingKind, register: &RegisterArg) {
-        let Some(variable) = self.ensure_variable(register) else {
-            return;
-        };
-        self.graph.variables.get_mut(&variable).unwrap().definitions += 1;
-        self.graph
-            .variables
-            .get_mut(&variable)
-            .unwrap()
-            .source_binding = true;
-        self.edge(variable, None, VariableEdgeKind::Binding(kind));
+        if let Some(variable) = self.ensure_variable(register) {
+            variable.definitions += 1;
+            variable.source_binding = true;
+            let identity = variable.identity;
+            self.edge(identity, None, VariableEdgeKind::Binding(kind));
+        }
     }
 }
 

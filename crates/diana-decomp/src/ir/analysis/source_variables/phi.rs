@@ -62,6 +62,7 @@ type CopyFacts = BTreeSet<(u32, CopySource)>;
 /// Forward must-analysis for source-variable values already established on
 /// normal control-flow paths. Exceptional Phi copies are unnecessary when the
 /// same value is available immediately before the throwing instruction.
+#[derive(Default)]
 struct AvailableCopyAnalysis {
     before_throw: BTreeMap<BlockId, CopyFacts>,
     before_normal: BTreeMap<BlockId, CopyFacts>,
@@ -83,145 +84,98 @@ impl AvailableCopyAnalysis {
             exceptional_copies,
             statement_definitions,
         )?;
-        let mut inputs = cfg
-            .block_ids()
-            .into_iter()
-            .map(|block| (block, universe.clone()))
-            .collect::<BTreeMap<_, _>>();
-        let mut outputs = inputs.clone();
-        inputs.insert(cfg.entry, CopyFacts::new());
-
-        loop {
-            let mut changed = false;
-            for block in cfg.block_ids() {
-                let input = if block == cfg.entry {
-                    CopyFacts::new()
-                } else {
-                    let mut states = Vec::new();
-                    for (predecessor, kind) in cfg
-                        .incoming_edges(block)
-                        .into_iter()
-                        .filter(|(_, kind)| !kind.is_exception())
-                    {
-                        let Some(mut state) = outputs.get(&predecessor).cloned() else {
-                            continue;
-                        };
-                        let edge = crate::ir::RegionEdge {
-                            source: predecessor,
-                            target: block,
-                            kind,
-                        };
-                        for copy in normal_copies
-                            .get(&NormalCopySite::Edge(edge))
-                            .into_iter()
-                            .flatten()
-                        {
-                            Self::transfer_copy(&mut state, copy, variables)?;
-                        }
-                        states.push(state);
-                    }
-                    Self::meet(states.iter())
-                };
-                let mut output = input.clone();
-                let body = cfg
-                    .block(block)
-                    .ok_or(SourceVariableError::MissingBlock(block))?;
-                let (last, prefix) = body
-                    .insns
-                    .split_last()
-                    .map_or((None, &[][..]), |(last, prefix)| (Some(last), prefix));
-                for instruction in prefix {
-                    Self::transfer_instruction(
-                        &mut output,
-                        instruction,
-                        variables,
-                        statement_definitions,
-                    )?;
-                }
-                for (destination, source) in exceptional_copies.get(&block).into_iter().flatten() {
-                    Self::define(&mut output, *destination, Some(source.clone()));
-                }
-                if let Some(last) = last {
-                    Self::transfer_instruction(
-                        &mut output,
-                        last,
-                        variables,
-                        statement_definitions,
-                    )?;
-                }
-                for copy in normal_copies
-                    .get(&NormalCopySite::Block(block))
-                    .into_iter()
-                    .flatten()
-                {
-                    Self::transfer_copy(&mut output, copy, variables)?;
-                }
-                changed |= inputs.get(&block) != Some(&input);
-                changed |= outputs.get(&block) != Some(&output);
-                inputs.insert(block, input);
-                outputs.insert(block, output);
-            }
-            if !changed {
-                break;
-            }
+        let mut observations = Self::default();
+        if universe.is_empty() {
+            return Ok(observations);
         }
-
-        let mut before_throw = BTreeMap::new();
-        let mut before_normal = BTreeMap::new();
-        let mut before_edge = BTreeMap::new();
-        for block in cfg.block_ids() {
-            let body = cfg
-                .block(block)
-                .ok_or(SourceVariableError::MissingBlock(block))?;
-            let mut facts = inputs.get(&block).cloned().unwrap_or_default();
+        // Each block starts at the universal must-set. Only a changed normal
+        // output can change a successor's input. Record the requested program
+        // points on each visit; the final visit sees the converged input.
+        let mut outputs = BTreeMap::new();
+        let mut pending = cfg
+            .blocks
+            .keys()
+            .copied()
+            .collect::<std::collections::VecDeque<_>>();
+        let mut queued = cfg.blocks.keys().copied().collect::<foldhash::HashSet<_>>();
+        while let Some(block) = pending.pop_front() {
+            queued.remove(&block);
+            let mut incoming: Option<CopyFacts> = None;
+            if block != cfg.entry {
+                for &(source, kind) in cfg.predecessors_with_kind(block) {
+                    if kind.is_exception() || !cfg.blocks.contains_key(&source) {
+                        continue;
+                    }
+                    let edge = crate::ir::RegionEdge {
+                        source,
+                        target: block,
+                        kind,
+                    };
+                    let mut predecessor =
+                        std::borrow::Cow::Borrowed(outputs.get(&source).unwrap_or(&universe));
+                    if let Some(copies) = normal_copies.get(&NormalCopySite::Edge(edge)) {
+                        for copy in copies {
+                            Self::transfer_copy(predecessor.to_mut(), copy, variables)?;
+                        }
+                    }
+                    if let Some(common) = &mut incoming {
+                        common.retain(|fact| predecessor.contains(fact));
+                    } else {
+                        incoming = Some(predecessor.into_owned());
+                    }
+                }
+            }
+            let mut state = incoming.unwrap_or_default();
+            let body = &cfg.blocks[&block];
             let (last, prefix) = body
                 .insns
                 .split_last()
                 .map_or((None, &[][..]), |(last, prefix)| (Some(last), prefix));
             for instruction in prefix {
                 Self::transfer_instruction(
-                    &mut facts,
+                    &mut state,
                     instruction,
                     variables,
                     statement_definitions,
                 )?;
             }
-            if last.is_some_and(InsnNode::can_throw) {
-                before_throw.insert(block, facts.clone());
-            }
-            for (destination, source) in exceptional_copies.get(&block).into_iter().flatten() {
-                Self::define(&mut facts, *destination, Some(source.clone()));
+            if let Some(assignments) = exceptional_copies.get(&block) {
+                if last.is_some_and(InsnNode::can_throw) {
+                    observations.before_throw.insert(block, state.clone());
+                }
+                for (destination, source) in assignments {
+                    Self::define(&mut state, *destination, Some(source.clone()));
+                }
             }
             if let Some(last) = last {
-                Self::transfer_instruction(&mut facts, last, variables, statement_definitions)?;
+                Self::transfer_instruction(&mut state, last, variables, statement_definitions)?;
             }
-            before_normal.insert(block, facts.clone());
-            for copy in normal_copies
-                .get(&NormalCopySite::Block(block))
-                .into_iter()
-                .flatten()
-            {
-                Self::transfer_copy(&mut facts, copy, variables)?;
+            if let Some(copies) = normal_copies.get(&NormalCopySite::Block(block)) {
+                observations.before_normal.insert(block, state.clone());
+                for copy in copies {
+                    Self::transfer_copy(&mut state, copy, variables)?;
+                }
             }
-            for (target, kind) in cfg.successors_with_kind(block) {
+            let changed = outputs.get(&block).unwrap_or(&universe) != &state;
+            for &(target, kind) in cfg.successors_with_kind(block) {
                 if kind.is_exception() {
                     continue;
                 }
-                before_edge.insert(
-                    crate::ir::RegionEdge {
-                        source: block,
-                        target: *target,
-                        kind: *kind,
-                    },
-                    facts.clone(),
-                );
+                let edge = crate::ir::RegionEdge {
+                    source: block,
+                    target,
+                    kind,
+                };
+                if normal_copies.contains_key(&NormalCopySite::Edge(edge)) {
+                    observations.before_edge.insert(edge, state.clone());
+                }
+                if changed && cfg.blocks.contains_key(&target) && queued.insert(target) {
+                    pending.push_back(target);
+                }
             }
+            outputs.insert(block, state);
         }
-        Ok(Self {
-            before_throw,
-            before_normal,
-            before_edge,
-        })
+        Ok(observations)
     }
 
     fn universe(
@@ -232,6 +186,7 @@ impl AvailableCopyAnalysis {
         statement_definitions: &BTreeSet<SsaVar>,
     ) -> Result<CopyFacts, SourceVariableError> {
         let mut facts = CopyFacts::new();
+        let has_queries = !normal_copies.is_empty() || !exceptional_copies.is_empty();
         for copy in normal_copies.values().flatten() {
             if let Some(fact) = Self::copy_fact(copy, variables)? {
                 facts.insert(fact);
@@ -247,22 +202,15 @@ impl AvailableCopyAnalysis {
                 if !Self::is_statement_definition(instruction, statement_definitions) {
                     continue;
                 }
+                // Resolve every original identity, including when there is no placement query.
                 if let Some(fact) = Self::instruction_fact(instruction, variables)? {
-                    facts.insert(fact);
+                    if has_queries {
+                        facts.insert(fact);
+                    }
                 }
             }
         }
         Ok(facts)
-    }
-
-    fn meet<'a>(mut states: impl Iterator<Item = &'a CopyFacts>) -> CopyFacts {
-        let Some(mut facts) = states.next().cloned() else {
-            return CopyFacts::new();
-        };
-        for state in states {
-            facts.retain(|fact| state.contains(fact));
-        }
-        facts
     }
 
     fn transfer_instruction(
@@ -504,25 +452,33 @@ impl<'a> SsaCopyResolver<'a> {
     }
 }
 
-pub(super) struct RequiredPhiValues {
-    values: BTreeSet<SsaVar>,
+#[derive(Default)]
+pub(super) struct SemanticSsaValues {
+    uses: BTreeSet<SsaVar>,
+    operation_results: BTreeSet<SsaVar>,
+    materialized: BTreeSet<SsaVar>,
 }
 
-impl RequiredPhiValues {
-    pub(super) fn collect(
+impl SemanticSsaValues {
+    pub(super) fn collect(root: &SemanticNode) -> Self {
+        let mut values = Self::default();
+        values.visit_node(root);
+        values
+    }
+
+    pub(super) fn into_retained_and_definitions(mut self) -> (BTreeSet<SsaVar>, BTreeSet<SsaVar>) {
+        self.uses.extend(self.operation_results);
+        (self.uses, self.materialized)
+    }
+
+    pub(super) fn required(
+        &self,
         cfg: &CFG,
         graph: &SsaValueGraph,
-        root: &SemanticNode,
         constants: &BTreeMap<SsaVar, InsnArg>,
         contractions: &ControlContractions,
     ) -> Result<BTreeSet<SsaVar>, SourceVariableError> {
-        let mut collector = Self {
-            values: BTreeSet::new(),
-        };
-        collector.visit_node(root);
-        let roots = collector.values;
-        let materialized = StatementDefinitions::collect(root);
-        let mut pending = roots.iter().copied().collect::<Vec<_>>();
+        let mut pending = self.uses.iter().copied().collect::<Vec<_>>();
         let mut visited = BTreeSet::new();
         let mut required = BTreeSet::new();
         let edge_arguments = ContractedEdgeArguments::new(cfg, graph, constants, contractions);
@@ -534,7 +490,7 @@ impl RequiredPhiValues {
                 // move's result identity. Following the stale CFG operand
                 // would lower that already-recovered Phi a second time and
                 // place copies before the Select's branch definitions.
-                || materialized.contains(&value)
+                || self.materialized.contains(&value)
                 || PhiCopies::canonical_constant(constants, value).is_some()
             {
                 continue;
@@ -586,55 +542,20 @@ impl InstructionVisitor for ArgumentDependencies {
     }
 }
 
-impl SemanticVisitor for RequiredPhiValues {
-    fn visit_register(&mut self, register: &RegisterArg) {
-        self.values.extend(SsaVar::from_reg(register));
-    }
-}
-
-pub(super) struct RetainedSsaValues {
-    values: BTreeSet<SsaVar>,
-}
-
-pub(super) struct StatementDefinitions {
-    values: BTreeSet<SsaVar>,
-}
-
-impl StatementDefinitions {
-    pub(super) fn collect(root: &SemanticNode) -> BTreeSet<SsaVar> {
-        let mut collector = Self {
-            values: BTreeSet::new(),
-        };
-        collector.visit_node(root);
-        collector.values
-    }
-}
-
-impl SemanticVisitor for StatementDefinitions {
+impl SemanticVisitor for SemanticSsaValues {
     fn visit_statement(&mut self, statement: &SemanticStatement) {
-        self.values
+        self.materialized
             .extend(statement.result().and_then(SsaVar::from_reg));
+        crate::ir::semantic::walk_statement(self, statement);
     }
-}
 
-impl RetainedSsaValues {
-    pub(super) fn collect(root: &SemanticNode) -> BTreeSet<SsaVar> {
-        let mut collector = Self {
-            values: BTreeSet::new(),
-        };
-        collector.visit_node(root);
-        collector.values
-    }
-}
-
-impl SemanticVisitor for RetainedSsaValues {
-    fn enter_operation(&mut self, instruction: &crate::ir::SemanticOperation) {
-        self.values
-            .extend(instruction.result.as_ref().and_then(SsaVar::from_reg));
+    fn enter_operation(&mut self, operation: &crate::ir::SemanticOperation) {
+        self.operation_results
+            .extend(operation.result.as_ref().and_then(SsaVar::from_reg));
     }
 
     fn visit_register(&mut self, register: &RegisterArg) {
-        self.values.extend(SsaVar::from_reg(register));
+        self.uses.extend(SsaVar::from_reg(register));
     }
 }
 
@@ -991,7 +912,7 @@ struct NormalCopyPlacement<'a> {
     cfg: &'a CFG,
     variables: &'a CodeVariables,
     liveness: &'a SsaLiveness,
-    semantic_blocks: BTreeSet<BlockId>,
+    semantic_blocks: &'a BTreeSet<BlockId>,
 }
 
 impl<'a> NormalCopyPlacement<'a> {
@@ -999,13 +920,13 @@ impl<'a> NormalCopyPlacement<'a> {
         cfg: &'a CFG,
         variables: &'a CodeVariables,
         liveness: &'a SsaLiveness,
-        semantic: &SemanticNode,
+        semantic_blocks: &'a BTreeSet<BlockId>,
     ) -> Self {
         Self {
             cfg,
             variables,
             liveness,
-            semantic_blocks: SemanticBlocks::collect(semantic),
+            semantic_blocks,
         }
     }
 
@@ -1153,7 +1074,7 @@ impl SplitEdgeBlock {
 /// on the predecessor would clobber a normal path.
 struct ExceptionalIngressCopyPlacement<'a> {
     cfg: &'a CFG,
-    semantic_blocks: BTreeSet<BlockId>,
+    semantic_blocks: &'a BTreeSet<BlockId>,
     contractions: &'a ControlContractions,
     regions: &'a RegionGraph,
     values: &'a SsaValueGraph,
@@ -1165,7 +1086,7 @@ struct ExceptionalIngressCopyPlacement<'a> {
 impl<'a> ExceptionalIngressCopyPlacement<'a> {
     fn new(
         cfg: &'a CFG,
-        semantic: &SemanticNode,
+        semantic_blocks: &'a BTreeSet<BlockId>,
         contractions: &'a ControlContractions,
         regions: &'a RegionGraph,
         values: &'a SsaValueGraph,
@@ -1175,7 +1096,7 @@ impl<'a> ExceptionalIngressCopyPlacement<'a> {
     ) -> Self {
         Self {
             cfg,
-            semantic_blocks: SemanticBlocks::collect(semantic),
+            semantic_blocks,
             contractions,
             regions,
             values,
@@ -1311,19 +1232,26 @@ impl<'a> ExceptionalCopyPlacement<'a> {
         &self,
         mut copies: CollectedPhiCopies,
     ) -> Result<PhiCopySet, SourceVariableError> {
-        NormalCopyPlacement::new(self.cfg, self.variables, self.liveness, self.semantic)
-            .apply(&mut copies.normal)?;
-        ExceptionalIngressCopyPlacement::new(
-            self.cfg,
-            self.semantic,
-            self.contractions,
-            self.regions,
-            self.values,
-            self.statement_definitions,
-            self.required_phis,
-            self.constants,
-        )
-        .apply(&mut copies);
+        if copies
+            .normal
+            .keys()
+            .any(|site| matches!(site, NormalCopySite::Block(_)))
+        {
+            let semantic_blocks = SemanticBlocks::collect(self.semantic);
+            NormalCopyPlacement::new(self.cfg, self.variables, self.liveness, &semantic_blocks)
+                .apply(&mut copies.normal)?;
+            ExceptionalIngressCopyPlacement::new(
+                self.cfg,
+                &semantic_blocks,
+                self.contractions,
+                self.regions,
+                self.values,
+                self.statement_definitions,
+                self.required_phis,
+                self.constants,
+            )
+            .apply(&mut copies);
+        }
         let exceptional_effects = self.exceptional_effects(&copies.exceptional)?;
         let available = AvailableCopyAnalysis::analyze(
             self.cfg,
@@ -2301,11 +2229,16 @@ impl PhiLowering {
     }
 
     pub(super) fn apply(mut self, root: &mut SemanticNode) -> Result<(), SourceVariableError> {
-        self.semantic_blocks = SemanticBlocks::collect(root);
-        self.repeated_semantic_blocks = SemanticBlockOccurrences::repeated(root);
-        self.statement_blocks = StatementBlocks::collect(root);
-        self.materialized_instructions =
-            EvaluationInstructions::of_node(root).into_iter().collect();
+        if !self.normal.by_site.is_empty() {
+            let sites = SemanticBlockOccurrences::collect(root);
+            self.semantic_blocks = sites.all;
+            self.repeated_semantic_blocks = sites.repeated;
+            self.statement_blocks = sites.with_statements;
+        }
+        if !self.terminal_exceptional.is_empty() {
+            self.materialized_instructions =
+                EvaluationInstructions::of_node(root).into_iter().collect();
+        }
         let body = std::mem::replace(root, SemanticNode::Empty);
         *root = self.fold_node(body)?;
         if let Some(site) = self.normal.first_unplaced() {
@@ -2342,6 +2275,14 @@ impl SemanticFolder for PhiLowering {
 
     fn finish_node(&mut self, node: SemanticNode) -> Result<SemanticNode, Self::Error> {
         match node {
+            SemanticNode::If { .. }
+            | SemanticNode::Switch { .. }
+            | SemanticNode::Synchronized { .. }
+            | SemanticNode::ForEach { .. }
+                if self.exceptional.is_empty() =>
+            {
+                Ok(node)
+            }
             SemanticNode::BasicBlock(block) => self.lower_block(block),
             SemanticNode::Leave(leave) => self.lower_leave(leave),
             SemanticNode::If {
@@ -2350,7 +2291,7 @@ impl SemanticFolder for PhiLowering {
                 else_node,
             } => {
                 let prefix =
-                    self.exceptional_prefix(EvaluationInstructions::of_predicate(&condition));
+                    self.exceptional_prefix(|| EvaluationInstructions::of_predicate(&condition));
                 Ok(SemanticNode::sequence([
                     prefix,
                     SemanticNode::If {
@@ -2367,8 +2308,8 @@ impl SemanticFolder for PhiLowering {
                 mut test,
                 body,
             } => {
-                let prefix =
-                    self.exceptional_prefix(EvaluationInstructions::of_predicate(&test.condition));
+                let prefix = self
+                    .exceptional_prefix(|| EvaluationInstructions::of_predicate(&test.condition));
                 test.setup = Box::new(SemanticNode::sequence([*test.setup, prefix]));
                 Ok(SemanticNode::Loop {
                     control,
@@ -2384,7 +2325,7 @@ impl SemanticFolder for PhiLowering {
                 cases,
             } => {
                 let prefix =
-                    self.exceptional_prefix(EvaluationInstructions::of_expression(&selector));
+                    self.exceptional_prefix(|| EvaluationInstructions::of_expression(&selector));
                 Ok(SemanticNode::sequence([
                     prefix,
                     SemanticNode::Switch {
@@ -2400,7 +2341,8 @@ impl SemanticFolder for PhiLowering {
                 method,
                 body,
             } => {
-                let prefix = self.exceptional_prefix(EvaluationInstructions::of_expression(&lock));
+                let prefix =
+                    self.exceptional_prefix(|| EvaluationInstructions::of_expression(&lock));
                 Ok(SemanticNode::sequence([
                     prefix,
                     SemanticNode::Synchronized {
@@ -2418,7 +2360,7 @@ impl SemanticFolder for PhiLowering {
                 body,
             } => {
                 let prefix =
-                    self.exceptional_prefix(EvaluationInstructions::of_expression(&iterable));
+                    self.exceptional_prefix(|| EvaluationInstructions::of_expression(&iterable));
                 Ok(SemanticNode::sequence([
                     prefix,
                     SemanticNode::ForEach {
@@ -2441,13 +2383,16 @@ impl SemanticFolder for PhiLowering {
 }
 
 impl PhiLowering {
-    fn exceptional_prefix(
+    fn exceptional_prefix<I: IntoIterator<Item = InstructionId>>(
         &mut self,
-        instructions: impl IntoIterator<Item = InstructionId>,
+        instructions: impl FnOnce() -> I,
     ) -> SemanticNode {
+        if self.exceptional.is_empty() {
+            return SemanticNode::Empty;
+        }
         let mut resolved = BTreeSet::new();
         let mut blocks = Vec::new();
-        for instruction in instructions {
+        for instruction in instructions() {
             if !resolved.insert(instruction) {
                 continue;
             }
@@ -2471,28 +2416,35 @@ impl PhiLowering {
         &mut self,
         mut block: SemanticBlock,
     ) -> Result<SemanticNode, SourceVariableError> {
-        self.seen.insert(block.id);
+        if !self.handler_entries.is_empty() {
+            self.seen.insert(block.id);
+        }
         let owns_normal_copies =
             !block.statements.is_empty() || !self.statement_blocks.contains(&block.id);
-        let mut statements = if self.handler_blocks.contains(&block.id) {
+        let mut prefix = if self.handler_blocks.contains(&block.id) {
             Vec::new()
         } else {
             self.handler_entries.remove(&block.id).unwrap_or_default()
         };
-        let mut resolved = BTreeSet::new();
-        for statement in block.statements {
-            for instruction in EvaluationInstructions::of_statement(&statement) {
-                if let Some((_, copies)) = self.exceptional.get(&instruction) {
-                    if resolved.insert(instruction) {
-                        self.placed_exceptional.insert(instruction);
-                        statements.extend(copies.iter().cloned());
+        if !self.exceptional.is_empty() {
+            let mut resolved = BTreeSet::new();
+            for statement in block.statements {
+                for instruction in EvaluationInstructions::of_statement(&statement) {
+                    if let Some((_, copies)) = self.exceptional.get(&instruction) {
+                        if resolved.insert(instruction) {
+                            self.placed_exceptional.insert(instruction);
+                            prefix.extend(copies.iter().cloned());
+                        }
                     }
                 }
+                prefix.push(statement);
             }
-            statements.push(statement);
+            block.statements = prefix;
+        } else if !prefix.is_empty() {
+            prefix.append(&mut block.statements);
+            block.statements = prefix;
         }
-        block.statements = statements;
-        if owns_normal_copies {
+        if owns_normal_copies && !self.normal.by_site.is_empty() {
             let site = NormalCopySite::Block(block.id);
             let repeats_semantically =
                 !block.statements.is_empty() || self.repeated_semantic_blocks.contains(&block.id);
@@ -2513,13 +2465,11 @@ impl PhiLowering {
         let condition_prefix = leave
             .condition
             .as_ref()
-            .map(EvaluationInstructions::of_predicate)
-            .map(|instructions| self.exceptional_prefix(instructions))
+            .map(|p| self.exceptional_prefix(|| EvaluationInstructions::of_predicate(p)))
             .unwrap_or(SemanticNode::Empty);
         let value_prefix = leave
             .value()
-            .map(EvaluationInstructions::of_expression)
-            .map(|instructions| self.exceptional_prefix(instructions))
+            .map(|v| self.exceptional_prefix(|| EvaluationInstructions::of_expression(v)))
             .unwrap_or(SemanticNode::Empty);
         let terminal_prefix = leave
             .origin
@@ -2530,13 +2480,18 @@ impl PhiLowering {
                     origin,
                 )
             })
-            .map(|instruction| self.exceptional_prefix([instruction]))
+            .map(|instruction| self.exceptional_prefix(|| [instruction]))
             .unwrap_or(SemanticNode::Empty);
         let normal_prefix = leave
             .origin
             .and_then(|origin| {
-                self.seen.insert(origin);
-                let mut sites = Vec::with_capacity(3);
+                if !self.handler_entries.is_empty() {
+                    self.seen.insert(origin);
+                }
+                if self.normal.by_site.is_empty() {
+                    return None;
+                }
+                let mut sites = smallvec::SmallVec::<[NormalCopySite; 3]>::new();
                 if let Some(edge) = leave.edge {
                     sites.push(NormalCopySite::Edge(edge));
                     // A surviving target block owns its block-local copies.
@@ -2557,30 +2512,30 @@ impl PhiLowering {
                 })
             })
             .unwrap_or(SemanticNode::Empty);
-        let Some(condition) = leave.condition.take() else {
-            return Ok(SemanticNode::sequence([
-                condition_prefix,
-                value_prefix,
-                terminal_prefix,
-                normal_prefix,
-                SemanticNode::Leave(leave),
-            ]));
-        };
-
-        let taken = SemanticNode::sequence([
-            value_prefix,
-            terminal_prefix,
-            normal_prefix,
-            SemanticNode::Leave(leave),
-        ]);
-        Ok(SemanticNode::sequence([
-            condition_prefix,
-            SemanticNode::If {
+        let condition = leave.condition.take();
+        let mut taken = SemanticNode::Leave(leave);
+        if !matches!(
+            (&value_prefix, &terminal_prefix, &normal_prefix),
+            (
+                SemanticNode::Empty,
+                SemanticNode::Empty,
+                SemanticNode::Empty
+            )
+        ) {
+            taken = SemanticNode::sequence([value_prefix, terminal_prefix, normal_prefix, taken]);
+        }
+        if let Some(condition) = condition {
+            taken = SemanticNode::If {
                 condition: crate::ir::SemanticOperand::new(condition),
                 then_node: Box::new(taken),
                 else_node: None,
-            },
-        ]))
+            };
+        }
+        Ok(if matches!(condition_prefix, SemanticNode::Empty) {
+            taken
+        } else {
+            SemanticNode::sequence([condition_prefix, taken])
+        })
     }
 
     fn lower_try(
@@ -2640,6 +2595,9 @@ impl SemanticBlocks {
 }
 
 impl SemanticVisitor for SemanticBlocks {
+    fn visits_values(&self) -> bool {
+        false
+    }
     fn enter_node(&mut self, node: &SemanticNode) {
         if let SemanticNode::BasicBlock(block) = node {
             self.blocks.insert(block.id);
@@ -2649,47 +2607,31 @@ impl SemanticVisitor for SemanticBlocks {
 
 #[derive(Default)]
 struct SemanticBlockOccurrences {
-    counts: BTreeMap<BlockId, usize>,
+    all: BTreeSet<BlockId>,
+    repeated: BTreeSet<BlockId>,
+    with_statements: BTreeSet<BlockId>,
 }
 
 impl SemanticBlockOccurrences {
-    fn repeated(root: &SemanticNode) -> BTreeSet<BlockId> {
-        let mut collector = Self::default();
-        collector.visit_node(root);
-        collector
-            .counts
-            .into_iter()
-            .filter_map(|(block, count)| (count > 1).then_some(block))
-            .collect()
+    fn collect(root: &SemanticNode) -> Self {
+        let mut sites = Self::default();
+        sites.visit_node(root);
+        sites
     }
 }
 
 impl SemanticVisitor for SemanticBlockOccurrences {
+    fn visits_values(&self) -> bool {
+        false
+    }
+
     fn enter_node(&mut self, node: &SemanticNode) {
         if let SemanticNode::BasicBlock(block) = node {
-            *self.counts.entry(block.id).or_default() += 1;
-        }
-    }
-}
-
-#[derive(Default)]
-struct StatementBlocks {
-    blocks: BTreeSet<BlockId>,
-}
-
-impl StatementBlocks {
-    fn collect(root: &SemanticNode) -> BTreeSet<BlockId> {
-        let mut collector = Self::default();
-        collector.visit_node(root);
-        collector.blocks
-    }
-}
-
-impl SemanticVisitor for StatementBlocks {
-    fn enter_node(&mut self, node: &SemanticNode) {
-        if let SemanticNode::BasicBlock(block) = node {
+            if !self.all.insert(block.id) {
+                self.repeated.insert(block.id);
+            }
             if !block.statements.is_empty() {
-                self.blocks.insert(block.id);
+                self.with_statements.insert(block.id);
             }
         }
     }
@@ -2899,14 +2841,14 @@ mod tests {
                 ),
             )],
         });
-        let required = RequiredPhiValues::collect(
-            &cfg,
-            &values,
-            &root,
-            &BTreeMap::new(),
-            &ControlContractions::identity(),
-        )
-        .expect("required Phi analysis");
+        let required = SemanticSsaValues::collect(&root)
+            .required(
+                &cfg,
+                &values,
+                &BTreeMap::new(),
+                &ControlContractions::identity(),
+            )
+            .expect("required Phi analysis");
 
         assert!(!required.contains(&phi_value));
     }
@@ -3121,7 +3063,7 @@ mod tests {
         let root = SemanticNode::sequence(vec![block(), block()]);
 
         assert_eq!(
-            SemanticBlockOccurrences::repeated(&root),
+            SemanticBlockOccurrences::collect(&root).repeated,
             BTreeSet::from([BlockId::new(7)])
         );
     }
@@ -3193,3 +3135,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "../../../../tests/internal/available_copy_sites.rs"]
+mod available_copy_sites;

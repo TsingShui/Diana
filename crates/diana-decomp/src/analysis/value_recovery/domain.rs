@@ -360,6 +360,14 @@ impl DomainLogic {
         let (Some(left), Some(right)) = (self.exact(left), self.exact(right)) else {
             return Ok(false);
         };
+        // Terminal and equal operands are precisely the uncharged terminal
+        // cases in BDD intersection. The handles came from this arena.
+        if left.is_false() || right.is_false() {
+            return Ok(true);
+        }
+        if left == right || left.is_true() || right.is_true() {
+            return Ok(false);
+        }
         match self.bdd.and(left, right) {
             Ok(intersection) => Ok(intersection.is_false()),
             Err(error) if error.is_resource_limit() => {
@@ -432,31 +440,46 @@ impl DomainLogic {
             return Ok(left);
         }
 
-        let mut terms = Vec::new();
-        self.extend_terms(left, conjunction, &mut terms)?;
-        self.extend_terms(right, conjunction, &mut terms)?;
-        terms.sort();
-        terms.dedup();
-        for term in &terms {
-            if let DomainNode::Not(inner) = self.node(*term)? {
-                if terms.binary_search(inner).is_ok() {
-                    return Ok(absorbing);
-                }
+        let a = self.junction_terms(&left, conjunction)?;
+        let b = self.junction_terms(&right, conjunction)?;
+        let (shorter, longer, longer_domain) = if a.len() <= b.len() {
+            (a, b, right)
+        } else {
+            (b, a, left)
+        };
+        // Each interned junction already contains distinct, sorted terms
+        // without complements. Only cross-operand pairs can cancel. When a
+        // guard just repeats existing terms its canonical domain already
+        // owns the exact proof and needs no union allocation or BDD work.
+        let mut contained = true;
+        for &term in shorter {
+            let complement = self.nodes[(term.0 - 2) as usize].complement;
+            if complement.is_some_and(|other| longer.binary_search(&other).is_ok()) {
+                return Ok(absorbing);
             }
+            contained = contained && longer.binary_search(&term).is_ok();
         }
-        if terms.len() == 1 {
-            return terms.pop().ok_or_else(DomainError::malformed_evaluation);
+        if contained {
+            return Ok(longer_domain);
         }
-
+        let pair;
+        let union;
+        let terms = if a.len() == 1 && b.len() == 1 {
+            pair = [left.min(right), left.max(right)];
+            pair.as_slice()
+        } else {
+            union = Self::union_terms(a, b);
+            union.as_slice()
+        };
         let index = if conjunction {
             &self.conjunctions
         } else {
             &self.disjunctions
         };
-        if let Some(domain) = index.get(terms.as_slice()) {
+        if let Some(domain) = index.get(terms) {
             return Ok(*domain);
         }
-        let proof = self.junction_proof(&terms, conjunction, [left, right])?;
+        let proof = self.junction_proof(terms, conjunction, [left, right])?;
         let terms: Rc<[ControlDomain]> = terms.into();
         let node = if conjunction {
             DomainNode::And(Rc::clone(&terms))
@@ -473,19 +496,31 @@ impl DomainLogic {
         Ok(domain)
     }
 
-    fn extend_terms(
-        &self,
-        domain: ControlDomain,
+    fn junction_terms<'a>(
+        &'a self,
+        domain: &'a ControlDomain,
         conjunction: bool,
-        terms: &mut Vec<ControlDomain>,
-    ) -> Result<(), DomainError> {
-        match (conjunction, self.node(domain)?) {
-            (true, DomainNode::And(nested)) | (false, DomainNode::Or(nested)) => {
-                terms.extend(nested.iter().copied());
+    ) -> Result<&'a [ControlDomain], DomainError> {
+        Ok(match (conjunction, self.node(*domain)?) {
+            (true, DomainNode::And(terms)) | (false, DomainNode::Or(terms)) => terms,
+            _ => std::slice::from_ref(domain),
+        })
+    }
+
+    fn union_terms(mut left: &[ControlDomain], mut right: &[ControlDomain]) -> Vec<ControlDomain> {
+        let mut result = Vec::with_capacity(left.len() + right.len());
+        while let ([a, more_left @ ..], [b, more_right @ ..]) = (left, right) {
+            result.push((*a).min(*b));
+            if a <= b {
+                left = more_left;
             }
-            _ => terms.push(domain),
+            if b <= a {
+                right = more_right;
+            }
         }
-        Ok(())
+        result.extend_from_slice(left);
+        result.extend_from_slice(right);
+        result
     }
 
     fn junction_proof(

@@ -52,65 +52,59 @@ impl PredicateRegionFormation {
         &mut self,
         nodes: Vec<SemanticNode>,
     ) -> Result<SemanticNode, ValueRecoveryError> {
+        if !has_guarded_tail(&nodes) {
+            return Ok(SemanticNode::sequence(nodes));
+        }
         let mut formed = Vec::<SemanticNode>::with_capacity(nodes.len());
-        for node in nodes {
-            let merged = match (formed.last(), &node) {
-                (
-                    Some(SemanticNode::If {
-                        condition,
-                        then_node,
-                        else_node: None,
-                    }),
-                    SemanticNode::If {
-                        condition: next_condition,
-                        then_node: next_then,
-                        else_node: None,
-                    },
-                ) => Self::can_extend(condition, then_node, next_condition)?
-                    .then(|| next_then.as_ref().clone()),
-                _ => None,
-            };
-            if let Some(next) = merged {
-                let previous = formed
-                    .last()
-                    .cloned()
-                    .expect("predicate region candidate disappeared");
-                let mut candidate = previous.clone();
-                if let SemanticNode::If { then_node, .. } = &mut candidate {
-                    let body = std::mem::replace(then_node, Box::new(SemanticNode::Empty));
-                    **then_node = SemanticNode::sequence([*body, next]);
-                } else {
-                    unreachable!("predicate region candidate changed");
-                }
-                let original = SemanticNode::sequence([previous, node.clone()]);
-                if SemanticCompletion::analyze(&original) == SemanticCompletion::analyze(&candidate)
-                {
-                    *formed
-                        .last_mut()
-                        .expect("predicate region candidate disappeared") = candidate;
-                    self.changed = true;
-                    continue;
-                }
-            }
-
-            if let SemanticNode::If {
-                condition,
-                then_node,
-                else_node: None,
-            } = &node
+        for mut node in nodes {
+            if let (
+                Some(SemanticNode::If {
+                    condition,
+                    then_node,
+                    else_node: None,
+                }),
+                SemanticNode::If {
+                    condition: next_condition,
+                    then_node: next_then,
+                    else_node: None,
+                },
+            ) = (formed.last_mut(), &mut node)
             {
-                // PathInjector only rewrites the last sequential child. Passing
-                // the whole prefix cloned the growing if-chain on every
-                // candidate (O(n²) completion walks). Apply against the last
-                // node only; a long if-chain stays a flat sequence.
-                if !formed.is_empty() && GuardDistribution::should_try(condition, then_node) {
-                    let last = formed.pop().expect("non-empty prefix");
-                    let (last, distributed) = GuardDistribution::apply(last, condition, then_node)?;
-                    formed.push(last);
-                    if distributed {
+                if Self::can_extend(condition, then_node, next_condition)? {
+                    let first = SemanticCompletion::analyze(then_node);
+                    let second = SemanticCompletion::analyze(next_then);
+                    let original = SemanticCompletion::sequence([
+                        SemanticCompletion::branch(condition, first.clone(), None),
+                        SemanticCompletion::branch(next_condition, second.clone(), None),
+                    ]);
+                    let merged = SemanticCompletion::branch(
+                        condition,
+                        SemanticCompletion::sequence([first, second]),
+                        None,
+                    );
+                    if original == merged {
+                        let first = std::mem::replace(then_node.as_mut(), SemanticNode::Empty);
+                        let second = std::mem::replace(next_then.as_mut(), SemanticNode::Empty);
+                        **then_node = SemanticNode::sequence([first, second]);
                         self.changed = true;
                         continue;
                     }
+                }
+            }
+
+            if let (
+                Some(last),
+                SemanticNode::If {
+                    condition,
+                    then_node,
+                    else_node: None,
+                },
+            ) = (formed.last_mut(), &node)
+            {
+                if let Some(distributed) = GuardDistribution::apply(last, condition, then_node)? {
+                    *last = distributed;
+                    self.changed = true;
+                    continue;
                 }
             }
             formed.push(node);
@@ -124,6 +118,16 @@ impl PredicateRegionFormation {
     /// region formation can merge them with the neighbours that share their
     /// predicate instead of leaving each merge to restate it.
     fn form_block(&mut self, block: SemanticBlock) -> SemanticNode {
+        if block.statements.is_empty() {
+            return SemanticNode::Empty;
+        }
+        if !block
+            .statements
+            .iter()
+            .any(GuardedAssignment::is_self_selecting)
+        {
+            return SemanticNode::BasicBlock(block);
+        }
         let id = block.id;
         let mut formed = Vec::<SemanticNode>::new();
         let mut pending = Vec::<SemanticStatement>::new();
@@ -197,22 +201,66 @@ impl PredicateRegionFormation {
     }
 }
 
+fn has_guarded_tail(nodes: &[SemanticNode]) -> bool {
+    nodes.iter().skip(1).any(|node| {
+        matches!(
+            node,
+            SemanticNode::If {
+                else_node: None,
+                ..
+            }
+        )
+    })
+}
+
 fn needs_predicate_regions(root: &SemanticNode) -> bool {
-    struct Finder {
-        needed: bool,
+    #[derive(Default)]
+    struct Sites {
+        needs_fold: bool,
+        has_if: bool,
+        needs_normalization: bool,
     }
-    impl SemanticVisitor for Finder {
-        fn enter_node(&mut self, node: &SemanticNode) {
-            self.needed |= matches!(node, SemanticNode::If { .. });
+    impl SemanticVisitor for Sites {
+        fn visits_values(&self) -> bool {
+            false
         }
 
-        fn visit_statement(&mut self, statement: &SemanticStatement) {
-            self.needed |= GuardedAssignment::is_self_selecting(statement);
+        fn enter_node(&mut self, node: &SemanticNode) {
+            if self.needs_fold {
+                return;
+            }
+            match node {
+                SemanticNode::BasicBlock(block) => {
+                    self.needs_normalization |= block.statements.is_empty();
+                    self.needs_fold = block
+                        .statements
+                        .iter()
+                        .any(GuardedAssignment::is_self_selecting);
+                }
+                SemanticNode::Sequence(children) => {
+                    self.needs_fold = has_guarded_tail(children);
+                    self.needs_normalization |= children.len() < 2
+                        || children.iter().any(|child| {
+                            matches!(child, SemanticNode::Empty | SemanticNode::Sequence(_))
+                        });
+                }
+                SemanticNode::If { .. } => self.has_if = true,
+                // The original pass also enters on a self-selecting loop
+                // statement, then canonicalizes any blocks and sequences.
+                SemanticNode::For { init, update, .. } => {
+                    self.needs_fold = GuardedAssignment::is_self_selecting(init)
+                        || GuardedAssignment::is_self_selecting(update);
+                }
+                _ => {}
+            }
+            // An isolated branch has no region pairing, but still activates
+            // the existing normalization of empty blocks and nested sequences.
+            self.needs_fold |= self.has_if && self.needs_normalization;
         }
     }
-    let mut finder = Finder { needed: false };
-    finder.visit_node(root);
-    finder.needed
+    let mut sites = Sites::default();
+    sites.visit_node(root);
+    sites.needs_fold
 }
 
 struct PredicateEquivalence {
@@ -221,7 +269,7 @@ struct PredicateEquivalence {
 
 impl PredicateEquivalence {
     fn new(left: &SemanticPredicate, right: &SemanticPredicate) -> Self {
-        let mut atoms = Vec::<crate::ir::SemanticOperation>::new();
+        let mut atoms = Vec::<&crate::ir::SemanticOperation>::new();
         let mut symbols = std::collections::BTreeMap::new();
         for predicate in [left, right] {
             let mut pending = vec![predicate];
@@ -232,7 +280,7 @@ impl PredicateEquivalence {
                             .iter()
                             .position(|atom| Self::instruction(atom, instruction))
                             .unwrap_or_else(|| {
-                                atoms.push(instruction.clone());
+                                atoms.push(instruction);
                                 atoms.len() - 1
                             });
                         symbols.insert(
@@ -397,61 +445,5 @@ impl SemanticFolder for PredicateRegionFormation {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ir::{
-        ArgType, InsnNode, InsnType, InstructionId, LiteralArg, RegionId, SemanticExpression,
-        SemanticLeave, SemanticLeaveKind,
-    };
-
-    fn predicate(id: usize) -> SemanticPredicate {
-        let mut instruction = InsnNode::new(InsnType::If, 0);
-        instruction.id = InstructionId::new(id);
-        SemanticPredicate::Test(
-            crate::ir::SemanticOperation::from_instruction(instruction).unwrap(),
-        )
-    }
-
-    fn leave(kind: SemanticLeaveKind) -> SemanticNode {
-        let region = RegionId::new(0);
-        SemanticNode::Leave(SemanticLeave {
-            site: None,
-            condition: None,
-            kind,
-            edge: None,
-            origin: None,
-            source: region,
-            destination: region,
-            target: region,
-            cleanup: Vec::new(),
-        })
-    }
-
-    #[test]
-    fn rejects_equivalent_guard_merge_that_drops_an_abrupt_outcome() {
-        let condition = predicate(1);
-        let mut root = SemanticNode::sequence([
-            SemanticNode::guard(
-                condition.clone(),
-                leave(SemanticLeaveKind::Throw(SemanticExpression::Literal(
-                    LiteralArg::new(0, ArgType::INT),
-                ))),
-            ),
-            SemanticNode::guard(condition, leave(SemanticLeaveKind::Return(None))),
-        ]);
-        let before = SemanticCompletion::analyze(&root);
-
-        let changed = PredicateRegionFormation::apply(&mut root).unwrap();
-
-        assert!(!changed);
-        assert_eq!(SemanticCompletion::analyze(&root), before);
-        assert!(matches!(root, SemanticNode::Sequence(nodes) if nodes.len() == 2));
-    }
-
-    #[test]
-    fn skips_trees_without_if_or_self_selecting_select() {
-        let mut root = SemanticNode::Empty;
-        assert!(!PredicateRegionFormation::apply(&mut root).unwrap());
-        assert!(matches!(root, SemanticNode::Empty));
-    }
-}
+#[path = "../../../tests/internal/predicate_regions.rs"]
+mod tests;

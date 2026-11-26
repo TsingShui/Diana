@@ -110,7 +110,7 @@ impl StringBuilderProtocol {
         (expression.insn_type == InsnType::Invoke
             && terminal.name == "toString"
             && terminal.descriptor.parameters.is_empty()
-            && terminal.descriptor.return_type == ArgType::object("java/lang/String")
+            && terminal.descriptor.return_type.as_object() == Some("java/lang/String")
             && Self::is_builder(&terminal.owner))
         .then_some(())?;
         let owner = &terminal.owner;
@@ -133,7 +133,7 @@ impl StringBuilderProtocol {
         let leads_with_string = seed.is_some()
             || appended
                 .first()
-                .is_some_and(|(_, parameter)| parameter == &ArgType::string());
+                .is_some_and(|(_, parameter)| parameter.as_object() == Some("java/lang/String"));
         let mut terms = (!leads_with_string)
             .then(Self::empty_string)
             .into_iter()

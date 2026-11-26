@@ -17,15 +17,15 @@ struct TypeState {
 }
 
 impl TypeState {
-    fn from_bounds(bounds: Option<&BTreeSet<TypeBound>>) -> Self {
+    fn from_bounds(bounds: BTreeSet<TypeBound>) -> Self {
         let mut state = Self::default();
-        for bound in bounds.into_iter().flatten() {
+        for bound in bounds {
             match bound.kind {
-                BoundKind::Exact => state.exact.insert(bound.ty.clone()),
-                BoundKind::Lower => state.lower.insert(bound.ty.clone()),
-                BoundKind::Upper => state.upper.insert(bound.ty.clone()),
-                BoundKind::Domain => state.domain.insert(bound.ty.clone()),
-                BoundKind::Fallback => state.fallback.insert(bound.ty.clone()),
+                BoundKind::Exact => state.exact.insert(bound.ty),
+                BoundKind::Lower => state.lower.insert(bound.ty),
+                BoundKind::Upper => state.upper.insert(bound.ty),
+                BoundKind::Domain => state.domain.insert(bound.ty),
+                BoundKind::Fallback => state.fallback.insert(bound.ty),
             };
         }
         state
@@ -45,31 +45,41 @@ pub(super) struct TypeLattice;
 
 impl TypeLattice {
     pub(super) fn solve(
-        constraints: &NormalizedTypeConstraints,
+        mut constraints: NormalizedTypeConstraints,
         hierarchy: &dyn TypeHierarchy,
     ) -> BTreeMap<SsaVar, ArgType> {
-        let mut states = constraints
-            .members
-            .keys()
-            .copied()
-            .map(|root| (root, TypeState::from_bounds(constraints.bounds.get(&root))))
+        let mut states = std::mem::take(&mut constraints.bounds)
+            .into_iter()
+            .map(|(root, bounds)| (root, TypeState::from_bounds(bounds)))
             .collect::<BTreeMap<_, _>>();
-        Self::propagate(constraints, &mut states, hierarchy);
+        if !(constraints.flows.is_empty()
+            && constraints.upper_flows.is_empty()
+            && constraints.arrays.is_empty())
+        {
+            // Preserve the initial root order even for as-yet unconstrained components.
+            for &root in constraints.members.values() {
+                states.entry(root).or_default();
+            }
+            Self::propagate(&constraints, &mut states, hierarchy);
+        }
 
-        let component_types = states
-            .iter()
-            .filter_map(|(root, state)| Self::resolve_state(state, hierarchy).map(|ty| (*root, ty)))
-            .collect::<BTreeMap<_, _>>();
-        constraints
-            .members
-            .iter()
-            .flat_map(|(root, members)| {
-                component_types
-                    .get(root)
-                    .into_iter()
-                    .flat_map(move |ty| members.iter().map(move |value| (*value, ty.clone())))
-            })
-            .collect()
+        let mut types = BTreeMap::new();
+        for (root, state) in states {
+            if let Some(ty) = Self::resolve_state(&state, hierarchy) {
+                types.insert(root, ty);
+            }
+        }
+        // A root belongs to its own equivalence class. Expand only genuine
+        // copies, so singleton components move directly into the result.
+        for (&value, &root) in &constraints.members {
+            if value != root {
+                if let Some(ty) = types.get(&root) {
+                    types.insert(value, ty.clone());
+                }
+            }
+        }
+        types.retain(|value, _| constraints.members.contains_key(value));
+        types
     }
 
     fn propagate(
@@ -86,99 +96,94 @@ impl TypeLattice {
         for (source, target) in &constraints.upper_flows {
             incoming.entry(*target).or_default().insert(*source);
         }
+        // Keep each component's constraints in the same order as the original
+        // array relation. A self relation contributes its array side only.
+        let mut arrays = BTreeMap::<SsaVar, Vec<(SsaVar, BoundKind)>>::new();
+        for constraint in &constraints.arrays {
+            let (array, value, bound) = match *constraint {
+                ArrayConstraint::Read { array, result } => (array, result, BoundKind::Exact),
+                ArrayConstraint::Write { array, value } => (array, value, BoundKind::Upper),
+            };
+            arrays.entry(array).or_default().push((value, bound));
+            if value != array {
+                arrays
+                    .entry(value)
+                    .or_default()
+                    .push((array, BoundKind::Lower));
+            }
+        }
+
         let mut pending = states.keys().copied().collect::<VecDeque<_>>();
-        let mut queued = states.keys().copied().collect::<BTreeSet<_>>();
+        let mut queued = states.keys().copied().collect::<foldhash::HashSet<_>>();
+        let mut fallback = Vec::new();
+        let mut upper = Vec::new();
         while let Some(root) = pending.pop_front() {
             queued.remove(&root);
-            let state = states.get(&root).cloned().unwrap_or_default();
+            let outgoing = outgoing.get(&root);
+            let incoming = incoming.get(&root);
+            let arrays = arrays.get(&root);
+            if outgoing.is_none() && incoming.is_none() && arrays.is_none() {
+                continue;
+            }
+            let state = &states[&root];
+            let produced = (outgoing.is_some() || arrays.is_some())
+                .then(|| state.produced_type(hierarchy))
+                .flatten();
+            let array_element = arrays.and_then(|_| match &produced {
+                Some(ArgType::Array(element)) => Some((**element).clone()),
+                Some(_) => None,
+                None => match Self::most_specific_upper(&state.upper, hierarchy)? {
+                    ArgType::Array(element) => Some(std::sync::Arc::unwrap_or_clone(element)),
+                    _ => None,
+                },
+            });
+            fallback.clear();
+            upper.clear();
+            if outgoing.is_some() {
+                fallback.extend(state.fallback.iter().cloned());
+            }
+            if incoming.is_some() {
+                upper.extend(state.upper.iter().chain(&state.exact).cloned());
+            }
 
-            if let Some(produced) = state.produced_type(hierarchy) {
-                for target in outgoing.get(&root).into_iter().flatten() {
-                    let changed = states
-                        .entry(*target)
-                        .or_default()
-                        .lower
-                        .insert(produced.clone());
-                    if changed && queued.insert(*target) {
-                        pending.push_back(*target);
-                    }
+            if let Some(produced) = &produced {
+                for &target in outgoing.into_iter().flatten() {
+                    Self::insert_bound(
+                        states,
+                        target,
+                        BoundKind::Lower,
+                        produced.clone(),
+                        &mut queued,
+                        &mut pending,
+                    );
                 }
             }
-            for target in outgoing.get(&root).into_iter().flatten() {
-                let target_state = states.entry(*target).or_default();
-                let before = target_state.fallback.len();
-                target_state.fallback.extend(state.fallback.iter().cloned());
-                if target_state.fallback.len() != before && queued.insert(*target) {
+            for target in outgoing.into_iter().flatten() {
+                let state = states.entry(*target).or_default();
+                let before = state.fallback.len();
+                state.fallback.extend(fallback.iter().cloned());
+                if state.fallback.len() != before && queued.insert(*target) {
                     pending.push_back(*target);
                 }
             }
-
-            for source in incoming.get(&root).into_iter().flatten() {
-                let source_state = states.entry(*source).or_default();
-                let before = source_state.upper.len();
-                source_state
-                    .upper
-                    .extend(state.upper.iter().chain(&state.exact).cloned());
-                if source_state.upper.len() != before && queued.insert(*source) {
+            for source in incoming.into_iter().flatten() {
+                let state = states.entry(*source).or_default();
+                let before = state.upper.len();
+                state.upper.extend(upper.iter().cloned());
+                if state.upper.len() != before && queued.insert(*source) {
                     pending.push_back(*source);
                 }
             }
-
-            for constraint in &constraints.arrays {
-                match *constraint {
-                    ArrayConstraint::Read { array, result } if array == root => {
-                        if let Some(element) = Self::array_element(&state, hierarchy) {
-                            Self::insert_bound(
-                                states,
-                                result,
-                                BoundKind::Exact,
-                                element,
-                                &mut queued,
-                                &mut pending,
-                            );
-                        }
-                    }
-                    ArrayConstraint::Read { array, result } if result == root => {
-                        if let Some(element) =
-                            state.produced_type(hierarchy).filter(Self::is_concrete)
-                        {
-                            Self::insert_bound(
-                                states,
-                                array,
-                                BoundKind::Lower,
-                                ArgType::array(element),
-                                &mut queued,
-                                &mut pending,
-                            );
-                        }
-                    }
-                    ArrayConstraint::Write { array, value } if array == root => {
-                        if let Some(element) = Self::array_element(&state, hierarchy) {
-                            Self::insert_bound(
-                                states,
-                                value,
-                                BoundKind::Upper,
-                                element,
-                                &mut queued,
-                                &mut pending,
-                            );
-                        }
-                    }
-                    ArrayConstraint::Write { array, value } if value == root => {
-                        if let Some(element) =
-                            state.produced_type(hierarchy).filter(Self::is_concrete)
-                        {
-                            Self::insert_bound(
-                                states,
-                                array,
-                                BoundKind::Lower,
-                                ArgType::array(element),
-                                &mut queued,
-                                &mut pending,
-                            );
-                        }
-                    }
-                    ArrayConstraint::Read { .. } | ArrayConstraint::Write { .. } => {}
+            for &(target, kind) in arrays.into_iter().flatten() {
+                let ty = match kind {
+                    BoundKind::Lower => produced
+                        .as_ref()
+                        .filter(|ty| Self::is_concrete(ty))
+                        .map(|ty| ArgType::array(ty.clone())),
+                    _ => array_element.clone(),
+                };
+                if let Some(ty) = ty {
+                    Self::insert_bound(states, target, kind, ty, &mut queued, &mut pending);
                 }
             }
         }
@@ -189,7 +194,7 @@ impl TypeLattice {
         value: SsaVar,
         kind: BoundKind,
         ty: ArgType,
-        queued: &mut BTreeSet<SsaVar>,
+        queued: &mut foldhash::HashSet<SsaVar>,
         pending: &mut VecDeque<SsaVar>,
     ) {
         let state = states.entry(value).or_default();
@@ -202,16 +207,6 @@ impl TypeLattice {
         };
         if changed && queued.insert(value) {
             pending.push_back(value);
-        }
-    }
-
-    fn array_element(state: &TypeState, hierarchy: &dyn TypeHierarchy) -> Option<ArgType> {
-        let produced = state
-            .produced_type(hierarchy)
-            .or_else(|| Self::most_specific_upper(&state.upper, hierarchy))?;
-        match produced {
-            ArgType::Array(element) => Some(*element),
-            _ => None,
         }
     }
 
@@ -298,7 +293,7 @@ impl TypeLattice {
     fn concrete_hint(ty: &ArgType) -> Option<ArgType> {
         match ty {
             ArgType::Unknown(categories) => {
-                let [category] = categories.as_slice() else {
+                let [category] = categories.as_ref() else {
                     return None;
                 };
                 match category {
@@ -420,15 +415,23 @@ impl TypeLattice {
         }
         match (left, right) {
             (ArgType::Unknown(left), ArgType::Unknown(right)) => {
-                let right = right.into_iter().collect::<BTreeSet<_>>();
-                let intersection = left
-                    .into_iter()
-                    .filter(|candidate| right.contains(candidate))
-                    .collect::<Vec<_>>();
+                // The membership test does not reorder or deduplicate the left
+                // operand. Reuse its representation when every member survives.
+                let accepted = right.iter().fold(0u16, |mask, ty| mask | (1 << *ty as u8));
+                let keep = |ty: &PrimitiveType| accepted & (1 << *ty as u8) != 0;
+                if left.iter().all(keep) {
+                    return if left.is_empty() {
+                        ArgType::unknown()
+                    } else {
+                        ArgType::Unknown(left)
+                    };
+                }
+                let mut intersection = left.into_owned();
+                intersection.retain(keep);
                 if intersection.is_empty() {
                     ArgType::unknown()
                 } else {
-                    ArgType::Unknown(intersection)
+                    ArgType::Unknown(intersection.into())
                 }
             }
             (known, ArgType::Unknown(candidates)) | (ArgType::Unknown(candidates), known) => {
@@ -450,7 +453,11 @@ impl TypeLattice {
                     (ArgType::Primitive(_), _) | (_, ArgType::Primitive(_)) => {
                         ArgType::object("java/lang/Object")
                     }
-                    _ => ArgType::array(Self::join(*left, *right, hierarchy)),
+                    _ => ArgType::array(Self::join(
+                        std::sync::Arc::unwrap_or_clone(left),
+                        std::sync::Arc::unwrap_or_clone(right),
+                        hierarchy,
+                    )),
                 }
             }
             (ArgType::Array(_), ArgType::Object(object))
@@ -469,7 +476,9 @@ impl TypeLattice {
     fn join_primitive(left: PrimitiveType, right: PrimitiveType) -> ArgType {
         use PrimitiveType::{Boolean, Byte, Char, Double, Float, Int, Long, Short};
         match (left, right) {
-            (Boolean, Int) | (Int, Boolean) => ArgType::Unknown(vec![Boolean, Int]),
+            (Boolean, Int) | (Int, Boolean) => {
+                ArgType::Unknown(std::borrow::Cow::Borrowed(&[Boolean, Int]))
+            }
             (Byte | Short | Char | Int, Byte | Short | Char | Int) => ArgType::INT,
             (Long, Byte | Short | Char | Int) | (Byte | Short | Char | Int, Long) => ArgType::LONG,
             (Float, Byte | Short | Char | Int) | (Byte | Short | Char | Int, Float) => {
@@ -477,7 +486,7 @@ impl TypeLattice {
             }
             (Double, Float | Long | Byte | Short | Char | Int)
             | (Float | Long | Byte | Short | Char | Int, Double) => ArgType::DOUBLE,
-            (left, right) => ArgType::Unknown(vec![left, right]),
+            (left, right) => ArgType::Unknown(vec![left, right].into()),
         }
     }
 
@@ -516,17 +525,17 @@ mod tests {
         let source = SsaVar::new(2, 5);
         let target = SsaVar::new(2, 7);
         let constraints = NormalizedTypeConstraints {
-            members: BTreeMap::from([
-                (source, BTreeSet::from([source])),
-                (target, BTreeSet::from([target])),
-            ]),
+            members: BTreeMap::from([(source, source), (target, target)]),
             bounds: BTreeMap::from([
                 (
                     source,
                     BTreeSet::from([
                         TypeBound::new(
                             BoundKind::Domain,
-                            ArgType::Unknown(vec![PrimitiveType::Int, PrimitiveType::Boolean]),
+                            ArgType::Unknown(std::borrow::Cow::Borrowed(&[
+                                PrimitiveType::Int,
+                                PrimitiveType::Boolean,
+                            ])),
                         ),
                         TypeBound::new(BoundKind::Fallback, ArgType::INT),
                     ]),
@@ -541,7 +550,7 @@ mod tests {
             arrays: BTreeSet::new(),
         };
 
-        let resolved = TypeLattice::solve(&constraints, &ClassHierarchyIndex::default());
+        let resolved = TypeLattice::solve(constraints, &ClassHierarchyIndex::default());
 
         assert_eq!(resolved.get(&source), Some(&ArgType::BOOLEAN));
         assert_eq!(resolved.get(&target), Some(&ArgType::BOOLEAN));
@@ -553,10 +562,7 @@ mod tests {
         let value = SsaVar::new(1, 0);
         let value_type = ArgType::object("android/content/pm/ActivityInfo");
         let constraints = NormalizedTypeConstraints {
-            members: BTreeMap::from([
-                (array, BTreeSet::from([array])),
-                (value, BTreeSet::from([value])),
-            ]),
+            members: BTreeMap::from([(array, array), (value, value)]),
             bounds: BTreeMap::from([
                 (
                     array,
@@ -572,7 +578,7 @@ mod tests {
             arrays: BTreeSet::from([ArrayConstraint::Write { array, value }]),
         };
 
-        let resolved = TypeLattice::solve(&constraints, &ClassHierarchyIndex::default());
+        let resolved = TypeLattice::solve(constraints, &ClassHierarchyIndex::default());
 
         assert_eq!(resolved.get(&array), Some(&ArgType::array(value_type)));
     }
@@ -584,11 +590,7 @@ mod tests {
         let value = SsaVar::new(2, 0);
         let element = ArgType::object("androidx/compose/ui/node/LayoutNode");
         let constraints = NormalizedTypeConstraints {
-            members: BTreeMap::from([
-                (source, BTreeSet::from([source])),
-                (destination, BTreeSet::from([destination])),
-                (value, BTreeSet::from([value])),
-            ]),
+            members: BTreeMap::from([(source, source), (destination, destination), (value, value)]),
             bounds: BTreeMap::from([
                 (
                     source,
@@ -629,7 +631,7 @@ mod tests {
             "androidx/compose/ui/node/LayoutNode",
             vec!["java/lang/Object".to_string()],
         );
-        let resolved = TypeLattice::solve(&constraints, &hierarchy);
+        let resolved = TypeLattice::solve(constraints, &hierarchy);
 
         assert_eq!(resolved.get(&value), Some(&element));
     }
@@ -638,7 +640,7 @@ mod tests {
     fn incompatible_primitive_producer_does_not_use_the_consumer_type() {
         let value = SsaVar::new(0, 0);
         let constraints = NormalizedTypeConstraints {
-            members: BTreeMap::from([(value, BTreeSet::from([value]))]),
+            members: BTreeMap::from([(value, value)]),
             bounds: BTreeMap::from([(
                 value,
                 BTreeSet::from([
@@ -651,7 +653,7 @@ mod tests {
             arrays: BTreeSet::new(),
         };
 
-        let resolved = TypeLattice::solve(&constraints, &ClassHierarchyIndex::default());
+        let resolved = TypeLattice::solve(constraints, &ClassHierarchyIndex::default());
 
         assert_eq!(resolved.get(&value), None);
     }
@@ -662,7 +664,7 @@ mod tests {
         let view = ArgType::object("android/view/View");
         let callback = ArgType::object("com/example/SelectionCallback");
         let constraints = NormalizedTypeConstraints {
-            members: BTreeMap::from([(value, BTreeSet::from([value]))]),
+            members: BTreeMap::from([(value, value)]),
             bounds: BTreeMap::from([(
                 value,
                 BTreeSet::from([
@@ -684,8 +686,12 @@ mod tests {
             "com/example/SelectionCallback",
             vec!["java/lang/Object".to_string()],
         );
-        let resolved = TypeLattice::solve(&constraints, &hierarchy);
+        let resolved = TypeLattice::solve(constraints, &hierarchy);
 
         assert_eq!(resolved.get(&value), Some(&view));
     }
 }
+
+#[cfg(test)]
+#[path = "../../../../tests/internal/type_domains.rs"]
+mod type_domains;

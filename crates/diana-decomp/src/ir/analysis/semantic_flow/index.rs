@@ -141,7 +141,7 @@ impl EdgeRows {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(in crate::ir::analysis) struct GraphIndex {
     pub(super) points: Arc<PointNumbers>,
     successors: EdgeRows,

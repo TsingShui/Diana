@@ -117,6 +117,10 @@ fn contains_loop(root: &SemanticNode) -> bool {
         found: bool,
     }
     impl SemanticVisitor for Finder {
+        fn visits_values(&self) -> bool {
+            false
+        }
+
         fn enter_node(&mut self, node: &SemanticNode) {
             self.found |= matches!(node, SemanticNode::Loop { .. });
         }

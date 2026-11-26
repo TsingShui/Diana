@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::ir::analysis::SsaVar;
 use crate::ir::{
-    ArgType, RegionGraph, RegionId, RegionKind, RegisterArg, SemanticCatch, SemanticExpression,
+    RegionGraph, RegionId, RegionKind, RegisterArg, SemanticCatch, SemanticExpression,
     SemanticExpressionTransform, SemanticFinally, SemanticFolder, SemanticInstructions,
     SemanticLeaveKind, SemanticNode,
 };
@@ -73,7 +73,7 @@ impl ExceptionForwarding {
         if !catch
             .exception_types
             .iter()
-            .any(|exception| exception == &ArgType::throwable())
+            .any(|exception| exception.as_object() == Some("java/lang/Throwable"))
         {
             return None;
         }

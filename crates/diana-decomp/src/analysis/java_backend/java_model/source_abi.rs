@@ -338,7 +338,7 @@ impl ConstructorSourceAbi {
             hidden_parameters.insert(index, Self::signature(parameters.get(index)?)?);
         }
         if class.is_enum()
-            && parameters.first() == Some(&ArgType::string())
+            && parameters.first().and_then(ArgType::as_object) == Some("java/lang/String")
             && parameters.get(1) == Some(&ArgType::INT)
         {
             hidden_parameters.insert(0, Self::signature(&parameters[0])?);
@@ -404,7 +404,7 @@ impl ConstructorSourceAbi {
         match ty {
             ArgType::Primitive(primitive) => Some(JvmTypeSignature::BaseType(*primitive)),
             ArgType::Object(name) => Some(JvmTypeSignature::ClassType(ClassTypeSignature {
-                raw_name: name.clone(),
+                raw_name: name.to_string(),
                 type_arguments: Vec::new(),
                 inner_segments: Vec::new(),
             })),
@@ -428,7 +428,7 @@ impl FunctionObjectClass {
             && class
                 .super_class
                 .as_ref()
-                .is_none_or(|ty| ty == &ArgType::object("java/lang/Object"))
+                .is_none_or(|ty| ty.as_object() == Some("java/lang/Object"))
             && class
                 .fields()
                 .iter()

@@ -535,8 +535,14 @@ impl RegionGraph {
         region: RegionId,
         origin: &super::semantic::StatementOrigin,
     ) -> Result<bool, RegionInvariantError> {
-        exits::OccurrenceElision::new(cfg, &self.tree, &self.exception_handlers, &self.elisions)
-            .contains(region, origin)
+        exits::OccurrenceElision::new(
+            cfg,
+            &self.tree,
+            &self.block_owners,
+            &self.exception_handlers,
+            &self.elisions,
+        )
+        .contains(region, origin)
     }
 
     pub fn leave_for_edge(&self, edge: RegionEdge) -> Option<&ResolvedRegionExit> {

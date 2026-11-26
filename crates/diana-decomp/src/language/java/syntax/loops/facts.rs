@@ -405,7 +405,7 @@ impl IteratorProtocol {
         let method = Self::method(instruction)?;
         (method.name == "iterator"
             && method.descriptor.parameters.is_empty()
-            && method.descriptor.return_type == ArgType::object("java/util/Iterator")
+            && method.descriptor.return_type.as_object() == Some("java/util/Iterator")
             && instruction.insn_type == InsnType::Invoke
             && instruction.operands().len() == 1
             && method.owner.as_object().is_some_and(|owner| {

@@ -14,10 +14,23 @@ pub enum JavaPrimitiveType {
     Double,
 }
 
-#[derive(Debug, Clone)]
-pub struct JavaIdentifier {
-    source_name: SmolStr,
-    dex_name: Option<SmolStr>,
+#[derive(Clone)]
+pub struct JavaIdentifier(IdentifierSpelling);
+
+#[derive(Clone)]
+enum IdentifierSpelling {
+    Hint(SmolStr),
+    Dex(SmolStr),
+    Alias(std::sync::Arc<(SmolStr, SmolStr)>),
+}
+
+impl std::fmt::Debug for JavaIdentifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JavaIdentifier")
+            .field("source_name", &self.as_str())
+            .field("dex_name", &self.dex_name())
+            .finish()
+    }
 }
 
 impl JavaIdentifier {
@@ -25,16 +38,22 @@ impl JavaIdentifier {
     /// fields and methods: keep valid printable identifiers, otherwise drop
     /// illegal characters instead of hex-escaping them.
     pub fn from_dex(value: &str) -> Self {
-        Self {
-            source_name: Self::sanitize_dex_name(value),
-            dex_name: Some(SmolStr::new(value)),
-        }
+        let source_name = Self::sanitize_dex_name(value);
+        Self::with_dex_spelling(value, source_name)
     }
 
     pub(crate) fn from_dex_alias(value: &str, source_name: impl Into<String>) -> Self {
-        Self {
-            source_name: SmolStr::from(source_name.into()),
-            dex_name: Some(SmolStr::new(value)),
+        Self::with_dex_spelling(value, SmolStr::from(source_name.into()))
+    }
+
+    fn with_dex_spelling(original: &str, source_name: SmolStr) -> Self {
+        if original == source_name.as_str() {
+            Self(IdentifierSpelling::Dex(source_name))
+        } else {
+            Self(IdentifierSpelling::Alias(std::sync::Arc::new((
+                source_name,
+                SmolStr::new(original),
+            ))))
         }
     }
 
@@ -60,32 +79,40 @@ impl JavaIdentifier {
         } else {
             Self::sanitize_dex_name(value)
         };
-        Self {
-            source_name,
-            dex_name: None,
-        }
+        Self(IdentifierSpelling::Hint(source_name))
     }
 
     pub fn as_str(&self) -> &str {
-        &self.source_name
+        match &self.0 {
+            IdentifierSpelling::Dex(name) | IdentifierSpelling::Hint(name) => name,
+            IdentifierSpelling::Alias(names) => &names.0,
+        }
+    }
+
+    fn dex_name(&self) -> Option<&str> {
+        match &self.0 {
+            IdentifierSpelling::Dex(name) => Some(name),
+            IdentifierSpelling::Hint(_) => None,
+            IdentifierSpelling::Alias(names) => Some(&names.1),
+        }
     }
 
     pub(crate) fn original_name(&self) -> &str {
-        self.dex_name.as_deref().unwrap_or(&self.source_name)
+        self.dex_name().unwrap_or_else(|| self.as_str())
     }
 
     fn with_source_name(&self, source_name: String) -> Self {
-        Self {
-            source_name: source_name.into(),
-            dex_name: self.dex_name.clone(),
+        match self.dex_name() {
+            Some(original) => Self::with_dex_spelling(original, source_name.into()),
+            None => Self(IdentifierSpelling::Hint(source_name.into())),
         }
     }
 
     fn printed_name(&self) -> &str {
         if preserve_dex_names() {
-            self.dex_name.as_deref().unwrap_or(&self.source_name)
+            self.original_name()
         } else {
-            &self.source_name
+            self.as_str()
         }
     }
 
@@ -139,14 +166,14 @@ impl JavaIdentifier {
     }
 
     fn is_valid_identifier(value: &str) -> bool {
-        if value.is_empty() || Self::is_reserved(value) {
-            return false;
-        }
-        let mut characters = value.chars();
-        let Some(first) = characters.next() else {
+        let Some((&first, rest)) = value.as_bytes().split_first() else {
             return false;
         };
-        Self::is_java_identifier_start(first) && characters.all(Self::is_java_identifier_part)
+        Self::is_java_identifier_start(char::from(first))
+            && rest
+                .iter()
+                .all(|&byte| Self::is_java_identifier_part(char::from(byte)))
+            && !Self::is_reserved(value)
     }
 
     fn is_reserved(value: &str) -> bool {
@@ -221,7 +248,7 @@ fn java_string_hash(value: &str) -> i32 {
 
 impl PartialEq for JavaIdentifier {
     fn eq(&self, other: &Self) -> bool {
-        self.source_name == other.source_name
+        self.as_str() == other.as_str()
     }
 }
 
@@ -235,13 +262,13 @@ impl PartialOrd for JavaIdentifier {
 
 impl Ord for JavaIdentifier {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.source_name.cmp(&other.source_name)
+        self.as_str().cmp(other.as_str())
     }
 }
 
 impl std::hash::Hash for JavaIdentifier {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        std::hash::Hash::hash(&self.source_name, state);
+        std::hash::Hash::hash(self.as_str(), state);
     }
 }
 
@@ -781,80 +808,167 @@ pub enum JavaExpr {
     },
 }
 
-impl JavaExpr {
-    pub(crate) fn negated(self) -> Self {
-        Self::negated_form(self).0
+#[derive(Clone, Copy)]
+enum NegationEdit {
+    Boolean(bool),
+    Comparison(JavaBinaryOp),
+    RemoveNot,
+    AddNot,
+    Distribute(JavaBinaryOp),
+}
+
+impl NegationEdit {
+    fn atom(expression: &JavaExpr) -> Option<Self> {
+        Some(match expression {
+            JavaExpr::Literal(JavaLiteral::Boolean(value)) => Self::Boolean(!value),
+            JavaExpr::Unary {
+                op: JavaUnaryOp::LogicalNot,
+                ..
+            } => Self::RemoveNot,
+            JavaExpr::Binary {
+                op: JavaBinaryOp::LogicalAnd | JavaBinaryOp::LogicalOr,
+                ..
+            } => return None,
+            JavaExpr::Binary { op, .. } => JavaExpr::complementary_operator(*op)
+                .map(Self::Comparison)
+                .unwrap_or(Self::AddNot),
+            _ => Self::AddNot,
+        })
     }
 
-    fn negated_form(expression: Self) -> (Self, usize) {
-        match expression {
-            Self::Literal(JavaLiteral::Boolean(value)) => {
-                (Self::Literal(JavaLiteral::Boolean(!value)), 0)
+    fn atom_cost(self) -> (u8, isize) {
+        match self {
+            Self::Boolean(_) | Self::Comparison(_) => (0, 0),
+            Self::RemoveNot => (0, -1),
+            Self::AddNot => (1, 1),
+            Self::Distribute(_) => unreachable!("junction cost comes from its children"),
+        }
+    }
+
+    fn apply_atom(self, current: &mut JavaExpr) {
+        match (self, current) {
+            (Self::Boolean(value), current) => {
+                *current = JavaExpr::Literal(JavaLiteral::Boolean(value))
             }
-            Self::Unary {
-                op: JavaUnaryOp::LogicalNot,
-                operand,
-            } => (*operand, 0),
-            Self::Binary {
-                left,
-                op: JavaBinaryOp::LogicalAnd,
-                right,
-            } => Self::negated_junction(*left, JavaBinaryOp::LogicalAnd, *right),
-            Self::Binary {
-                left,
-                op: JavaBinaryOp::LogicalOr,
-                right,
-            } => Self::negated_junction(*left, JavaBinaryOp::LogicalOr, *right),
-            Self::Binary { left, op, right } => match Self::complementary_operator(op) {
-                Some(op) => (Self::Binary { left, op, right }, 0),
-                None => (
-                    Self::Unary {
-                        op: JavaUnaryOp::LogicalNot,
-                        operand: Box::new(Self::Binary { left, op, right }),
-                    },
-                    1,
-                ),
-            },
-            expression => (
-                Self::Unary {
+            (Self::Comparison(complement), JavaExpr::Binary { op, .. }) => *op = complement,
+            (Self::RemoveNot, current) => {
+                let JavaExpr::Unary { operand, .. } = std::mem::replace(current, JavaExpr::This)
+                else {
+                    unreachable!("planned logical not");
+                };
+                *current = *operand;
+            }
+            (Self::AddNot, current) => {
+                let operand = Box::new(std::mem::replace(current, JavaExpr::This));
+                *current = JavaExpr::Unary {
                     op: JavaUnaryOp::LogicalNot,
-                    operand: Box::new(expression),
-                },
-                1,
-            ),
+                    operand,
+                };
+            }
+            _ => unreachable!("negation edit matches its original expression"),
         }
     }
+}
 
-    fn negated_junction(left: Self, operator: JavaBinaryOp, right: Self) -> (Self, usize) {
-        let original = Self::Binary {
-            left: Box::new(left.clone()),
-            op: operator,
-            right: Box::new(right.clone()),
-        };
-        let (left, left_cost) = Self::negated_form(left);
-        let (right, right_cost) = Self::negated_form(right);
-        let transformed_cost = left_cost.saturating_add(right_cost);
-        if transformed_cost <= 3 {
-            return (
-                Self::Binary {
-                    left: Box::new(left),
-                    op: match operator {
-                        JavaBinaryOp::LogicalAnd => JavaBinaryOp::LogicalOr,
-                        JavaBinaryOp::LogicalOr => JavaBinaryOp::LogicalAnd,
-                        _ => unreachable!("boolean junction requires a logical operator"),
-                    },
-                    right: Box::new(right),
-                },
-                transformed_cost,
-            );
+struct NegationPlan {
+    edits: smallvec::SmallVec<[NegationEdit; 8]>,
+    cost_delta: isize,
+    #[cfg(test)]
+    visits: usize,
+}
+
+impl NegationPlan {
+    /// Decide whether each logical junction distributes its negation before
+    /// editing any operand. A rejected distribution keeps its original subtree.
+    fn analyze(expression: &JavaExpr) -> Self {
+        enum Task<'a> {
+            Visit(&'a JavaExpr),
+            Join(usize),
         }
-        (
-            Self::Unary {
-                op: JavaUnaryOp::LogicalNot,
-                operand: Box::new(original),
-            },
-            3,
-        )
+        let mut tasks = smallvec::SmallVec::<[Task<'_>; 8]>::new();
+        tasks.push(Task::Visit(expression));
+        let mut costs = smallvec::SmallVec::<[(u8, isize); 8]>::new();
+        let mut plan = Self {
+            edits: smallvec::SmallVec::new(),
+            cost_delta: 0,
+            #[cfg(test)]
+            visits: 0,
+        };
+        while let Some(task) = tasks.pop() {
+            let expression = match task {
+                Task::Visit(expression) => expression,
+                Task::Join(index) => {
+                    let (right, right_delta) = costs.pop().expect("right negation cost");
+                    let (left, left_delta) = costs.pop().expect("left negation cost");
+                    let budget = left + right;
+                    if budget <= 3 {
+                        costs.push((budget, left_delta + right_delta));
+                    } else {
+                        // A wrapped junction counts as three for its parent,
+                        // but adds only one unary node to the printed expression.
+                        plan.edits.truncate(index + 1);
+                        plan.edits[index] = NegationEdit::AddNot;
+                        costs.push((3, 1));
+                    }
+                    continue;
+                }
+            };
+            #[cfg(test)]
+            {
+                plan.visits += 1;
+            }
+            if let Some(edit) = NegationEdit::atom(expression) {
+                plan.edits.push(edit);
+                costs.push(edit.atom_cost());
+            } else if let JavaExpr::Binary { left, op, right } = expression {
+                let index = plan.edits.len();
+                let inverse = if *op == JavaBinaryOp::LogicalAnd {
+                    JavaBinaryOp::LogicalOr
+                } else {
+                    JavaBinaryOp::LogicalAnd
+                };
+                plan.edits.push(NegationEdit::Distribute(inverse));
+                tasks.extend([Task::Join(index), Task::Visit(right), Task::Visit(left)]);
+            } else {
+                unreachable!("only logical junctions have a non-atomic negation");
+            }
+        }
+        plan.cost_delta = costs.pop().expect("root negation cost").1;
+        plan
+    }
+
+    fn apply(self, expression: &mut JavaExpr) {
+        let mut pending = smallvec::SmallVec::<[&mut JavaExpr; 8]>::new();
+        pending.push(expression);
+        for edit in self.edits {
+            let current = pending.pop().expect("negation operand");
+            match (edit, current) {
+                (NegationEdit::Distribute(inverse), JavaExpr::Binary { left, op, right }) => {
+                    *op = inverse;
+                    pending.push(right);
+                    pending.push(left);
+                }
+                (edit, current) => edit.apply_atom(current),
+            }
+        }
+    }
+}
+
+impl JavaExpr {
+    pub(crate) fn negated(mut self) -> Self {
+        if let Some(edit) = NegationEdit::atom(&self) {
+            edit.apply_atom(&mut self);
+        } else {
+            NegationPlan::analyze(&self).apply(&mut self);
+        }
+        self
+    }
+
+    pub(super) fn negation_reduces_cost(&self) -> bool {
+        match NegationEdit::atom(self) {
+            Some(edit) => edit.atom_cost().1 < 0,
+            None => NegationPlan::analyze(self).cost_delta < 0,
+        }
     }
 
     fn complementary_operator(operator: JavaBinaryOp) -> Option<JavaBinaryOp> {
@@ -1108,3 +1222,11 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/java_negation.rs"]
+mod negation_tests;
+
+#[cfg(test)]
+#[path = "../../../tests/internal/identifier_spelling.rs"]
+mod spelling_tests;

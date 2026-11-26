@@ -328,6 +328,10 @@ impl SemanticIdentity {
 }
 
 impl SemanticVisitor for SemanticIdentity {
+    fn visits_values(&self) -> bool {
+        false
+    }
+
     fn enter_node(&mut self, node: &SemanticNode) {
         match node {
             SemanticNode::BasicBlock(block) => self.record(block.id),

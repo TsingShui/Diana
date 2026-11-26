@@ -72,10 +72,10 @@ impl<'a> RegionReducer<'a> {
         let root = self.regions.tree().root();
         let mut order = Vec::new();
         let mut entered = BTreeSet::new();
-        let mut pending = vec![(root, false)];
-        while let Some((region, exiting)) = pending.pop() {
-            if exiting {
-                order.push(region);
+        let mut pending = vec![(root, None)];
+        while let Some((region, children)) = pending.pop() {
+            if let Some(children) = children {
+                order.push((region, children));
                 continue;
             }
             if !entered.insert(region) {
@@ -96,14 +96,13 @@ impl<'a> RegionReducer<'a> {
                 let owner = descriptor.parent.unwrap_or(root);
                 let body = handlers.body_region(owner, region)?;
                 if body != region {
-                    pending.push((body, false));
+                    pending.push((body, None));
                     continue;
                 }
             }
-            pending.push((region, true));
             let children = RegionChildren::classify(self.cfg, self.regions, descriptor)?;
-            let mut dependencies = children.ordinary;
-            for handler in children.handlers {
+            let mut dependencies = children.ordinary.clone();
+            for &handler in &children.handlers {
                 dependencies.push(handlers.body_region(region, handler)?);
                 if let Some((target, _)) = handlers.forwarded_catch_target(handler)? {
                     // A split handler can be reduced before the shared catch
@@ -122,11 +121,12 @@ impl<'a> RegionReducer<'a> {
             }
             dependencies.sort();
             dependencies.dedup();
-            pending.extend(dependencies.into_iter().rev().map(|child| (child, false)));
+            pending.push((region, Some(children)));
+            pending.extend(dependencies.into_iter().rev().map(|child| (child, None)));
         }
         let mut reduced = BTreeMap::<RegionId, ReducedRegion>::new();
-        for region in order {
-            let node = self.reduce_region(region, &mut reduced)?;
+        for (region, children) in order {
+            let node = self.reduce_region(region, children, &mut reduced)?;
             reduced.insert(region, node);
         }
         let root_region = root;
@@ -208,15 +208,14 @@ impl<'a> RegionReducer<'a> {
     fn reduce_region(
         &self,
         region_id: RegionId,
+        children: RegionChildren,
         reduced: &mut BTreeMap<RegionId, ReducedRegion>,
     ) -> Result<ReducedRegion, StructureError> {
         let region = self
             .regions
             .tree()
             .region(region_id)
-            .ok_or(StructureError::UnknownRegion(region_id))?
-            .clone();
-        let children = RegionChildren::classify(self.cfg, self.regions, &region)?;
+            .ok_or(StructureError::UnknownRegion(region_id))?;
         let contraction = ChildReducer::new(
             self.cfg,
             self.regions,
@@ -227,7 +226,7 @@ impl<'a> RegionReducer<'a> {
             self.observer,
         )
         .reduce(reduced)?;
-        let entries = self.entry_ports.of(region_id)?.clone();
+        let entries = self.entry_ports.of(region_id)?;
         if entries.is_empty() {
             let mut region_cfg = RegionCfgBuilder::new(
                 self.cfg,
@@ -237,11 +236,11 @@ impl<'a> RegionReducer<'a> {
                 &contraction.ports,
                 &self.anchors,
                 &contraction.flows,
-                &entries,
+                entries,
                 None,
             )
             .build()?;
-            self.prepare_region_cfg(region_id, &region, &mut region_cfg)?;
+            self.prepare_region_cfg(region_id, region, &mut region_cfg)?;
             let body = self.structure_region_cfg(
                 region_id,
                 &region.kind,
@@ -254,7 +253,7 @@ impl<'a> RegionReducer<'a> {
             });
         }
         let mut region_cfgs = BTreeMap::new();
-        for entry in &entries {
+        for entry in entries {
             let mut region_cfg = RegionCfgBuilder::new(
                 self.cfg,
                 self.regions,
@@ -263,11 +262,11 @@ impl<'a> RegionReducer<'a> {
                 &contraction.ports,
                 &self.anchors,
                 &contraction.flows,
-                &entries,
+                entries,
                 Some(*entry),
             )
             .build()?;
-            self.prepare_region_cfg(region_id, &region, &mut region_cfg)?;
+            self.prepare_region_cfg(region_id, region, &mut region_cfg)?;
             region_cfgs.insert(*entry, region_cfg);
         }
 

@@ -6,15 +6,47 @@ use crate::ir::{BlockId, EdgeKind, InstructionTree, InstructionVisitor, Register
 
 #[derive(Debug, Clone)]
 pub struct RegisterLiveness {
-    live_in: BTreeMap<BlockId, BTreeSet<u32>>,
+    live_in: BTreeMap<BlockId, LiveRegisters>,
     definition_blocks: BTreeMap<u32, Vec<BlockId>>,
+}
+
+/// DEX methods commonly address only the first word of registers. Keep
+/// higher, potentially sparse register numbers independent of that fast path.
+#[derive(Debug, Clone, Default)]
+struct LiveRegisters {
+    low: u64,
+    high: BTreeSet<u32>,
+}
+
+impl LiveRegisters {
+    fn insert(&mut self, register: u32) -> bool {
+        if register >= u64::BITS {
+            return self.high.insert(register);
+        }
+        let bit = 1u64 << register;
+        let new = self.low & bit == 0;
+        self.low |= bit;
+        new
+    }
+
+    fn contains(&self, register: u32) -> bool {
+        if register < u64::BITS {
+            self.low & (1u64 << register) != 0
+        } else {
+            self.high.contains(&register)
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.low == 0 && self.high.is_empty()
+    }
 }
 
 #[derive(Default)]
 struct BlockLiveness {
-    first_definitions: BTreeMap<u32, usize>,
+    first_definitions: foldhash::HashMap<u32, usize>,
     exceptional_boundary: Option<usize>,
-    live_in: BTreeSet<u32>,
+    live_in: LiveRegisters,
     pending: Vec<u32>,
 }
 
@@ -116,7 +148,13 @@ impl RegisterLiveness {
     pub fn is_live_in(&self, block: BlockId, register: u32) -> bool {
         self.live_in
             .get(&block)
-            .is_some_and(|values| values.contains(&register))
+            .is_some_and(|values| values.contains(register))
+    }
+
+    pub(crate) fn definitions(&self) -> impl Iterator<Item = (u32, &[BlockId])> {
+        self.definition_blocks
+            .iter()
+            .map(|(&register, blocks)| (register, blocks.as_slice()))
     }
 
     pub fn definition_blocks(&self, register: u32) -> impl Iterator<Item = BlockId> + '_ {

@@ -313,7 +313,7 @@ impl JvmTypeSignature {
             | ArgType::Unknown(_) => None,
             ArgType::Primitive(primitive) => Some(Self::BaseType(*primitive)),
             ArgType::Object(name) => Some(Self::ClassType(ClassTypeSignature {
-                raw_name: name.clone(),
+                raw_name: name.to_string(),
                 type_arguments: Vec::new(),
                 inner_segments: Vec::new(),
             })),

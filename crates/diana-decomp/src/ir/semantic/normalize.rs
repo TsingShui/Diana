@@ -184,10 +184,10 @@ impl CompletionPreservingRewrite {
     where
         F: FnOnce(SemanticNode) -> Result<SemanticNode, SemanticFoldError>,
     {
-        let before = super::SemanticCompletion::analyze(&body);
+        let before = super::ControlCompletion::analyze(&body);
         let rewritten = rewrite(body)?;
-        let after = super::SemanticCompletion::analyze(&rewritten);
-        if !before.same_control_outcomes(&after) {
+        let after = super::ControlCompletion::analyze(&rewritten);
+        if before != after {
             return Err(SemanticFoldError::CompletionChanged { transform: name });
         }
         Ok(rewritten)
@@ -201,10 +201,10 @@ impl CompletionPreservingRewrite {
     where
         F: FnOnce(SemanticNode) -> Result<SemanticNode, SemanticFoldError>,
     {
-        let before = super::SemanticCompletion::analyze(&body);
+        let before = super::ControlCompletion::analyze(&body);
         let rewritten = rewrite(body)?;
-        let after = super::SemanticCompletion::analyze(&rewritten);
-        if !before.same_void_method_outcomes(&after) {
+        let after = super::ControlCompletion::analyze(&rewritten);
+        if before.void_method() != after.void_method() {
             return Err(SemanticFoldError::CompletionChanged { transform: name });
         }
         Ok(rewritten)
@@ -356,6 +356,10 @@ impl SemanticCfgIdentity {
 }
 
 impl SemanticVisitor for SemanticCfgIdentity {
+    fn visits_values(&self) -> bool {
+        false
+    }
+
     fn enter_node(&mut self, node: &SemanticNode) {
         if let SemanticNode::BasicBlock(block) = node {
             self.blocks.insert(block.id);
@@ -1186,7 +1190,7 @@ impl BranchLinearizer {
         else {
             return node;
         };
-        if !super::SemanticCompletion::analyze(&then_node).can_complete_normally() {
+        if !super::ControlCompletion::normally_completes(&then_node) {
             SemanticNode::sequence([
                 SemanticNode::If {
                     condition,
@@ -1195,7 +1199,7 @@ impl BranchLinearizer {
                 },
                 *else_node,
             ])
-        } else if !super::SemanticCompletion::analyze(&else_node).can_complete_normally() {
+        } else if !super::ControlCompletion::normally_completes(&else_node) {
             SemanticNode::sequence([
                 SemanticNode::If {
                     condition: crate::ir::SemanticOperand {
@@ -1224,34 +1228,44 @@ impl TryLexicalScope {
         let SemanticNode::Sequence(mut nodes) = node else {
             return node;
         };
-        let mut index = 0;
-        while index + 1 < nodes.len() {
-            let can_extend = match &nodes[index] {
-                SemanticNode::Try {
-                    body,
-                    catches,
-                    finally,
-                    ..
-                } => {
-                    finally.is_none()
-                        && super::SemanticCompletion::analyze(body).can_complete_normally()
-                        && catches.iter().all(|catch| {
-                            !super::SemanticCompletion::analyze(&catch.body).can_complete_normally()
-                        })
-                        && !nodes[index + 1].may_throw()
-                }
-                _ => false,
+        let mut next = 0;
+        let len = nodes.len();
+        while next + 1 < len {
+            let index = next;
+            next += 1;
+            let (prefix, suffix) = nodes.split_at_mut(next);
+            let SemanticNode::Try {
+                body,
+                catches,
+                finally: None,
+                ..
+            } = &mut prefix[index]
+            else {
+                continue;
             };
-            if !can_extend {
-                index += 1;
+            if !super::ControlCompletion::normally_completes(body)
+                || catches
+                    .iter()
+                    .any(|catch| super::ControlCompletion::normally_completes(&catch.body))
+            {
                 continue;
             }
-            let continuation = nodes.remove(index + 1);
-            let SemanticNode::Try { body, .. } = &mut nodes[index] else {
-                unreachable!("try lexical extension lost its checked node");
-            };
-            let protected = std::mem::replace(body.as_mut(), SemanticNode::Empty);
-            **body = SemanticNode::sequence([protected, continuation]);
+            for continuation in suffix {
+                if continuation.may_throw() {
+                    break;
+                }
+                next += 1;
+                let continuation = std::mem::replace(continuation, SemanticNode::Empty);
+                // The protected prefix can complete normally, so the appended
+                // child's normal exit determines whether another child may enter.
+                let extend_again =
+                    next < len && super::ControlCompletion::normally_completes(&continuation);
+                let previous = std::mem::replace(body.as_mut(), SemanticNode::Empty);
+                **body = SemanticNode::sequence([previous, continuation]);
+                if !extend_again {
+                    break;
+                }
+            }
         }
         SemanticNode::sequence(nodes)
     }
@@ -1699,7 +1713,7 @@ impl NormalCompletion {
     }
 
     fn can_complete(node: &SemanticNode) -> bool {
-        super::SemanticCompletion::analyze(node).can_complete_normally()
+        super::ControlCompletion::normally_completes(node)
     }
 }
 
@@ -2077,6 +2091,10 @@ impl LabelReferences {
 }
 
 impl SemanticVisitor for LabelReferences {
+    fn visits_values(&self) -> bool {
+        false
+    }
+
     fn enter_node(&mut self, node: &SemanticNode) {
         let SemanticNode::Leave(leave) = node else {
             return;
@@ -2105,10 +2123,18 @@ impl SemanticSize {
 }
 
 impl SemanticVisitor for SemanticSize {
+    fn visits_values(&self) -> bool {
+        false
+    }
+
     fn enter_node(&mut self, _node: &SemanticNode) {
         self.nodes = self.nodes.saturating_add(1);
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/try_lexical_scope.rs"]
+mod try_lexical_scope_tests;
 
 #[cfg(test)]
 mod redundant_vacuous_predicate_tests {

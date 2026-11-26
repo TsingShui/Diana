@@ -1,7 +1,10 @@
 //! Frozen adjacency for occurrence-sensitive flow. The builder appends edges
 //! in evaluation order; freezing sorts and deduplicates each public edge row.
 
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Mutex, OnceLock},
+};
 
 use super::{index::PointNumbers, SemanticFlowEdgeKind, SemanticFlowPoint};
 
@@ -68,6 +71,7 @@ pub(super) struct FlowEdges {
     successors: Rows<SemanticFlowPoint>,
     predecessors: Rows<(SemanticFlowPoint, SemanticFlowEdgeKind)>,
     pub(super) cleanup: bool,
+    mandatory_paths: OnceLock<Arc<Mutex<MandatoryPaths>>>,
 }
 
 impl Default for FlowEdges {
@@ -115,7 +119,20 @@ impl FlowEdges {
             successors,
             predecessors,
             cleanup,
+            mandatory_paths: OnceLock::new(),
         }
+    }
+
+    pub(super) fn must_reach(&self, source: SemanticFlowPoint, target: SemanticFlowPoint) -> bool {
+        let (Some(source), Some(target)) = (self.points.get(source), self.points.get(target))
+        else {
+            return false;
+        };
+        self.mandatory_paths
+            .get_or_init(|| Arc::new(Mutex::default()))
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .search(self, source, target)
     }
 
     pub(super) fn successors(&self, point: SemanticFlowPoint) -> &[SemanticFlowPoint] {
@@ -133,5 +150,53 @@ impl FlowEdges {
             .get(point)
             .map(|row| self.predecessors.get(row))
             .unwrap_or_default()
+    }
+}
+
+/// Depth-first search of paths that avoid the target. A terminal or an edge
+/// back to the active path disproves mandatory reachability. Consecutive
+/// searches retain only scratch space indexed by this immutable graph.
+#[derive(Debug, Default)]
+struct MandatoryPaths {
+    colors: Vec<u32>,
+    stack: Vec<(usize, usize)>,
+    generation: u32,
+}
+
+impl MandatoryPaths {
+    fn search(&mut self, edges: &FlowEdges, source: usize, target: usize) -> bool {
+        self.colors.resize(edges.points.len(), 0);
+        if self.generation >= u32::MAX - 2 {
+            self.colors.fill(0);
+            self.generation = 0;
+        }
+        self.generation += 2;
+        let active = self.generation;
+        let complete = active + 1;
+        self.stack.clear();
+        self.stack.push((source, 0));
+        self.colors[source] = active;
+        while let Some((point, cursor)) = self.stack.last_mut() {
+            let successors = edges.successors.get(*point);
+            let Some(&next) = successors.get(*cursor) else {
+                if successors.is_empty() {
+                    return false;
+                }
+                self.colors[*point] = complete;
+                self.stack.pop();
+                continue;
+            };
+            *cursor += 1;
+            let next = edges.points.get(next).expect("edge target is indexed");
+            if next == target || self.colors[next] == complete {
+                continue;
+            }
+            if self.colors[next] == active {
+                return false;
+            }
+            self.colors[next] = active;
+            self.stack.push((next, 0));
+        }
+        true
     }
 }

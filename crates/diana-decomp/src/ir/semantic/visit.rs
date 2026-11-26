@@ -163,7 +163,8 @@ pub trait SemanticFolder {
 
 pub fn walk_node<V: SemanticVisitor + ?Sized>(visitor: &mut V, node: &SemanticNode) {
     let values = visitor.visits_values();
-    let mut pending = vec![VisitTask::Enter(node)];
+    let mut pending = smallvec::SmallVec::<[VisitTask; 8]>::new();
+    pending.push(VisitTask::Enter(node));
     while let Some(task) = pending.pop() {
         let node = match task {
             VisitTask::Exit(node) => {
@@ -189,15 +190,21 @@ pub fn walk_node<V: SemanticVisitor + ?Sized>(visitor: &mut V, node: &SemanticNo
             VisitTask::Enter(node) => node,
         };
         visitor.enter_node(node);
-        pending.push(VisitTask::Exit(node));
+        if !matches!(
+            node,
+            SemanticNode::Empty | SemanticNode::BasicBlock(_) | SemanticNode::Leave(_)
+        ) {
+            pending.push(VisitTask::Exit(node));
+        }
         match node {
-            SemanticNode::Empty => {}
+            SemanticNode::Empty => visitor.exit_node(node),
             SemanticNode::BasicBlock(block) => {
                 if values {
                     for statement in &block.statements {
                         visitor.visit_statement(statement);
                     }
                 }
+                visitor.exit_node(node);
             }
             SemanticNode::Sequence(children) => {
                 pending.extend(children.iter().rev().map(VisitTask::Enter))
@@ -303,13 +310,14 @@ pub fn walk_node<V: SemanticVisitor + ?Sized>(visitor: &mut V, node: &SemanticNo
             }
             SemanticNode::Leave(leave) => {
                 if values {
-                    if let Some(condition) = &leave.condition {
-                        pending.push(VisitTask::Predicate(condition));
-                    }
                     if let Some(value) = leave.value() {
-                        pending.push(VisitTask::Expression(value));
+                        visitor.visit_expression(value);
+                    }
+                    if let Some(condition) = &leave.condition {
+                        visitor.visit_predicate(condition);
                     }
                 }
+                visitor.exit_node(node);
             }
         }
     }

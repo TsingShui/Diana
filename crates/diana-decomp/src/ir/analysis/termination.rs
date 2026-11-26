@@ -273,7 +273,9 @@ mod tests {
 
     fn call(target: &str) -> InsnNode {
         let mut invoke = InsnNode::invoke(InvokeType::Static, 0, Vec::new());
-        invoke.payload.reference = Some(Box::new(MemberReference::Method(reference(target))));
+        invoke.payload.reference = Some(std::sync::Arc::new(MemberReference::Method(reference(
+            target,
+        ))));
         invoke
     }
 
@@ -373,7 +375,7 @@ mod tests {
         let mut caller = graph("caller");
         let mut entry = Block::new(0);
         let mut invoke = InsnNode::invoke(InvokeType::Static, 0, Vec::new());
-        invoke.payload.reference = Some(Box::new(MemberReference::Method(marker)));
+        invoke.payload.reference = Some(std::sync::Arc::new(MemberReference::Method(marker)));
         entry.push(invoke);
         entry.push(InsnNode::goto(1));
         caller.add_block(entry);
@@ -417,7 +419,7 @@ mod tests {
         let mut caller = graph("caller");
         let mut entry = Block::new(0);
         let mut invoke = InsnNode::invoke(InvokeType::Static, 0, Vec::new());
-        invoke.payload.reference = Some(Box::new(MemberReference::Method(target)));
+        invoke.payload.reference = Some(std::sync::Arc::new(MemberReference::Method(target)));
         entry.push(invoke);
         entry.push(InsnNode::goto(1));
         caller.add_block(entry);

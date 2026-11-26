@@ -394,8 +394,7 @@ impl<'a> ChildReducer<'a> {
                 };
                 Self::verify_labels(self.owner, *child, entry, "classified", &body)?;
                 self.observe(*child, entry, "classified", &body);
-                if !crate::ir::semantic::SemanticCompletion::analyze(&body).can_complete_normally()
-                {
+                if !crate::ir::semantic::ControlCompletion::normally_completes(&body) {
                     flow = flow.close_normal_path();
                 }
                 let body = OpenFlowCompletion::attach(self.owner, body, &flow);
@@ -598,7 +597,7 @@ impl OpenFlowCompletion {
         else {
             return body;
         };
-        if !crate::ir::semantic::SemanticCompletion::analyze(&body).can_complete_normally() {
+        if !crate::ir::semantic::ControlCompletion::normally_completes(&body) {
             return body;
         }
         SemanticNode::sequence([

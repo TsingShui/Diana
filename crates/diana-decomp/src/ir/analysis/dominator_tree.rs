@@ -3,8 +3,13 @@
 //! This module provides dominator tree computation for CFG analysis,
 //! used by region ownership and semantic scheduling.
 
+use super::ReachingConditions;
 use crate::ir::{BlockId, EdgeKind, CFG};
 use std::collections::{BTreeMap, BTreeSet};
+
+#[cfg(test)]
+#[path = "../../../tests/internal/dag_dominators.rs"]
+mod dag_dominators;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DominanceError {
@@ -113,6 +118,64 @@ impl DominatorTree {
         predecessors: &BTreeMap<BlockId, Vec<BlockId>>,
     ) -> Result<Self, DominanceError> {
         Self::compute_in(cfg, entry, blocks, predecessors)
+    }
+
+    /// Use the ordinary-edge order already established for this region's
+    /// reaching conditions. In a DAG a node's immediate dominator is the
+    /// deepest common dominator of its predecessors, all of which precede it.
+    pub(in crate::ir) fn for_reaching_conditions(
+        cfg: &CFG,
+        facts: &ReachingConditions,
+    ) -> Result<Self, DominanceError> {
+        // The explicit-topology contract diagnoses a live exceptional edge
+        // without an ordinary counterpart, or a root with absent topology.
+        if cfg.has_exception_edges() || cfg.block(cfg.entry).is_none() {
+            return Self::compute_with_predecessors(
+                cfg,
+                cfg.entry,
+                cfg.graph_node_ids(),
+                &cfg.normal_predecessor_snapshot(),
+            );
+        }
+        let order = facts.order();
+        if order.first() != Some(&cfg.entry) {
+            return Err(DominanceError::MissingEntry(cfg.entry));
+        }
+        let mut ancestors = Vec::with_capacity(order.len());
+        let mut nodes = Vec::with_capacity(order.len());
+        for (rank, &block) in order.iter().enumerate() {
+            let parent = if rank == 0 {
+                ancestors.push(DagAncestor::default());
+                None
+            } else {
+                let mut incoming = cfg
+                    .normal_predecessors(block)
+                    .filter_map(|source| facts.rank(source));
+                let first = incoming
+                    .next()
+                    .ok_or(DominanceError::MissingDominator(block))?;
+                if first >= rank {
+                    return Err(DominanceError::InvalidTraversal(block));
+                }
+                let mut parent = first;
+                for source in incoming {
+                    if source >= rank {
+                        return Err(DominanceError::InvalidTraversal(block));
+                    }
+                    parent = DagAncestor::common(&ancestors, parent, source);
+                }
+                ancestors.push(DagAncestor::child(&ancestors, parent));
+                Some(order[parent])
+            };
+            nodes.push(DominatorNode {
+                block,
+                parent,
+                children: Vec::new(),
+                preorder: 0,
+                subtree_end: 0,
+            });
+        }
+        Self::from_parents(cfg.entry, nodes)
     }
 
     /// Compute a dominance forest over ordinary control flow. A synthetic root
@@ -245,7 +308,10 @@ impl DominatorTree {
 
         let mut algorithm = LengauerTarjan::new(traversal, &topology);
         drop(topology);
-        let mut nodes = algorithm.compute()?;
+        Self::from_parents(entry, algorithm.compute()?)
+    }
+
+    fn from_parents(entry: BlockId, mut nodes: Vec<DominatorNode>) -> Result<Self, DominanceError> {
         nodes.sort_unstable_by_key(|node| node.block);
         let mut tree = Self { entry, nodes };
         for i in 0..tree.nodes.len() {
@@ -375,6 +441,58 @@ impl DominatorTree {
             pending.extend(self.children(node).rev().map(|child| (child, false)));
         }
         result
+    }
+}
+
+/// One level-ancestor jump per node keeps the online tree linear in space.
+/// Joining two successive jumps of equal length makes long ancestor walks
+/// skip whole levels while retaining a parent step for the final approach.
+#[derive(Default)]
+struct DagAncestor {
+    parent: usize,
+    jump: usize,
+    depth: usize,
+}
+
+impl DagAncestor {
+    fn child(tree: &[Self], parent: usize) -> Self {
+        let p = &tree[parent];
+        let j = &tree[p.jump];
+        let jj = &tree[j.jump];
+        let jump = if p.depth - j.depth == j.depth - jj.depth {
+            j.jump
+        } else {
+            parent
+        };
+        Self {
+            parent,
+            jump,
+            depth: p.depth + 1,
+        }
+    }
+
+    fn common(tree: &[Self], mut left: usize, mut right: usize) -> usize {
+        if tree[left].depth < tree[right].depth {
+            std::mem::swap(&mut left, &mut right);
+        }
+        while tree[left].depth > tree[right].depth {
+            let jump = tree[left].jump;
+            left = if tree[jump].depth >= tree[right].depth {
+                jump
+            } else {
+                tree[left].parent
+            };
+        }
+        while left != right {
+            if tree[left].jump != tree[right].jump {
+                left = tree[left].jump;
+                right = tree[right].jump;
+            } else {
+                left = tree[left].parent;
+                right = tree[right].parent;
+            }
+        }
+        left
     }
 }
 

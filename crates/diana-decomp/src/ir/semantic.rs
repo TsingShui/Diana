@@ -27,8 +27,8 @@ mod verify;
 mod visit;
 
 pub(crate) use completion::{
-    CompletionDomain, CompletionInterpreter, SemanticCompletion, SemanticControlTopology,
-    SemanticTransfer,
+    CompletionDomain, CompletionInterpreter, ControlCompletion, SemanticCompletion,
+    SemanticControlTopology, SemanticTransfer,
 };
 pub use dce::SemanticDeadCodeElimination;
 pub use expression::{SemanticExpression, SemanticOperation};
@@ -492,28 +492,6 @@ impl SemanticPredicate {
             }
         }
         symbols
-    }
-
-    pub fn effects(&self) -> InstructionEffects {
-        let mut effects = InstructionEffects::PURE;
-        let mut pending = vec![self];
-        while let Some(predicate) = pending.pop() {
-            match predicate {
-                Self::Test(operation) => {
-                    effects = effects.join(operation.direct_effects().without_control());
-                    for operand in operation.operands() {
-                        effects = effects.join(operand.effects());
-                    }
-                    if let Some(target) = operation.compound_target() {
-                        effects = effects.join(target.effects());
-                    }
-                }
-                Self::Not(inner) => pending.push(inner),
-                Self::And(terms) | Self::Or(terms) => pending.extend(terms),
-                Self::True | Self::False => {}
-            }
-        }
-        effects
     }
 }
 
@@ -1026,10 +1004,13 @@ impl SemanticNode {
     pub fn sequence(nodes: impl IntoIterator<Item = SemanticNode>) -> Self {
         let mut nodes: Vec<_> = nodes.into_iter().collect();
         if nodes.iter().any(|node| matches!(node, Self::Sequence(_))) {
-            let mut flattened = Vec::with_capacity(nodes.len());
+            let mut flattened = Vec::new();
             for node in nodes {
                 match node {
                     Self::Empty => {}
+                    // Growing a sequence by one continuation can keep the
+                    // prefix buffer across successive region reductions.
+                    Self::Sequence(children) if flattened.is_empty() => flattened = children,
                     Self::Sequence(children) => flattened.extend(children),
                     other => flattened.push(other),
                 }
@@ -1116,14 +1097,16 @@ mod branch_effect_tests {
         let mut instruction = InsnNode::new(InsnType::Invoke, 0);
         instruction.id = InstructionId::new(1);
         instruction.payload.invoke_type = Some(InvokeType::Virtual);
-        instruction.payload.reference = Some(Box::new(MemberReference::Method(MethodReference {
-            owner: ArgType::object("java/util/ArrayList"),
-            name: "remove".into(),
-            descriptor: MethodDescriptor {
-                parameters: vec![ArgType::object("java/lang/Object")],
-                return_type: ArgType::BOOLEAN,
+        instruction.payload.reference = Some(std::sync::Arc::new(MemberReference::Method(
+            MethodReference {
+                owner: ArgType::object("java/util/ArrayList"),
+                name: "remove".into(),
+                descriptor: MethodDescriptor {
+                    parameters: vec![ArgType::object("java/lang/Object")],
+                    return_type: ArgType::BOOLEAN,
+                },
             },
-        })));
+        )));
         instruction.result = Some(RegisterArg::new_ssa(0, 0, ArgType::BOOLEAN));
         let operation = SemanticOperation::from_instruction(instruction).expect("invoke");
         SemanticPredicate::Test(operation)

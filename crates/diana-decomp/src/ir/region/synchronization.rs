@@ -951,7 +951,7 @@ mod tests {
 
     fn invocation(reference: &str) -> InsnNode {
         let mut instruction = InsnNode::invoke(InvokeType::Static, 0, Vec::new());
-        instruction.payload.reference = Some(Box::new(MemberReference::Method(
+        instruction.payload.reference = Some(std::sync::Arc::new(MemberReference::Method(
             reference.parse::<MethodReference>().unwrap(),
         )));
         instruction

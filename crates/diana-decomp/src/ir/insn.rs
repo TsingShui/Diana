@@ -426,8 +426,18 @@ impl InsnPayload {
             && self.is_get == other.is_get
             && self.is_length == other.is_length
             && self.is_enter == other.is_enter
-            && self.fill_array_data == other.fill_array_data
-            && match (&self.switch_cases, &other.switch_cases) {
+            && self.edge_copy == other.edge_copy
+            && self.extended_equivalent(other)
+    }
+
+    fn extended_equivalent(&self, other: &Self) -> bool {
+        let left: &ExtendedInsnPayload = self;
+        let right: &ExtendedInsnPayload = other;
+        if std::ptr::eq(left, right) {
+            return true;
+        }
+        left.fill_array_data == right.fill_array_data
+            && match (&left.switch_cases, &right.switch_cases) {
                 (Some(left), Some(right)) => left
                     .iter()
                     .map(|(key, _)| key)
@@ -435,10 +445,9 @@ impl InsnPayload {
                 (None, None) => true,
                 _ => false,
             }
-            && self.switch_default.is_some() == other.switch_default.is_some()
-            && self.bool_expr == other.bool_expr
-            && self.edge_copy == other.edge_copy
-            && match (&self.lambda, &other.lambda) {
+            && left.switch_default.is_some() == right.switch_default.is_some()
+            && left.bool_expr == right.bool_expr
+            && match (&left.lambda, &right.lambda) {
                 (Some(left), Some(right)) => {
                     left.interface == right.interface
                         && left.sam_name == right.sam_name
@@ -570,8 +579,10 @@ pub struct LambdaSite {
     pub implementation_constructor: bool,
 }
 
-/// Additional instruction-specific data
-#[derive(Debug, Clone, Default)]
+/// Additional instruction-specific data. Common opcodes keep their operands
+/// and fixed-width flags inline. Only the opcodes carrying extended facts
+/// allocate that part of the payload.
+#[derive(Clone, Default)]
 pub struct InsnPayload {
     /// For Arith: the arithmetic operation
     pub arith_op: Option<ArithOp>,
@@ -597,10 +608,9 @@ pub struct InsnPayload {
 
     /// For Invoke/Field: method or field reference
     ///
-    /// Boxed because `MemberReference` is large (~112 bytes) while only a
-    /// small share of instructions carry one; every decoded archive holds
-    /// millions of these payloads.
-    pub reference: Option<Box<super::MemberReference>>,
+    /// CFG and semantic copies share the immutable DEX declaration, including
+    /// its owner, original name and parameter types.
+    pub reference: Option<std::sync::Arc<super::MemberReference>>,
 
     /// For ConstStr: string value
     pub string_value: Option<Box<super::Utf16String>>,
@@ -632,17 +642,29 @@ pub struct InsnPayload {
     /// For method ops: method index in DEX method pool
     pub method_index: Option<u32>,
 
-    /// For Switch: switch cases (value -> offset)
-    pub switch_cases: Option<Box<Vec<(i32, i32)>>>,
-
-    /// For Switch: default target
-    pub switch_default: Option<i32>,
-
     /// For Cmp: comparison bias
     pub cmp_bias: Option<CmpBias>,
 
     /// For Cast: target type
     pub cast_type: Option<Box<ArgType>>,
+
+    /// For compound assignments: statement target expression.
+    pub compound_target: Option<Box<InsnArg>>,
+
+    /// Ordered assignment produced while eliminating a parallel Phi copy.
+    pub edge_copy: bool,
+    extended: Option<std::sync::Arc<ExtendedInsnPayload>>,
+}
+
+/// Switch tables, decoded data and facts created by SSA or structuring. An
+/// instruction clone can share this data until its own pass edits it.
+#[derive(Debug, Clone, Default)]
+pub struct ExtendedInsnPayload {
+    /// For Switch: switch cases (value -> offset)
+    pub switch_cases: Option<Box<Vec<(i32, i32)>>>,
+
+    /// For Switch: default target
+    pub switch_default: Option<i32>,
 
     /// For FillArray: decoded fill-array-data payload.
     pub fill_array_data: Option<Box<FillArrayData>>,
@@ -650,20 +672,70 @@ pub struct InsnPayload {
     /// For structured expression nodes: recovered boolean condition.
     pub bool_expr: Option<BoolExpr>,
 
-    /// For compound assignments: statement target expression.
-    pub compound_target: Option<Box<InsnArg>>,
-
     /// For Phi: incoming CFG edges corresponding one-to-one with `args`.
     ///
     /// Keeping edge identity on the Phi is essential: CFG rewrites and
     /// exceptional predecessors make positional reconstruction ambiguous.
     pub phi_edges: Vec<(BlockId, EdgeKind)>,
 
-    /// Ordered assignment produced while eliminating a parallel Phi copy.
-    pub edge_copy: bool,
-
     /// Recovered `LambdaMetafactory` call-site facts for `invoke-custom`.
     pub lambda: Option<Box<LambdaSite>>,
+}
+
+impl std::ops::Deref for InsnPayload {
+    type Target = ExtendedInsnPayload;
+
+    fn deref(&self) -> &Self::Target {
+        static EMPTY: ExtendedInsnPayload = ExtendedInsnPayload {
+            switch_cases: None,
+            switch_default: None,
+            fill_array_data: None,
+            bool_expr: None,
+            phi_edges: Vec::new(),
+            lambda: None,
+        };
+        self.extended.as_deref().unwrap_or(&EMPTY)
+    }
+}
+
+impl std::ops::DerefMut for InsnPayload {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        std::sync::Arc::make_mut(self.extended.get_or_insert_with(Default::default))
+    }
+}
+
+impl fmt::Debug for InsnPayload {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InsnPayload")
+            .field("arith_op", &self.arith_op)
+            .field("unary_op", &self.unary_op)
+            .field("if_op", &self.if_op)
+            .field("target", &self.target)
+            .field("invoke_type", &self.invoke_type)
+            .field("no_return", &self.no_return)
+            .field("reference", &self.reference)
+            .field("string_value", &self.string_value)
+            .field("string_index", &self.string_index)
+            .field("class_type", &self.class_type)
+            .field("type_index", &self.type_index)
+            .field("field_index", &self.field_index)
+            .field("is_static", &self.is_static)
+            .field("is_get", &self.is_get)
+            .field("is_length", &self.is_length)
+            .field("is_enter", &self.is_enter)
+            .field("method_index", &self.method_index)
+            .field("switch_cases", &self.switch_cases)
+            .field("switch_default", &self.switch_default)
+            .field("cmp_bias", &self.cmp_bias)
+            .field("cast_type", &self.cast_type)
+            .field("fill_array_data", &self.fill_array_data)
+            .field("bool_expr", &self.bool_expr)
+            .field("compound_target", &self.compound_target)
+            .field("phi_edges", &self.phi_edges)
+            .field("edge_copy", &self.edge_copy)
+            .field("lambda", &self.lambda)
+            .finish()
+    }
 }
 
 impl InsnNode {

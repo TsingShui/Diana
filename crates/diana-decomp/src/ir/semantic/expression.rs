@@ -4,7 +4,10 @@
 //! boundary onward every value, including control-dependent selections, uses
 //! this representation.
 
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU8, Ordering},
+    Arc,
+};
 
 use crate::ir::{
     analysis::{InstructionEffects, SourceEvaluationError},
@@ -45,6 +48,34 @@ pub struct SemanticOperationData {
     pub payload: InsnPayload,
     operands: Vec<SemanticExpression>,
     compound_target: Option<Box<SemanticExpression>>,
+    operand_effects: CachedOperandEffects,
+}
+
+/// All readers of a shared operation see the same immutable operands. Only
+/// the effect bits are published. No other memory depends on their ordering.
+struct CachedOperandEffects(AtomicU8);
+
+impl CachedOperandEffects {
+    const EMPTY: u8 = u8::MAX;
+
+    fn new() -> Self {
+        Self(AtomicU8::new(Self::EMPTY))
+    }
+
+    fn get(&self) -> Option<InstructionEffects> {
+        let bits = self.0.load(Ordering::Relaxed);
+        (bits != Self::EMPTY).then(|| InstructionEffects::from_bits(bits))
+    }
+
+    fn set(&self, effects: InstructionEffects) {
+        self.0.store(effects.bits(), Ordering::Relaxed);
+    }
+}
+
+impl Clone for CachedOperandEffects {
+    fn clone(&self) -> Self {
+        Self(AtomicU8::new(self.0.load(Ordering::Relaxed)))
+    }
 }
 
 impl Drop for SemanticOperationData {
@@ -119,7 +150,9 @@ impl std::ops::Deref for SemanticOperation {
 
 impl std::ops::DerefMut for SemanticOperation {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        Arc::make_mut(&mut self.0)
+        let data = Arc::make_mut(&mut self.0);
+        *data.operand_effects.0.get_mut() = CachedOperandEffects::EMPTY;
+        data
     }
 }
 
@@ -134,6 +167,102 @@ impl std::fmt::Debug for SemanticOperation {
             .field("operands", &self.operands)
             .field("compound_target", &self.compound_target)
             .finish()
+    }
+}
+
+enum EffectTask<'a> {
+    Expression(&'a SemanticExpression),
+    Predicate(&'a SemanticPredicate),
+    Operands(&'a SemanticOperation),
+    Finish(&'a SemanticOperation, InstructionEffects),
+}
+
+/// Evaluate operations, selections and predicates on one stack. Completing an
+/// operation records only its operands' effects. A predicate suppresses its
+/// own control effect, and edge-copy handling can override the root separately.
+struct EffectWalk;
+
+impl EffectWalk {
+    fn run(first: EffectTask<'_>) -> InstructionEffects {
+        let mut tasks = smallvec::SmallVec::<[EffectTask; 8]>::new();
+        let mut task = first;
+        let mut effects = InstructionEffects::PURE;
+        loop {
+            match task {
+                EffectTask::Expression(SemanticExpression::Operation(operation)) => {
+                    effects = effects.join(operation.direct_effects());
+                    task = EffectTask::Operands(operation);
+                    continue;
+                }
+                EffectTask::Expression(SemanticExpression::Select {
+                    condition,
+                    when_true,
+                    when_false,
+                }) => {
+                    tasks.push(EffectTask::Expression(when_false));
+                    tasks.push(EffectTask::Expression(when_true));
+                    task = EffectTask::Predicate(condition);
+                    continue;
+                }
+                EffectTask::Predicate(SemanticPredicate::Test(operation)) => {
+                    effects = effects.join(operation.direct_effects().without_control());
+                    task = EffectTask::Operands(operation);
+                    continue;
+                }
+                EffectTask::Predicate(SemanticPredicate::Not(inner)) => {
+                    task = EffectTask::Predicate(inner);
+                    continue;
+                }
+                EffectTask::Predicate(
+                    SemanticPredicate::And(terms) | SemanticPredicate::Or(terms),
+                ) => {
+                    tasks.extend(terms.iter().rev().map(EffectTask::Predicate));
+                }
+                EffectTask::Operands(operation) => {
+                    if let Some(cached) = operation.operand_effects.get() {
+                        effects = effects.join(cached);
+                    } else {
+                        let mut nested = operation
+                            .operands
+                            .iter()
+                            .chain(operation.compound_target.as_deref())
+                            .filter(|child| {
+                                matches!(
+                                    child,
+                                    SemanticExpression::Operation(_)
+                                        | SemanticExpression::Select { .. }
+                                )
+                            });
+                        if let Some(first) = nested.next() {
+                            tasks.push(EffectTask::Finish(operation, effects));
+                            tasks.extend(nested.rev().map(EffectTask::Expression));
+                            effects = InstructionEffects::PURE;
+                            task = EffectTask::Expression(first);
+                            continue;
+                        }
+                        operation.operand_effects.set(InstructionEffects::PURE);
+                    }
+                }
+                EffectTask::Finish(operation, outer) => {
+                    operation.operand_effects.set(effects);
+                    effects = outer.join(effects);
+                }
+                EffectTask::Predicate(SemanticPredicate::True | SemanticPredicate::False)
+                | EffectTask::Expression(
+                    SemanticExpression::Register(_) | SemanticExpression::Literal(_),
+                ) => {}
+            }
+            let Some(next) = tasks.pop() else {
+                return effects;
+            };
+            task = next;
+        }
+    }
+}
+
+impl SemanticPredicate {
+    pub fn effects(&self) -> InstructionEffects {
+        EffectWalk::run(EffectTask::Predicate(self))
     }
 }
 
@@ -300,31 +429,11 @@ impl SemanticExpression {
     }
 
     pub fn effects(&self) -> InstructionEffects {
-        if matches!(self, Self::Register(_) | Self::Literal(_)) {
-            return InstructionEffects::PURE;
+        match self {
+            Self::Register(_) | Self::Literal(_) => InstructionEffects::PURE,
+            Self::Operation(operation) => operation.effects(),
+            Self::Select { .. } => EffectWalk::run(EffectTask::Expression(self)),
         }
-        let mut effects = InstructionEffects::PURE;
-        let mut pending = vec![self];
-        while let Some(expression) = pending.pop() {
-            match expression {
-                Self::Register(_) | Self::Literal(_) => {}
-                Self::Operation(operation) => {
-                    effects = effects.join(operation.direct_effects());
-                    pending.extend(operation.compound_target.iter().map(Box::as_ref));
-                    pending.extend(operation.operands.iter().rev());
-                }
-                Self::Select {
-                    condition,
-                    when_true,
-                    when_false,
-                } => {
-                    effects = effects.join(condition.effects());
-                    pending.push(when_false);
-                    pending.push(when_true);
-                }
-            }
-        }
-        effects
     }
 }
 
@@ -355,7 +464,7 @@ impl SemanticOperation {
     pub(super) fn children_mut(
         &mut self,
     ) -> impl DoubleEndedIterator<Item = &mut SemanticExpression> {
-        let data = Arc::make_mut(&mut self.0);
+        let data = std::ops::DerefMut::deref_mut(self);
         data.operands
             .iter_mut()
             .chain(data.compound_target.as_deref_mut())
@@ -409,25 +518,18 @@ impl SemanticOperation {
     }
 
     pub fn effects(&self) -> InstructionEffects {
-        let mut effects = self.direct_effects();
-        for operand in &self.operands {
-            effects = effects.join(operand.effects());
-        }
-        if let Some(target) = &self.compound_target {
-            effects = effects.join(target.effects());
-        }
-        effects
+        self.direct_effects().join(self.nested_effects())
     }
 
     pub fn effects_ignoring_edge_copy(&self) -> InstructionEffects {
-        let mut effects = self.direct_effects_with_edge_copy(false);
-        for operand in &self.operands {
-            effects = effects.join(operand.effects());
-        }
-        if let Some(target) = &self.compound_target {
-            effects = effects.join(target.effects());
-        }
-        effects
+        self.direct_effects_with_edge_copy(false)
+            .join(self.nested_effects())
+    }
+
+    fn nested_effects(&self) -> InstructionEffects {
+        self.operand_effects
+            .get()
+            .unwrap_or_else(|| EffectWalk::run(EffectTask::Operands(self)))
     }
 
     pub fn direct_effects(&self) -> InstructionEffects {
@@ -570,6 +672,7 @@ impl SemanticOperation {
             payload: instruction.payload,
             operands,
             compound_target: compound_target.map(Box::new),
+            operand_effects: CachedOperandEffects::new(),
         }))
     }
 
@@ -627,3 +730,7 @@ enum EvaluationTask<'a> {
     Expression(&'a SemanticExpression),
     Effect(&'a SemanticOperation),
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/operation_effects.rs"]
+mod effect_tests;

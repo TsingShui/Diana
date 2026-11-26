@@ -6,6 +6,7 @@
 //! irreducible entries are split by semantics-preserving node duplication; and
 //! the remaining DAG is translated with the NoMoreGotos nested-label scheme.
 
+use crate::ir::semantic::ControlCompletion;
 use smallvec::{smallvec, SmallVec};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -276,6 +277,69 @@ pub(super) struct SemanticFlowGraph {
     exits: BTreeSet<BlockId>,
 }
 
+type FlowPredecessors = BTreeMap<BlockId, SmallVec<[BlockId; 2]>>;
+
+/// Targets include embedded transfers and control boundaries. Predecessors
+/// count only internal flow edges. Both refer to the same graph revision.
+struct FlowTopology {
+    targets: BTreeMap<BlockId, SmallVec<[BlockId; 2]>>,
+    predecessors: FlowPredecessors,
+}
+
+impl FlowTopology {
+    fn new(graph: &SemanticFlowGraph) -> Self {
+        let targets = graph
+            .nodes
+            .keys()
+            .map(|&block| (block, graph.targets(block)))
+            .collect::<BTreeMap<_, _>>();
+        let predecessors = graph.predecessors_from(
+            targets
+                .iter()
+                .map(|(&source, edges)| (source, edges.iter().copied())),
+        );
+        Self {
+            targets,
+            predecessors,
+        }
+    }
+
+    fn targets(&self, block: BlockId) -> &[BlockId] {
+        self.targets.get(&block).map_or(&[], SmallVec::as_slice)
+    }
+}
+
+/// A failed switch or branch search leaves the graph unchanged. Its
+/// topological order and postdominators are also valid for the next search.
+struct AcyclicFlow {
+    topology: FlowTopology,
+    order: Vec<BlockId>,
+    postdominators: PostDominators,
+}
+
+impl AcyclicFlow {
+    fn analyze(graph: &SemanticFlowGraph) -> Result<Self, StructureError> {
+        let topology = FlowTopology::new(graph);
+        let order = graph.topological_order(&topology)?;
+        let postdominators = PostDominators::analyze(graph, &topology, &order)?;
+        Ok(Self {
+            topology,
+            order,
+            postdominators,
+        })
+    }
+
+    fn get_or_analyze<'a>(
+        cache: &'a mut Option<Self>,
+        graph: &SemanticFlowGraph,
+    ) -> Result<&'a Self, StructureError> {
+        Ok(match cache {
+            Some(facts) => facts,
+            None => cache.insert(Self::analyze(graph)?),
+        })
+    }
+}
+
 impl SemanticFlowGraph {
     fn allocate_label(
         &mut self,
@@ -426,11 +490,14 @@ impl SemanticFlowGraph {
             self.bind_embedded_continuations()?;
             self.verify_lexical_domains()?;
             let Some((component, predecessors)) = self.first_cyclic_component() else {
+                let mut analyzed = None;
                 if semantic.is_switch_region(self.region) {
                     while pattern_budget.take() {
-                        let Some(switch) = SwitchRegion::analyze(&self)? else {
+                        let facts = AcyclicFlow::get_or_analyze(&mut analyzed, &self)?;
+                        let Some(switch) = SwitchRegion::find(&self, facts) else {
                             break;
                         };
+                        analyzed = None;
                         self.collapse_switch(switch, semantic)?;
                         self.prune();
                         self.verify_lexical_domains()?;
@@ -440,9 +507,11 @@ impl SemanticFlowGraph {
                     return Ok((body, self.next_id));
                 }
                 while pattern_budget.take() {
-                    let Some(branch) = BranchRegion::analyze(&self)? else {
+                    let facts = AcyclicFlow::get_or_analyze(&mut analyzed, &self)?;
+                    let Some(branch) = BranchRegion::find(&self, facts) else {
                         break;
                     };
+                    analyzed = None;
                     self.collapse_branch(branch, semantic)?;
                     self.prune();
                     self.verify_lexical_domains()?;
@@ -450,9 +519,10 @@ impl SemanticFlowGraph {
                         return Ok((body, self.next_id));
                     }
                 }
+                let order = analyzed.map(|facts| facts.order);
                 let lowering = AcyclicLabelLowering::new(self)?;
                 let next_id = lowering.next_id();
-                let body = lowering.lower()?;
+                let body = lowering.lower(order)?;
                 return Ok((body, next_id));
             };
             let entries = self.component_entries(&component, &predecessors);
@@ -611,7 +681,7 @@ impl SemanticFlowGraph {
                 self.next_id = self.next_id.max(next_id);
                 body
             };
-            let body = if SemanticCompletion::analyze(&body).can_complete_normally() {
+            let body = if ControlCompletion::normally_completes(&body) {
                 SemanticNode::sequence([
                     body,
                     SemanticNode::Leave(crate::ir::SemanticLeave {
@@ -813,7 +883,7 @@ impl SemanticFlowGraph {
         &mut self,
         component: &BTreeSet<BlockId>,
         entries: &BTreeSet<BlockId>,
-        predecessors: &BTreeMap<BlockId, BTreeSet<BlockId>>,
+        predecessors: &FlowPredecessors,
     ) -> Result<(), StructureError> {
         let plan = IrreducibleEntryAnalysis::new(self, component, entries).analyze()?;
         for (entry, slice) in plan.copies {
@@ -885,7 +955,7 @@ impl SemanticFlowGraph {
     fn component_entries(
         &self,
         component: &BTreeSet<BlockId>,
-        predecessors: &BTreeMap<BlockId, BTreeSet<BlockId>>,
+        predecessors: &FlowPredecessors,
     ) -> BTreeSet<BlockId> {
         component
             .iter()
@@ -959,16 +1029,22 @@ impl SemanticFlowGraph {
         targets
     }
 
-    fn predecessors(&self) -> BTreeMap<BlockId, BTreeSet<BlockId>> {
-        let mut predecessors = self
-            .nodes
-            .keys()
-            .copied()
-            .map(|node| (node, BTreeSet::new()))
-            .collect::<BTreeMap<_, _>>();
-        for source in self.nodes.keys().copied() {
-            for target in self.successors(source) {
-                predecessors.entry(target).or_default().insert(source);
+    fn predecessors(&self) -> FlowPredecessors {
+        self.predecessors_from(self.nodes.keys().map(|&block| (block, self.targets(block))))
+    }
+
+    fn predecessors_from<T: IntoIterator<Item = BlockId>>(
+        &self,
+        rows: impl Iterator<Item = (BlockId, T)>,
+    ) -> FlowPredecessors {
+        let mut predecessors = FlowPredecessors::new();
+        for (source, targets) in rows {
+            predecessors.entry(source).or_default();
+            for target in targets {
+                if self.is_internal_target(target) {
+                    // Sources and distinct targets arrive in identity order.
+                    predecessors.entry(target).or_default().push(source);
+                }
             }
         }
         predecessors
@@ -1003,9 +1079,7 @@ impl SemanticFlowGraph {
             }
     }
 
-    fn first_cyclic_component(
-        &self,
-    ) -> Option<(BTreeSet<BlockId>, BTreeMap<BlockId, BTreeSet<BlockId>>)> {
+    fn first_cyclic_component(&self) -> Option<(BTreeSet<BlockId>, FlowPredecessors)> {
         // The first Kosaraju traversal detects a cycle exactly when it reaches
         // an ancestor still on its DFS stack. A DAG needs no reverse traversal.
         let mut finished = BTreeMap::new();
@@ -1083,11 +1157,9 @@ impl SemanticFlowGraph {
         self.nodes.retain(|node, _| reachable.contains(node));
     }
 
-    fn topological_order(
-        &self,
-        predecessors: &BTreeMap<BlockId, BTreeSet<BlockId>>,
-    ) -> Result<Vec<BlockId>, StructureError> {
-        let mut indegree = predecessors
+    fn topological_order(&self, topology: &FlowTopology) -> Result<Vec<BlockId>, StructureError> {
+        let mut indegree = topology
+            .predecessors
             .iter()
             .map(|(node, incoming)| (*node, incoming.len()))
             .collect::<BTreeMap<_, _>>();
@@ -1098,7 +1170,12 @@ impl SemanticFlowGraph {
         let mut order = Vec::with_capacity(self.nodes.len());
         while let Some(node) = ready.pop_first() {
             order.push(node);
-            for target in self.successors(node) {
+            for target in topology
+                .targets(node)
+                .iter()
+                .copied()
+                .filter(|target| self.is_internal_target(*target))
+            {
                 let degree = indegree
                     .get_mut(&target)
                     .ok_or(StructureError::MalformedFlowNode(target))?;
@@ -2065,11 +2142,14 @@ struct SwitchFlowArm {
 }
 
 impl SwitchRegion {
-    fn analyze(graph: &SemanticFlowGraph) -> Result<Option<Self>, StructureError> {
-        let predecessors = graph.predecessors();
-        let order = graph.topological_order(&predecessors)?;
-        let postdominators = PostDominators::analyze(graph, &order)?;
-        for source in order {
+    fn find(graph: &SemanticFlowGraph, facts: &AcyclicFlow) -> Option<Self> {
+        let AcyclicFlow {
+            topology,
+            order,
+            postdominators,
+        } = facts;
+        let predecessors = &topology.predecessors;
+        for &source in order {
             let Some(FlowNode {
                 transfer:
                     FlowTransfer::Switch {
@@ -2116,7 +2196,7 @@ impl SwitchRegion {
             let mut expanded = 0usize;
             let mut valid = true;
             for (entry, mut values, is_default) in labels {
-                let arm = Self::arm(graph, source, entry, join);
+                let arm = Self::arm(graph, topology, source, entry, join);
                 if Some(entry) != join && arm.is_empty() {
                     valid = false;
                     break;
@@ -2145,19 +2225,20 @@ impl SwitchRegion {
             }) {
                 continue;
             }
-            return Ok(Some(Self {
+            return Some(Self {
                 source,
                 selector: selector.clone(),
                 join,
                 arms,
                 nodes,
-            }));
+            });
         }
-        Ok(None)
+        None
     }
 
     fn arm(
         graph: &SemanticFlowGraph,
+        topology: &FlowTopology,
         source: BlockId,
         entry: BlockId,
         join: Option<BlockId>,
@@ -2173,7 +2254,7 @@ impl SwitchRegion {
             {
                 continue;
             }
-            pending.extend(graph.targets(block));
+            pending.extend(topology.targets(block));
         }
         nodes
     }
@@ -2231,18 +2312,16 @@ struct BranchRegion {
 }
 
 impl BranchRegion {
-    fn analyze(graph: &SemanticFlowGraph) -> Result<Option<Self>, StructureError> {
-        let predecessors = graph.predecessors();
-        let order = graph.topological_order(&predecessors)?;
-        let postdominators = PostDominators::analyze(graph, &order)?;
+    fn find(graph: &SemanticFlowGraph, facts: &AcyclicFlow) -> Option<Self> {
+        let AcyclicFlow {
+            topology,
+            order,
+            postdominators,
+        } = facts;
+        let predecessors = &topology.predecessors;
         let mut tails = BTreeMap::new();
-        let ranks = order
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(rank, block)| (block, rank))
-            .collect::<BTreeMap<_, _>>();
-        for source in order.into_iter().rev() {
+        let mut joins = BranchJoins::new(order);
+        for (rank, source) in order.iter().copied().enumerate().rev() {
             let Some(FlowNode {
                 transfer:
                     FlowTransfer::Branch {
@@ -2255,48 +2334,46 @@ impl BranchRegion {
             else {
                 continue;
             };
-            let joins = BranchJoins::analyze(
+            for &join in joins.candidates(
                 graph,
-                &postdominators,
-                &predecessors,
-                &ranks,
-                source,
+                postdominators,
+                topology,
+                (source, rank),
                 *when_true,
                 *when_false,
-            );
-            for join in joins.iter() {
+            ) {
                 let Some(true_arm) =
-                    BranchArm::analyze(graph, &predecessors, &mut tails, *when_true, join)
+                    BranchArm::analyze(graph, topology, &mut tails, *when_true, join)
                 else {
                     continue;
                 };
                 let Some(false_arm) =
-                    BranchArm::analyze(graph, &predecessors, &mut tails, *when_false, join)
+                    BranchArm::analyze(graph, topology, &mut tails, *when_false, join)
                 else {
                     continue;
                 };
                 if true_arm.is_empty() && false_arm.is_empty()
                     || !true_arm.nodes.is_disjoint(&false_arm.nodes)
-                    || !Self::single_entry(&predecessors, source, *when_true, &true_arm.nodes)
-                    || !Self::single_entry(&predecessors, source, *when_false, &false_arm.nodes)
+                    || !Self::single_entry(predecessors, source, *when_true, &true_arm.nodes)
+                    || !Self::single_entry(predecessors, source, *when_false, &false_arm.nodes)
                 {
                     continue;
                 }
-                return Ok(Some(Self {
+                return Some(Self {
                     source,
                     when_true: *when_true,
                     when_false: *when_false,
                     join,
                     true_arm,
                     false_arm,
-                }));
+                });
             }
         }
-        Ok(None)
+        None
     }
 
     fn single_entry(
-        predecessors: &BTreeMap<BlockId, BTreeSet<BlockId>>,
+        predecessors: &FlowPredecessors,
         source: BlockId,
         entry: BlockId,
         arm: &BTreeSet<BlockId>,
@@ -2324,7 +2401,7 @@ struct BranchArm {
 impl BranchArm {
     fn analyze(
         graph: &SemanticFlowGraph,
-        predecessors: &BTreeMap<BlockId, BTreeSet<BlockId>>,
+        topology: &FlowTopology,
         tails: &mut BTreeMap<BlockId, Option<ContinuationTail>>,
         entry: BlockId,
         join: BlockId,
@@ -2339,9 +2416,12 @@ impl BranchArm {
         let mut pending = vec![entry];
         let mut continuation = None::<ContinuationTail>;
         let mut reaches_join = false;
-        let mut open_boundaries = BTreeSet::new();
+        let mut has_open_boundary = false;
         while let Some(block) = pending.pop() {
             if block == join {
+                if continuation.is_some() {
+                    return None;
+                }
                 reaches_join = true;
                 continue;
             }
@@ -2349,11 +2429,12 @@ impl BranchArm {
             // A join inside that epilogue cuts it short for just this candidate.
             let tail = tails
                 .entry(block)
-                .or_insert_with(|| ContinuationTail::analyze(graph, predecessors, block));
+                .or_insert_with(|| ContinuationTail::analyze(graph, &topology.predecessors, block));
             if let Some(tail) = tail.as_ref().filter(|tail| !tail.blocks.contains(&join)) {
-                if continuation
-                    .as_ref()
-                    .is_some_and(|current| current.entry != tail.entry)
+                if reaches_join
+                    || continuation
+                        .as_ref()
+                        .is_some_and(|current| current.entry != tail.entry)
                 {
                     return None;
                 }
@@ -2366,12 +2447,16 @@ impl BranchArm {
             if !graph.nodes.contains_key(&block) || graph.continues.contains_key(&block) {
                 return None;
             }
-            for target in graph.targets(block) {
+            for &target in topology.targets(block) {
                 if target == join {
+                    if continuation.is_some() {
+                        return None;
+                    }
                     reaches_join = true;
-                } else if graph.continues.contains_key(&target) || graph.exits.contains(&target) {
-                    open_boundaries.insert(target);
-                    continue;
+                } else if graph.continues.contains_key(&target) {
+                    has_open_boundary = true;
+                } else if graph.exits.contains(&target) {
+                    return None;
                 } else if graph.nodes.contains_key(&target) {
                     pending.push(target);
                 } else {
@@ -2379,19 +2464,10 @@ impl BranchArm {
                 }
             }
         }
-        if continuation.is_some() && reaches_join {
-            return None;
-        }
-        if open_boundaries
-            .iter()
-            .any(|boundary| !graph.continues.contains_key(boundary))
-        {
-            return None;
-        }
         if !reaches_join
             && continuation.is_none()
-            && open_boundaries.is_empty()
-            && !Self::is_closed(graph, &nodes)
+            && !has_open_boundary
+            && !Self::is_closed(graph, topology, &nodes)
         {
             return None;
         }
@@ -2401,18 +2477,19 @@ impl BranchArm {
         })
     }
 
-    fn is_closed(graph: &SemanticFlowGraph, nodes: &BTreeSet<BlockId>) -> bool {
-        let terminals = nodes
+    fn is_closed(
+        graph: &SemanticFlowGraph,
+        topology: &FlowTopology,
+        nodes: &BTreeSet<BlockId>,
+    ) -> bool {
+        let mut terminals = nodes
             .iter()
             .filter_map(|block| {
                 let node = graph.nodes.get(block)?;
-                graph.targets(*block).is_empty().then_some(node)
+                topology.targets(*block).is_empty().then_some(node)
             })
-            .collect::<Vec<_>>();
-        !terminals.is_empty()
-            && terminals
-                .iter()
-                .all(|node| !node.completion(graph.region).normal)
+            .peekable();
+        terminals.peek().is_some() && terminals.all(|node| !node.completion(graph.region).normal)
     }
 
     fn is_empty(&self) -> bool {
@@ -2435,7 +2512,7 @@ impl ContinuationTail {
 
     fn analyze(
         graph: &SemanticFlowGraph,
-        predecessors: &BTreeMap<BlockId, BTreeSet<BlockId>>,
+        predecessors: &FlowPredecessors,
         entry: BlockId,
     ) -> Option<Self> {
         if predecessors
@@ -2487,29 +2564,62 @@ impl ContinuationTail {
 }
 
 struct BranchJoins {
-    blocks: Vec<BlockId>,
+    ranks: foldhash::HashMap<BlockId, usize>,
+    visited_from: Vec<usize>,
+    pending: Vec<BlockId>,
+    candidates: Vec<BlockId>,
 }
 
 impl BranchJoins {
-    fn analyze(
+    fn new(order: &[BlockId]) -> Self {
+        Self {
+            ranks: order
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(rank, block)| (block, rank))
+                .collect(),
+            visited_from: vec![usize::MAX; order.len()],
+            pending: Vec::new(),
+            candidates: Vec::new(),
+        }
+    }
+
+    fn candidates(
+        &mut self,
         graph: &SemanticFlowGraph,
         postdominators: &PostDominators,
-        predecessors: &BTreeMap<BlockId, BTreeSet<BlockId>>,
-        ranks: &BTreeMap<BlockId, usize>,
-        source: BlockId,
+        topology: &FlowTopology,
+        (source, source_rank): (BlockId, usize),
         when_true: BlockId,
         when_false: BlockId,
-    ) -> Self {
-        let source_rank = ranks.get(&source).copied().unwrap_or(0);
-        let reachable = Self::reachable(graph, [when_true, when_false]);
-        let mut blocks = Vec::new();
+    ) -> &[BlockId] {
+        let ranks = &self.ranks;
+        let blocks = &mut self.candidates;
+        blocks.clear();
         if let Some(join) = postdominators.immediate(source) {
             blocks.push(join);
         }
         blocks.extend([when_true, when_false]);
-        blocks.extend(predecessors.iter().filter_map(|(block, incoming)| {
-            (incoming.len() > 1 && reachable.contains(block)).then_some(*block)
-        }));
+        self.pending.extend([when_true, when_false]);
+        while let Some(block) = self.pending.pop() {
+            let Some(&rank) = ranks.get(&block) else {
+                continue;
+            };
+            if graph.continues.contains_key(&block) || self.visited_from[rank] == source_rank {
+                continue;
+            }
+            // Each source is visited once per immutable topology.
+            self.visited_from[rank] = source_rank;
+            if topology
+                .predecessors
+                .get(&block)
+                .is_some_and(|incoming| incoming.len() > 1)
+            {
+                blocks.push(block);
+            }
+            self.pending.extend(topology.targets(block));
+        }
         blocks.retain(|block| {
             if graph.is_control_boundary(*block) {
                 true
@@ -2524,29 +2634,7 @@ impl BranchJoins {
             )
         });
         blocks.dedup();
-        Self { blocks }
-    }
-
-    fn reachable(
-        graph: &SemanticFlowGraph,
-        entries: impl IntoIterator<Item = BlockId>,
-    ) -> BTreeSet<BlockId> {
-        let mut reached = BTreeSet::new();
-        let mut pending = entries.into_iter().collect::<Vec<_>>();
-        while let Some(block) = pending.pop() {
-            if !graph.nodes.contains_key(&block)
-                || graph.continues.contains_key(&block)
-                || !reached.insert(block)
-            {
-                continue;
-            }
-            pending.extend(graph.targets(block));
-        }
-        reached
-    }
-
-    fn iter(&self) -> impl Iterator<Item = BlockId> + '_ {
-        self.blocks.iter().copied()
+        blocks
     }
 }
 
@@ -2564,7 +2652,11 @@ struct PostDominators {
 }
 
 impl PostDominators {
-    fn analyze(graph: &SemanticFlowGraph, order: &[BlockId]) -> Result<Self, StructureError> {
+    fn analyze(
+        graph: &SemanticFlowGraph,
+        topology: &FlowTopology,
+        order: &[BlockId],
+    ) -> Result<Self, StructureError> {
         let nodes = order
             .iter()
             .copied()
@@ -2573,7 +2665,7 @@ impl PostDominators {
                 order
                     .iter()
                     .copied()
-                    .flat_map(|block| graph.targets(block))
+                    .flat_map(|block| topology.targets(block).iter().copied())
                     .filter(|target| graph.is_control_boundary(*target))
                     .map(PostNode::Boundary),
             )
@@ -2599,7 +2691,7 @@ impl PostDominators {
                     .get(&PostNode::Block(block))
                     .copied()
                     .ok_or(StructureError::MalformedFlowNode(block))?;
-                let successors = Self::successors(graph, block)
+                let successors = Self::successors(graph, topology, block)
                     .into_iter()
                     .map(|successor| {
                         indices.get(&successor).copied().ok_or_else(|| {
@@ -2662,13 +2754,18 @@ impl PostDominators {
         left
     }
 
-    fn successors(graph: &SemanticFlowGraph, block: BlockId) -> BTreeSet<PostNode> {
-        let targets = graph.targets(block);
+    fn successors(
+        graph: &SemanticFlowGraph,
+        topology: &FlowTopology,
+        block: BlockId,
+    ) -> BTreeSet<PostNode> {
+        let targets = topology.targets(block);
         if targets.is_empty() {
             return BTreeSet::from([PostNode::Exit]);
         }
         targets
-            .into_iter()
+            .iter()
+            .copied()
             .map(|target| {
                 if !graph.is_control_boundary(target) {
                     PostNode::Block(target)
@@ -2748,8 +2845,13 @@ impl AcyclicLabelLowering {
         self.next_id
     }
 
-    fn lower(mut self) -> Result<SemanticNode, StructureError> {
-        let order = self.graph.topological_order(&self.graph.predecessors())?;
+    fn lower(mut self, order: Option<Vec<BlockId>>) -> Result<SemanticNode, StructureError> {
+        let order = match order {
+            Some(order) => order,
+            None => self
+                .graph
+                .topological_order(&FlowTopology::new(&self.graph))?,
+        };
         let ranks = order
             .iter()
             .copied()
@@ -3384,6 +3486,10 @@ impl SemanticVisitor for LexicalIdentities {
 mod tests {
     use super::*;
 
+    fn branch_region(graph: &SemanticFlowGraph) -> Result<Option<BranchRegion>, StructureError> {
+        Ok(BranchRegion::find(graph, &AcyclicFlow::analyze(graph)?))
+    }
+
     struct LeaveSummary {
         boundary: SemanticLabel,
         boundary_exits: usize,
@@ -3391,6 +3497,10 @@ mod tests {
     }
 
     impl SemanticVisitor for LeaveSummary {
+        fn visits_values(&self) -> bool {
+            false
+        }
+
         fn enter_node(&mut self, node: &SemanticNode) {
             let SemanticNode::Leave(leave) = node else {
                 return;
@@ -3571,9 +3681,7 @@ mod tests {
             exits: BTreeSet::from([join, exit]),
         };
 
-        assert!(BranchRegion::analyze(&graph)
-            .expect("branch analysis")
-            .is_none());
+        assert!(branch_region(&graph).expect("branch analysis").is_none());
     }
 
     #[test]
@@ -3622,7 +3730,7 @@ mod tests {
             exits: BTreeSet::from([join]),
         };
 
-        let branch = BranchRegion::analyze(&graph)
+        let branch = branch_region(&graph)
             .expect("branch analysis")
             .expect("closed branch arm");
         assert_eq!(branch.join, join);
@@ -3653,11 +3761,10 @@ mod tests {
             exits: BTreeSet::from([left_exit, right_exit]),
         };
 
-        let order = graph
-            .topological_order(&graph.predecessors())
-            .expect("acyclic graph");
+        let topology = FlowTopology::new(&graph);
+        let order = graph.topological_order(&topology).expect("acyclic graph");
         let postdominators =
-            PostDominators::analyze(&graph, &order).expect("postdominator analysis");
+            PostDominators::analyze(&graph, &topology, &order).expect("postdominator analysis");
 
         assert_eq!(postdominators.immediate_node(source), Some(PostNode::Exit));
     }
@@ -3726,7 +3833,7 @@ mod tests {
 
         let body = AcyclicLabelLowering::new(graph)
             .expect("label allocation")
-            .lower()
+            .lower(None)
             .expect("acyclic label lowering");
         let SemanticNode::Label {
             label: boundary, ..
@@ -3816,7 +3923,7 @@ mod tests {
             exits: BTreeSet::new(),
         };
 
-        let branch = BranchRegion::analyze(&graph)
+        let branch = branch_region(&graph)
             .expect("branch analysis")
             .expect("branch with loop continuation tail");
 
@@ -3878,7 +3985,7 @@ mod tests {
             exits: BTreeSet::new(),
         };
 
-        let branch = BranchRegion::analyze(&graph)
+        let branch = branch_region(&graph)
             .expect("branch analysis")
             .expect("shared continuation branch");
 
@@ -3960,7 +4067,7 @@ mod tests {
             exits: BTreeSet::new(),
         };
 
-        let branch = BranchRegion::analyze(&graph)
+        let branch = branch_region(&graph)
             .expect("branch analysis")
             .expect("shared terminal tail branch");
 
@@ -4379,7 +4486,7 @@ mod tests {
             exits: BTreeSet::new(),
         };
 
-        let branch = BranchRegion::analyze(&graph)
+        let branch = branch_region(&graph)
             .expect("branch analysis")
             .expect("branch with abrupt continuation");
 

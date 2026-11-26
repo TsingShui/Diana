@@ -614,16 +614,6 @@ impl RegionTree {
         Ok(false)
     }
 
-    pub(super) fn block_owners(
-        &self,
-        cfg: &CFG,
-    ) -> Result<BTreeMap<BlockId, RegionId>, RegionInvariantError> {
-        cfg.block_ids()
-            .into_iter()
-            .map(|block| self.owner(block).map(|owner| (block, owner)))
-            .collect()
-    }
-
     pub fn add_child(
         &mut self,
         parent: RegionId,
@@ -751,23 +741,30 @@ impl RegionTree {
         Ok(())
     }
 
-    // Depth-only clients need no allocated path for a valid tree. A chain
-    // longer than the entire tree must cycle; the full walk then supplies
-    // the same first repeated region and error witnesses as parent_chain.
-    fn depth(&self, region: RegionId) -> Result<usize, RegionInvariantError> {
+    fn walk_parents(
+        &self,
+        start: RegionId,
+        mut visit: impl FnMut(RegionId),
+    ) -> Result<usize, RegionInvariantError> {
         let mut depth = 0;
-        let mut current = Some(region);
+        let mut current = Some(start);
         while let Some(id) = current {
             if depth == self.regions.len() {
-                return self.parent_chain(region).map(|chain| chain.len());
+                // The diagnostic includes the path up to the first repeated parent.
+                return self.parent_chain(start).map(|chain| chain.len());
             }
-            let node = self
+            let region = self
                 .region(id)
                 .ok_or(RegionInvariantError::UnknownRegion(id))?;
+            visit(id);
             depth += 1;
-            current = node.parent;
+            current = region.parent;
         }
         Ok(depth)
+    }
+
+    fn depth(&self, region: RegionId) -> Result<usize, RegionInvariantError> {
+        self.walk_parents(region, |_| {})
     }
 
     pub fn parent_chain(
@@ -798,7 +795,9 @@ impl RegionTree {
         ancestor: RegionId,
         region: RegionId,
     ) -> Result<bool, RegionInvariantError> {
-        Ok(self.parent_chain(region)?.contains(&ancestor))
+        let mut found = false;
+        self.walk_parents(region, |id| found |= id == ancestor)?;
+        Ok(found)
     }
 
     pub fn common_ancestor(
@@ -806,14 +805,21 @@ impl RegionTree {
         left: RegionId,
         right: RegionId,
     ) -> Result<RegionId, RegionInvariantError> {
-        let right_ancestors = self
-            .parent_chain(right)?
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-        self.parent_chain(left)?
-            .into_iter()
-            .find(|candidate| right_ancestors.contains(candidate))
-            .ok_or(RegionInvariantError::NoCommonAncestor { left, right })
+        let right_depth = self.depth(right)?;
+        let left_depth = self.depth(left)?;
+        let parent = |id| self.region(id).and_then(|region| region.parent);
+        let (mut a, mut b) = (Some(left), Some(right));
+        for _ in right_depth..left_depth {
+            a = a.and_then(parent);
+        }
+        for _ in left_depth..right_depth {
+            b = b.and_then(parent);
+        }
+        while a != b {
+            a = a.and_then(parent);
+            b = b.and_then(parent);
+        }
+        a.ok_or(RegionInvariantError::NoCommonAncestor { left, right })
     }
 
     pub fn owner(&self, block: BlockId) -> Result<RegionId, RegionInvariantError> {
@@ -852,8 +858,8 @@ impl RegionTree {
         &self,
         source: RegionId,
         block: BlockId,
+        innermost: RegionId,
     ) -> Result<RegionId, RegionInvariantError> {
-        let innermost = self.owner(block)?;
         if source != innermost && !self.is_ancestor(source, innermost)? {
             return Ok(innermost);
         }
@@ -876,7 +882,10 @@ impl RegionTree {
         Ok(preferred)
     }
 
-    pub(super) fn verify(&self, cfg: &CFG) -> Result<(), RegionInvariantError> {
+    pub(super) fn verified_owners(
+        &self,
+        cfg: &CFG,
+    ) -> Result<BTreeMap<BlockId, RegionId>, RegionInvariantError> {
         let root = self
             .region(self.root)
             .ok_or(RegionInvariantError::UnknownRegion(self.root))?;
@@ -948,7 +957,7 @@ impl RegionTree {
                     }
                 }
             }
-            self.parent_chain(region.id)?;
+            self.depth(region.id)?;
             if let Some(entry) = region.entry {
                 if !region.blocks.contains(&entry) {
                     return Err(RegionInvariantError::RegionEntryOutsideBody {
@@ -994,10 +1003,46 @@ impl RegionTree {
             }
         }
 
-        for block in cfg.block_ids() {
-            self.owner(block)?;
+        // Overlapping regions are now known to be nested. Visiting a parent
+        // before its children gives each block its unique deepest owner.
+        let blocks = cfg.block_ids();
+        let mut owners = blocks
+            .iter()
+            .copied()
+            .filter(|block| root.owns_block(*block))
+            .map(|block| (block, self.root))
+            .collect::<BTreeMap<_, _>>();
+        let root_covers_all = owners.len() == blocks.len();
+        let mut pending = root.children.clone();
+        while let Some(id) = pending.pop() {
+            let region = self
+                .region(id)
+                .ok_or(RegionInvariantError::UnknownRegion(id))?;
+            for &block in &region.blocks {
+                if cfg.block(block).is_some() {
+                    owners.insert(block, id);
+                }
+            }
+            pending.extend(&region.children);
         }
-        Ok(())
+        if !root_covers_all {
+            if let Some(block) = blocks.into_iter().find(|block| !owners.contains_key(block)) {
+                return Err(RegionInvariantError::MissingOwner(block));
+            }
+        }
+        Ok(owners)
+    }
+
+    pub(super) fn indexed_owner(
+        &self,
+        owners: &BTreeMap<BlockId, RegionId>,
+        block: BlockId,
+    ) -> Result<RegionId, RegionInvariantError> {
+        match owners.get(&block) {
+            Some(owner) => Ok(*owner),
+            // A malformed transfer may reference a block outside the CFG.
+            None => self.owner(block),
+        }
     }
 }
 
@@ -2509,7 +2554,7 @@ mod tests {
 
         assert_eq!(tree.region(owner).unwrap().blocks, blocks([1, 2, 3]));
         assert_eq!(tree.region(release).unwrap().blocks, blocks([4]));
-        tree.verify(&cfg).unwrap();
+        tree.verified_owners(&cfg).unwrap();
     }
 
     #[test]

@@ -4,11 +4,12 @@
 //! methods cannot be mixed accidentally. All externally supplied handles and
 //! expression symbols are validated before graph operations are evaluated.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 
 use foldhash::{HashMap, HashMapExt, HashSet};
 use std::fmt;
+use std::hash::BuildHasher;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::ir::bool_expr::{BoolExpr, BoolVariable};
@@ -104,6 +105,13 @@ struct ArenaNode {
 }
 
 impl ArenaNode {
+    fn key(&self) -> (usize, u32) {
+        (
+            self.variable,
+            u32::from(self.low) << 16 | u32::from(self.high),
+        )
+    }
+
     fn complement(&self) -> Option<u16> {
         self.has_complement.then_some(self.complement)
     }
@@ -125,9 +133,11 @@ impl ArenaNode {
 struct Manager {
     context: u64,
     nodes: Vec<ArenaNode>,
-    unique: HashMap<(usize, u32), u16>,
+    // Nodes already own their immutable keys. Buckets only need their arena IDs.
+    unique: hashbrown::HashTable<u16>,
+    unique_hasher: foldhash::fast::RandomState,
     binary_cache: HashMap<u64, u16>,
-    apply_work: ApplyWork,
+    apply_work: Vec<ApplyFrame>,
     implication_work: ImplicationWork,
     complements: usize,
     implication_cache: HashMap<u32, bool>,
@@ -155,9 +165,10 @@ impl Manager {
                     ..falsity
                 },
             ],
-            unique: HashMap::new(),
+            unique: hashbrown::HashTable::new(),
+            unique_hasher: foldhash::fast::RandomState::default(),
             binary_cache: HashMap::new(),
-            apply_work: ApplyWork::default(),
+            apply_work: Vec::new(),
             implication_work: ImplicationWork::default(),
             complements: 2,
             implication_cache: HashMap::new(),
@@ -207,10 +218,16 @@ impl Manager {
             return Ok(low);
         }
         let key = (variable, u32::from(low) << 16 | u32::from(high));
-        let entry = self.unique.entry(key);
-        if let std::collections::hash_map::Entry::Occupied(existing) = entry {
-            return Ok(*existing.get());
-        }
+        let nodes = &self.nodes;
+        let hasher = &self.unique_hasher;
+        let entry = match self.unique.entry(
+            hasher.hash_one(key),
+            |&id| nodes[usize::from(id)].key() == key,
+            |&id| hasher.hash_one(nodes[usize::from(id)].key()),
+        ) {
+            hashbrown::hash_table::Entry::Occupied(existing) => return Ok(*existing.get()),
+            hashbrown::hash_table::Entry::Vacant(entry) => entry,
+        };
         if self.nodes.len() >= self.limits.nodes {
             return Err(BddError::ResourceLimit {
                 resource: BddResource::Nodes,
@@ -229,7 +246,7 @@ impl Manager {
             has_complement: false,
             trivial_implications: 0,
         });
-        entry.or_insert(id);
+        entry.insert(id);
         Ok(id)
     }
 
@@ -246,116 +263,110 @@ impl Manager {
         self.validate(right)?;
         let result = self.apply_nodes(operation, left.node, right.node);
         if result.is_err() {
-            self.apply_work.pending.clear();
-            self.apply_work.results.clear();
+            self.apply_work.clear();
         }
         result.map(|id| self.handle(id))
     }
 
-    fn apply_nodes(&mut self, operation: BinaryOp, left: u16, right: u16) -> Result<u16, BddError> {
-        let mut task = ApplyTask::Visit(left, right);
+    fn apply_nodes(
+        &mut self,
+        operation: BinaryOp,
+        mut left: u16,
+        mut right: u16,
+    ) -> Result<u16, BddError> {
         loop {
-            let result = match task {
-                ApplyTask::Visit(left, right) => {
-                    let (left, right) = (left.min(right), left.max(right));
-                    // With sorted IDs the two terminals always appear first.
-                    match (operation, left) {
-                        (BinaryOp::And, 0) | (BinaryOp::Or, 1) => left,
-                        (BinaryOp::Or, 0) | (BinaryOp::And, 1) => right,
-                        _ if left == right => left,
-                        _ => {
-                            let key = ((operation as u64) << 32)
-                                | (u64::from(left) << 16)
-                                | u64::from(right);
-                            if let Some(&result) = self.binary_cache.get(&key) {
-                                result
-                            } else {
-                                self.charge_operation()?;
-                                let a = self.nodes[usize::from(left)];
-                                let b = self.nodes[usize::from(right)];
-                                let variable = a.variable.min(b.variable);
-                                let (a_low, a_high) = a.cofactors(left, variable);
-                                let (b_low, b_high) = b.cofactors(right, variable);
-                                self.apply_work
-                                    .pending
-                                    .push(ApplyTask::Combine { key, variable });
-                                self.apply_work
-                                    .pending
-                                    .push(ApplyTask::Visit(a_high, b_high));
-                                task = ApplyTask::Visit(a_low, b_low);
-                                continue;
-                            }
-                        }
+            (left, right) = (left.min(right), left.max(right));
+            let mut result = match (operation, left) {
+                (BinaryOp::And, 0) | (BinaryOp::Or, 1) => left,
+                (BinaryOp::Or, 0) | (BinaryOp::And, 1) => right,
+                _ if left == right => left,
+                _ => {
+                    let key =
+                        ((operation as u64) << 32) | (u64::from(left) << 16) | u64::from(right);
+                    if let Some(&result) = self.binary_cache.get(&key) {
+                        result
+                    } else {
+                        self.charge_operation()?;
+                        let a = self.nodes[usize::from(left)];
+                        let b = self.nodes[usize::from(right)];
+                        let variable = a.variable.min(b.variable);
+                        let (a_low, a_high) = a.cofactors(left, variable);
+                        let (b_low, b_high) = b.cofactors(right, variable);
+                        self.apply_work.push(ApplyFrame {
+                            key,
+                            variable,
+                            next: ApplyChild::High(a_high, b_high),
+                        });
+                        (left, right) = (a_low, b_low);
+                        continue;
                     }
                 }
-                ApplyTask::Combine { key, variable } => {
-                    let high = self
-                        .apply_work
-                        .results
-                        .pop()
-                        .ok_or(BddError::MalformedEvaluation)?;
-                    let low = self
-                        .apply_work
-                        .results
-                        .pop()
-                        .ok_or(BddError::MalformedEvaluation)?;
-                    let result = self.intern(variable, low, high)?;
-                    self.reserve_cache_entries(1)?;
-                    self.binary_cache.insert(key, result);
-                    result
+            };
+            loop {
+                let Some(frame) = self.apply_work.last_mut() else {
+                    return Ok(result);
+                };
+                match frame.next {
+                    ApplyChild::High(a, b) => {
+                        // The low child finished. Keep its result on this
+                        // same frame while descending into the high child.
+                        frame.next = ApplyChild::Combine(result);
+                        (left, right) = (a, b);
+                        break;
+                    }
+                    ApplyChild::Combine(low) => {
+                        let (key, variable) = (frame.key, frame.variable);
+                        self.apply_work.pop();
+                        result = self.intern(variable, low, result)?;
+                        self.reserve_cache_entries(1)?;
+                        self.binary_cache.insert(key, result);
+                    }
                 }
-            };
-            let Some(next) = self.apply_work.pending.pop() else {
-                return Ok(result);
-            };
-            self.apply_work.results.push(result);
-            task = next;
+            }
         }
     }
 
     fn negate(&mut self, value: Bdd) -> Result<Bdd, BddError> {
         self.validate(value)?;
-        if let Some(result) = self.nodes[usize::from(value.node)].complement() {
-            return Ok(self.handle(result));
-        }
-        let mut tasks = vec![NotTask::Visit(value)];
-        let mut results = Vec::new();
-        while let Some(task) = tasks.pop() {
-            match task {
-                NotTask::Visit(value) => {
-                    if let Some(result) = self.nodes[usize::from(value.node)].complement() {
-                        results.push(self.handle(result));
-                        continue;
-                    }
-                    self.charge_operation()?;
-                    let node = self.validate(value)?;
-                    tasks.push(NotTask::Combine {
-                        value,
-                        variable: node.variable,
-                    });
-                    tasks.push(NotTask::Visit(node.high));
-                    tasks.push(NotTask::Visit(node.low));
-                }
-                NotTask::Combine { value, variable } => {
-                    let high = results.pop().ok_or(BddError::MalformedEvaluation)?;
-                    let low = results.pop().ok_or(BddError::MalformedEvaluation)?;
-                    let result = self.node(variable, low, high)?;
-                    let first = usize::from(value.node);
-                    let second = usize::from(result.node);
-                    let additional = usize::from(!self.nodes[first].has_complement)
-                        + usize::from(!self.nodes[second].has_complement);
-                    self.reserve_cache_entries(additional)?;
-                    self.nodes[first].set_complement(result.node);
-                    self.nodes[second].set_complement(value.node);
-                    self.complements += additional;
-                    results.push(result);
-                }
+        let mut node = value.node;
+        // A completed child stores its complement on the arena node. Retain
+        // only outstanding parents, and read both child results from the arena.
+        let mut parents = smallvec::SmallVec::<[u16; 16]>::new();
+        loop {
+            let current = self.nodes[usize::from(node)];
+            if current.complement().is_none() {
+                self.charge_operation()?;
+                parents.push(node);
+                node = current.low;
+                continue;
+            }
+            loop {
+                let Some(&parent) = parents.last() else {
+                    return Ok(self.handle(
+                        self.nodes[usize::from(node)]
+                            .complement()
+                            .ok_or(BddError::MalformedEvaluation)?,
+                    ));
+                };
+                let current = self.nodes[usize::from(parent)];
+                let low = self.nodes[usize::from(current.low)]
+                    .complement()
+                    .ok_or(BddError::MalformedEvaluation)?;
+                let Some(high) = self.nodes[usize::from(current.high)].complement() else {
+                    node = current.high;
+                    break;
+                };
+                let result = self.intern(current.variable, low, high)?;
+                let additional = usize::from(!self.nodes[usize::from(parent)].has_complement)
+                    + usize::from(!self.nodes[usize::from(result)].has_complement);
+                self.reserve_cache_entries(additional)?;
+                self.nodes[usize::from(parent)].set_complement(result);
+                self.nodes[usize::from(result)].set_complement(parent);
+                self.complements += additional;
+                parents.pop();
+                node = parent;
             }
         }
-        if results.len() != 1 {
-            return Err(BddError::MalformedEvaluation);
-        }
-        results.pop().ok_or(BddError::MalformedEvaluation)
     }
 
     fn restrict(
@@ -650,26 +661,21 @@ impl Manager {
     }
 }
 
-#[derive(Default)]
-struct ApplyWork {
-    pending: Vec<ApplyTask>,
-    results: Vec<u16>,
+struct ApplyFrame {
+    key: u64,
+    variable: usize,
+    next: ApplyChild,
+}
+
+enum ApplyChild {
+    High(u16, u16),
+    Combine(u16),
 }
 
 #[derive(Default)]
 struct ImplicationWork {
     pending: Vec<(u16, u16)>,
     visited: HashSet<u32>,
-}
-
-enum ApplyTask {
-    Visit(u16, u16),
-    Combine { key: u64, variable: usize },
-}
-
-enum NotTask {
-    Visit(Bdd),
-    Combine { value: Bdd, variable: usize },
 }
 
 enum RestrictTask {
@@ -789,12 +795,18 @@ impl DnfBuilder {
     }
 }
 
+struct Variable {
+    index: usize,
+    compiled: Cell<Option<u16>>,
+}
+
 pub struct BddContext {
     context: u64,
-    variables: BTreeMap<BoolVariable, usize>,
+    variables: BTreeMap<BoolVariable, Variable>,
     variables_by_index: Vec<BoolVariable>,
     manager: RefCell<Manager>,
     expressions: RefCell<BTreeMap<BoolExpr, Bdd>>,
+    compiled_symbols: Cell<usize>,
     limits: BddLimits,
 }
 
@@ -830,7 +842,13 @@ impl BddContext {
                 continue;
             }
             let index = variables_by_index.len();
-            variables.insert(name.clone(), index);
+            variables.insert(
+                name.clone(),
+                Variable {
+                    index,
+                    compiled: Cell::new(None),
+                },
+            );
             variables_by_index.push(name);
         }
         let limits = BddLimits::for_variables(variables_by_index.len());
@@ -840,6 +858,7 @@ impl BddContext {
             variables_by_index,
             manager: RefCell::new(Manager::new(context, limits)),
             expressions: RefCell::new(BTreeMap::new()),
+            compiled_symbols: Cell::new(0),
             limits,
         }
     }
@@ -886,8 +905,7 @@ impl BddContext {
             .map(|(variable, value)| {
                 self.variables
                     .get(variable)
-                    .copied()
-                    .map(|index| (index, *value))
+                    .map(|variable| (variable.index, *value))
                     .ok_or_else(|| BddError::UnknownVariable(variable.clone()))
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
@@ -902,7 +920,7 @@ impl BddContext {
             .map(|variable| {
                 self.variables
                     .get(variable)
-                    .copied()
+                    .map(|variable| variable.index)
                     .ok_or_else(|| BddError::UnknownVariable(variable.clone()))
             })
             .collect::<Result<BTreeSet<_>, _>>()?;
@@ -917,54 +935,60 @@ impl BddContext {
         manager.constrain(value, care)
     }
 
+    fn compile_symbol(&self, name: &BoolVariable) -> Result<Bdd, BddError> {
+        let symbol = self
+            .variables
+            .get(name)
+            .ok_or_else(|| BddError::UnknownVariable(name.clone()))?;
+        if let Some(node) = symbol.compiled.get() {
+            return Ok(Bdd {
+                context: self.context,
+                node,
+            });
+        }
+        let value = self.manager.borrow_mut().variable(symbol.index)?;
+        self.reserve_expression(self.expressions.borrow().len())?;
+        symbol.compiled.set(Some(value.node));
+        self.compiled_symbols.set(self.compiled_symbols.get() + 1);
+        Ok(value)
+    }
+
+    fn compiled(&self, expression: &BoolExpr) -> Result<Option<Bdd>, BddError> {
+        match expression {
+            BoolExpr::True => Ok(Some(self.truth())),
+            BoolExpr::False => Ok(Some(self.falsity())),
+            BoolExpr::Symbol(name) => self.compile_symbol(name).map(Some),
+            _ => Ok(self.expressions.borrow().get(expression).copied()),
+        }
+    }
+
     pub fn compile(&self, expression: &BoolExpr) -> Result<Bdd, BddError> {
+        if let Some(value) = self.compiled(expression)? {
+            return Ok(value);
+        }
         let mut tasks = vec![CompileTask::Visit(expression)];
         let mut results = Vec::new();
         while let Some(task) = tasks.pop() {
             match task {
                 CompileTask::Visit(expression) => {
-                    if let Some(value) = self.expressions.borrow().get(expression) {
-                        results.push(*value);
+                    if let Some(value) = self.compiled(expression)? {
+                        results.push(value);
                         continue;
                     }
-                    match expression {
-                        BoolExpr::True => results.push(self.truth()),
-                        BoolExpr::False => results.push(self.falsity()),
-                        BoolExpr::Symbol(symbol) => {
-                            let variable = self
-                                .variables
-                                .get(symbol)
-                                .copied()
-                                .ok_or_else(|| BddError::UnknownVariable(symbol.clone()))?;
-                            let value = self.manager.borrow_mut().variable(variable)?;
-                            self.record_expression(expression, value)?;
-                            results.push(value);
-                        }
+                    let (operation, operands) = match expression {
                         BoolExpr::Not(inner) => {
-                            tasks.push(CompileTask::Combine {
-                                expression,
-                                operation: CompileOp::Not,
-                                operands: 1,
-                            });
-                            tasks.push(CompileTask::Visit(inner));
+                            (CompileOp::Not, std::slice::from_ref(inner.as_ref()))
                         }
-                        BoolExpr::And(terms) => {
-                            tasks.push(CompileTask::Combine {
-                                expression,
-                                operation: CompileOp::And,
-                                operands: terms.len(),
-                            });
-                            tasks.extend(terms.iter().rev().map(CompileTask::Visit));
-                        }
-                        BoolExpr::Or(terms) => {
-                            tasks.push(CompileTask::Combine {
-                                expression,
-                                operation: CompileOp::Or,
-                                operands: terms.len(),
-                            });
-                            tasks.extend(terms.iter().rev().map(CompileTask::Visit));
-                        }
-                    }
+                        BoolExpr::And(terms) => (CompileOp::And, terms.as_slice()),
+                        BoolExpr::Or(terms) => (CompileOp::Or, terms.as_slice()),
+                        _ => unreachable!("all leaf expressions compile directly"),
+                    };
+                    tasks.push(CompileTask::Combine {
+                        expression,
+                        operation,
+                        operands: operands.len(),
+                    });
+                    tasks.extend(operands.iter().rev().map(CompileTask::Visit));
                 }
                 CompileTask::Combine {
                     expression,
@@ -975,21 +999,21 @@ impl BddContext {
                         .len()
                         .checked_sub(operands)
                         .ok_or(BddError::MalformedEvaluation)?;
-                    let values = results.drain(start..).collect::<Vec<_>>();
-                    let value = match operation {
-                        CompileOp::Not => {
-                            let [value] = values.as_slice() else {
-                                return Err(BddError::MalformedEvaluation);
-                            };
-                            self.not(*value)?
-                        }
-                        CompileOp::And => values
-                            .into_iter()
-                            .try_fold(self.truth(), |left, right| self.and(left, right))?,
-                        CompileOp::Or => values
-                            .into_iter()
-                            .try_fold(self.falsity(), |left, right| self.or(left, right))?,
-                    };
+                    let mut values = results.drain(start..);
+                    let value =
+                        match operation {
+                            CompileOp::Not => {
+                                let [value] = values.as_slice() else {
+                                    return Err(BddError::MalformedEvaluation);
+                                };
+                                self.not(*value)?
+                            }
+                            CompileOp::And => values
+                                .try_fold(self.truth(), |left, right| self.and(left, right))?,
+                            CompileOp::Or => values
+                                .try_fold(self.falsity(), |left, right| self.or(left, right))?,
+                        };
+                    drop(values);
                     self.record_expression(expression, value)?;
                     results.push(value);
                 }
@@ -1466,14 +1490,21 @@ impl BddContext {
         Ok(results.pop())
     }
 
-    fn record_expression(&self, expression: &BoolExpr, value: Bdd) -> Result<(), BddError> {
-        let mut expressions = self.expressions.borrow_mut();
-        if !expressions.contains_key(expression) && expressions.len() >= self.limits.cache_entries {
+    fn reserve_expression(&self, compounds: usize) -> Result<(), BddError> {
+        if compounds.saturating_add(self.compiled_symbols.get()) >= self.limits.cache_entries {
             return Err(BddError::ResourceLimit {
                 resource: BddResource::CacheEntries,
                 limit: self.limits.cache_entries,
             });
         }
+        Ok(())
+    }
+
+    fn record_expression(&self, expression: &BoolExpr, value: Bdd) -> Result<(), BddError> {
+        let mut expressions = self.expressions.borrow_mut();
+        // A compound is scheduled only after its cache miss; a strict child
+        // cannot equal that compound, and siblings run to completion in order.
+        self.reserve_expression(expressions.len())?;
         expressions.insert(expression.clone(), value);
         Ok(())
     }
@@ -1676,3 +1707,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/internal/bdd_apply.rs"]
+mod apply_tests;

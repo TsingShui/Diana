@@ -1,4 +1,4 @@
-use std::{borrow::Cow, cell::RefCell};
+use std::cell::RefCell;
 
 use crate::ir::semantic::{CompletionDomain, CompletionInterpreter};
 use crate::ir::{
@@ -25,7 +25,7 @@ pub(super) struct FlowCollector<'ir> {
     loop_owner: ScopeId,
     enclosing_scopes: Vec<(ScopeId, ScopeId)>,
     protections: Vec<u32>,
-    fallthrough_domains: std::collections::BTreeMap<usize, ControlDomain>,
+    fallthrough_domains: SequenceFallthrough,
 }
 
 impl<'ir> FlowCollector<'ir> {
@@ -38,7 +38,7 @@ impl<'ir> FlowCollector<'ir> {
             loop_owner: ScopeId::default(),
             enclosing_scopes: Vec::new(),
             protections: Vec::new(),
-            fallthrough_domains: std::collections::BTreeMap::new(),
+            fallthrough_domains: SequenceFallthrough::default(),
         }
     }
 
@@ -92,7 +92,7 @@ impl<'ir> FlowCollector<'ir> {
         let origin = point.as_ref();
         let mut evaluation_prefix = EffectSummary::pure();
         let execution_domain = domain;
-        let definition = match &statement.kind {
+        let (definition, prefix_covers_statement) = match &statement.kind {
             SemanticStatementKind::Definition { result, value, .. } => {
                 if self.graph.is_identity_definition(result, value) {
                     if let Some(site) = statement.site {
@@ -102,7 +102,7 @@ impl<'ir> FlowCollector<'ir> {
                 }
                 let mut argument = 0;
                 let mut predicate = 0;
-                self.visit_semantic_value_uses(
+                let covers_value = self.visit_semantic_value_uses(
                     value,
                     execution_domain,
                     event,
@@ -112,7 +112,10 @@ impl<'ir> FlowCollector<'ir> {
                     &mut predicate,
                     origin,
                 )?;
-                Some((result, Cow::Borrowed(value)))
+                (
+                    Some(result),
+                    covers_value && !value.as_operation().is_some_and(|op| op.payload.edge_copy),
+                )
             }
             SemanticStatementKind::Instruction(instruction) => {
                 if self.graph.is_identity_move(instruction) {
@@ -122,7 +125,7 @@ impl<'ir> FlowCollector<'ir> {
                     return Ok(());
                 }
                 let site = statement.site.map(UseSite::Statement);
-                self.visit_operation_uses(
+                let covers_operation = self.visit_operation_uses(
                     instruction,
                     execution_domain,
                     event,
@@ -131,22 +134,23 @@ impl<'ir> FlowCollector<'ir> {
                     site,
                     origin,
                 )?;
-                instruction.result.as_ref().map(|result| {
-                    (
-                        result,
-                        Cow::Owned(SemanticExpression::Operation(Box::new(instruction.clone()))),
-                    )
-                })
+                (
+                    instruction.result.as_ref(),
+                    covers_operation && !instruction.payload.edge_copy,
+                )
             }
         };
-        if let Some((result, value)) = definition {
-            self.record_definition(statement, result, value, execution_domain, event);
+        if let Some(result) = definition {
+            self.record_definition(statement, result, execution_domain, event);
         }
-        self.record_effect(
-            statement.site,
-            execution_domain,
-            EffectSummary::statement(statement),
-        );
+        if let Some(site) = statement.site {
+            let effect = if prefix_covers_statement {
+                evaluation_prefix
+            } else {
+                EffectSummary::statement(statement)
+            };
+            self.record_effect(Some(site), execution_domain, effect);
+        }
         Ok(())
     }
 
@@ -154,7 +158,6 @@ impl<'ir> FlowCollector<'ir> {
         &mut self,
         statement: &'ir SemanticStatement,
         result: &'ir crate::ir::RegisterArg,
-        value: Cow<'ir, SemanticExpression>,
         domain: ControlDomain,
         event: usize,
     ) {
@@ -171,7 +174,7 @@ impl<'ir> FlowCollector<'ir> {
                 origin: statement.origin.as_ref(),
                 instruction: statement.id(),
                 result,
-                value,
+                statement,
                 domain,
                 scope: self.scope,
                 protection: self.protections.last().copied(),
@@ -191,7 +194,7 @@ impl<'ir> FlowCollector<'ir> {
         next_argument: &mut u32,
         next_predicate: &mut u32,
         origin: Option<&crate::ir::analysis::SemanticFlowPoint>,
-    ) -> Result<(), ValueRecoveryError> {
+    ) -> Result<bool, ValueRecoveryError> {
         match value {
             SemanticExpression::Register(_)
             | SemanticExpression::Literal(_)
@@ -251,7 +254,9 @@ impl<'ir> FlowCollector<'ir> {
                     origin,
                 )?;
                 *prefix = true_prefix.join(false_prefix);
-                Ok(())
+                // The scheduling prefix keeps control from the condition;
+                // the effect of the selected value strips that control.
+                Ok(false)
             }
         }
     }
@@ -295,17 +300,6 @@ impl<'ir> FlowCollector<'ir> {
         Ok(())
     }
 
-    fn fallthrough_domain(
-        &mut self,
-        node: &SemanticNode,
-    ) -> Result<ControlDomain, ValueRecoveryError> {
-        let key = std::ptr::from_ref(node).addr();
-        if let Some(domain) = self.fallthrough_domains.get(&key).copied() {
-            return Ok(domain);
-        }
-        Err(ValueRecoveryError::IncompleteSemanticFlow)
-    }
-
     fn visit_predicate_uses(
         &mut self,
         predicate: &SemanticPredicate,
@@ -314,13 +308,17 @@ impl<'ir> FlowCollector<'ir> {
         site: Option<UseSite>,
         origin: Option<&crate::ir::analysis::SemanticFlowPoint>,
     ) -> Result<EffectSummary, ValueRecoveryError> {
-        let mut pending = vec![(predicate, domain)];
+        let mut pending = Vec::new();
+        let mut current = (predicate, domain);
         let mut evaluation_prefix = EffectSummary::pure();
-        while let Some((predicate, domain)) = pending.pop() {
+        loop {
+            let (predicate, domain) = current;
             match predicate {
                 SemanticPredicate::True | SemanticPredicate::False => {}
                 SemanticPredicate::Test(insn) => {
-                    if let Some(operand_point) = origin.copied().filter(|_| insn.id.is_valid()) {
+                    if let Some(operand_point) = origin.copied().filter(|_| {
+                        self.graph.identity() == super::ValueIdentity::Source && insn.id.is_valid()
+                    }) {
                         let effect_point = site
                             .map(UseSite::id)
                             .map(crate::ir::analysis::SemanticFlowPoint::after)
@@ -345,13 +343,16 @@ impl<'ir> FlowCollector<'ir> {
                         origin,
                     )?;
                 }
-                SemanticPredicate::Not(inner) => pending.push((inner, domain)),
+                SemanticPredicate::Not(inner) => {
+                    current = (inner.as_ref(), domain);
+                    continue;
+                }
                 SemanticPredicate::And(terms) | SemanticPredicate::Or(terms) => {
                     let conjunction = matches!(predicate, SemanticPredicate::And(_));
                     let mut evaluation_domain = domain;
-                    let mut visits = Vec::with_capacity(terms.len());
+                    let start = pending.len();
                     for term in terms {
-                        visits.push((term, evaluation_domain));
+                        pending.push((term, evaluation_domain));
                         let term_domain = self.graph.logic.predicate(term)?;
                         let continuation = if conjunction {
                             term_domain
@@ -361,9 +362,11 @@ impl<'ir> FlowCollector<'ir> {
                         evaluation_domain =
                             self.graph.logic.and(evaluation_domain, continuation)?;
                     }
-                    pending.extend(visits.into_iter().rev());
+                    pending[start..].reverse();
                 }
             }
+            let Some(next) = pending.pop() else { break };
+            current = next;
         }
         Ok(evaluation_prefix)
     }
@@ -399,37 +402,35 @@ impl<'ir> FlowCollector<'ir> {
         context: UseContext,
         site: Option<UseSite>,
         origin: Option<&crate::ir::analysis::SemanticFlowPoint>,
-    ) -> Result<(), ValueRecoveryError> {
-        let operands = operation.evaluation_operands_iter()?;
-        if operands.clone().all(|operand| {
-            matches!(
-                operand,
-                SemanticExpression::Register(_) | SemanticExpression::Literal(_)
-            )
-        }) {
-            for operand in operands {
-                if let SemanticExpression::Register(register) = operand {
-                    self.record_use(
-                        register,
-                        domain,
-                        event,
-                        prefix,
-                        context,
-                        Some(operation.insn_type),
-                        site,
-                        origin,
-                    );
+    ) -> Result<bool, ValueRecoveryError> {
+        let (mut operands, mut covers_operation) = evaluation_operands(operation)?;
+        let nested = loop {
+            match operands.next() {
+                Some(SemanticExpression::Register(register)) => self.record_use(
+                    register,
+                    domain,
+                    event,
+                    prefix,
+                    context,
+                    Some(operation.insn_type),
+                    site,
+                    origin,
+                ),
+                Some(SemanticExpression::Literal(_)) => {}
+                Some(nested) => break nested,
+                None => {
+                    *prefix = std::mem::take(prefix).join(EffectSummary::direct(operation));
+                    return Ok(covers_operation);
                 }
             }
-            *prefix = std::mem::take(prefix).join(EffectSummary::direct(operation));
-            return Ok(());
-        }
+        };
         let mut pending = vec![EvaluationTask::Effect(operation)];
         pending.extend(
             operands
                 .rev()
                 .map(|expression| EvaluationTask::Expression(expression, operation.insn_type)),
         );
+        pending.push(EvaluationTask::Expression(nested, operation.insn_type));
         while let Some(task) = pending.pop() {
             match task {
                 EvaluationTask::Expression(SemanticExpression::Register(register), consumer) => {
@@ -446,8 +447,10 @@ impl<'ir> FlowCollector<'ir> {
                 }
                 EvaluationTask::Expression(SemanticExpression::Operation(child), _) => {
                     pending.push(EvaluationTask::Effect(child));
+                    let (operands, covers_child) = evaluation_operands(child)?;
+                    covers_operation &= covers_child;
                     pending.extend(
-                        child.evaluation_operands_iter()?.rev().map(|expression| {
+                        operands.rev().map(|expression| {
                             EvaluationTask::Expression(expression, child.insn_type)
                         }),
                     );
@@ -460,6 +463,7 @@ impl<'ir> FlowCollector<'ir> {
                     },
                     consumer,
                 ) => {
+                    covers_operation = false;
                     *prefix = prefix
                         .clone()
                         .join(self.visit_predicate_uses(condition, domain, event, site, origin)?);
@@ -497,7 +501,7 @@ impl<'ir> FlowCollector<'ir> {
                 }
             }
         }
-        Ok(())
+        Ok(covers_operation)
     }
 
     fn record_use(
@@ -512,6 +516,7 @@ impl<'ir> FlowCollector<'ir> {
         origin: Option<&crate::ir::analysis::SemanticFlowPoint>,
     ) {
         if let Some(key) = self.graph.key(register) {
+            self.graph.has_predicate_uses |= context == UseContext::Predicate;
             self.graph.uses.entry(key).or_default().push(UseFact {
                 point: origin.cloned(),
                 domain,
@@ -538,13 +543,13 @@ impl<'ir> FlowCollector<'ir> {
         consumer: Option<InsnType>,
         site: Option<UseSite>,
         origin: Option<&crate::ir::analysis::SemanticFlowPoint>,
-    ) -> Result<(), ValueRecoveryError> {
+    ) -> Result<bool, ValueRecoveryError> {
         match expression {
             SemanticExpression::Register(register) => {
                 self.record_use(
                     register, domain, event, prefix, context, consumer, site, origin,
                 );
-                Ok(())
+                Ok(true)
             }
             SemanticExpression::Operation(operation) => {
                 self.visit_operation_uses(operation, domain, event, prefix, context, site, origin)
@@ -584,9 +589,9 @@ impl<'ir> FlowCollector<'ir> {
                     origin,
                 )?;
                 *prefix = true_prefix.join(false_prefix);
-                Ok(())
+                Ok(false)
             }
-            SemanticExpression::Literal(_) => Ok(()),
+            SemanticExpression::Literal(_) => Ok(true),
         }
     }
 
@@ -654,6 +659,49 @@ impl<'ir> FlowCollector<'ir> {
     }
 }
 
+/// Source evaluation visits a subset of the raw operand positions, each at
+/// most once. Its two borrowed slices give an exact lower bound on their
+/// combined length. A full permutation has the same effect union in any order.
+fn evaluation_operands(
+    operation: &SemanticOperation,
+) -> Result<
+    (impl DoubleEndedIterator<Item = &SemanticExpression>, bool),
+    crate::ir::analysis::SourceEvaluationError,
+> {
+    let operands = operation.evaluation_operands_iter()?;
+    let raw_count = operation.operands().len() + usize::from(operation.compound_target().is_some());
+    let covers_operation = operands.size_hint().0 == raw_count;
+    Ok((operands, covers_operation))
+}
+
+/// The scheduler reads all children of one sequence together. A nonempty
+/// sequence's child slice identifies that occurrence in the immutable tree.
+#[derive(Default)]
+struct SequenceFallthrough {
+    starts: std::collections::BTreeMap<usize, usize>,
+    states: Vec<ControlDomain>,
+}
+
+impl SequenceFallthrough {
+    fn record(&mut self, children: &[SemanticNode], states: &[ControlDomain]) {
+        if !children.is_empty() {
+            self.starts
+                .insert(children.as_ptr().addr(), self.states.len());
+            self.states.extend_from_slice(states);
+        }
+    }
+
+    fn children(&self, children: &[SemanticNode]) -> Result<&[ControlDomain], ValueRecoveryError> {
+        if children.is_empty() {
+            return Ok(&[]);
+        }
+        self.starts
+            .get(&children.as_ptr().addr())
+            .and_then(|&start| self.states.get(start..start.checked_add(children.len())?))
+            .ok_or(ValueRecoveryError::IncompleteSemanticFlow)
+    }
+}
+
 struct ControlFallthrough<'a> {
     logic: RefCell<&'a mut crate::analysis::value_recovery::domain::DomainLogic>,
 }
@@ -662,13 +710,16 @@ impl<'a> ControlFallthrough<'a> {
     fn analyze(
         root: &SemanticNode,
         logic: &'a mut crate::analysis::value_recovery::domain::DomainLogic,
-    ) -> Result<std::collections::BTreeMap<usize, ControlDomain>, ValueRecoveryError> {
-        CompletionInterpreter::analyze_facts(
+    ) -> Result<SequenceFallthrough, ValueRecoveryError> {
+        let mut sequences = SequenceFallthrough::default();
+        CompletionInterpreter::analyze_sequences(
             root,
             &Self {
                 logic: RefCell::new(logic),
             },
-        )
+            |children, states| sequences.record(children, states),
+        )?;
+        Ok(sequences)
     }
 
     fn predicate(
@@ -794,3 +845,7 @@ enum EvaluationTask<'a> {
     Expression(&'a SemanticExpression, InsnType),
     Effect(&'a SemanticOperation),
 }
+
+#[cfg(test)]
+#[path = "../../../../tests/internal/statement_effects.rs"]
+mod tests;

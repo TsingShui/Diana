@@ -76,7 +76,7 @@ impl<'a> RegionGraphBuilder<'a> {
         let control_regions = ControlRegionAnalysis::new(envelope_cfg, envelope_flow);
         let mut control_tree = RegionTree::new(Some(cfg.entry));
         control_tree.cover_method(cfg)?;
-        control_regions.apply(&mut control_tree)?;
+        let prepared_control = control_regions.apply(&mut control_tree)?;
         control_tree.canonicalize_nesting()?;
         let (mut tree, mut exception_region_map, mut exception_handlers) =
             ExceptionRegionTreeBuilder::new(
@@ -193,19 +193,17 @@ impl<'a> RegionGraphBuilder<'a> {
         tree.remove_control_regions()?;
         LexicalOwnershipClosure::apply(cfg, &control_flow, &exception_handlers, &mut tree)?;
         tree.canonicalize_nesting()?;
-        control_regions.apply_loops_with_handlers(&mut tree, &exception_handlers)?;
-        control_regions.apply_switches(&mut tree)?;
+        control_regions.apply_with_handlers(&mut tree, &exception_handlers, prepared_control)?;
         tree.canonicalize_nesting()?;
         tree.cover_method(cfg)?;
         tree.close_ancestor_ownership()?;
-        tree.verify(cfg)?;
-
-        let block_owners = tree.block_owners(cfg)?;
+        let block_owners = tree.verified_owners(cfg)?;
         let implicit_cleanup_completions = ImplicitCleanupCompletions::analyze(&tree, analysis);
         let handler_adapters = analysis.handler_adapters.clone();
         let exits = RegionExitAnalysis::new(
             cfg,
             &tree,
+            &block_owners,
             &elisions,
             &control_flow,
             &cleanup_representatives,
@@ -238,7 +236,8 @@ impl<'a> RegionGraphBuilder<'a> {
             edge_leaves,
             elisions,
         };
-        graph.verify(cfg)?;
+        super::RegionGraphVerifier::new(&graph, cfg)
+            .verify_exits_and_ownership(&graph.block_owners)?;
         Ok(graph)
     }
 }

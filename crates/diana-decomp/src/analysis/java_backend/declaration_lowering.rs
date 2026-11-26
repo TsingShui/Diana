@@ -24,7 +24,7 @@ use super::member_names::ClassMemberNames;
 use super::static_initialization::StaticInitializationRecovery;
 use super::synthetic_members::SyntheticMemberRecovery;
 use super::type_names::JavaTypeNameResolver;
-use super::type_uses::{ClassTypeUses, GenericTypeUses};
+use super::type_uses::{include_abi_type, ClassTypeUses, GenericTypeUses, JavaMethodTypeUses};
 use super::JavaDecompilerError;
 
 pub(super) struct JavaCompilationUnitLowering;
@@ -73,22 +73,23 @@ impl JavaCompilationUnitLowering {
         let generic_uses =
             GenericTypeUses::contracts(generic_fields.values(), generic_methods.values());
         let mut type_uses = ClassTypeUses::collect(&class);
-        type_uses.extend_from_slice(&generic_uses);
+        type_uses.extend(&generic_uses);
+        let (declared_types, imports) = type_uses.finish()?;
         let local_function_object_types = FunctionObjectTypeCatalog::collect(&class);
         let cu_types = CompilationUnitAbiTypes::collect(
             Some(&class),
             &references.fields,
             &references.methods,
-            type_uses.iter().cloned(),
+            declared_types,
             current_type.as_ref(),
             &local_function_object_types,
         );
-        let names = std::rc::Rc::new(JavaTypeNameResolver::for_class(
-            &class,
+        let names = std::rc::Rc::new(JavaTypeNameResolver::from_imports(
+            Some(&class),
             package.as_deref(),
             current_type.as_ref(),
-            type_uses,
-        )?);
+            imports,
+        ));
         let members = {
             std::sync::Arc::new(
                 ClassMemberNames::collect(&class)
@@ -203,10 +204,9 @@ pub(super) struct JavaSingleMethodLowering;
 
 impl JavaSingleMethodLowering {
     pub(super) fn lower(
-        method: &JavaMethodModel,
+        mut method: JavaMethodModel,
         current_package: Option<&str>,
-        current_type: Option<&ArgType>,
-        type_uses: impl IntoIterator<Item = ArgType>,
+        owner: &ArgType,
         source_abi: &std::sync::Arc<super::JavaSourceAbi>,
         hierarchy: std::sync::Arc<crate::ir::analysis::ClassHierarchyIndex>,
         observer: std::sync::Arc<dyn crate::ir::AnalysisObserver>,
@@ -219,21 +219,18 @@ impl JavaSingleMethodLowering {
         let generic_methods = source_abi.generic_methods(references.methods.iter());
         let referenced_overloads = source_abi.referenced_overloads(references.methods.iter());
         let referenced_constructors = source_abi.referenced_constructors(references.methods.iter());
-        let mut type_uses = type_uses.into_iter().collect::<Vec<_>>();
+        let mut type_uses = JavaMethodTypeUses::collect(&method);
         let generic_uses =
             GenericTypeUses::contracts(generic_fields.values(), generic_methods.values());
-        type_uses.extend_from_slice(&generic_uses);
-        let body_current_type = method
-            .body
-            .as_ref()
-            .and_then(super::java_model::method::JavaMethodBody::current_type);
-        let current_type = current_type.or(body_current_type);
-        let local_function_object_types = method_local_function_objects(method, current_type);
+        type_uses.extend(&generic_uses);
+        let (declared_types, imports) = type_uses.finish()?;
+        let current_type = Some(owner);
+        let local_function_object_types = method_local_function_objects(&method, current_type);
         let mut cu_types = CompilationUnitAbiTypes::collect(
             None,
             &references.fields,
             &references.methods,
-            type_uses.iter().cloned(),
+            declared_types,
             current_type,
             &local_function_object_types,
         );
@@ -242,17 +239,18 @@ impl JavaSingleMethodLowering {
             .as_ref()
             .and_then(super::java_model::method::JavaMethodBody::outer_instance_field)
         {
-            CompilationUnitAbiTypes::insert(&mut cu_types, &field.owner);
-            CompilationUnitAbiTypes::insert(&mut cu_types, &field.field_type);
-            CompilationUnitAbiTypes::insert(&mut cu_types, outer);
+            include_abi_type(&mut cu_types, &field.owner);
+            include_abi_type(&mut cu_types, &field.field_type);
+            include_abi_type(&mut cu_types, outer);
         }
-        let names = std::rc::Rc::new(JavaTypeNameResolver::new(
+        let names = std::rc::Rc::new(JavaTypeNameResolver::from_imports(
+            None,
             current_package,
             current_type,
-            type_uses,
-        )?);
+            imports,
+        ));
         let members = std::sync::Arc::new(
-            ClassMemberNames::method_only(current_type, method)
+            ClassMemberNames::method_only(current_type, &method)
                 .with_constructor_layouts(referenced_constructors)
                 .with_overloads(referenced_overloads),
         );
@@ -310,7 +308,7 @@ impl JavaSingleMethodLowering {
             observer,
         );
         lowering.method(
-            method,
+            &mut method,
             current_type,
             None,
             None,
@@ -343,62 +341,47 @@ impl CompilationUnitAbiTypes {
         class: Option<&JavaClassModel>,
         field_references: &std::collections::BTreeSet<crate::ir::FieldReference>,
         method_references: &std::collections::BTreeSet<crate::ir::MethodReference>,
-        type_uses: impl IntoIterator<Item = ArgType>,
+        mut types: std::collections::BTreeSet<ArgType>,
         current_type: Option<&ArgType>,
         local_function_objects: &std::collections::BTreeMap<
             ArgType,
             crate::ir::generic_types::JvmTypeSignature,
         >,
     ) -> std::collections::BTreeSet<ArgType> {
-        let mut types = std::collections::BTreeSet::new();
         if let Some(current_type) = current_type {
-            Self::insert(&mut types, current_type);
-        }
-        for ty in type_uses {
-            Self::insert(&mut types, &ty);
+            include_abi_type(&mut types, current_type);
         }
         for field in field_references {
-            Self::insert(&mut types, &field.owner);
-            Self::insert(&mut types, &field.field_type);
+            include_abi_type(&mut types, &field.owner);
+            include_abi_type(&mut types, &field.field_type);
         }
         for method in method_references {
-            Self::insert(&mut types, &method.owner);
+            include_abi_type(&mut types, &method.owner);
             for parameter in &method.descriptor.parameters {
-                Self::insert(&mut types, parameter);
+                include_abi_type(&mut types, parameter);
             }
-            Self::insert(&mut types, &method.descriptor.return_type);
+            include_abi_type(&mut types, &method.descriptor.return_type);
         }
         for (identity, interface) in local_function_objects {
-            Self::insert(&mut types, identity);
-            Self::insert(&mut types, &interface.erased());
+            include_abi_type(&mut types, identity);
+            include_abi_type(&mut types, &interface.erased());
         }
         if let Some(class) = class {
             let mut pending = vec![class];
             while let Some(class) = pending.pop() {
                 pending.extend(class.nested.iter());
                 if let Some(current) = class.declaration.current_type() {
-                    Self::insert(&mut types, &current);
+                    include_abi_type(&mut types, &current);
                 }
                 if let Some(extends) = &class.declaration.extends {
-                    Self::insert(&mut types, extends);
+                    include_abi_type(&mut types, extends);
                 }
                 for interface in &class.declaration.implements {
-                    Self::insert(&mut types, interface);
+                    include_abi_type(&mut types, interface);
                 }
             }
         }
         types
-    }
-
-    fn insert(types: &mut std::collections::BTreeSet<ArgType>, ty: &ArgType) {
-        let mut current = ty;
-        loop {
-            types.insert(current.clone());
-            match current {
-                ArgType::Array(element) => current = element.as_ref(),
-                _ => break,
-            }
-        }
     }
 }
 
@@ -797,6 +780,7 @@ impl<'a> JavaTypeLowering<'a> {
                 method.body = None;
                 continue;
             }
+            let had_body = method.body.is_some();
             let lowered = {
                 self.method(
                     method,
@@ -840,9 +824,9 @@ impl<'a> JavaTypeLowering<'a> {
                         },
                         &descriptor,
                     );
-                    let failed = method.with_failure(failure);
+                    let mut failed = method.with_failure(failure);
                     self.method(
-                        &failed,
+                        &mut failed,
                         owner.as_ref(),
                         class.declaration.signature.as_ref(),
                         source_super_type.as_ref(),
@@ -850,7 +834,6 @@ impl<'a> JavaTypeLowering<'a> {
                     )?
                 }
             };
-            let had_body = method.body.take().is_some();
             if had_body
                 && lowered.body.as_ref().is_some_and(|body| {
                     source_constructor_count == 1
@@ -1149,7 +1132,7 @@ impl<'a> JavaTypeLowering<'a> {
 
     fn method(
         &self,
-        method: &JavaMethodModel,
+        method: &mut JavaMethodModel,
         owner: Option<&ArgType>,
         class_signature: Option<&ClassSignature>,
         source_super_type: Option<&JavaType>,
@@ -1157,12 +1140,12 @@ impl<'a> JavaTypeLowering<'a> {
             std::collections::BTreeMap<crate::ir::FieldReference, JavaType>,
         >,
     ) -> Result<JavaMethodDeclaration, JavaDecompilerError> {
+        let method_body = method.body.take();
         let declaration = &method.declaration;
         let signature = declaration.signature.as_ref();
         let annotations = self.method_annotations(declaration)?;
         let mut name_scope = crate::language::java::JavaNameScope::default();
-        let reserved_type_qualifiers = method
-            .body
+        let reserved_type_qualifiers = method_body
             .as_ref()
             .into_iter()
             .flat_map(super::java_model::method::JavaMethodBody::static_owner_types)
@@ -1266,7 +1249,7 @@ impl<'a> JavaTypeLowering<'a> {
             .map(Self::failure_body)
             .map(Ok)
             .or_else(|| {
-                method.body.as_ref().map(|body| {
+                method_body.map(|body| {
                     let mut outer_instances = self
                         .outer_instances
                         .iter()
@@ -1312,16 +1295,16 @@ impl<'a> JavaTypeLowering<'a> {
                             &self.generic_uses,
                             self.source_object_types.clone(),
                             self.generic_type_projection.clone(),
-                            source_current_type.clone(),
+                            source_current_type,
                             source_super_type.cloned(),
                             &source_parameter_types,
                             return_type.clone(),
-                            source_type_erasures.clone(),
-                            source_type_bounds.clone(),
-                            generic_throw_types.clone(),
+                            source_type_erasures,
+                            source_type_bounds,
+                            generic_throw_types,
                             outer_instances,
                             {
-                                let mut reserved = reserved_type_qualifiers.clone();
+                                let mut reserved = reserved_type_qualifiers;
                                 if declaration.kind.is_class_initializer() {
                                     reserved.extend(
                                         owner
@@ -1418,7 +1401,7 @@ impl<'a> JavaTypeLowering<'a> {
         let has_override = declaration
             .annotations
             .iter()
-            .any(|annotation| annotation.annotation_type == ArgType::object("java/lang/Override"));
+            .any(|annotation| annotation.annotation_type.as_object() == Some("java/lang/Override"));
         if declaration.override_semantics.is_some()
             && !declaration.kind.is_constructor()
             && !declaration.kind.is_class_initializer()
@@ -1990,7 +1973,8 @@ mod tests {
     #[test]
     fn source_projection_infers_platform_subtype_with_relative_nested_argument() {
         let current = ArgType::object("pkg/Outer$Builder");
-        let names = JavaTypeNameResolver::new(
+        let names = JavaTypeNameResolver::for_test(
+            None,
             Some("pkg"),
             Some(&current),
             [
@@ -2103,7 +2087,11 @@ mod tests {
             Some(&class),
             &field_references,
             &method_references,
-            [ArgType::array(alloc.clone())],
+            {
+                let mut uses = super::super::type_uses::DeclaredTypeUses::default();
+                uses.extend([&ArgType::array(alloc.clone())]);
+                uses.finish().unwrap().0
+            },
             Some(&current),
             &local_fo,
         );
@@ -2154,7 +2142,7 @@ mod tests {
             None,
             &std::collections::BTreeSet::new(),
             &method_references,
-            std::iter::empty(),
+            Default::default(),
             Some(&current),
             &std::collections::BTreeMap::new(),
         );

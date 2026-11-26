@@ -138,30 +138,26 @@ impl<'a> SemanticFactory<'a> {
             {
                 continue;
             }
-            let mut instruction = insn.clone();
             let kind = match (
-                instruction.insn_type,
-                instruction.payload.bool_expr.take(),
-                instruction.args.as_slice(),
-                instruction.result.as_ref(),
+                insn.insn_type,
+                insn.payload.bool_expr.as_ref(),
+                insn.args.as_slice(),
+                insn.result.as_ref(),
             ) {
                 (InsnType::Ternary, Some(condition), [when_true, when_false], Some(result)) => {
                     SemanticStatementKind::Definition {
-                        id: instruction.id,
+                        id: insn.id,
                         result: result.clone(),
                         value: SemanticExpression::select(
-                            self.predicate(condition)?,
+                            self.predicate(condition.clone())?,
                             SemanticExpression::from_argument(when_true.clone())?,
                             SemanticExpression::from_argument(when_false.clone())?,
                         ),
                     }
                 }
-                (_, condition, _, _) => {
-                    instruction.payload.bool_expr = condition;
-                    SemanticStatementKind::Instruction(SemanticOperation::from_instruction(
-                        instruction,
-                    )?)
-                }
+                _ => SemanticStatementKind::Instruction(SemanticOperation::from_instruction(
+                    insn.clone(),
+                )?),
             };
             statements.push(SemanticStatement {
                 site: None,

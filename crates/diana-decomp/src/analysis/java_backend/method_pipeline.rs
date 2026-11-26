@@ -226,8 +226,7 @@ impl<'a> MethodBodyPipeline<'a> {
             .observer
             .is_enabled(crate::ir::AnalysisEventKind::IncompleteMethod)
             && cfg.method().descriptor().return_type != ArgType::VOID
-            && crate::ir::semantic::SemanticCompletion::analyze(semantic.body())
-                .can_complete_normally()
+            && crate::ir::semantic::ControlCompletion::normally_completes(semantic.body())
         {
             self.observer
                 .observe(crate::ir::AnalysisEvent::IncompleteMethod {
@@ -311,6 +310,23 @@ pub(super) struct BodyTypeUses {
     pub lambda_types: Box<[ArgType]>,
 }
 
+impl BodyTypeUses {
+    pub(super) fn required_types() -> &'static [ArgType; 3] {
+        static REQUIRED: std::sync::LazyLock<[ArgType; 3]> = std::sync::LazyLock::new(|| {
+            [
+                ArgType::object("java/lang/Float"),
+                ArgType::object("java/lang/Double"),
+                ArgType::object("java/lang/Long"),
+            ]
+        });
+        &REQUIRED
+    }
+
+    pub(super) fn iter(&self) -> impl Iterator<Item = &ArgType> {
+        self.uses.iter().chain(Self::required_types())
+    }
+}
+
 struct MethodTypeUses<'a> {
     types: &'a crate::ir::analysis::SourceTypeEnvironment,
     uses: std::collections::BTreeSet<ArgType>,
@@ -323,17 +339,12 @@ impl<'a> MethodTypeUses<'a> {
     fn collect(
         method: &'a SemanticMethod<SourceSyntaxSemantics>,
     ) -> Result<BodyTypeUses, JavaDecompilerError> {
-        let mut uses = method
-            .state()
-            .types()
-            .known_types()
-            .cloned()
-            .collect::<std::collections::BTreeSet<_>>();
-        uses.extend([
-            ArgType::object("java/lang/Float"),
-            ArgType::object("java/lang/Double"),
-            ArgType::object("java/lang/Long"),
-        ]);
+        let mut uses = std::collections::BTreeSet::new();
+        for ty in method.state().types().known_types() {
+            if !uses.contains(ty) {
+                uses.insert(ty.clone());
+            }
+        }
         let mut collector = Self {
             types: method.state().types(),
             uses,
