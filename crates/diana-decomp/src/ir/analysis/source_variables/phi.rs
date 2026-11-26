@@ -1671,10 +1671,13 @@ impl PhiCopies {
         mut value: SsaVar,
     ) -> Option<&InsnArg> {
         let mut visited = BTreeSet::new();
-        while visited.insert(value) {
+        loop {
             let canonical = values.get(&value)?;
             match canonical {
                 InsnArg::Reg(register) => {
+                    if !visited.insert(value) {
+                        return None;
+                    }
                     value = SsaVar::from_reg(register)?;
                 }
                 InsnArg::Lit(_) => return Some(canonical),
@@ -1686,7 +1689,6 @@ impl PhiCopies {
                 InsnArg::Wrapped(_) => return None,
             }
         }
-        None
     }
 
     fn typed_constant(value: &InsnArg, ty: &ArgType) -> Option<InsnArg> {

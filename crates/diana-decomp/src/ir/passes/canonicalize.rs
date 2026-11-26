@@ -1,6 +1,6 @@
 //! Fact-driven canonicalization of ordinary CFG topology.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use crate::ir::{Block, BlockId, EdgeKind, InsnType, CFG};
 
@@ -62,15 +62,13 @@ struct CanonicalEntry;
 impl CanonicalEntry {
     fn normalize(cfg: &mut CFG) -> bool {
         let original = cfg.entry;
-        if cfg.incoming_edges(original).is_empty() {
+        if cfg.predecessors_with_kind(original).is_empty() {
             return false;
         }
         let next = cfg
-            .block_ids()
-            .into_iter()
-            .map(BlockId::raw)
-            .max()
-            .map_or(0, |block| block.saturating_add(1));
+            .blocks
+            .last_key_value()
+            .map_or(0, |(&block, _)| block.raw().saturating_add(1));
         let entry = BlockId::new(next);
         cfg.add_block(Block::synthetic(entry));
         cfg.set_exception_coverage(entry, BTreeSet::new());
@@ -85,18 +83,17 @@ struct CanonicalTerminator;
 impl CanonicalTerminator {
     fn normalize(cfg: &mut CFG) -> Result<bool, CanonicalizationError> {
         let mut reductions = Vec::new();
-        for block in cfg.block_ids() {
-            let body = cfg
-                .block(block)
-                .ok_or(CanonicalizationError::MissingBlock(block))?;
+        for (&block, body) in &cfg.blocks {
             if !body.terminator().is_some_and(|instruction| {
                 matches!(instruction.insn_type, InsnType::If | InsnType::Switch)
             }) {
                 continue;
             }
-            let targets = cfg.normal_successors(block).collect::<BTreeSet<_>>();
-            if let [target] = targets.iter().copied().collect::<Vec<_>>().as_slice() {
-                reductions.push((block, *target));
+            let mut targets = cfg.normal_successors(block);
+            if let Some(target) = targets.next() {
+                if targets.all(|other| other == target) {
+                    reductions.push((block, target));
+                }
             }
         }
         for (block, target) in &reductions {
@@ -133,54 +130,50 @@ impl CanonicalTerminator {
 
 struct CanonicalFacts<'a> {
     cfg: &'a CFG,
-    incoming: BTreeMap<BlockId, Vec<(BlockId, EdgeKind)>>,
     handler_entries: BTreeSet<BlockId>,
 }
 
 impl<'a> CanonicalFacts<'a> {
     fn analyze(cfg: &'a CFG) -> Self {
-        let mut incoming = cfg
-            .block_ids()
-            .into_iter()
-            .map(|block| (block, Vec::new()))
-            .collect::<BTreeMap<_, _>>();
-        for source in cfg.block_ids() {
-            for &(target, kind) in cfg.successors_with_kind(source) {
-                incoming.entry(target).or_default().push((source, kind));
-            }
-        }
-        for edges in incoming.values_mut() {
-            edges.sort();
-            edges.dedup();
-        }
         let handler_offsets = cfg
             .handlers
             .iter()
             .map(|handler| handler.handler)
             .collect::<BTreeSet<_>>();
-        let handler_entries = cfg
-            .blocks
-            .values()
-            .filter(|block| !block.synthetic && handler_offsets.contains(&block.offset))
-            .map(|block| block.id)
-            .collect();
+        let handler_entries = if handler_offsets.is_empty() {
+            BTreeSet::new()
+        } else {
+            cfg.blocks
+                .values()
+                .filter(|block| !block.synthetic && handler_offsets.contains(&block.offset))
+                .map(|block| block.id)
+                .collect()
+        };
         Self {
             cfg,
-            incoming,
             handler_entries,
         }
+    }
+
+    // The CFG owns sorted, deduplicated reverse edges. An absent source has
+    // no block in this pass and must not participate in a physical rewrite.
+    fn incoming(&self, block: BlockId) -> impl Iterator<Item = (BlockId, EdgeKind)> + '_ {
+        self.cfg
+            .predecessors_with_kind(block)
+            .iter()
+            .copied()
+            .filter(|(source, _)| self.cfg.blocks.contains_key(source))
     }
 
     fn independent_edits(&self) -> Vec<GraphEdit> {
         let mut selected = Vec::new();
         let mut touched = BTreeSet::new();
-        for block in self.cfg.block_ids() {
+        for block in self.cfg.blocks.keys().copied() {
             let Some(edit) = self.merge(block).or_else(|| self.bypass(block)) else {
                 continue;
             };
-            let edit_blocks = edit.touched();
-            if edit_blocks.is_disjoint(&touched) {
-                touched.extend(edit_blocks);
+            if !edit.touched().any(|block| touched.contains(&block)) {
+                touched.extend(edit.touched());
                 selected.push(edit);
             }
         }
@@ -211,10 +204,9 @@ impl<'a> CanonicalFacts<'a> {
         if *tail == self.cfg.entry || self.handler_entries.contains(tail) {
             return None;
         }
-        let [(predecessor, EdgeKind::Normal)] = self.incoming.get(tail)?.as_slice() else {
-            return None;
-        };
-        if *predecessor != head
+        let mut incoming = self.incoming(*tail);
+        if incoming.next() != Some((head, EdgeKind::Normal))
+            || incoming.next().is_some()
             || self.cfg.exception_coverage(head) != self.cfg.exception_coverage(*tail)
         {
             return None;
@@ -242,7 +234,7 @@ impl<'a> CanonicalFacts<'a> {
         if *target == block {
             return None;
         }
-        let incoming = self.incoming.get(&block)?.clone();
+        let incoming: Vec<_> = self.incoming(block).collect();
         if incoming.is_empty() {
             return None;
         }
@@ -276,25 +268,22 @@ enum GraphEdit {
 }
 
 impl GraphEdit {
-    fn touched(&self) -> BTreeSet<BlockId> {
-        match self {
+    fn touched(&self) -> impl Iterator<Item = BlockId> + '_ {
+        let (first, second, edges) = match self {
             Self::Merge {
                 head,
                 tail,
                 outgoing,
-            } => std::iter::once(*head)
-                .chain(std::iter::once(*tail))
-                .chain(outgoing.iter().map(|(target, _)| *target))
-                .collect(),
+            } => (*head, *tail, outgoing),
             Self::Bypass {
                 block,
                 target,
                 incoming,
-            } => std::iter::once(*block)
-                .chain(std::iter::once(*target))
-                .chain(incoming.iter().map(|(source, _)| *source))
-                .collect(),
-        }
+            } => (*block, *target, incoming),
+        };
+        [first, second]
+            .into_iter()
+            .chain(edges.iter().map(|&(neighbour, _)| neighbour))
     }
 
     fn apply(self, cfg: &mut CFG) -> Result<(), CanonicalizationError> {
@@ -331,11 +320,8 @@ impl GraphEdit {
                 target,
                 incoming,
             } => {
-                let sources = incoming
-                    .iter()
-                    .map(|(source, _)| *source)
-                    .collect::<BTreeSet<_>>();
-                for source in sources {
+                for edges in incoming.chunk_by(|left, right| left.0 == right.0) {
+                    let source = edges[0].0;
                     let outgoing = cfg.successors_with_kind(source).to_vec();
                     cfg.remove_all_edges_from(source);
                     for (successor, kind) in outgoing {

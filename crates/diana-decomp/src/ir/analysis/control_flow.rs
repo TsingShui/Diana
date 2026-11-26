@@ -133,55 +133,60 @@ impl ControlContinuations {
     }
 
     pub fn preserving(cfg: &CFG, boundaries: &BTreeSet<BlockId>) -> Self {
-        let destinations = cfg
-            .block_ids()
-            .into_iter()
-            .filter(|target| cfg.block(*target).is_some_and(|block| block.synthetic))
-            .filter_map(|target| {
-                let destination = Self::find_destination(cfg, boundaries, target);
-                (destination != target).then_some((target, destination))
+        let mut next: BTreeMap<_, _> = cfg
+            .blocks
+            .iter()
+            .filter_map(|(&id, block)| {
+                if !block.synthetic || boundaries.contains(&id) {
+                    return None;
+                }
+                // Exactly one physical successor, of any ordinary edge kind.
+                let &[(target, kind)] = cfg.successors_with_kind(id) else {
+                    return None;
+                };
+                if kind.is_exception()
+                    || cfg
+                        .predecessors_with_kind(id)
+                        .iter()
+                        .any(|(_, kind)| kind.is_exception())
+                    || !block
+                        .insns
+                        .iter()
+                        .all(|insn| matches!(insn.insn_type, InsnType::Nop | InsnType::Goto))
+                {
+                    return None;
+                }
+                Some((id, target))
             })
             .collect();
-        Self { destinations }
-    }
 
-    fn find_destination(
-        cfg: &CFG,
-        phi_predecessors: &BTreeSet<BlockId>,
-        target: BlockId,
-    ) -> BlockId {
-        let mut current = target;
-        let mut visited = BTreeSet::new();
-        while visited.insert(current) {
-            let Some(block) = cfg.block(current) else {
-                break;
-            };
-            if !block.synthetic
-                || phi_predecessors.contains(&current)
-                || cfg
-                    .incoming_edges(current)
-                    .iter()
-                    .any(|(_, kind)| kind.is_exception())
-                || cfg
-                    .successors_with_kind(current)
-                    .iter()
-                    .any(|(_, kind)| kind.is_exception())
-                || !block.insns.iter().all(|instruction| {
-                    matches!(instruction.insn_type, InsnType::Nop | InsnType::Goto)
-                })
-            {
-                break;
+        let mut destinations = BTreeMap::new();
+        let mut path = Vec::new();
+        while let Some((start, mut current)) = next.pop_first() {
+            path.clear();
+            path.push(start);
+            while let Some(target) = next.remove(&current) {
+                path.push(current);
+                current = target;
             }
-            let successors = cfg.normal_successors(current).collect::<Vec<_>>();
-            let [successor] = successors.as_slice() else {
-                break;
-            };
-            current = *successor;
+            // Every member of a cycle returns to itself. An incoming path
+            // stops at the first cycle member it encounters, including when
+            // that member was already resolved on an earlier walk.
+            let end = path
+                .iter()
+                .position(|&block| block == current)
+                .unwrap_or(path.len());
+            let destination = destinations.get(&current).copied().unwrap_or(current);
+            destinations.extend(path[..end].iter().map(|&block| (block, destination)));
         }
-        current
+        Self { destinations }
     }
 
     pub fn destination(&self, target: BlockId) -> BlockId {
         self.destinations.get(&target).copied().unwrap_or(target)
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/control_continuations.rs"]
+mod continuation_tests;

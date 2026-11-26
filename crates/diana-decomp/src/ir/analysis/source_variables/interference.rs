@@ -1,3 +1,5 @@
+mod live_set;
+use live_set::LiveSet;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ir::analysis::{SemanticFlowGraph, SemanticFlowPoint};
@@ -13,22 +15,23 @@ use super::{edge_arguments::ContractedEdgeArguments, SourceVariableError, SsaCla
 
 #[derive(Default)]
 struct BlockLiveness {
-    definitions: BTreeSet<SsaVar>,
-    input: BTreeSet<SsaVar>,
-    output: BTreeSet<SsaVar>,
-    phi_definitions: BTreeSet<SsaVar>,
+    definitions: LiveSet,
+    input: LiveSet,
+    output: LiveSet,
+    phi_definitions: LiveSet,
 }
 
 impl BlockLiveness {
-    /// True when this outgoing value also becomes newly live at entry.
-    fn add_live_out(&mut self, value: SsaVar) -> bool {
-        self.output.insert(value) && !self.definitions.contains(&value) && self.input.insert(value)
+    fn add_live_out(&mut self, word: usize, bits: u64) -> u64 {
+        let new = self.output.add(word, bits);
+        self.input.add(word, new & !self.definitions.word(word))
     }
 }
 
 pub(super) struct SsaLiveness {
+    names: Box<[SsaVar]>,
     blocks: BTreeMap<BlockId, BlockLiveness>,
-    phi_uses: BTreeMap<(BlockId, BlockId, crate::ir::EdgeKind), BTreeSet<SsaVar>>,
+    phi_uses: BTreeMap<(BlockId, BlockId, crate::ir::EdgeKind), LiveSet>,
 }
 
 impl SsaLiveness {
@@ -36,45 +39,54 @@ impl SsaLiveness {
         cfg: &CFG,
         retained: &BTreeSet<SsaVar>,
     ) -> Result<Self, SourceVariableError> {
+        let names: Box<[_]> = retained.iter().copied().collect();
+        let id = |name: SsaVar| names.binary_search(&name).ok();
         let mut blocks = BTreeMap::new();
-        let mut phi_uses =
-            BTreeMap::<(BlockId, BlockId, crate::ir::EdgeKind), BTreeSet<SsaVar>>::new();
+        let mut phi_uses = BTreeMap::<_, LiveSet>::new();
         for (&block, body) in &cfg.blocks {
             let mut facts = BlockLiveness::default();
             for instruction in &body.insns {
                 if instruction.insn_type == InsnType::Phi {
-                    if let Some(result) = instruction.result.as_ref().and_then(SsaVar::from_reg) {
-                        if retained.contains(&result) {
-                            facts.definitions.insert(result);
-                            facts.phi_definitions.insert(result);
-                        }
+                    if let Some(result) = instruction
+                        .result
+                        .as_ref()
+                        .and_then(SsaVar::from_reg)
+                        .and_then(id)
+                    {
+                        facts.definitions.insert(result);
+                        facts.phi_definitions.insert(result);
                     }
                     for (&(predecessor, edge_kind), argument) in
                         instruction.payload.phi_edges.iter().zip(&instruction.args)
                     {
-                        if let Some(value) = argument.as_register().and_then(SsaVar::from_reg) {
-                            if retained.contains(&value) {
-                                phi_uses
-                                    .entry((predecessor, block, edge_kind))
-                                    .or_default()
-                                    .insert(value);
-                            }
+                        if let Some(value) = argument
+                            .as_register()
+                            .and_then(SsaVar::from_reg)
+                            .and_then(id)
+                        {
+                            phi_uses
+                                .entry((predecessor, block, edge_kind))
+                                .or_default()
+                                .insert(value);
                         }
                     }
                     continue;
                 }
                 for usage in InstructionUses::collect(instruction)
                     .into_iter()
-                    .filter(|usage| retained.contains(usage))
+                    .filter_map(id)
                 {
-                    if !facts.definitions.contains(&usage) {
+                    if !facts.definitions.contains(usage) {
                         facts.input.insert(usage);
                     }
                 }
-                if let Some(result) = instruction.result.as_ref().and_then(SsaVar::from_reg) {
-                    if retained.contains(&result) {
-                        facts.definitions.insert(result);
-                    }
+                if let Some(result) = instruction
+                    .result
+                    .as_ref()
+                    .and_then(SsaVar::from_reg)
+                    .and_then(id)
+                {
+                    facts.definitions.insert(result);
                 }
             }
             blocks.insert(block, facts);
@@ -82,41 +94,45 @@ impl SsaLiveness {
 
         let mut pending = Vec::new();
         for (&source, facts) in blocks.iter_mut().rev() {
-            pending.extend(facts.input.iter().map(|&value| (source, value)));
+            pending.extend(facts.input.words().map(|(word, bits)| (source, word, bits)));
             for &(target, kind) in cfg.successors_with_kind(source) {
                 if !cfg.blocks.contains_key(&target) {
                     return Err(SourceVariableError::MissingBlock(target));
                 }
                 if let Some(arguments) = phi_uses.get(&(source, target, kind)) {
-                    for &value in arguments {
-                        if facts.add_live_out(value) {
-                            pending.push((source, value));
+                    for (word, bits) in arguments.words() {
+                        let added = facts.add_live_out(word, bits);
+                        if added != 0 {
+                            pending.push((source, word, added));
                         }
                     }
                 }
             }
         }
-        // The input/output equations are monotone. Propagate each new entry
-        // fact backward once. Phi operands above belong to their own edge,
-        // and phi definitions at a successor kill the incoming value.
-        while let Some((target, value)) = pending.pop() {
-            if blocks[&target].phi_definitions.contains(&value) {
+        // Propagate whole words of new entry facts. Phi operands seed their
+        // concrete edge above, while a Phi definition kills that incoming name.
+        while let Some((target, word, bits)) = pending.pop() {
+            let through = bits & !blocks[&target].phi_definitions.word(word);
+            if through == 0 {
                 continue;
             }
             for &(source, _) in cfg.predecessors_with_kind(target) {
                 if let Some(facts) = blocks.get_mut(&source) {
-                    if facts.add_live_out(value) {
-                        pending.push((source, value));
+                    let added = facts.add_live_out(word, through);
+                    if added != 0 {
+                        pending.push((source, word, added));
                     }
                 }
             }
         }
-        // Transfer equations are complete. Keep the live sets in their
-        // original block table and materialize no per-edge copies.
         for facts in blocks.values_mut() {
-            facts.definitions.clear();
+            facts.definitions = LiveSet::default();
         }
-        Ok(Self { blocks, phi_uses })
+        Ok(Self {
+            names,
+            blocks,
+            phi_uses,
+        })
     }
 
     /// Borrow the live names on a given CFG successor edge. Both consumers
@@ -136,12 +152,15 @@ impl SsaLiveness {
             .phi_uses
             .get(&(source, target, kind))
             .into_iter()
-            .flatten();
-        Ok(facts.input.difference(&facts.phi_definitions).chain(
-            operands.filter(|value| {
+            .flat_map(LiveSet::ids);
+        Ok(facts
+            .input
+            .ids()
+            .filter(|&value| !facts.phi_definitions.contains(value))
+            .chain(operands.filter(|&value| {
                 !facts.input.contains(value) || facts.phi_definitions.contains(value)
-            }),
-        ))
+            }))
+            .map(|id| &self.names[id]))
     }
 
     pub(super) fn normal_continuation_live(
@@ -214,7 +233,7 @@ impl InterferenceGraph {
                 Self::add_clique(
                     graph.groups.as_ref(),
                     &mut graph.hard_edges,
-                    facts.input.iter().copied(),
+                    facts.input.ids().map(|id| liveness.names[id]),
                 );
             }
         }
@@ -225,25 +244,30 @@ impl InterferenceGraph {
                 .ok_or(SourceVariableError::MissingBlock(block))?;
             let mut live = facts.output.clone();
             for instruction in body.insns.iter().rev() {
+                let id = |name: SsaVar| liveness.names.binary_search(&name).ok();
                 let definition = instruction
                     .result
                     .as_ref()
                     .and_then(SsaVar::from_reg)
-                    .filter(|value| retained.contains(value));
-                let mut uses = if instruction.insn_type == InsnType::Phi {
+                    .and_then(id);
+                let uses: smallvec::SmallVec<[usize; 4]> = if instruction.insn_type == InsnType::Phi
+                {
                     Default::default()
                 } else {
                     InstructionUses::collect(instruction)
+                        .into_iter()
+                        .filter_map(id)
+                        .collect()
                 };
-                uses.retain(|value| retained.contains(value));
                 if needs_interference {
                     Self::add_clique(
                         graph.groups.as_ref(),
                         &mut graph.hard_edges,
-                        uses.iter().copied(),
+                        uses.iter().map(|&id| liveness.names[id]),
                     );
                 }
-                if let Some(definition) = definition {
+                if let Some(id) = definition {
+                    let definition = liveness.names[id];
                     if needs_interference && graph.participates(definition) {
                         let move_source = (instruction.insn_type == InsnType::Move)
                             .then(|| instruction.args.first())
@@ -251,16 +275,18 @@ impl InterferenceGraph {
                             .and_then(InsnArg::as_register)
                             .and_then(SsaVar::from_reg);
                         for other in live
-                            .iter()
-                            .copied()
+                            .ids()
+                            .map(|id| liveness.names[id])
                             .filter(|value| *value != definition && Some(*value) != move_source)
                         {
                             graph.add(definition, other);
                         }
                     }
-                    live.remove(&definition);
+                    live.remove(id);
                 }
-                live.extend(uses);
+                for id in uses {
+                    live.insert(id);
+                }
             }
             if facts.input != live {
                 return Err(SourceVariableError::LivenessMismatch(block));
@@ -340,12 +366,15 @@ impl InterferenceGraph {
     fn add_clique(
         groups: Option<&Groups>,
         edges: &mut Edges,
-        mut values: impl ExactSizeIterator<Item = SsaVar> + Clone,
+        mut values: impl Iterator<Item = SsaVar> + Clone,
     ) {
         // Short operand lists need no scratch table. Wide live-in sets can
         // contain many independent components: enumerate only pairs that
         // a candidate union could ever bring into the same source variable.
-        if let Some(groups) = groups.filter(|_| values.len() > 8) {
+        if let Some(groups) = groups.filter(|_| {
+            let (min, max) = values.size_hint();
+            min > 8 || max.is_none_or(|n| n > 8) && values.clone().nth(8).is_some()
+        }) {
             let mut members =
                 foldhash::HashMap::<SsaVar, smallvec::SmallVec<[SsaVar; 4]>>::default();
             for value in values {
@@ -393,21 +422,31 @@ impl SemanticLiveness {
         interference: &mut InterferenceGraph,
         flow: impl FnOnce() -> std::sync::Arc<SemanticFlowGraph>,
     ) -> Result<Self, SourceVariableError> {
-        let sites = SemanticSiteCollector::new(retained).collect(root)?;
+        let sites =
+            SemanticSiteCollector::new(retained, interference.has_candidates()).collect(root)?;
         let flow = flow();
         if !flow.is_complete() {
             return Err(SourceVariableError::IncompleteSemanticFlow);
         }
-        if !interference.has_candidates() {
-            for point in flow.ordered_points() {
-                if let SemanticFlowPoint::Before(site) = point {
-                    if !sites.contains_key(&site) {
+        let sites = match sites {
+            SiteRecords::Facts(facts) => facts,
+            SiteRecords::Identities(mut ids) => {
+                ids.sort_unstable();
+                let mut known = ids.into_iter().peekable();
+                for point in flow.ordered_points() {
+                    let SemanticFlowPoint::Before(site) = point else {
+                        continue;
+                    };
+                    while known.next_if(|value| *value < site).is_some() {}
+                    if known.next() != Some(site) {
                         return Err(SourceVariableError::MissingSemanticSite("flow point"));
                     }
                 }
+                return Ok(Self {
+                    sites: BTreeMap::new(),
+                });
             }
-            return Ok(Self { sites });
-        }
+        };
         for facts in sites.values() {
             InterferenceGraph::add_clique(
                 interference.groups.as_ref(),
@@ -572,23 +611,29 @@ impl SemanticLiveness {
     }
 }
 
+// Site validation is required even when there are no names to coalesce.
+// Only an interference query consumes the definitions and reads at each site.
+enum SiteRecords {
+    Identities(smallvec::SmallVec<[SemanticSiteId; 8]>),
+    Facts(BTreeMap<SemanticSiteId, SemanticSiteFacts>),
+}
+
 struct SemanticSiteCollector<'a> {
     retained: &'a BTreeSet<SsaVar>,
-    sites: BTreeMap<SemanticSiteId, SemanticSiteFacts>,
+    sites: SiteRecords,
 }
 
 impl<'a> SemanticSiteCollector<'a> {
-    fn new(retained: &'a BTreeSet<SsaVar>) -> Self {
-        Self {
-            retained,
-            sites: BTreeMap::new(),
-        }
+    fn new(retained: &'a BTreeSet<SsaVar>, with_facts: bool) -> Self {
+        let sites = if with_facts {
+            SiteRecords::Facts(BTreeMap::new())
+        } else {
+            SiteRecords::Identities(Default::default())
+        };
+        Self { retained, sites }
     }
 
-    fn collect(
-        mut self,
-        root: &SemanticNode,
-    ) -> Result<BTreeMap<SemanticSiteId, SemanticSiteFacts>, SourceVariableError> {
+    fn collect(mut self, root: &SemanticNode) -> Result<SiteRecords, SourceVariableError> {
         let mut pending = vec![root];
         while let Some(node) = pending.pop() {
             match node {
@@ -632,10 +677,10 @@ impl<'a> SemanticSiteCollector<'a> {
                     ..
                 } => {
                     self.record_expression(iterable.site, iterable)?;
-                    if let (Some(site), Some(variable)) =
-                        (iterable.site, SsaVar::from_reg(variable))
+                    if let (SiteRecords::Facts(sites), Some(site), Some(value)) =
+                        (&mut self.sites, iterable.site, SsaVar::from_reg(variable))
                     {
-                        self.site(site).definitions.insert(variable);
+                        sites.entry(site).or_default().definitions.insert(value);
                     }
                     pending.push(body);
                 }
@@ -666,7 +711,9 @@ impl<'a> SemanticSiteCollector<'a> {
                     let site = leave
                         .site
                         .ok_or(SourceVariableError::MissingSemanticSite("leave"))?;
-                    let mut reader = self.reads(site);
+                    let Some(mut reader) = self.reads(site) else {
+                        continue;
+                    };
                     if let Some(condition) = &leave.condition {
                         reader.visit_predicate(condition);
                     }
@@ -687,7 +734,9 @@ impl<'a> SemanticSiteCollector<'a> {
             .site
             .ok_or(SourceVariableError::MissingSemanticSite("statement"))?;
         let retained = self.retained;
-        let facts = self.site(site);
+        let Some(facts) = self.site(site) else {
+            return Ok(());
+        };
         if let Some(origin) = &statement.origin {
             facts.blocks.insert(origin.block);
         }
@@ -708,7 +757,9 @@ impl<'a> SemanticSiteCollector<'a> {
         predicate: &SemanticPredicate,
     ) -> Result<(), SourceVariableError> {
         let site = site.ok_or(SourceVariableError::MissingSemanticSite("predicate"))?;
-        self.reads(site).visit_predicate(predicate);
+        if let Some(mut reads) = self.reads(site) {
+            reads.visit_predicate(predicate);
+        }
         Ok(())
     }
 
@@ -718,19 +769,28 @@ impl<'a> SemanticSiteCollector<'a> {
         expression: &SemanticExpression,
     ) -> Result<(), SourceVariableError> {
         let site = site.ok_or(SourceVariableError::MissingSemanticSite("expression"))?;
-        self.reads(site).visit_expression(expression);
+        if let Some(mut reads) = self.reads(site) {
+            reads.visit_expression(expression);
+        }
         Ok(())
     }
 
-    fn reads(&mut self, site: SemanticSiteId) -> RetainedReads<'_> {
-        RetainedReads {
-            retained: self.retained,
-            uses: &mut self.site(site).uses,
-        }
+    fn reads(&mut self, site: SemanticSiteId) -> Option<RetainedReads<'_>> {
+        let retained = self.retained;
+        Some(RetainedReads {
+            retained,
+            uses: &mut self.site(site)?.uses,
+        })
     }
 
-    fn site(&mut self, site: SemanticSiteId) -> &mut SemanticSiteFacts {
-        self.sites.entry(site).or_default()
+    fn site(&mut self, site: SemanticSiteId) -> Option<&mut SemanticSiteFacts> {
+        match &mut self.sites {
+            SiteRecords::Identities(ids) => {
+                ids.push(site);
+                None
+            }
+            SiteRecords::Facts(sites) => Some(sites.entry(site).or_default()),
+        }
     }
 }
 
@@ -965,3 +1025,7 @@ mod tests {
 #[cfg(test)]
 #[path = "../../../../tests/internal/linear_semantic_liveness.rs"]
 mod linear_semantic_liveness;
+
+#[cfg(test)]
+#[path = "../../../../tests/internal/ssa_live_words.rs"]
+mod ssa_live_words;

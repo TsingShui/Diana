@@ -296,11 +296,16 @@ impl SsaStage<'_> {
 struct StageContext<'a> {
     cfg: &'a mut CFG,
     observer: &'a dyn crate::ir::AnalysisObserver,
+    validated: bool,
 }
 
 impl<'a> StageContext<'a> {
     fn new(cfg: &'a mut CFG, observer: &'a dyn crate::ir::AnalysisObserver) -> Self {
-        Self { cfg, observer }
+        Self {
+            cfg,
+            observer,
+            validated: false,
+        }
     }
 
     fn pass<P>(&mut self, stage: &'static str, pass: &mut P) -> Result<bool, CfgPipelineError>
@@ -321,6 +326,7 @@ impl<'a> StageContext<'a> {
         CfgPipelineError: From<E>,
     {
         self.observer.checkpoint()?;
+        self.validated = false;
         let result = run(self.cfg).map_err(CfgPipelineError::from)?;
         self.observe(stage, name, result);
         self.observer.checkpoint()?;
@@ -330,8 +336,13 @@ impl<'a> StageContext<'a> {
     fn validate(&mut self, stage: &'static str) -> Result<(), CfgPipelineError> {
         self.observer.checkpoint()?;
         let mut validator = ValidateCFG;
-        let result = validator.run(self.cfg)?;
-        self.observe(stage, validator.name(), result);
+        // Adjacent stage boundaries may publish the same immutable CFG. Keep
+        // both observer events and checkpoints while checking that snapshot once.
+        if !self.validated {
+            validator.run(self.cfg)?;
+            self.validated = true;
+        }
+        self.observe(stage, validator.name(), PassResult::Unchanged);
         self.observer.checkpoint()?;
         Ok(())
     }

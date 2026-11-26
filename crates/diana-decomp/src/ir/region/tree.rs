@@ -75,10 +75,13 @@ impl RegionTree {
 
     pub(super) fn cover_method(&mut self, cfg: &CFG) -> Result<(), RegionInvariantError> {
         let root = self.root;
-        self.region_mut(root)
+        let blocks = &mut self
+            .region_mut(root)
             .ok_or(RegionInvariantError::UnknownRegion(root))?
-            .blocks
-            .extend(cfg.block_ids());
+            .blocks;
+        if blocks.len() != cfg.blocks.len() || !blocks.iter().eq(cfg.blocks.keys()) {
+            blocks.extend(cfg.blocks.keys().copied());
+        }
         Ok(())
     }
 
@@ -1005,14 +1008,14 @@ impl RegionTree {
 
         // Overlapping regions are now known to be nested. Visiting a parent
         // before its children gives each block its unique deepest owner.
-        let blocks = cfg.block_ids();
-        let mut owners = blocks
-            .iter()
+        let mut owners = cfg
+            .blocks
+            .keys()
             .copied()
             .filter(|block| root.owns_block(*block))
             .map(|block| (block, self.root))
             .collect::<BTreeMap<_, _>>();
-        let root_covers_all = owners.len() == blocks.len();
+        let root_covers_all = owners.len() == cfg.blocks.len();
         let mut pending = root.children.clone();
         while let Some(id) = pending.pop() {
             let region = self
@@ -1026,7 +1029,7 @@ impl RegionTree {
             pending.extend(&region.children);
         }
         if !root_covers_all {
-            if let Some(block) = blocks.into_iter().find(|block| !owners.contains_key(block)) {
+            if let Some(&block) = cfg.blocks.keys().find(|block| !owners.contains_key(block)) {
                 return Err(RegionInvariantError::MissingOwner(block));
             }
         }

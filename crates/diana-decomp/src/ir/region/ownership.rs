@@ -21,12 +21,32 @@ impl LexicalOwnershipClosure {
         handlers: &BTreeMap<RegionId, Vec<RegionId>>,
         tree: &mut RegionTree,
     ) -> Result<(), RegionInvariantError> {
-        let predecessors = cfg.normal_predecessor_snapshot();
+        // With a single lexical owner, every ordinary edge has the same
+        // ownership on both ends. Keep the ordinary discovery order when a
+        // malformed graph references a block outside that owner.
+        if let Some(root) = tree.region(tree.root()) {
+            if tree.regions.len() == 1
+                && root.id == tree.root()
+                && root.parent.is_none()
+                && root.children.is_empty()
+                && matches!(root.kind, RegionKind::Method)
+                && root.blocks.iter().eq(cfg.blocks.keys())
+                && cfg.graph_nodes().all(|source| {
+                    root.owns_block(source)
+                        && cfg
+                            .normal_successors(source)
+                            .all(|target| root.owns_block(target))
+                })
+            {
+                return Ok(());
+            }
+        }
         loop {
             let mut candidates = BTreeMap::<RegionId, BTreeSet<BlockId>>::new();
             for block in cfg
-                .block_ids()
-                .into_iter()
+                .blocks
+                .keys()
+                .copied()
                 .filter(|block| Self::is_non_throwing(cfg, *block))
             {
                 candidates
@@ -36,13 +56,9 @@ impl LexicalOwnershipClosure {
             }
             let mut changed = false;
             for (current_owner, blocks) in candidates {
-                for component in Self::components(cfg, &predecessors, &blocks) {
+                for component in Self::components(cfg, &blocks) {
                     let incoming = component.iter().flat_map(|block| {
-                        predecessors
-                            .get(block)
-                            .into_iter()
-                            .flatten()
-                            .copied()
+                        cfg.normal_predecessors(*block)
                             .filter(|predecessor| !component.contains(predecessor))
                     });
                     let outgoing = component.iter().flat_map(|block| {
@@ -92,7 +108,6 @@ impl LexicalOwnershipClosure {
             .filter(|region| matches!(&region.kind, RegionKind::Try))
             .map(|region| region.id)
             .collect::<Vec<_>>();
-        let predecessors = cfg.normal_predecessor_snapshot();
         for candidate in candidates {
             let region = tree
                 .region(candidate)
@@ -111,11 +126,7 @@ impl LexicalOwnershipClosure {
                 .copied()
                 .collect::<BTreeSet<_>>();
             let incoming = region.blocks.iter().flat_map(|block| {
-                predecessors
-                    .get(block)
-                    .into_iter()
-                    .flatten()
-                    .copied()
+                cfg.normal_predecessors(*block)
                     .filter(|predecessor| !region.blocks.contains(predecessor))
             });
             let outgoing = region
@@ -208,7 +219,6 @@ impl LexicalOwnershipClosure {
         handler: RegionId,
         owner: RegionId,
     ) -> Result<(), RegionInvariantError> {
-        let predecessors = cfg.normal_predecessor_snapshot();
         loop {
             let scope = tree
                 .region(handler)
@@ -226,11 +236,9 @@ impl LexicalOwnershipClosure {
                 .collect::<BTreeSet<_>>();
             let mut additions = BTreeSet::new();
             for block in candidates {
-                let private = predecessors
-                    .get(&block)
-                    .into_iter()
-                    .flatten()
-                    .all(|predecessor| scope.contains(predecessor));
+                let private = cfg
+                    .normal_predecessors(block)
+                    .all(|predecessor| scope.contains(&predecessor));
                 if private && tree.owner(block)? == owner {
                     additions.insert(block);
                 }
@@ -281,11 +289,7 @@ impl LexicalOwnershipClosure {
         })
     }
 
-    fn components(
-        cfg: &CFG,
-        predecessors: &BTreeMap<BlockId, Vec<BlockId>>,
-        candidates: &BTreeSet<BlockId>,
-    ) -> Vec<BTreeSet<BlockId>> {
+    fn components(cfg: &CFG, candidates: &BTreeSet<BlockId>) -> Vec<BTreeSet<BlockId>> {
         let mut remaining = candidates.clone();
         let mut components = Vec::new();
         while let Some(seed) = remaining.pop_first() {
@@ -295,11 +299,8 @@ impl LexicalOwnershipClosure {
                 if !component.insert(block) {
                     continue;
                 }
-                let adjacent = predecessors
-                    .get(&block)
-                    .into_iter()
-                    .flatten()
-                    .copied()
+                let adjacent = cfg
+                    .normal_predecessors(block)
                     .chain(cfg.normal_successors(block));
                 for neighbor in adjacent.filter(|neighbor| remaining.remove(neighbor)) {
                     pending.push(neighbor);

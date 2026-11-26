@@ -3,41 +3,20 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use crate::ir::{analysis::SsaVar, ArgType, PrimitiveType};
 
 use super::{
-    constraints::{ArrayConstraint, BoundKind, NormalizedTypeConstraints, TypeBound},
+    bounds::{BoundKind, TypeBound, TypeBounds},
+    constraints::{ArrayConstraint, NormalizedTypeConstraints},
     hierarchy::{SubtypeRelation, TypeHierarchy},
 };
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct TypeState {
-    exact: BTreeSet<ArgType>,
-    lower: BTreeSet<ArgType>,
-    upper: BTreeSet<ArgType>,
-    domain: BTreeSet<ArgType>,
-    fallback: BTreeSet<ArgType>,
-}
-
-impl TypeState {
-    fn from_bounds(bounds: BTreeSet<TypeBound>) -> Self {
-        let mut state = Self::default();
-        for bound in bounds {
-            match bound.kind {
-                BoundKind::Exact => state.exact.insert(bound.ty),
-                BoundKind::Lower => state.lower.insert(bound.ty),
-                BoundKind::Upper => state.upper.insert(bound.ty),
-                BoundKind::Domain => state.domain.insert(bound.ty),
-                BoundKind::Fallback => state.fallback.insert(bound.ty),
-            };
-        }
-        state
-    }
-
+impl TypeBounds {
     fn produced_type(&self, hierarchy: &dyn TypeHierarchy) -> Option<ArgType> {
-        let evidence = if self.exact.is_empty() {
-            &self.lower
+        let exact = self.evidence(BoundKind::Exact);
+        let evidence = if exact.clone().next().is_some() {
+            exact
         } else {
-            &self.exact
+            self.evidence(BoundKind::Lower)
         };
-        TypeLattice::join_all(evidence.iter().cloned(), hierarchy)
+        TypeLattice::join_all(evidence.cloned(), hierarchy)
     }
 }
 
@@ -48,10 +27,7 @@ impl TypeLattice {
         mut constraints: NormalizedTypeConstraints,
         hierarchy: &dyn TypeHierarchy,
     ) -> BTreeMap<SsaVar, ArgType> {
-        let mut states = std::mem::take(&mut constraints.bounds)
-            .into_iter()
-            .map(|(root, bounds)| (root, TypeState::from_bounds(bounds)))
-            .collect::<BTreeMap<_, _>>();
+        let mut states = std::mem::take(&mut constraints.bounds);
         if !(constraints.flows.is_empty()
             && constraints.upper_flows.is_empty()
             && constraints.arrays.is_empty())
@@ -84,7 +60,7 @@ impl TypeLattice {
 
     fn propagate(
         constraints: &NormalizedTypeConstraints,
-        states: &mut BTreeMap<SsaVar, TypeState>,
+        states: &mut BTreeMap<SsaVar, TypeBounds>,
         hierarchy: &dyn TypeHierarchy,
     ) {
         let mut outgoing = BTreeMap::<SsaVar, BTreeSet<SsaVar>>::new();
@@ -132,7 +108,7 @@ impl TypeLattice {
             let array_element = arrays.and_then(|_| match &produced {
                 Some(ArgType::Array(element)) => Some((**element).clone()),
                 Some(_) => None,
-                None => match Self::most_specific_upper(&state.upper, hierarchy)? {
+                None => match Self::most_specific_upper(state, hierarchy)? {
                     ArgType::Array(element) => Some(std::sync::Arc::unwrap_or_clone(element)),
                     _ => None,
                 },
@@ -140,10 +116,15 @@ impl TypeLattice {
             fallback.clear();
             upper.clear();
             if outgoing.is_some() {
-                fallback.extend(state.fallback.iter().cloned());
+                fallback.extend(state.evidence(BoundKind::Fallback).cloned());
             }
             if incoming.is_some() {
-                upper.extend(state.upper.iter().chain(&state.exact).cloned());
+                upper.extend(
+                    state
+                        .evidence(BoundKind::Upper)
+                        .chain(state.evidence(BoundKind::Exact))
+                        .cloned(),
+                );
             }
 
             if let Some(produced) = &produced {
@@ -160,17 +141,21 @@ impl TypeLattice {
             }
             for target in outgoing.into_iter().flatten() {
                 let state = states.entry(*target).or_default();
-                let before = state.fallback.len();
-                state.fallback.extend(fallback.iter().cloned());
-                if state.fallback.len() != before && queued.insert(*target) {
+                let mut changed = false;
+                for ty in &fallback {
+                    changed |= state.insert(TypeBound::new(BoundKind::Fallback, ty.clone()));
+                }
+                if changed && queued.insert(*target) {
                     pending.push_back(*target);
                 }
             }
             for source in incoming.into_iter().flatten() {
                 let state = states.entry(*source).or_default();
-                let before = state.upper.len();
-                state.upper.extend(upper.iter().cloned());
-                if state.upper.len() != before && queued.insert(*source) {
+                let mut changed = false;
+                for ty in &upper {
+                    changed |= state.insert(TypeBound::new(BoundKind::Upper, ty.clone()));
+                }
+                if changed && queued.insert(*source) {
                     pending.push_back(*source);
                 }
             }
@@ -190,7 +175,7 @@ impl TypeLattice {
     }
 
     fn insert_bound(
-        states: &mut BTreeMap<SsaVar, TypeState>,
+        states: &mut BTreeMap<SsaVar, TypeBounds>,
         value: SsaVar,
         kind: BoundKind,
         ty: ArgType,
@@ -198,69 +183,58 @@ impl TypeLattice {
         pending: &mut VecDeque<SsaVar>,
     ) {
         let state = states.entry(value).or_default();
-        let changed = match kind {
-            BoundKind::Exact => state.exact.insert(ty),
-            BoundKind::Lower => state.lower.insert(ty),
-            BoundKind::Upper => state.upper.insert(ty),
-            BoundKind::Domain => state.domain.insert(ty),
-            BoundKind::Fallback => state.fallback.insert(ty),
-        };
+        let changed = state.insert(TypeBound::new(kind, ty));
         if changed && queued.insert(value) {
             pending.push_back(value);
         }
     }
 
-    fn resolve_state(state: &TypeState, hierarchy: &dyn TypeHierarchy) -> Option<ArgType> {
+    fn resolve_state(state: &TypeBounds, hierarchy: &dyn TypeHierarchy) -> Option<ArgType> {
         let strong = state.produced_type(hierarchy);
         if let Some(ty) = strong.as_ref().filter(|ty| Self::is_concrete(ty)) {
             if state
-                .upper
-                .iter()
+                .evidence(BoundKind::Upper)
                 .all(|upper| Self::is_assignable(ty, upper, hierarchy))
             {
                 return Some(ty.clone());
             }
         }
 
-        let upper = Self::most_specific_upper(&state.upper, hierarchy);
+        let upper = Self::most_specific_upper(state, hierarchy);
         if let Some(candidate) = upper.as_ref() {
             let exact_satisfies = state
-                .exact
-                .iter()
+                .evidence(BoundKind::Exact)
                 .all(|bound| Self::producer_bound_compatible(bound, candidate, hierarchy));
             let lower_satisfies = state
-                .lower
-                .iter()
+                .evidence(BoundKind::Lower)
                 .all(|bound| Self::producer_bound_compatible(bound, candidate, hierarchy));
-            if exact_satisfies && lower_satisfies && Self::domain_accepts(&state.domain, candidate)
-            {
+            if exact_satisfies && lower_satisfies && Self::domain_accepts(state, candidate) {
                 return Some(candidate.clone());
             }
         }
         if let Some(ty) = strong.as_ref().filter(|ty| Self::is_concrete(ty)) {
             if state
-                .upper
-                .iter()
+                .evidence(BoundKind::Upper)
                 .all(|upper| Self::producer_bound_compatible(ty, upper, hierarchy))
-                && Self::domain_accepts(&state.domain, ty)
+                && Self::domain_accepts(state, ty)
             {
                 return Some(ty.clone());
             }
         }
-        if let Some(candidate) = Self::join_all(state.fallback.iter().cloned(), hierarchy) {
+        if let Some(candidate) =
+            Self::join_all(state.evidence(BoundKind::Fallback).cloned(), hierarchy)
+        {
             if Self::is_concrete(&candidate)
                 && state
-                    .upper
-                    .iter()
+                    .evidence(BoundKind::Upper)
                     .all(|upper| Self::is_assignable(&candidate, upper, hierarchy))
-                && Self::domain_accepts(&state.domain, &candidate)
+                && Self::domain_accepts(state, &candidate)
             {
                 return Some(candidate);
             }
         }
         let domain = state
-            .domain
-            .iter()
+            .evidence(BoundKind::Domain)
             .filter_map(Self::concrete_hint)
             .collect::<BTreeSet<_>>();
         let mut candidates = domain.into_iter();
@@ -269,22 +243,18 @@ impl TypeLattice {
             return None;
         }
         state
-            .upper
-            .iter()
+            .evidence(BoundKind::Upper)
             .all(|upper| Self::is_assignable(&candidate, upper, hierarchy))
             .then_some(candidate)
     }
 
-    fn most_specific_upper(
-        upper: &BTreeSet<ArgType>,
-        hierarchy: &dyn TypeHierarchy,
-    ) -> Option<ArgType> {
-        upper
-            .iter()
+    fn most_specific_upper(state: &TypeBounds, hierarchy: &dyn TypeHierarchy) -> Option<ArgType> {
+        state
+            .evidence(BoundKind::Upper)
             .filter_map(Self::concrete_hint)
             .filter(|candidate| {
-                upper
-                    .iter()
+                state
+                    .evidence(BoundKind::Upper)
                     .all(|other| Self::is_assignable(candidate, other, hierarchy))
             })
             .min()
@@ -374,9 +344,10 @@ impl TypeLattice {
         )
     }
 
-    fn domain_accepts(domain: &BTreeSet<ArgType>, candidate: &ArgType) -> bool {
-        domain.is_empty()
-            || domain.iter().any(|observed| match observed {
+    fn domain_accepts(state: &TypeBounds, candidate: &ArgType) -> bool {
+        let mut domain = state.evidence(BoundKind::Domain).peekable();
+        domain.peek().is_none()
+            || domain.any(|observed| match observed {
                 ArgType::Unknown(categories) => Self::unknown_accepts(categories, candidate),
                 known => known == candidate || Self::same_register_category(known, candidate),
             })
@@ -529,7 +500,7 @@ mod tests {
             bounds: BTreeMap::from([
                 (
                     source,
-                    BTreeSet::from([
+                    TypeBounds::from([
                         TypeBound::new(
                             BoundKind::Domain,
                             ArgType::Unknown(std::borrow::Cow::Borrowed(&[
@@ -542,7 +513,7 @@ mod tests {
                 ),
                 (
                     target,
-                    BTreeSet::from([TypeBound::new(BoundKind::Exact, ArgType::BOOLEAN)]),
+                    TypeBounds::from([TypeBound::new(BoundKind::Exact, ArgType::BOOLEAN)]),
                 ),
             ]),
             flows: BTreeSet::from([(source, target)]),
@@ -566,11 +537,14 @@ mod tests {
             bounds: BTreeMap::from([
                 (
                     array,
-                    BTreeSet::from([TypeBound::new(BoundKind::Domain, ArgType::unknown_object())]),
+                    TypeBounds::from([TypeBound::new(
+                        BoundKind::Domain,
+                        ArgType::unknown_object(),
+                    )]),
                 ),
                 (
                     value,
-                    BTreeSet::from([TypeBound::new(BoundKind::Exact, value_type.clone())]),
+                    TypeBounds::from([TypeBound::new(BoundKind::Exact, value_type.clone())]),
                 ),
             ]),
             flows: BTreeSet::new(),
@@ -594,21 +568,24 @@ mod tests {
             bounds: BTreeMap::from([
                 (
                     source,
-                    BTreeSet::from([TypeBound::new(
+                    TypeBounds::from([TypeBound::new(
                         BoundKind::Exact,
                         ArgType::array(ArgType::object("java/lang/Object")),
                     )]),
                 ),
                 (
                     destination,
-                    BTreeSet::from([
+                    TypeBounds::from([
                         TypeBound::new(BoundKind::Lower, ArgType::array(element.clone())),
                         TypeBound::new(BoundKind::Upper, ArgType::array(element.clone())),
                     ]),
                 ),
                 (
                     value,
-                    BTreeSet::from([TypeBound::new(BoundKind::Domain, ArgType::unknown_object())]),
+                    TypeBounds::from([TypeBound::new(
+                        BoundKind::Domain,
+                        ArgType::unknown_object(),
+                    )]),
                 ),
             ]),
             flows: BTreeSet::new(),
@@ -643,7 +620,7 @@ mod tests {
             members: BTreeMap::from([(value, value)]),
             bounds: BTreeMap::from([(
                 value,
-                BTreeSet::from([
+                TypeBounds::from([
                     TypeBound::new(BoundKind::Exact, ArgType::BOOLEAN),
                     TypeBound::new(BoundKind::Upper, ArgType::INT),
                 ]),
@@ -667,7 +644,7 @@ mod tests {
             members: BTreeMap::from([(value, value)]),
             bounds: BTreeMap::from([(
                 value,
-                BTreeSet::from([
+                TypeBounds::from([
                     TypeBound::new(BoundKind::Lower, view.clone()),
                     TypeBound::new(BoundKind::Upper, view.clone()),
                     TypeBound::new(BoundKind::Upper, callback),

@@ -87,6 +87,17 @@ impl<'a> SemanticReachingAnalysis<'a> {
         key: SsaVar,
         point: SemanticFlowPoint,
     ) -> Result<Vec<usize>, ValueRecoveryError> {
+        let mut output = Vec::new();
+        self.candidates_into(key, point, &mut output)?;
+        Ok(output)
+    }
+
+    fn candidates_into(
+        &self,
+        key: SsaVar,
+        point: SemanticFlowPoint,
+        output: &mut Vec<usize>,
+    ) -> Result<(), ValueRecoveryError> {
         let definitions = self
             .graph
             .definitions
@@ -96,17 +107,17 @@ impl<'a> SemanticReachingAnalysis<'a> {
         match self.model() {
             ReachingModel::Ssa(flow) => {
                 let reachability = flow.indexed_reachability();
-                Ok(definitions
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(ordinal, definition)| {
+                output.clear();
+                output.extend(definitions.iter().enumerate().filter_map(
+                    |(ordinal, definition)| {
                         definition
                             .site
                             .map(SemanticFlowPoint::after)
                             .filter(|definition| reachability.reaches(*definition, point))
                             .map(|_| ordinal)
-                    })
-                    .collect())
+                    },
+                ));
+                Ok(())
             }
             ReachingModel::Source { flow, reaching } => {
                 let reaching = reaching.get_or_init(|| SourceReaching::analyze(self.graph, flow));
@@ -114,7 +125,7 @@ impl<'a> SemanticReachingAnalysis<'a> {
                     .values
                     .get(&key)
                     .ok_or(ValueRecoveryError::MissingSemanticSite)?;
-                let candidates = reaching.facts.at(value, point);
+                let candidates = reaching.facts.at_into(value, point, output);
                 candidates.ok_or(ValueRecoveryError::MissingReachingFact { value: key, point })
             }
             ReachingModel::Incomplete => Err(ValueRecoveryError::IncompleteSemanticFlow),
@@ -175,13 +186,21 @@ impl<'a> SemanticReachingAnalysis<'a> {
 
 pub(super) struct ReachingDefinitionFacts {
     pub(super) uses: Vec<ReachingUse>,
+    candidates: Vec<usize>,
     /// Number of uses for which each definition remains a feasible reaching
     /// value, including uses whose path relation cannot select one definition.
     pub(super) candidate_uses: Vec<usize>,
 }
 
+impl ReachingDefinitionFacts {
+    pub(super) fn candidates(&self, usage: &ReachingUse) -> &[usize] {
+        &self.candidates[usage.candidates.clone()]
+    }
+}
+
+#[derive(Clone)]
 pub(super) struct ReachingUse {
-    pub(super) candidates: Vec<usize>,
+    candidates: std::ops::Range<usize>,
     pub(super) selected: Option<usize>,
     pub(super) control: bool,
 }
@@ -209,99 +228,100 @@ impl<'a, 'graph> ReachingDefinitions<'a, 'graph> {
             .map(|definition| definition.key)
             .ok_or(ValueRecoveryError::MissingSemanticSite)?;
         let mut candidate_uses = vec![0usize; definitions.len()];
-        let mut relations = Vec::with_capacity(uses.len());
+        let mut relations: Vec<ReachingUse> = Vec::with_capacity(uses.len());
+        let mut candidates = Vec::new();
+        let mut indices = Vec::new();
+        let mut next_indices = Vec::new();
+        let mut previous_point = None;
+        let mut previous_query = None;
 
         for usage in uses {
             let Some(point) = usage.point else {
                 return Err(ValueRecoveryError::MissingUsePoint(key));
             };
-            let indices = self.analysis.candidates(key, point)?;
+            let same_indices = if previous_point == Some(point) {
+                true
+            } else {
+                self.analysis
+                    .candidates_into(key, point, &mut next_indices)?;
+                let same = previous_point.is_some() && next_indices == indices;
+                std::mem::swap(&mut indices, &mut next_indices);
+                previous_point = Some(point);
+                same
+            };
             let control = matches!(
                 usage.site,
                 Some(
                     UseSite::Predicate(_) | UseSite::SelectedPredicate(_, _) | UseSite::Argument(_)
                 )
             );
-            let mut candidates = Vec::new();
-            for index in indices {
-                // A definition in a repetitive scope can reach the use from an
-                // earlier iteration. Its execution domain describes one
-                // iteration only, so comparing it directly with the use domain
-                // can incorrectly make the two look disjoint.
-                if definitions[index].repetitive
-                    || !self
-                        .graph
-                        .logic
-                        .disjoint(usage.domain, definitions[index].domain)?
-                {
-                    candidates.push(index);
-                }
-            }
-            for &index in &candidates {
-                candidate_uses[index] += 1;
-            }
-
-            let selected = if control {
-                let mut unique = Vec::new();
-                for &index in &candidates {
-                    if self
-                        .graph
-                        .logic
-                        .implies(usage.domain, definitions[index].domain)?
-                        && self.excludes_other_definitions(
-                            index,
-                            &candidates,
-                            usage,
-                            definitions,
-                        )?
+            let saturated = self.graph.proof_budget_exhausted();
+            let query = (usage.domain, control, saturated);
+            let relation = if same_indices && previous_query == Some(query) {
+                // The original successful proofs are cached by the same BDD arena.
+                // A relation which crossed its proof limit is never replayed.
+                relations.last().expect("previous reaching query").clone()
+            } else {
+                let start = candidates.len();
+                for &index in &indices {
+                    // A prior iteration can reach the use even when the two
+                    // control domains within a single iteration are disjoint.
+                    if definitions[index].repetitive
+                        || !self
+                            .graph
+                            .logic
+                            .disjoint(usage.domain, definitions[index].domain)?
                     {
-                        unique.push(index);
+                        candidates.push(index);
                     }
                 }
-                unique
-                    .into_iter()
-                    .max_by_key(|index| definitions[*index].event)
-            } else {
-                match candidates.as_slice() {
-                    [index] => Some(*index),
-                    _ => None,
+                let feasible = &candidates[start..];
+                let mut selected = None;
+                if control {
+                    // Every other feasible definition already defeated exclusion:
+                    // it is repetitive or its intersection was nonempty. Saturation
+                    // can only make the latter disjointness proof more conservative.
+                    // Implications can still consume the arena budget in this order.
+                    for &index in feasible {
+                        if self
+                            .graph
+                            .logic
+                            .implies(usage.domain, definitions[index].domain)?
+                            && feasible.len() == 1
+                        {
+                            selected = Some(index);
+                        }
+                    }
+                } else if let [only] = feasible {
+                    selected = Some(*only);
+                }
+                previous_query =
+                    (saturated == self.graph.proof_budget_exhausted()).then_some(query);
+                ReachingUse {
+                    candidates: start..candidates.len(),
+                    selected,
+                    control,
                 }
             };
-
-            relations.push(ReachingUse {
-                candidates,
-                selected,
-                control,
-            });
+            relations.push(relation);
+        }
+        for run in relations.chunk_by(|left, right| left.candidates == right.candidates) {
+            for &index in &candidates[run[0].candidates.clone()] {
+                candidate_uses[index] += run.len();
+            }
         }
 
         Ok(ReachingDefinitionFacts {
             uses: relations,
+            candidates,
             candidate_uses,
         })
     }
-
-    fn excludes_other_definitions(
-        &self,
-        selected: usize,
-        reaching: &[usize],
-        usage: &UseFact,
-        definitions: &[DefinitionFact],
-    ) -> Result<bool, ValueRecoveryError> {
-        for &candidate in reaching {
-            if candidate != selected
-                && (definitions[candidate].repetitive
-                    || !self
-                        .graph
-                        .logic
-                        .disjoint(usage.domain, definitions[candidate].domain)?)
-            {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
 }
+
+#[cfg(test)]
+#[path = "../../../../tests/internal/reaching_partitions.rs"]
+mod partitions;
 
 #[cfg(test)]
 mod tests {
@@ -410,7 +430,7 @@ mod tests {
 
         assert_eq!(uses.len(), 1);
         assert!(facts.uses[0].control);
-        assert!(facts.uses[0].candidates.contains(&repetitive));
+        assert!(facts.candidates(&facts.uses[0]).contains(&repetitive));
         assert_eq!(facts.uses[0].selected, None);
         assert_eq!(facts.candidate_uses[repetitive], 1);
     }

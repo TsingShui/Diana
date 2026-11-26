@@ -1,5 +1,7 @@
 //! Constraint-graph type recovery for SSA values.
 
+#[path = "types/bounds.rs"]
+mod bounds;
 #[path = "types/constraints.rs"]
 mod constraints;
 #[path = "types/hierarchy.rs"]

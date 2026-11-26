@@ -2,16 +2,52 @@
 
 use super::{GraphIndex, SemanticFlowPoint, SemanticSiteId};
 
-/// Numbered method sites and synthetic program points each occupy contiguous
-/// ranges. Publicly constructed graphs can also use arbitrary 64-bit IDs.
+/// Site ordinals occupy separate before, after and synthetic ranges. The
+/// compact graph index uses their public ordering even when some sites have
+/// no reachable after-point (return, throw or transfer).
 #[derive(Debug)]
 pub(super) enum PointNumbers {
-    Contiguous {
-        after: usize,
-        synthetic: usize,
-        end: usize,
+    Contiguous(PointLayout),
+    Gapped {
+        layout: PointLayout,
+        words: Box<[RankWord]>,
+        slots: Box<[usize]>,
     },
     Sparse(Box<[SemanticFlowPoint]>),
+}
+
+#[derive(Debug)]
+pub(super) struct PointLayout {
+    after: usize,
+    synthetic: usize,
+    end: usize,
+}
+
+impl PointLayout {
+    fn slot(&self, point: SemanticFlowPoint) -> Option<usize> {
+        let (base, length, raw) = match point {
+            SemanticFlowPoint::Before(site) => (0, self.after, site.0),
+            SemanticFlowPoint::After(site) => (self.after, self.synthetic - self.after, site.0),
+            SemanticFlowPoint::Synthetic(id) => (self.synthetic, self.end - self.synthetic, id),
+        };
+        (raw < length as u64).then(|| base + raw as usize)
+    }
+
+    fn point(&self, slot: usize) -> SemanticFlowPoint {
+        if slot < self.after {
+            SemanticFlowPoint::Before(SemanticSiteId(slot as u64))
+        } else if slot < self.synthetic {
+            SemanticFlowPoint::After(SemanticSiteId((slot - self.after) as u64))
+        } else {
+            SemanticFlowPoint::Synthetic((slot - self.synthetic) as u64)
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, Default)]
+pub(super) struct RankWord {
+    present: u64,
+    preceding: usize,
 }
 
 impl PointNumbers {
@@ -21,7 +57,11 @@ impl PointNumbers {
     ) -> Self {
         let mut lengths = [0usize; 3];
         for point in points.clone() {
-            let (kind, raw) = Self::parts(point);
+            let (kind, raw) = match point {
+                SemanticFlowPoint::Before(site) => (0, site.0),
+                SemanticFlowPoint::After(site) => (1, site.0),
+                SemanticFlowPoint::Synthetic(id) => (2, id),
+            };
             let Some(end) = usize::try_from(raw).ok().and_then(|id| id.checked_add(1)) else {
                 return Self::sparse(points);
             };
@@ -34,34 +74,40 @@ impl PointNumbers {
         else {
             return Self::sparse(points);
         };
-        // Publicly constructed graphs can use arbitrary 64-bit IDs. Only
-        // allocate a direct membership table that the input length bounds.
         if count > observations {
             return Self::sparse(points);
         }
-        let dense = Self::Contiguous {
+        let layout = PointLayout {
             after: before,
             synthetic: before + after,
             end: count,
         };
-        let mut seen = vec![false; count];
-        let mut distinct = 0;
+        let mut words = smallvec::SmallVec::<[RankWord; 2]>::new();
+        words.resize(count.div_ceil(64), RankWord::default());
         for point in points {
-            let slot = dense.get(point).expect("within observed range");
-            if !std::mem::replace(&mut seen[slot], true) {
-                distinct += 1;
-            }
+            let slot = layout.slot(point).expect("within observed range");
+            words[slot / 64].present |= 1 << (slot % 64);
+        }
+        let mut distinct = 0;
+        for word in &mut words {
+            word.preceding = distinct;
+            distinct += word.present.count_ones() as usize;
         }
         if distinct == count {
-            dense
-        } else {
-            Self::Sparse(
-                seen.into_iter()
-                    .enumerate()
-                    .filter(|(_, present)| *present)
-                    .map(|(id, _)| dense.point(id))
-                    .collect(),
-            )
+            return Self::Contiguous(layout);
+        }
+        let mut slots = Vec::with_capacity(distinct);
+        for (index, word) in words.iter().enumerate() {
+            let mut bits = word.present;
+            while bits != 0 {
+                slots.push(index * 64 + bits.trailing_zeros() as usize);
+                bits &= bits - 1;
+            }
+        }
+        Self::Gapped {
+            layout,
+            words: words.into_boxed_slice(),
+            slots: slots.into_boxed_slice(),
         }
     }
 
@@ -72,34 +118,23 @@ impl PointNumbers {
         Self::Sparse(ordered.into_boxed_slice())
     }
 
-    fn parts(point: SemanticFlowPoint) -> (usize, u64) {
-        match point {
-            SemanticFlowPoint::Before(site) => (0, site.0),
-            SemanticFlowPoint::After(site) => (1, site.0),
-            SemanticFlowPoint::Synthetic(id) => (2, id),
-        }
-    }
-
     pub(super) fn len(&self) -> usize {
         match self {
-            Self::Contiguous { end, .. } => *end,
+            Self::Contiguous(layout) => layout.end,
+            Self::Gapped { slots, .. } => slots.len(),
             Self::Sparse(points) => points.len(),
         }
     }
 
     pub(super) fn get(&self, point: SemanticFlowPoint) -> Option<usize> {
         match self {
-            Self::Contiguous {
-                after,
-                synthetic,
-                end,
-            } => {
-                let (base, length, raw) = match point {
-                    SemanticFlowPoint::Before(site) => (0, *after, site.0),
-                    SemanticFlowPoint::After(site) => (*after, synthetic - after, site.0),
-                    SemanticFlowPoint::Synthetic(id) => (*synthetic, end - synthetic, id),
-                };
-                (raw < length as u64).then(|| base + raw as usize)
+            Self::Contiguous(layout) => layout.slot(point),
+            Self::Gapped { layout, words, .. } => {
+                let slot = layout.slot(point)?;
+                let word = &words[slot / 64];
+                let bit = 1 << (slot % 64);
+                (word.present & bit != 0)
+                    .then(|| word.preceding + (word.present & (bit - 1)).count_ones() as usize)
             }
             Self::Sparse(points) => points.binary_search(&point).ok(),
         }
@@ -107,17 +142,8 @@ impl PointNumbers {
 
     pub(super) fn point(&self, node: usize) -> SemanticFlowPoint {
         match self {
-            Self::Contiguous { after, .. } if node < *after => {
-                SemanticFlowPoint::Before(SemanticSiteId(node as u64))
-            }
-            Self::Contiguous {
-                after, synthetic, ..
-            } if node < *synthetic => {
-                SemanticFlowPoint::After(SemanticSiteId((node - after) as u64))
-            }
-            Self::Contiguous { synthetic, .. } => {
-                SemanticFlowPoint::Synthetic((node - synthetic) as u64)
-            }
+            Self::Contiguous(layout) => layout.point(node),
+            Self::Gapped { layout, slots, .. } => layout.point(slots[node]),
             Self::Sparse(points) => points[node],
         }
     }

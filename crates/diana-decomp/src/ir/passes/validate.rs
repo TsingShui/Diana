@@ -133,7 +133,7 @@ impl Pass for ValidateCFG {
         if cfg.entry_block().is_none() {
             return Err(CfgInvariantError::MissingEntry);
         }
-        for source in cfg.graph_node_ids() {
+        for source in cfg.graph_nodes() {
             let Some(block) = cfg.block(source) else {
                 return Err(CfgInvariantError::MissingSource(source));
             };
@@ -141,7 +141,12 @@ impl Pass for ValidateCFG {
                 return Err(CfgInvariantError::MissingCoverage(source));
             }
             let edges = cfg.successors_with_kind(source);
-            if edges.iter().copied().collect::<BTreeSet<_>>().len() != edges.len() {
+            let duplicate = match edges {
+                [] | [_] => false,
+                [first, second] => first == second,
+                _ => edges.iter().copied().collect::<BTreeSet<_>>().len() != edges.len(),
+            };
+            if duplicate {
                 return Err(CfgInvariantError::DuplicateEdges(source));
             }
             for (target, _) in edges {
@@ -155,30 +160,24 @@ impl Pass for ValidateCFG {
 
             let ordinary = edges
                 .iter()
-                .filter(|(_, kind)| *kind != EdgeKind::Exception)
-                .copied()
-                .collect::<Vec<_>>();
+                .filter(|(_, kind)| *kind != EdgeKind::Exception);
+            let ordinary_count = ordinary.clone().count();
             match block.terminator().map(|instruction| instruction.insn_type) {
                 Some(InsnType::If) => {
-                    let true_edges = ordinary
-                        .iter()
-                        .filter(|(_, kind)| *kind == EdgeKind::True)
-                        .count();
-                    let false_edges = ordinary
-                        .iter()
-                        .filter(|(_, kind)| *kind == EdgeKind::False)
-                        .count();
-                    if ordinary.len() != 2 || true_edges != 1 || false_edges != 1 {
+                    if ordinary_count != 2
+                        || !ordinary.clone().any(|(_, kind)| *kind == EdgeKind::True)
+                        || !ordinary.clone().any(|(_, kind)| *kind == EdgeKind::False)
+                    {
                         return Err(CfgInvariantError::MalformedBranch(source));
                     }
                 }
-                Some(InsnType::Goto) if ordinary.len() != 1 => {
+                Some(InsnType::Goto) if ordinary_count != 1 => {
                     return Err(CfgInvariantError::MalformedGoto {
                         block: source,
-                        successors: ordinary.len(),
+                        successors: ordinary_count,
                     });
                 }
-                Some(InsnType::Return | InsnType::Throw) if !ordinary.is_empty() => {
+                Some(InsnType::Return | InsnType::Throw) if ordinary_count != 0 => {
                     return Err(CfgInvariantError::TerminalSuccessor(source));
                 }
                 Some(InsnType::Switch) => {
@@ -190,35 +189,35 @@ impl Pass for ValidateCFG {
                     }
                     let encoded = terminator
                         .get_switch_cases()
-                        .into_iter()
-                        .flatten()
-                        .map(|(value, _)| *value)
-                        .collect::<Vec<_>>();
-                    let encoded_values = encoded.iter().copied().collect::<BTreeSet<_>>();
-                    let edge_values = ordinary
+                        .map(Vec::as_slice)
+                        .unwrap_or_default();
+                    let encoded_values = encoded
                         .iter()
+                        .map(|(value, _)| *value)
+                        .collect::<BTreeSet<_>>();
+                    let edge_values = ordinary
+                        .clone()
                         .filter_map(|(_, kind)| match kind {
                             EdgeKind::SwitchCase(value) => Some(*value),
                             _ => None,
                         })
                         .collect::<BTreeSet<_>>();
                     let defaults = ordinary
-                        .iter()
                         .filter(|(_, kind)| *kind == EdgeKind::SwitchDefault)
                         .count();
                     if encoded.len() != encoded_values.len()
                         || encoded_values != edge_values
                         || defaults != 1
-                        || ordinary.len() != encoded.len() + 1
+                        || ordinary_count != encoded.len() + 1
                     {
                         return Err(CfgInvariantError::InconsistentSwitchDispatch(source));
                     }
                 }
                 Some(InsnType::Goto | InsnType::Return | InsnType::Throw) => {}
-                _ if ordinary.len() > 1 => {
+                _ if ordinary_count > 1 => {
                     return Err(CfgInvariantError::LinearFanout {
                         block: source,
-                        successors: ordinary.len(),
+                        successors: ordinary_count,
                     });
                 }
                 _ => {}
@@ -230,8 +229,8 @@ impl Pass for ValidateCFG {
                     if non_phi_seen {
                         return Err(CfgInvariantError::NonPrefixPhi(source));
                     }
-                    let expected = cfg.incoming_edges(source);
-                    if instruction.payload.phi_edges != expected
+                    let expected = cfg.predecessors_with_kind(source);
+                    if instruction.payload.phi_edges.as_slice() != expected
                         || instruction.args.len() != expected.len()
                     {
                         return Err(CfgInvariantError::InconsistentPhi(source));

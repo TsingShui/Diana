@@ -7,6 +7,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+mod adjacency;
+use adjacency::EdgeRows;
+
 use super::block::{Block, BlockId, ExceptionHandler};
 use super::{ArgType, InstructionId, MethodDescriptor};
 
@@ -104,9 +107,9 @@ pub struct CFG {
     /// Blocks (ordered by BlockId for deterministic iteration)
     pub blocks: BTreeMap<BlockId, Block>,
     /// Successors: block -> [(successor, edge_kind)] (ordered by BlockId)
-    successors: BTreeMap<BlockId, Vec<(BlockId, EdgeKind)>>,
+    successors: EdgeRows,
     /// Reverse of the successor table, sorted by (source, kind).
-    incoming: BTreeMap<BlockId, Vec<(BlockId, EdgeKind)>>,
+    incoming: EdgeRows,
     /// Exception handlers
     pub handlers: Vec<ExceptionHandler>,
     /// DEX protected-range membership captured before CFG topology edits.
@@ -136,8 +139,8 @@ impl CFG {
             label: name,
             entry: BlockId::new(0),
             blocks: BTreeMap::new(),
-            successors: BTreeMap::new(),
-            incoming: BTreeMap::new(),
+            successors: EdgeRows::default(),
+            incoming: EdgeRows::default(),
             handlers: Vec::new(),
             exception_coverage: BTreeMap::new(),
             coverage_captured: false,
@@ -265,7 +268,7 @@ impl CFG {
     }
 
     pub(crate) fn graph_nodes(&self) -> impl ExactSizeIterator<Item = BlockId> + Clone + '_ {
-        self.successors.keys().copied()
+        self.successors.iter().map(|(id, _)| id)
     }
 
     /// Remove graph-topology entries that are no longer reachable from the entry.
@@ -276,9 +279,7 @@ impl CFG {
     pub fn prune_unreachable_graph_nodes(&mut self) -> Vec<BlockId> {
         let reachable = self.reachable();
         let to_remove: Vec<_> = self
-            .successors
-            .keys()
-            .copied()
+            .graph_nodes()
             .filter(|id| !reachable.contains(id))
             .collect();
 
@@ -294,13 +295,13 @@ impl CFG {
     /// After `remove_block_from_graph`, the block content still exists but it's
     /// no longer part of the graph topology.
     pub fn is_graph_node(&self, id: BlockId) -> bool {
-        self.successors.contains_key(&id)
+        self.successors.get(id).is_some()
     }
 
     pub fn add_block(&mut self, block: Block) {
         let id = block.id;
         self.blocks.insert(id, block);
-        self.successors.entry(id).or_default();
+        self.successors.row(id);
     }
 
     /// Remove a block from the CFG, along with all edges to/from it.
@@ -389,11 +390,11 @@ impl CFG {
     /// topology during iterative reduction, but the block content must be preserved
     /// for code generation after structuring is complete.
     pub fn remove_block_from_graph(&mut self, id: BlockId) {
-        for (to, kind) in self.successors.remove(&id).unwrap_or_default() {
+        for (to, kind) in self.successors.remove(id).unwrap_or_default() {
             Self::forget_incoming(&mut self.incoming, to, (id, kind));
         }
-        for (from, kind) in self.incoming.remove(&id).unwrap_or_default() {
-            if let Some(edges) = self.successors.get_mut(&from) {
+        for (from, kind) in self.incoming.remove(id).unwrap_or_default() {
+            if let Some(edges) = self.successors.get_mut(from) {
                 edges.retain(|edge| *edge != (id, kind));
             }
         }
@@ -402,10 +403,10 @@ impl CFG {
     // === Edge operations ===
 
     pub fn add_edge(&mut self, from: BlockId, to: BlockId, kind: EdgeKind) {
-        let successors = self.successors.entry(from).or_default();
+        let successors = self.successors.row(from);
         if !successors.contains(&(to, kind)) {
             successors.push((to, kind));
-            let incoming = self.incoming.entry(to).or_default();
+            let incoming = self.incoming.row(to);
             let index = incoming.partition_point(|edge| *edge < (from, kind));
             incoming.insert(index, (from, kind));
         }
@@ -414,7 +415,7 @@ impl CFG {
     pub fn successors(&self, id: impl Into<BlockId>) -> impl Iterator<Item = BlockId> + '_ {
         let id = id.into();
         self.successors
-            .get(&id)
+            .get(id)
             .into_iter()
             .flat_map(|v| v.iter().map(|(s, _)| *s))
     }
@@ -422,7 +423,7 @@ impl CFG {
     /// Get only normal (non-exception) successors of a block
     pub fn normal_successors(&self, id: impl Into<BlockId>) -> impl Iterator<Item = BlockId> + '_ {
         let id = id.into();
-        self.successors.get(&id).into_iter().flat_map(|v| {
+        self.successors.get(id).into_iter().flat_map(|v| {
             v.iter()
                 .filter(|(_, kind)| *kind != EdgeKind::Exception)
                 .map(|(s, _)| *s)
@@ -431,7 +432,7 @@ impl CFG {
 
     pub fn successors_with_kind(&self, id: impl Into<BlockId>) -> &[(BlockId, EdgeKind)] {
         self.successors
-            .get(&id.into())
+            .get(id.into())
             .map(|v| v.as_slice())
             .unwrap_or(&[])
     }
@@ -454,8 +455,8 @@ impl CFG {
 
     pub(crate) fn has_exception_edges(&self) -> bool {
         self.successors
-            .values()
-            .flatten()
+            .iter()
+            .flat_map(|(_, edges)| edges)
             .any(|(_, kind)| kind.is_exception())
     }
 
@@ -465,8 +466,8 @@ impl CFG {
 
     pub fn predecessors_with_kind(&self, target: BlockId) -> &[(BlockId, EdgeKind)] {
         self.incoming
-            .get(&target)
-            .map(Vec::as_slice)
+            .get(target)
+            .map(|edges| edges.as_slice())
             .unwrap_or_default()
     }
 
@@ -496,7 +497,7 @@ impl CFG {
         include: impl Fn(EdgeKind) -> bool,
     ) -> BTreeMap<BlockId, Vec<BlockId>> {
         let mut snapshot: BTreeMap<_, _> = self.blocks.keys().map(|&id| (id, Vec::new())).collect();
-        for (&to, edges) in &self.incoming {
+        for (to, edges) in self.incoming.iter() {
             let mut sources: Vec<_> = edges
                 .iter()
                 .filter(|(_, kind)| include(*kind))
@@ -515,44 +516,40 @@ impl CFG {
         self.incoming_sources(id.into()).collect()
     }
 
-    fn forget_incoming(
-        index: &mut BTreeMap<BlockId, Vec<(BlockId, EdgeKind)>>,
-        to: BlockId,
-        edge: (BlockId, EdgeKind),
-    ) {
-        if let Some(incoming) = index.get_mut(&to) {
+    fn forget_incoming(index: &mut EdgeRows, to: BlockId, edge: (BlockId, EdgeKind)) {
+        if let Some(incoming) = index.get_mut(to) {
             if let Ok(index) = incoming.binary_search(&edge) {
                 incoming.remove(index);
             }
             if incoming.is_empty() {
-                index.remove(&to);
+                index.remove(to);
             }
         }
     }
 
     pub fn has_edge(&self, from: BlockId, to: BlockId) -> bool {
         self.successors
-            .get(&from)
+            .get(from)
             .map(|v| v.iter().any(|(s, _)| *s == to))
             .unwrap_or(false)
     }
 
     /// Remove an edge from the graph
     pub fn remove_edge(&mut self, from: BlockId, to: BlockId) {
-        if let Some(edges) = self.successors.get_mut(&from) {
+        if let Some(edges) = self.successors.get_mut(from) {
             edges.retain(|(target, _)| *target != to);
         }
-        if let Some(edges) = self.incoming.get_mut(&to) {
+        if let Some(edges) = self.incoming.get_mut(to) {
             edges.retain(|(source, _)| *source != from);
             if edges.is_empty() {
-                self.incoming.remove(&to);
+                self.incoming.remove(to);
             }
         }
     }
 
     /// Remove one typed edge while preserving parallel edges with a different kind.
     pub fn remove_edge_with_kind(&mut self, from: BlockId, to: BlockId, kind: EdgeKind) {
-        if let Some(edges) = self.successors.get_mut(&from) {
+        if let Some(edges) = self.successors.get_mut(from) {
             edges.retain(|edge| *edge != (to, kind));
         }
         Self::forget_incoming(&mut self.incoming, to, (from, kind));
@@ -561,14 +558,14 @@ impl CFG {
     /// Get the kind of edge between two blocks, if it exists.
     pub fn get_edge_kind(&self, from: BlockId, to: BlockId) -> Option<EdgeKind> {
         self.successors
-            .get(&from)
+            .get(from)
             .and_then(|succs| succs.iter().find(|(s, _)| *s == to))
             .map(|(_, k)| *k)
     }
 
     /// Remove all edges from a block
     pub fn remove_all_edges_from(&mut self, from: BlockId) {
-        if let Some(edges) = self.successors.get_mut(&from) {
+        if let Some(edges) = self.successors.get_mut(from) {
             for (to, kind) in std::mem::take(edges) {
                 Self::forget_incoming(&mut self.incoming, to, (from, kind));
             }
@@ -577,12 +574,12 @@ impl CFG {
 
     /// Remove ordinary control flow from a block while preserving exception dispatch.
     pub fn remove_normal_edges_from(&mut self, from: BlockId) -> bool {
-        let Some(edges) = self.successors.get_mut(&from) else {
+        let Some(edges) = self.successors.get_mut(from) else {
             return false;
         };
         let before = edges.len();
         let incoming = &mut self.incoming;
-        edges.retain(|&(to, kind)| {
+        edges.retain(|&mut (to, kind)| {
             if kind == EdgeKind::Exception {
                 return true;
             }
@@ -594,10 +591,11 @@ impl CFG {
 
     /// Remove all exception edges from the graph.
     pub fn remove_exception_edges(&mut self) {
-        for edges in self.successors.values_mut() {
+        self.successors.retain(|edges| {
             edges.retain(|(_, kind)| *kind != EdgeKind::Exception);
-        }
-        self.incoming.retain(|_, edges| {
+            true
+        });
+        self.incoming.retain(|edges| {
             edges.retain(|(_, kind)| *kind != EdgeKind::Exception);
             !edges.is_empty()
         });

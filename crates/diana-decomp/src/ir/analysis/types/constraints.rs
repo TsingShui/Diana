@@ -8,31 +8,12 @@ use crate::ir::{
 
 use super::TypeConstraintError;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum BoundKind {
-    Domain,
-    Fallback,
-    Upper,
-    Lower,
-    Exact,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) struct TypeBound {
-    pub(super) kind: BoundKind,
-    pub(super) ty: ArgType,
-}
-
-impl TypeBound {
-    pub(super) fn new(kind: BoundKind, ty: ArgType) -> Self {
-        Self { kind, ty }
-    }
-}
+use super::bounds::{BoundKind, TypeBound, TypeBounds};
 
 pub(super) struct TypeConstraintGraph {
     classes: Option<SsaClasses>,
     values: BTreeSet<SsaVar>,
-    bounds: BTreeMap<SsaVar, BTreeSet<TypeBound>>,
+    bounds: BTreeMap<SsaVar, TypeBounds>,
     flows: BTreeSet<(SsaVar, SsaVar)>,
     upper_flows: BTreeSet<(SsaVar, SsaVar)>,
     arrays: BTreeSet<ArrayConstraint>,
@@ -41,7 +22,7 @@ pub(super) struct TypeConstraintGraph {
 pub(super) struct NormalizedTypeConstraints {
     /// Each observed SSA value and the root whose bounds determine its type.
     pub(super) members: BTreeMap<SsaVar, SsaVar>,
-    pub(super) bounds: BTreeMap<SsaVar, BTreeSet<TypeBound>>,
+    pub(super) bounds: BTreeMap<SsaVar, TypeBounds>,
     pub(super) flows: BTreeSet<(SsaVar, SsaVar)>,
     pub(super) upper_flows: BTreeSet<(SsaVar, SsaVar)>,
     pub(super) arrays: BTreeSet<ArrayConstraint>,
@@ -118,10 +99,17 @@ impl TypeConstraintGraph {
         let bounds = if self.classes.is_none() {
             self.bounds
         } else {
-            let mut merged = BTreeMap::<SsaVar, BTreeSet<TypeBound>>::new();
+            let mut merged = BTreeMap::<SsaVar, TypeBounds>::new();
             for (value, bounds) in self.bounds {
                 let root = roots.get(&value).copied().unwrap_or(value);
-                merged.entry(root).or_default().extend(bounds);
+                match merged.entry(root) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(bounds);
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut entry) => {
+                        entry.get_mut().merge(bounds);
+                    }
+                }
             }
             merged
         };

@@ -280,18 +280,26 @@ impl SemanticReachingValues {
     }
 
     pub fn at(&self, value: usize, point: SemanticFlowPoint) -> Option<Vec<usize>> {
+        let mut output = Vec::new();
+        self.at_into(value, point, &mut output)?;
+        Some(output)
+    }
+
+    pub(crate) fn at_into(
+        &self,
+        value: usize,
+        point: SemanticFlowPoint,
+        output: &mut Vec<usize>,
+    ) -> Option<()> {
+        output.clear();
         match &self.0 {
-            ReachingStorage::Linear(facts) => facts.at(value, point),
-            ReachingStorage::Blocks(facts) => facts.at(value, point),
+            ReachingStorage::Linear(facts) => facts.at_into(value, point, output),
+            ReachingStorage::Blocks(facts) => facts.at_into(value, point, output),
             ReachingStorage::Dataflow { reaching, by_value } => {
                 let reaching = reaching.get(&point)?;
                 let range = by_value.range(value).unwrap_or(0..0);
-                Some(
-                    reaching
-                        .members(range)
-                        .map(|bit| by_value.ordinals[bit])
-                        .collect(),
-                )
+                output.extend(reaching.members(range).map(|bit| by_value.ordinals[bit]));
+                Some(())
             }
         }
     }

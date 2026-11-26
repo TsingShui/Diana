@@ -65,20 +65,21 @@ impl LinearReaching {
         Some(&self.writes[start..end])
     }
 
-    pub(super) fn at(&self, value: usize, point: SemanticFlowPoint) -> Option<Vec<usize>> {
+    pub(super) fn at_into(
+        &self,
+        value: usize,
+        point: SemanticFlowPoint,
+        output: &mut Vec<usize>,
+    ) -> Option<()> {
         let rank = self.target(point)?;
         let writes = self.writes(value).unwrap_or_default();
         let preceding = &writes[..writes.partition_point(|&(position, _)| position <= rank)];
         let Some(&(latest, _)) = preceding.last() else {
-            return Some(Vec::new());
+            return Some(());
         };
         let group = preceding.partition_point(|&(position, _)| position < latest);
-        Some(
-            preceding[group..]
-                .iter()
-                .map(|&(_, ordinal)| ordinal)
-                .collect(),
-        )
+        output.extend(preceding[group..].iter().map(|&(_, ordinal)| ordinal));
+        Some(())
     }
 
     pub(super) fn unchanged(
@@ -172,15 +173,21 @@ impl BlockReaching {
         PointValue::Incoming(&input.incoming)
     }
 
-    pub(super) fn at(&self, value: usize, point: SemanticFlowPoint) -> Option<Vec<usize>> {
+    pub(super) fn at_into(
+        &self,
+        value: usize,
+        point: SemanticFlowPoint,
+        output: &mut Vec<usize>,
+    ) -> Option<()> {
         let rank = self.rank(point)?;
         let range = self.by_value.range(value).unwrap_or(0..0);
         let ordinal = |bit: usize| self.by_value.ordinals[bit];
-        Some(match self.value_at(rank, range.clone()) {
-            PointValue::Unreachable => Vec::new(),
-            PointValue::Incoming(facts) => facts.members(range).map(ordinal).collect(),
-            PointValue::Local(writes) => writes.iter().map(|&(_, bit)| ordinal(bit)).collect(),
-        })
+        match self.value_at(rank, range.clone()) {
+            PointValue::Unreachable => {}
+            PointValue::Incoming(facts) => output.extend(facts.members(range).map(ordinal)),
+            PointValue::Local(writes) => output.extend(writes.iter().map(|&(_, bit)| ordinal(bit))),
+        }
+        Some(())
     }
 
     pub(super) fn unchanged(

@@ -102,41 +102,46 @@ impl JavaDecompiler {
         inner: Vec<NestedClassInput>,
     ) -> Result<String, JavaDecompilerError> {
         self.observer.checkpoint()?;
-        let signature_started = std::time::Instant::now();
+        let stats = std::env::var_os("DEXDEC_BATCH_STATS").is_some();
+        let start = || stats.then(std::time::Instant::now);
+        let elapsed = |started: Option<std::time::Instant>| {
+            started.map_or(std::time::Duration::ZERO, |t| t.elapsed())
+        };
+        let signature_started = start();
         let source_signatures = super::signature_inference::SourceSignatureInference::analyze(
             self.type_hierarchy.as_ref(),
             class.class_type(),
             &methods,
             &inner,
         );
-        let signature_ms = signature_started.elapsed();
-        let methods_started = std::time::Instant::now();
+        let signature_ms = elapsed(signature_started);
+        let methods_started = start();
         let (outer_methods, outer_instance) =
             { self.build_class_methods(class, methods, &source_signatures) }?;
-        let methods_ms = methods_started.elapsed();
+        let methods_ms = elapsed(methods_started);
         self.observer.checkpoint()?;
         self.class_stage(class.type_descriptor(), "build_outer_methods:done");
-        let nested_started = std::time::Instant::now();
+        let nested_started = start();
         let nested_models = { self.build_nested_class_models(inner, &source_signatures) }?;
-        let nested_ms = nested_started.elapsed();
+        let nested_ms = elapsed(nested_started);
         self.observer.checkpoint()?;
         self.class_stage(class.type_descriptor(), "build_nested_models:done");
-        let model_started = std::time::Instant::now();
+        let model_started = start();
         let mut class_model = {
             JavaClassModel::from_class_node(class, outer_methods, outer_instance)
                 .map(|model| model.with_nested(nested_models))
         }?;
         self.observer.checkpoint()?;
         class_model.assign_lexical_type_names(&self.source_abi);
-        let model_ms = model_started.elapsed();
+        let model_ms = elapsed(model_started);
         self.class_stage(class.type_descriptor(), "class_model:done");
-        let render_started = std::time::Instant::now();
+        let render_started = start();
         let source = {
             self.observer.checkpoint()?;
             self.render_class_model(class_model)
         }?;
-        if std::env::var_os("DEXDEC_BATCH_STATS").is_some() {
-            let render_ms = render_started.elapsed();
+        if stats {
+            let render_ms = elapsed(render_started);
             let total = signature_ms + methods_ms + nested_ms + model_ms + render_ms;
             if total.as_millis() >= 200 {
                 eprintln!(
@@ -270,13 +275,21 @@ impl JavaDecompiler {
                 .as_ref()
                 .map(|types| types.parameters())
                 .unwrap_or(inferred_parameter_types.as_slice());
-            let descriptor = decoded_method.info.descriptor();
-            self.method_stage(
-                class.type_descriptor(),
-                &decoded_method.info.name,
-                &descriptor,
-                "start",
-            );
+            let descriptor = std::cell::LazyCell::new(|| decoded_method.info.descriptor());
+            let observe_stage = |stage| {
+                if self
+                    .observer
+                    .is_enabled(crate::ir::AnalysisEventKind::MethodStage)
+                {
+                    self.method_stage(
+                        class.type_descriptor(),
+                        &decoded_method.info.name,
+                        &descriptor,
+                        stage,
+                    );
+                }
+            };
+            observe_stage("start");
             let recovered = self.build_method_model_from_node(
                 class,
                 decoded_method,
@@ -291,22 +304,12 @@ impl JavaDecompiler {
             );
             match recovered {
                 Ok(model) => {
-                    self.method_stage(
-                        class.type_descriptor(),
-                        &decoded_method.info.name,
-                        &descriptor,
-                        "done",
-                    );
+                    observe_stage("done");
                     Ok(Ok(model))
                 }
                 Err(error) if error.is_cancelled() => Err(error),
                 Err(error) => {
-                    self.method_stage(
-                        class.type_descriptor(),
-                        &decoded_method.info.name,
-                        &descriptor,
-                        "failed",
-                    );
+                    observe_stage("failed");
                     let stage = if matches!(error, JavaDecompilerError::GenericSignature(_)) {
                         MethodRecoveryStage::Metadata
                     } else {

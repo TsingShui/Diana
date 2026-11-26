@@ -267,13 +267,14 @@ impl<'a> ValuePlanner<'a> {
 
         let reaching = self.facts.reaching_definitions(definitions)?;
         for (usage, relation) in uses.iter().zip(&reaching.uses) {
-            let (Some(target), false) = (usage.point, relation.candidates.is_empty()) else {
+            let candidates = reaching.candidates(relation);
+            let (Some(target), false) = (usage.point, candidates.is_empty()) else {
                 return Ok(None);
             };
             if !self.expression_visible_at(expression, usage.scope) {
                 return Ok(None);
             }
-            for &candidate in &relation.candidates {
+            for &candidate in candidates {
                 let definition = &definitions[candidate];
                 let Some(site) = definition.site else {
                     return Ok(None);
@@ -941,7 +942,8 @@ impl<'a> ValuePlanner<'a> {
         let [relation] = reaching.uses.as_slice() else {
             return Ok(None);
         };
-        if relation.candidates.len() != definitions.len() {
+        let candidates = reaching.candidates(relation);
+        if candidates.len() != definitions.len() {
             return Ok(None);
         }
         for (index, left) in definitions.iter().enumerate() {
@@ -1002,7 +1004,7 @@ impl<'a> ValuePlanner<'a> {
         else {
             return Ok(None);
         };
-        let mut candidates = relation.candidates.clone();
+        let mut candidates = candidates.to_vec();
         candidates.sort_by_key(|index| definitions[*index].event);
         let mut remaining = care.clone();
         let mut inputs = Vec::with_capacity(candidates.len());

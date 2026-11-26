@@ -410,3 +410,44 @@ fn chain_reachability_matches_independent_paths_inside_and_between_loops() {
         }
     }
 }
+
+#[test]
+fn occurrence_numbers_match_ordered_site_identities_across_holes_and_overflow() {
+    use super::super::{PointNumbers, SemanticSiteId};
+    use SemanticFlowPoint::{After, Before, Synthetic};
+
+    let all: Vec<_> = (0..140)
+        .map(|id| Before(SemanticSiteId(id)))
+        .chain((0..115).map(|id| After(SemanticSiteId(id))))
+        .chain((0..139).map(Synthetic))
+        .collect();
+    let gapped: Vec<_> = all
+        .iter()
+        .enumerate()
+        .filter(|(ordinal, _)| !(64..128).contains(ordinal) && ordinal % 11 != 5)
+        .map(|(_, p)| *p)
+        .collect();
+    let sparse = vec![
+        Before(SemanticSiteId(u64::MAX)),
+        After(SemanticSiteId(u64::MAX - 1)),
+        Synthetic(u64::MAX),
+        Synthetic(17),
+    ];
+    for selected in [&all, &gapped, &sparse] {
+        let occurrence = selected.iter().rev().chain(selected.iter()).copied();
+        let numbered = PointNumbers::from_occurrences(occurrence, selected.len() * 2);
+        let sorted: Vec<_> = selected
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        assert_eq!(numbered.len(), sorted.len());
+        for (index, &site) in sorted.iter().enumerate() {
+            assert_eq!(numbered.point(index), site);
+        }
+        for &site in all.iter().chain(&sparse) {
+            assert_eq!(numbered.get(site), sorted.binary_search(&site).ok());
+        }
+    }
+}
