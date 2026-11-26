@@ -3,8 +3,8 @@ use crate::ir::PrimitiveType;
 
 #[test]
 fn imports_keep_the_first_unresolved_type_in_declaration_order() {
-    let first = ArgType::Unknown(std::borrow::Cow::Borrowed(&[PrimitiveType::Long]));
-    let later = ArgType::Unknown(std::borrow::Cow::Borrowed(&[PrimitiveType::Byte]));
+    let first = ArgType::Unknown([PrimitiveType::Long].into());
+    let later = ArgType::Unknown([PrimitiveType::Byte].into());
     assert!(later < first);
     let repeated = ArgType::object("alpha/Shared");
     let mut uses = DeclaredTypeUses::default();

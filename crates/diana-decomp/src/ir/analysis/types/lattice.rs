@@ -397,12 +397,12 @@ impl TypeLattice {
                         ArgType::Unknown(left)
                     };
                 }
-                let mut intersection = left.into_owned();
-                intersection.retain(keep);
+                let intersection: crate::ir::TypeCandidates =
+                    left.iter().copied().filter(keep).collect();
                 if intersection.is_empty() {
                     ArgType::unknown()
                 } else {
-                    ArgType::Unknown(intersection.into())
+                    ArgType::Unknown(intersection)
                 }
             }
             (known, ArgType::Unknown(candidates)) | (ArgType::Unknown(candidates), known) => {
@@ -447,9 +447,7 @@ impl TypeLattice {
     fn join_primitive(left: PrimitiveType, right: PrimitiveType) -> ArgType {
         use PrimitiveType::{Boolean, Byte, Char, Double, Float, Int, Long, Short};
         match (left, right) {
-            (Boolean, Int) | (Int, Boolean) => {
-                ArgType::Unknown(std::borrow::Cow::Borrowed(&[Boolean, Int]))
-            }
+            (Boolean, Int) | (Int, Boolean) => ArgType::Unknown([Boolean, Int].into()),
             (Byte | Short | Char | Int, Byte | Short | Char | Int) => ArgType::INT,
             (Long, Byte | Short | Char | Int) | (Byte | Short | Char | Int, Long) => ArgType::LONG,
             (Float, Byte | Short | Char | Int) | (Byte | Short | Char | Int, Float) => {
@@ -503,10 +501,7 @@ mod tests {
                     TypeBounds::from([
                         TypeBound::new(
                             BoundKind::Domain,
-                            ArgType::Unknown(std::borrow::Cow::Borrowed(&[
-                                PrimitiveType::Int,
-                                PrimitiveType::Boolean,
-                            ])),
+                            ArgType::Unknown([PrimitiveType::Int, PrimitiveType::Boolean].into()),
                         ),
                         TypeBound::new(BoundKind::Fallback, ArgType::INT),
                     ]),

@@ -13,7 +13,8 @@ use std::sync::Arc;
 #[derive(Debug, Clone)]
 pub(super) struct LinearReaching {
     points: Arc<PointNumbers>,
-    target_ranks: Vec<usize>,
+    ranks: Arc<Vec<usize>>,
+    targets: DefinitionSet,
     offsets: Vec<usize>,
     writes: Vec<(usize, usize)>,
 }
@@ -21,15 +22,11 @@ pub(super) struct LinearReaching {
 impl LinearReaching {
     pub(super) fn new(
         numbers: &Arc<PointNumbers>,
-        points: &[SemanticFlowPoint],
+        ranks: &Arc<Vec<usize>>,
         definitions: &[SemanticValueDefinition],
         value_count: usize,
         targets: &DefinitionSet,
     ) -> Self {
-        let mut ranks = vec![usize::MAX; numbers.len()];
-        for (rank, &point) in points.iter().enumerate() {
-            ranks[numbers.get(point).expect("indexed linear point")] = rank;
-        }
         let offsets = DefinitionsByValue::offsets(definitions, value_count);
         let mut next = offsets[..value_count].to_vec();
         let mut writes = vec![(0, 0); definitions.len()];
@@ -41,22 +38,18 @@ impl LinearReaching {
         for range in offsets.windows(2) {
             writes[range[0]..range[1]].sort_by_key(|&(rank, _)| rank);
         }
-        for (id, rank) in ranks.iter_mut().enumerate() {
-            if !targets.contains(id) {
-                *rank = usize::MAX;
-            }
-        }
         Self {
             points: Arc::clone(numbers),
-            target_ranks: ranks,
+            ranks: Arc::clone(ranks),
+            targets: targets.clone(),
             offsets,
             writes,
         }
     }
 
     fn target(&self, point: SemanticFlowPoint) -> Option<usize> {
-        let rank = self.target_ranks[self.points.get(point)?];
-        (rank != usize::MAX).then_some(rank)
+        let id = self.points.get(point)?;
+        self.targets.contains(id).then(|| self.ranks[id])
     }
 
     fn writes(&self, value: usize) -> Option<&[(usize, usize)]> {

@@ -45,7 +45,7 @@ pub use insn::{
 pub use instruction_tree::{
     InstructionTransform, InstructionTree, InstructionTreeError, InstructionVisitor,
 };
-pub use ty::{ArgType, DescriptorParseError, MethodDescriptor, PrimitiveType};
+pub use ty::{ArgType, DescriptorParseError, MethodDescriptor, PrimitiveType, TypeCandidates};
 pub use utf16::Utf16String;
 
 // Block and CFG

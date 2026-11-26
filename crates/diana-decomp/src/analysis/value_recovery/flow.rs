@@ -895,15 +895,13 @@ impl<'ir> ValueFlowGraph<'ir> {
                 }
             }
             for phi in self.phis() {
-                let Some((replacement_key, replacement)) =
-                    self.trivial_phi_replacement(phi, &values)
-                else {
+                let Some(replacement) = self.trivial_phi_replacement(phi, &values) else {
                     continue;
                 };
                 let changed_value = values
                     .get(&phi.result)
                     .and_then(|value| self.canonical_key(value))
-                    .is_none_or(|current| current != replacement_key);
+                    != self.canonical_key(&replacement);
                 if changed_value {
                     values.insert(phi.result, replacement);
                     changed = true;
@@ -925,7 +923,7 @@ impl<'ir> ValueFlowGraph<'ir> {
         definitions: &[DefinitionFact],
         values: &BTreeMap<SsaVar, InsnArg>,
     ) -> Option<InsnArg> {
-        let mut representative = None::<(CanonicalKey, InsnArg)>;
+        let mut representative = None::<InsnArg>;
         for definition in definitions {
             if definition.edge_copy() {
                 return None;
@@ -933,21 +931,21 @@ impl<'ir> ValueFlowGraph<'ir> {
             let value = self.resolve_canonical(self.canonical_value(definition, values)?, values);
             let key = self.canonical_key(&value)?;
             match &representative {
-                None => representative = Some((key, value)),
-                Some((representative_key, _)) if *representative_key == key => {}
+                None => representative = Some(value),
+                Some(prior) if self.canonical_key(prior) == Some(key) => {}
                 Some(_) => return None,
             }
         }
-        representative.map(|(_, value)| value)
+        representative
     }
 
     fn trivial_phi_replacement(
         &self,
         phi: &PhiMerge,
         values: &BTreeMap<SsaVar, InsnArg>,
-    ) -> Option<(CanonicalKey, InsnArg)> {
+    ) -> Option<InsnArg> {
         let self_key = CanonicalKey::Value(phi.result);
-        let mut representative = None::<(CanonicalKey, InsnArg)>;
+        let mut representative = None::<InsnArg>;
         for input in &phi.inputs {
             let value = self.resolve_canonical(
                 InsnArg::reg_ssa(
@@ -962,8 +960,8 @@ impl<'ir> ValueFlowGraph<'ir> {
                 continue;
             }
             match &representative {
-                None => representative = Some((key, value)),
-                Some((representative_key, _)) if *representative_key == key => {}
+                None => representative = Some(value),
+                Some(prior) if self.canonical_key(prior) == Some(key) => {}
                 Some(_) => return None,
             }
         }
@@ -1029,19 +1027,25 @@ impl<'ir> ValueFlowGraph<'ir> {
         }
     }
 
-    fn resolve_canonical(&self, mut value: InsnArg, values: &BTreeMap<SsaVar, InsnArg>) -> InsnArg {
-        let mut visited = BTreeSet::new();
-        loop {
-            let Some(variable) = value.as_register().and_then(|register| self.key(register)) else {
-                return value;
-            };
+    fn resolve_canonical(&self, value: InsnArg, values: &BTreeMap<SsaVar, InsnArg>) -> InsnArg {
+        let mut visited = super::AliasPath::default();
+        let mut current = &value;
+        while let Some(variable) = current
+            .as_register()
+            .and_then(|register| self.key(register))
+        {
             let Some(replacement) = values.get(&variable) else {
-                return value;
+                break;
             };
             if !visited.insert(variable) {
-                return value;
+                break;
             }
-            value = replacement.clone();
+            current = replacement;
+        }
+        if std::ptr::eq(current, &value) {
+            value
+        } else {
+            current.clone()
         }
     }
 
@@ -1053,11 +1057,11 @@ impl<'ir> ValueFlowGraph<'ir> {
             .unwrap_or_else(crate::ir::ArgType::unknown)
     }
 
-    fn canonical_key(&self, value: &InsnArg) -> Option<CanonicalKey> {
+    fn canonical_key<'a>(&self, value: &'a InsnArg) -> Option<CanonicalKey<'a>> {
         match value {
             InsnArg::Lit(literal) => Some(CanonicalKey::Literal {
                 value: literal.value,
-                ty: literal.ty.clone(),
+                ty: &literal.ty,
             }),
             InsnArg::Reg(register) => self.key(register).map(CanonicalKey::Value),
             InsnArg::Wrapped(instruction) => match instruction.insn_type {
@@ -1068,12 +1072,11 @@ impl<'ir> ValueFlowGraph<'ir> {
                         ty: instruction
                             .result
                             .as_ref()
-                            .map(|result| result.ty.clone())
-                            .unwrap_or_else(|| literal.ty.clone()),
+                            .map_or(&literal.ty, |result| &result.ty),
                     })
                 }
                 InsnType::ConstStr => Some(CanonicalKey::String(
-                    instruction.payload.string_value.as_deref().cloned()?,
+                    instruction.payload.string_value.as_deref()?,
                 )),
                 _ => None,
             },
@@ -1125,10 +1128,13 @@ fn required_phi_input_closure<'a>(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum CanonicalKey {
+enum CanonicalKey<'a> {
     Value(SsaVar),
-    Literal { value: i64, ty: crate::ir::ArgType },
-    String(Utf16String),
+    Literal {
+        value: i64,
+        ty: &'a crate::ir::ArgType,
+    },
+    String(&'a Utf16String),
 }
 
 struct DefinitionClass<'a> {
@@ -1221,8 +1227,9 @@ impl SemanticVisitor for ControlSymbolClosure<'_> {
     }
 
     fn visit_predicate(&mut self, predicate: &SemanticPredicate) {
-        let mut pending = vec![predicate];
-        while let Some(predicate) = pending.pop() {
+        let mut pending = Vec::new();
+        let mut predicate = predicate;
+        loop {
             match predicate {
                 SemanticPredicate::Test(instruction) => {
                     self.variables
@@ -1239,12 +1246,21 @@ impl SemanticVisitor for ControlSymbolClosure<'_> {
                     }
                     self.visit_operation(instruction);
                 }
-                SemanticPredicate::Not(inner) => pending.push(inner),
+                SemanticPredicate::Not(inner) => {
+                    predicate = inner;
+                    continue;
+                }
                 SemanticPredicate::And(terms) | SemanticPredicate::Or(terms) => {
-                    pending.extend(terms);
+                    if let Some((last, preceding)) = terms.split_last() {
+                        pending.extend(preceding);
+                        predicate = last;
+                        continue;
+                    }
                 }
                 SemanticPredicate::True | SemanticPredicate::False => {}
             }
+            let Some(next) = pending.pop() else { break };
+            predicate = next;
         }
     }
 }

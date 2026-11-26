@@ -232,7 +232,7 @@ impl<'a> ValueNumbering<'a> {
         mut value: SsaVar,
         pending: &mut VecDeque<SemanticOperation>,
     ) -> Option<ValueOperand> {
-        let mut visited = BTreeSet::new();
+        let mut visited = super::AliasPath::default();
         while let Some(argument) = self.canonical_values.get(&value) {
             match argument {
                 InsnArg::Lit(literal) => {
@@ -282,7 +282,7 @@ impl<'a> ValueNumbering<'a> {
     }
 
     fn root(&self, mut value: SsaVar) -> SsaVar {
-        let mut visited = BTreeSet::new();
+        let mut visited = super::AliasPath::default();
         while let Some(&parent) = self.aliases.get(&value) {
             if !visited.insert(value) {
                 break;

@@ -935,8 +935,9 @@ impl CompletionInterpreter {
         if let Some(state) = Self::leaf_state(root, domain) {
             return state;
         }
-        let mut tasks = vec![CompletionTask::Visit(root)];
-        let mut results = Vec::new();
+        let mut tasks = smallvec::SmallVec::<[CompletionTask; 4]>::new();
+        let mut results = smallvec::SmallVec::<[D::State; 4]>::new();
+        tasks.push(CompletionTask::Visit(root));
         while let Some(task) = tasks.pop() {
             match task {
                 CompletionTask::Visit(node) => {
@@ -957,8 +958,8 @@ impl CompletionInterpreter {
     fn schedule<'a, D: CompletionDomain>(
         node: &'a SemanticNode,
         domain: &D,
-        tasks: &mut Vec<CompletionTask<'a>>,
-        results: &mut Vec<D::State>,
+        tasks: &mut smallvec::SmallVec<[CompletionTask<'a>; 4]>,
+        results: &mut smallvec::SmallVec<[D::State; 4]>,
     ) -> Result<(), D::Error> {
         match node {
             SemanticNode::Empty => {
@@ -1076,7 +1077,7 @@ impl CompletionInterpreter {
 
     fn combine<D: CompletionDomain>(
         frame: CompletionFrame<'_>,
-        results: &mut Vec<D::State>,
+        results: &mut smallvec::SmallVec<[D::State; 4]>,
         domain: &D,
         sequence: &mut impl FnMut(&[SemanticNode], &[D::State]),
     ) -> Result<D::State, D::Error> {

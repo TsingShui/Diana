@@ -318,8 +318,9 @@ impl StringBuildingRecovery {
         if recovery.builders.read_back.is_empty() {
             return Ok(false);
         }
-        let body = std::mem::replace(root, SemanticNode::Empty);
-        *root = recovery.fold_node(body)?;
+        super::visit::for_each_block_mut(root, |block| {
+            recovery.changed |= recovery.merge(&mut block.statements);
+        });
         Ok(recovery.changed)
     }
 

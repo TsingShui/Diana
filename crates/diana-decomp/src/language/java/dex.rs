@@ -1788,7 +1788,7 @@ impl DexJavaDialect {
                         .zip(insn.operands().iter().skip(1))
                     {
                         if let Some(actual) =
-                            self.generic_inference_argument_source_type(actual, erased)
+                            self.generic_inference_argument_source_type(formal, actual, erased)
                         {
                             constraints.constrain(formal, &actual);
                         }
@@ -2005,7 +2005,9 @@ impl DexJavaDialect {
             .zip(&method.descriptor.parameters)
             .zip(arguments)
         {
-            if let Some(actual) = self.generic_inference_argument_source_type(actual, erased) {
+            if let Some(actual) =
+                self.generic_inference_argument_source_type(formal, actual, erased)
+            {
                 solver.constrain(formal, &actual);
             }
         }
@@ -2019,6 +2021,9 @@ impl DexJavaDialect {
         contract: &GenericMethodContract,
         expected: Option<&JavaType>,
     ) -> Option<JavaType> {
+        if !contract.owner.contains_type_variable() {
+            return None;
+        }
         if operation
             .payload
             .invoke_type
@@ -2035,10 +2040,13 @@ impl DexJavaDialect {
             .zip(operation.operands().iter().skip(1))
         {
             if let Some(actual_type) = self
-                .generic_inference_argument_source_type(actual, erased)
+                .generic_inference_argument_source_type(formal, actual, erased)
                 .filter(|actual| self.has_generic_argument_evidence(actual))
             {
                 solver.constrain(formal, &actual_type);
+            }
+            if !formal.contains_type_variable() {
+                continue;
             }
             let SemanticExpression::Operation(nested_operation) = actual else {
                 continue;
@@ -2074,6 +2082,9 @@ impl DexJavaDialect {
         owner_signature: &ClassTypeSignature,
         receiver: &SemanticExpression,
     ) {
+        if !owner_signature.contains_type_variable() {
+            return;
+        }
         if self.is_enclosing_instance_receiver(receiver, owner) {
             solver.constrain_current_owner(owner_signature);
             solver.assume_raw_owner_if_unbound(owner_signature);
@@ -2220,7 +2231,9 @@ impl DexJavaDialect {
                         .skip(usize::from(invoke_type.has_receiver())),
                 )
             {
-                if let Some(actual) = self.generic_inference_argument_source_type(actual, erased) {
+                if let Some(actual) =
+                    self.generic_inference_argument_source_type(formal, actual, erased)
+                {
                     constraints.constrain(formal, &actual);
                 }
             }
@@ -2232,6 +2245,9 @@ impl DexJavaDialect {
                     .iter()
                     .skip(usize::from(invoke_type.has_receiver())),
             ) {
+                if !formal.contains_type_variable() {
+                    continue;
+                }
                 let SemanticExpression::Operation(operation) = actual else {
                     continue;
                 };
@@ -3233,9 +3249,13 @@ impl DexJavaDialect {
 
     fn generic_inference_argument_source_type(
         &self,
+        formal: &JvmTypeSignature,
         value: &SemanticExpression,
         erased_formal: &ArgType,
     ) -> Option<JavaType> {
+        if !formal.contains_type_variable() {
+            return None;
+        }
         self.generic_argument_source_type(value, erased_formal)
             .filter(|ty| !self.is_raw_generic_type(ty))
     }

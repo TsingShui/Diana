@@ -305,6 +305,15 @@ impl GenericSignatures {
 }
 
 impl JvmTypeSignature {
+    pub(crate) fn contains_type_variable(&self) -> bool {
+        match self {
+            Self::TypeVariable(_) => true,
+            Self::Array(element) => element.contains_type_variable(),
+            Self::ClassType(class) => class.contains_type_variable(),
+            Self::BaseType(_) => false,
+        }
+    }
+
     /// Lifts a concrete descriptor type into the corresponding raw source
     /// signature. Pseudo and unresolved IR types have no source signature.
     pub fn from_erased(ty: &ArgType) -> Option<Self> {
@@ -360,6 +369,22 @@ impl JvmTypeSignature {
 }
 
 impl ClassTypeSignature {
+    pub(crate) fn contains_type_variable(&self) -> bool {
+        self.type_arguments
+            .iter()
+            .chain(
+                self.inner_segments
+                    .iter()
+                    .flat_map(|segment| &segment.type_arguments),
+            )
+            .any(|argument| match argument {
+                TypeArgument::Unbounded => false,
+                TypeArgument::Exact(ty) | TypeArgument::Extends(ty) | TypeArgument::Super(ty) => {
+                    ty.contains_type_variable()
+                }
+            })
+    }
+
     /// `com/example/Map$Entry` (top) → `com/example/Map$Entry` (full erased name).
     pub fn erased_name(&self) -> String {
         let mut name = self.raw_name.clone();

@@ -14,7 +14,7 @@ fn linear_reaching_distinguishes_write_sites_even_with_repeated_ordinals() {
     for edge in chain.windows(2) {
         builder.add_edge(edge[0], edge[1], SemanticFlowEdgeKind::Normal);
     }
-    let graph = builder.finish([chain[0]].into());
+    let graph = builder.finish(&[chain[0]]);
     let defs = [
         (chain[3], 0, 41),
         (chain[1], 0, 41),
@@ -53,7 +53,7 @@ fn long_linear_flow_retains_one_record_per_write_for_all_target_snapshots() {
     for i in 1..count {
         builder.add_edge(point(i - 1), point(i), SemanticFlowEdgeKind::Normal);
     }
-    let graph = builder.finish([point(0)].into());
+    let graph = builder.finish(&[point(0)]);
     let defs = (0..count)
         .rev()
         .map(|i| SemanticValueDefinition::new(point(i), i % 11, 1000 - i))
@@ -63,7 +63,10 @@ fn long_linear_flow_retains_one_record_per_write_for_all_target_snapshots() {
         panic!("single chain");
     };
     assert_eq!(storage.writes.len(), count);
-    assert_eq!(storage.target_ranks.len(), count);
+    assert!(std::sync::Arc::ptr_eq(
+        &storage.ranks,
+        &graph.linear_order().unwrap().ranks
+    ));
     for i in 0..count {
         for value in 0..11 {
             let expected = (0..=i)
@@ -124,7 +127,7 @@ fn block_transfers_match_each_reachable_last_write() {
         };
         builder.add_edge(point(source), point(target), kind);
     }
-    let graph = builder.finish([point(0), point(18)].into());
+    let graph = builder.finish(&[point(0), point(18)]);
     let definitions = (0..91)
         .map(|i| SemanticValueDefinition::new(point((i * 19) % 27), i % 7, 1000 - i))
         .chain([
@@ -228,7 +231,7 @@ fn two_long_arms_and_a_back_edge_store_four_inputs_for_all_occurrences() {
         );
     }
     builder.add_edge(point(join), point(0), SemanticFlowEdgeKind::LoopBack);
-    let graph = builder.finish([point(0)].into());
+    let graph = builder.finish(&[point(0)]);
     let defs = (1..join)
         .rev()
         .map(|i| SemanticValueDefinition::new(point(i), 0, i % ARM))
@@ -258,7 +261,7 @@ fn cached_reaching_requires_the_same_points_and_definition_ordinals() {
     for i in 0..3 {
         builder.add_edge(point(i), point(i + 1), SemanticFlowEdgeKind::Normal);
     }
-    let graph = builder.finish([point(0)].into());
+    let graph = builder.finish(&[point(0)]);
     let initial = vec![SemanticValueDefinition::new(point(1), 0, 5)];
     let targets = BTreeSet::from([point(3)]);
     let previous = graph.cached_reaching_values(initial.clone(), 1, targets.clone());
@@ -300,7 +303,7 @@ fn frozen_edges_sort_deduplicate_and_preserve_each_cleanup_transition() {
     ] {
         builder.add_edge(source, target, kind);
     }
-    let graph = builder.finish([point(0), isolated].into());
+    let graph = builder.finish(&[point(0), isolated]);
     assert_eq!(graph.successors(far), &[point(2), point(3)]);
     assert_eq!(graph.successors(point(0)), &[point(3)]);
     assert_eq!(
@@ -349,7 +352,7 @@ fn chain_reachability_matches_independent_paths_inside_and_between_loops() {
     for &(from, to) in &edges {
         builder.add_edge(points[from], points[to], SemanticFlowEdgeKind::Normal);
     }
-    let graph = builder.finish([points[0]].into());
+    let graph = builder.finish(&[points[0]]);
     let mut expected = vec![vec![false; points.len()]; points.len()];
     for (from, reachable) in expected.iter_mut().enumerate() {
         let mut pending = vec![from];

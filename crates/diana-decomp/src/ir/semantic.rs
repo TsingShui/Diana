@@ -928,67 +928,59 @@ impl SemanticCloneFrame {
 
 impl SemanticPredicate {
     pub fn constant_value(&self) -> Option<bool> {
-        enum Task<'a> {
-            Visit(&'a SemanticPredicate),
-            Not,
-            Junction { count: usize, conjunction: bool },
+        struct Junction<'a> {
+            remaining: std::slice::Iter<'a, SemanticPredicate>,
+            conjunction: bool,
+            value: bool,
+            negated: bool,
         }
 
-        let mut root = self;
-        let mut negate = false;
-        while let Self::Not(inner) = root {
-            negate = !negate;
-            root = inner;
-        }
-        match root {
-            Self::True => return Some(!negate),
-            Self::False => return Some(negate),
-            Self::Test(test) => return Self::constant_test(test).map(|value| value ^ negate),
-            _ => {}
-        }
-        let mut tasks = vec![Task::Visit(root)];
-        let mut values = Vec::new();
-        while let Some(task) = tasks.pop() {
-            match task {
-                Task::Visit(Self::True) => values.push(true),
-                Task::Visit(Self::False) => values.push(false),
-                Task::Visit(Self::Test(test)) => values.push(Self::constant_test(test)?),
-                Task::Visit(Self::Not(inner)) => {
-                    tasks.push(Task::Not);
-                    tasks.push(Task::Visit(inner));
-                }
-                Task::Visit(Self::And(terms)) => {
-                    tasks.push(Task::Junction {
-                        count: terms.len(),
-                        conjunction: true,
-                    });
-                    tasks.extend(terms.iter().rev().map(Task::Visit));
-                }
-                Task::Visit(Self::Or(terms)) => {
-                    tasks.push(Task::Junction {
-                        count: terms.len(),
-                        conjunction: false,
-                    });
-                    tasks.extend(terms.iter().rev().map(Task::Visit));
-                }
-                Task::Not => {
-                    let value = values.pop()?;
-                    values.push(!value);
-                }
-                Task::Junction { count, conjunction } => {
-                    let start = values.len().checked_sub(count)?;
-                    let mut terms = values.drain(start..);
-                    let value = if conjunction {
-                        terms.all(|term| term)
-                    } else {
-                        terms.any(|term| term)
-                    };
-                    drop(terms);
-                    values.push(value);
-                }
+        let mut parents = smallvec::SmallVec::<[Junction; 4]>::new();
+        let mut current = self;
+        'visit: loop {
+            let mut negated = false;
+            while let Self::Not(inner) = current {
+                negated = !negated;
+                current = inner;
             }
+            let mut value = match current {
+                Self::True => true,
+                Self::False => false,
+                Self::Test(test) => Self::constant_test(test)?,
+                Self::And(terms) | Self::Or(terms) => {
+                    let conjunction = matches!(current, Self::And(_));
+                    let mut remaining = terms.iter();
+                    if let Some(first) = remaining.next() {
+                        parents.push(Junction {
+                            remaining,
+                            conjunction,
+                            value: conjunction,
+                            negated,
+                        });
+                        current = first;
+                        continue;
+                    }
+                    conjunction
+                }
+                Self::Not(_) => unreachable!("negations were consumed"),
+            } ^ negated;
+            while let Some(parent) = parents.last_mut() {
+                if parent.conjunction {
+                    parent.value &= value;
+                } else {
+                    parent.value |= value;
+                }
+                // A known result requires a constant for every operand,
+                // including operands following a decisive true or false.
+                if let Some(next) = parent.remaining.next() {
+                    current = next;
+                    continue 'visit;
+                }
+                value = parent.value ^ parent.negated;
+                parents.pop();
+            }
+            return Some(value);
         }
-        (values.len() == 1).then(|| values[0] ^ negate)
     }
 
     fn constant_test(test: &SemanticOperation) -> Option<bool> {

@@ -32,6 +32,28 @@ use flow::{
 use schedule::ValueSchedule;
 use ssa_constants::SparseConstantPropagation;
 
+/// Alias walks usually end at the next definition. Longer walks retain an
+/// ordered set for cycle detection without making their lookup quadratic.
+#[derive(Default)]
+struct AliasPath {
+    first: smallvec::SmallVec<[SsaVar; 4]>,
+    rest: BTreeSet<SsaVar>,
+}
+
+impl AliasPath {
+    fn insert(&mut self, value: SsaVar) -> bool {
+        if self.first.contains(&value) {
+            return false;
+        }
+        if self.first.len() < self.first.inline_size() {
+            self.first.push(value);
+            true
+        } else {
+            self.rest.insert(value)
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ValueRecovery {
     gated_control: GatedControlFlow,

@@ -47,7 +47,7 @@ fn a_read_at_its_own_definition_crosses_only_the_earlier_live_range() {
         statements,
     });
     let flow = Arc::new(SemanticFlowGraph::analyze(&root));
-    assert!(flow.linear_points().is_some());
+    assert!(flow.reverse_linear_points().is_some());
     let mut graph = InterferenceGraph::default();
     SemanticLiveness::analyze(
         &root,

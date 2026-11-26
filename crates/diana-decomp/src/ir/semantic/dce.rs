@@ -8,10 +8,21 @@ pub struct SemanticDeadCodeElimination {
 
 impl SemanticDeadCodeElimination {
     pub fn apply(root: &mut SemanticNode) -> Result<bool, SemanticFoldError> {
-        let body = std::mem::replace(root, SemanticNode::Empty);
         let mut elimination = Self { changed: false };
-        *root = elimination.fold_node(body)?;
+        super::visit::for_each_block_mut(root, |block| elimination.edit_block(block));
         Ok(elimination.changed)
+    }
+
+    fn edit_block(&mut self, block: &mut super::SemanticBlock) {
+        block.statements.retain(|statement| {
+            let removable = matches!(
+                &statement.kind,
+                SemanticStatementKind::Instruction(instruction)
+                    if instruction.result.is_none()
+            ) && statement.effects().is_pure();
+            self.changed |= removable;
+            !removable
+        });
     }
 }
 
@@ -20,15 +31,7 @@ impl SemanticFolder for SemanticDeadCodeElimination {
 
     fn finish_node(&mut self, mut node: SemanticNode) -> Result<SemanticNode, Self::Error> {
         if let SemanticNode::BasicBlock(block) = &mut node {
-            block.statements.retain(|statement| {
-                let removable = matches!(
-                    &statement.kind,
-                    SemanticStatementKind::Instruction(instruction)
-                        if instruction.result.is_none()
-                ) && statement.effects().is_pure();
-                self.changed |= removable;
-                !removable
-            });
+            self.edit_block(block);
         }
         Ok(node)
     }

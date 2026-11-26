@@ -2,7 +2,8 @@
 //!
 //! Splits instruction list into basic blocks and builds CFG.
 
-use std::collections::{BTreeSet, HashMap};
+use smallvec::SmallVec;
+use std::collections::HashMap;
 
 use super::block::{Block, BlockId, ExceptionHandler};
 use super::cfg::{EdgeKind, MethodContext, CFG};
@@ -53,184 +54,163 @@ impl Splitter {
     }
     /// Build CFG
     pub fn build(mut self) -> CFG {
-        let mut cfg = CFG::with_method(self.method.clone());
+        let mut cfg = CFG::with_method(self.method);
         cfg.registers = self.registers;
         cfg.ins = self.ins;
-        if self.insns.is_empty() {
-            cfg.handlers = std::mem::take(&mut self.handlers);
-            return cfg;
+        if !self.insns.is_empty() {
+            let (leaders, ordered) = Self::find_leaders(&mut self.insns, &self.handlers);
+            Self::create_blocks(&mut cfg, self.insns, &leaders, ordered);
+            Self::build_edges(&mut cfg, &leaders, ordered, &self.handlers);
         }
-        self.annotate_dispatch_metadata();
-
-        let leaders = self.find_leaders();
-        cfg.handlers = std::mem::take(&mut self.handlers);
-        let offset_to_block = self.create_blocks(&mut cfg, &leaders);
-        self.build_edges(&mut cfg, &offset_to_block);
-
+        cfg.handlers = self.handlers;
         cfg
     }
 
-    fn annotate_dispatch_metadata(&mut self) {
-        for index in 0..self.insns.len() {
-            if self.insns[index].insn_type != InsnType::Switch {
-                continue;
+    fn find_leaders(
+        insns: &mut [InsnNode],
+        handlers: &[ExceptionHandler],
+    ) -> (SmallVec<[u32; 8]>, bool) {
+        let mut leaders = SmallVec::new();
+        leaders.push(insns[0].offset);
+        let mut boundaries = handlers
+            .iter()
+            .flat_map(|h| [h.start, h.end])
+            .collect::<Vec<_>>();
+        boundaries.sort_unstable();
+        leaders.extend(handlers.iter().map(|h| h.handler));
+
+        // The coverage test uses the union. Handler identities and DEX order
+        // remain separate when building the exceptional edges.
+        let mut ranges: Vec<_> = handlers
+            .iter()
+            .filter(|h| h.start < h.end)
+            .map(|h| (h.start, h.end))
+            .collect();
+        ranges.sort_unstable();
+        let mut merged = 0;
+        for i in 0..ranges.len() {
+            let (start, end) = ranges[i];
+            if merged != 0 && start <= ranges[merged - 1].1 {
+                ranges[merged - 1].1 = ranges[merged - 1].1.max(end);
+            } else {
+                ranges[merged] = (start, end);
+                merged += 1;
             }
-            let default = self
-                .insns
-                .get(index + 1)
-                .and_then(|instruction| i32::try_from(instruction.offset).ok());
-            self.insns[index].payload.switch_default = default;
         }
-    }
-
-    fn find_leaders(&self) -> BTreeSet<u32> {
-        let mut leaders = BTreeSet::new();
-        let insn_offsets: BTreeSet<u32> = self.insns.iter().map(|insn| insn.offset).collect();
-
-        // First instruction
-        if let Some(first) = self.insns.first() {
-            leaders.insert(first.offset);
-        }
-
-        // Try region boundaries and handler entries.
-        //
-        // Exception ranges are defined over instruction offsets, not existing
-        // block boundaries. If a try starts or ends in the middle of a block,
-        // structuring later on needs the CFG to already reflect that boundary.
-        for eh in &self.handlers {
-            if insn_offsets.contains(&eh.start) {
-                leaders.insert(eh.start);
+        ranges.truncate(merged);
+        let mut ordered = true;
+        for i in 0..insns.len() {
+            let next = insns.get(i + 1).map(|insn| insn.offset);
+            let insn = &mut insns[i];
+            ordered &= next.is_none_or(|pc| insn.offset < pc);
+            if !boundaries.is_empty() && boundaries.binary_search(&insn.offset).is_ok() {
+                leaders.push(insn.offset);
             }
-            if insn_offsets.contains(&eh.end) {
-                leaders.insert(eh.end);
-            }
-            leaders.insert(eh.handler);
-        }
-
-        // Branch targets and instructions after branches
-        // Note: target in InsnNode is stored as absolute address by decoder
-        for (i, insn) in self.insns.iter().enumerate() {
             match insn.insn_type {
-                InsnType::Goto => {
-                    // Keep control ownership independent from the effects in
-                    // the lexical prefix. Exception regions can then own a
-                    // non-throwing dispatch without also claiming preceding
-                    // calls that lie outside the protected DEX interval.
-                    leaders.insert(insn.offset);
-                    if let Some(target) = insn.get_target() {
-                        // target is already absolute address
-                        leaders.insert(target as u32);
-                    }
-                    if let Some(next) = self.insns.get(i + 1) {
-                        leaders.insert(next.offset);
-                    }
-                }
-                InsnType::If => {
-                    leaders.insert(insn.offset);
-                    if let Some(target) = insn.get_target() {
-                        // target is already absolute address
-                        leaders.insert(target as u32);
-                    }
-                    if let Some(next) = self.insns.get(i + 1) {
-                        leaders.insert(next.offset);
-                    }
+                InsnType::Goto | InsnType::If => {
+                    leaders.push(insn.offset);
+                    leaders.extend(insn.get_target().map(|target| target as u32));
                 }
                 InsnType::Switch => {
-                    leaders.insert(insn.offset);
+                    insn.payload.switch_default = next.and_then(|pc| i32::try_from(pc).ok());
+                    leaders.push(insn.offset);
                     if let Some(cases) = insn.get_switch_cases() {
-                        for &(_, target) in cases {
-                            // target is already absolute address
-                            leaders.insert(target as u32);
-                        }
-                    }
-                    if let Some(next) = self.insns.get(i + 1) {
-                        leaders.insert(next.offset);
+                        leaders.extend(cases.iter().map(|&(_, target)| target as u32));
                     }
                 }
-                InsnType::Return | InsnType::Throw => {
-                    if let Some(next) = self.insns.get(i + 1) {
-                        leaders.insert(next.offset);
-                    }
-                }
+                InsnType::Return | InsnType::Throw => {}
                 _ => {
-                    // Instructions that can throw in try region
-                    if insn.can_throw() && self.handlers.iter().any(|h| h.covers(insn.offset)) {
-                        if let Some(next) = self.insns.get(i + 1) {
-                            leaders.insert(next.offset);
-                        }
+                    if ranges.is_empty() || !insn.can_throw() {
+                        continue;
+                    }
+                    let range = ranges.partition_point(|&(_, end)| end <= insn.offset);
+                    if !ranges
+                        .get(range)
+                        .is_some_and(|&(start, _)| start <= insn.offset)
+                    {
+                        continue;
                     }
                 }
             }
+            leaders.extend(next);
         }
-
-        leaders
+        leaders.sort_unstable();
+        leaders.dedup();
+        (leaders, ordered)
     }
 
-    fn create_blocks(&mut self, cfg: &mut CFG, leaders: &BTreeSet<u32>) -> HashMap<u32, BlockId> {
-        let insns = std::mem::take(&mut self.insns);
-        let leader_vec: Vec<u32> = leaders.iter().copied().collect();
-        let mut offset_to_block = HashMap::with_capacity(leader_vec.len());
-        let mut ranges = Vec::with_capacity(leader_vec.len());
-        let mut index = 0usize;
-        for (idx, &leader) in leader_vec.iter().enumerate() {
-            let next_leader = leader_vec.get(idx + 1).copied().unwrap_or(u32::MAX);
-            let start = index;
-            while index < insns.len() && insns[index].offset < next_leader {
-                debug_assert!(insns[index].offset >= leader);
-                index += 1;
-            }
-            ranges.push((start, index));
-        }
-
-        let mut remaining = insns.into_iter();
-        let mut consumed = 0usize;
-        let mut entry = None;
-        for (idx, &leader) in leader_vec.iter().enumerate() {
-            let block_id = BlockId::new(idx as u32);
-            offset_to_block.insert(leader, block_id);
-            let (start, end) = ranges[idx];
-            for _ in consumed..start {
-                remaining.next();
-            }
-            let mut block_insns = Vec::with_capacity(end.saturating_sub(start));
-            for _ in start..end {
-                let Some(insn) = remaining.next() else {
-                    break;
-                };
-                if entry.is_none() {
-                    entry = Some(block_id);
+    fn create_blocks(cfg: &mut CFG, mut insns: Vec<InsnNode>, leaders: &[u32], ordered: bool) {
+        if let [leader] = leaders {
+            // A single block can own the original DEX instruction allocation.
+            // u32::MAX is the exclusive end of the final interval.
+            if !ordered || insns.last().is_some_and(|i| i.offset == u32::MAX) {
+                if let Some(end) = insns.iter().position(|i| i.offset == u32::MAX) {
+                    insns.truncate(end);
                 }
-                block_insns.push(insn);
             }
-            consumed = end;
-            cfg.add_block(Block::with_instructions(block_id, leader, block_insns));
+            cfg.add_block(Block::with_instructions(BlockId::new(0), *leader, insns));
+            return;
         }
-
+        let mut remaining = insns.into_iter();
+        let mut entry = None;
+        for (index, &leader) in leaders.iter().enumerate() {
+            let end = leaders.get(index + 1).copied().unwrap_or(u32::MAX);
+            let count = remaining
+                .as_slice()
+                .iter()
+                .take_while(|insn| insn.offset < end)
+                .count();
+            let block = BlockId::new(index as u32);
+            let instructions = remaining.by_ref().take(count).collect();
+            cfg.add_block(Block::with_instructions(block, leader, instructions));
+            if count != 0 && entry.is_none() {
+                entry = Some(block);
+            }
+        }
         if let Some(entry) = entry {
             cfg.entry = entry;
         }
-
-        offset_to_block
     }
 
-    fn build_edges(&self, cfg: &mut CFG, offset_to_block: &HashMap<u32, BlockId>) {
-        let offsets: Vec<u32> = cfg
-            .blocks
-            .values()
-            .flat_map(|block| block.insns.iter().map(|insn| insn.offset))
-            .collect();
-        let mut next_offsets = HashMap::with_capacity(offsets.len());
-        for pair in offsets.windows(2) {
-            next_offsets.insert(pair[0], pair[1]);
-        }
-        let next_offset = |off: u32| next_offsets.get(&off).copied();
-
+    fn build_edges(cfg: &mut CFG, leaders: &[u32], ordered: bool, handlers: &[ExceptionHandler]) {
+        let block_for = |offset| {
+            leaders
+                .binary_search(&offset)
+                .ok()
+                .map(|i| BlockId::new(i as u32))
+        };
+        // DEX offsets increase in instruction order. A block terminator's
+        // fallthrough PC is the first instruction of the next nonempty block.
+        // Synthetic streams with repeated PCs retain their last recorded successor.
+        let next_offsets = (!ordered).then(|| {
+            let mut offsets = cfg
+                .blocks
+                .values()
+                .flat_map(|block| block.insns.iter().map(|i| i.offset));
+            let mut next = HashMap::new();
+            if let Some(mut previous) = offsets.next() {
+                for offset in offsets {
+                    next.insert(previous, offset);
+                    previous = offset;
+                }
+            }
+            next
+        });
         // Collect edges first to avoid borrow issues
         let mut edges: Vec<(BlockId, BlockId, EdgeKind)> = Vec::new();
 
-        for block in cfg.blocks.values() {
+        let mut blocks = cfg
+            .blocks
+            .values()
+            .filter(|block| !block.insns.is_empty())
+            .peekable();
+        while let Some(block) = blocks.next() {
             let Some(term) = block.terminator() else {
                 continue;
+            };
+            let mut next_offset = || match &next_offsets {
+                Some(offsets) => offsets.get(&term.offset).copied(),
+                None => blocks.peek()?.insns.first().map(|i| i.offset),
             };
             let block_id = block.id;
 
@@ -239,7 +219,7 @@ impl Splitter {
                     if let Some(target) = term.get_target() {
                         // target is already absolute address
                         let abs = target as u32;
-                        if let Some(&to) = offset_to_block.get(&abs) {
+                        if let Some(to) = block_for(abs) {
                             edges.push((block_id, to, EdgeKind::Normal));
                         }
                     }
@@ -248,12 +228,12 @@ impl Splitter {
                     if let Some(target) = term.get_target() {
                         // target is already absolute address
                         let abs = target as u32;
-                        if let Some(&to) = offset_to_block.get(&abs) {
+                        if let Some(to) = block_for(abs) {
                             edges.push((block_id, to, EdgeKind::True));
                         }
                     }
-                    if let Some(next) = next_offset(term.offset) {
-                        if let Some(&to) = offset_to_block.get(&next) {
+                    if let Some(next) = next_offset() {
+                        if let Some(to) = block_for(next) {
                             edges.push((block_id, to, EdgeKind::False));
                         }
                     }
@@ -263,37 +243,22 @@ impl Splitter {
                         for &(value, target) in cases {
                             // target is already absolute address
                             let abs = target as u32;
-                            if let Some(&to) = offset_to_block.get(&abs) {
+                            if let Some(to) = block_for(abs) {
                                 edges.push((block_id, to, EdgeKind::SwitchCase(value)));
                             }
                         }
                     }
-                    if let Some(next) = next_offset(term.offset) {
-                        if let Some(&to) = offset_to_block.get(&next) {
+                    if let Some(next) = next_offset() {
+                        if let Some(to) = block_for(next) {
                             edges.push((block_id, to, EdgeKind::SwitchDefault));
                         }
                     }
                 }
                 InsnType::Return | InsnType::Throw => {}
                 _ => {
-                    if let Some(next) = next_offset(term.offset) {
-                        if let Some(&to) = offset_to_block.get(&next) {
+                    if let Some(next) = next_offset() {
+                        if let Some(to) = block_for(next) {
                             edges.push((block_id, to, EdgeKind::Normal));
-                        }
-                    }
-                }
-            }
-        }
-
-        // Exception edges
-        let handlers = cfg.handlers.clone();
-        for eh in &handlers {
-            if let Some(&handler_id) = offset_to_block.get(&eh.handler) {
-                for block in cfg.blocks.values() {
-                    for insn in &block.insns {
-                        if insn.can_throw() && eh.covers(insn.offset) {
-                            edges.push((block.id, handler_id, EdgeKind::Exception));
-                            break;
                         }
                     }
                 }
@@ -304,6 +269,39 @@ impl Splitter {
         // whose true and false edges intentionally share one target.
         for (from, to, kind) in edges {
             cfg.add_edge(from, to, kind);
+        }
+
+        if !handlers.is_empty() {
+            let mut throwing: Vec<_> = cfg
+                .blocks
+                .values()
+                .flat_map(|block| {
+                    block
+                        .insns
+                        .iter()
+                        .filter(|insn| insn.can_throw())
+                        .map(move |insn| (insn.offset, block.id))
+                })
+                .collect();
+            if !ordered {
+                throwing.sort_unstable();
+            }
+            for handler in handlers {
+                let Some(target) = block_for(handler.handler) else {
+                    continue;
+                };
+                let start = throwing.partition_point(|&(pc, _)| pc < handler.start);
+                let mut previous = None;
+                for &(pc, block) in &throwing[start..] {
+                    if pc >= handler.end {
+                        break;
+                    }
+                    if previous != Some(block) {
+                        cfg.add_edge(block, target, EdgeKind::Exception);
+                        previous = Some(block);
+                    }
+                }
+            }
         }
     }
 }

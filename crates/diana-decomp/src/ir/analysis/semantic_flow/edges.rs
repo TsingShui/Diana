@@ -1,10 +1,7 @@
 //! Frozen adjacency for occurrence-sensitive flow. The builder appends edges
 //! in evaluation order; freezing sorts and deduplicates each public edge row.
 
-use std::{
-    collections::BTreeSet,
-    sync::{Arc, Mutex, OnceLock},
-};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use super::{
     index::{FlowBlocks, PointNumbers},
@@ -85,12 +82,12 @@ pub(in crate::ir::analysis) struct GraphIndex {
 
 impl Default for GraphIndex {
     fn default() -> Self {
-        Self::new(&[], &BTreeSet::new())
+        Self::new(&[], &[])
     }
 }
 
 impl GraphIndex {
-    pub(super) fn new(edges: &[FlowEdge], entries: &BTreeSet<SemanticFlowPoint>) -> Self {
+    pub(super) fn new(edges: &[FlowEdge], entries: &[SemanticFlowPoint]) -> Self {
         let observations = edges.len().saturating_mul(2).saturating_add(entries.len());
         let points = Arc::new(PointNumbers::from_occurrences(
             edges

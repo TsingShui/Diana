@@ -338,6 +338,60 @@ enum VisitTask<'a> {
     Binding(SemanticBindingKind, &'a RegisterArg),
 }
 
+/// Edit basic blocks in fold order while their enclosing control nodes
+/// remain in place. Statements owned by loop headers are separate sites.
+pub(super) fn for_each_block_mut(
+    root: &mut SemanticNode,
+    mut edit: impl FnMut(&mut super::SemanticBlock),
+) {
+    let mut pending = smallvec::SmallVec::<[&mut SemanticNode; 8]>::new();
+    let mut current = root;
+    loop {
+        match current {
+            SemanticNode::Empty | SemanticNode::Leave(_) => {}
+            SemanticNode::BasicBlock(block) => edit(block),
+            SemanticNode::Sequence(nodes) => pending.extend(nodes.iter_mut().rev()),
+            SemanticNode::If {
+                then_node,
+                else_node,
+                ..
+            } => {
+                pending.extend(else_node.as_deref_mut());
+                current = then_node;
+                continue;
+            }
+            SemanticNode::Loop { test, body, .. } => {
+                pending.push(body);
+                current = &mut test.setup;
+                continue;
+            }
+            SemanticNode::For { body, .. }
+            | SemanticNode::ForEach { body, .. }
+            | SemanticNode::Synchronized { body, .. }
+            | SemanticNode::Label { body, .. } => {
+                current = body;
+                continue;
+            }
+            SemanticNode::Switch { cases, .. } => {
+                pending.extend(cases.iter_mut().rev().map(|case| &mut case.body));
+            }
+            SemanticNode::Try {
+                body,
+                catches,
+                finally,
+                ..
+            } => {
+                pending.extend(finally.iter_mut().map(|cleanup| cleanup.body.as_mut()));
+                pending.extend(catches.iter_mut().rev().map(|catch| &mut catch.body));
+                current = body;
+                continue;
+            }
+        }
+        let Some(next) = pending.pop() else { break };
+        current = next;
+    }
+}
+
 pub fn fold_node<F: SemanticFolder + ?Sized>(
     folder: &mut F,
     mut node: SemanticNode,

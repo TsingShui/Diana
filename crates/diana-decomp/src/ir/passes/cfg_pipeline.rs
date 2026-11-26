@@ -283,7 +283,15 @@ impl SsaStage<'_> {
             })?;
         changed |= constructors_changed;
         if constructors_changed {
-            changed |= context.pass(Self::NAME, &mut self.prune)?;
+            // The all-edge dominator tree covers every physical block. A rewrite
+            // that retained it can only need stale handler declarations pruned.
+            changed |= context.pass_with(Self::NAME, self.prune.name(), |cfg| {
+                if facts.reusable_tree.is_some() {
+                    Ok(PruneUnreachable::prune_handlers(cfg))
+                } else {
+                    self.prune.run(cfg)
+                }
+            })?;
             changed |= context.pass_with(Self::NAME, self.simplify.name(), |cfg| {
                 self.simplify.run_reusing(cfg, facts)
             })?;

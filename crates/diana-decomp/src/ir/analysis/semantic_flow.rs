@@ -52,14 +52,20 @@ pub struct SemanticFlowGraph {
     index: Arc<GraphIndex>,
     complete: bool,
     reachability: OnceLock<SemanticReachability>,
-    linear_points: OnceLock<Option<Vec<SemanticFlowPoint>>>,
+    linear_order: OnceLock<Option<LinearOrder>>,
     last_reaching: OnceLock<Arc<Mutex<Option<ReachingQuery>>>>,
+}
+
+#[derive(Debug, Clone)]
+struct LinearOrder {
+    ranks: Arc<Vec<usize>>,
+    last: usize,
 }
 
 #[derive(Debug, Clone)]
 pub struct SemanticReachability {
     points: Arc<PointNumbers>,
-    components: Vec<usize>,
+    components: Arc<Vec<usize>>,
     chain_of: Vec<usize>,
     store: ReachabilityStore,
 }
@@ -415,7 +421,7 @@ impl SemanticReachability {
         };
         Self {
             points: Arc::clone(&index.points),
-            components,
+            components: Arc::new(components),
             chain_of,
             store,
         }
@@ -497,15 +503,10 @@ impl SemanticReachability {
     // A straight-line method has one path. Its point order answers all
     // reachability queries without a component graph or a closure matrix.
     fn linear_chain(graph: &SemanticFlowGraph) -> Option<Self> {
-        let points = graph.linear_points()?;
-        let numbers = Arc::clone(&graph.index.points);
-        let mut ranks = vec![0; points.len()];
-        for (rank, &point) in points.iter().enumerate() {
-            ranks[numbers.get(point).expect("indexed linear point")] = rank;
-        }
+        let order = graph.linear_order()?;
         Some(Self {
-            points: numbers,
-            components: ranks,
+            points: Arc::clone(&graph.index.points),
+            components: Arc::clone(&order.ranks),
             chain_of: Vec::new(),
             store: ReachabilityStore::Linear,
         })
@@ -689,7 +690,7 @@ impl SemanticFlowGraph {
         if source == target {
             return true;
         }
-        if self.linear_points().is_some() {
+        if self.linear_order().is_some() {
             return self.indexed_reachability().reaches(source, target);
         }
         let (Some(from), Some(to)) = (self.index.id(source), self.index.id(target)) else {
@@ -727,7 +728,7 @@ impl SemanticFlowGraph {
             [next] if *next == to => return true,
             _ => {}
         }
-        if self.linear_points().is_some() {
+        if self.linear_order().is_some() {
             return self.indexed_reachability().reaches(source, target);
         }
         self.index.must_reach(from, to)
@@ -736,8 +737,8 @@ impl SemanticFlowGraph {
     // A single entry and one successor per edge source give a chain exactly
     // when its walk ends after visiting all edge sources. The bound also
     // detects a cycle without allocating a visited set.
-    pub(super) fn linear_points(&self) -> Option<&[SemanticFlowPoint]> {
-        self.linear_points
+    fn linear_order(&self) -> Option<&LinearOrder> {
+        self.linear_order
             .get_or_init(|| {
                 if self.index.entries.len() != 1
                     || self.index.successor_count() != self.index.len() - 1
@@ -746,9 +747,9 @@ impl SemanticFlowGraph {
                 }
                 let count = self.index.points.len();
                 let mut point = *self.index.entries.first()?;
-                let mut points = Vec::with_capacity(count);
-                for _ in 1..count {
-                    points.push(self.index.point(point));
+                let mut ranks = vec![0; count];
+                for rank in 0..count - 1 {
+                    ranks[point] = rank;
                     let [next] = self.index.successors(point) else {
                         return None;
                     };
@@ -757,10 +758,23 @@ impl SemanticFlowGraph {
                 if !self.index.successors(point).is_empty() {
                     return None;
                 }
-                points.push(self.index.point(point));
-                Some(points)
+                ranks[point] = count - 1;
+                Some(LinearOrder {
+                    ranks: Arc::new(ranks),
+                    last: point,
+                })
             })
-            .as_deref()
+            .as_ref()
+    }
+
+    pub(super) fn reverse_linear_points(
+        &self,
+    ) -> Option<impl Iterator<Item = SemanticFlowPoint> + '_> {
+        let last = self.linear_order()?.last;
+        Some(
+            std::iter::successors(Some(last), |&node| self.index.predecessors(node).next())
+                .map(|node| self.index.point(node)),
+        )
     }
 
     /// Source passes can change expression syntax without changing any
@@ -831,10 +845,10 @@ impl SemanticFlowGraph {
     ) -> SemanticReachingValues {
         let cleanup = self.has_cleanup_continuations();
         if !cleanup {
-            if let Some(points) = self.linear_points() {
+            if let Some(order) = self.linear_order() {
                 return SemanticReachingValues(ReachingStorage::Linear(LinearReaching::new(
                     &self.index.points,
-                    points,
+                    &order.ranks,
                     definitions,
                     value_count,
                     targets,
@@ -1280,21 +1294,15 @@ impl SemanticFlowBuilder {
                 }
             }
         }
-        self.finish(
-            results
-                .pop()
-                .and_then(|fragment| fragment.entry)
-                .into_iter()
-                .collect(),
-        )
+        self.finish(results.pop().and_then(|fragment| fragment.entry).as_slice())
     }
 
-    fn finish(self, entries: BTreeSet<SemanticFlowPoint>) -> SemanticFlowGraph {
+    fn finish(self, entries: &[SemanticFlowPoint]) -> SemanticFlowGraph {
         SemanticFlowGraph {
-            index: Arc::new(GraphIndex::new(&self.edges, &entries)),
+            index: Arc::new(GraphIndex::new(&self.edges, entries)),
             complete: self.complete,
             reachability: OnceLock::new(),
-            linear_points: OnceLock::new(),
+            linear_order: OnceLock::new(),
             last_reaching: OnceLock::new(),
         }
     }
@@ -2054,7 +2062,7 @@ mod tests {
         for &(source, target) in edges {
             builder.add_edge(source, target, SemanticFlowEdgeKind::Normal);
         }
-        builder.finish(BTreeSet::new())
+        builder.finish(&[])
     }
 
     #[test]
@@ -2094,7 +2102,7 @@ mod tests {
         for (source, target) in [(0, 1), (0, 2), (1, 3), (2, 3), (3, 4), (4, 3), (4, 5)] {
             builder.add_edge(points[source], points[target], SemanticFlowEdgeKind::Normal);
         }
-        let graph = builder.finish(BTreeSet::from([points[0]]));
+        let graph = builder.finish(&[points[0]]);
 
         let dense = SemanticReachability::analyze_with_dense_limit(&graph, usize::MAX);
         let sparse = SemanticReachability::analyze_with_dense_limit(&graph, 0);
@@ -2123,7 +2131,7 @@ mod tests {
         for (source, target) in [(0, 1), (0, 2), (1, 3), (2, 3), (3, 1)] {
             builder.add_edge(points[source], points[target], SemanticFlowEdgeKind::Normal);
         }
-        let graph = builder.finish(BTreeSet::from([points[0]]));
+        let graph = builder.finish(&[points[0]]);
 
         let reaching = graph.reaching_values(
             &[

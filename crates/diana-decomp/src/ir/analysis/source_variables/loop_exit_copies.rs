@@ -243,7 +243,7 @@ impl<'a> DefiniteDefinition<'a> {
     }
 
     fn read_operation(&mut self, operation: &crate::ir::SemanticOperation, state: &BTreeSet<u32>) {
-        let Ok(arguments) = operation.evaluation_operands() else {
+        let Ok(arguments) = operation.evaluation_operands_iter() else {
             self.valid = false;
             return;
         };

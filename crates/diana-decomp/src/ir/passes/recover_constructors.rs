@@ -607,18 +607,14 @@ impl RecoverConstructors<'_> {
         let mut replacements = BTreeMap::<SsaVar, SsaVar>::new();
         let mut removals = facts.discarded_allocations().clone();
         let mut constructors = BTreeMap::new();
-        let mut exceptional_merges = facts
-            .discarded_allocations()
-            .iter()
-            .map(|allocation| ExceptionalAllocationMerge {
-                allocation: allocation.block,
-                handlers: cfg
-                    .successors_with_kind(allocation.block)
-                    .iter()
-                    .filter_map(|(target, kind)| (*kind == EdgeKind::Exception).then_some(*target))
-                    .collect(),
-            })
-            .collect::<Vec<_>>();
+        let mut exceptional_edges = Vec::new();
+        for allocation in facts.discarded_allocations() {
+            for &(handler, kind) in cfg.successors_with_kind(allocation.block) {
+                if kind == EdgeKind::Exception {
+                    exceptional_edges.push((allocation.block, handler));
+                }
+            }
+        }
         let mut multi_site = None;
         let mut object_plans = Vec::new();
         for initialization in facts.entries() {
@@ -678,14 +674,20 @@ impl RecoverConstructors<'_> {
                 );
                 object_plans.push(plan);
             }
-            exceptional_merges.push(ExceptionalAllocationMerge {
-                allocation: initialization.allocation.block,
-                handlers: initialization.allocation_exception_handlers.clone(),
-            });
+            exceptional_edges.extend(
+                initialization
+                    .allocation_exception_handlers
+                    .iter()
+                    .map(|&handler| (initialization.allocation.block, handler)),
+            );
         }
 
         drop(multi_site);
-        cached.invalidate();
+        if exceptional_edges.is_empty() {
+            cached.invalidate_values();
+        } else {
+            cached.invalidate();
+        }
 
         for (&block_id, block) in &mut cfg.blocks {
             let mut rewriter = ConstructorRewriter::new(&replacements);
@@ -760,40 +762,35 @@ impl RecoverConstructors<'_> {
             inserted.extend(std::mem::take(&mut body.insns));
             body.insns = inserted;
         }
-        for merge in exceptional_merges {
-            merge.apply(cfg)?;
+        for (allocation, handler) in exceptional_edges {
+            Self::remove_allocation_edge(cfg, allocation, handler)?;
         }
         Ok(PassResult::Changed)
     }
-}
 
-struct ExceptionalAllocationMerge {
-    allocation: crate::ir::BlockId,
-    handlers: Vec<crate::ir::BlockId>,
-}
-
-impl ExceptionalAllocationMerge {
-    fn apply(self, cfg: &mut CFG) -> Result<(), ConstructorRecoveryError> {
-        for handler in self.handlers {
-            cfg.remove_edge_with_kind(self.allocation, handler, EdgeKind::Exception);
-            let block = cfg
-                .block_mut(handler)
-                .ok_or(ConstructorRecoveryError::MissingHandler(handler))?;
-            for phi in block
-                .insns
-                .iter_mut()
-                .filter(|instruction| instruction.insn_type == InsnType::Phi)
-            {
-                if phi.args.len() != phi.payload.phi_edges.len() {
-                    return Err(ConstructorRecoveryError::MalformedHandlerPhi(handler));
-                }
-                let mut arguments = std::mem::take(&mut phi.args).into_iter();
-                let mut edges = std::mem::take(&mut phi.payload.phi_edges).into_iter();
-                while let (Some(argument), Some(edge)) = (arguments.next(), edges.next()) {
-                    if edge != (self.allocation, crate::ir::EdgeKind::Exception) {
-                        phi.args.push(argument);
-                        phi.payload.phi_edges.push(edge);
-                    }
+    fn remove_allocation_edge(
+        cfg: &mut CFG,
+        allocation: BlockId,
+        handler: BlockId,
+    ) -> Result<(), ConstructorRecoveryError> {
+        cfg.remove_edge_with_kind(allocation, handler, EdgeKind::Exception);
+        let block = cfg
+            .block_mut(handler)
+            .ok_or(ConstructorRecoveryError::MissingHandler(handler))?;
+        for phi in block
+            .insns
+            .iter_mut()
+            .filter(|instruction| instruction.insn_type == InsnType::Phi)
+        {
+            if phi.args.len() != phi.payload.phi_edges.len() {
+                return Err(ConstructorRecoveryError::MalformedHandlerPhi(handler));
+            }
+            let mut arguments = std::mem::take(&mut phi.args).into_iter();
+            let mut edges = std::mem::take(&mut phi.payload.phi_edges).into_iter();
+            while let (Some(argument), Some(edge)) = (arguments.next(), edges.next()) {
+                if edge != (allocation, EdgeKind::Exception) {
+                    phi.args.push(argument);
+                    phi.payload.phi_edges.push(edge);
                 }
             }
         }

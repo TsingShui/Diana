@@ -947,24 +947,22 @@ impl RedundantVacuousPredicate {
         test: &SemanticOperation,
         following: &SemanticNode,
     ) -> Option<SemanticOperation> {
-        let operands = test.evaluation_operands().ok()?;
-        let candidates = operands
-            .into_iter()
-            .filter_map(|operand| match operand {
-                SemanticExpression::Operation(operation)
-                    if operation.result.is_some()
-                        && operation.id.is_valid()
-                        && !operation.effects().without_control().is_pure()
-                        && Self::operation_occurrences(following, operation.id) != 0 =>
-                {
-                    Some(operation.clone())
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        (candidates.len() == 1)
-            .then(|| candidates.into_iter().next())
-            .flatten()
+        let mut candidates =
+            test.evaluation_operands_iter()
+                .ok()?
+                .filter_map(|operand| match operand {
+                    SemanticExpression::Operation(operation)
+                        if operation.result.is_some()
+                            && operation.id.is_valid()
+                            && !operation.effects().without_control().is_pure()
+                            && Self::operation_occurrences(following, operation.id) != 0 =>
+                    {
+                        Some(operation)
+                    }
+                    _ => None,
+                });
+        let first = candidates.next()?;
+        candidates.next().is_none().then(|| first.clone())
     }
 
     fn guard_for_test(
@@ -1107,7 +1105,7 @@ impl RedundantVacuousPredicate {
         let Some(instruction) = statement.instruction_ref() else {
             return false;
         };
-        let Ok(operands) = instruction.evaluation_operands() else {
+        let Ok(operands) = instruction.evaluation_operands_iter() else {
             return false;
         };
         for operand in operands {

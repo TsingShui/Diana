@@ -1484,13 +1484,14 @@ impl<'a> ValuePlanner<'a> {
         if !left.operation_equivalent(right) {
             return false;
         }
-        let (Ok(left), Ok(right)) = (left.evaluation_operands(), right.evaluation_operands())
-        else {
+        let (Ok(left), Ok(right)) = (
+            left.evaluation_operands_iter(),
+            right.evaluation_operands_iter(),
+        ) else {
             return false;
         };
-        left.len() == right.len()
+        left.size_hint().0 == right.size_hint().0
             && left
-                .into_iter()
                 .zip(right)
                 .all(|(left, right)| self.same_argument(left.into(), right.into()))
     }

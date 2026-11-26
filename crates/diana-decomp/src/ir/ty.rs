@@ -9,7 +9,12 @@
 //! - Array types ([I, [Ljava/lang/Object;)
 //! - Unknown types (used during type inference)
 
-use std::borrow::Cow;
+use std::{
+    cmp::Ordering,
+    hash::{Hash, Hasher},
+    ops::Deref,
+    sync::Arc,
+};
 use std::{fmt, str::FromStr};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -253,6 +258,95 @@ impl PrimitiveType {
     }
 }
 
+/// Ordered candidate categories of a partially known DEX type. The list
+/// keeps repeats and distinct orders supplied by callers.
+#[derive(Clone)]
+pub struct TypeCandidates(CandidateStorage);
+
+#[derive(Clone)]
+enum CandidateStorage {
+    Inline {
+        elements: [PrimitiveType; 12],
+        len: u8,
+    },
+    Shared(Arc<Vec<PrimitiveType>>),
+}
+
+impl TypeCandidates {
+    fn inline(types: &[PrimitiveType]) -> Option<Self> {
+        let mut elements = [PrimitiveType::Void; 12];
+        elements.get_mut(..types.len())?.copy_from_slice(types);
+        Some(Self(CandidateStorage::Inline {
+            elements,
+            len: types.len() as u8,
+        }))
+    }
+}
+
+impl From<Vec<PrimitiveType>> for TypeCandidates {
+    fn from(types: Vec<PrimitiveType>) -> Self {
+        Self::inline(&types).unwrap_or_else(|| Self(CandidateStorage::Shared(Arc::new(types))))
+    }
+}
+
+impl<const N: usize> From<[PrimitiveType; N]> for TypeCandidates {
+    fn from(types: [PrimitiveType; N]) -> Self {
+        Self::inline(&types)
+            .unwrap_or_else(|| Self(CandidateStorage::Shared(Arc::new(Vec::from(types)))))
+    }
+}
+
+impl FromIterator<PrimitiveType> for TypeCandidates {
+    fn from_iter<T: IntoIterator<Item = PrimitiveType>>(iter: T) -> Self {
+        let values: smallvec::SmallVec<[PrimitiveType; 12]> = iter.into_iter().collect();
+        Self::inline(&values)
+            .unwrap_or_else(|| Self(CandidateStorage::Shared(Arc::new(values.into_vec()))))
+    }
+}
+
+impl Deref for TypeCandidates {
+    type Target = [PrimitiveType];
+
+    fn deref(&self) -> &Self::Target {
+        match &self.0 {
+            CandidateStorage::Inline { elements, len } => &elements[..usize::from(*len)],
+            CandidateStorage::Shared(elements) => elements.as_slice(),
+        }
+    }
+}
+
+impl fmt::Debug for TypeCandidates {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.deref().fmt(f)
+    }
+}
+
+impl PartialEq for TypeCandidates {
+    fn eq(&self, other: &Self) -> bool {
+        self.deref() == other.deref()
+    }
+}
+
+impl Eq for TypeCandidates {}
+
+impl PartialOrd for TypeCandidates {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for TypeCandidates {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.deref().cmp(other.deref())
+    }
+}
+
+impl Hash for TypeCandidates {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.deref().hash(state)
+    }
+}
+
 /// Argument type - represents the type of an instruction argument
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ArgType {
@@ -265,8 +359,8 @@ pub enum ArgType {
     /// Array type with an immutable element shared by type propagation and IR clones.
     Array(std::sync::Arc<ArgType>),
 
-    /// Ordered candidate categories. The common DEX operand sets are static slices.
-    Unknown(Cow<'static, [PrimitiveType]>),
+    /// Ordered candidate categories. All standard DEX type sets fit inline.
+    Unknown(TypeCandidates),
 }
 
 impl ArgType {
@@ -284,58 +378,64 @@ impl ArgType {
 
     /// Unknown narrow type (int, float, boolean, short, byte, char, object, array)
     pub fn narrow() -> ArgType {
-        ArgType::Unknown(Cow::Borrowed(&[
-            PrimitiveType::Int,
-            PrimitiveType::Float,
-            PrimitiveType::Boolean,
-            PrimitiveType::Short,
-            PrimitiveType::Byte,
-            PrimitiveType::Char,
-            PrimitiveType::Object,
-            PrimitiveType::Array,
-        ]))
+        ArgType::Unknown(
+            [
+                PrimitiveType::Int,
+                PrimitiveType::Float,
+                PrimitiveType::Boolean,
+                PrimitiveType::Short,
+                PrimitiveType::Byte,
+                PrimitiveType::Char,
+                PrimitiveType::Object,
+                PrimitiveType::Array,
+            ]
+            .into(),
+        )
     }
 
     /// Unknown wide type (long, double)
     pub fn wide() -> ArgType {
-        ArgType::Unknown(Cow::Borrowed(&[PrimitiveType::Long, PrimitiveType::Double]))
+        ArgType::Unknown([PrimitiveType::Long, PrimitiveType::Double].into())
     }
 
     /// Unknown object type (object or array)
     pub fn unknown_object() -> ArgType {
-        ArgType::Unknown(Cow::Borrowed(&[
-            PrimitiveType::Object,
-            PrimitiveType::Array,
-        ]))
+        ArgType::Unknown([PrimitiveType::Object, PrimitiveType::Array].into())
     }
 
     /// DEX equality operands may be integral values, references, or null.
     pub fn equality_operand() -> ArgType {
-        ArgType::Unknown(Cow::Borrowed(&[
-            PrimitiveType::Int,
-            PrimitiveType::Boolean,
-            PrimitiveType::Short,
-            PrimitiveType::Byte,
-            PrimitiveType::Char,
-            PrimitiveType::Object,
-            PrimitiveType::Array,
-        ]))
+        ArgType::Unknown(
+            [
+                PrimitiveType::Int,
+                PrimitiveType::Boolean,
+                PrimitiveType::Short,
+                PrimitiveType::Byte,
+                PrimitiveType::Char,
+                PrimitiveType::Object,
+                PrimitiveType::Array,
+            ]
+            .into(),
+        )
     }
 
     /// Any unknown type
     pub fn unknown() -> ArgType {
-        ArgType::Unknown(Cow::Borrowed(&[
-            PrimitiveType::Int,
-            PrimitiveType::Long,
-            PrimitiveType::Float,
-            PrimitiveType::Double,
-            PrimitiveType::Boolean,
-            PrimitiveType::Short,
-            PrimitiveType::Byte,
-            PrimitiveType::Char,
-            PrimitiveType::Object,
-            PrimitiveType::Array,
-        ]))
+        ArgType::Unknown(
+            [
+                PrimitiveType::Int,
+                PrimitiveType::Long,
+                PrimitiveType::Float,
+                PrimitiveType::Double,
+                PrimitiveType::Boolean,
+                PrimitiveType::Short,
+                PrimitiveType::Byte,
+                PrimitiveType::Char,
+                PrimitiveType::Object,
+                PrimitiveType::Array,
+            ]
+            .into(),
+        )
     }
 
     // ==================== Common Object Types ====================

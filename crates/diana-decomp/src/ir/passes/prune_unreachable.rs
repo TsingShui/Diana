@@ -21,14 +21,15 @@ impl Pass for PruneUnreachable {
 
     fn run(&mut self, cfg: &mut CFG) -> Result<PassResult, Self::Error> {
         let reachable = cfg.reachable();
-        let to_remove: Vec<_> = cfg
-            .block_ids()
-            .into_iter()
+        let removed: BTreeSet<_> = cfg
+            .blocks
+            .keys()
+            .copied()
             .filter(|id| !reachable.contains(id))
             .collect();
-
-        let mut changed = !to_remove.is_empty();
-        let removed = to_remove.iter().copied().collect::<BTreeSet<_>>();
+        if removed.is_empty() {
+            return Ok(Self::prune_handlers(cfg));
+        }
         for block in cfg.blocks.values_mut() {
             for phi in block
                 .insns
@@ -48,10 +49,19 @@ impl Pass for PruneUnreachable {
                 }
             }
         }
-        for id in to_remove {
+        for id in removed {
             cfg.remove_block(id);
         }
+        Self::prune_handlers(cfg);
+        Ok(PassResult::Changed)
+    }
+}
 
+impl PruneUnreachable {
+    pub(super) fn prune_handlers(cfg: &mut CFG) -> PassResult {
+        if cfg.handlers.is_empty() {
+            return PassResult::Unchanged;
+        }
         let handler_entries = cfg
             .blocks
             .values()
@@ -61,9 +71,7 @@ impl Pass for PruneUnreachable {
         let handler_count = cfg.handlers.len();
         cfg.handlers
             .retain(|handler| handler_entries.contains(&handler.handler));
-        changed |= cfg.handlers.len() != handler_count;
-
-        Ok(changed.into())
+        (cfg.handlers.len() != handler_count).into()
     }
 }
 

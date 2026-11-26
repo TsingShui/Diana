@@ -132,7 +132,9 @@ fn immutable_operand_types_and_reference_clones_preserve_dex_identity() {
         let ArgType::Unknown(candidates) = ty else {
             unreachable!()
         };
-        assert!(matches!(candidates, std::borrow::Cow::Borrowed(_)));
+        let start = std::ptr::from_ref(&candidates).addr();
+        assert!((start..start + std::mem::size_of_val(&candidates))
+            .contains(&candidates.as_ptr().addr()));
         assert_eq!(candidates.as_ref(), candidates.clone().as_ref());
     }
 }
@@ -217,4 +219,24 @@ fn checked_instruction_layout_retains_each_reference_slot_and_width() {
     assert_eq!(payload.width(), CodeUnitCount(2));
     assert_eq!(payload.references(), [None, None]);
     assert!(std::mem::size_of::<diana_decomp::p1::DecodedInstruction>() <= 96);
+}
+
+#[test]
+fn candidate_lists_preserve_slice_identity_across_inline_and_shared_lengths() {
+    use diana_decomp::ir::{PrimitiveType, TypeCandidates};
+    use std::hash::{BuildHasher, RandomState};
+    let hash = RandomState::new();
+    let kinds = [PrimitiveType::Float, PrimitiveType::Int, PrimitiveType::Int];
+    for count in [0, 1, 2, 11, 12, 13, 32] {
+        let input = kinds.into_iter().cycle().take(count).collect::<Vec<_>>();
+        let candidates: TypeCandidates = input.iter().copied().collect();
+        assert_eq!(&*candidates, input);
+        assert_eq!(candidates, TypeCandidates::from(input.clone()));
+        assert_eq!(format!("{candidates:?}"), format!("{input:?}"));
+        assert_eq!(hash.hash_one(&candidates), hash.hash_one(&input[..]));
+        let reversed: TypeCandidates = input.iter().rev().copied().collect();
+        assert_eq!(candidates.cmp(&reversed), input.as_slice().cmp(&reversed));
+    }
+    #[cfg(target_pointer_width = "64")]
+    assert!(std::mem::size_of::<ArgType>() <= 24);
 }

@@ -23,6 +23,14 @@ pub(super) struct LoweredNestedType {
     pub declaration: JavaTypeDeclaration,
 }
 
+impl LoweredNestedType {
+    fn construction_identity(&self) -> Option<&JavaType> {
+        self.identity
+            .as_ref()
+            .filter(|_| self.is_anonymous || self.is_function_object)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct RecoveredFunction {
     pub owner: JavaIdentifier,
@@ -170,26 +178,31 @@ impl AnonymousClassRecovery {
                 &recovered,
             );
         }
+        let mut parameter_names = FunctionParameterNames::new();
+        // Binding a construction can introduce lambda parameters anywhere in
+        // this lexical tree. Reserve the original names before the first edit
+        // only when the forest contains a candidate for that binding.
+        if nested
+            .iter()
+            .any(|item| item.construction_identity().is_some())
+        {
+            parameter_names.reserve_declaration(declaration);
+            for item in &mut nested {
+                parameter_names.reserve_declaration(&mut item.declaration);
+            }
+        }
         let mut forest = nested.into_iter().map(Some).collect::<Vec<_>>();
         let mut removed = Vec::new();
         let mut recovered_functions = BTreeSet::new();
-        let mut parameter_names = FunctionParameterNames::new();
-        parameter_names.reserve_declaration(declaration);
-        for nested in forest.iter_mut().flatten() {
-            parameter_names.reserve_declaration(&mut nested.declaration);
-        }
         for index in 0..forest.len() {
             let Some(mut candidate) = forest[index].take() else {
                 continue;
             };
-            if (!candidate.is_anonymous && !candidate.is_function_object)
-                || candidate.identity.is_none()
-            {
+            let Some(identity) = candidate.construction_identity() else {
                 RetainedFunctionObjectAbi::apply(&mut candidate, names);
                 forest[index] = Some(candidate);
                 continue;
-            }
-            let identity = candidate.identity.as_ref().unwrap();
+            };
             let construction_count = Self::construction_count(declaration, identity)
                 + forest
                     .iter_mut()

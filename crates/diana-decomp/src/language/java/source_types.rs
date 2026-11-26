@@ -2224,29 +2224,6 @@ impl GenericInvocationCompatibility {
         }
     }
 
-    fn has_type_variable(ty: &JvmTypeSignature) -> bool {
-        match ty {
-            JvmTypeSignature::TypeVariable(_) => true,
-            JvmTypeSignature::Array(element) => Self::has_type_variable(element),
-            JvmTypeSignature::ClassType(class) => class
-                .type_arguments
-                .iter()
-                .chain(
-                    class
-                        .inner_segments
-                        .iter()
-                        .flat_map(|segment| &segment.type_arguments),
-                )
-                .any(|argument| match argument {
-                    TypeArgument::Unbounded => false,
-                    TypeArgument::Exact(ty)
-                    | TypeArgument::Extends(ty)
-                    | TypeArgument::Super(ty) => Self::has_type_variable(ty),
-                }),
-            JvmTypeSignature::BaseType(_) => false,
-        }
-    }
-
     pub(super) fn has_concrete_type_argument(ty: &JvmTypeSignature) -> bool {
         match ty {
             JvmTypeSignature::ClassType(class) => class
@@ -3979,8 +3956,7 @@ impl<'a> SourceTypeFlow<'a> {
                     return false;
                 };
                 let result = invocation_expression_signature(operation, contract);
-                let return_depends_on_type_variables =
-                    GenericInvocationCompatibility::has_type_variable(result.as_ref());
+                let return_depends_on_type_variables = result.contains_type_variable();
                 let raw_owner_affects_return =
                     solver.owner_is_raw(&contract.owner) && return_depends_on_type_variables;
                 let unchecked_input_affects_return = return_depends_on_type_variables
@@ -4845,6 +4821,9 @@ impl<'a> SourceTypeFlow<'a> {
         operation: &SemanticOperation,
         contract: &GenericMethodContract,
     ) -> Option<JavaType> {
+        if !contract.owner.contains_type_variable() {
+            return None;
+        }
         if operation
             .payload
             .invoke_type
@@ -5139,6 +5118,9 @@ impl<'a> SourceTypeFlow<'a> {
         owner: &ClassTypeSignature,
         receiver: &SemanticExpression,
     ) {
+        if !owner.contains_type_variable() {
+            return;
+        }
         let is_current_instance = self.this_variable.is_some_and(|this_variable| {
             receiver
                 .as_register()
@@ -5202,7 +5184,12 @@ impl<'a> SourceTypeFlow<'a> {
         erased_formal: &ArgType,
         expression: &SemanticExpression,
     ) {
-        if erased_formal.is_reference() && Self::constant(expression) == Some(0) {
+        // This operation only contributes bindings to the enclosing solver.
+        // A closed formal still supplies its source type to the nested call
+        // through poly_argument_constraints and the ordinary argument conversion.
+        if !formal.contains_type_variable()
+            || (erased_formal.is_reference() && Self::constant(expression) == Some(0))
+        {
             return;
         }
         // A function-object construction is a poly expression: its target SAM
@@ -5758,7 +5745,7 @@ impl<'a> SourceTypeFlow<'a> {
             return None;
         };
         let return_depends_on_type_variables =
-            GenericInvocationCompatibility::has_type_variable(&contract.signature.return_type);
+            contract.signature.return_type.contains_type_variable();
         let raw_owner_affects_return =
             solver.owner_is_raw(&contract.owner) && return_depends_on_type_variables;
         let unchecked_input_affects_return = return_depends_on_type_variables

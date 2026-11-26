@@ -470,13 +470,13 @@ impl SemanticLiveness {
                 facts.uses.iter().copied(),
             );
         }
-        if let Some(points) = flow.linear_points() {
+        if let Some(points) = flow.reverse_linear_points() {
             let mut live = BTreeSet::new();
-            for point in points.iter().rev() {
+            for point in points {
                 match point {
                     SemanticFlowPoint::Before(site) => {
                         let facts = sites
-                            .get(site)
+                            .get(&site)
                             .ok_or(SourceVariableError::MissingSemanticSite("flow point"))?;
                         // A statement can both read and define a name. Its
                         // incoming uses survive the kill of its outgoing value.
@@ -492,7 +492,7 @@ impl SemanticLiveness {
                         );
                     }
                     SemanticFlowPoint::After(site) => {
-                        if let Some(facts) = sites.get(site) {
+                        if let Some(facts) = sites.get(&site) {
                             for &definition in &facts.definitions {
                                 if !interference.participates(definition) {
                                     continue;

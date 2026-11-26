@@ -86,38 +86,65 @@ impl std::error::Error for ResultBindingError {}
 
 impl ResultBindingAnalysis {
     fn analyze(cfg: &CFG) -> Result<Vec<ResultBinding>, ResultBindingError> {
-        let mut order = cfg
-            .blocks
-            .values()
-            .flat_map(|block| {
-                block
-                    .insns
-                    .iter()
-                    .enumerate()
-                    .map(move |(index, instruction)| {
-                        (
-                            instruction.offset,
-                            InsnPosition {
-                                block: block.id,
-                                index,
-                            },
-                        )
-                    })
+        let instructions = || {
+            cfg.blocks.values().flat_map(|block| {
+                block.insns.iter().enumerate().map(move |(index, insn)| {
+                    (
+                        InsnPosition {
+                            block: block.id,
+                            index,
+                        },
+                        insn,
+                    )
+                })
             })
-            .collect::<Vec<_>>();
-        order.sort_by_key(|(offset, position)| (*offset, position.block, position.index));
+        };
+        let mut previous_offset = 0;
+        let mut has_results = false;
+        let ordered = cfg.blocks.iter().all(|(&id, block)| {
+            id == block.id
+                && block.insns.iter().all(|insn| {
+                    let ordered = previous_offset <= insn.offset;
+                    previous_offset = insn.offset;
+                    has_results |= insn.insn_type == InsnType::MoveResult;
+                    ordered
+                })
+        });
+        if ordered {
+            if !has_results {
+                return Ok(Vec::new());
+            }
+            return Self::bind_stream(cfg, instructions().map(Ok));
+        }
 
+        // CFG transformations may reorder blocks with respect to DEX offsets.
+        // Keep the position tie-break and checked lookups for these inputs.
+        let mut order: Vec<_> = instructions()
+            .map(|(pos, insn)| (insn.offset, pos))
+            .collect();
+        order.sort_unstable_by_key(|(offset, pos)| (*offset, pos.block, pos.index));
+        Self::bind_stream(
+            cfg,
+            order
+                .into_iter()
+                .map(|(_, pos)| Ok((pos, Self::instruction(cfg, pos)?))),
+        )
+    }
+
+    fn bind_stream<'a>(
+        cfg: &CFG,
+        instructions: impl Iterator<Item = Result<(InsnPosition, &'a InsnNode), ResultBindingError>>,
+    ) -> Result<Vec<ResultBinding>, ResultBindingError> {
         let mut bindings = Vec::new();
-        for (stream_index, (_, pseudo)) in order.iter().enumerate() {
-            let instruction = Self::instruction(cfg, *pseudo)?;
+        let mut previous = None;
+        for current in instructions {
+            let (pseudo, instruction) = current?;
+            let producer = previous.replace((pseudo, instruction));
             if instruction.insn_type != InsnType::MoveResult {
                 continue;
             }
-            let (_, producer) = stream_index
-                .checked_sub(1)
-                .and_then(|index| order.get(index))
-                .ok_or(ResultBindingError::MissingProducer(instruction.offset))?;
-            let producer_instruction = Self::instruction(cfg, *producer)?;
+            let (producer, producer_instruction) =
+                producer.ok_or(ResultBindingError::MissingProducer(instruction.offset))?;
             if !matches!(
                 producer_instruction.insn_type,
                 InsnType::Invoke | InsnType::FilledNewArray
@@ -145,8 +172,8 @@ impl ResultBindingAnalysis {
                 .clone()
                 .ok_or(ResultBindingError::MissingDestination(instruction.offset))?;
             bindings.push(ResultBinding {
-                producer: *producer,
-                pseudo: *pseudo,
+                producer,
+                pseudo,
                 value,
             });
         }
@@ -205,32 +232,46 @@ impl Pass for BindResults {
             return Ok(PassResult::Unchanged);
         }
 
-        for binding in &bindings {
+        let mut removals = BTreeMap::<BlockId, Vec<usize>>::new();
+        for binding in bindings {
             let producer = cfg
                 .block_mut(binding.producer.block)
                 .and_then(|block| block.insns.get_mut(binding.producer.index))
                 .ok_or(ResultBindingError::MissingInstruction(binding.producer))?;
-            let mut result = binding.value.clone();
+            let mut result = binding.value;
             if !result.ty.is_known() {
                 result.ty = ResultBindingAnalysis::result_type(producer)?;
             }
             producer.result = Some(result);
-        }
-
-        let mut removals = BTreeMap::<BlockId, Vec<usize>>::new();
-        for binding in bindings {
             removals
                 .entry(binding.pseudo.block)
                 .or_default()
                 .push(binding.pseudo.index);
         }
         for (block, mut indices) in removals {
-            indices.sort_unstable_by(|left, right| right.cmp(left));
+            indices.sort_unstable();
             let instructions = &mut cfg
                 .block_mut(block)
                 .ok_or(ResultBindingError::MissingBlock(block))?
                 .insns;
-            for index in indices {
+            // Valid positions are unique. Move every surviving instruction at
+            // most once even in a block containing thousands of invoke results.
+            if indices.len() > 1
+                && indices
+                    .last()
+                    .is_some_and(|last| *last < instructions.len())
+                && indices.windows(2).all(|pair| pair[0] != pair[1])
+            {
+                let mut removed = indices.into_iter().peekable();
+                let mut index = 0;
+                instructions.retain(|_| {
+                    let keep = removed.next_if_eq(&index).is_none();
+                    index += 1;
+                    keep
+                });
+                continue;
+            }
+            for index in indices.into_iter().rev() {
                 if index >= instructions.len() {
                     return Err(ResultBindingError::MissingInstruction(InsnPosition {
                         block,

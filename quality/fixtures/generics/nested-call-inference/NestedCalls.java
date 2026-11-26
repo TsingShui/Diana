@@ -20,4 +20,24 @@ public final class NestedCalls {
         return id(id(id(id(id(id(id(
                id(id(id(id(id(id(id(value))))))))))))));
     }
+
+    public static <T> String closedStep(String text, T witness) {
+        return text;
+    }
+
+    public static String closedChain(String text, Object witness) {
+        String current = text;
+        for (int i = 0; i < 11; i++) {
+            current = closedStep(current, witness);
+        }
+        return current;
+    }
+
+    public static <T> T keepAfter(List<String> observed, T next) {
+        return next;
+    }
+
+    public static List<String> routed(boolean flag, List<String> typed, List raw) {
+        return keepAfter(flag ? bounded(typed) : bounded(raw), id(typed));
+    }
 }

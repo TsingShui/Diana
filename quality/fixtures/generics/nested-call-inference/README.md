@@ -18,6 +18,20 @@ cast and the emitted casts operate on list references and accept null. The
 helpers never read an element, so arbitrary elements in the raw list reach the
 caller unchanged. This path review compares the Smali and decompiled source.
 
+`closedChain` passes its string through eleven calls to `closedStep`. The
+first formal is always `String`; the second formal is the type variable
+`T`. Each call receives the same witness and returns its first argument.
+The reviewed output preserves all eleven calls and their nesting order.
+This also preserves a null string or witness.
+
+`routed` exercises a concrete parameterized formal beside a type-variable
+formal. On the true path the first argument calls `bounded` on the typed
+input. On the false path it calls `bounded` on the raw input, preserving
+the unchecked list conversion. Both paths then evaluate `id(typed)` as the
+second argument to `keepAfter`. The helper returns that second argument.
+The DEX and the reviewed Java return the typed list on both paths, including
+when either list is null. None of the helpers reads a list element.
+
 The prepared DEX was assembled with Smali 3.0.9 and OpenJDK 21.0.12.1 at API 28.
 
 ```sh

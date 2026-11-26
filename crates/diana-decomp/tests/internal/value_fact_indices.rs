@@ -128,3 +128,26 @@ fn operand_versions_use_ssa_identity_only_after_flow_is_available() {
     assert!(!facts.operands_unchanged(before, after, || [SsaVar::new(3, 0)]));
     assert!(facts.operands_unchanged(before, after, || [SsaVar::new(8, 0)]));
 }
+
+#[test]
+fn canonical_alias_cycles_keep_the_first_revisited_registers_metadata() {
+    let empty = SemanticNode::Empty;
+    let graph = ValueFlowGraph::build_source(&empty, &BTreeSet::new()).unwrap();
+    let named = |number, ty| {
+        let mut reg = register(number);
+        reg.ty = ty;
+        InsnArg::Reg(reg)
+    };
+    let mut aliases = BTreeMap::new();
+    for number in 0..9 {
+        aliases.insert(SsaVar::new(number, 0), named(number + 1, ArgType::INT));
+    }
+    for cycle_start in [0, 3, 7, 9] {
+        let expected = named(cycle_start, ArgType::LONG);
+        aliases.insert(SsaVar::new(9, 0), expected);
+        let resolved = graph.resolve_canonical(named(0, ArgType::INT), &aliases);
+        let register = resolved.as_register().unwrap();
+        assert_eq!(register.code_var, Some(cycle_start));
+        assert_eq!(register.ty, ArgType::LONG);
+    }
+}
