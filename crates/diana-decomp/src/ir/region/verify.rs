@@ -1,9 +1,9 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
-use crate::ir::{BlockId, CFG};
+use crate::ir::CFG;
 
 use super::{
-    RegionEdge, RegionGraph, RegionId, RegionInvariantError, RegionTransfer, RegionTransferKind,
+    BlockOwners, RegionEdge, RegionGraph, RegionInvariantError, RegionTransfer, RegionTransferKind,
     ResolvedRegionExit,
 };
 
@@ -24,7 +24,7 @@ impl<'a> RegionGraphVerifier<'a> {
 
     pub(super) fn verify_exits_and_ownership(
         &self,
-        owners: &BTreeMap<BlockId, RegionId>,
+        owners: &BlockOwners,
     ) -> Result<(), RegionInvariantError> {
         self.verify_leave_index()?;
         self.verify_elisions()?;
@@ -93,10 +93,7 @@ impl<'a> RegionGraphVerifier<'a> {
         Ok(())
     }
 
-    fn verify_transfers(
-        &self,
-        owners: &BTreeMap<BlockId, RegionId>,
-    ) -> Result<(), RegionInvariantError> {
+    fn verify_transfers(&self, owners: &BlockOwners) -> Result<(), RegionInvariantError> {
         for transfer in &self.graph.transfers {
             self.verify_transfer(transfer, owners)?;
         }
@@ -106,7 +103,7 @@ impl<'a> RegionGraphVerifier<'a> {
     fn verify_transfer(
         &self,
         transfer: &RegionTransfer,
-        owners: &BTreeMap<BlockId, RegionId>,
+        owners: &BlockOwners,
     ) -> Result<(), RegionInvariantError> {
         let source = self
             .graph

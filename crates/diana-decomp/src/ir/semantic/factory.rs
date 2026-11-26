@@ -155,9 +155,9 @@ impl<'a> SemanticFactory<'a> {
                         ),
                     }
                 }
-                _ => SemanticStatementKind::Instruction(SemanticOperation::from_instruction(
-                    insn.clone(),
-                )?),
+                _ => SemanticStatementKind::Instruction(
+                    SemanticOperation::from_borrowed_instruction(insn)?,
+                ),
             };
             statements.push(SemanticStatement {
                 site: None,
@@ -165,34 +165,21 @@ impl<'a> SemanticFactory<'a> {
                 kind,
             });
         }
-        let mut nodes = vec![SemanticNode::BasicBlock(SemanticBlock {
+        let body = SemanticNode::BasicBlock(SemanticBlock {
             id: block_id,
             statements,
-        })];
-
-        nodes.extend(self.terminal_leaves_from(block_id)?);
-
-        Ok(SemanticNode::sequence(nodes))
-    }
-
-    fn terminal_leaves_from(
-        &self,
-        block: BlockId,
-    ) -> Result<Vec<SemanticNode>, SemanticBuildError> {
+        });
         let implicit_cleanup_completion = self
             .regions
-            .is_enclosed_implicit_cleanup_completion(self.region, block)?;
-        self.regions
-            .leaves()
-            .iter()
-            .filter(move |resolved| {
-                resolved.leave.source_block == Some(block)
-                    && resolved.leave.edge.is_none()
-                    && !(implicit_cleanup_completion
-                        && matches!(resolved.leave.exit, crate::ir::RegionExit::Throw(_)))
-            })
-            .map(|resolved| self.leave(resolved))
-            .collect()
+            .is_enclosed_implicit_cleanup_completion(self.region, block_id)?;
+        if let Some(resolved) = self.regions.terminal_leave(block_id) {
+            if !(implicit_cleanup_completion
+                && matches!(resolved.leave.exit, crate::ir::RegionExit::Throw(_)))
+            {
+                return Ok(SemanticNode::Sequence(vec![body, self.leave(resolved)?]));
+            }
+        }
+        Ok(body)
     }
 
     pub(crate) fn leave(
@@ -234,8 +221,9 @@ impl<'a> SemanticFactory<'a> {
         &self,
         condition: BoolExpr,
     ) -> Result<SemanticPredicate, SemanticBuildError> {
-        let mut pending = vec![PredicateTask::Visit(condition)];
-        let mut results = Vec::new();
+        let mut pending = smallvec::SmallVec::<[PredicateTask; 2]>::new();
+        pending.push(PredicateTask::Visit(condition));
+        let mut results = smallvec::SmallVec::<[SemanticPredicate; 2]>::new();
         while let Some(task) = pending.pop() {
             match task {
                 PredicateTask::Visit(condition) => match condition {
@@ -304,9 +292,8 @@ impl<'a> SemanticFactory<'a> {
             .iter()
             .rev()
             .find(|insn| insn.insn_type == InsnType::If)
-            .cloned()
             .ok_or(SemanticBuildError::MissingCondition(block))?;
-        Ok(SemanticOperation::from_instruction(instruction)?)
+        Ok(SemanticOperation::from_borrowed_instruction(instruction)?)
     }
 
     fn is_statement(insn: &InsnNode) -> bool {

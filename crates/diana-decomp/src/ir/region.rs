@@ -26,7 +26,7 @@ mod tree;
 mod verify;
 
 use exits::CleanupChainAnalysis;
-use ownership::LexicalOwnershipClosure;
+use ownership::{BlockOwners, LexicalOwnershipClosure};
 use verify::RegionGraphVerifier;
 
 pub use builder::RegionGraphBuilder;
@@ -348,9 +348,10 @@ pub struct RegionGraph {
     implicit_cleanup_completions: BTreeMap<RegionId, BTreeSet<BlockId>>,
     exceptional_contractions: Vec<(BlockId, BlockId)>,
     exceptional_rethrow_sources: BTreeMap<BlockId, BTreeSet<BlockId>>,
-    block_owners: BTreeMap<BlockId, RegionId>,
+    block_owners: BlockOwners,
     transfers: Vec<RegionTransfer>,
     leaves: Vec<ResolvedRegionExit>,
+    terminal_leaves: std::ops::Range<usize>,
     edge_leaves: BTreeMap<RegionEdge, usize>,
     elisions: InstructionElisions,
 }
@@ -525,6 +526,18 @@ impl RegionGraph {
         &self.leaves
     }
 
+    pub(crate) fn terminal_leave(&self, block: BlockId) -> Option<&ResolvedRegionExit> {
+        let terminals = &self.leaves[self.terminal_leaves.clone()];
+        let index = terminals
+            .binary_search_by_key(&Some(block), |resolved| resolved.leave.source_block)
+            .ok()?;
+        Some(&terminals[index])
+    }
+
+    pub(crate) fn region_leaves(&self) -> &[ResolvedRegionExit] {
+        &self.leaves[self.terminal_leaves.end..]
+    }
+
     pub fn is_elided(&self, origin: &super::semantic::StatementOrigin) -> bool {
         self.elisions.contains(origin)
     }
@@ -552,7 +565,7 @@ impl RegionGraph {
     }
 
     pub fn owner_of(&self, block: BlockId) -> Option<RegionId> {
-        self.block_owners.get(&block).copied()
+        self.block_owners.get(block)
     }
 
     pub fn cleanup_chain(

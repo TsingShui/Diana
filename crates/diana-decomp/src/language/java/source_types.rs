@@ -2580,10 +2580,20 @@ impl PendingEquations {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RequirementChange {
+    Unchanged,
+    Inserted,
+    Updated,
+}
+
 #[derive(Default)]
 struct TypeEquationGraph {
     dependents: foldhash::HashMap<SourceTypeFact, SmallVec<[usize; 1]>>,
     invocation_dependents: foldhash::HashMap<SourceTypeFact, SmallVec<[usize; 1]>>,
+    fixed_invocation_targets: foldhash::HashMap<SourceTypeFact, SmallVec<[usize; 1]>>,
+    fixed_invocations: Vec<usize>,
+    pending_fixed_targets: Vec<SourceTypeFact>,
     outputs: foldhash::HashMap<SourceTypeFact, SmallVec<[usize; 1]>>,
     candidates: Vec<Option<TypeEquationCandidate>>,
     dirty: PendingEquations,
@@ -2597,8 +2607,12 @@ impl TypeEquationGraph {
         invocations: &[SemanticOperation],
         generic_fields: &BTreeMap<FieldReference, GenericFieldContract>,
         generic_methods: &BTreeMap<MethodReference, GenericMethodContract>,
+        dynamic_formals: &BTreeSet<&ArgType>,
     ) {
         self.dependents.clear();
+        self.fixed_invocation_targets.clear();
+        self.fixed_invocations.clear();
+        self.pending_fixed_targets.clear();
         self.invocation_dependents.clear();
         self.outputs.clear();
         self.candidates.clear();
@@ -2638,12 +2652,25 @@ impl TypeEquationGraph {
             self.candidates.push(None);
         }
         for (index, invocation) in invocations.iter().enumerate() {
-            Self::record_dependencies(
-                &mut self.invocation_dependents,
-                index,
-                invocation.result.as_ref(),
-                invocation.operands(),
-            );
+            let Some(MemberReference::Method(method)) = invocation.payload.reference.as_deref()
+            else {
+                continue;
+            };
+            let may_read_state =
+                |ty: &ArgType| matches!(ty, ArgType::Array(_)) || dynamic_formals.contains(ty);
+            let dynamic = generic_methods.contains_key(method)
+                || may_read_state(&method.owner)
+                || method.descriptor.parameters.iter().any(may_read_state);
+            if dynamic {
+                Self::record_dependencies(
+                    &mut self.invocation_dependents,
+                    index,
+                    invocation.result.as_ref(),
+                    invocation.operands(),
+                );
+            } else {
+                self.fixed_invocations.push(index);
+            }
         }
     }
 
@@ -2707,11 +2734,46 @@ impl TypeEquationGraph {
         }
     }
 
+    fn mark_requirement(&mut self, fact: SourceTypeFact, change: RequirementChange) -> bool {
+        if change == RequirementChange::Unchanged {
+            return false;
+        }
+        self.mark_changed(fact);
+        // A fixed use that had already contributed to this target would have
+        // created its requirement. Only overwriting an existing requirement
+        // can invalidate a previously applied fixed use.
+        if change == RequirementChange::Updated {
+            if self.fixed_invocations.is_empty() {
+                if let Some(dependents) = self.fixed_invocation_targets.get(&fact) {
+                    self.dirty_invocations.extend(dependents);
+                }
+            } else {
+                self.pending_fixed_targets.push(fact);
+            }
+        }
+        true
+    }
+
     fn take_dirty(&mut self) -> PendingEquations {
         std::mem::take(&mut self.dirty)
     }
 
-    fn take_dirty_invocations(&mut self) -> PendingEquations {
+    fn take_dirty_invocations(&mut self, invocations: &[SemanticOperation]) -> PendingEquations {
+        if !self.pending_fixed_targets.is_empty() {
+            for index in self.fixed_invocations.drain(..) {
+                Self::record_dependencies(
+                    &mut self.fixed_invocation_targets,
+                    index,
+                    None,
+                    invocations[index].operands(),
+                );
+            }
+            for fact in self.pending_fixed_targets.drain(..) {
+                if let Some(dependents) = self.fixed_invocation_targets.get(&fact) {
+                    self.dirty_invocations.extend(dependents);
+                }
+            }
+        }
         std::mem::take(&mut self.dirty_invocations)
     }
 
@@ -2922,11 +2984,31 @@ impl<'a> SourceTypeFlow<'a> {
         flow.visit_node(root);
         flow.constrain_boolean_predicates();
         let invocations = std::mem::take(&mut flow.invocations);
+        // Boolean storage can read a reaching definition. Other erased
+        // formals have a fixed requirement. Account for supplied source-type
+        // aliases instead of assuming a descriptor always has its usual spelling.
+        let boolean = source_types.get(&ArgType::BOOLEAN);
+        let dynamic_formals = if invocations.is_empty() {
+            BTreeSet::new()
+        } else {
+            source_types
+                .iter()
+                .filter_map(|(erased, source)| {
+                    let dynamic = match source {
+                        JavaType::Primitive(_) => Some(source) == boolean,
+                        JavaType::Class(_) => matches!(boolean, Some(JavaType::Class(_))),
+                        JavaType::Variable(_) | JavaType::Array(_) => true,
+                    };
+                    dynamic.then_some(erased)
+                })
+                .collect()
+        };
         flow.equation_graph.rebuild(
             &flow.equations,
             &invocations,
             generic_fields,
             generic_methods,
+            &dynamic_formals,
         );
         flow.converge(&invocations);
         let invocations = if collect_diagnostics {
@@ -3325,7 +3407,11 @@ impl<'a> SourceTypeFlow<'a> {
                     changed |= self.constrain_expression_context(iterable, expected);
                 }
             }
-            for index in self.equation_graph.take_dirty_invocations().indices() {
+            for index in self
+                .equation_graph
+                .take_dirty_invocations(invocations)
+                .indices()
+            {
                 changed |= self.constrain_invocation(&invocations[index]);
             }
             if !changed {
@@ -4373,11 +4459,20 @@ impl<'a> SourceTypeFlow<'a> {
         requirements: &mut BTreeMap<K, TypeState>,
         identity: K,
         incoming: Cow<'_, JavaType>,
-    ) -> bool {
-        let next = match requirements.get(&identity) {
-            None => TypeState::Exact(incoming.into_owned()),
-            Some(TypeState::Exact(current)) if current == incoming.as_ref() => return false,
-            Some(TypeState::Exact(current)) => {
+    ) -> RequirementChange {
+        use std::collections::btree_map::Entry;
+        let mut existing = match requirements.entry(identity) {
+            Entry::Vacant(entry) => {
+                entry.insert(TypeState::Exact(incoming.into_owned()));
+                return RequirementChange::Inserted;
+            }
+            Entry::Occupied(entry) => entry,
+        };
+        let next = match existing.get() {
+            TypeState::Exact(current) if current == incoming.as_ref() => {
+                return RequirementChange::Unchanged
+            }
+            TypeState::Exact(current) => {
                 let current_erasure = Self::erased_type(
                     source_types,
                     source_erasures,
@@ -4410,7 +4505,7 @@ impl<'a> SourceTypeFlow<'a> {
                             })
                     });
                 if current_is_subtype && !incoming_is_subtype {
-                    return false;
+                    return RequirementChange::Unchanged;
                 }
                 let same_erasure = current_erasure == incoming_erasure;
                 let current_symbolic = Self::contains_type_variable(current);
@@ -4429,13 +4524,13 @@ impl<'a> SourceTypeFlow<'a> {
                     TypeState::Exact(incoming.into_owned())
                 } else if let Some(refined) = refined {
                     if &refined == current {
-                        return false;
+                        return RequirementChange::Unchanged;
                     }
                     TypeState::Exact(refined)
                 } else if same_erasure && !current_symbolic && incoming_symbolic {
                     TypeState::Exact(incoming.into_owned())
                 } else if same_erasure && current_symbolic && !incoming_symbolic {
-                    return false;
+                    return RequirementChange::Unchanged;
                 } else {
                     let relations = JavaTypeRelations::new(
                         source_types,
@@ -4453,15 +4548,15 @@ impl<'a> SourceTypeFlow<'a> {
                             TypeState::Exact(incoming.into_owned())
                         }
                         (true, false) => TypeState::Exact(incoming.into_owned()),
-                        (false, true) | (true, true) => return false,
+                        (false, true) | (true, true) => return RequirementChange::Unchanged,
                         (false, false) => TypeState::Conflict,
                     }
                 }
             }
-            Some(TypeState::Conflict) => return false,
+            TypeState::Conflict => return RequirementChange::Unchanged,
         };
-        requirements.insert(identity, next);
-        true
+        existing.insert(next);
+        RequirementChange::Updated
     }
 
     fn contains_type_variable(ty: &JavaType) -> bool {
@@ -5432,21 +5527,6 @@ impl<'a> SourceTypeFlow<'a> {
             })
         {
             projected
-        } else if kind != TypeConstraintKind::Definition
-            && register.code_var.is_some_and(|variable| {
-                !self.roles.has(variable, TypeRole::FIXED)
-                    && self
-                        .equation_graph
-                        .outputs
-                        .contains_key(&SourceTypeFact::Variable(variable))
-            })
-            && declared_erasure.is_reference()
-            && erased.is_reference()
-        {
-            // DEX verifier joins can erase a value to one of several unrelated
-            // interfaces. Source requirements are validated against every
-            // definition before replacing the local declaration.
-            ty
         } else {
             return false;
         };
@@ -5476,11 +5556,9 @@ impl<'a> SourceTypeFlow<'a> {
                     value,
                     Cow::Borrowed(&ty),
                 );
-                if value_changed {
-                    self.equation_graph
-                        .mark_changed(SourceTypeFact::Value(value));
-                }
-                changed |= value_changed;
+                changed |= self
+                    .equation_graph
+                    .mark_requirement(SourceTypeFact::Value(value), value_changed);
             }
             if let Some(variable) = register.code_var {
                 self.roles.mark(variable, role);
@@ -5504,11 +5582,9 @@ impl<'a> SourceTypeFlow<'a> {
                     variable,
                     Cow::Owned(ty),
                 );
-                if variable_changed {
-                    self.equation_graph
-                        .mark_changed(SourceTypeFact::Variable(variable));
-                }
-                changed |= variable_changed;
+                changed |= self
+                    .equation_graph
+                    .mark_requirement(SourceTypeFact::Variable(variable), variable_changed);
             }
             return changed;
         }

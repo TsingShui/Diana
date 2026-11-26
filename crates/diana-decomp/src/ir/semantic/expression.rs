@@ -482,10 +482,32 @@ impl SemanticOperation {
         Self::from_parts(instruction, Vec::new(), None)
     }
     pub fn from_instruction(mut instruction: InsnNode) -> Result<Self, SemanticFoldError> {
-        let operands = std::mem::take(&mut instruction.args)
-            .into_iter()
-            .map(SemanticExpression::from_argument)
-            .collect::<Result<_, _>>()?;
+        let args = std::mem::take(&mut instruction.args);
+        Self::from_instruction_args(instruction, args.into_iter())
+    }
+
+    pub(crate) fn from_borrowed_instruction(
+        instruction: &InsnNode,
+    ) -> Result<Self, SemanticFoldError> {
+        let header = InsnNode {
+            id: instruction.id,
+            insn_type: instruction.insn_type,
+            result: instruction.result.clone(),
+            args: Vec::new(),
+            offset: instruction.offset,
+            payload: instruction.payload.clone(),
+        };
+        Self::from_instruction_args(header, instruction.args.iter().cloned())
+    }
+
+    fn from_instruction_args(
+        mut instruction: InsnNode,
+        args: impl ExactSizeIterator<Item = InsnArg>,
+    ) -> Result<Self, SemanticFoldError> {
+        let mut operands = Vec::with_capacity(args.len());
+        for argument in args {
+            operands.push(SemanticExpression::from_argument(argument)?);
+        }
         let target = instruction
             .payload
             .compound_target

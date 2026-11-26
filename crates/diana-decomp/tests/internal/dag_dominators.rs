@@ -3,8 +3,13 @@ use crate::ir::analysis::ReachingConditions;
 use crate::ir::{Block, BlockId, EdgeKind, CFG};
 
 #[test]
-fn ordinary_dag_dominance_matches_vertex_removal_with_sparse_unordered_ids() {
-    let ids = [48, 2, 33, 95, 6].map(BlockId::new);
+fn ordinary_dag_dominance_matches_vertex_removal_in_physical_and_external_orders() {
+    for ids in [[48, 2, 33, 95, 6], [2, 6, 33, 48, 95], [95, 48, 33, 6, 2]] {
+        check_ordinary_dag(ids.map(BlockId::new));
+    }
+}
+
+fn check_ordinary_dag(ids: [BlockId; 5]) {
     // All forward edge subsets on five vertices, including cross-branch joins.
     for mask in 0..1024 {
         let mut cfg = CFG::new("dag_order");

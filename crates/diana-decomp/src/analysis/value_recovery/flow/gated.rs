@@ -1170,7 +1170,7 @@ impl PredicateLookup for GatedControlFlow {
         InstructionEffects::of_tree(test)
             .without_control()
             .is_pure()
-            .then(|| SemanticOperation::from_instruction(test.clone()).ok())
+            .then(|| SemanticOperation::from_borrowed_instruction(test).ok())
             .flatten()
     }
 }

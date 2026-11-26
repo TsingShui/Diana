@@ -1,6 +1,7 @@
 //! Region transfer and cleanup-chain analysis.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Range;
 
 use crate::ir::{
     analysis::{ControlFlowFacts, InstructionEffects, SsaVar},
@@ -9,19 +10,21 @@ use crate::ir::{
 };
 
 use super::{
-    InstructionElisions, RegionEdge, RegionExit, RegionExitKind, RegionId, RegionInvariantError,
-    RegionKind, RegionLeave, RegionTransfer, RegionTransferKind, RegionTree, ResolvedRegionExit,
+    BlockOwners, InstructionElisions, RegionEdge, RegionExit, RegionExitKind, RegionId,
+    RegionInvariantError, RegionKind, RegionLeave, RegionTransfer, RegionTransferKind, RegionTree,
+    ResolvedRegionExit,
 };
 
 pub(super) struct RegionExitFacts {
     pub(super) transfers: Vec<RegionTransfer>,
     pub(super) leaves: Vec<ResolvedRegionExit>,
+    pub(super) terminal_leaves: Range<usize>,
 }
 
 pub(super) struct OccurrenceElision<'a> {
     cfg: &'a CFG,
     tree: &'a RegionTree,
-    owners: &'a BTreeMap<BlockId, RegionId>,
+    owners: &'a BlockOwners,
     handlers: &'a BTreeMap<RegionId, Vec<RegionId>>,
     elisions: &'a InstructionElisions,
 }
@@ -30,7 +33,7 @@ impl<'a> OccurrenceElision<'a> {
     pub(super) fn new(
         cfg: &'a CFG,
         tree: &'a RegionTree,
-        owners: &'a BTreeMap<BlockId, RegionId>,
+        owners: &'a BlockOwners,
         handlers: &'a BTreeMap<RegionId, Vec<RegionId>>,
         elisions: &'a InstructionElisions,
     ) -> Self {
@@ -85,7 +88,7 @@ impl<'a> OccurrenceElision<'a> {
 pub(super) struct RegionExitAnalysis<'a> {
     cfg: &'a CFG,
     tree: &'a RegionTree,
-    owners: &'a BTreeMap<BlockId, RegionId>,
+    owners: &'a BlockOwners,
     elisions: &'a InstructionElisions,
     control_flow: &'a ControlFlowFacts,
     cleanup_representatives: &'a BTreeMap<BlockId, BlockId>,
@@ -209,7 +212,7 @@ impl<'a> RegionExitAnalysis<'a> {
     pub(super) fn new(
         cfg: &'a CFG,
         tree: &'a RegionTree,
-        owners: &'a BTreeMap<BlockId, RegionId>,
+        owners: &'a BlockOwners,
         elisions: &'a InstructionElisions,
         control_flow: &'a ControlFlowFacts,
         cleanup_representatives: &'a BTreeMap<BlockId, BlockId>,
@@ -230,10 +233,16 @@ impl<'a> RegionExitAnalysis<'a> {
     pub(super) fn analyze(&self) -> Result<RegionExitFacts, RegionInvariantError> {
         let transfers = self.transfers()?;
         let mut leaves = Vec::new();
-        for leave in self.leaves(&transfers)? {
-            leaves.push(self.resolve(leave)?);
-        }
-        Ok(RegionExitFacts { transfers, leaves })
+        let terminal_leaves = self.collect_leaves(&transfers, &mut leaves)?;
+        let leaves = leaves
+            .into_iter()
+            .map(|leave| self.resolve(leave))
+            .collect::<Result<_, _>>()?;
+        Ok(RegionExitFacts {
+            transfers,
+            leaves,
+            terminal_leaves,
+        })
     }
 
     pub(super) fn cleanup_chain(
@@ -294,11 +303,11 @@ impl<'a> RegionExitAnalysis<'a> {
         Ok(transfers)
     }
 
-    fn leaves(
+    fn collect_leaves(
         &self,
         transfers: &[RegionTransfer],
-    ) -> Result<Vec<RegionLeave>, RegionInvariantError> {
-        let mut leaves = Vec::new();
+        leaves: &mut Vec<RegionLeave>,
+    ) -> Result<Range<usize>, RegionInvariantError> {
         for transfer in transfers {
             let forwarded_cleanup = self.forwarded_cleanup_throw(transfer)?;
             if !transfer.requires_leave(self.cfg) {
@@ -341,7 +350,9 @@ impl<'a> RegionExitAnalysis<'a> {
             leaves.push(leave);
         }
 
-        for source_block in self.cfg.block_ids() {
+        // Each physical block contributes at most one terminal, in block ID order.
+        let terminal_start = leaves.len();
+        for &source_block in self.cfg.blocks.keys() {
             if self.cleanup_representatives.contains_key(&source_block) {
                 continue;
             }
@@ -391,6 +402,7 @@ impl<'a> RegionExitAnalysis<'a> {
             };
             leaves.push(RegionLeave::new(source, target, exit).with_source_block(source_block));
         }
+        let terminal_leaves = terminal_start..leaves.len();
 
         for region in self.tree.regions() {
             let continuation = match &region.kind {
@@ -418,7 +430,7 @@ impl<'a> RegionExitAnalysis<'a> {
             leave.control_target = control.map(|control| control.target);
             leaves.push(leave);
         }
-        Ok(leaves)
+        Ok(terminal_leaves)
     }
 
     /// A nested compiler cleanup can forward its caught exception directly
@@ -664,7 +676,7 @@ impl TerminalContinuationFacts {
 struct TerminalContinuation<'a> {
     cfg: &'a CFG,
     tree: &'a RegionTree,
-    owners: &'a BTreeMap<BlockId, RegionId>,
+    owners: &'a BlockOwners,
     elided: &'a BTreeSet<StatementOrigin>,
     facts: &'a TerminalContinuationFacts,
 }
@@ -673,7 +685,7 @@ impl<'a> TerminalContinuation<'a> {
     fn new(
         cfg: &'a CFG,
         tree: &'a RegionTree,
-        owners: &'a BTreeMap<BlockId, RegionId>,
+        owners: &'a BlockOwners,
         elided: &'a BTreeSet<StatementOrigin>,
         facts: &'a TerminalContinuationFacts,
     ) -> Self {
@@ -895,7 +907,7 @@ mod tests {
         let facts = RegionExitAnalysis::new(
             &cfg,
             &tree,
-            &BTreeMap::new(),
+            &BlockOwners::Sparse(BTreeMap::new()),
             &elisions,
             &control_flow,
             &BTreeMap::new(),
@@ -999,7 +1011,7 @@ mod tests {
         let leaves = RegionExitAnalysis::new(
             &cfg,
             &tree,
-            &BTreeMap::new(),
+            &BlockOwners::Sparse(BTreeMap::new()),
             &elisions,
             &control_flow,
             &contractions,
@@ -1075,7 +1087,7 @@ mod tests {
         let facts = RegionExitAnalysis::new(
             &cfg,
             &tree,
-            &BTreeMap::new(),
+            &BlockOwners::Sparse(BTreeMap::new()),
             &elisions,
             &control_flow,
             &representatives,
@@ -1141,10 +1153,15 @@ mod tests {
         tree.cover_method(&cfg).unwrap();
         let elided = BTreeSet::new();
         let facts = TerminalContinuationFacts::analyze(&cfg);
-        let continuation =
-            TerminalContinuation::new(&cfg, &tree, &BTreeMap::new(), &elided, &facts)
-                .analyze(BlockId::new(0), BlockId::new(1))
-                .unwrap();
+        let continuation = TerminalContinuation::new(
+            &cfg,
+            &tree,
+            &BlockOwners::Sparse(BTreeMap::new()),
+            &elided,
+            &facts,
+        )
+        .analyze(BlockId::new(0), BlockId::new(1))
+        .unwrap();
 
         assert!(continuation.is_none());
     }
@@ -1169,20 +1186,30 @@ mod tests {
         let mut tree = RegionTree::new(Some(cfg.entry));
         tree.cover_method(&cfg).unwrap();
         let facts = TerminalContinuationFacts::analyze(&cfg);
-        let continuation =
-            TerminalContinuation::new(&cfg, &tree, &BTreeMap::new(), &BTreeSet::new(), &facts)
-                .analyze(BlockId::new(0), BlockId::new(1))
-                .unwrap();
+        let continuation = TerminalContinuation::new(
+            &cfg,
+            &tree,
+            &BlockOwners::Sparse(BTreeMap::new()),
+            &BTreeSet::new(),
+            &facts,
+        )
+        .analyze(BlockId::new(0), BlockId::new(1))
+        .unwrap();
 
         assert!(matches!(continuation, Some(RegionExit::Return(Some(_)))));
 
         let facts = TerminalContinuationFacts {
             phi_predecessors: BTreeSet::from([BlockId::new(1)]),
         };
-        let continuation =
-            TerminalContinuation::new(&cfg, &tree, &BTreeMap::new(), &BTreeSet::new(), &facts)
-                .analyze(BlockId::new(0), BlockId::new(1))
-                .unwrap();
+        let continuation = TerminalContinuation::new(
+            &cfg,
+            &tree,
+            &BlockOwners::Sparse(BTreeMap::new()),
+            &BTreeSet::new(),
+            &facts,
+        )
+        .analyze(BlockId::new(0), BlockId::new(1))
+        .unwrap();
         assert!(continuation.is_none());
     }
 
@@ -1207,10 +1234,15 @@ mod tests {
         let mut tree = RegionTree::new(Some(cfg.entry));
         tree.cover_method(&cfg).unwrap();
         let facts = TerminalContinuationFacts::analyze(&cfg);
-        let continuation =
-            TerminalContinuation::new(&cfg, &tree, &BTreeMap::new(), &BTreeSet::new(), &facts)
-                .analyze(BlockId::new(0), BlockId::new(1))
-                .unwrap();
+        let continuation = TerminalContinuation::new(
+            &cfg,
+            &tree,
+            &BlockOwners::Sparse(BTreeMap::new()),
+            &BTreeSet::new(),
+            &facts,
+        )
+        .analyze(BlockId::new(0), BlockId::new(1))
+        .unwrap();
 
         assert!(matches!(
             continuation,

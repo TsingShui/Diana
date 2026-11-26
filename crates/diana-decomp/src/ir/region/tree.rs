@@ -7,8 +7,8 @@ use crate::ir::analysis::{InstructionEffects, LexicalBoundaryAnalysis};
 use crate::ir::{BlockId, InsnArg, CFG};
 
 use super::{
-    LaminarPlacement, RegionId, RegionInvariantError, RegionKind, RegionPlacement, RegionTree,
-    StructuredRegion, SynchronizedRegion,
+    BlockOwners, LaminarPlacement, RegionId, RegionInvariantError, RegionKind, RegionPlacement,
+    RegionTree, StructuredRegion, SynchronizedRegion,
 };
 
 struct SiblingBlocks<'a> {
@@ -885,10 +885,7 @@ impl RegionTree {
         Ok(preferred)
     }
 
-    pub(super) fn verified_owners(
-        &self,
-        cfg: &CFG,
-    ) -> Result<BTreeMap<BlockId, RegionId>, RegionInvariantError> {
+    pub(super) fn verified_owners(&self, cfg: &CFG) -> Result<BlockOwners, RegionInvariantError> {
         let root = self
             .region(self.root)
             .ok_or(RegionInvariantError::UnknownRegion(self.root))?;
@@ -1008,14 +1005,18 @@ impl RegionTree {
 
         // Overlapping regions are now known to be nested. Visiting a parent
         // before its children gives each block its unique deepest owner.
-        let mut owners = cfg
-            .blocks
-            .keys()
-            .copied()
-            .filter(|block| root.owns_block(*block))
-            .map(|block| (block, self.root))
-            .collect::<BTreeMap<_, _>>();
-        let root_covers_all = owners.len() == cfg.blocks.len();
+        let mut owners = BlockOwners::for_cfg(cfg, root);
+        if owners.is_uniform() {
+            return Ok(owners);
+        }
+        let mut root_covers_all = true;
+        for &block in cfg.blocks.keys() {
+            if root.owns_block(block) {
+                owners.insert(block, self.root);
+            } else {
+                root_covers_all = false;
+            }
+        }
         let mut pending = root.children.clone();
         while let Some(id) = pending.pop() {
             let region = self
@@ -1029,7 +1030,11 @@ impl RegionTree {
             pending.extend(&region.children);
         }
         if !root_covers_all {
-            if let Some(&block) = cfg.blocks.keys().find(|block| !owners.contains_key(block)) {
+            if let Some(&block) = cfg
+                .blocks
+                .keys()
+                .find(|block| owners.get(**block).is_none())
+            {
                 return Err(RegionInvariantError::MissingOwner(block));
             }
         }
@@ -1038,11 +1043,11 @@ impl RegionTree {
 
     pub(super) fn indexed_owner(
         &self,
-        owners: &BTreeMap<BlockId, RegionId>,
+        owners: &BlockOwners,
         block: BlockId,
     ) -> Result<RegionId, RegionInvariantError> {
-        match owners.get(&block) {
-            Some(owner) => Ok(*owner),
+        match owners.get(block) {
+            Some(owner) => Ok(owner),
             // A malformed transfer may reference a block outside the CFG.
             None => self.owner(block),
         }

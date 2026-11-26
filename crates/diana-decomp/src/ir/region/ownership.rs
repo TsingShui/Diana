@@ -6,6 +6,83 @@ use crate::ir::{analysis::ControlFlowFacts, BlockId, CFG};
 
 use super::{RegionId, RegionInvariantError, RegionKind, RegionTree};
 
+/// Immutable after the tree assigns the deepest lexical owner of each CFG block.
+/// Dense storage is bounded by the number of actual blocks, including for callers
+/// supplying large or sparse block IDs.
+#[derive(Debug, Clone)]
+pub(super) enum BlockOwners {
+    Uniform {
+        first: BlockId,
+        last: BlockId,
+        owner: RegionId,
+    },
+    Indexed {
+        first: BlockId,
+        rows: Box<[Option<RegionId>]>,
+    },
+    Sparse(BTreeMap<BlockId, RegionId>),
+}
+
+impl BlockOwners {
+    pub(super) fn for_cfg(cfg: &CFG, root: &super::StructuredRegion) -> Self {
+        let (Some((&first, _)), Some((&last, _))) =
+            (cfg.blocks.first_key_value(), cfg.blocks.last_key_value())
+        else {
+            return Self::Sparse(BTreeMap::new());
+        };
+        let span = u64::from(last.raw() - first.raw()) + 1;
+        if root.children.is_empty()
+            && span == cfg.blocks.len() as u64
+            && root.blocks.len() == cfg.blocks.len()
+            && root.blocks.first() == Some(&first)
+            && root.blocks.last() == Some(&last)
+        {
+            // Both sets fill the same inclusive interval.
+            return Self::Uniform {
+                first,
+                last,
+                owner: root.id,
+            };
+        }
+        if span > cfg.blocks.len().saturating_mul(2) as u64 {
+            return Self::Sparse(BTreeMap::new());
+        }
+        Self::Indexed {
+            first,
+            rows: vec![None; span as usize].into_boxed_slice(),
+        }
+    }
+
+    pub(super) fn is_uniform(&self) -> bool {
+        matches!(self, Self::Uniform { .. })
+    }
+
+    pub(super) fn insert(&mut self, block: BlockId, owner: RegionId) {
+        match self {
+            Self::Indexed { first, rows } => {
+                rows[(block.raw() - first.raw()) as usize] = Some(owner)
+            }
+            Self::Sparse(rows) => {
+                rows.insert(block, owner);
+            }
+            Self::Uniform { .. } => unreachable!("uniform owner table is complete"),
+        }
+    }
+
+    pub(super) fn get(&self, block: BlockId) -> Option<RegionId> {
+        match self {
+            Self::Uniform { first, last, owner } => {
+                (*first <= block && block <= *last).then_some(*owner)
+            }
+            Self::Indexed { first, rows } => rows
+                .get(block.raw().checked_sub(first.raw())? as usize)
+                .copied()
+                .flatten(),
+            Self::Sparse(rows) => rows.get(&block).copied(),
+        }
+    }
+}
+
 /// Computes the region-convex closure of already owned lexical blocks.
 ///
 /// Exception tables only cover instruction ranges that need handlers. A
@@ -332,3 +409,7 @@ impl LexicalOwnershipClosure {
         Ok(Some(common))
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/block_owners.rs"]
+mod block_owners_tests;

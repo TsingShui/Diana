@@ -423,11 +423,9 @@ impl<'a> RegionReducer<'a> {
         if region_cfg.representatives.is_empty() {
             let leaves = self
                 .regions
-                .leaves()
+                .region_leaves()
                 .iter()
-                .filter(|leave| {
-                    leave.leave.source == region_id && leave.leave.source_block.is_none()
-                })
+                .filter(|leave| leave.leave.source == region_id)
                 .map(|leave| semantic.leave(leave))
                 .collect::<Result<Vec<_>, _>>()?;
             return Ok(SemanticNode::sequence(leaves));

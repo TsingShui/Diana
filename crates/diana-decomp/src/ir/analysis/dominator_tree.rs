@@ -69,6 +69,18 @@ struct DominatorNode {
     subtree_end: usize,
 }
 
+impl DominatorNode {
+    fn new(block: BlockId, parent: Option<BlockId>) -> Self {
+        Self {
+            block,
+            parent,
+            children: Default::default(),
+            preorder: 0,
+            subtree_end: 0,
+        }
+    }
+}
+
 impl DominatorTree {
     /// Compute exact dominance over every CFG edge using Lengauer-Tarjan.
     pub fn compute(cfg: &CFG) -> Result<Self, DominanceError> {
@@ -130,37 +142,12 @@ impl DominatorTree {
         }
         let mut ancestors = Vec::with_capacity(order.len());
         let mut nodes = Vec::with_capacity(order.len());
-        for (rank, &block) in order.iter().enumerate() {
-            let parent = if rank == 0 {
-                ancestors.push(DagAncestor::default());
-                None
-            } else {
-                let mut incoming = cfg
-                    .normal_predecessors(block)
-                    .filter_map(|source| facts.rank(source));
-                let first = incoming
-                    .next()
-                    .ok_or(DominanceError::MissingDominator(block))?;
-                if first >= rank {
-                    return Err(DominanceError::InvalidTraversal(block));
-                }
-                let mut parent = first;
-                for source in incoming {
-                    if source >= rank {
-                        return Err(DominanceError::InvalidTraversal(block));
-                    }
-                    parent = DagAncestor::common(&ancestors, parent, source);
-                }
-                ancestors.push(DagAncestor::child(&ancestors, parent));
-                Some(order[parent])
-            };
-            nodes.push(DominatorNode {
-                block,
-                parent,
-                children: Default::default(),
-                preorder: 0,
-                subtree_end: 0,
-            });
+        for &block in order {
+            let incoming = cfg
+                .normal_predecessors(block)
+                .filter_map(|source| facts.rank(source));
+            let parent = DagAncestor::append(&mut ancestors, block, incoming)?;
+            nodes.push(DominatorNode::new(block, parent.map(|rank| order[rank])));
         }
         Self::from_parents(cfg.entry, nodes)
     }
@@ -250,6 +237,9 @@ impl DominatorTree {
                     subtree_end: 1,
                 }]),
             });
+        }
+        if let Some(parents) = topology.ordered_dag(start)? {
+            return Self::from_parents(entry, parents);
         }
         let traversal = DepthFirstNumbering::compute(start, &topology);
         if require_all_reachable && traversal.vertices.len() != topology.nodes.len() {
@@ -419,6 +409,33 @@ struct DagAncestor {
 }
 
 impl DagAncestor {
+    fn append(
+        tree: &mut Vec<Self>,
+        block: BlockId,
+        mut predecessors: impl Iterator<Item = usize>,
+    ) -> Result<Option<usize>, DominanceError> {
+        let rank = tree.len();
+        if rank == 0 {
+            tree.push(Self::default());
+            return Ok(None);
+        }
+        let first = predecessors
+            .next()
+            .ok_or(DominanceError::MissingDominator(block))?;
+        if first >= rank {
+            return Err(DominanceError::InvalidTraversal(block));
+        }
+        let mut parent = first;
+        for predecessor in predecessors {
+            if predecessor >= rank {
+                return Err(DominanceError::InvalidTraversal(block));
+            }
+            parent = Self::common(tree, parent, predecessor);
+        }
+        tree.push(Self::child(tree, parent));
+        Ok(Some(parent))
+    }
+
     fn child(tree: &[Self], parent: usize) -> Self {
         let p = &tree[parent];
         let j = &tree[p.jump];
@@ -469,6 +486,35 @@ struct Topology {
 }
 
 impl Topology {
+    /// A predecessor in every non-root row, strictly earlier in one ordering,
+    /// establishes both acyclicity and reachability from that root. The virtual
+    /// postdominance exit is last in physical order, so its DAG runs backwards.
+    fn ordered_dag(&self, start: usize) -> Result<Option<Vec<DominatorNode>>, DominanceError> {
+        let last = self.nodes.len() - 1;
+        if start != 0 && start != last || !self.predecessors[start].is_empty() {
+            return Ok(None);
+        }
+        let rank = |i: usize| if start == 0 { i } else { last - i };
+        if self.predecessors.iter().enumerate().any(|(i, row)| {
+            i != start && (row.is_empty() || row.iter().any(|&p| rank(p) >= rank(i)))
+        }) {
+            return Ok(None);
+        }
+        let mut ancestors = Vec::with_capacity(self.nodes.len());
+        let mut nodes = Vec::with_capacity(self.nodes.len());
+        for i in 0..self.nodes.len() {
+            let physical = rank(i);
+            let block = self.nodes[physical];
+            let incoming = self.predecessors[physical].iter().copied().map(rank);
+            let parent = DagAncestor::append(&mut ancestors, block, incoming)?;
+            nodes.push(DominatorNode::new(
+                block,
+                parent.map(|p| self.nodes[rank(p)]),
+            ));
+        }
+        Ok(Some(nodes))
+    }
+
     fn position(nodes: &[BlockId], block: BlockId) -> Option<usize> {
         let direct = block.raw() as usize;
         if nodes.get(direct) == Some(&block) {

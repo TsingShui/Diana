@@ -235,6 +235,7 @@ impl<'a> RegionGraphBuilder<'a> {
             block_owners,
             transfers: exits.transfers,
             leaves: exits.leaves,
+            terminal_leaves: exits.terminal_leaves,
             edge_leaves,
             elisions,
         };

@@ -146,16 +146,23 @@ impl ExpressionFact {
 
 pub(super) struct ExpressionSyntax;
 
-/// A source statement can seed boolean inference only when it defines a named
-/// int. Compound values may contain selects or rewritable operations further
-/// down, so the ordinary expression pass handles those conservatively.
+/// Only named integral definitions can supply an inferred boolean. The first
+/// pass publishes those facts to the type environment. Later passes consume
+/// them only for xor negations and materialized boolean identities.
+#[derive(Clone, Copy)]
+pub(super) enum BooleanUse {
+    RefineTypes,
+    Rewrite,
+}
+
 #[derive(Default)]
 struct ExpressionSites {
     int_definition: bool,
     boolean_definition: bool,
     predicate: bool,
     rewrite: bool,
-    select: bool,
+    boolean_rewrite: bool,
+    identity: bool,
 }
 
 impl ExpressionSites {
@@ -174,47 +181,35 @@ impl ExpressionSites {
                 }
                 match &statement.kind {
                     SemanticStatementKind::Instruction(op) => self.visit_operation(op),
-                    SemanticStatementKind::Definition { value, .. } => self.visit_expression(value),
+                    SemanticStatementKind::Definition { result, value, .. } => {
+                        if !self.0.identity && result.code_var.is_some() {
+                            self.0.identity = matches!(
+                                BooleanIdentityProof::canonical(value),
+                                SemanticExpression::Select { .. }
+                            );
+                        }
+                        self.visit_expression(value);
+                    }
                 }
             }
 
             fn visit_predicate(&mut self, predicate: &SemanticPredicate) {
                 self.0.predicate = true;
-                match predicate {
-                    SemanticPredicate::Test(op) => self.visit_operation(op),
-                    SemanticPredicate::Not(_)
-                    | SemanticPredicate::And(_)
-                    | SemanticPredicate::Or(_) => self.0.compound(),
-                    SemanticPredicate::True | SemanticPredicate::False => {}
+                if !self.0.boolean_rewrite {
+                    visit_predicate_tests(predicate, |op| self.visit_operation(op));
                 }
             }
 
             fn visit_expression(&mut self, value: &SemanticExpression) {
                 match value {
-                    SemanticExpression::Select { .. } => self.0.compound(),
+                    SemanticExpression::Select { .. } => self.0.select(),
                     SemanticExpression::Operation(op) => self.visit_operation(op),
                     SemanticExpression::Register(_) | SemanticExpression::Literal(_) => {}
                 }
             }
 
             fn visit_operation(&mut self, op: &SemanticOperation) {
-                if op
-                    .operands()
-                    .iter()
-                    .chain(op.compound_target())
-                    .any(|operand| {
-                        matches!(
-                            operand,
-                            SemanticExpression::Select { .. } | SemanticExpression::Operation(_)
-                        )
-                    })
-                {
-                    self.0.compound();
-                } else if op.insn_type == InsnType::Arith
-                    && op.payload.arith_op == Some(ArithOp::Xor)
-                {
-                    self.0.rewrite = true;
-                }
+                self.0.inspect_operations(op);
             }
         }
 
@@ -223,9 +218,69 @@ impl ExpressionSites {
         facts
     }
 
-    fn compound(&mut self) {
+    fn select(&mut self) {
+        // Conditions and both arms can contain further rewrites.
+        self.predicate = true;
+        self.boolean_rewrite = true;
         self.rewrite = true;
-        self.select = true;
+    }
+
+    fn inspect_operations(&mut self, root: &SemanticOperation) {
+        let mut pending = smallvec::SmallVec::<[&SemanticOperation; 4]>::new();
+        pending.push(root);
+        while let Some(op) = pending.pop() {
+            if self.boolean_rewrite && (self.predicate || self.boolean_definition) {
+                return;
+            }
+            if op.insn_type == InsnType::Arith && op.payload.arith_op == Some(ArithOp::Xor) {
+                self.boolean_rewrite = true;
+                self.rewrite = true;
+            }
+            // The expression proofs preserve operation roots and never produce
+            // a cast or a cmp. These necessary input shapes therefore remain
+            // valid when rewriting children before their parent.
+            if !self.rewrite && op.insn_type == InsnType::Invoke {
+                self.rewrite = StringBuilderProtocol::method(op)
+                    .is_some_and(|method| method.name == "toString");
+            }
+            for value in op.operands().iter().chain(op.compound_target()) {
+                match value {
+                    SemanticExpression::Select { .. } => {
+                        self.select();
+                        return;
+                    }
+                    SemanticExpression::Operation(child) => {
+                        self.rewrite |= matches!(
+                            (op.insn_type, child.insn_type),
+                            (InsnType::Arith | InsnType::If, InsnType::Cast)
+                                | (InsnType::If, InsnType::Cmp)
+                        );
+                        pending.push(child);
+                    }
+                    SemanticExpression::Literal(_) | SemanticExpression::Register(_) => {}
+                }
+            }
+        }
+    }
+}
+
+fn visit_predicate_tests(
+    mut predicate: &SemanticPredicate,
+    mut visit: impl FnMut(&SemanticOperation),
+) {
+    let mut pending = smallvec::SmallVec::<[&SemanticPredicate; 4]>::new();
+    loop {
+        match predicate {
+            SemanticPredicate::Test(op) => visit(op),
+            SemanticPredicate::Not(inner) => {
+                predicate = inner;
+                continue;
+            }
+            SemanticPredicate::And(terms) | SemanticPredicate::Or(terms) => pending.extend(terms),
+            SemanticPredicate::True | SemanticPredicate::False => {}
+        }
+        let Some(next) = pending.pop() else { return };
+        predicate = next;
     }
 }
 
@@ -293,10 +348,14 @@ impl ExpressionSyntax {
     pub(super) fn apply(
         root: &mut SemanticNode,
         types: &SourceTypeEnvironment,
+        boolean_use: BooleanUse,
     ) -> Result<ExpressionRecovery, crate::ir::SemanticFoldError> {
         let sites = ExpressionSites::collect(root, types);
         let boolean_variables = if sites.int_definition
-            && (sites.predicate || sites.select || sites.boolean_definition)
+            && (sites.predicate || sites.boolean_definition)
+            && (matches!(boolean_use, BooleanUse::RefineTypes)
+                || sites.boolean_rewrite
+                || sites.identity)
         {
             BooleanValueAnalysis::analyze(root, types)
         } else {
@@ -315,7 +374,7 @@ impl ExpressionSyntax {
             proven: &rewriter.boolean_variables,
             changed: false,
         };
-        if sites.select {
+        if sites.identity {
             let body = std::mem::replace(root, SemanticNode::Empty);
             *root = identities.fold_node(body)?;
         }
@@ -601,8 +660,8 @@ impl<'a> BooleanValueAnalysis<'a> {
             .unwrap_or_else(|_| result.ty.clone());
         self.result_types.entry(variable).or_insert(ty);
         let formula = self.formula(value);
-        self.record_select_predicates(value);
         if formula.valid {
+            self.record_select_predicates(value);
             for dependency in &formula.dependencies {
                 self.consumers
                     .entry(*dependency)
@@ -681,7 +740,8 @@ impl<'a> BooleanValueAnalysis<'a> {
     }
 
     fn record_select_predicates(&mut self, value: &SemanticExpression) {
-        let mut pending = vec![value];
+        let mut pending = smallvec::SmallVec::<[&SemanticExpression; 4]>::new();
+        pending.push(value);
         while let Some(value) = pending.pop() {
             match value {
                 SemanticExpression::Select {
@@ -694,6 +754,9 @@ impl<'a> BooleanValueAnalysis<'a> {
                     pending.push(when_true);
                 }
                 SemanticExpression::Operation(operation) => {
+                    if !operation.contains_select() {
+                        continue;
+                    }
                     pending.extend(operation.operands());
                     pending.extend(operation.compound_target());
                 }
@@ -703,17 +766,7 @@ impl<'a> BooleanValueAnalysis<'a> {
     }
 
     fn record_predicate(&mut self, predicate: &SemanticPredicate) {
-        let mut pending = vec![predicate];
-        while let Some(predicate) = pending.pop() {
-            match predicate {
-                SemanticPredicate::Test(test) => self.record_test(test),
-                SemanticPredicate::Not(inner) => pending.push(inner),
-                SemanticPredicate::And(terms) | SemanticPredicate::Or(terms) => {
-                    pending.extend(terms)
-                }
-                SemanticPredicate::True | SemanticPredicate::False => {}
-            }
-        }
+        visit_predicate_tests(predicate, |test| self.record_test(test));
     }
 
     fn record_test(&mut self, test: &SemanticOperation) {
@@ -777,7 +830,8 @@ impl<'a> BooleanValueAnalysis<'a> {
     }
 
     fn record_value_expression(&mut self, value: &SemanticExpression) {
-        let mut pending = vec![value];
+        let mut pending = smallvec::SmallVec::<[&SemanticExpression; 4]>::new();
+        pending.push(value);
         while let Some(value) = pending.pop() {
             match value {
                 SemanticExpression::Register(register) => {
@@ -1140,3 +1194,7 @@ mod tests {
         assert_eq!(analysis.solve(), BTreeSet::from([16, 20]));
     }
 }
+
+#[cfg(test)]
+#[path = "../../../../tests/internal/boolean_expression_recovery.rs"]
+mod boolean_expression_recovery;

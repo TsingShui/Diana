@@ -243,7 +243,7 @@ impl<'a> ValueNumbering<'a> {
                 }
                 InsnArg::Wrapped(instruction) => {
                     let operation =
-                        SemanticOperation::from_instruction((**instruction).clone()).ok()?;
+                        SemanticOperation::from_borrowed_instruction(instruction).ok()?;
                     if !Self::pure_root(&operation) {
                         return None;
                     }

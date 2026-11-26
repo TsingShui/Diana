@@ -34,7 +34,11 @@ impl<'a> JavaValueSyntax<'a> {
         method: &mut SemanticMethod<SourceSyntaxSemantics>,
     ) -> Result<bool, crate::ir::SemanticFoldError> {
         let (body, state) = method.parts_mut();
-        let recovery = expression::ExpressionSyntax::apply(body, state.types())?;
+        let recovery = expression::ExpressionSyntax::apply(
+            body,
+            state.types(),
+            expression::BooleanUse::Rewrite,
+        )?;
         let loops = SyntaxSites::collect(body).loop_rewrite && self.loops.apply(body)?;
         Ok(recovery.changed || loops)
     }
@@ -59,7 +63,11 @@ impl SemanticTransform<SourceSemantics> for SourceSyntaxRecovery<'_> {
         mut method: SemanticMethod<SourceSemantics>,
     ) -> Result<SemanticMethod<Self::Output>, Self::Error> {
         let (body, state) = method.parts_mut();
-        let expressions = expression::ExpressionSyntax::apply(body, state.types())?;
+        let expressions = expression::ExpressionSyntax::apply(
+            body,
+            state.types(),
+            expression::BooleanUse::RefineTypes,
+        )?;
         state
             .types_mut()
             .refine_booleans(expressions.boolean_variables);

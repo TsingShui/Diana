@@ -1,4 +1,4 @@
-//! Method-local SSA ordinals. Only nonempty words beyond the first allocate.
+//! Method-local liveness sets. Only nonempty words beyond the first allocate.
 use std::collections::BTreeMap;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
