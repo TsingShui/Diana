@@ -48,6 +48,7 @@ pub use ssa::{
     SsaValue, SsaValueGraph, SsaVar, UsePosition, ValueCopy,
 };
 pub use termination::MethodTermination;
+pub(crate) use types::RegisterTypeEvidence;
 pub use types::{
     ClassHierarchyIndex, HierarchySource, ReferenceTypeInfo, SourceTypeEnvironment,
     SsaTypeEnvironment, SubtypeRelation, TypeConstraintError, TypeHierarchy, TypeSolver,

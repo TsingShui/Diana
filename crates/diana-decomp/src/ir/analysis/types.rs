@@ -119,6 +119,19 @@ impl fmt::Display for TypeConstraintError {
 
 impl std::error::Error for TypeConstraintError {}
 
+pub(crate) enum RegisterTypeEvidence<'a> {
+    Environment(&'a ArgType),
+    Operand(&'a ArgType),
+}
+
+impl<'a> RegisterTypeEvidence<'a> {
+    fn ty(self) -> &'a ArgType {
+        match self {
+            Self::Environment(ty) | Self::Operand(ty) => ty,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SsaTypeEnvironment {
     types: BTreeMap<SsaVar, ArgType>,
@@ -138,11 +151,19 @@ impl SsaTypeEnvironment {
         &'a self,
         register: &'a RegisterArg,
     ) -> Result<&'a ArgType, TypeConstraintError> {
+        self.register_type_evidence(register)
+            .map(RegisterTypeEvidence::ty)
+    }
+
+    fn register_type_evidence<'a>(
+        &'a self,
+        register: &'a RegisterArg,
+    ) -> Result<RegisterTypeEvidence<'a>, TypeConstraintError> {
         if let Some(ty) = SsaVar::from_reg(register).and_then(|value| self.types.get(&value)) {
-            return Ok(ty);
+            return Ok(RegisterTypeEvidence::Environment(ty));
         }
         if register.ty.is_known() {
-            return Ok(&register.ty);
+            return Ok(RegisterTypeEvidence::Operand(&register.ty));
         }
         Err(TypeConstraintError::UnresolvedValue {
             register: register.reg_num,
@@ -372,13 +393,21 @@ impl SourceTypeEnvironment {
         &'a self,
         register: &'a RegisterArg,
     ) -> Result<&'a ArgType, TypeConstraintError> {
+        self.register_type_evidence(register)
+            .map(RegisterTypeEvidence::ty)
+    }
+
+    pub(crate) fn register_type_evidence<'a>(
+        &'a self,
+        register: &'a RegisterArg,
+    ) -> Result<RegisterTypeEvidence<'a>, TypeConstraintError> {
         if let Some(ty) = register
             .code_var
             .and_then(|variable| self.variable(variable))
         {
-            return Ok(ty);
+            return Ok(RegisterTypeEvidence::Environment(ty));
         }
-        self.ssa.register_type(register)
+        self.ssa.register_type_evidence(register)
     }
 
     pub fn argument_type<'a>(

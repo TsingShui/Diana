@@ -2230,7 +2230,30 @@ impl PhiLowering {
         self.next_variable
     }
 
-    pub(super) fn apply(mut self, root: &mut SemanticNode) -> Result<(), SourceVariableError> {
+    /// The placement fold also makes conditional leaves explicit and
+    /// canonicalizes a loop's setup sequence when it appends a prefix.
+    pub(super) fn rewrites_without_copies(node: &SemanticNode) -> bool {
+        match node {
+            SemanticNode::Leave(leave) => leave.condition.is_some(),
+            SemanticNode::Loop { test, .. } => {
+                matches!(test.setup.as_ref(), SemanticNode::Sequence(nodes) if nodes.len() < 2)
+            }
+            _ => false,
+        }
+    }
+
+    pub(super) fn apply(
+        mut self,
+        root: &mut SemanticNode,
+        needs_control_rewrite: bool,
+    ) -> Result<(), SourceVariableError> {
+        if !needs_control_rewrite
+            && self.normal.by_site.is_empty()
+            && self.exceptional.is_empty()
+            && self.handler_entries.is_empty()
+        {
+            return Ok(());
+        }
         if !self.normal.by_site.is_empty() {
             let sites = SemanticBlockOccurrences::collect(root);
             self.semantic_blocks = sites.all;

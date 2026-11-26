@@ -308,6 +308,7 @@ fn method_stats_enabled() -> bool {
 
 #[derive(Debug, Clone)]
 pub(super) struct BodyTypeUses {
+    pub references: Box<[std::sync::Arc<MemberReference>]>,
     pub uses: std::collections::BTreeSet<ArgType>,
     pub static_owners: Box<[ArgType]>,
     pub lambda_types: Box<[ArgType]>,
@@ -332,6 +333,7 @@ impl BodyTypeUses {
 
 struct MethodTypeUses<'a> {
     types: &'a crate::ir::analysis::SourceTypeEnvironment,
+    references: Vec<std::sync::Arc<MemberReference>>,
     uses: std::collections::BTreeSet<ArgType>,
     static_owners: std::collections::BTreeSet<ArgType>,
     lambda_types: std::collections::BTreeSet<ArgType>,
@@ -350,6 +352,7 @@ impl<'a> MethodTypeUses<'a> {
         }
         let mut collector = Self {
             types: method.state().types(),
+            references: Vec::new(),
             uses,
             static_owners: Default::default(),
             lambda_types: Default::default(),
@@ -359,6 +362,7 @@ impl<'a> MethodTypeUses<'a> {
         match collector.error {
             Some(error) => Err(error.into()),
             None => Ok(BodyTypeUses {
+                references: collector.references.into_boxed_slice(),
                 uses: collector.uses,
                 static_owners: collector.static_owners.into_iter().collect(),
                 lambda_types: collector.lambda_types.into_iter().collect(),
@@ -398,11 +402,7 @@ impl SemanticVisitor for MethodTypeUses<'_> {
 
     fn enter_operation(&mut self, operation: &crate::ir::SemanticOperation) {
         if let Some(result) = &operation.result {
-            match self.types.register_type(result) {
-                Ok(ty) => self.insert(ty),
-                Err(error) if self.error.is_none() => self.error = Some(error),
-                Err(_) => {}
-            }
+            self.visit_register(result);
         }
         if let Some(lambda) = operation.payload.lambda.as_deref() {
             self.lambda_types.insert(lambda.interface.clone());
@@ -411,8 +411,12 @@ impl SemanticVisitor for MethodTypeUses<'_> {
         }
         self.insert_option(operation.payload.class_type.as_deref());
         self.insert_option(operation.payload.cast_type.as_deref());
-        match operation.payload.reference.as_deref() {
-            Some(MemberReference::Field(field)) => {
+        let Some(reference) = &operation.payload.reference else {
+            return;
+        };
+        self.references.push(std::sync::Arc::clone(reference));
+        match reference.as_ref() {
+            MemberReference::Field(field) => {
                 if matches!(
                     operation.insn_type,
                     crate::ir::InsnType::Sget | crate::ir::InsnType::Sput
@@ -423,7 +427,7 @@ impl SemanticVisitor for MethodTypeUses<'_> {
                 self.insert(&field.owner);
                 self.insert(&field.field_type);
             }
-            Some(MemberReference::Method(method)) => {
+            MemberReference::Method(method) => {
                 if operation.payload.invoke_type == Some(crate::ir::InvokeType::Static)
                     && !self.static_owners.contains(&method.owner)
                 {
@@ -435,13 +439,17 @@ impl SemanticVisitor for MethodTypeUses<'_> {
                 }
                 self.insert(&method.descriptor.return_type);
             }
-            None => {}
         }
     }
 
     fn visit_register(&mut self, register: &crate::ir::RegisterArg) {
-        match self.types.register_type(register) {
-            Ok(ty) => self.insert(ty),
+        use crate::ir::analysis::RegisterTypeEvidence;
+        // The initial set already contains the environment's complete type.
+        // Its component types are added only when an array is actually used.
+        match self.types.register_type_evidence(register) {
+            Ok(RegisterTypeEvidence::Environment(ArgType::Array(element))) => self.insert(element),
+            Ok(RegisterTypeEvidence::Environment(_)) => {}
+            Ok(RegisterTypeEvidence::Operand(ty)) => self.insert(ty),
             Err(error) if self.error.is_none() => self.error = Some(error),
             Err(_) => {}
         }

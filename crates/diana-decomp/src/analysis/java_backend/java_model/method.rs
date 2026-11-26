@@ -143,7 +143,9 @@ impl JavaMethodBody {
         &self,
         references: &mut MemberReferences,
     ) {
-        crate::ir::SemanticVisitor::visit_node(references, &self.body);
+        for reference in &self.type_uses.references {
+            references.insert(reference);
+        }
     }
 
     pub(in crate::analysis::java_backend) fn static_owner_types(&self) -> &[ArgType] {
@@ -355,13 +357,13 @@ pub(in crate::analysis::java_backend) struct MemberReferences {
         std::collections::BTreeSet<crate::ir::FieldReference>,
 }
 
-impl crate::ir::SemanticVisitor for MemberReferences {
-    fn enter_operation(&mut self, operation: &crate::ir::SemanticOperation) {
-        match operation.payload.reference.as_deref() {
-            Some(crate::ir::MemberReference::Method(method)) if !self.methods.contains(method) => {
+impl MemberReferences {
+    fn insert(&mut self, reference: &crate::ir::MemberReference) {
+        match reference {
+            crate::ir::MemberReference::Method(method) if !self.methods.contains(method) => {
                 self.methods.insert(method.clone());
             }
-            Some(crate::ir::MemberReference::Field(field)) if !self.fields.contains(field) => {
+            crate::ir::MemberReference::Field(field) if !self.fields.contains(field) => {
                 self.fields.insert(field.clone());
             }
             _ => {}

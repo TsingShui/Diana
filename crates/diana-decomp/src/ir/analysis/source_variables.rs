@@ -215,7 +215,8 @@ impl SourceVariableAllocation {
         hierarchy: &dyn super::TypeHierarchy,
     ) -> Result<SemanticMethod<SourceSemantics>, SourceVariableError> {
         self.annotate_cfg(cfg)?;
-        SourceAnnotation::new(&self.variables).apply(method.body_mut())?;
+        let needs_control_rewrite =
+            SourceAnnotation::new(&self.variables).apply(method.body_mut())?;
         let copies = PhiCopies::collect(
             cfg,
             &self.required_phis,
@@ -257,7 +258,7 @@ impl SourceVariableAllocation {
             method.state().regions(),
         )?;
         let next_variable = phi_lowering.next_variable();
-        phi_lowering.apply(method.body_mut())?;
+        phi_lowering.apply(method.body_mut(), needs_control_rewrite)?;
         LexicalExitLowering::apply(method.body_mut(), next_variable, &mut source_types)?;
         ExceptionTypeBinding::apply(method.body(), &mut source_types, hierarchy)?;
         let (body, state) = method.into_parts();
@@ -828,17 +829,21 @@ impl SourceInputs {
 
 struct SourceAnnotation<'a> {
     variables: &'a CodeVariables,
+    needs_control_rewrite: bool,
 }
 
 impl<'a> SourceAnnotation<'a> {
     fn new(variables: &'a CodeVariables) -> Self {
-        Self { variables }
+        Self {
+            variables,
+            needs_control_rewrite: false,
+        }
     }
 
-    fn apply(mut self, root: &mut SemanticNode) -> Result<(), SourceVariableError> {
+    fn apply(mut self, root: &mut SemanticNode) -> Result<bool, SourceVariableError> {
         let body = std::mem::replace(root, SemanticNode::Empty);
         *root = self.fold_node(body)?;
-        Ok(())
+        Ok(self.needs_control_rewrite)
     }
 
     fn annotate_register(&self, register: &mut RegisterArg) {
@@ -882,6 +887,7 @@ impl SemanticFolder for SourceAnnotation<'_> {
     type Error = SourceVariableError;
 
     fn finish_node(&mut self, mut node: SemanticNode) -> Result<SemanticNode, Self::Error> {
+        self.needs_control_rewrite |= PhiLowering::rewrites_without_copies(&node);
         SemanticInstructions::transform_node(&mut node, self)?;
         if let SemanticNode::BasicBlock(block) = &mut node {
             block.statements.retain(|statement| {

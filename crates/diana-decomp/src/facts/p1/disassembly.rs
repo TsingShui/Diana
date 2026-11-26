@@ -737,6 +737,11 @@ impl<'a> DecodedMethod<'a> {
     }
 }
 
+pub(super) struct DecodedDirectory {
+    pub(super) items: Vec<DecodedItem>,
+    pub(super) reference_count: usize,
+}
+
 impl<'a> ProgramIndex<'a> {
     /// Builds the original instruction/payload directory once. On failure the
     /// returned prefix contains every item decoded before the failing PC.
@@ -744,6 +749,15 @@ impl<'a> ProgramIndex<'a> {
         &self,
         source: &RawMethodView<'a>,
     ) -> Result<Vec<DecodedItem>, (Vec<DecodedItem>, MethodError)> {
+        self.decode_directory(source)
+            .map(|directory| directory.items)
+    }
+
+    pub(super) fn decode_directory(
+        &self,
+        source: &RawMethodView<'a>,
+    ) -> Result<DecodedDirectory, (Vec<DecodedItem>, MethodError)> {
+        let mut reference_count = 0usize;
         let mut items = Vec::new();
         let result =
             (|| -> Result<(), MethodError> {
@@ -751,6 +765,10 @@ impl<'a> ProgramIndex<'a> {
                 while pc.0 < source.code_units().0 {
                     let layout = instruction_layout_of(source, pc)?;
                     let item = if let Some(encoding) = layout.instruction() {
+                        let slots = &encoding.spec().references;
+                        // Each reference slot occupies at least one of the checked code units.
+                        reference_count +=
+                            usize::from(slots[0].is_some()) + usize::from(slots[1].is_some());
                         let operands = instruction_operands(source.instructions(), pc, layout)
                             .map_err(MethodError::Decode)?;
                         DecodedItem::Instruction(DecodedInstruction {
@@ -771,7 +789,10 @@ impl<'a> ProgramIndex<'a> {
                 Ok(())
             })();
         match result {
-            Ok(()) => Ok(items),
+            Ok(()) => Ok(DecodedDirectory {
+                items,
+                reference_count,
+            }),
             Err(error) => Err((items, error)),
         }
     }

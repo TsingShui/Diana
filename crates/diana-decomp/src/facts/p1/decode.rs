@@ -35,11 +35,11 @@ impl<'a> ProgramIndex<'a> {
         let (_, return_shape) = source
             .program()
             .type_descriptor(crate::TypeId(source.declaration().return_type_id))?;
-        let items = match self.build_items(code) {
-            Ok(items) => items,
+        let (items, reference_count) = match self.decode_directory(code) {
+            Ok(directory) => (directory.items, directory.reference_count),
             Err((prefix, error)) => return outcome(code, prefix, error),
         };
-        let references = match self.read_reference_facts(&items, return_shape) {
+        let references = match self.read_reference_facts(&items, reference_count, return_shape) {
             Ok(facts) => facts,
             Err(error) => return outcome(code, items, error),
         };
@@ -96,9 +96,13 @@ impl<'a> ProgramIndex<'a> {
     fn read_reference_facts(
         &self,
         items: &[super::DecodedItem],
+        reference_count: usize,
         return_shape: TypeShape,
     ) -> Result<ReferenceReads<'a>, MethodError> {
         let mut facts = Vec::new();
+        // Failure of this capacity hint leaves the original fallible ordered
+        // pushes in charge of the exact allocation failure and its position.
+        let _ = facts.try_reserve_exact(reference_count);
         let mut issues = Vec::new();
         for item in items {
             let super::DecodedItem::Instruction(instruction) = item else {
