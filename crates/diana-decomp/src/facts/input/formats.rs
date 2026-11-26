@@ -154,8 +154,8 @@ pub struct IndexedRef {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LayoutKind {
-    Instruction(OpcodeSpec),
+pub enum LayoutKind<S = OpcodeSpec> {
+    Instruction(S),
     PackedSwitch {
         entries: u16,
     },
@@ -168,24 +168,106 @@ pub enum LayoutKind {
     },
 }
 
+/// The checked opcode selects the meaning of both original indices. Unused
+/// slots need no tag and index zero remains a valid reference.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct InstructionLayout {
+    spec: &'static OpcodeSpec,
+    indices: [u32; 2],
+}
+
+impl InstructionLayout {
+    pub(crate) fn spec(self) -> &'static OpcodeSpec {
+        self.spec
+    }
+
+    pub(crate) fn layout(self) -> InsnLayout {
+        InsnLayout {
+            kind: LayoutKind::Instruction(self),
+            width: self.spec.format.width(),
+        }
+    }
+
+    pub(crate) fn references(self) -> [Option<(ReferenceKind, IndexedRef)>; 2] {
+        std::array::from_fn(|slot| {
+            let kind = self.spec.references[slot]?;
+            let index = self.indices[slot];
+            let target = match kind {
+                ReferenceKind::String => OperandReference::String(StringId(index)),
+                ReferenceKind::Type => OperandReference::Type(TypeId(index)),
+                ReferenceKind::Field => OperandReference::Field(FieldId(index)),
+                ReferenceKind::Method => OperandReference::Method(MethodId(index)),
+                ReferenceKind::Proto => OperandReference::Proto(ProtoId(index)),
+                ReferenceKind::CallSite => OperandReference::CallSite(CallSiteId(index)),
+                ReferenceKind::MethodHandle => {
+                    OperandReference::MethodHandle(MethodHandleId(index))
+                }
+            };
+            let operand_slot = if slot == 0 {
+                ReferenceSlot::First
+            } else {
+                ReferenceSlot::Second
+            };
+            Some((
+                kind,
+                IndexedRef {
+                    target,
+                    operand_slot,
+                },
+            ))
+        })
+    }
+}
+
 /// A complete layout at one PC, constructed only after range/format checks.
 /// It does not certify registers, branch targets, reference bounds or payload keys.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub struct InsnLayout {
-    kind: LayoutKind,
+    kind: LayoutKind<InstructionLayout>,
     width: CodeUnitCount,
-    references: [Option<IndexedRef>; 2],
+}
+
+impl std::fmt::Debug for InsnLayout {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("InsnLayout")
+            .field("kind", &self.kind())
+            .field("width", &self.width)
+            .field("references", &self.references())
+            .finish()
+    }
 }
 
 impl InsnLayout {
     pub fn kind(&self) -> LayoutKind {
-        self.kind
+        match self.kind {
+            LayoutKind::Instruction(encoding) => LayoutKind::Instruction(*encoding.spec()),
+            LayoutKind::PackedSwitch { entries } => LayoutKind::PackedSwitch { entries },
+            LayoutKind::SparseSwitch { entries } => LayoutKind::SparseSwitch { entries },
+            LayoutKind::ArrayData {
+                element_width,
+                element_count,
+            } => LayoutKind::ArrayData {
+                element_width,
+                element_count,
+            },
+        }
+    }
+    pub(crate) fn instruction(&self) -> Option<InstructionLayout> {
+        match self.kind {
+            LayoutKind::Instruction(encoding) => Some(encoding),
+            _ => None,
+        }
     }
     pub fn width(&self) -> CodeUnitCount {
         self.width
     }
     pub fn references(&self) -> [Option<IndexedRef>; 2] {
-        self.references
+        self.instruction().map_or([None; 2], |instruction| {
+            instruction
+                .references()
+                .map(|entry| entry.map(|(_, reference)| reference))
+        })
     }
 }
 
@@ -240,9 +322,8 @@ pub fn instruction_layout(
     version: DexVersion,
 ) -> Result<InsnLayout, RawDecodeError> {
     let first = word(code_bytes, pc, 0)?;
-    let spec = match encoding_head(first, pc, version)? {
-        EncodingHead::Instruction(spec) => spec,
-        EncodingHead::Payload => return payload(code_bytes, pc, first),
+    let Some(spec) = checked_opcode(first, pc, version)? else {
+        return payload(code_bytes, pc, first);
     };
     let width = span(code_bytes, pc, u64::from(spec.format.width().0))?;
     if matches!(
@@ -255,41 +336,20 @@ pub fn instruction_layout(
     if matches!(spec.format, Format::F35c | Format::F45cc) && first >> 12 > 5 {
         return Err(bad(pc, LayoutProblem::InvalidWordCount));
     }
-    let mut references = [None; 2];
-    for (slot, kind) in spec.references.into_iter().enumerate() {
-        if let Some(kind) = kind {
-            let index = if slot == 1 {
-                u32::from(word(code_bytes, pc, 3)?)
-            } else if spec.format == Format::F31c {
-                wide_word(code_bytes, pc, 1)?
-            } else {
-                u32::from(word(code_bytes, pc, 1)?)
-            };
-            let target = match kind {
-                ReferenceKind::String => OperandReference::String(StringId(index)),
-                ReferenceKind::Type => OperandReference::Type(TypeId(index)),
-                ReferenceKind::Field => OperandReference::Field(FieldId(index)),
-                ReferenceKind::Method => OperandReference::Method(MethodId(index)),
-                ReferenceKind::Proto => OperandReference::Proto(ProtoId(index)),
-                ReferenceKind::CallSite => OperandReference::CallSite(CallSiteId(index)),
-                ReferenceKind::MethodHandle => {
-                    OperandReference::MethodHandle(MethodHandleId(index))
-                }
-            };
-            references[slot] = Some(IndexedRef {
-                target,
-                operand_slot: if slot == 0 {
-                    ReferenceSlot::First
-                } else {
-                    ReferenceSlot::Second
-                },
-            });
-        }
+    let mut indices = [0; 2];
+    if spec.references[0].is_some() {
+        indices[0] = if spec.format == Format::F31c {
+            wide_word(code_bytes, pc, 1)?
+        } else {
+            u32::from(word(code_bytes, pc, 1)?)
+        };
+    }
+    if spec.references[1].is_some() {
+        indices[1] = u32::from(word(code_bytes, pc, 3)?);
     }
     Ok(InsnLayout {
-        kind: LayoutKind::Instruction(spec),
+        kind: LayoutKind::Instruction(InstructionLayout { spec, indices }),
         width,
-        references,
     })
 }
 
@@ -386,7 +446,6 @@ fn payload(bytes: &[u8], pc: CodeUnitOffset, signature: u16) -> Result<InsnLayou
     Ok(InsnLayout {
         kind,
         width: span(bytes, pc, width)?,
-        references: [None; 2],
     })
 }
 
@@ -400,9 +459,20 @@ pub fn encoding_head(
     pc: CodeUnitOffset,
     version: DexVersion,
 ) -> Result<EncodingHead, RawDecodeError> {
+    Ok(match checked_opcode(first, pc, version)? {
+        Some(spec) => EncodingHead::Instruction(*spec),
+        None => EncodingHead::Payload,
+    })
+}
+
+fn checked_opcode(
+    first: u16,
+    pc: CodeUnitOffset,
+    version: DexVersion,
+) -> Result<Option<&'static OpcodeSpec>, RawDecodeError> {
     if first & 0xff == 0 && first != 0 {
         return match first {
-            0x0100 | 0x0200 | 0x0300 => Ok(EncodingHead::Payload),
+            0x0100 | 0x0200 | 0x0300 => Ok(None),
             _ => Err(RawDecodeError::UnknownEncoding { pc, word: first }),
         };
     }
@@ -416,7 +486,7 @@ pub fn encoding_head(
             actual: version,
         });
     }
-    Ok(EncodingHead::Instruction(spec))
+    Ok(Some(spec))
 }
 
 /// Packed scan facts per opcode: the low byte is the width in code units, the
@@ -454,7 +524,20 @@ pub fn opcode_mnemonic(opcode: u8) -> Option<&'static str> {
     opcode_spec(opcode).map(|spec| spec.mnemonic)
 }
 
-pub(super) fn opcode_spec(opcode: u8) -> Option<OpcodeSpec> {
+fn opcode_spec(opcode: u8) -> Option<&'static OpcodeSpec> {
+    static SPECS: [Option<OpcodeSpec>; 256] = {
+        let mut specs = [None; 256];
+        let mut index = 0;
+        while index < specs.len() {
+            specs[index] = build_opcode_spec(index as u8);
+            index += 1;
+        }
+        specs
+    };
+    SPECS[usize::from(opcode)].as_ref()
+}
+
+const fn build_opcode_spec(opcode: u8) -> Option<OpcodeSpec> {
     use Format::*;
     use ReferenceKind as R;
     let mut references = [None; 2];
@@ -462,7 +545,7 @@ pub(super) fn opcode_spec(opcode: u8) -> Option<OpcodeSpec> {
     let (mnemonic, format) = match opcode {
         0x00 => ("nop", F10x),
         0x01..=0x09 => {
-            let index = usize::from(opcode - 1);
+            let index = (opcode - 1) as usize;
             (
                 [
                     "move",
@@ -484,16 +567,16 @@ pub(super) fn opcode_spec(opcode: u8) -> Option<OpcodeSpec> {
                 "move-result-wide",
                 "move-result-object",
                 "move-exception",
-            ][usize::from(opcode - 0x0a)],
+            ][(opcode - 0x0a) as usize],
             F11x,
         ),
         0x0e => ("return-void", F10x),
         0x0f..=0x11 => (
-            ["return", "return-wide", "return-object"][usize::from(opcode - 0x0f)],
+            ["return", "return-wide", "return-object"][(opcode - 0x0f) as usize],
             F11x,
         ),
         0x12..=0x19 => {
-            let index = usize::from(opcode - 0x12);
+            let index = (opcode - 0x12) as usize;
             (
                 [
                     "const/4",
@@ -521,7 +604,7 @@ pub(super) fn opcode_spec(opcode: u8) -> Option<OpcodeSpec> {
             ("const-class", F21c)
         }
         0x1d..=0x1e => (
-            ["monitor-enter", "monitor-exit"][usize::from(opcode - 0x1d)],
+            ["monitor-enter", "monitor-exit"][(opcode - 0x1d) as usize],
             F11x,
         ),
         0x1f => {
@@ -555,7 +638,7 @@ pub(super) fn opcode_spec(opcode: u8) -> Option<OpcodeSpec> {
         0x29 => ("goto/16", F20t),
         0x2a => ("goto/32", F30t),
         0x2b..=0x2c => (
-            ["packed-switch", "sparse-switch"][usize::from(opcode - 0x2b)],
+            ["packed-switch", "sparse-switch"][(opcode - 0x2b) as usize],
             F31t,
         ),
         0x2d..=0x31 => (
@@ -565,16 +648,15 @@ pub(super) fn opcode_spec(opcode: u8) -> Option<OpcodeSpec> {
                 "cmpl-double",
                 "cmpg-double",
                 "cmp-long",
-            ][usize::from(opcode - 0x2d)],
+            ][(opcode - 0x2d) as usize],
             F23x,
         ),
         0x32..=0x37 => (
-            ["if-eq", "if-ne", "if-lt", "if-ge", "if-gt", "if-le"][usize::from(opcode - 0x32)],
+            ["if-eq", "if-ne", "if-lt", "if-ge", "if-gt", "if-le"][(opcode - 0x32) as usize],
             F22t,
         ),
         0x38..=0x3d => (
-            ["if-eqz", "if-nez", "if-ltz", "if-gez", "if-gtz", "if-lez"]
-                [usize::from(opcode - 0x38)],
+            ["if-eqz", "if-nez", "if-ltz", "if-gez", "if-gtz", "if-lez"][(opcode - 0x38) as usize],
             F21t,
         ),
         0x44..=0x51 => (
@@ -593,7 +675,7 @@ pub(super) fn opcode_spec(opcode: u8) -> Option<OpcodeSpec> {
                 "aput-byte",
                 "aput-char",
                 "aput-short",
-            ][usize::from(opcode - 0x44)],
+            ][(opcode - 0x44) as usize],
             F23x,
         ),
         0x52..=0x5f => {
@@ -614,7 +696,7 @@ pub(super) fn opcode_spec(opcode: u8) -> Option<OpcodeSpec> {
                     "iput-byte",
                     "iput-char",
                     "iput-short",
-                ][usize::from(opcode - 0x52)],
+                ][(opcode - 0x52) as usize],
                 F22c,
             )
         }
@@ -636,7 +718,7 @@ pub(super) fn opcode_spec(opcode: u8) -> Option<OpcodeSpec> {
                     "sput-byte",
                     "sput-char",
                     "sput-short",
-                ][usize::from(opcode - 0x60)],
+                ][(opcode - 0x60) as usize],
                 F21c,
             )
         }
@@ -649,7 +731,7 @@ pub(super) fn opcode_spec(opcode: u8) -> Option<OpcodeSpec> {
                     "invoke-direct",
                     "invoke-static",
                     "invoke-interface",
-                ][usize::from(opcode - 0x6e)],
+                ][(opcode - 0x6e) as usize],
                 F35c,
             )
         }
@@ -662,7 +744,7 @@ pub(super) fn opcode_spec(opcode: u8) -> Option<OpcodeSpec> {
                     "invoke-direct/range",
                     "invoke-static/range",
                     "invoke-interface/range",
-                ][usize::from(opcode - 0x74)],
+                ][(opcode - 0x74) as usize],
                 F3rc,
             )
         }
@@ -689,7 +771,7 @@ pub(super) fn opcode_spec(opcode: u8) -> Option<OpcodeSpec> {
                 "int-to-byte",
                 "int-to-char",
                 "int-to-short",
-            ][usize::from(opcode - 0x7b)],
+            ][(opcode - 0x7b) as usize],
             F12x,
         ),
         0x90..=0xaf => (
@@ -726,7 +808,7 @@ pub(super) fn opcode_spec(opcode: u8) -> Option<OpcodeSpec> {
                 "mul-double",
                 "div-double",
                 "rem-double",
-            ][usize::from(opcode - 0x90)],
+            ][(opcode - 0x90) as usize],
             F23x,
         ),
         0xb0..=0xcf => (
@@ -763,7 +845,7 @@ pub(super) fn opcode_spec(opcode: u8) -> Option<OpcodeSpec> {
                 "mul-double/2addr",
                 "div-double/2addr",
                 "rem-double/2addr",
-            ][usize::from(opcode - 0xb0)],
+            ][(opcode - 0xb0) as usize],
             F12x,
         ),
         0xd0..=0xd7 => (
@@ -776,7 +858,7 @@ pub(super) fn opcode_spec(opcode: u8) -> Option<OpcodeSpec> {
                 "and-int/lit16",
                 "or-int/lit16",
                 "xor-int/lit16",
-            ][usize::from(opcode - 0xd0)],
+            ][(opcode - 0xd0) as usize],
             F22s,
         ),
         0xd8..=0xe2 => (
@@ -792,7 +874,7 @@ pub(super) fn opcode_spec(opcode: u8) -> Option<OpcodeSpec> {
                 "shl-int/lit8",
                 "shr-int/lit8",
                 "ushr-int/lit8",
-            ][usize::from(opcode - 0xd8)],
+            ][(opcode - 0xd8) as usize],
             F22b,
         ),
         0xfa..=0xfb => {
@@ -851,7 +933,7 @@ pub(super) fn opcode_spec(opcode: u8) -> Option<OpcodeSpec> {
     })
 }
 
-fn register_shape(opcode: u8, format: Format) -> RegisterShape {
+const fn register_shape(opcode: u8, format: Format) -> RegisterShape {
     use Format::*;
     use RegisterWidth::{One, Two};
     let mut widths = match format {
@@ -899,7 +981,7 @@ fn register_shape(opcode: u8, format: Format) -> RegisterShape {
                 (One, One),
                 (One, One),
                 (One, One),
-            ][usize::from(opcode - 0x7b)];
+            ][(opcode - 0x7b) as usize];
             widths = [Some(a), Some(b), None];
         }
         0x9b..=0xa5 | 0xab..=0xaf => {

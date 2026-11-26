@@ -167,3 +167,54 @@ fn editing_decoded_constants_preserves_other_instruction_copies() {
     assert_eq!(other.conversion_type(), Some(&ArgType::LONG));
     assert!(!cast.operation_equivalent(&other));
 }
+
+#[test]
+fn checked_instruction_layout_retains_each_reference_slot_and_width() {
+    use diana_decomp::raw::{
+        instruction_layout, DexVersion, IndexedRef, LayoutKind, OperandReference, RawDecodeError,
+        ReferenceSlot,
+    };
+    use diana_decomp::{CodeUnitCount, CodeUnitOffset, MethodId, ProtoId, StringId};
+
+    let pc = CodeUnitOffset(0);
+    let polymorphic = [0xfa, 0x20, 0, 0, 0x21, 0, 0xfe, 0xca];
+    let insn = instruction_layout(&polymorphic, pc, DexVersion::V038).unwrap();
+    assert_eq!(insn.width(), CodeUnitCount(4));
+    assert!(
+        matches!(insn.kind(), LayoutKind::Instruction(spec) if spec.mnemonic == "invoke-polymorphic")
+    );
+    assert_eq!(
+        insn.references(),
+        [
+            Some(IndexedRef {
+                target: OperandReference::Method(MethodId(0)),
+                operand_slot: ReferenceSlot::First
+            }),
+            Some(IndexedRef {
+                target: OperandReference::Proto(ProtoId(0xcafe)),
+                operand_slot: ReferenceSlot::Second
+            }),
+        ]
+    );
+    assert!(matches!(
+        instruction_layout(&polymorphic, pc, DexVersion::V035),
+        Err(RawDecodeError::UnsupportedVersion { opcode: 0xfa, .. })
+    ));
+    let jumbo =
+        instruction_layout(&[0x1b, 1, 0x78, 0x56, 0x34, 0x12], pc, DexVersion::V035).unwrap();
+    assert_eq!(
+        jumbo.references(),
+        [
+            Some(IndexedRef {
+                target: OperandReference::String(StringId(0x1234_5678)),
+                operand_slot: ReferenceSlot::First
+            }),
+            None,
+        ]
+    );
+    let payload = instruction_layout(&[0, 2, 0, 0], pc, DexVersion::V035).unwrap();
+    assert_eq!(payload.kind(), LayoutKind::SparseSwitch { entries: 0 });
+    assert_eq!(payload.width(), CodeUnitCount(2));
+    assert_eq!(payload.references(), [None, None]);
+    assert!(std::mem::size_of::<diana_decomp::p1::DecodedInstruction>() <= 96);
+}

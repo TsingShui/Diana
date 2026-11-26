@@ -31,13 +31,9 @@ impl<'collector, 'node> NodeScheduler<'collector, 'node> {
             SemanticNode::Empty => {}
             SemanticNode::BasicBlock(block) => {
                 self.collector.record_block(block.id, self.domain)?;
-                self.pending.extend(
-                    block
-                        .statements
-                        .iter()
-                        .rev()
-                        .map(|statement| FlowTask::Statement(statement, self.domain)),
-                );
+                for statement in &block.statements {
+                    self.collector.visit_statement(statement, self.domain)?;
+                }
             }
             SemanticNode::Sequence(children) => self.schedule_sequence(children)?,
             SemanticNode::If {

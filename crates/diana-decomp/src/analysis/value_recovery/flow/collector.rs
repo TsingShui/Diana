@@ -52,7 +52,9 @@ impl<'ir> FlowCollector<'ir> {
     }
 
     fn collect_facts(&mut self, root: &'ir SemanticNode) -> Result<(), ValueRecoveryError> {
-        let mut pending = vec![FlowTask::Node(root, self.graph.logic.truth())];
+        let mut pending = Vec::new();
+        let domain = self.graph.logic.truth();
+        NodeScheduler::new(self, domain, &mut pending).schedule(root)?;
         while let Some(task) = pending.pop() {
             match task {
                 FlowTask::Node(node, domain) => {

@@ -51,16 +51,38 @@ fn nested_pure_numbering_retains_every_level_and_the_canonical_literal() {
         [(SsaVar::new(3, 1), InsnArg::lit(19, ArgType::INT))].into(),
     )
     .unwrap();
-    let mut key = &key;
-    for _ in 0..40 {
-        assert_eq!(key.instruction, InsnType::Neg);
-        let [ValueOperand::Expression(child)] = key.arguments.as_slice() else {
-            panic!("nested negation")
-        };
-        key = child;
-    }
-    assert_eq!(key.instruction, InsnType::Neg);
-    assert!(
-        matches!(key.arguments.as_slice(), [ValueOperand::Literal {value: 19, ty}] if *ty == ArgType::INT)
-    );
+    assert_eq!(key.root.instruction, InsnType::Neg);
+    assert_eq!(key.children.len(), 40);
+    assert!(key
+        .children
+        .iter()
+        .all(|child| child.instruction == InsnType::Neg && child.argument_count == 1));
+    let (last, preceding) = key.operands.split_last().unwrap();
+    assert_eq!(preceding.len(), 40);
+    assert!(preceding
+        .iter()
+        .all(|slot| *slot == ValueOperand::Operation));
+    assert!(matches!(last, ValueOperand::Literal { value: 19, ty } if *ty == ArgType::INT));
+}
+
+#[test]
+fn sibling_operand_order_and_nested_operation_boundaries_distinguish_keys() {
+    let lit = |n| InsnArg::lit(n, ArgType::INT);
+    let sum = |left, right| {
+        let mut arithmetic = op(InsnType::Arith, vec![left, right]);
+        arithmetic.payload.arith_op = Some(ArithOp::Add);
+        InsnArg::wrap(arithmetic)
+    };
+    let a = sum(sum(lit(1), lit(2)), sum(lit(3), lit(4)));
+    let b = sum(sum(lit(1), lit(3)), sum(lit(2), lit(4)));
+    let c = sum(lit(1), sum(sum(lit(2), lit(3)), lit(4)));
+    let direct = number(a.clone(), BTreeMap::new()).unwrap();
+    let canonical = number(
+        InsnArg::reg_ssa(4, 1, ArgType::INT),
+        [(SsaVar::new(4, 1), a)].into(),
+    )
+    .unwrap();
+    assert_eq!(direct, canonical);
+    assert_ne!(direct, number(b, BTreeMap::new()).unwrap());
+    assert_ne!(direct, number(c, BTreeMap::new()).unwrap());
 }

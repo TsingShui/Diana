@@ -49,6 +49,66 @@ pub(crate) fn path_conflict(error: &io::Error) -> bool {
     )
 }
 
+/// Source workers create sibling files concurrently in a private package tree.
+pub(crate) struct SourceFiles<'a> {
+    root: &'a Path,
+    #[cfg(target_os = "linux")]
+    unnamed: std::sync::atomic::AtomicBool,
+}
+
+impl<'a> SourceFiles<'a> {
+    pub(crate) fn new(root: &'a Path) -> Self {
+        Self {
+            root,
+            #[cfg(target_os = "linux")]
+            unnamed: std::sync::atomic::AtomicBool::new(true),
+        }
+    }
+
+    pub(crate) fn create(&self, relative: &Path) -> io::Result<File> {
+        #[cfg(target_os = "linux")]
+        if self.unnamed.load(std::sync::atomic::Ordering::Relaxed) {
+            let path = self.root.join(relative);
+            if let Some(parent) = path.parent() {
+                use rustix::fs::{AtFlags, CWD, Mode, OFlags, linkat, open};
+                use rustix::io::Errno;
+                // Allocate in the actual package with the ordinary creation mode.
+                // Only linking the new inode needs to serialize on the destination
+                // directory entry. The name is claimed before any bytes are written.
+                let result = open(
+                    parent,
+                    OFlags::TMPFILE | OFlags::RDWR | OFlags::CLOEXEC,
+                    Mode::from_bits_truncate(0o666),
+                )
+                .and_then(|file| {
+                    if let Err(error) = linkat(&file, "", CWD, &path, AtFlags::EMPTY_PATH) {
+                        // Older kernels can report ENOENT when linking an open
+                        // descriptor is unavailable to an unprivileged process.
+                        if error == Errno::NOENT {
+                            self.unnamed
+                                .store(false, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        return Err(error);
+                    }
+                    Ok(File::from(file))
+                });
+                match result {
+                    Ok(file) => return Ok(file),
+                    Err(Errno::EXIST) => return Err(io::Error::from(Errno::EXIST)),
+                    Err(
+                        Errno::OPNOTSUPP | Errno::INVAL | Errno::NOSYS | Errno::PERM | Errno::ISDIR,
+                    ) => {
+                        self.unnamed
+                            .store(false, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+        create_file(self.root, relative)
+    }
+}
+
 pub(crate) fn create_file(root: &Path, relative: &Path) -> io::Result<File> {
     let path = root.join(relative);
     match File::create_new(&path) {

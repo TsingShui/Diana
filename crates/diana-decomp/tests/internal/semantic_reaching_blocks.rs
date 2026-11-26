@@ -262,10 +262,15 @@ fn cached_reaching_requires_the_same_points_and_definition_ordinals() {
     let initial = vec![SemanticValueDefinition::new(point(1), 0, 5)];
     let targets = BTreeSet::from([point(3)]);
     let previous = graph.cached_reaching_values(initial.clone(), 1, targets.clone());
-    let repeated = graph.cached_reaching_values(initial.clone(), 1, targets.clone());
+    let repeated = graph.cached_reaching_values(
+        initial.clone(),
+        1,
+        [point(3), point(3), SemanticFlowPoint::Synthetic(u64::MAX)],
+    );
+    assert_eq!(repeated.at(0, SemanticFlowPoint::Synthetic(u64::MAX)), None);
     assert!(std::sync::Arc::ptr_eq(&previous, &repeated));
     assert_eq!(previous.at(0, point(3)), Some(vec![5]));
-    let expanded = graph.cached_reaching_values(initial, 1, [point(0), point(3)].into());
+    let expanded = graph.cached_reaching_values(initial, 1, [point(0), point(3)]);
     assert_eq!(expanded.at(0, point(0)), Some(vec![]));
     let amended = graph.cached_reaching_values(
         vec![SemanticValueDefinition::new(point(1), 0, 19)],

@@ -248,7 +248,7 @@ impl DefinitionsByValue {
 struct ReachingQuery {
     definitions: Vec<SemanticValueDefinition>,
     value_count: usize,
-    targets: BTreeSet<SemanticFlowPoint>,
+    targets: DefinitionSet,
     facts: Arc<SemanticReachingValues>,
 }
 
@@ -770,8 +770,9 @@ impl SemanticFlowGraph {
         &self,
         definitions: Vec<SemanticValueDefinition>,
         value_count: usize,
-        targets: BTreeSet<SemanticFlowPoint>,
+        targets: impl IntoIterator<Item = SemanticFlowPoint>,
     ) -> Arc<SemanticReachingValues> {
+        let targets = self.target_mask(targets);
         let cache = self
             .last_reaching
             .get_or_init(|| Arc::new(Mutex::new(None)));
@@ -787,7 +788,7 @@ impl SemanticFlowGraph {
             }
         }
         *cache = None;
-        let facts = Arc::new(self.reaching_values(&definitions, value_count, &targets));
+        let facts = Arc::new(self.reaching_values_at(&definitions, value_count, &targets));
         *cache = Some(ReachingQuery {
             definitions,
             value_count,
@@ -802,6 +803,31 @@ impl SemanticFlowGraph {
         definitions: &[SemanticValueDefinition],
         value_count: usize,
         targets: &BTreeSet<SemanticFlowPoint>,
+    ) -> SemanticReachingValues {
+        self.reaching_values_at(
+            definitions,
+            value_count,
+            &self.target_mask(targets.iter().copied()),
+        )
+    }
+
+    // The immutable graph already gives every existing point a dense ordinal.
+    // Repeated uses of one site request the same bit, and absent sites have no fact.
+    fn target_mask(&self, targets: impl IntoIterator<Item = SemanticFlowPoint>) -> DefinitionSet {
+        let mut mask = DefinitionSet::new(self.index.len());
+        for target in targets {
+            if let Some(id) = self.index.id(target) {
+                mask.insert(id);
+            }
+        }
+        mask
+    }
+
+    fn reaching_values_at(
+        &self,
+        definitions: &[SemanticValueDefinition],
+        value_count: usize,
+        targets: &DefinitionSet,
     ) -> SemanticReachingValues {
         let cleanup = self.has_cleanup_continuations();
         if !cleanup {
@@ -847,7 +873,7 @@ impl SemanticFlowGraph {
     fn reaching_values_with_cleanup(
         &self,
         definitions: &[SemanticValueDefinition],
-        targets: &BTreeSet<SemanticFlowPoint>,
+        targets: &DefinitionSet,
         generated: BTreeMap<SemanticFlowPoint, DefinitionSet>,
         killed: BTreeMap<SemanticFlowPoint, DefinitionSet>,
         by_value: DefinitionsByValue,
@@ -953,7 +979,7 @@ impl SemanticFlowGraph {
 
         let mut reaching = BTreeMap::<SemanticFlowPoint, DefinitionSet>::new();
         for (((point, _), facts), initialized) in states.into_iter().zip(facts).zip(initialized) {
-            if initialized && targets.contains(&point) {
+            if initialized && self.index.id(point).is_some_and(|id| targets.contains(id)) {
                 match reaching.entry(point) {
                     std::collections::btree_map::Entry::Vacant(entry) => {
                         entry.insert(facts);
@@ -971,23 +997,23 @@ impl SemanticFlowGraph {
     fn insert_unreachable_target_bottoms(
         &self,
         reaching: &mut BTreeMap<SemanticFlowPoint, DefinitionSet>,
-        targets: &BTreeSet<SemanticFlowPoint>,
+        targets: &DefinitionSet,
         definition_count: usize,
     ) {
-        for target in targets
-            .iter()
-            .copied()
-            .filter(|&target| self.index.points.get(target).is_some())
-        {
+        for id in targets.members(0..self.index.len()) {
+            let target = self.index.point(id);
             reaching
                 .entry(target)
                 .or_insert_with(|| DefinitionSet::new(definition_count));
         }
     }
 
-    fn reaching_slice(&self, targets: &BTreeSet<SemanticFlowPoint>) -> BTreeSet<SemanticFlowPoint> {
-        let mut nodes = targets.clone();
-        let mut ancestors = targets.iter().copied().collect::<VecDeque<_>>();
+    fn reaching_slice(&self, targets: &DefinitionSet) -> BTreeSet<SemanticFlowPoint> {
+        let mut nodes = targets
+            .members(0..self.index.len())
+            .map(|id| self.index.point(id))
+            .collect::<BTreeSet<_>>();
+        let mut ancestors = nodes.iter().copied().collect::<VecDeque<_>>();
         while let Some(node) = ancestors.pop_front() {
             for (predecessor, _) in self.index.incoming_points(node) {
                 if nodes.insert(predecessor) {

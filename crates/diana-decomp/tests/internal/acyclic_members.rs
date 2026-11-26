@@ -120,3 +120,103 @@ fn terminal_condition_errors_keep_their_block_order_during_membership_transfer()
     );
     assert!(members.is_empty());
 }
+
+#[test]
+fn suspended_branch_queries_preserve_eligibility_order_and_bdd_capacity() {
+    let mut cfg = CFG::new("nested_then_serial_diamonds");
+    cfg.entry = BlockId::new(0);
+    let branches = [0, 1, 4, 7, 10, 13, 16, 19];
+    for id in 0..=22 {
+        let mut block = Block::new(id);
+        if branches.contains(&id) {
+            block.push(InsnNode::new(InsnType::If, 0));
+        }
+        cfg.add_block(block);
+    }
+    let id = BlockId::new;
+    for (source, when_true, when_false) in [(0, 1, 4), (1, 2, 3), (4, 5, 6)] {
+        cfg.add_edge(id(source), id(when_true), EdgeKind::True);
+        cfg.add_edge(id(source), id(when_false), EdgeKind::False);
+    }
+    for source in [2, 3, 5, 6] {
+        cfg.add_edge(id(source), id(7), EdgeKind::Normal);
+    }
+    for source in (7..=19).step_by(3) {
+        cfg.add_edge(id(source), id(source + 1), EdgeKind::True);
+        cfg.add_edge(id(source), id(source + 2), EdgeKind::False);
+        cfg.add_edge(id(source + 1), id(source + 3), EdgeKind::Normal);
+        cfg.add_edge(id(source + 2), id(source + 3), EdgeKind::Normal);
+    }
+
+    fn exercise(cfg: &CFG, independent: bool) -> usize {
+        let facts = ReachingConditions::analyze(cfg).unwrap();
+        let first = facts.compile(&BoolExpr::block(BlockId::new(0))).unwrap();
+        let assumptions = [facts.truth(), first, facts.not(first).unwrap()];
+        let mut queries = BranchQueries::default();
+        for (scope, rank, wanted) in [
+            (0, 0, 0),
+            (1, 0, 1),
+            (2, 0, 4),
+            (1, 1, 7),
+            (0, 1, 7),
+            (2, 1, 7),
+            (1, 0, 1),
+            (1, 2, 10),
+            (0, 2, 10),
+            (2, 0, 4),
+        ] {
+            let assumption = assumptions[scope];
+            let actual = if independent {
+                let mut eligible = facts.branch_variables().iter().copied().filter(|&block| {
+                    let owner = facts.condition(block).unwrap().domain();
+                    if !facts.implies(assumption, owner).unwrap() {
+                        return false;
+                    }
+                    let positive = facts.compile(&BoolExpr::block(block)).unwrap();
+                    let negative = facts.not(positive).unwrap();
+                    !facts.implies(assumption, positive).unwrap()
+                        && !facts.implies(assumption, negative).unwrap()
+                });
+                eligible.nth(rank)
+            } else {
+                let variables = if scope == 0 {
+                    &mut queries.root
+                } else {
+                    queries.assumed.entry(assumption).or_default()
+                };
+                variables
+                    .candidate(rank, assumption, &facts, &mut queries.literals)
+                    .unwrap()
+                    .map(|(owner, _, _)| owner)
+            };
+            assert_eq!(actual, Some(BlockId::new(wanted)));
+        }
+
+        let mut domains = vec![facts.truth()];
+        for &block in facts.branch_variables().iter().take(7) {
+            let term = facts.compile(&BoolExpr::block(block)).unwrap();
+            for i in 0..domains.len() {
+                domains.push(facts.and(domains[i], term).unwrap());
+            }
+        }
+        for (i, &premise) in domains.iter().enumerate() {
+            for (j, &consequence) in domains.iter().enumerate() {
+                if let Err(error) = facts.implies(premise, consequence) {
+                    assert!(
+                        matches!(
+                            error,
+                            ReachingConditionError::Bdd(crate::ir::bdd::BddError::ResourceLimit {
+                                resource: crate::ir::bdd::BddResource::CacheEntries,
+                                ..
+                            })
+                        ),
+                        "{error:?}"
+                    );
+                    return i * domains.len() + j;
+                }
+            }
+        }
+        panic!("expected to exhaust the bounded implication cache");
+    }
+    assert_eq!(exercise(&cfg, false), exercise(&cfg, true));
+}

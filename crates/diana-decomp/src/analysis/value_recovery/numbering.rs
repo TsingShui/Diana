@@ -1,6 +1,6 @@
 //! Global value numbering over pure semantic expressions.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 use crate::ir::analysis::SsaVar;
 use crate::ir::{
@@ -46,7 +46,7 @@ pub(super) struct ValueNumbering<'a> {
     canonical_values: &'a BTreeMap<SsaVar, InsnArg>,
     availability: Option<&'a dyn ValueAvailability>,
     aliases: BTreeMap<SsaVar, SsaVar>,
-    classes: HashMap<ValueExpression, Vec<NumberedDefinition>>,
+    classes: HashMap<ValueExpression, Vec<NumberedDefinition<'a>>>,
 }
 
 impl<'a> ValueNumbering<'a> {
@@ -92,7 +92,7 @@ impl<'a> ValueNumbering<'a> {
                 .rev()
             {
                 if numbering.available(candidate, definition, &expression)? {
-                    representative = Some(candidate.clone());
+                    representative = Some(*candidate);
                     break;
                 }
             }
@@ -114,7 +114,7 @@ impl<'a> ValueNumbering<'a> {
                 .or_default()
                 .push(NumberedDefinition {
                     key: definition.key,
-                    register: (*definition.result).clone(),
+                    register: definition.result,
                     domain: definition.domain,
                     scope: definition.scope,
                     event: definition.event,
@@ -146,7 +146,7 @@ impl<'a> ValueNumbering<'a> {
 
     fn available(
         &self,
-        candidate: &NumberedDefinition,
+        candidate: &NumberedDefinition<'_>,
         current: &DefinitionFact,
         expression: &ValueExpression,
     ) -> Result<bool, ValueRecoveryError> {
@@ -184,91 +184,81 @@ impl<'a> ValueNumbering<'a> {
         if !Self::pure_root(instruction) {
             return None;
         }
-        let mut pending = vec![ExpressionTask::Operation(instruction.clone())];
-        let mut values = Vec::new();
-        while let Some(task) = pending.pop() {
-            match task {
-                ExpressionTask::Operation(instruction) => {
-                    if !Self::numberable(instruction.insn_type) {
-                        return None;
+        let mut key = ValueExpression {
+            root: OperationKey::of(instruction)?,
+            children: Vec::new(),
+            operands: Vec::with_capacity(instruction.operands().len()),
+        };
+        // Arity partitions the operand stream into rows. Each Operation slot
+        // introduces exactly one child row, in encounter order. Hashing and
+        // equality therefore need neither recursive descent nor boxed keys.
+        let mut pending = VecDeque::new();
+        let mut current = instruction;
+        let mut owned;
+        loop {
+            for operand in current.operands() {
+                let slot = match operand {
+                    SemanticExpression::Register(register) => {
+                        let value = self.root(self.key(register)?);
+                        self.canonical_operand(value, &mut pending)?
                     }
-                    let frame = ExpressionFrame::of(&instruction)?;
-                    pending.push(ExpressionTask::Build(frame));
-                    pending.extend(
-                        instruction
-                            .operands()
-                            .iter()
-                            .cloned()
-                            .rev()
-                            .map(ExpressionTask::Expression),
-                    );
-                }
-                ExpressionTask::Expression(SemanticExpression::Register(register)) => {
-                    let value = self.root(self.key(&register)?);
-                    match self.canonical_values.get(&value) {
-                        Some(canonical) => {
-                            pending.push(ExpressionTask::Canonical(canonical.clone()));
-                        }
-                        None => values.push(ValueOperand::Register(value)),
-                    }
-                }
-                ExpressionTask::Expression(SemanticExpression::Literal(literal)) => {
-                    values.push(ValueOperand::Literal {
+                    SemanticExpression::Literal(literal) => ValueOperand::Literal {
                         value: literal.value,
-                        ty: literal.ty,
+                        ty: literal.ty.clone(),
+                    },
+                    SemanticExpression::Operation(operation) => {
+                        pending.push_back(operation.clone());
+                        ValueOperand::Operation
+                    }
+                    SemanticExpression::Select { .. } => return None,
+                };
+                key.operands.push(slot);
+            }
+            let Some(next) = pending.pop_front() else {
+                break;
+            };
+            if !Self::numberable(next.insn_type) {
+                return None;
+            }
+            key.children.push(OperationKey::of(&next)?);
+            owned = next;
+            current = &owned;
+        }
+        Some(key)
+    }
+
+    fn canonical_operand(
+        &self,
+        mut value: SsaVar,
+        pending: &mut VecDeque<SemanticOperation>,
+    ) -> Option<ValueOperand> {
+        let mut visited = BTreeSet::new();
+        while let Some(argument) = self.canonical_values.get(&value) {
+            match argument {
+                InsnArg::Lit(literal) => {
+                    return Some(ValueOperand::Literal {
+                        value: literal.value,
+                        ty: literal.ty.clone(),
                     });
                 }
-                ExpressionTask::Expression(SemanticExpression::Operation(operation)) => {
-                    pending.push(ExpressionTask::Operation(operation));
-                }
-                ExpressionTask::Expression(SemanticExpression::Select { .. }) => return None,
-                ExpressionTask::Canonical(mut argument) => {
-                    let mut visited = BTreeSet::new();
-                    loop {
-                        match argument {
-                            InsnArg::Lit(literal) => {
-                                values.push(ValueOperand::Literal {
-                                    value: literal.value,
-                                    ty: literal.ty.clone(),
-                                });
-                                break;
-                            }
-                            InsnArg::Wrapped(instruction) => {
-                                let operation =
-                                    SemanticOperation::from_instruction((*instruction).clone())
-                                        .ok()?;
-                                if !Self::pure_root(&operation) {
-                                    return None;
-                                }
-                                pending.push(ExpressionTask::Operation(operation));
-                                break;
-                            }
-                            InsnArg::Reg(register) => {
-                                let value = self.root(self.key(&register)?);
-                                if !visited.insert(value) {
-                                    values.push(ValueOperand::Register(value));
-                                    break;
-                                }
-                                let Some(canonical) = self.canonical_values.get(&value) else {
-                                    values.push(ValueOperand::Register(value));
-                                    break;
-                                };
-                                argument = canonical.clone();
-                            }
-                        }
+                InsnArg::Wrapped(instruction) => {
+                    let operation =
+                        SemanticOperation::from_instruction((**instruction).clone()).ok()?;
+                    if !Self::pure_root(&operation) {
+                        return None;
                     }
+                    pending.push_back(operation);
+                    return Some(ValueOperand::Operation);
                 }
-                ExpressionTask::Build(frame) => {
-                    let start = values.len().checked_sub(frame.argument_count)?;
-                    let arguments = values.drain(start..).collect();
-                    values.push(ValueOperand::Expression(Box::new(frame.build(arguments))));
+                InsnArg::Reg(register) => {
+                    value = self.root(self.key(register)?);
+                    if !visited.insert(value) {
+                        break;
+                    }
                 }
             }
         }
-        match values.pop()? {
-            ValueOperand::Expression(expression) if values.is_empty() => Some(*expression),
-            _ => None,
-        }
+        Some(ValueOperand::Register(value))
     }
 
     /// Transitive effects include each nested operand, compound target and
@@ -307,10 +297,10 @@ impl<'a> ValueNumbering<'a> {
     }
 }
 
-#[derive(Debug, Clone)]
-struct NumberedDefinition {
+#[derive(Debug, Clone, Copy)]
+struct NumberedDefinition<'a> {
     key: SsaVar,
-    register: RegisterArg,
+    register: &'a RegisterArg,
     domain: ControlDomain,
     scope: ScopeId,
     event: usize,
@@ -320,34 +310,21 @@ struct NumberedDefinition {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ValueExpression {
-    instruction: InsnType,
-    result_type: ArgType,
-    arithmetic: Option<ArithOp>,
-    unary: Option<UnaryOp>,
-    comparison_bias: Option<CmpBias>,
-    cast_type: Option<ArgType>,
-    class_type: Option<ArgType>,
-    type_index: Option<u32>,
-    string_value: Option<Utf16String>,
-    arguments: Vec<ValueOperand>,
+    root: OperationKey,
+    children: Vec<OperationKey>,
+    operands: Vec<ValueOperand>,
 }
 
 impl ValueExpression {
-    fn variables(&self) -> impl Iterator<Item = SsaVar> + '_ {
-        let mut pending = self.arguments.iter().collect::<Vec<_>>();
-        let mut variables = BTreeSet::new();
-        while let Some(operand) = pending.pop() {
-            match operand {
-                ValueOperand::Register(value) => {
-                    variables.insert(*value);
-                }
-                ValueOperand::Expression(expression) => {
-                    pending.extend(expression.arguments.iter());
-                }
-                ValueOperand::Literal { .. } => {}
-            }
-        }
-        variables.into_iter()
+    fn variables(&self) -> impl Iterator<Item = SsaVar> {
+        self.operands
+            .iter()
+            .filter_map(|operand| match operand {
+                ValueOperand::Register(value) => Some(*value),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
     }
 }
 
@@ -355,10 +332,11 @@ impl ValueExpression {
 enum ValueOperand {
     Register(SsaVar),
     Literal { value: i64, ty: ArgType },
-    Expression(Box<ValueExpression>),
+    Operation,
 }
 
-struct ExpressionFrame {
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct OperationKey {
     instruction: InsnType,
     result_type: ArgType,
     arithmetic: Option<ArithOp>,
@@ -371,7 +349,7 @@ struct ExpressionFrame {
     argument_count: usize,
 }
 
-impl ExpressionFrame {
+impl OperationKey {
     fn of(instruction: &SemanticOperation) -> Option<Self> {
         Some(Self {
             instruction: instruction.insn_type,
@@ -386,28 +364,6 @@ impl ExpressionFrame {
             argument_count: instruction.operands().len(),
         })
     }
-
-    fn build(self, arguments: Vec<ValueOperand>) -> ValueExpression {
-        ValueExpression {
-            instruction: self.instruction,
-            result_type: self.result_type,
-            arithmetic: self.arithmetic,
-            unary: self.unary,
-            comparison_bias: self.comparison_bias,
-            cast_type: self.cast_type,
-            class_type: self.class_type,
-            type_index: self.type_index,
-            string_value: self.string_value,
-            arguments,
-        }
-    }
-}
-
-enum ExpressionTask {
-    Operation(SemanticOperation),
-    Expression(SemanticExpression),
-    Canonical(InsnArg),
-    Build(ExpressionFrame),
 }
 
 #[cfg(test)]

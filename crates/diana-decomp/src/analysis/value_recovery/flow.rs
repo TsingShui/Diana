@@ -801,7 +801,7 @@ impl<'ir> ValueFlowGraph<'ir> {
         self.semantic_flow.as_ref().map(ScheduledFlow::get)
     }
 
-    fn movement_points(&self) -> BTreeSet<crate::ir::analysis::SemanticFlowPoint> {
+    fn movement_points(&self) -> impl Iterator<Item = crate::ir::analysis::SemanticFlowPoint> + '_ {
         self.definitions
             .values()
             .flatten()
@@ -812,7 +812,6 @@ impl<'ir> ValueFlowGraph<'ir> {
             })
             .chain(self.uses.values().flatten().filter_map(|usage| usage.point))
             .chain(self.effects.iter().map(|effect| effect.point))
-            .collect()
     }
 
     fn is_constant(value: &InsnArg) -> bool {

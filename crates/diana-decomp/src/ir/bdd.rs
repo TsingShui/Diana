@@ -168,12 +168,80 @@ impl UniqueNodes {
     }
 }
 
+/// Nonterminal binary cache keys are strictly ordered node pairs. In
+/// particular zero is never a key, although either terminal is a valid result.
+struct BinaryMemo {
+    slots: smallvec::SmallVec<[u64; 4]>,
+    len: usize,
+    hasher: foldhash::fast::RandomState,
+}
+
+impl BinaryMemo {
+    fn new() -> Self {
+        Self {
+            slots: smallvec::SmallVec::from_buf([0; 4]),
+            len: 0,
+            hasher: foldhash::fast::RandomState::default(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn get(&self, key: u32) -> Option<u16> {
+        let mask = self.slots.len() - 1;
+        let mut pos = self.hasher.hash_one(key) as usize & mask;
+        loop {
+            let entry = self.slots[pos];
+            if entry == 0 {
+                return None;
+            }
+            if entry as u32 == key {
+                return Some((entry >> 32) as u16);
+            }
+            pos = (pos + 1) & mask;
+        }
+    }
+
+    fn place(slots: &mut [u64], hash: usize, entry: u64) {
+        let mask = slots.len() - 1;
+        let mut pos = hash & mask;
+        while slots[pos] != 0 {
+            pos = (pos + 1) & mask;
+        }
+        slots[pos] = entry;
+    }
+
+    fn insert(&mut self, key: u32, value: u16) {
+        // The caller missed this pair before descending. Every recursive
+        // cofactor advances past its top variable, so descendants cannot
+        // have installed this key while its frame was pending.
+        if self.len == self.slots.len() / 4 * 3 {
+            let mut larger = smallvec::smallvec![0; self.slots.len() * 2];
+            for &entry in &self.slots {
+                if entry != 0 {
+                    Self::place(
+                        &mut larger,
+                        self.hasher.hash_one(entry as u32) as usize,
+                        entry,
+                    );
+                }
+            }
+            self.slots = larger;
+        }
+        let entry = u64::from(value) << 32 | u64::from(key);
+        Self::place(&mut self.slots, self.hasher.hash_one(key) as usize, entry);
+        self.len += 1;
+    }
+}
+
 struct Manager {
     context: u64,
     nodes: Vec<ArenaNode>,
     // Nodes already own their immutable keys. Buckets only need their arena IDs.
     unique: UniqueNodes,
-    binary_cache: HashMap<u32, u16>,
+    binary_cache: BinaryMemo,
     apply_work: Vec<ApplyFrame>,
     implication_work: ImplicationWork,
     complements: usize,
@@ -203,7 +271,7 @@ impl Manager {
                 },
             ],
             unique: UniqueNodes::new(),
-            binary_cache: HashMap::new(),
+            binary_cache: BinaryMemo::new(),
             apply_work: Vec::new(),
             implication_work: ImplicationWork::default(),
             complements: 2,
@@ -322,7 +390,7 @@ impl Manager {
                     // leaves one orientation for each commutative operation.
                     let (first, second) = if AND { (left, right) } else { (right, left) };
                     let key = u32::from(first) << 16 | u32::from(second);
-                    if let Some(&result) = self.binary_cache.get(&key) {
+                    if let Some(result) = self.binary_cache.get(key) {
                         result
                     } else {
                         self.charge_operation()?;
@@ -619,8 +687,7 @@ impl Manager {
     }
 
     fn implies_nodes(&mut self, premise: u16, consequence: u16) -> Result<bool, BddError> {
-        self.implication_work.pending.clear();
-        self.implication_work.visited.clear();
+        self.implication_work.begin();
         let mut next = (premise, consequence);
         loop {
             let (premise, consequence) = next;
@@ -630,8 +697,7 @@ impl Manager {
                 }
                 if self
                     .implication_work
-                    .visited
-                    .insert(u32::from(premise) << 16 | u32::from(consequence))
+                    .visit(u32::from(premise) << 16 | u32::from(consequence))
                 {
                     self.charge_operation()?;
                     let a = self.nodes[usize::from(premise)];
@@ -714,7 +780,35 @@ enum ApplyChild {
 #[derive(Default)]
 struct ImplicationWork {
     pending: Vec<(u16, u16)>,
+    first: [u32; 8],
+    first_len: usize,
     visited: HashSet<u32>,
+}
+
+impl ImplicationWork {
+    fn begin(&mut self) {
+        self.pending.clear();
+        self.first_len = 0;
+    }
+
+    fn visit(&mut self, pair: u32) -> bool {
+        // Short proofs use only a handful of pairs. Keep those on the
+        // work stack even after a larger proof grew the fallback table.
+        if self.first_len <= self.first.len() {
+            if self.first[..self.first_len].contains(&pair) {
+                return false;
+            }
+            if self.first_len < self.first.len() {
+                self.first[self.first_len] = pair;
+                self.first_len += 1;
+                return true;
+            }
+            self.visited.clear();
+            self.visited.extend(self.first);
+            self.first_len += 1;
+        }
+        self.visited.insert(pair)
+    }
 }
 
 enum RestrictTask {

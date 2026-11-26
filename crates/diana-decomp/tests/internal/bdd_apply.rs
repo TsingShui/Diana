@@ -224,3 +224,20 @@ fn arena_growth_retains_canonical_ids_and_looks_up_existing_nodes_at_its_limit()
     );
     assert_eq!(manager.intern(0, 1, 1), Ok(1));
 }
+
+#[test]
+fn implication_pairs_are_charged_once_per_traversal_across_spills_and_restarts() {
+    let mut work = ImplicationWork::default();
+    for count in [4, 8, 300, 2, 9, 8, 400] {
+        work.begin();
+        for id in 1..=count {
+            let pair = id << 16 | (id + 1);
+            assert!(work.visit(pair));
+            assert!(!work.visit(pair));
+            assert!(!work.visit(1 << 16 | 2));
+        }
+        for id in (1..=count).rev() {
+            assert!(!work.visit(id << 16 | (id + 1)));
+        }
+    }
+}

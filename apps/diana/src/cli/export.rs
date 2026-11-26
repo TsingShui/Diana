@@ -8,7 +8,7 @@ use std::sync::{Mutex, MutexGuard};
 use serde_json::json;
 
 use super::output::Failure;
-use crate::analysis::export_path::{create_file, path_conflict, portable_component};
+use crate::analysis::export_path::{SourceFiles, create_file, path_conflict, portable_component};
 use crate::analysis::export_resources::{self, ResourceNotice};
 use crate::analysis::request::RequestScope;
 use crate::analysis::source_export::{self, SourceEvent};
@@ -87,7 +87,9 @@ fn write_export(scope: &RequestScope, output: &Path, jobs: usize) -> io::Result<
     let root = stage.path();
     let report = Mutex::new(Report::default());
     let classes = AtomicUsize::new(0);
-    fs::create_dir(root.join("sources"))?;
+    let source_root = root.join("sources");
+    fs::create_dir(&source_root)?;
+    let source_files = SourceFiles::new(&source_root);
     let mut warnings = 0;
     let resources = export_resources::write(scope, root, |entry, notice, reason| {
         warnings += usize::from(notice == ResourceNotice::Warning);
@@ -107,7 +109,7 @@ fn write_export(scope: &RequestScope, output: &Path, jobs: usize) -> io::Result<
             } => {
                 let name = String::from_utf16(&descriptor).ok();
                 let normal = match name.as_deref().and_then(class_path) {
-                    Some(relative) => match create_file(&root.join("sources"), &relative) {
+                    Some(relative) => match source_files.create(&relative) {
                         Ok(file) => Some(file),
                         Err(error) if path_conflict(&error) => None,
                         Err(error) => return Err(error),

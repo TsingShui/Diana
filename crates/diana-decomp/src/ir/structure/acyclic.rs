@@ -4,6 +4,7 @@
 //! Boolean implication plus graph reachability. The construction stage is a
 //! separate, mechanical translation from the resulting fact tree to semantic IR.
 
+use foldhash::HashMap;
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
@@ -29,33 +30,46 @@ pub(super) enum AcyclicReductionReason {
     ConditionExpression,
 }
 
-pub(super) struct AcyclicStructurer<'a, 'semantic, 'seeded> {
-    cfg: &'a CFG,
-    semantic: &'semantic SemanticFactory<'semantic>,
-    seeded: &'seeded mut BTreeMap<BlockId, SemanticNode>,
-    predicates: Option<&'a BTreeMap<BlockId, SemanticPredicate>>,
+pub(super) trait AcyclicSeeds {
+    fn body(&self, block: BlockId) -> Option<&SemanticNode>;
+    fn take(&mut self, block: BlockId) -> Option<SemanticNode>;
+
+    fn predicate(
+        &self,
+        semantic: &SemanticFactory<'_>,
+        condition: BoolExpr,
+    ) -> Result<SemanticPredicate, SemanticBuildError> {
+        semantic.predicate(condition)
+    }
 }
 
-impl<'a, 'semantic, 'seeded> AcyclicStructurer<'a, 'semantic, 'seeded> {
+impl AcyclicSeeds for BTreeMap<BlockId, SemanticNode> {
+    fn body(&self, block: BlockId) -> Option<&SemanticNode> {
+        self.get(&block)
+    }
+
+    fn take(&mut self, block: BlockId) -> Option<SemanticNode> {
+        self.remove(&block)
+    }
+}
+
+pub(super) struct AcyclicStructurer<'a, 'semantic, S> {
+    cfg: &'a CFG,
+    semantic: &'semantic SemanticFactory<'semantic>,
+    seeded: &'a mut S,
+}
+
+impl<'a, 'semantic, S: AcyclicSeeds> AcyclicStructurer<'a, 'semantic, S> {
     pub(super) fn new(
         cfg: &'a CFG,
         semantic: &'semantic SemanticFactory<'semantic>,
-        seeded: &'seeded mut BTreeMap<BlockId, SemanticNode>,
+        seeded: &'a mut S,
     ) -> Self {
         Self {
             cfg,
             semantic,
             seeded,
-            predicates: None,
         }
-    }
-
-    pub(super) fn predicates(
-        mut self,
-        predicates: &'a BTreeMap<BlockId, SemanticPredicate>,
-    ) -> Self {
-        self.predicates = Some(predicates);
-        self
     }
 
     /// An unconditional chain has one reaching condition (true) and its
@@ -90,7 +104,7 @@ impl<'a, 'semantic, 'seeded> AcyclicStructurer<'a, 'semantic, 'seeded> {
             }
         }
         let shape = AcyclicStructureFact::sequence(facts);
-        AcyclicStructureLowering::new(self.semantic, self.seeded, self.predicates)
+        AcyclicStructureLowering::new(self.semantic, self.seeded)
             .lower(shape)
             .map(Some)
     }
@@ -135,13 +149,12 @@ impl<'a, 'semantic, 'seeded> AcyclicStructurer<'a, 'semantic, 'seeded> {
             ));
         };
         Ok(AcyclicStructure::Structured(
-            AcyclicStructureLowering::new(self.semantic, &mut *self.seeded, self.predicates)
-                .lower(structure)?,
+            AcyclicStructureLowering::new(self.semantic, &mut *self.seeded).lower(structure)?,
         ))
     }
 
     fn is_closed_block(&self, block: BlockId) -> bool {
-        if let Some(node) = self.seeded.get(&block) {
+        if let Some(node) = self.seeded.body(block) {
             return !ControlCompletion::normally_completes(node);
         }
         self.cfg
@@ -174,7 +187,7 @@ impl<'a> AcyclicStructureAnalysis<'a> {
     fn analyze(&self) -> Result<Option<AcyclicStructureFact>, AcyclicStructureError> {
         let dominators = DominatorTree::for_reaching_conditions(self.cfg, self.facts)?;
         let mut subtrees = BTreeMap::<BlockId, StructureItem>::new();
-        let mut root_variables = BranchVariables::default();
+        let mut queries = BranchQueries::default();
         for block in dominators.postorder() {
             let assumption = ConditionDomain {
                 domain: self
@@ -196,12 +209,8 @@ impl<'a> AcyclicStructureAnalysis<'a> {
             let descendants = if children.is_empty() {
                 AcyclicStructureFact::Empty
             } else {
-                let Some(structure) = self.refine(
-                    children,
-                    assumption.clone(),
-                    &mut root_variables,
-                    &mut blocks,
-                )?
+                let Some(structure) =
+                    self.refine(children, assumption.clone(), &mut queries, &mut blocks)?
                 else {
                     return Ok(None);
                 };
@@ -235,27 +244,22 @@ impl<'a> AcyclicStructureAnalysis<'a> {
         &self,
         items: Vec<StructureItem>,
         assumption: ConditionDomain,
-        root_variables: &mut BranchVariables,
+        queries: &mut BranchQueries,
         blocks: &mut BTreeSet<BlockId>,
     ) -> Result<Option<AcyclicStructureFact>, AcyclicStructureError> {
         let mut tasks = vec![RefineTask::Refine { items, assumption }];
         let mut results = Vec::new();
-        let mut local_variables = None::<(Bdd, BranchVariables)>;
         while let Some(task) = tasks.pop() {
             match task {
                 RefineTask::Refine { items, assumption } => {
                     let variables = if assumption.domain == self.facts.truth() {
-                        &mut *root_variables
+                        &mut queries.root
                     } else {
-                        let (cached, variables) = local_variables
-                            .get_or_insert_with(|| (assumption.domain, BranchVariables::default()));
-                        if *cached != assumption.domain {
-                            *cached = assumption.domain;
-                            variables.reset();
-                        }
-                        variables
+                        queries.assumed.entry(assumption.domain).or_default()
                     };
-                    let Some(cluster) = self.cluster(&items, &assumption, variables)? else {
+                    let Some(cluster) =
+                        self.cluster(&items, &assumption, variables, &mut queries.literals)?
+                    else {
                         // A suspended refinement owns its cluster's member
                         // set. Only the final result transfers it to the
                         // enclosing dominator, after all proofs have read it.
@@ -377,21 +381,26 @@ impl<'a> AcyclicStructureAnalysis<'a> {
         items: &[StructureItem],
         assumption: &ConditionDomain,
         variables: &mut BranchVariables,
+        literals: &mut Vec<Option<(Bdd, Bdd)>>,
     ) -> Result<Option<ConditionCluster>, AcyclicStructureError> {
+        // A singleton cannot partition. Its first complete search still issues
+        // all BDD queries in order, including those that charge cache entries.
+        if let [item] = items {
+            if variables.last_singleton == Some(item.condition.domain) {
+                return Ok(None);
+            }
+        }
+        if items.is_empty() && variables.tested == self.facts.branch_variables().len() {
+            return Ok(None);
+        }
+        let mut classes = Vec::new();
         let mut next = 0;
         while let Some((condition, domain, negated)) =
-            variables.candidate(next, assumption.domain, self.facts)?
+            variables.candidate(next, assumption.domain, self.facts, literals)?
         {
             next += 1;
-            let classes = items
-                .iter()
-                .map(|item| self.classify(item, domain, negated))
-                .collect::<Result<Vec<_>, _>>()?;
-            let clustered = classes
-                .iter()
-                .filter(|class| !matches!(class, BranchClass::Remaining))
-                .count();
-            if clustered < 2 {
+            let (positive, negative) = self.classify_items(items, domain, negated, &mut classes)?;
+            if positive + negative < 2 {
                 continue;
             }
             if let Some(cluster) = self.partition(
@@ -400,7 +409,7 @@ impl<'a> AcyclicStructureAnalysis<'a> {
                     .rank(condition)
                     .ok_or(AcyclicStructureError::MissingRank(condition))?,
                 items,
-                classes,
+                &mut classes,
             ) {
                 return Ok(Some(cluster));
             }
@@ -419,17 +428,8 @@ impl<'a> AcyclicStructureAnalysis<'a> {
             {
                 continue;
             }
-            let classes = items
-                .iter()
-                .map(|item| self.classify(item, domain, negated))
-                .collect::<Result<Vec<_>, _>>()?;
-            if !classes
-                .iter()
-                .any(|class| matches!(class, BranchClass::True))
-                || !classes
-                    .iter()
-                    .any(|class| matches!(class, BranchClass::False))
-            {
+            let (positive, negative) = self.classify_items(items, domain, negated, &mut classes)?;
+            if positive == 0 || negative == 0 {
                 continue;
             }
             let remaining = self.expression_budget.get();
@@ -437,28 +437,43 @@ impl<'a> AcyclicStructureAnalysis<'a> {
             let Some((condition, nodes)) = self.facts.expression(relative, remaining)? else {
                 continue;
             };
-            if let Some(cluster) = self.partition(condition, candidate.lexical_rank, items, classes)
+            if let Some(cluster) =
+                self.partition(condition, candidate.lexical_rank, items, &mut classes)
             {
                 self.expression_budget.set(remaining.saturating_sub(nodes));
                 return Ok(Some(cluster));
             }
         }
+        if let [item] = items {
+            variables.last_singleton = Some(item.condition.domain);
+        }
         Ok(None)
     }
 
-    fn classify(
+    fn classify_items(
         &self,
-        item: &StructureItem,
+        items: &[StructureItem],
         condition: Bdd,
         negated: Bdd,
-    ) -> Result<BranchClass, AcyclicStructureError> {
-        if self.facts.implies(item.condition.domain, condition)? {
-            Ok(BranchClass::True)
-        } else if self.facts.implies(item.condition.domain, negated)? {
-            Ok(BranchClass::False)
-        } else {
-            Ok(BranchClass::Remaining)
+        classes: &mut Vec<BranchClass>,
+    ) -> Result<(usize, usize), AcyclicStructureError> {
+        classes.clear();
+        classes.reserve(items.len());
+        let mut positive = 0;
+        let mut negative = 0;
+        for item in items {
+            let class = if self.facts.implies(item.condition.domain, condition)? {
+                positive += 1;
+                BranchClass::True
+            } else if self.facts.implies(item.condition.domain, negated)? {
+                negative += 1;
+                BranchClass::False
+            } else {
+                BranchClass::Remaining
+            };
+            classes.push(class);
         }
+        Ok((positive, negative))
     }
 
     fn partition(
@@ -466,13 +481,13 @@ impl<'a> AcyclicStructureAnalysis<'a> {
         condition: BoolExpr,
         condition_rank: usize,
         items: &[StructureItem],
-        classes: Vec<BranchClass>,
+        classes: &mut Vec<BranchClass>,
     ) -> Option<ConditionCluster> {
         let mut true_blocks = BTreeSet::new();
         let mut false_blocks = BTreeSet::new();
         let mut remaining = Vec::new();
         let mut lexical_rank = condition_rank;
-        for (item, class) in items.iter().zip(&classes) {
+        for (item, class) in items.iter().zip(classes.iter()) {
             let blocks = match class {
                 BranchClass::True => &mut true_blocks,
                 BranchClass::False => &mut false_blocks,
@@ -511,7 +526,7 @@ impl<'a> AcyclicStructureAnalysis<'a> {
         let insertion = desired.clamp(lower, upper);
         Some(ConditionCluster {
             condition,
-            classes,
+            classes: std::mem::take(classes),
             insertion,
             blocks,
             lexical_rank,
@@ -570,31 +585,40 @@ struct ConditionDomain {
     domain: Bdd,
 }
 
-/// The branch variables available under one assumption, in evaluation order.
-/// Extend only as far as each cluster search actually goes: the first BDD
-/// queries populate bounded caches, even for variables that get rejected.
+/// Reaching conditions and their ordered variables belong to one BDD arena.
+#[derive(Default)]
+struct BranchQueries {
+    root: BranchVariables,
+    assumed: HashMap<Bdd, BranchVariables>,
+    literals: Vec<Option<(Bdd, Bdd)>>,
+}
+
+/// Each assumption keeps the eligible prefix that has already been examined.
+/// Extend it lazily: first queries consume bounded BDD entries even for
+/// rejected variables. Every eligible index already has two charged implication
+/// pairs in the BDD cache. Its literals are shared by all assumptions.
 #[derive(Default)]
 struct BranchVariables {
     tested: usize,
-    available: Vec<(BlockId, Bdd, Bdd)>,
+    available: Vec<usize>,
+    last_singleton: Option<Bdd>,
 }
 
 impl BranchVariables {
-    fn reset(&mut self) {
-        self.tested = 0;
-        self.available.clear();
-    }
-
     fn candidate(
         &mut self,
         rank: usize,
         assumption: Bdd,
         facts: &ReachingConditions,
+        literals: &mut Vec<Option<(Bdd, Bdd)>>,
     ) -> Result<Option<(BlockId, Bdd, Bdd)>, AcyclicStructureError> {
-        if let Some(candidate) = self.available.get(rank) {
-            return Ok(Some(*candidate));
+        let variables = facts.branch_variables();
+        if let Some(&index) = self.available.get(rank) {
+            let (domain, negated) =
+                literals[index].ok_or(AcyclicStructureError::MissingCondition(variables[index]))?;
+            return Ok(Some((variables[index], domain, negated)));
         }
-        for &condition in &facts.branch_variables()[self.tested..] {
+        for (index, &condition) in variables.iter().enumerate().skip(self.tested) {
             self.tested += 1;
             let owner = facts
                 .condition(condition)
@@ -602,14 +626,23 @@ impl BranchVariables {
             if !facts.implies(assumption, owner.domain())? {
                 continue;
             }
-            let domain = facts.compile(&BoolExpr::block(condition))?;
-            let negated = facts.not(domain)?;
+            if index >= literals.len() {
+                literals.resize(index + 1, None);
+            }
+            let (domain, negated) = match literals[index] {
+                Some(literals) => literals,
+                None => {
+                    let domain = facts.compile(&BoolExpr::block(condition))?;
+                    let negated = facts.not(domain)?;
+                    literals[index] = Some((domain, negated));
+                    (domain, negated)
+                }
+            };
             if facts.implies(assumption, domain)? || facts.implies(assumption, negated)? {
                 continue;
             }
-            let candidate = (condition, domain, negated);
-            self.available.push(candidate);
-            return Ok(Some(candidate));
+            self.available.push(index);
+            return Ok(Some((condition, domain, negated)));
         }
         Ok(None)
     }
@@ -701,23 +734,14 @@ enum RefineTask {
     },
 }
 
-struct AcyclicStructureLowering<'a, 'semantic> {
+struct AcyclicStructureLowering<'a, 'semantic, S> {
     semantic: &'semantic SemanticFactory<'semantic>,
-    seeded: &'a mut BTreeMap<BlockId, SemanticNode>,
-    predicates: Option<&'a BTreeMap<BlockId, SemanticPredicate>>,
+    seeded: &'a mut S,
 }
 
-impl<'a, 'semantic> AcyclicStructureLowering<'a, 'semantic> {
-    fn new(
-        semantic: &'semantic SemanticFactory<'semantic>,
-        seeded: &'a mut BTreeMap<BlockId, SemanticNode>,
-        predicates: Option<&'a BTreeMap<BlockId, SemanticPredicate>>,
-    ) -> Self {
-        Self {
-            semantic,
-            seeded,
-            predicates,
-        }
+impl<'a, 'semantic, S: AcyclicSeeds> AcyclicStructureLowering<'a, 'semantic, S> {
+    fn new(semantic: &'semantic SemanticFactory<'semantic>, seeded: &'a mut S) -> Self {
+        Self { semantic, seeded }
     }
 
     fn lower(
@@ -730,7 +754,7 @@ impl<'a, 'semantic> AcyclicStructureLowering<'a, 'semantic> {
             match task {
                 LowerTask::Visit(AcyclicStructureFact::Empty) => results.push(SemanticNode::Empty),
                 LowerTask::Visit(AcyclicStructureFact::Block { block, prefix_only }) => {
-                    results.push(match self.seeded.remove(&block) {
+                    results.push(match self.seeded.take(block) {
                         Some(node) => node,
                         None => self.semantic.block(block, prefix_only)?,
                     });
@@ -769,7 +793,11 @@ impl<'a, 'semantic> AcyclicStructureLowering<'a, 'semantic> {
                     let body = results
                         .pop()
                         .ok_or(AcyclicStructureError::MalformedWorkStack)?;
-                    results.push(SemanticNode::branch(self.predicate(condition)?, body, None));
+                    results.push(SemanticNode::branch(
+                        self.seeded.predicate(self.semantic, condition)?,
+                        body,
+                        None,
+                    ));
                 }
                 LowerTask::If {
                     condition,
@@ -788,7 +816,7 @@ impl<'a, 'semantic> AcyclicStructureLowering<'a, 'semantic> {
                         .pop()
                         .ok_or(AcyclicStructureError::MalformedWorkStack)?;
                     results.push(SemanticNode::branch(
-                        self.predicate(condition)?,
+                        self.seeded.predicate(self.semantic, condition)?,
                         when_true,
                         when_false,
                     ));
@@ -802,89 +830,74 @@ impl<'a, 'semantic> AcyclicStructureLowering<'a, 'semantic> {
             .pop()
             .ok_or(AcyclicStructureError::MalformedWorkStack)
     }
-
-    fn predicate(&self, condition: BoolExpr) -> Result<SemanticPredicate, SemanticBuildError> {
-        let Some(predicates) = self.predicates else {
-            return self.semantic.predicate(condition);
-        };
-        MappedPredicate::new(predicates).lower(condition)
-    }
 }
 
-struct MappedPredicate<'a> {
-    predicates: &'a BTreeMap<BlockId, SemanticPredicate>,
-}
-
-impl<'a> MappedPredicate<'a> {
-    fn new(predicates: &'a BTreeMap<BlockId, SemanticPredicate>) -> Self {
-        Self { predicates }
-    }
-
-    fn lower(&self, condition: BoolExpr) -> Result<SemanticPredicate, SemanticBuildError> {
-        let mut pending = vec![PredicateTask::Visit(condition)];
-        let mut results = Vec::new();
-        while let Some(task) = pending.pop() {
-            match task {
-                PredicateTask::Visit(condition) => match condition {
-                    BoolExpr::True => results.push(SemanticPredicate::True),
-                    BoolExpr::False => results.push(SemanticPredicate::False),
-                    BoolExpr::Symbol(BoolVariable::Block(block)) => {
-                        results.push(
-                            self.predicates
-                                .get(&block)
-                                .cloned()
-                                .ok_or(SemanticBuildError::MissingCondition(block))?,
-                        );
-                    }
-                    BoolExpr::Symbol(variable) => {
-                        return Err(SemanticBuildError::InvalidVariable(variable));
-                    }
-                    BoolExpr::Not(inner) => {
-                        pending.push(PredicateTask::Not);
-                        pending.push(PredicateTask::Visit(*inner));
-                    }
-                    BoolExpr::And(terms) => {
-                        let count = terms.len();
-                        pending.push(PredicateTask::Junction {
-                            count,
-                            conjunction: true,
-                        });
-                        pending.extend(terms.into_iter().rev().map(PredicateTask::Visit));
-                    }
-                    BoolExpr::Or(terms) => {
-                        let count = terms.len();
-                        pending.push(PredicateTask::Junction {
-                            count,
-                            conjunction: false,
-                        });
-                        pending.extend(terms.into_iter().rev().map(PredicateTask::Visit));
-                    }
-                },
-                PredicateTask::Not => {
-                    let inner = results
-                        .pop()
-                        .ok_or(SemanticBuildError::MalformedPredicate)?;
-                    results.push(inner.negate());
+pub(super) fn lower_mapped_predicate<'a>(
+    condition: BoolExpr,
+    predicate: impl Fn(BlockId) -> Option<&'a SemanticPredicate>,
+) -> Result<SemanticPredicate, SemanticBuildError> {
+    let mut pending = vec![PredicateTask::Visit(condition)];
+    let mut results = Vec::new();
+    while let Some(task) = pending.pop() {
+        match task {
+            PredicateTask::Visit(condition) => match condition {
+                BoolExpr::True => results.push(SemanticPredicate::True),
+                BoolExpr::False => results.push(SemanticPredicate::False),
+                BoolExpr::Symbol(BoolVariable::Block(block)) => {
+                    results.push(
+                        predicate(block)
+                            .cloned()
+                            .ok_or(SemanticBuildError::MissingCondition(block))?,
+                    );
                 }
-                PredicateTask::Junction { count, conjunction } => {
-                    let start = results
-                        .len()
-                        .checked_sub(count)
-                        .ok_or(SemanticBuildError::MalformedPredicate)?;
-                    let terms = results.drain(start..).collect();
-                    results.push(if conjunction {
-                        SemanticPredicate::And(terms)
-                    } else {
-                        SemanticPredicate::Or(terms)
+                BoolExpr::Symbol(variable) => {
+                    return Err(SemanticBuildError::InvalidVariable(variable));
+                }
+                BoolExpr::Not(inner) => {
+                    pending.push(PredicateTask::Not);
+                    pending.push(PredicateTask::Visit(*inner));
+                }
+                BoolExpr::And(terms) => {
+                    let count = terms.len();
+                    pending.push(PredicateTask::Junction {
+                        count,
+                        conjunction: true,
                     });
+                    pending.extend(terms.into_iter().rev().map(PredicateTask::Visit));
                 }
+                BoolExpr::Or(terms) => {
+                    let count = terms.len();
+                    pending.push(PredicateTask::Junction {
+                        count,
+                        conjunction: false,
+                    });
+                    pending.extend(terms.into_iter().rev().map(PredicateTask::Visit));
+                }
+            },
+            PredicateTask::Not => {
+                let inner = results
+                    .pop()
+                    .ok_or(SemanticBuildError::MalformedPredicate)?;
+                results.push(inner.negate());
+            }
+            PredicateTask::Junction { count, conjunction } => {
+                let start = results
+                    .len()
+                    .checked_sub(count)
+                    .ok_or(SemanticBuildError::MalformedPredicate)?;
+                let terms = results.drain(start..).collect();
+                results.push(if conjunction {
+                    SemanticPredicate::And(terms)
+                } else {
+                    SemanticPredicate::Or(terms)
+                });
             }
         }
-        if results.len() != 1 {
-            return Err(SemanticBuildError::MalformedPredicate);
-        }
-        results.pop().ok_or(SemanticBuildError::MalformedPredicate)
     }
+    if results.len() != 1 {
+        return Err(SemanticBuildError::MalformedPredicate);
+    }
+    results.pop().ok_or(SemanticBuildError::MalformedPredicate)
 }
 
 enum PredicateTask {

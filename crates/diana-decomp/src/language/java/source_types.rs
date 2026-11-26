@@ -2163,44 +2163,51 @@ impl<'a> GenericRequirementLattice<'a> {
 pub(super) struct GenericInvocationCompatibility;
 
 impl GenericInvocationCompatibility {
-    pub(super) fn requires_unchecked_conversion(
+    pub(super) fn requires_unchecked_conversion<T: std::borrow::Borrow<JavaType>>(
         formal: &JvmTypeSignature,
-        actual: &JavaType,
+        actual: impl FnOnce() -> Option<T>,
         contract: &GenericMethodContract,
         source_types: &BTreeMap<ArgType, JavaType>,
     ) -> bool {
-        let JavaType::Class(actual) = actual else {
+        let (direct, parameter) = match formal {
+            JvmTypeSignature::TypeVariable(name) => (
+                None,
+                contract
+                    .signature
+                    .type_parameters
+                    .iter()
+                    .find(|parameter| &parameter.name == name),
+            ),
+            _ => (Some(formal), None),
+        };
+        let mut parameterized = direct
+            .into_iter()
+            .chain(parameter.into_iter().flat_map(|parameter| {
+                parameter
+                    .class_bound
+                    .iter()
+                    .chain(&parameter.interface_bounds)
+            }))
+            .filter(|candidate| Self::is_parameterized(candidate))
+            .filter_map(|candidate| match source_types.get(&candidate.erased())? {
+                JavaType::Class(class) => Some(class),
+                _ => None,
+            });
+        let Some(first) = parameterized.next() else {
             return false;
         };
-        if actual
+        let Some(actual) = actual() else {
+            return false;
+        };
+        let JavaType::Class(actual) = actual.borrow() else {
+            return false;
+        };
+        actual
             .segments
             .iter()
-            .any(|segment| !segment.arguments.is_empty())
-        {
-            return false;
-        }
-        let candidates = match formal {
-            JvmTypeSignature::TypeVariable(name) => contract
-                .signature
-                .type_parameters
-                .iter()
-                .find(|parameter| &parameter.name == name)
-                .into_iter()
-                .flat_map(|parameter| {
-                    parameter
-                        .class_bound
-                        .iter()
-                        .chain(&parameter.interface_bounds)
-                })
-                .collect::<Vec<_>>(),
-            formal => vec![formal],
-        };
-        candidates.into_iter().any(|candidate| {
-            Self::is_parameterized(candidate)
-                && source_types.get(&candidate.erased()).is_some_and(
-                    |erased| matches!(erased, JavaType::Class(erased) if erased.same_name(actual)),
-                )
-        })
+            .all(|segment| segment.arguments.is_empty())
+            && (first.same_name(actual)
+                || parameterized.any(|candidate| candidate.same_name(actual)))
     }
 
     fn is_parameterized(ty: &JvmTypeSignature) -> bool {
@@ -2451,11 +2458,9 @@ impl<K: Ord + Copy, T> SourceTypeStates<K, T> {
 }
 
 impl<K: Ord + Copy> SourceTypeStates<K, TypeState> {
-    fn retained(self, contextual: &BTreeSet<K>) -> SourceTypeStates<K, JavaType> {
+    fn retained(self, contextual: impl Fn(K) -> bool) -> SourceTypeStates<K, JavaType> {
         let retain = |key: &K, state| match state {
-            TypeState::Exact(ty)
-                if !matches!(ty, JavaType::Primitive(_)) || contextual.contains(key) =>
-            {
+            TypeState::Exact(ty) if !matches!(ty, JavaType::Primitive(_)) || contextual(*key) => {
                 Some(ty)
             }
             TypeState::Exact(_) | TypeState::Conflict => None,
@@ -2497,6 +2502,48 @@ struct TypeEquation {
 enum SourceTypeFact {
     Variable(u32),
     Value(SsaVar),
+}
+
+impl From<u32> for SourceTypeFact {
+    fn from(variable: u32) -> Self {
+        Self::Variable(variable)
+    }
+}
+
+impl From<SsaVar> for SourceTypeFact {
+    fn from(value: SsaVar) -> Self {
+        Self::Value(value)
+    }
+}
+
+bitflags::bitflags! {
+    #[derive(Clone, Copy, Default)]
+    struct TypeRole: u8 {
+        const FIXED = 1 << 0;
+        const ABI = 1 << 1;
+        const CONTEXTUAL = 1 << 2;
+        const DECLARATION = 1 << 3;
+        const ERASED_BOUNDARY = 1 << 4;
+        const JOIN = 1 << 5;
+    }
+}
+
+/// A register's source variable and its SSA value have distinct type roles.
+/// Roles are only queried by identity. Iteration order belongs to the
+/// requirement and equation producers, independently of this membership index.
+#[derive(Default)]
+struct TypeRoles(foldhash::HashMap<SourceTypeFact, TypeRole>);
+
+impl TypeRoles {
+    fn mark(&mut self, fact: impl Into<SourceTypeFact>, role: TypeRole) {
+        self.0.entry(fact.into()).or_default().insert(role);
+    }
+
+    fn has(&self, fact: impl Into<SourceTypeFact>, role: TypeRole) -> bool {
+        self.0
+            .get(&fact.into())
+            .is_some_and(|roles| roles.contains(role))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2804,9 +2851,7 @@ pub(super) struct SourceTypeFlow<'a> {
     current_type: Option<&'a ArgType>,
     source_current_type: Option<&'a JavaType>,
     this_variable: Option<u32>,
-    abi_fixed: BTreeSet<u32>,
-    fixed: BTreeSet<u32>,
-    fixed_values: BTreeSet<SsaVar>,
+    roles: TypeRoles,
     states: SourceTypeStates<u32, TypeState>,
     requirements: BTreeMap<u32, TypeState>,
     value_requirements: BTreeMap<SsaVar, TypeState>,
@@ -2815,12 +2860,6 @@ pub(super) struct SourceTypeFlow<'a> {
     requirement_candidates: BTreeMap<u32, BTreeSet<String>>,
     value_states: SourceTypeStates<SsaVar, TypeState>,
     value_erased_types: BTreeMap<SsaVar, ArgType>,
-    contextual_variables: BTreeSet<u32>,
-    contextual_values: BTreeSet<SsaVar>,
-    erased_boundary_variables: BTreeSet<u32>,
-    declaration_variables: BTreeSet<u32>,
-    declaration_values: BTreeSet<SsaVar>,
-    join_variables: BTreeSet<u32>,
     equations: Vec<TypeEquation>,
     equation_graph: TypeEquationGraph,
     elements: Vec<ElementEquation>,
@@ -2864,9 +2903,17 @@ impl<'a> SourceTypeFlow<'a> {
             current_type,
             source_current_type,
             this_variable,
-            abi_fixed: seeds.keys().copied().collect(),
-            fixed: seeds.keys().copied().collect(),
-            fixed_values: BTreeSet::new(),
+            roles: TypeRoles(
+                seeds
+                    .keys()
+                    .map(|&id| {
+                        (
+                            SourceTypeFact::Variable(id),
+                            TypeRole::FIXED | TypeRole::ABI,
+                        )
+                    })
+                    .collect(),
+            ),
             states: SourceTypeStates {
                 current: seeds
                     .iter()
@@ -2881,12 +2928,6 @@ impl<'a> SourceTypeFlow<'a> {
             requirement_candidates: BTreeMap::new(),
             value_states: SourceTypeStates::default(),
             value_erased_types: BTreeMap::new(),
-            contextual_variables: BTreeSet::new(),
-            contextual_values: BTreeSet::new(),
-            erased_boundary_variables: BTreeSet::new(),
-            declaration_variables: BTreeSet::new(),
-            declaration_values: BTreeSet::new(),
-            join_variables: BTreeSet::new(),
             equations: Vec::new(),
             equation_graph: TypeEquationGraph::default(),
             elements: Vec::new(),
@@ -2897,8 +2938,7 @@ impl<'a> SourceTypeFlow<'a> {
             collect_diagnostics,
         };
         if let (Some(variable), Some(ty)) = (this_variable, source_current_type) {
-            flow.abi_fixed.insert(variable);
-            flow.fixed.insert(variable);
+            flow.roles.mark(variable, TypeRole::ABI | TypeRole::FIXED);
             flow.states.insert(variable, TypeState::Exact(ty.clone()));
         }
         flow.visit_node(root);
@@ -2961,8 +3001,12 @@ impl<'a> SourceTypeFlow<'a> {
         };
         SourceTypeFacts {
             object_types,
-            variables: flow.states.retained(&flow.contextual_variables),
-            values: flow.value_states.retained(&flow.contextual_values),
+            variables: flow
+                .states
+                .retained(|id| flow.roles.has(id, TypeRole::CONTEXTUAL)),
+            values: flow
+                .value_states
+                .retained(|id| flow.roles.has(id, TypeRole::CONTEXTUAL)),
             requirements: requirements
                 .into_iter()
                 .filter_map(|(variable, state)| match state {
@@ -3151,8 +3195,13 @@ impl<'a> SourceTypeFlow<'a> {
             if replacements.is_empty() && value_replacements.is_empty() {
                 break;
             }
-            self.fixed.extend(replacements);
-            self.fixed_values.extend(value_replacements);
+            for fact in replacements
+                .into_iter()
+                .map(SourceTypeFact::Variable)
+                .chain(value_replacements.into_iter().map(SourceTypeFact::Value))
+            {
+                self.roles.mark(fact, TypeRole::FIXED);
+            }
         }
     }
 
@@ -3211,7 +3260,7 @@ impl<'a> SourceTypeFlow<'a> {
             self.generic_projection,
         )
         .with_erasure_index(Some(self.source_erasures.as_ref()));
-        if self.declaration_values.contains(&value)
+        if self.roles.has(value, TypeRole::DECLARATION)
             && self.value_definition_fits(value, requirement, &relations)
         {
             return self
@@ -3349,8 +3398,7 @@ impl<'a> SourceTypeFlow<'a> {
             Some(TypeState::Exact(current)) => Some(current),
             None => None,
         };
-        let joins_only =
-            matches!(output, SourceTypeFact::Variable(var) if self.join_variables.contains(&var));
+        let joins_only = self.roles.has(output, TypeRole::JOIN);
         let mut candidates = self
             .equation_graph
             .equations_for_output(output)
@@ -3394,10 +3442,7 @@ impl<'a> SourceTypeFlow<'a> {
     }
 
     fn fact_is_fixed(&self, fact: SourceTypeFact) -> bool {
-        match fact {
-            SourceTypeFact::Variable(variable) => self.fixed.contains(&variable),
-            SourceTypeFact::Value(value) => self.fixed_values.contains(&value),
-        }
+        self.roles.has(fact, TypeRole::FIXED)
     }
 
     fn fact_state(&self, fact: SourceTypeFact) -> Option<&TypeState> {
@@ -3464,7 +3509,7 @@ impl<'a> SourceTypeFlow<'a> {
         else {
             return None;
         };
-        if self.abi_fixed.contains(&variable) {
+        if self.roles.has(variable, TypeRole::ABI) {
             return None;
         }
         let definition = self.states.definition(&variable).and_then(TypeState::exact);
@@ -3482,7 +3527,7 @@ impl<'a> SourceTypeFlow<'a> {
             self.generic_projection,
         )
         .with_erasure_index(Some(self.source_erasures.as_ref()));
-        if self.declaration_variables.contains(&variable)
+        if self.roles.has(variable, TypeRole::DECLARATION)
             && self.definitions_fit(variable, requirement, &relations)
         {
             return self
@@ -3510,7 +3555,7 @@ impl<'a> SourceTypeFlow<'a> {
                     .then(|| principal.into_owned());
             }
         }
-        if self.erased_boundary_variables.contains(&variable)
+        if self.roles.has(variable, TypeRole::ERASED_BOUNDARY)
             && Self::has_source_specific_type(requirement)
             && self.states.get(&variable).is_some_and(|state| match state {
                 TypeState::Exact(current) => {
@@ -3945,14 +3990,12 @@ impl<'a> SourceTypeFlow<'a> {
                         .iter()
                         .zip(arguments)
                         .any(|(formal, actual)| {
-                            self.expression_type(actual).is_some_and(|actual| {
-                                GenericInvocationCompatibility::requires_unchecked_conversion(
-                                    formal,
-                                    &actual,
-                                    contract,
-                                    self.source_types,
-                                )
-                            })
+                            GenericInvocationCompatibility::requires_unchecked_conversion(
+                                formal,
+                                || self.expression_type(actual),
+                                contract,
+                                self.source_types,
+                            )
                         });
                 if raw_owner_affects_return || unchecked_input_affects_return {
                     return false;
@@ -4732,7 +4775,7 @@ impl<'a> SourceTypeFlow<'a> {
                 let refinable = match receiver {
                     SemanticExpression::Register(register) => register
                         .code_var
-                        .is_none_or(|variable| !self.fixed.contains(&variable)),
+                        .is_none_or(|variable| !self.roles.has(variable, TypeRole::FIXED)),
                     SemanticExpression::Operation(_) | SemanticExpression::Select { .. } => true,
                     SemanticExpression::Literal(_) => false,
                 };
@@ -4879,7 +4922,7 @@ impl<'a> SourceTypeFlow<'a> {
                     .requirements
                     .get(&variable)
                     .or_else(|| self.receiver_requirements.get(&variable))?;
-                if self.erased_boundary_variables.contains(&variable)
+                if self.roles.has(variable, TypeRole::ERASED_BOUNDARY)
                     && matches!(requirement, TypeState::Exact(ty) if Self::has_source_specific_type(ty))
                 {
                     return None;
@@ -4927,7 +4970,7 @@ impl<'a> SourceTypeFlow<'a> {
     fn register_principal_type(&self, register: &RegisterArg) -> Option<JavaType> {
         if let Some(variable) = register
             .code_var
-            .filter(|variable| self.abi_fixed.contains(variable))
+            .filter(|variable| self.roles.has(*variable, TypeRole::ABI))
         {
             return self.exact(variable).cloned();
         }
@@ -5166,27 +5209,44 @@ impl<'a> SourceTypeFlow<'a> {
         // type is determined by the enclosing invocation. Its generated class
         // signature often contains only erased bridge types, which are not
         // valid inference evidence for the enclosing generic method.
-        let direct = self
-            .generic_argument_type(expression)
-            .filter(|ty| !self.is_raw_generic_type(ty));
-        if let SemanticExpression::Operation(operation) = expression {
-            if let Some((mut nested, _, contract)) = self.invocation_solver(operation) {
-                let result = invocation_expression_signature(operation, contract);
-                GenericTypeRelation::converge(solver, formal, &mut nested, result.as_ref());
-                if let Some(actual) = nested.instantiate(result.as_ref()) {
-                    solver.constrain(formal, &actual);
-                    if Self::has_source_specific_type(&actual) {
-                        return;
-                    }
+        let nested = expression.as_operation().and_then(|operation| {
+            self.invocation_solver(operation)
+                .map(|solved| (operation, solved))
+        });
+        let inferred = if let Some((operation, (mut nested, arguments, contract))) = nested {
+            // The direct type uses the invocation's own inputs. Capture it before
+            // propagating constraints from its enclosing generic call.
+            let inferred = if operation.insn_type == InsnType::Invoke {
+                self.solved_invocation_type(operation, &nested, arguments, contract)
+                    .or_else(|| self.erased_result_type(operation))
+            } else {
+                self.expression_type(expression)
+            };
+            let result = invocation_expression_signature(operation, contract);
+            GenericTypeRelation::converge(solver, formal, &mut nested, result.as_ref());
+            if let Some(actual) = nested.instantiate(result.as_ref()) {
+                solver.constrain(formal, &actual);
+                if Self::has_source_specific_type(&actual) {
+                    return;
                 }
             }
-        }
+            inferred
+        } else {
+            self.expression_type(expression)
+        };
+        let direct = self
+            .generic_argument_type(expression, inferred)
+            .filter(|ty| !self.is_raw_generic_type(ty));
         if let Some(actual) = direct {
             solver.constrain(formal, &actual);
         }
     }
 
-    fn generic_argument_type(&self, expression: &SemanticExpression) -> Option<JavaType> {
+    fn generic_argument_type(
+        &self,
+        expression: &SemanticExpression,
+        inferred: Option<JavaType>,
+    ) -> Option<JavaType> {
         let value = expression
             .as_register()
             .or_else(|| {
@@ -5195,7 +5255,7 @@ impl<'a> SourceTypeFlow<'a> {
                     .and_then(|operation| operation.result.as_ref())
             })
             .and_then(SsaVar::from_reg);
-        self.expression_type(expression)
+        inferred
             .or_else(|| {
                 value.and_then(|value| match self.value_states.get(&value) {
                     Some(TypeState::Exact(ty)) => Some(ty.clone()),
@@ -5386,7 +5446,7 @@ impl<'a> SourceTypeFlow<'a> {
             projected
         } else if kind != TypeConstraintKind::Definition
             && register.code_var.is_some_and(|variable| {
-                !self.fixed.contains(&variable)
+                !self.roles.has(variable, TypeRole::FIXED)
                     && self
                         .equation_graph
                         .outputs
@@ -5404,14 +5464,16 @@ impl<'a> SourceTypeFlow<'a> {
         };
         let mut changed = false;
         if kind != TypeConstraintKind::Definition {
+            let role = if kind == TypeConstraintKind::Declaration {
+                TypeRole::CONTEXTUAL | TypeRole::DECLARATION
+            } else {
+                TypeRole::CONTEXTUAL
+            };
             let abi_fixed = register
                 .code_var
-                .is_some_and(|variable| self.abi_fixed.contains(&variable));
+                .is_some_and(|variable| self.roles.has(variable, TypeRole::ABI));
             if let Some(value) = value.filter(|_| !abi_fixed) {
-                self.contextual_values.insert(value);
-                if kind == TypeConstraintKind::Declaration {
-                    self.declaration_values.insert(value);
-                }
+                self.roles.mark(value, role);
                 let requirements = if kind == TypeConstraintKind::Receiver {
                     &mut self.receiver_value_requirements
                 } else {
@@ -5433,10 +5495,7 @@ impl<'a> SourceTypeFlow<'a> {
                 changed |= value_changed;
             }
             if let Some(variable) = register.code_var {
-                self.contextual_variables.insert(variable);
-                if kind == TypeConstraintKind::Declaration {
-                    self.declaration_variables.insert(variable);
-                }
+                self.roles.mark(variable, role);
                 if self.collect_diagnostics {
                     self.requirement_candidates
                         .entry(variable)
@@ -5484,7 +5543,7 @@ impl<'a> SourceTypeFlow<'a> {
         }
         if let Some(variable) = register
             .code_var
-            .filter(|variable| !self.fixed.contains(variable))
+            .filter(|variable| !self.roles.has(*variable, TypeRole::FIXED))
         {
             let variable_changed = Self::merge_constraint(
                 self.source_types,
@@ -5512,7 +5571,9 @@ impl<'a> SourceTypeFlow<'a> {
                 .or_insert_with(|| result.ty.clone());
         }
         if matches!(value, SemanticExpression::Select { .. }) {
-            self.join_variables.extend(result.code_var);
+            if let Some(variable) = result.code_var {
+                self.roles.mark(variable, TypeRole::JOIN);
+            }
         }
         self.equations.push(TypeEquation {
             result: result.clone(),
@@ -5666,12 +5727,14 @@ impl<'a> SourceTypeFlow<'a> {
                 .or_else(|| self.constructor_type(operation)),
             _ => None,
         };
-        inferred.or_else(|| {
-            operation
-                .result
-                .as_ref()
-                .and_then(|result| self.resolved_type(&result.ty))
-        })
+        inferred.or_else(|| self.erased_result_type(operation))
+    }
+
+    fn erased_result_type(&self, operation: &SemanticOperation) -> Option<JavaType> {
+        operation
+            .result
+            .as_ref()
+            .and_then(|result| self.resolved_type(&result.ty))
     }
 
     fn invocation_type(&self, operation: &SemanticOperation) -> Option<JavaType> {
@@ -5680,6 +5743,19 @@ impl<'a> SourceTypeFlow<'a> {
         };
         let Some((solver, arguments, contract)) = self.invocation_solver(operation) else {
             return self.resolved_type(&method.descriptor.return_type);
+        };
+        self.solved_invocation_type(operation, &solver, arguments, contract)
+    }
+
+    fn solved_invocation_type(
+        &self,
+        operation: &SemanticOperation,
+        solver: &GenericTypeSolver<'a>,
+        arguments: &[SemanticExpression],
+        contract: &GenericMethodContract,
+    ) -> Option<JavaType> {
+        let MemberReference::Method(method) = operation.payload.reference.as_deref()? else {
+            return None;
         };
         let return_depends_on_type_variables =
             GenericInvocationCompatibility::has_type_variable(&contract.signature.return_type);
@@ -5692,14 +5768,12 @@ impl<'a> SourceTypeFlow<'a> {
                 .iter()
                 .zip(arguments)
                 .any(|(formal, actual)| {
-                    self.expression_type(actual).is_some_and(|actual| {
-                        GenericInvocationCompatibility::requires_unchecked_conversion(
-                            formal,
-                            &actual,
-                            contract,
-                            self.source_types,
-                        )
-                    })
+                    GenericInvocationCompatibility::requires_unchecked_conversion(
+                        formal,
+                        || self.expression_type(actual),
+                        contract,
+                        self.source_types,
+                    )
                 });
         if raw_owner_affects_return || unchecked_input_affects_return {
             return self.resolved_type(&method.descriptor.return_type);
@@ -5923,7 +5997,7 @@ impl<'a> SourceTypeFlow<'a> {
             {
                 continue;
             }
-            self.erased_boundary_variables.insert(variable);
+            self.roles.mark(variable, TypeRole::ERASED_BOUNDARY);
         }
     }
 

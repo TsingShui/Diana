@@ -631,7 +631,6 @@ impl<'a> LexicalTypeEnvironment<'a> {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct JavaSourceAbi {
     constructors: BTreeMap<MethodReference, JavaConstructorLayout>,
-    methods: Vec<MethodReference>,
     owner_types: std::collections::BTreeMap<ArgType, ClassTypeSignature>,
     lexical_type_parameters: std::collections::BTreeMap<ArgType, Vec<TypeParameter>>,
     inherited_member_types: BTreeMap<ArgType, BTreeSet<(JavaIdentifier, ArgType)>>,
@@ -740,7 +739,6 @@ impl JavaSourceAbi {
                 })
             })
             .collect();
-        let methods = Self::method_overloads(&classes);
         let field_types = classes
             .iter()
             .copied()
@@ -960,7 +958,6 @@ impl JavaSourceAbi {
         }
         let mut abi = Self {
             constructors,
-            methods,
             owner_types: open_owners,
             lexical_type_parameters,
             inherited_member_types,
@@ -1050,10 +1047,6 @@ impl JavaSourceAbi {
         }
     }
 
-    pub(crate) fn methods(&self) -> impl Iterator<Item = MethodReference> + '_ {
-        self.methods.iter().cloned()
-    }
-
     pub(crate) fn import_is_accessible(
         &self,
         import: &crate::language::java::JavaClassName,
@@ -1075,50 +1068,6 @@ impl JavaSourceAbi {
             .entry((method.name.clone(), method.descriptor.clone()))
             .or_default()
             .push((method.owner.clone(), contract.clone()));
-    }
-
-    fn method_overloads(classes: &[&ClassNode]) -> Vec<MethodReference> {
-        let classes_by_type = classes
-            .iter()
-            .map(|class| (class.class_type().clone(), *class))
-            .collect::<std::collections::BTreeMap<_, _>>();
-        let mut methods = std::collections::BTreeSet::new();
-        for target in classes {
-            let mut pending = vec![(*target, true)];
-            let mut visited = std::collections::BTreeSet::new();
-            while let Some((owner, declared_here)) = pending.pop() {
-                if !visited.insert(owner.class_type().clone()) {
-                    continue;
-                }
-                methods.extend(
-                    owner
-                        .methods()
-                        .iter()
-                        .filter(|method| !method.is_class_init())
-                        .filter(|method| {
-                            declared_here
-                                || (!method.is_constructor() && !method.access_flags.is_private())
-                        })
-                        .map(|method| MethodReference {
-                            owner: target.class_type().clone(),
-                            name: method.name().to_string(),
-                            descriptor: crate::ir::MethodDescriptor {
-                                parameters: method.param_types().to_vec(),
-                                return_type: method.return_type().clone(),
-                            },
-                        }),
-                );
-                pending.extend(
-                    owner
-                        .super_class
-                        .iter()
-                        .chain(&owner.interfaces)
-                        .filter_map(|parent| classes_by_type.get(parent).copied())
-                        .map(|parent| (parent, false)),
-                );
-            }
-        }
-        methods.into_iter().collect()
     }
 
     pub(crate) fn owner_type(&self, owner: &ArgType) -> Option<&ClassTypeSignature> {

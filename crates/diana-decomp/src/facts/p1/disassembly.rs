@@ -2,7 +2,9 @@ use super::reference::{CheckedReferenceFact, ReferenceFactEntry};
 static INVALID_INVOKE_CAUSE: MethodError =
     MethodError::InternalInvariant("invoke lost its original reference failure");
 use super::{CheckedMethodLayout, MethodError};
-use crate::input::formats::{DexVersion, FlowKind, InsnLayout, LayoutKind, OpcodeSpec};
+use crate::input::formats::{
+    DexVersion, FlowKind, InsnLayout, InstructionLayout, LayoutKind, OpcodeSpec,
+};
 use crate::input::operands::{instruction_operands, RawOperands};
 use crate::input::protection::CheckedProtection;
 use crate::input::{ProgramIndex, RawMethodView};
@@ -27,12 +29,8 @@ pub struct DecodedReference {
 #[derive(Clone, Copy, Debug)]
 pub struct DecodedInstruction {
     pc: CodeUnitOffset,
-    spec: OpcodeSpec,
-    layout: InsnLayout,
+    encoding: InstructionLayout,
     operands: RawOperands,
-    references: [Option<DecodedReference>; 2],
-    branch_target: Option<CodeUnitOffset>,
-    payload_target: Option<CodeUnitOffset>,
     result_pc: Option<CodeUnitOffset>,
     producer_pc: Option<CodeUnitOffset>,
 }
@@ -42,16 +40,16 @@ impl DecodedInstruction {
         self.pc
     }
     pub fn layout(&self) -> InsnLayout {
-        self.layout
+        self.encoding.layout()
     }
     pub fn opcode(&self) -> u8 {
-        self.spec.opcode
+        self.encoding.spec().opcode
     }
     pub fn spec(&self) -> OpcodeSpec {
-        self.spec
+        *self.encoding.spec()
     }
     pub fn width(&self) -> CodeUnitCount {
-        self.layout.width()
+        self.layout().width()
     }
     pub fn operands(&self) -> &RawOperands {
         &self.operands
@@ -60,16 +58,38 @@ impl DecodedInstruction {
         self.operands.registers().iter()
     }
     pub fn references(&self) -> impl Iterator<Item = DecodedReference> + '_ {
-        self.references.into_iter().flatten()
+        self.encoding
+            .references()
+            .into_iter()
+            .flatten()
+            .map(|(kind, reference)| DecodedReference {
+                kind,
+                target: reference.target,
+                slot: reference.operand_slot,
+            })
     }
     /// Original relative target. It is a CFG target only under a published
     /// DecodedMethod's control guarantee; a stopped prefix can contain a bad target.
     pub fn branch_target(&self) -> Option<CodeUnitOffset> {
-        self.branch_target
+        match self.encoding.spec().flow {
+            FlowKind::Goto | FlowKind::Conditional => self.relative_target(),
+            _ => None,
+        }
     }
     /// Original payload target; the stopped-prefix case does not establish its association.
     pub fn payload_target(&self) -> Option<CodeUnitOffset> {
-        self.payload_target
+        match self.encoding.spec().flow {
+            FlowKind::PackedSwitch | FlowKind::SparseSwitch | FlowKind::FillArray => {
+                self.relative_target()
+            }
+            _ => None,
+        }
+    }
+    fn relative_target(&self) -> Option<CodeUnitOffset> {
+        self.pc
+            .0
+            .checked_add_signed(self.operands.offset()?.0)
+            .map(CodeUnitOffset)
     }
     /// The immediately following `move-result*` consumed by this producer, when
     /// P1 validated the adjacency.
@@ -730,63 +750,20 @@ impl<'a> ProgramIndex<'a> {
                 let mut pc = CodeUnitOffset(0);
                 while pc.0 < source.code_units().0 {
                     let layout = instruction_layout_of(source, pc)?;
-                    match layout.kind() {
-                        LayoutKind::Instruction(spec) => {
-                            let operands = instruction_operands(source.instructions(), pc, layout)
-                                .map_err(MethodError::Decode)?;
-                            let mut references = [None; 2];
-                            for (slot, reference) in layout.references().into_iter().enumerate() {
-                                let Some(reference) = reference else {
-                                    continue;
-                                };
-                                let kind = spec.references.get(slot).copied().flatten().ok_or(
-                                    MethodError::InternalInvariant(
-                                        "decoded reference slot has no declared kind",
-                                    ),
-                                )?;
-                                references[slot] = Some(DecodedReference {
-                                    kind,
-                                    target: reference.target,
-                                    slot: reference.operand_slot,
-                                });
-                            }
-                            let relative = operands
-                                .offset()
-                                .map(|delta| pc.0.checked_add_signed(delta.0).map(CodeUnitOffset));
-                            let branch_target = match spec.flow {
-                                FlowKind::Goto | FlowKind::Conditional => relative.flatten(),
-                                _ => None,
-                            };
-                            let payload_target = match spec.flow {
-                                FlowKind::PackedSwitch
-                                | FlowKind::SparseSwitch
-                                | FlowKind::FillArray => relative.flatten(),
-                                _ => None,
-                            };
-                            push(
-                                &mut items,
-                                DecodedItem::Instruction(DecodedInstruction {
-                                    pc,
-                                    spec,
-                                    layout,
-                                    operands,
-                                    references,
-                                    branch_target,
-                                    payload_target,
-                                    result_pc: None,
-                                    producer_pc: None,
-                                }),
-                            )
-                            .map_err(scratch)?;
-                        }
-                        _ => {
-                            push(
-                                &mut items,
-                                DecodedItem::Payload(DecodedPayload { pc, layout }),
-                            )
-                            .map_err(scratch)?;
-                        }
-                    }
+                    let item = if let Some(encoding) = layout.instruction() {
+                        let operands = instruction_operands(source.instructions(), pc, layout)
+                            .map_err(MethodError::Decode)?;
+                        DecodedItem::Instruction(DecodedInstruction {
+                            pc,
+                            encoding,
+                            operands,
+                            result_pc: None,
+                            producer_pc: None,
+                        })
+                    } else {
+                        DecodedItem::Payload(DecodedPayload { pc, layout })
+                    };
+                    push(&mut items, item).map_err(scratch)?;
                     pc = pc.checked_advance(layout.width()).ok_or(
                         MethodError::InternalInvariant("checked instruction extent overflowed"),
                     )?;
@@ -838,8 +815,7 @@ fn link_results(layout: &CheckedMethodLayout<'_>, items: &mut [DecodedItem]) {
         let DecodedItem::Instruction(result) = items[index] else {
             continue;
         };
-        if !matches!(result.spec.opcode, 0x0a..=0x0c) || layout.result_issue_at(result.pc).is_some()
-        {
+        if !matches!(result.opcode(), 0x0a..=0x0c) || layout.result_issue_at(result.pc).is_some() {
             continue;
         }
         let result_pc = result.pc;

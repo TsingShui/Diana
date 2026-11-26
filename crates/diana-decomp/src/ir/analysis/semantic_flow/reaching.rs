@@ -4,7 +4,7 @@ use super::{
     DefinitionSet, DefinitionsByValue, PointNumbers, ReachingStorage, SemanticFlowGraph,
     SemanticFlowPoint, SemanticReachingValues, SemanticValueDefinition,
 };
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::VecDeque;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -24,7 +24,7 @@ impl LinearReaching {
         points: &[SemanticFlowPoint],
         definitions: &[SemanticValueDefinition],
         value_count: usize,
-        targets: &BTreeSet<SemanticFlowPoint>,
+        targets: &DefinitionSet,
     ) -> Self {
         let mut ranks = vec![usize::MAX; numbers.len()];
         for (rank, &point) in points.iter().enumerate() {
@@ -42,7 +42,7 @@ impl LinearReaching {
             writes[range[0]..range[1]].sort_by_key(|&(rank, _)| rank);
         }
         for (id, rank) in ranks.iter_mut().enumerate() {
-            if !targets.contains(&numbers.point(id)) {
+            if !targets.contains(id) {
                 *rank = usize::MAX;
             }
         }
@@ -227,21 +227,16 @@ impl SemanticFlowGraph {
     pub(super) fn reaching_values_plain(
         &self,
         definitions: &[SemanticValueDefinition],
-        targets: &BTreeSet<SemanticFlowPoint>,
+        targets: &DefinitionSet,
         mut by_value: DefinitionsByValue,
         next: Vec<usize>,
     ) -> SemanticReachingValues {
         let width = definitions.len();
         let index = self.index();
         let blocks = index.blocks();
-        let mut target_points = vec![false; index.len()];
         let mut active = vec![false; blocks.order.len()];
         let mut ancestors = Vec::new();
-        for &target in targets {
-            let Some(point) = index.id(target) else {
-                continue;
-            };
-            target_points[point] = true;
+        for point in targets.members(0..index.len()) {
             if let Some(block) = blocks.owner(point) {
                 if !std::mem::replace(&mut active[block], true) {
                     ancestors.push(block);
@@ -359,7 +354,7 @@ impl SemanticFlowGraph {
             if blocks
                 .points(block)
                 .iter()
-                .any(|&point| target_points[point])
+                .any(|&point| targets.contains(point))
             {
                 inputs.push(BlockInput {
                     start: starts[block],
@@ -367,8 +362,8 @@ impl SemanticFlowGraph {
                 });
             }
         }
-        for (rank, requested) in ranks.iter_mut().zip(target_points) {
-            if !requested {
+        for (id, rank) in ranks.iter_mut().enumerate() {
+            if !targets.contains(id) {
                 *rank = BlockReaching::UNREQUESTED;
             }
         }

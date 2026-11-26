@@ -2373,12 +2373,12 @@ impl DexJavaDialect {
                     .zip(invocation_arguments)
                     .enumerate()
                     .filter_map(|(index, ((formal, erased), actual))| {
-                        let actual = self
-                            .intrinsic_source_type(actual)
-                            .or_else(|| self.generic_argument_source_type(actual, erased))?;
                         GenericInvocationCompatibility::requires_unchecked_conversion(
                             formal,
-                            &actual,
+                            || {
+                                self.intrinsic_source_type(actual)
+                                    .or_else(|| self.generic_argument_source_type(actual, erased))
+                            },
                             contract,
                             &self.source_types,
                         )
@@ -3179,14 +3179,12 @@ impl DexJavaDialect {
                 .iter()
                 .zip(arguments)
                 .any(|(formal, actual)| {
-                    self.source_expression_type(actual).is_some_and(|actual| {
-                        GenericInvocationCompatibility::requires_unchecked_conversion(
-                            formal,
-                            &actual,
-                            contract,
-                            &self.source_types,
-                        )
-                    })
+                    GenericInvocationCompatibility::requires_unchecked_conversion(
+                        formal,
+                        || self.source_expression_type(actual),
+                        contract,
+                        &self.source_types,
+                    )
                 })
         {
             return self.source_type(&method.descriptor.return_type).ok();
@@ -3724,7 +3722,7 @@ impl DexJavaDialect {
                 if self.source_erasure(&actual).as_ref() == Some(erased)
                     && GenericInvocationCompatibility::requires_unchecked_conversion(
                         formal,
-                        &actual,
+                        || Some(&actual),
                         contract,
                         &self.source_types,
                     )
@@ -4181,27 +4179,23 @@ impl DexJavaDialect {
     }
 
     fn predicate(&mut self, condition: &SemanticPredicate) -> Result<JavaExpr, JavaLoweringError> {
-        let mut pending = vec![JavaPredicateTask::Visit(condition)];
+        let mut pending = Vec::new();
         let mut results = Vec::new();
-        while let Some(task) = pending.pop() {
-            match task {
+        let mut task = JavaPredicateTask::Visit(condition);
+        loop {
+            let result = match task {
                 JavaPredicateTask::Visit(condition) => match condition {
-                    SemanticPredicate::True => {
-                        results.push(JavaExpr::Literal(JavaLiteral::Boolean(true)))
-                    }
+                    SemanticPredicate::True => Some(JavaExpr::Literal(JavaLiteral::Boolean(true))),
                     SemanticPredicate::False => {
-                        results.push(JavaExpr::Literal(JavaLiteral::Boolean(false)))
+                        Some(JavaExpr::Literal(JavaLiteral::Boolean(false)))
                     }
-                    SemanticPredicate::Test(test) => {
-                        results.push(self.test_condition(test, false)?)
-                    }
+                    SemanticPredicate::Test(test) => Some(self.test_condition(test, false)?),
                     SemanticPredicate::Not(inner) => match inner.as_ref() {
-                        SemanticPredicate::Test(test) => {
-                            results.push(self.test_condition(test, true)?)
-                        }
+                        SemanticPredicate::Test(test) => Some(self.test_condition(test, true)?),
                         inner => {
                             pending.push(JavaPredicateTask::Not);
-                            pending.push(JavaPredicateTask::Visit(inner));
+                            task = JavaPredicateTask::Visit(inner);
+                            continue;
                         }
                     },
                     SemanticPredicate::And(terms) | SemanticPredicate::Or(terms) => {
@@ -4211,50 +4205,62 @@ impl DexJavaDialect {
                             conjunction,
                         });
                         pending.extend(terms.iter().rev().map(JavaPredicateTask::Visit));
+                        None
                     }
                 },
                 JavaPredicateTask::Not => {
                     let operand = results.pop().ok_or(JavaLoweringError::MalformedPredicate)?;
-                    results.push(Self::negate_boolean(operand));
+                    Some(Self::negate_boolean(operand))
                 }
+                JavaPredicateTask::Junction {
+                    count: 0,
+                    conjunction,
+                } => Some(JavaExpr::Literal(JavaLiteral::Boolean(conjunction))),
                 JavaPredicateTask::Junction { count, conjunction } => {
                     let start = results
                         .len()
                         .checked_sub(count)
                         .ok_or(JavaLoweringError::MalformedPredicate)?;
-                    let mut terms = results.drain(start..).collect::<Vec<_>>();
-                    if terms.is_empty() {
-                        results.push(JavaExpr::Literal(JavaLiteral::Boolean(conjunction)));
-                        continue;
-                    }
                     let operator = if conjunction {
                         JavaBinaryOp::LogicalAnd
                     } else {
                         JavaBinaryOp::LogicalOr
                     };
-                    while terms.len() > 1 {
-                        let mut next = Vec::with_capacity(terms.len().div_ceil(2));
-                        let mut current = std::mem::take(&mut terms).into_iter();
-                        while let Some(left) = current.next() {
-                            next.push(match current.next() {
-                                Some(right) => JavaExpr::Binary {
-                                    left: Box::new(left),
-                                    op: operator,
-                                    right: Box::new(right),
-                                },
-                                None => left,
-                            });
-                        }
-                        terms = next;
-                    }
-                    results.push(terms.pop().ok_or(JavaLoweringError::MalformedPredicate)?);
+                    Some(
+                        Self::balanced_predicate(count, &mut results.drain(start..), operator)
+                            .ok_or(JavaLoweringError::MalformedPredicate)?,
+                    )
                 }
+            };
+            if let Some(value) = result {
+                if pending.is_empty() && results.is_empty() {
+                    return Ok(value);
+                }
+                results.push(value);
             }
+            task = pending.pop().ok_or(JavaLoweringError::MalformedPredicate)?;
         }
-        if results.len() != 1 {
-            return Err(JavaLoweringError::MalformedPredicate);
+    }
+
+    /// Pairing neighbors at each level gives the left subtree the largest
+    /// power-of-two prefix strictly shorter than the input. Consume terms in
+    /// their original order with at most one frame per bit of the term count.
+    fn balanced_predicate(
+        count: usize,
+        terms: &mut impl Iterator<Item = JavaExpr>,
+        operator: JavaBinaryOp,
+    ) -> Option<JavaExpr> {
+        if count == 1 {
+            return terms.next();
         }
-        results.pop().ok_or(JavaLoweringError::MalformedPredicate)
+        let left_count = 1usize << (count - 1).ilog2();
+        let left = Self::balanced_predicate(left_count, terms, operator)?;
+        let right = Self::balanced_predicate(count - left_count, terms, operator)?;
+        Some(JavaExpr::Binary {
+            left: Box::new(left),
+            op: operator,
+            right: Box::new(right),
+        })
     }
 
     fn semantic_value(
@@ -4664,7 +4670,15 @@ impl JavaDialect for DexJavaDialect {
         &mut self,
         condition: &SemanticPredicate,
     ) -> Result<JavaExpr, Self::Error> {
-        self.predicate(&condition.clone().negate())
+        match condition {
+            SemanticPredicate::True => Ok(JavaExpr::Literal(JavaLiteral::Boolean(false))),
+            SemanticPredicate::False => Ok(JavaExpr::Literal(JavaLiteral::Boolean(true))),
+            SemanticPredicate::Test(test) => self.test_condition(test, true),
+            SemanticPredicate::Not(inner) => self.predicate(inner),
+            SemanticPredicate::And(_) | SemanticPredicate::Or(_) => {
+                Ok(Self::negate_boolean(self.predicate(condition)?))
+            }
+        }
     }
 
     fn expression(&mut self, value: &SemanticExpression) -> Result<JavaExpr, Self::Error> {

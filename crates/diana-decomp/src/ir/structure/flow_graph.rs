@@ -19,7 +19,7 @@ use crate::ir::{
 };
 
 use super::{
-    acyclic::{AcyclicStructure, AcyclicStructurer},
+    acyclic::{lower_mapped_predicate, AcyclicSeeds, AcyclicStructure, AcyclicStructurer},
     loop_classifier::LoopClassifier,
     StructureError,
 };
@@ -193,6 +193,33 @@ struct FlowNode {
 struct FlowBodyFacts {
     embedded_uses: std::cell::OnceCell<Box<[(BlockId, usize)]>>,
     completion: std::cell::OnceCell<FlowCompletion>,
+}
+
+// The proof may request further graph reduction. Keep every body and its
+// cached facts in place until lowering has a complete structural plan.
+impl AcyclicSeeds for BTreeMap<BlockId, FlowNode> {
+    fn body(&self, block: BlockId) -> Option<&SemanticNode> {
+        self.get(&block).map(|node| &node.body)
+    }
+
+    fn take(&mut self, block: BlockId) -> Option<SemanticNode> {
+        // The skeleton also contains declared exits, each an empty sink.
+        Some(
+            self.get_mut(&block)
+                .map_or(SemanticNode::Empty, FlowNode::take_body),
+        )
+    }
+
+    fn predicate(
+        &self,
+        _semantic: &SemanticFactory<'_>,
+        condition: BoolExpr,
+    ) -> Result<SemanticPredicate, crate::ir::SemanticBuildError> {
+        lower_mapped_predicate(condition, |block| match &self.get(&block)?.transfer {
+            FlowTransfer::Branch { condition, .. } => Some(condition),
+            _ => None,
+        })
+    }
 }
 
 // Only these completion queries are used by graph contraction. Retaining
@@ -772,22 +799,10 @@ impl SemanticFlowGraph {
         &mut self,
         semantic: &SemanticFactory<'_>,
     ) -> Result<Option<SemanticNode>, StructureError> {
-        let Some((cfg, predicates)) = self.acyclic_cfg()? else {
+        let Some(cfg) = self.acyclic_cfg() else {
             return Ok(None);
         };
-        let mut seeded = self
-            .nodes
-            .iter_mut()
-            .map(|(block, node)| (*block, node.take_body()))
-            .collect::<BTreeMap<_, _>>();
-        seeded.extend(
-            cfg.block_ids()
-                .into_iter()
-                .filter(|block| !self.nodes.contains_key(block))
-                .map(|block| (block, SemanticNode::Empty)),
-        );
-        let result = AcyclicStructurer::new(&cfg, semantic, &mut seeded)
-            .predicates(&predicates)
+        let result = AcyclicStructurer::new(&cfg, semantic, &mut self.nodes)
             .structure()
             .map_err(|source| StructureError::Acyclic {
                 region: self.region,
@@ -795,31 +810,20 @@ impl SemanticFlowGraph {
             })?;
         match result {
             AcyclicStructure::Structured(body) => Ok(Some(body)),
-            AcyclicStructure::RequiresGraphReduction(_reason) => {
-                for (block, body) in seeded {
-                    if let Some(node) = self.nodes.get_mut(&block) {
-                        node.body = body;
-                    }
-                }
-                Ok(None)
-            }
+            AcyclicStructure::RequiresGraphReduction(_reason) => Ok(None),
         }
     }
 
-    fn acyclic_cfg(
-        &self,
-    ) -> Result<Option<(CFG, BTreeMap<BlockId, SemanticPredicate>)>, StructureError> {
+    fn acyclic_cfg(&self) -> Option<CFG> {
         let mut cfg = CFG::new(format!("semantic::{}", self.region));
         cfg.entry = self.entry;
-        let mut predicates = BTreeMap::new();
         for (block, node) in &self.nodes {
             let mut skeleton = Block::synthetic(*block);
             match &node.transfer {
-                FlowTransfer::Branch { condition, .. } => {
+                FlowTransfer::Branch { .. } => {
                     skeleton.push(crate::ir::InsnNode::new(InsnType::If, 0));
-                    predicates.insert(*block, condition.clone());
                 }
-                FlowTransfer::Switch { .. } | FlowTransfer::Fragment { .. } => return Ok(None),
+                FlowTransfer::Switch { .. } | FlowTransfer::Fragment { .. } => return None,
                 FlowTransfer::Stop | FlowTransfer::Jump(_) => {}
             }
             if node
@@ -827,7 +831,7 @@ impl SemanticFlowGraph {
                 .iter()
                 .any(|(target, _)| self.is_internal_target(*target))
             {
-                return Ok(None);
+                return None;
             }
             cfg.add_block(skeleton);
         }
@@ -845,24 +849,23 @@ impl SemanticFlowGraph {
                 FlowTransfer::Jump(target) if self.is_acyclic_target(*target) => {
                     cfg.add_edge(*block, *target, EdgeKind::Normal);
                 }
-                FlowTransfer::Jump(_) => return Ok(None),
+                FlowTransfer::Jump(_) => return None,
                 FlowTransfer::Branch {
                     when_true,
                     when_false,
                     ..
                 } => {
                     if !self.is_acyclic_target(*when_true) || !self.is_acyclic_target(*when_false) {
-                        return Ok(None);
+                        return None;
                     }
                     cfg.add_edge(*block, *when_true, EdgeKind::True);
                     cfg.add_edge(*block, *when_false, EdgeKind::False);
                 }
-                FlowTransfer::Switch { .. } | FlowTransfer::Fragment { .. } => return Ok(None),
+                FlowTransfer::Switch { .. } | FlowTransfer::Fragment { .. } => return None,
             }
         }
         cfg.prune_unreachable_graph_nodes();
-        predicates.retain(|block, _| cfg.is_graph_node(*block));
-        Ok(Some((cfg, predicates)))
+        Some(cfg)
     }
 
     fn is_internal_target(&self, target: BlockId) -> bool {
@@ -3634,10 +3637,7 @@ mod tests {
             exits: BTreeSet::from([exit]),
         };
 
-        let (cfg, _) = graph
-            .acyclic_cfg()
-            .expect("acyclic CFG analysis")
-            .expect("declared exit sink");
+        let cfg = graph.acyclic_cfg().expect("declared exit sink");
 
         assert!(cfg.is_graph_node(exit));
         assert!(cfg.has_edge(entry, exit));
@@ -4731,3 +4731,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/flow_seeds.rs"]
+mod seed_tests;
