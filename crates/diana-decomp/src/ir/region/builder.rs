@@ -80,29 +80,119 @@ impl<'a> RegionGraphBuilder<'a> {
         control_tree.cover_method(cfg)?;
         let prepared_control = control_regions.apply(&mut control_tree)?;
         control_tree.canonicalize_nesting()?;
+        let mut elisions =
+            super::InstructionElisions::from_candidates(analysis.elided_instructions.clone());
+        let (mut tree, exception_region_map, exception_handlers) = self.protected_scopes(
+            control_tree,
+            &control_flow,
+            envelope_cfg,
+            envelope_flow,
+            &cleanup_representatives,
+            &mut elisions,
+        )?;
+        tree.remove_control_regions()?;
+        LexicalOwnershipClosure::apply(cfg, &control_flow, &exception_handlers, &mut tree)?;
+        tree.canonicalize_nesting()?;
+        control_regions.apply_with_handlers(&mut tree, &exception_handlers, prepared_control)?;
+        tree.canonicalize_nesting()?;
+        tree.cover_method(cfg)?;
+        tree.close_ancestor_ownership()?;
+        let block_owners = tree.verified_owners(cfg)?;
+        let implicit_cleanup_completions = ImplicitCleanupCompletions::analyze(&tree, analysis);
+        let handler_adapters = analysis.handler_adapters.clone();
+        let exits = RegionExitAnalysis::new(
+            cfg,
+            &tree,
+            &block_owners,
+            &elisions,
+            &control_flow,
+            &cleanup_representatives,
+            &exception_handlers,
+        )
+        .analyze()?;
+        let mut edge_leaves = BTreeMap::new();
+        for (index, resolved) in exits.leaves.iter().enumerate() {
+            let Some(edge) = resolved.leave.edge else {
+                continue;
+            };
+            if edge_leaves.insert(edge, index).is_some() {
+                return Err(RegionInvariantError::DuplicateLeaveEdge(edge));
+            }
+        }
+        let graph = RegionGraph {
+            tree,
+            control_flow,
+            exception_region_map,
+            exception_handlers,
+            handler_adapters,
+            cleanup_representatives,
+            cleanup_value_bindings: analysis.cleanup_value_bindings.clone(),
+            implicit_cleanup_completions,
+            exceptional_contractions: exceptional_cleanup.contractions,
+            exceptional_rethrow_sources: exceptional_cleanup.rethrow_sources,
+            block_owners,
+            transfers: exits.transfers,
+            leaves: exits.leaves,
+            terminal_leaves: exits.terminal_leaves,
+            edge_leaves,
+            elisions,
+        };
+        super::RegionGraphVerifier::new(&graph, cfg)
+            .verify_exits_and_ownership(&graph.block_owners)?;
+        Ok(graph)
+    }
+    fn protected_scopes(
+        &self,
+        control_tree: RegionTree,
+        control_flow: &ControlFlowFacts,
+        envelope_cfg: &CFG,
+        envelope_flow: &ControlFlowFacts,
+        cleanup_representatives: &BTreeMap<crate::ir::BlockId, crate::ir::BlockId>,
+        elisions: &mut super::InstructionElisions,
+    ) -> Result<
+        (
+            RegionTree,
+            BTreeMap<u32, Vec<RegionId>>,
+            BTreeMap<RegionId, Vec<RegionId>>,
+        ),
+        RegionInvariantError,
+    > {
+        let cfg = self.cfg;
+        let analysis = self.exceptions;
+        let has_monitor = cfg
+            .blocks_iter()
+            .flat_map(|block| &block.insns)
+            .any(|insn| insn.insn_type == crate::ir::InsnType::MonitorEnter);
+        // Only a protected range or an explicit monitor can add lexical scopes
+        // to the canonical control tree. A standalone monitor needs no handler.
+        if analysis.regions.is_empty() && !has_monitor {
+            return Ok((control_tree, BTreeMap::new(), BTreeMap::new()));
+        }
         let (mut tree, mut exception_region_map, mut exception_handlers) =
             ExceptionRegionTreeBuilder::new(
                 analysis,
                 cfg,
-                &control_flow,
+                control_flow,
                 envelope_cfg,
                 envelope_flow,
-                &cleanup_representatives,
+                cleanup_representatives,
                 control_tree,
             )
             .build()?;
         tree.cover_method(cfg)?;
-        LexicalTryAnalysis::new(cfg, &control_flow).apply(&mut tree, &exception_region_map)?;
-        let mut elisions =
-            super::InstructionElisions::from_candidates(analysis.elided_instructions.clone());
-        let synchronized = SynchronizationCandidate::collect(
-            cfg,
-            self.values,
-            &control_flow,
-            analysis,
-            &tree,
-            &exception_region_map,
-        )?;
+        LexicalTryAnalysis::new(cfg, control_flow).apply(&mut tree, &exception_region_map)?;
+        let synchronized = if has_monitor {
+            SynchronizationCandidate::collect(
+                cfg,
+                self.values,
+                control_flow,
+                analysis,
+                &tree,
+                &exception_region_map,
+            )?
+        } else {
+            Vec::new()
+        };
         for candidate in synchronized {
             let region_id = candidate.owner;
             let handlers = candidate.handlers(&exception_handlers);
@@ -176,7 +266,7 @@ impl<'a> RegionGraphBuilder<'a> {
             cfg,
             envelope_cfg,
             envelope_flow,
-            &cleanup_representatives,
+            cleanup_representatives,
         )
         .apply(
             &mut tree,
@@ -192,56 +282,7 @@ impl<'a> RegionGraphBuilder<'a> {
         )?;
         tree.cover_method(cfg)?;
         tree.canonicalize_nesting()?;
-        tree.remove_control_regions()?;
-        LexicalOwnershipClosure::apply(cfg, &control_flow, &exception_handlers, &mut tree)?;
-        tree.canonicalize_nesting()?;
-        control_regions.apply_with_handlers(&mut tree, &exception_handlers, prepared_control)?;
-        tree.canonicalize_nesting()?;
-        tree.cover_method(cfg)?;
-        tree.close_ancestor_ownership()?;
-        let block_owners = tree.verified_owners(cfg)?;
-        let implicit_cleanup_completions = ImplicitCleanupCompletions::analyze(&tree, analysis);
-        let handler_adapters = analysis.handler_adapters.clone();
-        let exits = RegionExitAnalysis::new(
-            cfg,
-            &tree,
-            &block_owners,
-            &elisions,
-            &control_flow,
-            &cleanup_representatives,
-            &exception_handlers,
-        )
-        .analyze()?;
-        let mut edge_leaves = BTreeMap::new();
-        for (index, resolved) in exits.leaves.iter().enumerate() {
-            let Some(edge) = resolved.leave.edge else {
-                continue;
-            };
-            if edge_leaves.insert(edge, index).is_some() {
-                return Err(RegionInvariantError::DuplicateLeaveEdge(edge));
-            }
-        }
-        let graph = RegionGraph {
-            tree,
-            control_flow,
-            exception_region_map,
-            exception_handlers,
-            handler_adapters,
-            cleanup_representatives,
-            cleanup_value_bindings: analysis.cleanup_value_bindings.clone(),
-            implicit_cleanup_completions,
-            exceptional_contractions: exceptional_cleanup.contractions,
-            exceptional_rethrow_sources: exceptional_cleanup.rethrow_sources,
-            block_owners,
-            transfers: exits.transfers,
-            leaves: exits.leaves,
-            terminal_leaves: exits.terminal_leaves,
-            edge_leaves,
-            elisions,
-        };
-        super::RegionGraphVerifier::new(&graph, cfg)
-            .verify_exits_and_ownership(&graph.block_owners)?;
-        Ok(graph)
+        Ok((tree, exception_region_map, exception_handlers))
     }
 }
 
@@ -500,13 +541,6 @@ impl SynchronizationCandidate {
         tree: &RegionTree,
         exception_region_map: &BTreeMap<u32, Vec<RegionId>>,
     ) -> Result<Vec<Self>, RegionInvariantError> {
-        if !cfg
-            .blocks_iter()
-            .flat_map(|block| &block.insns)
-            .any(|insn| insn.insn_type == crate::ir::InsnType::MonitorEnter)
-        {
-            return Ok(Vec::new());
-        }
         let synchronization = SynchronizationAnalysis::new(
             cfg,
             values,

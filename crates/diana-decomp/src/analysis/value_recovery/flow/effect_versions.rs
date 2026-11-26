@@ -62,6 +62,7 @@ struct EffectDomainRuns {
     starts: Vec<usize>,
     by_effect: Vec<usize>,
     eligible: Vec<Cell<bool>>,
+    previous: Cell<Option<(ControlDomain, bool)>>,
 }
 
 impl EffectDomainRuns {
@@ -86,24 +87,42 @@ impl EffectDomainRuns {
             starts,
             by_effect,
             eligible,
+            previous: Cell::new(None),
         })
     }
 
     fn prepare(
         &self,
         effects: &[EffectFact],
+        movement: ControlDomain,
         conflicts: impl Fn(&EffectFact) -> bool,
         mut overlaps: impl FnMut(ControlDomain) -> bool,
+        saturated: impl Fn() -> bool,
     ) -> bool {
-        let mut any = false;
+        // Once every run charged its intersection, repeating the same domain
+        // uses only memoized proofs. The interval still tests the new endpoints
+        // and effects. Saturation can make earlier disjoint runs overlap.
+        if let Some((domain, any_overlap)) = self.previous.get() {
+            if domain == movement && !saturated() {
+                return any_overlap;
+            }
+        }
+        let mut all_checked = true;
+        let mut any_overlap = false;
         for (i, &start) in self.starts.iter().enumerate() {
             let end = self.starts.get(i + 1).copied().unwrap_or(effects.len());
-            let run = &effects[start..end];
-            let eligible = run.iter().any(&conflicts) && overlaps(run[0].domain);
+            let eligible = if effects[start..end].iter().any(&conflicts) {
+                overlaps(effects[start].domain)
+            } else {
+                all_checked = false;
+                false
+            };
             self.eligible[i].set(eligible);
-            any |= eligible;
+            any_overlap |= eligible;
         }
-        any
+        self.previous
+            .set((all_checked && !saturated()).then_some((movement, any_overlap)));
+        any_overlap
     }
 
     fn eligible(&self, index: usize) -> bool {
@@ -175,10 +194,11 @@ impl<'a> EffectVersions<'a> {
         } else if let Some(runs) = runs {
             // Keep the full sequence of first domain checks, even after a
             // reachable conflict. Saturation can change a later run's answer.
-            runs.prepare(effects, conflicts, overlaps)
-                && self.interval_conflict(flow, source, target, |i| {
-                    runs.eligible(i) && conflicts(&effects[i])
-                })
+            runs.prepare(effects, domain, conflicts, overlaps, || {
+                self.graph.proof_budget_exhausted()
+            }) && self.interval_conflict(flow, source, target, |i| {
+                runs.eligible(i) && conflicts(&effects[i])
+            })
         } else {
             let mut conflicting = effects.iter().filter_map(|fact| {
                 (conflicts(fact) && overlaps(fact.domain)).then_some(&fact.point)

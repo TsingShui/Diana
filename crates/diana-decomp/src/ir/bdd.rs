@@ -989,17 +989,17 @@ impl DnfBuilder {
     }
 }
 
-#[derive(Clone)]
-struct Variable {
-    index: usize,
+#[derive(Clone, Default)]
+struct LiteralSlots {
     positive: Cell<Option<u16>>,
     negative: Cell<Option<u16>>,
 }
 
 pub struct BddContext {
     context: u64,
-    variables: BTreeMap<BoolVariable, Variable>,
     variables_by_index: Vec<BoolVariable>,
+    unordered_indices: Option<Box<HashMap<BoolVariable, usize>>>,
+    literals: Vec<LiteralSlots>,
     manager: RefCell<Manager>,
     expressions: RefCell<BTreeMap<BoolExpr, Bdd>>,
     compiled_literals: Cell<usize>,
@@ -1031,25 +1031,32 @@ impl BddContext {
 
     pub fn ordered(names: impl IntoIterator<Item = BoolVariable>) -> Self {
         let context = NEXT_CONTEXT.fetch_add(1, Ordering::Relaxed);
-        let mut variables = BTreeMap::new();
-        let mut variables_by_index = Vec::new();
-        for name in names {
-            let std::collections::btree_map::Entry::Vacant(slot) = variables.entry(name.clone())
-            else {
-                continue;
-            };
-            slot.insert(Variable {
-                index: variables_by_index.len(),
-                positive: Cell::new(None),
-                negative: Cell::new(None),
+        let mut variables_by_index: Vec<_> = names.into_iter().collect();
+        // CFG predicate IDs and sets already arrive in ordinal order. Only a
+        // caller supplying a different order needs a separate name index.
+        let unordered_indices = if variables_by_index.is_sorted() {
+            variables_by_index.dedup();
+            None
+        } else {
+            let mut indices = HashMap::with_capacity(variables_by_index.len());
+            variables_by_index.retain(|name| {
+                let index = indices.len();
+                if let std::collections::hash_map::Entry::Vacant(slot) = indices.entry(name.clone())
+                {
+                    slot.insert(index);
+                    true
+                } else {
+                    false
+                }
             });
-            variables_by_index.push(name);
-        }
+            Some(Box::new(indices))
+        };
         let limits = BddLimits::for_variables(variables_by_index.len());
         Self {
             context,
-            variables,
+            literals: vec![LiteralSlots::default(); variables_by_index.len()],
             variables_by_index,
+            unordered_indices,
             manager: RefCell::new(Manager::new(context, limits)),
             expressions: RefCell::new(BTreeMap::new()),
             compiled_literals: Cell::new(0),
@@ -1062,7 +1069,10 @@ impl BddContext {
     }
 
     pub(crate) fn variable_index(&self, name: &BoolVariable) -> Option<usize> {
-        self.variables.get(name).map(|variable| variable.index)
+        match &self.unordered_indices {
+            Some(indices) => indices.get(name).copied(),
+            None => self.variables_by_index.binary_search(name).ok(),
+        }
     }
 
     /// Fork the exact bounded arena, rebinding only handles owned by this
@@ -1093,7 +1103,8 @@ impl BddContext {
         Ok((
             Self {
                 context,
-                variables: self.variables.clone(),
+                unordered_indices: self.unordered_indices.clone(),
+                literals: self.literals.clone(),
                 variables_by_index: self.variables_by_index.clone(),
                 manager: RefCell::new(manager),
                 expressions: RefCell::new(expressions),
@@ -1144,9 +1155,8 @@ impl BddContext {
         let assignments = assignments
             .iter()
             .map(|(variable, value)| {
-                self.variables
-                    .get(variable)
-                    .map(|variable| (variable.index, *value))
+                self.variable_index(variable)
+                    .map(|index| (index, *value))
                     .ok_or_else(|| BddError::UnknownVariable(variable.clone()))
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
@@ -1159,9 +1169,7 @@ impl BddContext {
         let variables = variables
             .iter()
             .map(|variable| {
-                self.variables
-                    .get(variable)
-                    .map(|variable| variable.index)
+                self.variable_index(variable)
                     .ok_or_else(|| BddError::UnknownVariable(variable.clone()))
             })
             .collect::<Result<BTreeSet<_>, _>>()?;
@@ -1181,10 +1189,17 @@ impl BddContext {
         name: &BoolVariable,
         positive: bool,
     ) -> Result<Bdd, BddError> {
-        let symbol = self
-            .variables
-            .get(name)
+        let index = self
+            .variable_index(name)
             .ok_or_else(|| BddError::UnknownVariable(name.clone()))?;
+        self.compile_index(index, positive)
+    }
+
+    pub(crate) fn compile_index(&self, index: usize, positive: bool) -> Result<Bdd, BddError> {
+        let symbol = self
+            .literals
+            .get(index)
+            .ok_or(BddError::MalformedEvaluation)?;
         let slot = if positive {
             &symbol.positive
         } else {
@@ -1200,7 +1215,7 @@ impl BddContext {
         let value = if let Some(node) = symbol.positive.get() {
             handle(node)
         } else {
-            let value = self.manager.borrow_mut().variable(symbol.index)?;
+            let value = self.manager.borrow_mut().variable(index)?;
             self.record_literal(&symbol.positive, value)?;
             value
         };
@@ -1343,13 +1358,13 @@ impl BddContext {
         self.manager.borrow().validate(care)?;
         if let Some(variable) = support
             .iter()
-            .find(|variable| !self.variables.contains_key(*variable))
+            .find(|variable| self.variable_index(variable).is_none())
         {
             return Err(BddError::UnknownVariable(variable.clone()));
         }
         let hidden = self
-            .variables
-            .keys()
+            .variables_by_index
+            .iter()
             .filter(|variable| !support.contains(*variable))
             .cloned()
             .collect::<BTreeSet<_>>();

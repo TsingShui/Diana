@@ -8,7 +8,8 @@
 use std::cell::{Cell, OnceCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::rc::Rc;
+use std::hash::BuildHasher;
+use std::ops::Range;
 
 use crate::ir::bdd::{Bdd, BddContext, BddError};
 use crate::ir::{BoolExpr, BoolVariable};
@@ -83,7 +84,7 @@ impl From<BddError> for DomainError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug)]
 enum DomainNode {
     True,
     False,
@@ -91,15 +92,19 @@ enum DomainNode {
     Not(ControlDomain),
     AndPair([ControlDomain; 2]),
     OrPair([ControlDomain; 2]),
-    And(Rc<[ControlDomain]>),
-    Or(Rc<[ControlDomain]>),
+    And(Range<usize>),
+    Or(Range<usize>),
 }
 
 impl DomainNode {
-    fn terms(&self, conjunction: bool) -> Option<&[ControlDomain]> {
+    fn terms<'a>(
+        &'a self,
+        conjunction: bool,
+        arena: &'a [ControlDomain],
+    ) -> Option<&'a [ControlDomain]> {
         match (self, conjunction) {
             (Self::AndPair(terms), true) | (Self::OrPair(terms), false) => Some(terms),
-            (Self::And(terms), true) | (Self::Or(terms), false) => Some(terms),
+            (Self::And(range), true) | (Self::Or(range), false) => Some(&arena[range.clone()]),
             _ => None,
         }
     }
@@ -151,8 +156,12 @@ pub(super) struct DomainLogic {
     nodes: Vec<DomainRecord>,
     symbols: BTreeMap<BoolVariable, ControlDomain>,
     joins: foldhash::HashMap<(ControlDomain, ControlDomain, bool), ControlDomain>,
-    conjunctions: BTreeMap<Rc<[ControlDomain]>, ControlDomain>,
-    disjunctions: BTreeMap<Rc<[ControlDomain]>, ControlDomain>,
+    /// Larger canonical sets occupy one method-local arena. The table stores
+    /// their creating domains and only accepts an exact ordered-term match.
+    term_arena: Vec<ControlDomain>,
+    term_work: Vec<ControlDomain>,
+    junction_index: hashbrown::HashTable<(u64, ControlDomain)>,
+    term_hasher: foldhash::fast::RandomState,
     saturated: Cell<bool>,
 }
 
@@ -176,8 +185,10 @@ impl DomainLogic {
             nodes: Vec::new(),
             symbols: BTreeMap::new(),
             joins: Default::default(),
-            conjunctions: BTreeMap::new(),
-            disjunctions: BTreeMap::new(),
+            term_arena: Vec::new(),
+            term_work: Vec::new(),
+            junction_index: hashbrown::HashTable::new(),
+            term_hasher: Default::default(),
             bdd,
             saturated: Cell::new(false),
         }
@@ -298,11 +309,10 @@ impl DomainLogic {
             let proof = match step {
                 ProofStep::Symbol(index) => {
                     let bdd = self.bdd();
-                    let name = bdd
-                        .variable_order()
-                        .get(index)
-                        .ok_or_else(DomainError::malformed_evaluation)?;
-                    self.proof(bdd.compile_literal(name, true))?
+                    if index >= bdd.variable_order().len() {
+                        return Err(DomainError::malformed_evaluation());
+                    }
+                    self.proof(bdd.compile_index(index, true))?
                 }
                 ProofStep::Not(domain) => match self.exact(domain) {
                     Some(proof) => self.proof(self.bdd().not(proof))?,
@@ -312,7 +322,7 @@ impl DomainLogic {
                     let conjunction = matches!(step, ProofStep::And(_));
                     let terms = self.nodes[i]
                         .node
-                        .terms(conjunction)
+                        .terms(conjunction, &self.term_arena)
                         .ok_or_else(DomainError::malformed_evaluation)?;
                     self.junction_proof(terms, conjunction, pair)?
                 }
@@ -507,11 +517,11 @@ impl DomainLogic {
         }
         if self
             .node(premise)?
-            .terms(true)
+            .terms(true, &self.term_arena)
             .is_some_and(|terms| terms.binary_search(&consequence).is_ok())
             || self
                 .node(consequence)?
-                .terms(false)
+                .terms(false, &self.term_arena)
                 .is_some_and(|terms| terms.binary_search(&premise).is_ok())
         {
             return Ok(true);
@@ -720,29 +730,35 @@ impl DomainLogic {
             };
             self.push_node(node, proof, None)?
         } else {
-            let terms = Self::union_terms(a, b);
-            let index = if conjunction {
-                &self.conjunctions
-            } else {
-                &self.disjunctions
-            };
-            if let Some(&domain) = index.get(terms.as_slice()) {
-                return Ok(domain);
+            let mut terms = std::mem::take(&mut self.term_work);
+            Self::union_terms(
+                &mut terms,
+                self.junction_terms(&left, conjunction)?,
+                self.junction_terms(&right, conjunction)?,
+            );
+            let hash = self.term_hasher.hash_one((conjunction, terms.as_slice()));
+            if let Some(&(_, existing)) = self.junction_index.find(hash, |&(_, domain)| {
+                self.nodes[(domain.0 - 2) as usize]
+                    .node
+                    .terms(conjunction, &self.term_arena)
+                    == Some(terms.as_slice())
+            }) {
+                self.term_work = terms;
+                return Ok(existing);
             }
             let proof = self.new_junction_proof(&terms, conjunction, [left, right])?;
-            let terms: Rc<[ControlDomain]> = terms.into();
+            let start = self.term_arena.len();
+            self.term_arena.extend_from_slice(&terms);
+            self.term_work = terms;
+            let range = start..self.term_arena.len();
             let node = if conjunction {
-                DomainNode::And(Rc::clone(&terms))
+                DomainNode::And(range)
             } else {
-                DomainNode::Or(Rc::clone(&terms))
+                DomainNode::Or(range)
             };
             let domain = self.push_node(node, proof, None)?;
-            let index = if conjunction {
-                &mut self.conjunctions
-            } else {
-                &mut self.disjunctions
-            };
-            index.insert(terms, domain);
+            self.junction_index
+                .insert_unique(hash, (hash, domain), |entry| entry.0);
             domain
         };
         self.joins.insert(input_pair, domain);
@@ -756,21 +772,40 @@ impl DomainLogic {
     ) -> Result<&'a [ControlDomain], DomainError> {
         Ok(self
             .node(*domain)?
-            .terms(conjunction)
+            .terms(conjunction, &self.term_arena)
             .unwrap_or(std::slice::from_ref(domain)))
     }
 
-    fn union_terms(mut left: &[ControlDomain], mut right: &[ControlDomain]) -> Vec<ControlDomain> {
-        let mut result = Vec::with_capacity(left.len() + right.len());
+    fn union_terms(
+        result: &mut Vec<ControlDomain>,
+        mut left: &[ControlDomain],
+        mut right: &[ControlDomain],
+    ) {
+        result.clear();
+        result.reserve(left.len() + right.len());
         if left.last() < right.first() {
             result.extend_from_slice(left);
             result.extend_from_slice(right);
-            return result;
+            return;
         }
         if right.last() < left.first() {
             result.extend_from_slice(right);
             result.extend_from_slice(left);
-            return result;
+            return;
+        }
+        let (shorter, longer) = if left.len() < right.len() {
+            (left, right)
+        } else {
+            (right, left)
+        };
+        if let [single] = shorter {
+            let position = longer.partition_point(|term| term < single);
+            result.extend_from_slice(&longer[..position]);
+            if longer.get(position) != Some(single) {
+                result.push(*single);
+            }
+            result.extend_from_slice(&longer[position..]);
+            return;
         }
         while let ([a, more_left @ ..], [b, more_right @ ..]) = (left, right) {
             result.push((*a).min(*b));
@@ -783,7 +818,6 @@ impl DomainLogic {
         }
         result.extend_from_slice(left);
         result.extend_from_slice(right);
-        result
     }
 
     fn new_junction_proof(
@@ -822,7 +856,7 @@ impl DomainLogic {
             return Ok(None);
         };
         for operand in operands {
-            let Some(prefix) = self.node(operand)?.terms(conjunction) else {
+            let Some(prefix) = self.node(operand)?.terms(conjunction, &self.term_arena) else {
                 continue;
             };
             if prefix.len() > start && terms.starts_with(prefix) {

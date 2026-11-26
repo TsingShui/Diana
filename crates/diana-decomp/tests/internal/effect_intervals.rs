@@ -205,13 +205,19 @@ fn grouped_checks_keep_first_charges_and_recheck_separated_domains_after_saturat
         })
         .collect();
     let runs = EffectDomainRuns::grouped(&effects).unwrap();
-    let mut saturated = false;
+    let saturated = std::cell::Cell::new(false);
     let mut checked = Vec::new();
-    assert!(runs.prepare(&effects, conflicts, |domain| {
-        checked.push(domain);
-        saturated |= domain == domains[2];
-        saturated || domain != domains[0]
-    }));
+    assert!(runs.prepare(
+        &effects,
+        domains[0],
+        conflicts,
+        |domain| {
+            checked.push(domain);
+            saturated.set(saturated.get() || domain == domains[2]);
+            saturated.get() || domain != domains[0]
+        },
+        || saturated.get(),
+    ));
     assert_eq!(checked, [domains[0], domains[2], domains[3], domains[0]]);
     for (i, fact) in effects.iter().enumerate() {
         assert_eq!(
@@ -221,4 +227,104 @@ fn grouped_checks_keep_first_charges_and_recheck_separated_domains_after_saturat
         );
     }
     assert!(EffectDomainRuns::grouped(&[]).is_none());
+}
+
+#[test]
+fn only_complete_unsaturated_domain_rows_are_reused_for_new_conflicts() {
+    use super::{EffectDomainRuns, EffectFact};
+    use crate::analysis::value_recovery::domain::DomainLogic;
+    use crate::ir::{BoolExpr, BoolVariable};
+    use std::cell::Cell;
+
+    let variables = (0..5).map(BoolVariable::Atom).collect();
+    let mut logic = DomainLogic::new(&variables);
+    let domains: Vec<_> = (0..5)
+        .map(|id| {
+            logic
+                .compile(&BoolExpr::Symbol(BoolVariable::Atom(id)))
+                .unwrap()
+        })
+        .collect();
+    let effects: Vec<_> = (0..10)
+        .map(|i| EffectFact {
+            point: after(i),
+            domain: domains[i as usize / 2],
+            effect: EffectSummary::synchronization(),
+        })
+        .collect();
+    let runs = EffectDomainRuns::grouped(&effects).unwrap();
+
+    // The first query establishes that runs 0, 2 and 4 are disjoint. The
+    // current endpoints and effect leave runs 1 and 3 unqueried.
+    let mut checked = Vec::new();
+    assert!(!runs.prepare(
+        &effects,
+        domains[0],
+        |fact| [domains[0], domains[2], domains[4]].contains(&fact.domain),
+        |domain| {
+            checked.push(domain);
+            false
+        },
+        || false,
+    ));
+    assert_eq!(checked, [domains[0], domains[2], domains[4]]);
+    checked.clear();
+
+    // An exact negative for the newly conflicting run 1 leaves the arena
+    // intact. Run 3 then saturates it, so the old negative for run 4 changes.
+    let saturated = Cell::new(false);
+    assert!(runs.prepare(
+        &effects,
+        domains[0],
+        |_| true,
+        |domain| {
+            checked.push(domain);
+            saturated.set(saturated.get() || domain == domains[3]);
+            saturated.get()
+        },
+        || saturated.get(),
+    ));
+    assert_eq!(checked, domains);
+    for i in 0..10 {
+        assert_eq!(runs.eligible(i), i >= 6);
+    }
+
+    // A different movement starts a fresh ordered scan, including domains
+    // proved disjoint before saturation in the previous movement.
+    checked.clear();
+    assert!(runs.prepare(
+        &effects,
+        domains[1],
+        |_| true,
+        |domain| {
+            checked.push(domain);
+            true
+        },
+        || false,
+    ));
+    assert_eq!(checked, domains);
+    checked.clear();
+    assert!(runs.prepare(
+        &effects,
+        domains[1],
+        |fact| fact.domain == domains[0],
+        |domain| {
+            checked.push(domain);
+            false
+        },
+        || false,
+    ));
+    assert!(checked.is_empty());
+    // A proof elsewhere in the same arena may cross the limit between moves.
+    assert!(runs.prepare(
+        &effects,
+        domains[1],
+        |_| true,
+        |domain| {
+            checked.push(domain);
+            true
+        },
+        || true,
+    ));
+    assert_eq!(checked, domains);
 }

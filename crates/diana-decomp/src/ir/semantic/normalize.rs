@@ -257,7 +257,24 @@ impl SemanticFolder for SemanticNormalization {
     }
 
     fn finish_node(&mut self, node: SemanticNode) -> Result<SemanticNode, Self::Error> {
-        let node = SemanticNormalizer::new(self.reachability).finish_node(node)?;
+        let node = match node {
+            // A flat sequence with no labels has only an unreachable suffix
+            // to cut. No later label composition can expose another cut.
+            SemanticNode::Sequence(items)
+                if !self.reachability.preserves_cfg_topology()
+                    && items.iter().all(|item| {
+                        !matches!(
+                            item,
+                            SemanticNode::Empty
+                                | SemanticNode::Sequence(_)
+                                | SemanticNode::Label { .. }
+                        )
+                    }) =>
+            {
+                return Ok(NormalCompletion::flat_sequence(items));
+            }
+            node => SemanticNormalizer::new(self.reachability).finish_node(node)?,
+        };
         if self.reachability.preserves_cfg_topology() {
             return Ok(node);
         }
@@ -760,6 +777,24 @@ impl SemanticFolder for SourceSemanticNormalizer {
 
     fn finish_node(&mut self, node: SemanticNode) -> Result<SemanticNode, Self::Error> {
         let node = match node {
+            // A flat sequence without vacuous guards or try scopes already
+            // satisfies both source-specific sequence rewrites.
+            SemanticNode::Sequence(items)
+                if items.len() >= 2
+                    && items.iter().all(|item| match item {
+                        SemanticNode::Empty
+                        | SemanticNode::Sequence(_)
+                        | SemanticNode::Try { .. } => false,
+                        SemanticNode::If {
+                            then_node,
+                            else_node: None,
+                            ..
+                        } => !matches!(then_node.as_ref(), SemanticNode::Empty),
+                        _ => true,
+                    }) =>
+            {
+                return Ok(NormalCompletion::flat_sequence(items))
+            }
             SemanticNode::BasicBlock(block) if block.statements.is_empty() => SemanticNode::Empty,
             node => node,
         };
@@ -1711,13 +1746,27 @@ struct NormalCompletion;
 
 impl NormalCompletion {
     fn sequence(mut nodes: Vec<SemanticNode>) -> SemanticNode {
+        Self::prune(&mut nodes);
+        SemanticNode::sequence(nodes)
+    }
+
+    /// The caller has established that no child is empty or a nested sequence.
+    fn flat_sequence(mut nodes: Vec<SemanticNode>) -> SemanticNode {
+        Self::prune(&mut nodes);
+        match nodes.len() {
+            0 => SemanticNode::Empty,
+            1 => nodes.pop().expect("flat sequence has one child"),
+            _ => SemanticNode::Sequence(nodes),
+        }
+    }
+
+    fn prune(nodes: &mut Vec<SemanticNode>) {
         // Completion of the last child cannot cut off another child.
         if let Some((_, prefix)) = nodes.split_last() {
             if let Some(index) = prefix.iter().position(|node| !Self::can_complete(node)) {
                 nodes.truncate(index + 1);
             }
         }
-        SemanticNode::sequence(nodes)
     }
 
     fn can_complete(node: &SemanticNode) -> bool {

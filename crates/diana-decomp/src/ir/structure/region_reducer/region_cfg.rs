@@ -13,6 +13,7 @@ pub(super) struct RegionAnchors {
     phi_predecessors: BTreeSet<BlockId>,
     control_anchors: BTreeSet<BlockId>,
     contractions: ControlContractions,
+    layout_sources: std::sync::OnceLock<RegionLayoutSources>,
     canonical_continuations: Arc<ControlContinuations>,
     control_continuations: Arc<ControlContinuations>,
 }
@@ -54,6 +55,7 @@ impl RegionAnchors {
             phi_predecessors,
             control_anchors,
             contractions,
+            layout_sources: Default::default(),
             canonical_continuations,
             control_continuations,
         })
@@ -497,6 +499,58 @@ impl RegionBodyReachability {
     }
 }
 
+/// A source belongs to the subtree of its canonical lexical owner. Explicit
+/// ports can also expose the source itself or another owner's contraction.
+/// Missing owners remain candidates so representation reports its original error.
+#[derive(Default)]
+struct RegionLayoutSources {
+    owned: foldhash::HashMap<RegionId, Vec<BlockId>>,
+    contracted: foldhash::HashMap<BlockId, Vec<BlockId>>,
+    unowned: Vec<BlockId>,
+}
+
+impl RegionLayoutSources {
+    fn new(cfg: &CFG, graph: &RegionGraph, anchors: &RegionAnchors) -> Self {
+        let mut index = Self::default();
+        for &source in cfg.blocks.keys() {
+            let block = anchors.representative(source);
+            if block != source {
+                index.contracted.entry(block).or_default().push(source);
+            }
+            if let Some(owner) = graph.owner_of(block) {
+                index.owned.entry(owner).or_default().push(source);
+            } else {
+                index.unowned.push(source);
+            }
+        }
+        index
+    }
+
+    fn candidates(&self, cfg: &CFG, scope: &RegionScope<'_>) -> Vec<BlockId> {
+        let mut blocks = self.unowned.clone();
+        let mut pending = vec![scope.region];
+        while let Some(region) = pending.pop() {
+            if let Some(owned) = self.owned.get(&region) {
+                blocks.extend_from_slice(owned);
+            }
+            if let Some(region) = scope.graph.tree().region(region) {
+                pending.extend_from_slice(&region.children);
+            }
+        }
+        for &port in scope.ports {
+            if cfg.block(port).is_some() {
+                blocks.push(port);
+            }
+            if let Some(sources) = self.contracted.get(&port) {
+                blocks.extend_from_slice(sources);
+            }
+        }
+        blocks.sort_unstable();
+        blocks.dedup();
+        blocks
+    }
+}
+
 pub(super) struct RegionScope<'a> {
     graph: &'a RegionGraph,
     region: RegionId,
@@ -639,14 +693,30 @@ impl<'a> RegionScope<'a> {
     }
 
     fn layout(&self, cfg: &CFG) -> Result<RegionLayout, StructureError> {
-        let mut mapping = BTreeMap::new();
-        let mut representatives = BTreeSet::new();
-        for block in cfg.blocks.keys().copied() {
+        let mut pairs = Vec::new();
+        let mut add = |block| -> Result<(), StructureError> {
             if let Some(representative) = self.representative(block)? {
-                mapping.insert(block, representative);
-                representatives.insert(representative);
+                pairs.push((block, representative));
             }
+            Ok(())
+        };
+        if self.region == self.graph.tree().root() {
+            cfg.blocks.keys().copied().try_for_each(add)?;
+        } else {
+            let sources = self
+                .anchors
+                .layout_sources
+                .get_or_init(|| RegionLayoutSources::new(cfg, self.graph, self.anchors));
+            sources
+                .candidates(cfg, self)
+                .into_iter()
+                .try_for_each(&mut add)?;
         }
+        let representatives = pairs
+            .iter()
+            .map(|&(_, representative)| representative)
+            .collect();
+        let mapping = pairs.into_iter().collect();
         let child_entries = self.ports.clone();
         Ok(RegionLayout {
             mapping,
@@ -656,7 +726,8 @@ impl<'a> RegionScope<'a> {
     }
 }
 
-struct RegionLayout {
+#[derive(Clone)]
+pub(super) struct RegionLayout {
     mapping: BTreeMap<BlockId, BlockId>,
     representatives: BTreeSet<BlockId>,
     child_entries: BTreeSet<BlockId>,
@@ -676,7 +747,6 @@ pub(super) struct RegionCfgBuilder<'a> {
     scope: RegionScope<'a>,
     child_flows: &'a BTreeMap<BlockId, BoundFlow>,
     entry_cuts: &'a BTreeSet<BlockId>,
-    entry: Option<BlockId>,
 }
 
 impl<'a> RegionCfgBuilder<'a> {
@@ -689,7 +759,6 @@ impl<'a> RegionCfgBuilder<'a> {
         anchors: &'a RegionAnchors,
         child_flows: &'a BTreeMap<BlockId, BoundFlow>,
         entry_cuts: &'a BTreeSet<BlockId>,
-        entry: Option<BlockId>,
     ) -> Self {
         Self {
             cfg,
@@ -698,15 +767,19 @@ impl<'a> RegionCfgBuilder<'a> {
             scope: RegionScope::new(regions, region, children, ports, anchors),
             child_flows,
             entry_cuts,
-            entry,
         }
     }
 
-    pub(super) fn build(self) -> Result<RegionCfg, StructureError> {
-        let mut layout = self.scope.layout(self.cfg)?;
-        let entry = self
-            .entry
-            .or_else(|| Self::unique_detached_entry(self.cfg, &layout));
+    pub(super) fn layout(&self) -> Result<RegionLayout, StructureError> {
+        self.scope.layout(self.cfg)
+    }
+
+    pub(super) fn build(
+        &self,
+        mut layout: RegionLayout,
+        entry: Option<BlockId>,
+    ) -> Result<RegionCfg, StructureError> {
+        let entry = entry.or_else(|| Self::unique_detached_entry(self.cfg, &layout));
         if let Some(entry) = entry {
             layout.preserve(entry);
         }
@@ -714,17 +787,29 @@ impl<'a> RegionCfgBuilder<'a> {
         let mut state = RegionCfgState::new(
             self.cfg,
             self.region,
-            layout,
+            &layout,
             origin_sensitive_boundaries,
             Arc::clone(&self.scope.anchors.canonical_continuations),
         )?;
-        if state.layout.representatives.is_empty() {
-            return Ok(state.finish());
+        if layout.representatives.is_empty() {
+            return Ok(state.finish(layout));
         }
         let entry = entry.ok_or(StructureError::MissingEntry(self.region))?;
-        state.connect_source_edges(self.cfg, self.regions, self.region, entry, self.entry_cuts)?;
-        state.connect_child_flows(self.child_flows, entry, self.entry_cuts)?;
-        Ok(state.finish())
+        let cuts = self
+            .entry_cuts
+            .iter()
+            .copied()
+            .filter(|&cut| cut != entry)
+            .map(|cut| layout.mapping.get(&cut).copied().unwrap_or(cut))
+            .filter(|&cut| cut != entry)
+            .collect();
+        let projection = RegionProjection {
+            layout: &layout,
+            cuts,
+        };
+        state.connect_source_edges(self.cfg, self.regions, self.region, entry, &projection)?;
+        state.connect_child_flows(self.child_flows, &projection)?;
+        Ok(state.finish(layout))
     }
 
     /// An entryless handler can still contain lexical work when its complete
@@ -738,10 +823,7 @@ impl<'a> RegionCfgBuilder<'a> {
             .copied()
             .map(|block| (block, BTreeSet::new()))
             .collect::<BTreeMap<_, _>>();
-        for source in cfg.blocks.keys().copied() {
-            let Some(from) = layout.mapping.get(&source).copied() else {
-                continue;
-            };
+        for (&source, &from) in &layout.mapping {
             for target in cfg.normal_successors(source) {
                 let Some(to) = layout.mapping.get(&target).copied() else {
                     continue;
@@ -767,11 +849,29 @@ impl<'a> RegionCfgBuilder<'a> {
     }
 }
 
+struct RegionProjection<'a> {
+    layout: &'a RegionLayout,
+    cuts: BTreeSet<BlockId>,
+}
+
+impl RegionProjection<'_> {
+    fn map(&self, block: BlockId) -> BlockId {
+        self.layout.mapping.get(&block).copied().unwrap_or(block)
+    }
+
+    fn entry_cut(&self, target: BlockId) -> Option<BlockId> {
+        if self.cuts.is_empty() {
+            return None;
+        }
+        let target = self.map(target);
+        self.cuts.contains(&target).then_some(target)
+    }
+}
+
 struct RegionCfgState {
     region: RegionId,
     cfg: CFG,
-    layout: RegionLayout,
-    edges: BTreeSet<(BlockId, BlockId, EdgeKind)>,
+    edges: Vec<(BlockId, BlockId, EdgeKind)>,
     boundaries: BTreeMap<BlockId, ResolvedRegionExit>,
     boundary_ids: BTreeMap<BoundaryKey, BlockId>,
     entry_boundaries: BTreeMap<BlockId, BlockId>,
@@ -787,7 +887,7 @@ impl RegionCfgState {
     fn new(
         source: &CFG,
         region: RegionId,
-        layout: RegionLayout,
+        layout: &RegionLayout,
         origin_sensitive_boundaries: BTreeSet<BlockId>,
         canonical_continuations: Arc<ControlContinuations>,
     ) -> Result<Self, StructureError> {
@@ -815,8 +915,7 @@ impl RegionCfgState {
         Ok(Self {
             region,
             cfg,
-            layout,
-            edges: BTreeSet::new(),
+            edges: Vec::new(),
             boundaries: BTreeMap::new(),
             boundary_ids: BTreeMap::new(),
             entry_boundaries: BTreeMap::new(),
@@ -835,18 +934,15 @@ impl RegionCfgState {
         regions: &RegionGraph,
         region: RegionId,
         entry: BlockId,
-        entry_cuts: &BTreeSet<BlockId>,
+        projection: &RegionProjection<'_>,
     ) -> Result<(), StructureError> {
-        self.cfg.entry = self
+        self.cfg.entry = projection
             .layout
             .mapping
             .get(&entry)
             .copied()
             .ok_or(StructureError::RegionEntryMissing { region, entry })?;
-        for source_block in source.blocks.keys().copied() {
-            let Some(&from) = self.layout.mapping.get(&source_block) else {
-                continue;
-            };
+        for (&source_block, &from) in &projection.layout.mapping {
             // Quotient-graph edges originate only at the terminal
             // representative. Emitting edges from every contracted adapter
             // would copy its epsilon path onto the representative and can
@@ -857,16 +953,16 @@ impl RegionCfgState {
             // A contracted child entry owns the complete semantic fragment.
             // Its physical interior can contain exits to other region ports,
             // but those exits have already been summarized by BoundFlow.
-            if self.layout.child_entries.contains(&from) {
+            if projection.layout.child_entries.contains(&from) {
                 continue;
             }
             for &(target, kind) in source.successors_with_kind(source_block) {
                 if kind.is_exception() {
                     continue;
                 }
-                if let Some(target) = self.entry_cut(target, entry, entry_cuts) {
+                if let Some(target) = projection.entry_cut(target) {
                     let boundary = self.intern_entry_boundary(target)?;
-                    self.edges.insert((from, boundary, kind));
+                    self.edges.push((from, boundary, kind));
                     continue;
                 }
                 let edge = RegionEdge {
@@ -879,10 +975,10 @@ impl RegionCfgState {
                     .filter(|leave| leave.leave.source == region)
                 {
                     let boundary = self.intern_boundary(leave)?;
-                    self.edges.insert((from, boundary, kind));
-                } else if let Some(&to) = self.layout.mapping.get(&target) {
+                    self.edges.push((from, boundary, kind));
+                } else if let Some(&to) = projection.layout.mapping.get(&target) {
                     if from != to {
-                        self.edges.insert((from, to, kind));
+                        self.edges.push((from, to, kind));
                     }
                 }
             }
@@ -922,7 +1018,6 @@ impl RegionCfgState {
             .checked_add(1)
             .ok_or(StructureError::BoundaryIdExhausted(self.region))?;
         self.cfg.add_block(Block::synthetic(boundary));
-        self.layout.representatives.insert(boundary);
         self.boundaries.insert(boundary, leave.clone());
         self.boundary_ids.insert(key, boundary);
         Ok(boundary)
@@ -938,7 +1033,6 @@ impl RegionCfgState {
             .checked_add(1)
             .ok_or(StructureError::BoundaryIdExhausted(self.region))?;
         self.cfg.add_block(Block::synthetic(boundary));
-        self.layout.representatives.insert(boundary);
         self.entry_boundaries.insert(boundary, target);
         self.entry_boundary_ids.insert(target, boundary);
         Ok(boundary)
@@ -947,29 +1041,27 @@ impl RegionCfgState {
     fn connect_child_flows(
         &mut self,
         flows: &BTreeMap<BlockId, BoundFlow>,
-        region_entry: BlockId,
-        entry_cuts: &BTreeSet<BlockId>,
+        projection: &RegionProjection<'_>,
     ) -> Result<(), StructureError> {
         for (child_entry, flow) in flows {
             match flow {
                 BoundFlow::Lexical(target) if child_entry != target => {
-                    let target = self.partition_target(*target, region_entry, entry_cuts)?;
-                    self.edges.insert((*child_entry, target, EdgeKind::Normal));
+                    let target = self.partition_target(*target, projection)?;
+                    self.edges.push((*child_entry, target, EdgeKind::Normal));
                 }
                 BoundFlow::Lexical(_) | BoundFlow::Terminal => {
                     self.terminal_seeds.insert(*child_entry);
                 }
                 BoundFlow::Leave(leave) => {
                     let boundary = self.intern_boundary(leave)?;
-                    self.edges
-                        .insert((*child_entry, boundary, EdgeKind::Normal));
+                    self.edges.push((*child_entry, boundary, EdgeKind::Normal));
                 }
                 BoundFlow::Open {
                     targets, boundary, ..
                 } => {
                     let mut targets = targets
                         .iter()
-                        .map(|target| self.partition_target(*target, region_entry, entry_cuts))
+                        .map(|target| self.partition_target(*target, projection))
                         .collect::<Result<BTreeSet<_>, _>>()?;
                     if let Some(leave) = boundary {
                         targets.insert(self.intern_boundary(leave)?);
@@ -990,50 +1082,39 @@ impl RegionCfgState {
     fn partition_target(
         &mut self,
         target: BlockId,
-        entry: BlockId,
-        entry_cuts: &BTreeSet<BlockId>,
+        projection: &RegionProjection<'_>,
     ) -> Result<BlockId, StructureError> {
-        let target = self.layout.mapping.get(&target).copied().unwrap_or(target);
-        if let Some(target) = self.entry_cut(target, entry, entry_cuts) {
+        let target = projection.map(target);
+        if let Some(target) = projection.entry_cut(target) {
             self.intern_entry_boundary(target)
         } else {
             Ok(target)
         }
     }
 
-    fn entry_cut(
-        &self,
-        target: BlockId,
-        entry: BlockId,
-        entry_cuts: &BTreeSet<BlockId>,
-    ) -> Option<BlockId> {
-        let target = self.layout.mapping.get(&target).copied().unwrap_or(target);
-        let entry = self.layout.mapping.get(&entry).copied().unwrap_or(entry);
-        (target != entry
-            && entry_cuts
-                .iter()
-                .any(|cut| self.layout.mapping.get(cut).copied().unwrap_or(*cut) == target))
-        .then_some(target)
-    }
-
-    fn finish(mut self) -> RegionCfg {
+    fn finish(mut self, mut layout: RegionLayout) -> RegionCfg {
+        layout.representatives.extend(
+            self.boundaries
+                .keys()
+                .chain(self.entry_boundaries.keys())
+                .copied(),
+        );
+        self.edges.sort_unstable();
+        self.edges.dedup();
         for (from, to, kind) in self.edges {
             self.cfg.add_edge(from, to, kind);
         }
-        self.cfg.prune_unreachable_graph_nodes();
-        self.layout
-            .representatives
-            .retain(|block| self.cfg.is_graph_node(*block));
-        self.boundaries
-            .retain(|block, _| self.cfg.is_graph_node(*block));
-        self.entry_boundaries
-            .retain(|block, _| self.cfg.is_graph_node(*block));
+        for block in self.cfg.prune_unreachable_graph_nodes() {
+            layout.representatives.remove(&block);
+            self.boundaries.remove(&block);
+            self.entry_boundaries.remove(&block);
+        }
         self.terminal_seeds
             .retain(|block| self.cfg.is_graph_node(*block));
         RegionCfg {
             cfg: self.cfg,
-            mapping: self.layout.mapping,
-            representatives: self.layout.representatives,
+            mapping: layout.mapping,
+            representatives: layout.representatives,
             boundaries: self.boundaries,
             entry_boundaries: self.entry_boundaries,
             terminal_seeds: self.terminal_seeds,

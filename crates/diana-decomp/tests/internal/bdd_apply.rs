@@ -317,3 +317,34 @@ fn fork_rebinds_cached_compounds_and_preserves_the_remaining_cache_budget() {
         .unwrap_err()
         .is_resource_limit());
 }
+
+#[test]
+fn variable_ordinals_keep_the_first_occurrence_in_any_input_order() {
+    let a = BoolVariable::Instruction(crate::ir::InstructionId::new(17));
+    let b = BoolVariable::Source(7);
+    let c = BoolVariable::Named("flag".to_owned());
+    for order in [
+        [a.clone(), b.clone(), c.clone()],
+        [c.clone(), a.clone(), b.clone()],
+    ] {
+        let [x, y, z] = order.clone();
+        let inputs = [x.clone(), x.clone(), y.clone(), z.clone(), z.clone()];
+        let context = BddContext::ordered(inputs);
+        assert_eq!(context.variable_order(), &order);
+        let first = context.compile_literal(&x, false).unwrap();
+        let (fork, roots) = context.fork([Some(first)]).unwrap();
+        assert_eq!(fork.compile_index(0, false).unwrap(), roots[0].unwrap());
+        for (index, name) in order.iter().enumerate() {
+            assert_eq!(context.variable_index(name), Some(index));
+            let symbol = context.compile_index(index, true).unwrap();
+            assert_eq!(
+                context.expression(symbol, 1).unwrap(),
+                Some((BoolExpr::Symbol(name.clone()), 1))
+            );
+        }
+        let reordered =
+            BddContext::ordered([z.clone(), y.clone(), z.clone(), x.clone(), y.clone()]);
+        assert_eq!(reordered.variable_order(), &[z, y, x]);
+        assert_eq!(context.variable_index(&BoolVariable::Atom(17)), None);
+    }
+}

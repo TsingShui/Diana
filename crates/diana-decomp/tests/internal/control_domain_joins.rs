@@ -41,16 +41,16 @@ fn growing_and_replayed_joins_keep_one_derivation_each_across_saturation() {
             );
         }
         assert_eq!(logic.joins.len(), atoms.len() - 1);
-        assert_eq!(
-            logic.conjunctions.len() + logic.disjunctions.len(),
-            atoms.len() - 2
-        );
+        assert_eq!(logic.junction_index.len(), atoms.len() - 2);
         let pair = logic.node(prefixes[1]).unwrap();
         assert!(matches!(
             pair,
             DomainNode::AndPair(_) | DomainNode::OrPair(_)
         ));
-        assert_eq!(pair.terms(conjunction), Some(atoms[..2].as_ref()));
+        assert_eq!(
+            pair.terms(conjunction, &logic.term_arena),
+            Some(atoms[..2].as_ref())
+        );
         let alternative = logic.junction(atoms[1], atoms[2], conjunction).unwrap();
         let count = logic.joins.len();
         let opposite = logic.not(atoms[0]).unwrap();

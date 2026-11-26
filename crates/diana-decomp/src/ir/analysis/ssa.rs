@@ -105,8 +105,7 @@ pub struct ValueCopy {
 #[derive(Debug, Clone, Default)]
 pub struct SsaValueGraph {
     values: Box<[SsaValue]>,
-    // Offsets into the ordered values, when register numbers fit a compact table.
-    register_starts: Box<[usize]>,
+    registers: RegisterRows,
     phis: Vec<PhiMerge>,
     phi_indices: foldhash::HashMap<SsaVar, usize>,
     copies: Vec<ValueCopy>,
@@ -306,23 +305,8 @@ impl SsaValueGraph {
     }
 
     pub fn value(&self, variable: SsaVar) -> Option<&SsaValue> {
-        let register = variable.reg_num as usize;
-        let values = if self.register_starts.is_empty() {
-            &self.values[..]
-        } else {
-            let starts = self.register_starts.get(register..)?.get(..2)?;
-            let row = &self.values[starts[0]..starts[1]];
-            let first = row.first()?.variable.version;
-            let dense = variable.version.checked_sub(first)? as usize;
-            if let Some(value) = row.get(dense).filter(|value| value.variable == variable) {
-                return Some(value);
-            }
-            row
-        };
-        values
-            .binary_search_by_key(&variable, |value| value.variable)
-            .ok()
-            .map(|index| &values[index])
+        self.registers
+            .find(&self.values, variable, |value| value.variable)
     }
 
     pub fn use_site<'a>(
@@ -437,20 +421,7 @@ struct SsaValueBuilder {
 impl SsaValueBuilder {
     fn finish(mut self) -> SsaValueGraph {
         let values: Box<[_]> = self.values.into_values().collect();
-        if let Some(last) = values.last() {
-            let max = last.variable.reg_num as usize;
-            if values.len() >= 8 && max < values.len() {
-                let mut starts = Vec::with_capacity(max + 2);
-                for (index, value) in values.iter().enumerate() {
-                    let register = value.variable.reg_num as usize;
-                    if register >= starts.len() {
-                        starts.resize(register + 1, index);
-                    }
-                }
-                starts.push(values.len());
-                self.graph.register_starts = starts.into_boxed_slice();
-            }
-        }
+        self.graph.registers = RegisterRows::new(&values, |value| value.variable);
         self.graph.values = values;
         self.graph
     }
@@ -536,8 +507,58 @@ impl SsaValueBuilder {
     }
 }
 
+/// Register offsets into an immutable table ordered by (register, version).
+/// Sparse register identities keep the ordinary sorted lookup. Dense version
+/// rows also support direct addressing without filling missing versions.
+#[derive(Debug, Clone, Default)]
+struct RegisterRows(Box<[usize]>);
+
+impl RegisterRows {
+    fn new<T>(values: &[T], key: impl Fn(&T) -> SsaVar) -> Self {
+        let Some(last) = values.last() else {
+            return Self::default();
+        };
+        let max = key(last).reg_num as usize;
+        if values.len() < 8 || max >= values.len() {
+            return Self::default();
+        }
+        let mut starts = Vec::with_capacity(max + 2);
+        for (index, value) in values.iter().enumerate() {
+            let register = key(value).reg_num as usize;
+            if register >= starts.len() {
+                starts.resize(register + 1, index);
+            }
+        }
+        starts.push(values.len());
+        Self(starts.into_boxed_slice())
+    }
+
+    fn find<'a, T>(
+        &self,
+        values: &'a [T],
+        variable: SsaVar,
+        key: impl Fn(&T) -> SsaVar,
+    ) -> Option<&'a T> {
+        let row = if self.0.is_empty() {
+            values
+        } else {
+            let starts = self.0.get(variable.reg_num as usize..)?.get(..2)?;
+            let row = &values[starts[0]..starts[1]];
+            let direct = variable.version.checked_sub(key(row.first()?).version)? as usize;
+            if let Some(value) = row.get(direct).filter(|value| key(value) == variable) {
+                return Some(value);
+            }
+            row
+        };
+        row.binary_search_by_key(&variable, key)
+            .ok()
+            .map(|index| &row[index])
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CodeVariables {
+    registers: RegisterRows,
     assignments: Vec<(SsaVar, u32)>,
     count: u32,
 }
@@ -561,10 +582,7 @@ impl CodeVariables {
             let Some(variable) = variable else { break };
             assignments.push((variable, assignments.len() as u32));
         }
-        Self {
-            count: assignments.len() as u32,
-            assignments,
-        }
+        Self::from_assignments(assignments.len() as u32, assignments)
     }
 
     pub(super) fn from_classes(mut classes: SsaClasses) -> Self {
@@ -577,9 +595,15 @@ impl CodeVariables {
             let id = *roots.entry(root).or_insert(next);
             assignments.push((variable, id));
         }
+        Self::from_assignments(roots.len() as u32, assignments)
+    }
+
+    fn from_assignments(count: u32, assignments: Vec<(SsaVar, u32)>) -> Self {
+        let registers = RegisterRows::new(&assignments, |entry| entry.0);
         Self {
+            registers,
+            count,
             assignments,
-            count: roots.len() as u32,
         }
     }
 
@@ -603,11 +627,9 @@ impl CodeVariables {
     }
 
     pub(super) fn variable_of(&self, value: SsaVar) -> Option<u32> {
-        let index = self
-            .assignments
-            .binary_search_by_key(&value, |(key, _)| *key)
-            .ok()?;
-        Some(self.assignments[index].1)
+        self.registers
+            .find(&self.assignments, value, |entry| entry.0)
+            .map(|entry| entry.1)
     }
 
     pub(super) fn assignments(&self) -> &[(SsaVar, u32)] {

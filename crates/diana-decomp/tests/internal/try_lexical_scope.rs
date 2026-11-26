@@ -157,3 +157,38 @@ fn normalizer_keeps_normal_children_and_still_rewrites_their_siblings() {
     assert_eq!(ids(&[folder.fold_node(ordinary(8)).unwrap()]), [8]);
     assert_eq!(folder.0, [1, 3, 5]);
 }
+
+#[test]
+fn flat_sequences_prune_a_no_return_suffix_only_after_phi_lowering() {
+    use super::{ReachabilityMode, SemanticNormalization, SourceSemanticNormalizer};
+    use crate::ir::SemanticFolder;
+
+    let sequence = SemanticNode::Sequence(vec![
+        ordinary(1),
+        block(2, InsnType::Invoke, true),
+        ordinary(3),
+    ]);
+    for (normalized, expected) in [
+        (
+            SemanticNormalization::new(ReachabilityMode::PreserveCfgTopology)
+                .rewrite(sequence.clone())
+                .unwrap(),
+            &[1, 2, 3][..],
+        ),
+        (
+            SemanticNormalization::new(ReachabilityMode::PruneUnreachable)
+                .rewrite(sequence.clone())
+                .unwrap(),
+            &[1, 2][..],
+        ),
+        (
+            SourceSemanticNormalizer.fold_node(sequence).unwrap(),
+            &[1, 2][..],
+        ),
+    ] {
+        let SemanticNode::Sequence(nodes) = normalized else {
+            panic!("expected the reachable prefix");
+        };
+        assert_eq!(ids(&nodes), expected);
+    }
+}

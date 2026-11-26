@@ -244,19 +244,19 @@ impl<'a> RegionReducer<'a> {
         )
         .reduce(reduced)?;
         let entries = self.entry_ports.of(region_id)?;
+        let builder = RegionCfgBuilder::new(
+            self.cfg,
+            self.regions,
+            region_id,
+            &children.ordinary,
+            &contraction.ports,
+            &self.anchors,
+            &contraction.flows,
+            entries,
+        );
+        let layout = builder.layout()?;
         if entries.is_empty() {
-            let mut region_cfg = RegionCfgBuilder::new(
-                self.cfg,
-                self.regions,
-                region_id,
-                &children.ordinary,
-                &contraction.ports,
-                &self.anchors,
-                &contraction.flows,
-                entries,
-                None,
-            )
-            .build()?;
+            let mut region_cfg = builder.build(layout, None)?;
             self.prepare_region_cfg(region_id, region, &mut region_cfg)?;
             let body = self.structure_region_cfg(
                 region_id,
@@ -270,19 +270,11 @@ impl<'a> RegionReducer<'a> {
             });
         }
         let mut region_cfgs = BTreeMap::new();
-        for entry in entries {
-            let mut region_cfg = RegionCfgBuilder::new(
-                self.cfg,
-                self.regions,
-                region_id,
-                &children.ordinary,
-                &contraction.ports,
-                &self.anchors,
-                &contraction.flows,
-                entries,
-                Some(*entry),
-            )
-            .build()?;
+        for (entry, layout) in entries
+            .iter()
+            .zip(std::iter::repeat_n(layout, entries.len()))
+        {
+            let mut region_cfg = builder.build(layout, Some(*entry))?;
             self.prepare_region_cfg(region_id, region, &mut region_cfg)?;
             region_cfgs.insert(*entry, region_cfg);
         }
@@ -391,14 +383,10 @@ impl<'a> RegionReducer<'a> {
             let header = region
                 .entry
                 .ok_or(StructureError::MissingEntry(region_id))?;
-            let back_sources = region_cfg
-                .cfg
-                .block_ids()
-                .into_iter()
-                .filter(|source| region_cfg.cfg.has_edge(*source, header))
-                .collect::<Vec<_>>();
-            for source in back_sources {
-                region_cfg.cfg.remove_edge(source, header);
+            for source in region_cfg.cfg.get_predecessors(header) {
+                if region_cfg.cfg.block(source).is_some() {
+                    region_cfg.cfg.remove_edge(source, header);
+                }
             }
         }
         self.observer.observe(crate::ir::AnalysisEvent::RegionCfg {
