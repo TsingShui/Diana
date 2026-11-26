@@ -292,7 +292,7 @@ impl InvokeLayout {
 
 pub struct DecodedFacts<'a> {
     pub owner: crate::p0::OwnerContext<'a>,
-    pub declaration: crate::p0::MethodDeclaration,
+    pub declaration: std::borrow::Cow<'a, crate::p0::MethodDeclaration>,
     pub access_flags: u32,
     pub entry: EntryLayout,
     pub annotations: crate::input::CheckedAnnotations,
@@ -358,7 +358,7 @@ pub struct DecodedMethod<'a> {
     /// One directory moved down the method chain; inspection borrows it.
     items: Vec<DecodedItem>,
     owner: crate::p0::OwnerContext<'a>,
-    declaration: crate::p0::MethodDeclaration,
+    declaration: std::borrow::Cow<'a, crate::p0::MethodDeclaration>,
     access_flags: u32,
     entry: EntryLayout,
     annotations: crate::input::CheckedAnnotations,

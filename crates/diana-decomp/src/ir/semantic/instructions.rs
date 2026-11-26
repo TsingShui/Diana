@@ -221,7 +221,10 @@ impl SemanticInstructions {
             _ => {}
         }
         let root = Self::take_expression(expression);
-        *expression = Self::transform_owned_expression(root, transform)?;
+        *expression = match root {
+            SemanticExpression::Operation(op) => Self::transform_root_operation(op, transform)?,
+            root => Self::transform_owned_expression(root, transform)?,
+        };
         Ok(())
     }
 
@@ -288,10 +291,39 @@ impl SemanticInstructions {
         op: SemanticOperation,
         transform: &mut T,
     ) -> Result<SemanticExpression, SemanticFoldError> {
+        // Keep ordinary expression trees in their existing operand slots. A
+        // bounded call depth hands deep trees to the iterative postorder walk.
+        Self::transform_operation_at_depth(op, transform, 4)
+    }
+
+    fn transform_operation_at_depth<T: SemanticExpressionTransform + ?Sized>(
+        mut op: SemanticOperation,
+        transform: &mut T,
+        depth: u8,
+    ) -> Result<SemanticExpression, SemanticFoldError> {
         if Self::direct_operands(&op) {
             return Ok(Self::transform_direct_operation(op, transform));
         }
-        Self::transform_owned_expression(SemanticExpression::Operation(op), transform)
+        if depth == 0 {
+            return Self::transform_owned_expression(SemanticExpression::Operation(op), transform);
+        }
+        for child in op.children_mut() {
+            match child {
+                SemanticExpression::Register(_) | SemanticExpression::Literal(_) => {
+                    Self::transform_leaf(child, transform);
+                }
+                _ => {
+                    let original = Self::take_expression(child);
+                    *child = match original {
+                        SemanticExpression::Operation(op) => {
+                            Self::transform_operation_at_depth(op, transform, depth - 1)?
+                        }
+                        select => Self::transform_owned_expression(select, transform)?,
+                    };
+                }
+            }
+        }
+        Ok(Self::finish_operation(op, transform))
     }
 
     fn transform_owned_expression<T>(
@@ -375,66 +407,45 @@ impl SemanticInstructions {
     where
         T: SemanticExpressionTransform + ?Sized,
     {
-        if matches!(
-            predicate,
-            SemanticPredicate::True | SemanticPredicate::False
-        ) {
-            return Ok(());
-        }
-        let root = std::mem::replace(predicate, SemanticPredicate::True);
-        if let SemanticPredicate::Test(operation) = root {
-            *predicate = Self::transform_test(operation, transform)?;
-            return Ok(());
-        }
-        let mut pending = vec![PredicateTask::Visit(root)];
-        let mut results = Vec::new();
-        while let Some(task) = pending.pop() {
-            match task {
-                PredicateTask::Visit(SemanticPredicate::Test(operation)) => {
-                    results.push(Self::transform_test(operation, transform)?);
+        let mut pending = smallvec::SmallVec::<[&mut SemanticPredicate; 8]>::new();
+        let mut current = &mut *predicate;
+        let result = loop {
+            match current {
+                SemanticPredicate::Test(_) => {
+                    let SemanticPredicate::Test(operation) =
+                        std::mem::replace(current, SemanticPredicate::True)
+                    else {
+                        unreachable!()
+                    };
+                    match Self::transform_test(operation, transform) {
+                        Ok(test) => *current = test,
+                        Err(error) => break Err(error),
+                    }
                 }
-                PredicateTask::Visit(SemanticPredicate::Not(inner)) => {
-                    pending.push(PredicateTask::Not);
-                    pending.push(PredicateTask::Visit(*inner));
+                SemanticPredicate::Not(inner) => {
+                    current = inner;
+                    continue;
                 }
-                PredicateTask::Visit(SemanticPredicate::And(terms)) => {
-                    pending.push(PredicateTask::Junction {
-                        count: terms.len(),
-                        conjunction: true,
-                    });
-                    pending.extend(terms.into_iter().rev().map(PredicateTask::Visit));
+                SemanticPredicate::And(terms) | SemanticPredicate::Or(terms) => {
+                    if let Some((first, rest)) = terms.split_first_mut() {
+                        pending.extend(rest.iter_mut().rev());
+                        current = first;
+                        continue;
+                    }
                 }
-                PredicateTask::Visit(SemanticPredicate::Or(terms)) => {
-                    pending.push(PredicateTask::Junction {
-                        count: terms.len(),
-                        conjunction: false,
-                    });
-                    pending.extend(terms.into_iter().rev().map(PredicateTask::Visit));
-                }
-                PredicateTask::Visit(leaf) => results.push(leaf),
-                PredicateTask::Not => {
-                    let inner = results.pop().ok_or(SemanticFoldError::MalformedWorkStack)?;
-                    results.push(SemanticPredicate::Not(Box::new(inner)));
-                }
-                PredicateTask::Junction { count, conjunction } => {
-                    let start = results
-                        .len()
-                        .checked_sub(count)
-                        .ok_or(SemanticFoldError::MalformedWorkStack)?;
-                    let terms = results.drain(start..).collect();
-                    results.push(if conjunction {
-                        SemanticPredicate::And(terms)
-                    } else {
-                        SemanticPredicate::Or(terms)
-                    });
-                }
+                SemanticPredicate::True | SemanticPredicate::False => {}
             }
+            let Some(next) = pending.pop() else {
+                break Ok(());
+            };
+            current = next;
+        };
+        drop(pending);
+        if result.is_err() {
+            // An unsuccessful transform leaves the same empty root as taking ownership.
+            *predicate = SemanticPredicate::True;
         }
-        if results.len() != 1 {
-            return Err(SemanticFoldError::MalformedWorkStack);
-        }
-        *predicate = results.pop().ok_or(SemanticFoldError::MalformedWorkStack)?;
-        Ok(())
+        result
     }
 
     fn transform_test<T: SemanticExpressionTransform + ?Sized>(
@@ -467,10 +478,4 @@ enum ExpressionTask {
     Visit(SemanticExpression),
     FinishOperation,
     Select(SemanticPredicate),
-}
-
-enum PredicateTask {
-    Visit(SemanticPredicate),
-    Not,
-    Junction { count: usize, conjunction: bool },
 }

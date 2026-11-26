@@ -26,7 +26,7 @@ impl TypeLattice {
     pub(super) fn solve(
         mut constraints: NormalizedTypeConstraints,
         hierarchy: &dyn TypeHierarchy,
-    ) -> BTreeMap<SsaVar, ArgType> {
+    ) -> super::SsaTypeEnvironment {
         let mut states = std::mem::take(&mut constraints.bounds);
         if !(constraints.flows.is_empty()
             && constraints.upper_flows.is_empty()
@@ -50,17 +50,14 @@ impl TypeLattice {
             }
         }
 
-        let mut types = BTreeMap::new();
-        for (root, state) in states {
-            if let Some(ty) = Self::resolve_state(&state, hierarchy) {
-                types.insert(root, ty);
-            }
-        }
-        // A root belongs to its own equivalence class. Expand only genuine
-        // copies, so singleton components move directly into the result.
+        let resolved = states.into_iter().filter_map(|(root, state)| {
+            Self::resolve_state(&state, hierarchy).map(|ty| (root, ty))
+        });
+        // Singleton components already arrive in register/version order.
         let Some(members) = constraints.members else {
-            return types;
+            return super::SsaTypeEnvironment::from_sorted(resolved.collect());
         };
+        let mut types = resolved.collect::<BTreeMap<_, _>>();
         for (&value, &root) in &members {
             if value != root {
                 if let Some(ty) = types.get(&root) {
@@ -68,8 +65,12 @@ impl TypeLattice {
                 }
             }
         }
-        types.retain(|value, _| members.contains_key(value));
-        types
+        super::SsaTypeEnvironment::from_sorted(
+            types
+                .into_iter()
+                .filter(|(value, _)| members.contains_key(value))
+                .collect(),
+        )
     }
 
     fn propagate(
@@ -532,8 +533,8 @@ mod tests {
 
         let resolved = TypeLattice::solve(constraints, &ClassHierarchyIndex::default());
 
-        assert_eq!(resolved.get(&source), Some(&ArgType::BOOLEAN));
-        assert_eq!(resolved.get(&target), Some(&ArgType::BOOLEAN));
+        assert_eq!(resolved.value_type(source), Some(&ArgType::BOOLEAN));
+        assert_eq!(resolved.value_type(target), Some(&ArgType::BOOLEAN));
     }
 
     #[test]
@@ -563,7 +564,10 @@ mod tests {
 
         let resolved = TypeLattice::solve(constraints, &ClassHierarchyIndex::default());
 
-        assert_eq!(resolved.get(&array), Some(&ArgType::array(value_type)));
+        assert_eq!(
+            resolved.value_type(array),
+            Some(&ArgType::array(value_type))
+        );
     }
 
     #[test]
@@ -623,7 +627,7 @@ mod tests {
         );
         let resolved = TypeLattice::solve(constraints, &hierarchy);
 
-        assert_eq!(resolved.get(&value), Some(&element));
+        assert_eq!(resolved.value_type(value), Some(&element));
     }
 
     #[test]
@@ -645,7 +649,7 @@ mod tests {
 
         let resolved = TypeLattice::solve(constraints, &ClassHierarchyIndex::default());
 
-        assert_eq!(resolved.get(&value), None);
+        assert_eq!(resolved.value_type(value), None);
     }
 
     #[test]
@@ -678,7 +682,7 @@ mod tests {
         );
         let resolved = TypeLattice::solve(constraints, &hierarchy);
 
-        assert_eq!(resolved.get(&value), Some(&view));
+        assert_eq!(resolved.value_type(value), Some(&view));
     }
 }
 

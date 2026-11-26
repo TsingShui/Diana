@@ -101,7 +101,7 @@ pub(super) fn backend_input_from_facts<'a>(
         if !matches!(source.raw(), crate::input::RawPrintable::Method(_)) {
             continue;
         }
-        let decoded = match image.index.decode_method_source(&source) {
+        let decoded = match image.index.decode_scoped_method_source(&source) {
             Ok(decoded) => decoded,
             Err(error) => {
                 methods.push(MethodFacts {

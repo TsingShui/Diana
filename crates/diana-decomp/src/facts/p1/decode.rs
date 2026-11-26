@@ -27,6 +27,40 @@ impl<'a> ProgramIndex<'a> {
         &self,
         source: &MethodSource<'_, 'a>,
     ) -> Result<DecodedOutcome<'a>, MethodError> {
+        self.decode_with_declaration(source, || {
+            source
+                .declaration()
+                .try_copy()
+                .map(std::borrow::Cow::Owned)
+                .map_err(method_error)
+        })
+    }
+
+    /// A consumer that finishes while the original declaration is live can
+    /// borrow it through the same checked P1 product.
+    pub(crate) fn decode_scoped_method_source<'s>(
+        &self,
+        source: &'s MethodSource<'_, 'a>,
+    ) -> Result<DecodedOutcome<'s>, MethodError>
+    where
+        'a: 's,
+    {
+        self.decode_with_declaration(source, || {
+            Ok(std::borrow::Cow::Borrowed(source.declaration()))
+        })
+    }
+
+    fn decode_with_declaration<'d>(
+        &self,
+        source: &MethodSource<'_, 'a>,
+        declaration: impl FnOnce() -> Result<
+            std::borrow::Cow<'d, crate::p0::MethodDeclaration>,
+            MethodError,
+        >,
+    ) -> Result<DecodedOutcome<'d>, MethodError>
+    where
+        'a: 'd,
+    {
         let RawPrintable::Method(code) = source.raw() else {
             return Err(MethodError::InternalInvariant(
                 "P1 was asked to decode a declaration-only source",
@@ -59,7 +93,7 @@ impl<'a> ProgramIndex<'a> {
             Ok(entry) => entry,
             Err(error) => return outcome(code, items, error),
         };
-        let declaration = match source.declaration().try_copy().map_err(method_error) {
+        let declaration = match declaration() {
             Ok(declaration) => declaration,
             Err(error) => return outcome(code, items, error),
         };

@@ -21,7 +21,7 @@ fn unobserved_singleton_endpoint_transmits_evidence_without_becoming_an_output()
     };
     let types = TypeLattice::solve(constraints, &ClassHierarchyIndex::default());
     assert_eq!(
-        types,
-        BTreeMap::from([(source, ArgType::LONG), (target, ArgType::LONG)])
+        types.types,
+        [(source, ArgType::LONG), (target, ArgType::LONG)]
     );
 }

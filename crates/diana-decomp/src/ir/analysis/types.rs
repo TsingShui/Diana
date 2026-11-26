@@ -16,6 +16,7 @@ use crate::ir::{
     ArgType, InsnArg, InsnType, PrimitiveType, RegisterArg, CFG,
 };
 
+use super::ssa::RegisterRows;
 use constraints::TypeConstraintGraph;
 use lattice::TypeLattice;
 
@@ -134,16 +135,23 @@ impl<'a> RegisterTypeEvidence<'a> {
 
 #[derive(Debug, Clone, Default)]
 pub struct SsaTypeEnvironment {
-    types: BTreeMap<SsaVar, ArgType>,
+    types: Vec<(SsaVar, ArgType)>,
+    registers: RegisterRows,
 }
 
 impl SsaTypeEnvironment {
+    fn from_sorted(types: Vec<(SsaVar, ArgType)>) -> Self {
+        let registers = RegisterRows::new(&types, |row| row.0);
+        Self { types, registers }
+    }
+
     pub fn value_type(&self, value: SsaVar) -> Option<&ArgType> {
-        self.types.get(&value)
+        let index = self.registers.position(&self.types, value, |row| row.0)?;
+        Some(&self.types[index].1)
     }
 
     pub fn known_types(&self) -> impl Iterator<Item = &ArgType> {
-        self.types.values()
+        self.types.iter().map(|(_, ty)| ty)
     }
 
     #[track_caller]
@@ -159,7 +167,7 @@ impl SsaTypeEnvironment {
         &'a self,
         register: &'a RegisterArg,
     ) -> Result<RegisterTypeEvidence<'a>, TypeConstraintError> {
-        if let Some(ty) = SsaVar::from_reg(register).and_then(|value| self.types.get(&value)) {
+        if let Some(ty) = SsaVar::from_reg(register).and_then(|value| self.value_type(value)) {
             return Ok(RegisterTypeEvidence::Environment(ty));
         }
         if register.ty.is_known() {
@@ -535,9 +543,7 @@ impl<'a> TypeSolver<'a> {
         constants: &BTreeMap<SsaVar, InsnArg>,
     ) -> Result<SsaTypeEnvironment, TypeConstraintError> {
         let constraints = TypeConstraintGraph::collect(cfg, values, constants)?.normalize();
-        Ok(SsaTypeEnvironment {
-            types: TypeLattice::solve(constraints, self.hierarchy),
-        })
+        Ok(TypeLattice::solve(constraints, self.hierarchy))
     }
 }
 

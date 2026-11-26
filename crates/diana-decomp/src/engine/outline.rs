@@ -183,7 +183,7 @@ impl Builder<'_, '_> {
                 return;
             }
         };
-        let decoded = match image.index.decode_method_source(&source) {
+        let decoded = match image.index.decode_scoped_method_source(&source) {
             Ok(decoded) => decoded,
             Err(error) => {
                 self.issue(format!(
