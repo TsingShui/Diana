@@ -418,9 +418,6 @@ impl InsnPayload {
             && self.invoke_type == other.invoke_type
             && self.no_return == other.no_return
             && self.reference == other.reference
-            && self.string_value == other.string_value
-            && self.class_type == other.class_type
-            && self.cast_type == other.cast_type
             && self.cmp_bias == other.cmp_bias
             && self.is_static == other.is_static
             && self.is_get == other.is_get
@@ -436,7 +433,10 @@ impl InsnPayload {
         if std::ptr::eq(left, right) {
             return true;
         }
-        left.fill_array_data == right.fill_array_data
+        left.string_value == right.string_value
+            && left.class_type == right.class_type
+            && left.cast_type == right.cast_type
+            && left.fill_array_data == right.fill_array_data
             && match (&left.switch_cases, &right.switch_cases) {
                 (Some(left), Some(right)) => left
                     .iter()
@@ -612,18 +612,6 @@ pub struct InsnPayload {
     /// its owner, original name and parameter types.
     pub reference: Option<std::sync::Arc<super::MemberReference>>,
 
-    /// For ConstStr: string value
-    pub string_value: Option<Box<super::Utf16String>>,
-
-    /// For ConstStr: string index in DEX string pool
-    pub string_index: Option<u32>,
-
-    /// For ConstClass: class type
-    pub class_type: Option<Box<ArgType>>,
-
-    /// For type-related ops: type index in DEX type pool
-    pub type_index: Option<u32>,
-
     /// For field ops: field index in DEX field pool
     pub field_index: Option<u32>,
 
@@ -645,9 +633,6 @@ pub struct InsnPayload {
     /// For Cmp: comparison bias
     pub cmp_bias: Option<CmpBias>,
 
-    /// For Cast: target type
-    pub cast_type: Option<Box<ArgType>>,
-
     /// For compound assignments: statement target expression.
     pub compound_target: Option<Box<InsnArg>>,
 
@@ -656,10 +641,25 @@ pub struct InsnPayload {
     extended: Option<std::sync::Arc<ExtendedInsnPayload>>,
 }
 
-/// Switch tables, decoded data and facts created by SSA or structuring. An
+/// String and type constants, decoded tables and facts created by SSA. An
 /// instruction clone can share this data until its own pass edits it.
 #[derive(Debug, Clone, Default)]
 pub struct ExtendedInsnPayload {
+    /// For ConstStr: string value
+    pub string_value: Option<Box<super::Utf16String>>,
+
+    /// For ConstStr: string index in DEX string pool
+    pub string_index: Option<u32>,
+
+    /// For ConstClass: class type
+    pub class_type: Option<Box<ArgType>>,
+
+    /// For type-related ops: type index in DEX type pool
+    pub type_index: Option<u32>,
+
+    /// For Cast: target type
+    pub cast_type: Option<Box<ArgType>>,
+
     /// For Switch: switch cases (value -> offset)
     pub switch_cases: Option<Box<Vec<(i32, i32)>>>,
 
@@ -687,6 +687,11 @@ impl std::ops::Deref for InsnPayload {
 
     fn deref(&self) -> &Self::Target {
         static EMPTY: ExtendedInsnPayload = ExtendedInsnPayload {
+            string_value: None,
+            string_index: None,
+            class_type: None,
+            type_index: None,
+            cast_type: None,
             switch_cases: None,
             switch_default: None,
             fill_array_data: None,

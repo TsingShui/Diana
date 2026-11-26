@@ -265,8 +265,7 @@ impl DominatorTree {
             return Err(DominanceError::Unreachable(unreachable));
         }
 
-        let mut algorithm = LengauerTarjan::new(traversal, &topology);
-        drop(topology);
+        let mut algorithm = LengauerTarjan::new(traversal, topology);
         Self::from_parents(entry, algorithm.compute()?)
     }
 
@@ -715,80 +714,94 @@ impl DepthFirstNumbering {
 }
 
 struct LengauerTarjan {
-    vertices: Vec<BlockId>,
+    blocks: Vec<BlockId>,
+    traversal: DepthFirstNumbering,
     predecessors: Vec<Neighbors>,
-    parents: Vec<Option<usize>>,
     semi: Vec<usize>,
     labels: Vec<usize>,
     ancestors: Vec<Option<usize>>,
-    buckets: Vec<Vec<usize>>,
+    bucket_tails: Vec<usize>,
+    next_member: Vec<usize>,
+    path: Vec<usize>,
     immediate: Vec<Option<usize>>,
 }
 
 impl LengauerTarjan {
-    fn new(traversal: DepthFirstNumbering, topology: &Topology) -> Self {
+    fn new(traversal: DepthFirstNumbering, topology: Topology) -> Self {
         let count = traversal.vertices.len();
-        let predecessor_indices = traversal
-            .vertices
-            .iter()
-            .map(|&node| {
-                topology.predecessors[node]
-                    .iter()
-                    .map(|&source| traversal.indices[source])
-                    .filter(|&index| index != usize::MAX)
-                    .collect()
-            })
-            .collect();
         Self {
-            vertices: traversal
-                .vertices
-                .into_iter()
-                .map(|node| topology.nodes[node])
-                .collect(),
-            predecessors: predecessor_indices,
-            parents: traversal.parents,
+            blocks: topology.nodes,
+            traversal,
+            predecessors: topology.predecessors,
             semi: (0..count).collect(),
             labels: (0..count).collect(),
             ancestors: vec![None; count],
-            buckets: vec![Vec::new(); count],
+            bucket_tails: vec![0; count],
+            next_member: vec![0; count],
+            path: Vec::new(),
             immediate: vec![None; count],
         }
     }
 
+    fn block(&self, number: usize) -> BlockId {
+        self.blocks[self.traversal.vertices[number]]
+    }
+
+    // Each non-root DFS vertex enters exactly one bucket. A circular list
+    // preserves insertion order with one tail per bucket and one link per
+    // vertex. Zero denotes an empty bucket because the root is never queued.
+    fn enqueue(&mut self, node: usize) {
+        let tail = &mut self.bucket_tails[self.semi[node]];
+        self.next_member[node] = if *tail == 0 {
+            node
+        } else {
+            std::mem::replace(&mut self.next_member[*tail], node)
+        };
+        *tail = node;
+    }
+
     fn compute(&mut self) -> Result<Vec<DominatorNode>, DominanceError> {
-        for node in (1..self.vertices.len()).rev() {
-            for i in 0..self.predecessors[node].len() {
-                let predecessor = self.predecessors[node][i];
+        for node in (1..self.traversal.vertices.len()).rev() {
+            let physical = self.traversal.vertices[node];
+            for i in 0..self.predecessors[physical].len() {
+                let predecessor = self.traversal.indices[self.predecessors[physical][i]];
+                if predecessor == usize::MAX {
+                    continue;
+                }
                 let representative = self.evaluate(predecessor)?;
                 self.semi[node] = self.semi[node].min(self.semi[representative]);
             }
-            self.buckets[self.semi[node]].push(node);
-            let parent =
-                self.parents[node].ok_or(DominanceError::InvalidTraversal(self.vertices[node]))?;
+            self.enqueue(node);
+            let parent = self.traversal.parents[node]
+                .ok_or_else(|| DominanceError::InvalidTraversal(self.block(node)))?;
             self.ancestors[node] = Some(parent);
-            for member in std::mem::take(&mut self.buckets[parent]) {
+            let tail = std::mem::take(&mut self.bucket_tails[parent]);
+            let mut member = std::mem::take(&mut self.next_member[tail]);
+            while member != 0 {
                 let representative = self.evaluate(member)?;
                 self.immediate[member] = Some(if self.semi[representative] < self.semi[member] {
                     representative
                 } else {
                     parent
                 });
+                member = self.next_member[member];
             }
         }
-        for node in 1..self.vertices.len() {
+        for node in 1..self.traversal.vertices.len() {
             if self.immediate[node] != Some(self.semi[node]) {
                 let provisional = self.immediate[node]
-                    .ok_or(DominanceError::MissingDominator(self.vertices[node]))?;
+                    .ok_or_else(|| DominanceError::MissingDominator(self.block(node)))?;
                 self.immediate[node] = self.immediate[provisional];
             }
         }
         Ok(self
+            .traversal
             .vertices
             .iter()
             .enumerate()
             .map(|(i, &block)| DominatorNode {
-                block,
-                parent: self.immediate[i].map(|parent| self.vertices[parent]),
+                block: self.blocks[block],
+                parent: self.immediate[i].map(|parent| self.block(parent)),
                 children: Default::default(),
                 preorder: 0,
                 subtree_end: 0,
@@ -800,18 +813,18 @@ impl LengauerTarjan {
         if self.ancestors[node].is_none() {
             return Ok(self.labels[node]);
         }
-        let mut path = Vec::new();
+        self.path.clear();
         let mut current = node;
         while let Some(parent) = self.ancestors[current] {
             if self.ancestors[parent].is_none() {
                 break;
             }
-            path.push(current);
+            self.path.push(current);
             current = parent;
         }
-        for member in path.into_iter().rev() {
+        for &member in self.path.iter().rev() {
             let parent = self.ancestors[member]
-                .ok_or(DominanceError::InvalidTraversal(self.vertices[member]))?;
+                .ok_or_else(|| DominanceError::InvalidTraversal(self.block(member)))?;
             if self.semi[self.labels[parent]] < self.semi[self.labels[member]] {
                 self.labels[member] = self.labels[parent];
             }

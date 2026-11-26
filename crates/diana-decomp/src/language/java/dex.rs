@@ -1753,9 +1753,8 @@ impl DexJavaDialect {
                     .filter(|ty| self.source_erasure(ty).as_ref() == Some(allocation_owner))
                     .filter(|ty| !self.is_raw_generic_type(ty))
                     .cloned();
-                let contract = self.generic_methods.get(method).cloned();
+                let contract = self.generic_methods.get(method);
                 let mut constraints = contract
-                    .as_ref()
                     .map(|contract| {
                         self.solver(&contract.owner, &contract.signature.type_parameters)
                     })
@@ -1772,7 +1771,7 @@ impl DexJavaDialect {
                         .as_deref()
                         .and_then(|projection| projection.infer_subtype(allocation_owner, expected))
                 });
-                if let Some(contract) = &contract {
+                if let Some(contract) = contract {
                     if allocation_owner == &method.owner {
                         if let Some(allocation_type) = analyzed_allocation_type
                             .as_ref()
@@ -1802,7 +1801,6 @@ impl DexJavaDialect {
                     .enumerate()
                     .map(|(index, _)| {
                         contract
-                            .as_ref()
                             .and_then(|contract| contract.signature.parameter_types.get(index))
                             .and_then(|formal| constraints.invocation_input_type(formal))
                     })
@@ -1817,7 +1815,7 @@ impl DexJavaDialect {
                 let inferred_allocation_type = analyzed_allocation_type
                     .or_else(|| {
                         needs_inferred_allocation
-                            .then(|| match contract.as_ref() {
+                            .then(|| match contract {
                                 Some(contract)
                                     if constraints
                                         .satisfies_declared_bounds(&contract.owner_parameters) =>
@@ -1979,10 +1977,10 @@ impl DexJavaDialect {
     ) -> Option<(
         GenericTypeSolver<'_>,
         &'operation [SemanticExpression],
-        GenericMethodContract,
+        &GenericMethodContract,
     )> {
         let method = Self::method(operation.payload.reference.as_deref()).ok()?;
-        let contract = self.generic_methods.get(method)?.clone();
+        let contract = self.generic_methods.get(method)?;
         let invoke_type = operation.payload.invoke_type?;
         let is_static = !invoke_type.has_receiver();
         let mut solver = self.solver(&contract.owner, &contract.signature.type_parameters);
@@ -2049,7 +2047,7 @@ impl DexJavaDialect {
             else {
                 continue;
             };
-            let result = invocation_expression_signature(nested_operation, &nested_contract);
+            let result = invocation_expression_signature(nested_operation, nested_contract);
             GenericTypeRelation::converge(&mut solver, formal, &mut nested, result.as_ref());
         }
         let receiver_has_evidence = operation
@@ -2192,16 +2190,15 @@ impl DexJavaDialect {
                 field: "invoke_type",
             })?;
         let is_static = !invoke_type.has_receiver();
-        let contract = self.generic_methods.get(method).cloned();
+        let contract = self.generic_methods.get(method);
         let mut constraints = contract
-            .as_ref()
             .map(|contract| self.solver(&contract.owner, &contract.signature.type_parameters))
             .unwrap_or_else(|| {
                 GenericTypeSolver::new(&self.source_types)
                     .with_erasure_index(Some(Arc::clone(&self.source_erasures)))
                     .with_projection(self.generic_type_projection.as_deref())
             });
-        if let Some(contract) = &contract {
+        if let Some(contract) = contract {
             if !is_static {
                 if let Some(receiver) = insn.operands().first() {
                     self.constrain_invocation_owner(
@@ -2242,7 +2239,7 @@ impl DexJavaDialect {
                 else {
                     continue;
                 };
-                let result = invocation_expression_signature(operation, &nested_contract);
+                let result = invocation_expression_signature(operation, nested_contract);
                 GenericTypeRelation::converge(
                     &mut constraints,
                     formal,
@@ -2269,7 +2266,7 @@ impl DexJavaDialect {
                 || insn.operands().first().is_some_and(|receiver| {
                     self.expression_declares_concrete_generic_type(receiver)
                 }));
-        let inferred_receiver_source_type = contract.as_ref().and_then(|contract| {
+        let inferred_receiver_source_type = contract.and_then(|contract| {
             (receiver_is_poly_invocation && !receiver_has_evidence)
                 .then(|| {
                     self.owner_inferred_from_arguments(insn, method, contract, expected_source_type)
@@ -2279,13 +2276,13 @@ impl DexJavaDialect {
         });
         if receiver_is_poly_invocation && !receiver_has_evidence {
             if let (Some(contract), Some(inferred)) =
-                (contract.as_ref(), inferred_receiver_source_type.as_ref())
+                (contract, inferred_receiver_source_type.as_ref())
             {
                 constraints.constrain_owner(&contract.owner, inferred);
                 constraints.complete_with_bounds(&contract.signature.type_parameters);
             }
         }
-        let receiver_requires_capture_conversion = contract.as_ref().is_some_and(|contract| {
+        let receiver_requires_capture_conversion = contract.is_some_and(|contract| {
             constraints.owner_requires_capture_conversion(
                 &contract.owner,
                 &contract.signature.parameter_types,
@@ -2333,7 +2330,6 @@ impl DexJavaDialect {
             .get(usize::from(!is_static)..)
             .unwrap_or_default();
         let mut argument_source_types = contract
-            .as_ref()
             .map(|contract| {
                 contract
                     .signature
@@ -2352,7 +2348,6 @@ impl DexJavaDialect {
             })
             .unwrap_or_default();
         let capture_witness_targets = contract
-            .as_ref()
             .and_then(|contract| {
                 constraints.capture_witness_specialization(
                     &contract.signature.type_parameters,
@@ -2361,7 +2356,6 @@ impl DexJavaDialect {
             })
             .map(|specialized| {
                 contract
-                    .as_ref()
                     .expect("capture witness requires a generic contract")
                     .signature
                     .parameter_types
@@ -2370,7 +2364,6 @@ impl DexJavaDialect {
                     .collect::<Vec<_>>()
             });
         let unchecked_arguments = contract
-            .as_ref()
             .map(|contract| {
                 contract
                     .signature
@@ -2404,7 +2397,6 @@ impl DexJavaDialect {
         let explicit_invocation = inferred_inputs_are_sound
             .then(|| {
                 contract
-                    .as_ref()
                     .filter(|contract| {
                         contract
                             .signature
@@ -2530,23 +2522,19 @@ impl DexJavaDialect {
                 {
                     target_type = Some(requirement.clone());
                 }
-                if target_type.is_none()
+                let parameterized_select = target_type.is_none()
                     && matches!(arg, SemanticExpression::Select { .. })
-                    && contract
-                        .as_ref()
+                    && self
+                        .generic_methods
+                        .get(method)
                         .and_then(|contract| contract.signature.parameter_types.get(index))
-                        .is_some_and(Self::signature_is_parameterized)
-                {
+                        .is_some_and(Self::signature_is_parameterized);
+                if parameterized_select {
                     target_type = self
                         .source_expression_type(arg)
                         .filter(|target| self.has_generic_argument_evidence(target));
                 }
-                let unresolved_poly_select = target_type.is_none()
-                    && matches!(arg, SemanticExpression::Select { .. })
-                    && contract
-                        .as_ref()
-                        .and_then(|contract| contract.signature.parameter_types.get(index))
-                        .is_some_and(Self::signature_is_parameterized);
+                let unresolved_poly_select = parameterized_select && target_type.is_none();
                 let expression = match target_type.as_ref() {
                     Some(target_type) => self.arg_as_source_target(arg, expected, target_type)?,
                     None
@@ -3195,7 +3183,7 @@ impl DexJavaDialect {
                         GenericInvocationCompatibility::requires_unchecked_conversion(
                             formal,
                             &actual,
-                            &contract,
+                            contract,
                             &self.source_types,
                         )
                     })

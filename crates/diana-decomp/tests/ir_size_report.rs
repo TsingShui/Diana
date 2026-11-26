@@ -50,19 +50,15 @@ fn report_core_ir_sizes() {
     );
     eprintln!("sizeof CFG             = {}", std::mem::size_of::<CFG>());
 
-    // Regression guard: the rare/heavy payload fields (reference, string_value,
-    // class_type, switch_cases, cast_type, fill_array_data, compound_target) are
-    // boxed precisely so the hot per-instruction footprint stays small. Every
-    // decoded archive holds millions of payloads, so even +8 bytes here is a
-    // real memory win handed back. Raise these bounds only alongside a
-    // documented memory-profile win.
+    // Most instructions need only the inline flags, indices and operand handles.
+    // Copies share the optional decoded constants and tables until edited.
     assert!(
-        std::mem::size_of::<InsnPayload>() <= 184,
+        std::mem::size_of::<InsnPayload>() <= 64,
         "InsnPayload grew to {} bytes; payload fields are boxed to keep it small",
         std::mem::size_of::<InsnPayload>()
     );
     assert!(
-        std::mem::size_of::<InsnNode>() <= 280,
+        std::mem::size_of::<InsnNode>() <= 160,
         "InsnNode grew to {} bytes; payload fields are boxed to keep it small",
         std::mem::size_of::<InsnNode>()
     );
@@ -139,4 +135,35 @@ fn immutable_operand_types_and_reference_clones_preserve_dex_identity() {
         assert!(matches!(candidates, std::borrow::Cow::Borrowed(_)));
         assert_eq!(candidates.as_ref(), candidates.clone().as_ref());
     }
+}
+
+#[test]
+fn editing_decoded_constants_preserves_other_instruction_copies() {
+    use diana_decomp::ir::{InsnType, InstructionEquivalence};
+    let mut original = InsnNode::new(InsnType::ConstStr, 0);
+    original.payload.string_index = Some(7);
+    original.payload.string_value = Some(Box::new("original".into()));
+    let mut changed = original.clone();
+    changed.payload.string_index = Some(11);
+    assert!(original.operation_equivalent(&changed));
+    changed.payload.string_value = Some(Box::new("changed".into()));
+    assert!(!original.operation_equivalent(&changed));
+    assert_eq!(original.payload.string_index, Some(7));
+    assert_eq!(
+        original
+            .payload
+            .string_value
+            .as_deref()
+            .unwrap()
+            .to_string_lossy(),
+        "original"
+    );
+
+    let mut cast = InsnNode::new(InsnType::Cast, 0);
+    cast.payload.cast_type = Some(Box::new(ArgType::INT));
+    let mut other = cast.clone();
+    other.payload.cast_type = Some(Box::new(ArgType::LONG));
+    assert_eq!(cast.conversion_type(), Some(&ArgType::INT));
+    assert_eq!(other.conversion_type(), Some(&ArgType::LONG));
+    assert!(!cast.operation_equivalent(&other));
 }

@@ -634,7 +634,7 @@ pub struct PlatformSymbolSet {
     store: SymbolStore,
     selected: Vec<u32>,
     positions: Option<HashMap<Box<str>, usize>>,
-    slots: Box<[OnceLock<Option<PlatformClass>>]>,
+    slots: Box<[OnceLock<Option<Box<PlatformClass>>>]>,
 }
 
 enum SymbolStore {
@@ -724,8 +724,13 @@ impl PlatformSymbolSet {
             SymbolStore::Archive(archive) => {
                 let position = self.position(descriptor)?;
                 self.slots[position]
-                    .get_or_init(|| archive.decode_record(self.selected[position]).ok())
-                    .as_ref()
+                    .get_or_init(|| {
+                        archive
+                            .decode_record(self.selected[position])
+                            .ok()
+                            .map(Box::new)
+                    })
+                    .as_deref()
             }
         }
     }

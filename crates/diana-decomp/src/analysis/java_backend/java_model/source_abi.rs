@@ -1317,22 +1317,20 @@ impl JavaSourceAbi {
                 return result.clone();
             }
         }
-        let result = self
-            .generic_hierarchy
-            .as_ref()
-            .and_then(|hierarchy| hierarchy.method_contract(method))
-            .or_else(|| {
-                self.platform_generic_hierarchy
-                    .as_ref()
-                    .and_then(|hierarchy| hierarchy.method_contract(method))
-            })
-            .or_else(|| {
-                if method.is_constructor() {
-                    None
-                } else {
-                    self.inherited_generic_method(method)
-                }
-            });
+        let result = match (&self.generic_hierarchy, &self.platform_generic_hierarchy) {
+            (Some(primary), Some(platform)) => {
+                primary.method_contract_with_platform(method, platform)
+            }
+            (Some(hierarchy), None) | (None, Some(hierarchy)) => hierarchy.method_contract(method),
+            (None, None) => None,
+        }
+        .or_else(|| {
+            if method.is_constructor() {
+                None
+            } else {
+                self.inherited_generic_method(method)
+            }
+        });
         if let Ok(mut cache) = self.resolved_methods.write() {
             cache.insert(method.clone(), result.clone());
         }

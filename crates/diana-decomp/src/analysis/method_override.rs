@@ -1176,7 +1176,38 @@ impl GenericTypeHierarchy {
         &self,
         method: &crate::ir::MethodReference,
     ) -> Option<GenericMethodContract> {
-        let declared = self.hierarchy.class_details(&method.owner)?;
+        Self::lookup_method_contract(&ContractHierarchy::new(&self.hierarchy), method)
+    }
+
+    pub(crate) fn method_contract_with_platform(
+        &self,
+        method: &crate::ir::MethodReference,
+        platform: &Self,
+    ) -> Option<GenericMethodContract> {
+        let query = ContractHierarchy::new(&self.hierarchy);
+        Self::lookup_method_contract(&query, method).or_else(|| {
+            // If every class lookup saw the same platform, the second search
+            // would revisit identical owner, parent and lexical binding facts.
+            let same_platform = platform.hierarchy.loaded.classes.is_empty()
+                && self
+                    .hierarchy
+                    .platform
+                    .as_ref()
+                    .zip(platform.hierarchy.platform.as_ref())
+                    .is_some_and(|(left, right)| Arc::ptr_eq(left, right));
+            if query.used_loaded.get() || !same_platform {
+                platform.method_contract(method)
+            } else {
+                None
+            }
+        })
+    }
+
+    fn lookup_method_contract(
+        hierarchy: &ContractHierarchy<'_>,
+        method: &crate::ir::MethodReference,
+    ) -> Option<GenericMethodContract> {
+        let declared = hierarchy.class_details(&method.owner)?;
         let owner_parameters = declared
             .generic_signature
             .as_ref()
@@ -1195,7 +1226,7 @@ impl GenericTypeHierarchy {
         let short_id = format!("{}{}", method.name, method.descriptor);
         let occurrence = JvmTypeSignature::ClassType(open_owner);
         let signature = find_in_bound_hierarchy(
-            &self.hierarchy,
+            hierarchy,
             &declared,
             &occurrence,
             !method.is_constructor(),
@@ -1565,15 +1596,42 @@ impl CompositeClassHierarchy {
             platform: Some(PlatformClassSet::default_cached()?),
         })
     }
+
+    fn lookup(&self, ty: &ArgType, loaded: impl FnOnce()) -> Option<Arc<ClassDetails>> {
+        if let Some(class) = self.loaded.class_details(ty) {
+            loaded();
+            Some(class)
+        } else {
+            self.platform
+                .as_ref()
+                .and_then(|platform| platform.class_details(ty))
+        }
+    }
 }
 
 impl ClassHierarchy for CompositeClassHierarchy {
     fn class_details(&self, ty: &ArgType) -> Option<Arc<ClassDetails>> {
-        self.loaded.class_details(ty).or_else(|| {
-            self.platform
-                .as_ref()
-                .and_then(|platform| platform.class_details(ty))
-        })
+        self.lookup(ty, || {})
+    }
+}
+
+struct ContractHierarchy<'a> {
+    hierarchy: &'a CompositeClassHierarchy,
+    used_loaded: std::cell::Cell<bool>,
+}
+
+impl<'a> ContractHierarchy<'a> {
+    fn new(hierarchy: &'a CompositeClassHierarchy) -> Self {
+        Self {
+            hierarchy,
+            used_loaded: Default::default(),
+        }
+    }
+}
+
+impl ClassHierarchy for ContractHierarchy<'_> {
+    fn class_details(&self, ty: &ArgType) -> Option<Arc<ClassDetails>> {
+        self.hierarchy.lookup(ty, || self.used_loaded.set(true))
     }
 }
 
@@ -1601,18 +1659,9 @@ impl PlatformClassSet {
     }
 
     pub fn default_cached() -> io::Result<Arc<Self>> {
-        static DEFAULT_SYMBOLS: OnceLock<Arc<PlatformClassSet>> = OnceLock::new();
-        if let Some(platform) = DEFAULT_SYMBOLS.get() {
-            return Ok(Arc::clone(platform));
-        }
-        let platform = Arc::new(Self::load_default()?);
-        match DEFAULT_SYMBOLS.set(Arc::clone(&platform)) {
-            Ok(()) => Ok(platform),
-            Err(_) => DEFAULT_SYMBOLS
-                .get()
-                .map(Arc::clone)
-                .ok_or_else(|| io::Error::other("platform symbol cache publication failed")),
-        }
+        static DEFAULT_SYMBOLS: crate::platform_symbols::PlatformCache<PlatformClassSet> =
+            crate::platform_symbols::PlatformCache::new();
+        DEFAULT_SYMBOLS.get_or_load(Self::load_default)
     }
 
     pub(crate) fn freeze_details(&self) {
@@ -2047,6 +2096,10 @@ impl MetadataDecoder {
             })
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/internal/abi_contract_lookup.rs"]
+mod contract_lookup_tests;
 
 #[cfg(test)]
 #[path = "method_override/tests.rs"]
