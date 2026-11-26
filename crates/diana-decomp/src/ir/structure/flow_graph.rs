@@ -186,13 +186,14 @@ impl FlowTransfer {
 struct FlowNode {
     body: SemanticNode,
     transfer: FlowTransfer,
-    facts: FlowBodyFacts,
+    facts: FlowNodeFacts,
 }
 
 #[derive(Debug, Clone, Default)]
-struct FlowBodyFacts {
+struct FlowNodeFacts {
     embedded_uses: std::cell::OnceCell<Box<[(BlockId, usize)]>>,
     completion: std::cell::OnceCell<FlowCompletion>,
+    reached: bool,
 }
 
 // The proof may request further graph reduction. Keep every body and its
@@ -241,7 +242,7 @@ impl FlowCompletion {
 
 impl FlowNode {
     fn take_body(&mut self) -> SemanticNode {
-        self.facts = FlowBodyFacts::default();
+        self.facts = FlowNodeFacts::default();
         std::mem::replace(&mut self.body, SemanticNode::Empty)
     }
 
@@ -384,13 +385,13 @@ impl SemanticFlowGraph {
         })
     }
 
-    pub(super) fn build(
+    pub(super) fn structure(
         cfg: &CFG,
         semantic: &SemanticFactory<'_>,
         region: RegionId,
         mut seeded: BTreeMap<BlockId, SemanticNode>,
         fragments: &BTreeSet<BlockId>,
-    ) -> Result<Self, StructureError> {
+    ) -> Result<SemanticNode, StructureError> {
         let graph_nodes = cfg.graph_node_ids().into_iter().collect::<BTreeSet<_>>();
         let mut nodes = BTreeMap::new();
         for block in &graph_nodes {
@@ -442,7 +443,8 @@ impl SemanticFlowGraph {
             exits: BTreeSet::new(),
         };
         graph.prune();
-        Ok(graph)
+        let budget = PatternReductionBudget::for_nodes(graph.nodes.len());
+        graph.reduce_pruned(semantic, budget).map(|(body, _)| body)
     }
 
     fn transfer(
@@ -499,20 +501,22 @@ impl SemanticFlowGraph {
         }
     }
 
-    pub(super) fn reduce(
-        self,
-        semantic: &SemanticFactory<'_>,
-    ) -> Result<SemanticNode, StructureError> {
-        self.reduce_state(semantic).map(|(body, _)| body)
-    }
-
     fn reduce_state(
         mut self,
         semantic: &SemanticFactory<'_>,
     ) -> Result<(SemanticNode, u32), StructureError> {
-        let mut pattern_budget = PatternReductionBudget::for_nodes(self.nodes.len());
+        // A nested arm's budget is set from its original domain.
+        let budget = PatternReductionBudget::for_nodes(self.nodes.len());
+        self.prune();
+        self.reduce_pruned(semantic, budget)
+    }
+
+    fn reduce_pruned(
+        mut self,
+        semantic: &SemanticFactory<'_>,
+        mut pattern_budget: PatternReductionBudget,
+    ) -> Result<(SemanticNode, u32), StructureError> {
         loop {
-            self.prune();
             FragmentNormalizer::apply(&mut self)?;
             self.bind_embedded_continuations()?;
             self.verify_lexical_domains()?;
@@ -563,6 +567,7 @@ impl SemanticFlowGraph {
                     .ok_or(StructureError::MalformedFlowGraph(self.region))?;
                 self.collapse_loop(component, header, semantic)?;
             }
+            self.prune();
         }
     }
 
@@ -1145,19 +1150,26 @@ impl SemanticFlowGraph {
     }
 
     fn prune(&mut self) {
-        let mut reachable = BTreeSet::new();
+        // Reachability only needs membership. Follow the original transfers
+        // directly, including embedded exits whose destination is in this graph.
         let mut pending = vec![self.entry];
-        while let Some(node) = pending.pop() {
-            if !self.nodes.contains_key(&node) || !reachable.insert(node) {
+        while let Some(block) = pending.pop() {
+            let Some(node) = self.nodes.get_mut(&block) else {
+                continue;
+            };
+            if node.facts.reached {
                 continue;
             }
+            node.facts.reached = true;
+            pending.extend(node.transfer.targets());
             pending.extend(
-                self.targets(node)
-                    .into_iter()
-                    .filter(|target| self.nodes.contains_key(target)),
+                node.embedded_uses(self.region)
+                    .iter()
+                    .map(|&(target, _)| target),
             );
         }
-        self.nodes.retain(|node, _| reachable.contains(node));
+        self.nodes
+            .retain(|_, node| std::mem::take(&mut node.facts.reached));
     }
 
     fn topological_order(&self, topology: &FlowTopology) -> Result<Vec<BlockId>, StructureError> {

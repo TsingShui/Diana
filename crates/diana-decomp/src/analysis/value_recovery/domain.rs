@@ -126,10 +126,14 @@ impl DomainLogic {
     const FALSE: ControlDomain = ControlDomain(1);
 
     pub(super) fn new(variables: &BTreeSet<BoolVariable>) -> Self {
-        let bdd = if variables.is_empty() {
+        Self::ordered(variables.iter().cloned())
+    }
+
+    pub(super) fn ordered(variables: impl ExactSizeIterator<Item = BoolVariable>) -> Self {
+        let bdd = if variables.len() == 0 {
             OnceCell::new()
         } else {
-            OnceCell::from(BddContext::new(variables))
+            OnceCell::from(BddContext::ordered(variables))
         };
         Self {
             nodes: Vec::new(),

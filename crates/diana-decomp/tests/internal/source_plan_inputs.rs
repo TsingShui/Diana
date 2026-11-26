@@ -491,3 +491,49 @@ fn copy_origins_preserve_cycle_entries_and_retained_definitions() {
         }
     }
 }
+
+#[test]
+fn replicated_predicate_occurrences_follow_the_selected_tests_effects() {
+    use crate::ir::analysis::SemanticFlowPoint;
+    use crate::ir::{
+        InstructionId, SemanticExpression, SemanticOperand, SemanticOperation, SemanticPredicate,
+    };
+
+    let instruction = InstructionId::new(17);
+    let guard = |number, reads_field| {
+        let mut branch = InsnNode::new(InsnType::If, 1);
+        branch.id = instruction;
+        let operand = if reads_field {
+            SemanticExpression::operation(InsnNode::new(InsnType::Sget, 0)).unwrap()
+        } else {
+            SemanticExpression::from_argument(InsnArg::lit(1, ArgType::INT)).unwrap()
+        };
+        let test = SemanticOperation::from_parts(branch, vec![operand], None);
+        let mut condition = SemanticOperand::new(SemanticPredicate::Test(test));
+        condition.site = Some(SemanticSiteId(number));
+        SemanticNode::If {
+            condition,
+            then_node: Box::new(SemanticNode::Empty),
+            else_node: None,
+        }
+    };
+    for final_read in [false, true] {
+        let root = SemanticNode::Sequence(vec![guard(7, !final_read), guard(12, final_read)]);
+        let graph = ValueFlowGraph::build_source(&root, &BTreeSet::new()).unwrap();
+        let points = graph
+            .predicate_uses
+            .get(&instruction)
+            .into_iter()
+            .flatten()
+            .map(|fact| fact.operand_point)
+            .collect::<Vec<_>>();
+        if final_read {
+            assert_eq!(
+                points,
+                [7, 12].map(|n| SemanticFlowPoint::before(SemanticSiteId(n)))
+            );
+        } else {
+            assert!(points.is_empty());
+        }
+    }
+}

@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn binary_apply_preserves_the_truth_table_of_every_three_variable_function() {
+fn boolean_operations_preserve_the_truth_table_of_every_three_variable_function() {
     let names = (0..3).map(BoolVariable::Atom).collect::<BTreeSet<_>>();
     let context = BddContext::new(&names);
     // This test deliberately queries many more pairs in one context than a
@@ -47,6 +47,7 @@ fn binary_apply_preserves_the_truth_table_of_every_three_variable_function() {
         for (j, &b) in functions.iter().enumerate() {
             assert_eq!(context.and(a, b).unwrap(), functions[i & j]);
             assert_eq!(context.or(a, b).unwrap(), functions[i | j]);
+            assert_eq!(context.implies_bdd(a, b).unwrap(), i & !j == 0);
         }
     }
 }
@@ -240,4 +241,34 @@ fn implication_pairs_are_charged_once_per_traversal_across_spills_and_restarts()
             assert!(!work.visit(id << 16 | (id + 1)));
         }
     }
+}
+
+#[test]
+fn implication_checks_the_high_proof_before_reporting_a_false_low_cofactor() {
+    let context = BddContext::ordered((0..3).map(BoolVariable::Atom));
+    let variables: Vec<_> = (0..3)
+        .map(|i| {
+            context
+                .compile_literal(&BoolVariable::Atom(i), true)
+                .unwrap()
+        })
+        .collect();
+    let (x, y, z) = (variables[0], variables[1], variables[2]);
+    // x = false disproves this implication immediately. For x = true,
+    // proving (y && z) => y needs a second nonterminal visit.
+    let yz = context.and(y, z).unwrap();
+    let premise = context.or(context.not(x).unwrap(), yz).unwrap();
+    let consequence = context.and(x, y).unwrap();
+    context.manager.borrow_mut().limits.operations = 1;
+    assert_eq!(
+        context.implies_bdd(premise, consequence),
+        Err(BddError::ResourceLimit {
+            resource: BddResource::Operations,
+            limit: 1,
+        })
+    );
+    context.manager.borrow_mut().limits.operations = 2;
+    assert_eq!(context.implies_bdd(premise, consequence), Ok(false));
+    context.manager.borrow_mut().limits.operations = 0;
+    assert_eq!(context.implies_bdd(premise, consequence), Ok(false));
 }

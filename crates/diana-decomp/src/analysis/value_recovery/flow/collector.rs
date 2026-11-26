@@ -9,7 +9,7 @@ use crate::ir::{
 
 use super::{
     effects::EffectSummary, DefinitionFact, EffectFact, PredicateUseFact, ScopeId, UseContext,
-    UseFact, UseSite, ValueFlowGraph,
+    UseFact, UseLocation, UseSite, ValueFlowGraph,
 };
 use crate::analysis::value_recovery::{domain::ControlDomain, ValueRecoveryError};
 
@@ -65,9 +65,8 @@ impl<'ir> FlowCollector<'ir> {
                 }
                 FlowTask::Predicate(predicate, domain, site) => {
                     let event = self.event();
-                    let point = site.map(UseSite::before);
                     let effect =
-                        self.visit_predicate_uses(predicate, domain, event, site, point.as_ref())?;
+                        self.visit_predicate_uses(predicate, domain, event, site.into())?;
                     self.record_effect(site.map(UseSite::id), domain, effect);
                 }
                 FlowTask::EnterScope(repetitive) => self.enter_scope(repetitive),
@@ -88,10 +87,6 @@ impl<'ir> FlowCollector<'ir> {
         domain: ControlDomain,
     ) -> Result<(), ValueRecoveryError> {
         let event = self.event();
-        let point = statement
-            .site
-            .map(crate::ir::analysis::SemanticFlowPoint::before);
-        let origin = point.as_ref();
         let mut evaluation_prefix = EffectSummary::pure();
         let execution_domain = domain;
         let (definition, prefix_covers_statement) = match &statement.kind {
@@ -112,7 +107,6 @@ impl<'ir> FlowCollector<'ir> {
                     statement.site,
                     &mut argument,
                     &mut predicate,
-                    origin,
                 )?;
                 (
                     Some(result),
@@ -133,8 +127,7 @@ impl<'ir> FlowCollector<'ir> {
                     event,
                     &mut evaluation_prefix,
                     UseContext::Value,
-                    site,
-                    origin,
+                    site.into(),
                 )?;
                 (
                     instruction.result.as_ref(),
@@ -197,7 +190,6 @@ impl<'ir> FlowCollector<'ir> {
         site: Option<crate::ir::SemanticSiteId>,
         next_argument: &mut u32,
         next_predicate: &mut u32,
-        origin: Option<&crate::ir::analysis::SemanticFlowPoint>,
     ) -> Result<bool, ValueRecoveryError> {
         match value {
             SemanticExpression::Register(_)
@@ -213,8 +205,7 @@ impl<'ir> FlowCollector<'ir> {
                     prefix,
                     UseContext::Value,
                     None,
-                    argument_site,
-                    origin,
+                    argument_site.into(),
                 )
             }
             SemanticExpression::Select {
@@ -224,13 +215,15 @@ impl<'ir> FlowCollector<'ir> {
             } => {
                 let current = *next_predicate;
                 *next_predicate += 1;
-                *prefix = prefix.clone().join(self.visit_predicate_uses(
-                    condition,
-                    domain,
-                    event,
-                    site.map(|site| UseSite::SelectedPredicate(site, current)),
-                    origin,
-                )?);
+                *prefix = prefix.clone().join(
+                    self.visit_predicate_uses(
+                        condition,
+                        domain,
+                        event,
+                        site.map(|site| UseSite::SelectedPredicate(site, current))
+                            .into(),
+                    )?,
+                );
                 let condition = self.graph.logic.predicate(condition)?;
                 let true_domain = self.graph.logic.and(domain, condition)?;
                 let negated = self.graph.logic.not(condition)?;
@@ -244,7 +237,6 @@ impl<'ir> FlowCollector<'ir> {
                     site,
                     next_argument,
                     next_predicate,
-                    origin,
                 )?;
                 let mut false_prefix = prefix.clone();
                 self.visit_semantic_value_uses(
@@ -255,7 +247,6 @@ impl<'ir> FlowCollector<'ir> {
                     site,
                     next_argument,
                     next_predicate,
-                    origin,
                 )?;
                 *prefix = true_prefix.join(false_prefix);
                 // The scheduling prefix keeps control from the condition;
@@ -271,13 +262,17 @@ impl<'ir> FlowCollector<'ir> {
         condition: Option<&SemanticPredicate>,
         domain: ControlDomain,
         event: usize,
-        site: Option<UseSite>,
-        origin: Option<&crate::ir::analysis::SemanticFlowPoint>,
+        location: UseLocation,
     ) -> Result<EffectSummary, ValueRecoveryError> {
         let Some(condition) = condition else {
-            return self.visit_expression_uses(value, domain, event, site, origin);
+            return self.visit_expression_uses(value, domain, event, location);
         };
-        let mut prefix = self.visit_predicate_uses(condition, domain, event, None, origin)?;
+        let mut prefix = self.visit_predicate_uses(
+            condition,
+            domain,
+            event,
+            UseLocation::Observation(location.id()),
+        )?;
         self.visit_expression_in_order(
             value,
             domain,
@@ -285,8 +280,7 @@ impl<'ir> FlowCollector<'ir> {
             &mut prefix,
             UseContext::Value,
             None,
-            site,
-            origin,
+            location,
         )?;
         Ok(prefix)
     }
@@ -296,11 +290,14 @@ impl<'ir> FlowCollector<'ir> {
         block: crate::ir::BlockId,
         domain: ControlDomain,
     ) -> Result<(), ValueRecoveryError> {
-        let domain = match self.graph.block_domains.get(&block).copied() {
-            Some(existing) => self.graph.logic.or(existing, domain)?,
-            None => domain,
-        };
-        self.graph.block_domains.insert(block, domain);
+        match self.graph.block_domains.entry(block) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                *entry.get_mut() = self.graph.logic.or(*entry.get(), domain)?;
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(domain);
+            }
+        }
         Ok(())
     }
 
@@ -309,8 +306,7 @@ impl<'ir> FlowCollector<'ir> {
         predicate: &SemanticPredicate,
         domain: ControlDomain,
         event: usize,
-        site: Option<UseSite>,
-        origin: Option<&crate::ir::analysis::SemanticFlowPoint>,
+        location: UseLocation,
     ) -> Result<EffectSummary, ValueRecoveryError> {
         let mut pending = Vec::new();
         let mut current = (predicate, domain);
@@ -320,10 +316,20 @@ impl<'ir> FlowCollector<'ir> {
             match predicate {
                 SemanticPredicate::True | SemanticPredicate::False => {}
                 SemanticPredicate::Test(insn) => {
-                    if let Some(operand_point) = origin.copied().filter(|_| {
-                        self.graph.identity() == super::ValueIdentity::Source && insn.id.is_valid()
+                    // Placement only queries occurrence points for observable tests. A
+                    // replicated instruction can carry different rewritten operands:
+                    // use the same selected test as the placement proof.
+                    if let Some(operand_point) = location.point().filter(|_| {
+                        self.graph.identity() == super::ValueIdentity::Source
+                            && insn.id.is_valid()
+                            && self
+                                .graph
+                                .predicate_tests
+                                .get(&insn.id)
+                                .is_some_and(|test| !test.effects().without_control().is_pure())
                     }) {
-                        let effect_point = site
+                        let effect_point = location
+                            .site()
                             .map(UseSite::id)
                             .map(crate::ir::analysis::SemanticFlowPoint::after)
                             .unwrap_or(operand_point);
@@ -343,8 +349,7 @@ impl<'ir> FlowCollector<'ir> {
                         event,
                         &mut evaluation_prefix,
                         UseContext::Predicate,
-                        site,
-                        origin,
+                        location,
                     )?;
                 }
                 SemanticPredicate::Not(inner) => {
@@ -380,8 +385,7 @@ impl<'ir> FlowCollector<'ir> {
         expression: &SemanticExpression,
         domain: ControlDomain,
         event: usize,
-        site: Option<UseSite>,
-        origin: Option<&crate::ir::analysis::SemanticFlowPoint>,
+        location: UseLocation,
     ) -> Result<EffectSummary, ValueRecoveryError> {
         let mut prefix = EffectSummary::pure();
         self.visit_expression_in_order(
@@ -391,8 +395,7 @@ impl<'ir> FlowCollector<'ir> {
             &mut prefix,
             UseContext::Value,
             None,
-            site,
-            origin,
+            location,
         )?;
         Ok(prefix)
     }
@@ -404,8 +407,7 @@ impl<'ir> FlowCollector<'ir> {
         event: usize,
         prefix: &mut EffectSummary,
         context: UseContext,
-        site: Option<UseSite>,
-        origin: Option<&crate::ir::analysis::SemanticFlowPoint>,
+        location: UseLocation,
     ) -> Result<bool, ValueRecoveryError> {
         let (mut operands, mut covers_operation) = evaluation_operands(operation)?;
         let nested = loop {
@@ -417,8 +419,7 @@ impl<'ir> FlowCollector<'ir> {
                     prefix,
                     context,
                     Some(operation.insn_type),
-                    site,
-                    origin,
+                    location,
                 ),
                 Some(SemanticExpression::Literal(_)) => {}
                 Some(nested) => break nested,
@@ -445,8 +446,7 @@ impl<'ir> FlowCollector<'ir> {
                         prefix,
                         context,
                         Some(consumer),
-                        site,
-                        origin,
+                        location,
                     );
                 }
                 EvaluationTask::Expression(SemanticExpression::Operation(child), _) => {
@@ -470,7 +470,7 @@ impl<'ir> FlowCollector<'ir> {
                     covers_operation = false;
                     *prefix = prefix
                         .clone()
-                        .join(self.visit_predicate_uses(condition, domain, event, site, origin)?);
+                        .join(self.visit_predicate_uses(condition, domain, event, location)?);
                     let condition = self.graph.logic.predicate(condition)?;
                     let true_domain = self.graph.logic.and(domain, condition)?;
                     let negated = self.graph.logic.not(condition)?;
@@ -483,8 +483,7 @@ impl<'ir> FlowCollector<'ir> {
                         &mut true_prefix,
                         context,
                         Some(consumer),
-                        site,
-                        origin,
+                        location,
                     )?;
                     let mut false_prefix = prefix.clone();
                     self.visit_expression_in_order(
@@ -494,8 +493,7 @@ impl<'ir> FlowCollector<'ir> {
                         &mut false_prefix,
                         context,
                         Some(consumer),
-                        site,
-                        origin,
+                        location,
                     )?;
                     *prefix = true_prefix.join(false_prefix);
                 }
@@ -516,15 +514,14 @@ impl<'ir> FlowCollector<'ir> {
         prefix: &EffectSummary,
         context: UseContext,
         consumer: Option<InsnType>,
-        site: Option<UseSite>,
-        origin: Option<&crate::ir::analysis::SemanticFlowPoint>,
+        location: UseLocation,
     ) {
         if let Some(key) = self.graph.key(register) {
             self.graph.has_predicate_uses |= context == UseContext::Predicate;
             self.graph.uses.push(
                 key,
                 UseFact {
-                    point: origin.cloned(),
+                    location,
                     domain,
                     scope: self.scope,
                     protection: self.protections.last().copied(),
@@ -534,7 +531,6 @@ impl<'ir> FlowCollector<'ir> {
                     evaluation_prefix: prefix.clone(),
                     context,
                     consumer,
-                    site,
                 },
             );
         }
@@ -548,18 +544,15 @@ impl<'ir> FlowCollector<'ir> {
         prefix: &mut EffectSummary,
         context: UseContext,
         consumer: Option<InsnType>,
-        site: Option<UseSite>,
-        origin: Option<&crate::ir::analysis::SemanticFlowPoint>,
+        location: UseLocation,
     ) -> Result<bool, ValueRecoveryError> {
         match expression {
             SemanticExpression::Register(register) => {
-                self.record_use(
-                    register, domain, event, prefix, context, consumer, site, origin,
-                );
+                self.record_use(register, domain, event, prefix, context, consumer, location);
                 Ok(true)
             }
             SemanticExpression::Operation(operation) => {
-                self.visit_operation_uses(operation, domain, event, prefix, context, site, origin)
+                self.visit_operation_uses(operation, domain, event, prefix, context, location)
             }
             SemanticExpression::Select {
                 condition,
@@ -568,7 +561,7 @@ impl<'ir> FlowCollector<'ir> {
             } => {
                 *prefix = prefix
                     .clone()
-                    .join(self.visit_predicate_uses(condition, domain, event, site, origin)?);
+                    .join(self.visit_predicate_uses(condition, domain, event, location)?);
                 let condition = self.graph.logic.predicate(condition)?;
                 let true_domain = self.graph.logic.and(domain, condition)?;
                 let negated = self.graph.logic.not(condition)?;
@@ -581,8 +574,7 @@ impl<'ir> FlowCollector<'ir> {
                     &mut true_prefix,
                     context,
                     consumer,
-                    site,
-                    origin,
+                    location,
                 )?;
                 let mut false_prefix = prefix.clone();
                 self.visit_expression_in_order(
@@ -592,8 +584,7 @@ impl<'ir> FlowCollector<'ir> {
                     &mut false_prefix,
                     context,
                     consumer,
-                    site,
-                    origin,
+                    location,
                 )?;
                 *prefix = true_prefix.join(false_prefix);
                 Ok(false)

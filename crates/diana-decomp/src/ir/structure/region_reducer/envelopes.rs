@@ -24,12 +24,16 @@ impl<'a> ExceptionEnvelopeCanonicalizer<'a> {
 
     pub(super) fn apply(&self, mut root: SemanticNode) -> Result<SemanticNode, StructureError> {
         loop {
-            let duplicates = TryMultiplicity::collect(&root)
+            let counts = TryMultiplicity::collect(&root);
+            let distinct = counts.len();
+            let duplicates = counts
                 .into_iter()
                 .filter_map(|(region, count)| (count > 1).then_some(region))
                 .collect::<Vec<_>>();
             if duplicates.is_empty() {
-                let root = self.merge_families(root)?;
+                if distinct > 1 {
+                    root = self.merge_families(root)?;
+                }
                 return self.finalize(root);
             }
 
@@ -64,10 +68,7 @@ impl<'a> ExceptionEnvelopeCanonicalizer<'a> {
 
     fn merge_families(&self, mut root: SemanticNode) -> Result<SemanticNode, StructureError> {
         loop {
-            let families = EnvelopeFamilies::collect(&root)
-                .into_values()
-                .filter(|family| family.count > 1 && family.envelope.is_some())
-                .collect::<Vec<_>>();
+            let families = EnvelopeFamilies::collect(&root);
             if families.is_empty() {
                 return Ok(root);
             }
@@ -627,18 +628,16 @@ impl SemanticFolder for MergeEnvelopeFamily<'_, '_, '_, '_> {
         }
 
         let region = self.canonicalizer.family_region(self.family)?;
-        let envelope = self
-            .family
-            .envelope
-            .clone()
-            .ok_or(StructureError::UnknownRegion(region))?;
+        let envelope = &self.family.envelope;
         if !envelope.can_wrap(&node) {
             return Ok(SemanticFoldControl::Descend(node));
         }
 
         let original = node.clone();
         let body = self.canonicalizer.strip_family(node, &self.family.key)?;
-        let candidate = self.canonicalizer.place_envelope(body, region, envelope)?;
+        let candidate = self
+            .canonicalizer
+            .place_envelope(body, region, envelope.clone())?;
         if escapes_structured_control(&candidate) {
             return Ok(SemanticFoldControl::Descend(original));
         }
@@ -737,15 +736,15 @@ impl EnvelopeKey {
 struct EnvelopeFamily {
     key: EnvelopeKey,
     regions: BTreeSet<RegionId>,
-    count: usize,
-    envelope: Option<ExceptionEnvelope>,
+    envelope: ExceptionEnvelope,
 }
 
 struct EnvelopeFamilies;
 
 impl EnvelopeFamilies {
-    fn collect(root: &SemanticNode) -> BTreeMap<EnvelopeKey, EnvelopeFamily> {
-        let mut families = BTreeMap::new();
+    fn collect(root: &SemanticNode) -> Vec<EnvelopeFamily> {
+        let mut families =
+            BTreeMap::<_, smallvec::SmallVec<[(RegionId, EnvelopeRef<'_>); 1]>>::new();
         let mut pending = vec![root];
         while let Some(node) = pending.pop() {
             match node {
@@ -759,27 +758,11 @@ impl EnvelopeFamilies {
                         catches: catches.iter().map(|catch| catch.region).collect(),
                         finally: finally.as_ref().map(|finally| finally.region),
                     };
-                    let envelope = ExceptionEnvelope {
-                        catches: catches.clone(),
-                        finally: finally.clone(),
+                    let envelope = EnvelopeRef {
+                        catches,
+                        finally: finally.as_ref(),
                     };
-                    let family = families
-                        .entry(key.clone())
-                        .or_insert_with(|| EnvelopeFamily {
-                            key,
-                            regions: BTreeSet::new(),
-                            count: 0,
-                            envelope: Some(envelope.clone()),
-                        });
-                    family.count += 1;
-                    family.regions.insert(*region);
-                    if family
-                        .envelope
-                        .as_ref()
-                        .is_some_and(|current| !current.same_shape(&envelope))
-                    {
-                        family.envelope = None;
-                    }
+                    families.entry(key).or_default().push((*region, envelope));
                     pending.push(body);
                     pending.extend(catches.iter().map(|catch| &catch.body));
                     if let Some(finally) = finally {
@@ -809,6 +792,23 @@ impl EnvelopeFamilies {
             }
         }
         families
+            .into_iter()
+            .filter_map(|(key, occurrences)| {
+                let ((_, first), others) = occurrences.split_first()?;
+                if others.is_empty() || !first.matches(others.iter().map(|(_, envelope)| *envelope))
+                {
+                    return None;
+                }
+                Some(EnvelopeFamily {
+                    key,
+                    regions: occurrences.iter().map(|(region, _)| *region).collect(),
+                    envelope: ExceptionEnvelope {
+                        catches: first.catches.to_vec(),
+                        finally: first.finally.cloned(),
+                    },
+                })
+            })
+            .collect()
     }
 }
 
@@ -829,51 +829,79 @@ impl ExceptionEnvelope {
     }
 
     fn same_shape(&self, other: &Self) -> bool {
-        self.catches.len() == other.catches.len()
-            && self
-                .catches
-                .iter()
-                .zip(&other.catches)
-                .all(|(left, right)| {
-                    left.region == right.region
-                        && left.exception_types == right.exception_types
-                        && left.exception_value == right.exception_value
-                })
-            && self.finally.as_ref().map(|finally| finally.region)
-                == other.finally.as_ref().map(|finally| finally.region)
-            // Catch/finally continuations are part of envelope identity. A loop
-            // may rewrite BreakLabel into Break(region) inside its body; merging
-            // that rewritten catch onto a try outside the loop leaves the break
-            // targeting inactive control.
-            && self.label_dependencies() == other.label_dependencies()
-            && self.control_dependencies() == other.control_dependencies()
+        self.borrowed().matches(std::iter::once(other.borrowed()))
+    }
+
+    fn borrowed(&self) -> EnvelopeRef<'_> {
+        EnvelopeRef {
+            catches: &self.catches,
+            finally: self.finally.as_ref(),
+        }
     }
 
     fn can_wrap(&self, node: &SemanticNode) -> bool {
-        self.label_dependencies()
+        let envelope = self.borrowed();
+        envelope
+            .label_dependencies()
             .is_disjoint(&LabelBindings::collect(node))
-            && self
+            && envelope
                 .control_dependencies()
                 .is_disjoint(&ControlBindings::collect(node))
     }
+}
 
-    fn label_dependencies(&self) -> BTreeSet<SemanticLabel> {
+#[derive(Clone, Copy)]
+struct EnvelopeRef<'a> {
+    catches: &'a [SemanticCatch],
+    finally: Option<&'a SemanticFinally>,
+}
+
+impl EnvelopeRef<'_> {
+    fn same_handlers(self, other: Self) -> bool {
+        self.catches.len() == other.catches.len()
+            && self.catches.iter().zip(other.catches).all(|(left, right)| {
+                left.region == right.region
+                    && left.exception_types == right.exception_types
+                    && left.exception_value == right.exception_value
+            })
+            && self.finally.map(|finally| finally.region)
+                == other.finally.map(|finally| finally.region)
+    }
+
+    fn matches(self, mut others: impl Iterator<Item = Self> + Clone) -> bool {
+        if !others.clone().all(|other| self.same_handlers(other)) {
+            return false;
+        }
+        // Moving a handler with a free label or loop control can change the
+        // destination of its break. Compare both kinds before merging.
+        let labels = self.label_dependencies();
+        if !others
+            .clone()
+            .all(|other| labels == other.label_dependencies())
+        {
+            return false;
+        }
+        let controls = self.control_dependencies();
+        others.all(|other| controls == other.control_dependencies())
+    }
+
+    fn label_dependencies(self) -> BTreeSet<SemanticLabel> {
         let mut dependencies = FreeLabelDependencies::default();
-        for catch in &self.catches {
+        for catch in self.catches {
             dependencies.visit_node(&catch.body);
         }
-        if let Some(finally) = &self.finally {
+        if let Some(finally) = self.finally {
             dependencies.visit_node(&finally.body);
         }
         dependencies.free
     }
 
-    fn control_dependencies(&self) -> BTreeSet<RegionId> {
+    fn control_dependencies(self) -> BTreeSet<RegionId> {
         let mut dependencies = FreeControlDependencies::default();
-        for catch in &self.catches {
+        for catch in self.catches {
             dependencies.visit_node(&catch.body);
         }
-        if let Some(finally) = &self.finally {
+        if let Some(finally) = self.finally {
             dependencies.visit_node(&finally.body);
         }
         dependencies.free
@@ -1550,6 +1578,10 @@ impl EnvelopeSet {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../../../tests/internal/envelope_families.rs"]
+mod family_tests;
 
 #[cfg(test)]
 mod tests {

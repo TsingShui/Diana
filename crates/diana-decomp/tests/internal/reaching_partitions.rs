@@ -136,7 +136,7 @@ fn a_repeated_point_still_applies_each_distinct_control_domain_after_budget_exha
     assert_eq!(output.candidates(&output.uses[3]), [0, 1]);
     assert_eq!(output.candidate_uses, [3, 3]);
     let mut missing = uses;
-    missing[1].point = None;
+    missing[1].location = super::super::UseLocation::Observation(None);
     assert!(
         matches!(ReachingDefinitions::new(&graph,&bdd).analyze(definitions,&missing), Err(ValueRecoveryError::MissingUsePoint(k)) if k == key)
     );

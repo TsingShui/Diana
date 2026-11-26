@@ -379,58 +379,88 @@ impl Manager {
         mut left: u16,
         mut right: u16,
     ) -> Result<u16, BddError> {
-        loop {
-            (left, right) = (left.min(right), left.max(right));
-            let mut result = match (AND, left) {
-                (true, 0) | (false, 1) => left,
-                (false, 0) | (true, 1) => right,
-                _ if left == right => left,
-                _ => {
-                    // Equal operands resolved above. The strict pair order
-                    // leaves one orientation for each commutative operation.
-                    let (first, second) = if AND { (left, right) } else { (right, left) };
-                    let key = u32::from(first) << 16 | u32::from(second);
-                    if let Some(result) = self.binary_cache.get(key) {
-                        result
-                    } else {
-                        self.charge_operation()?;
-                        let a = self.nodes[usize::from(left)];
-                        let b = self.nodes[usize::from(right)];
-                        let variable = a.variable.min(b.variable);
-                        let (a_low, a_high) = a.cofactors(left, variable);
-                        let (b_low, b_high) = b.cofactors(right, variable);
+        if let Some(result) = Self::terminal_apply::<AND>(left, right) {
+            return Ok(result);
+        }
+        'descend: loop {
+            let (lo, hi) = (left.min(right), left.max(right));
+            let (first, second) = if AND { (lo, hi) } else { (hi, lo) };
+            let key = u32::from(first) << 16 | u32::from(second);
+            let mut result = if let Some(result) = self.binary_cache.get(key) {
+                result
+            } else {
+                self.charge_operation()?;
+                let a = self.nodes[usize::from(left)];
+                let b = self.nodes[usize::from(right)];
+                let variable = a.variable.min(b.variable);
+                let (a_low, a_high) = a.cofactors(left, variable);
+                let (b_low, b_high) = b.cofactors(right, variable);
+                // Terminal and equal cofactors have no memo entry, charge or
+                // allocation. Descend only for pairs that can produce work.
+                match (
+                    Self::terminal_apply::<AND>(a_low, b_low),
+                    Self::terminal_apply::<AND>(a_high, b_high),
+                ) {
+                    (Some(low), Some(high)) => self.finish_apply(key, variable, low, high)?,
+                    (low, high) => {
+                        let (pair, next) = match (low, high) {
+                            (Some(low), _) => ((a_high, b_high), ApplyChild::LowResult(low)),
+                            (_, Some(high)) => ((a_low, b_low), ApplyChild::HighResult(high)),
+                            _ => ((a_low, b_low), ApplyChild::High(a_high, b_high)),
+                        };
                         self.apply_work.push(ApplyFrame {
                             key,
                             variable,
-                            next: ApplyChild::High(a_high, b_high),
+                            next,
                         });
-                        (left, right) = (a_low, b_low);
+                        (left, right) = pair;
                         continue;
                     }
                 }
             };
-            loop {
-                let Some(frame) = self.apply_work.last_mut() else {
-                    return Ok(result);
-                };
-                match frame.next {
+            while let Some(frame) = self.apply_work.last_mut() {
+                let (low, high) = match frame.next {
                     ApplyChild::High(a, b) => {
-                        // The low child finished. Keep its result on this
-                        // same frame while descending into the high child.
-                        frame.next = ApplyChild::Combine(result);
+                        frame.next = ApplyChild::LowResult(result);
                         (left, right) = (a, b);
-                        break;
+                        continue 'descend;
                     }
-                    ApplyChild::Combine(low) => {
-                        let (key, variable) = (frame.key, frame.variable);
-                        self.apply_work.pop();
-                        result = self.intern(variable, low, result)?;
-                        self.reserve_cache_entries(1)?;
-                        self.binary_cache.insert(key, result);
-                    }
-                }
+                    ApplyChild::LowResult(low) => (low, result),
+                    ApplyChild::HighResult(high) => (result, high),
+                };
+                let (key, variable) = (frame.key, frame.variable);
+                self.apply_work.pop();
+                result = self.finish_apply(key, variable, low, high)?;
             }
+            return Ok(result);
         }
+    }
+
+    fn terminal_apply<const AND: bool>(left: u16, right: u16) -> Option<u16> {
+        let absorbing = u16::from(!AND);
+        let neutral = u16::from(AND);
+        if left == right || right == neutral {
+            Some(left)
+        } else if left == neutral {
+            Some(right)
+        } else if left == absorbing || right == absorbing {
+            Some(absorbing)
+        } else {
+            None
+        }
+    }
+
+    fn finish_apply(
+        &mut self,
+        key: u32,
+        variable: usize,
+        low: u16,
+        high: u16,
+    ) -> Result<u16, BddError> {
+        let result = self.intern(variable, low, high)?;
+        self.reserve_cache_entries(1)?;
+        self.binary_cache.insert(key, result);
+        Ok(result)
     }
 
     fn negate(&mut self, value: Bdd) -> Result<Bdd, BddError> {
@@ -691,29 +721,54 @@ impl Manager {
         let mut next = (premise, consequence);
         loop {
             let (premise, consequence) = next;
-            if premise != 0 && consequence != 1 && premise != consequence {
-                if premise == 1 || consequence == 0 {
-                    return Ok(false);
-                }
-                if self
-                    .implication_work
-                    .visit(u32::from(premise) << 16 | u32::from(consequence))
-                {
-                    self.charge_operation()?;
-                    let a = self.nodes[usize::from(premise)];
-                    let b = self.nodes[usize::from(consequence)];
-                    let variable = a.variable.min(b.variable);
-                    let (a_low, a_high) = a.cofactors(premise, variable);
-                    let (b_low, b_high) = b.cofactors(consequence, variable);
-                    self.implication_work.pending.push((a_low, b_low));
-                    next = (a_high, b_high);
-                    continue;
+            if self
+                .implication_work
+                .visit(u32::from(premise) << 16 | u32::from(consequence))
+            {
+                self.charge_operation()?;
+                let a = self.nodes[usize::from(premise)];
+                let b = self.nodes[usize::from(consequence)];
+                let variable = a.variable.min(b.variable);
+                let (a_low, a_high) = a.cofactors(premise, variable);
+                let (b_low, b_high) = b.cofactors(consequence, variable);
+                // Check the high cofactor first. A false low cofactor must
+                // wait for any unfinished high proof and its budget checks.
+                match Self::terminal_implication(a_high, b_high) {
+                    Some(false) => return Ok(false),
+                    Some(true) => match Self::terminal_implication(a_low, b_low) {
+                        Some(false) => return Ok(false),
+                        Some(true) => {}
+                        None => {
+                            next = (a_low, b_low);
+                            continue;
+                        }
+                    },
+                    None => {
+                        if Self::terminal_implication(a_low, b_low) != Some(true) {
+                            self.implication_work.pending.push((a_low, b_low));
+                        }
+                        next = (a_high, b_high);
+                        continue;
+                    }
                 }
             }
-            let Some(child) = self.implication_work.pending.pop() else {
+            let Some((a, b)) = self.implication_work.pending.pop() else {
                 return Ok(true);
             };
-            next = child;
+            if a == 1 || b == 0 {
+                return Ok(false);
+            }
+            next = (a, b);
+        }
+    }
+
+    fn terminal_implication(premise: u16, consequence: u16) -> Option<bool> {
+        if premise == 0 || consequence == 1 || premise == consequence {
+            Some(true)
+        } else if premise == 1 || consequence == 0 {
+            Some(false)
+        } else {
+            None
         }
     }
 
@@ -774,7 +829,8 @@ struct ApplyFrame {
 
 enum ApplyChild {
     High(u16, u16),
-    Combine(u16),
+    LowResult(u16),
+    HighResult(u16),
 }
 
 #[derive(Default)]

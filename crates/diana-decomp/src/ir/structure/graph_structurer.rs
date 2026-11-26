@@ -99,13 +99,12 @@ impl<'a, 'semantic> GraphStructurer<'a, 'semantic> {
     }
 
     fn reduce_graph(self) -> Result<SemanticNode, StructureError> {
-        SemanticFlowGraph::build(
+        SemanticFlowGraph::structure(
             self.cfg,
             self.semantic,
             self.region,
             self.seeded,
             &self.terminal_seeds,
-        )?
-        .reduce(self.semantic)
+        )
     }
 }

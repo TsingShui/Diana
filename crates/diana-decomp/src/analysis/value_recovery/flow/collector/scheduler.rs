@@ -191,14 +191,9 @@ impl<'collector, 'node> NodeScheduler<'collector, 'node> {
         self.collector.graph.record_binding(variable);
         let event = self.collector.event();
         let site = iterable.site.map(UseSite::Argument);
-        let point = site.map(UseSite::before);
-        let effect = self.collector.visit_expression_uses(
-            iterable,
-            self.domain,
-            event,
-            site,
-            point.as_ref(),
-        )?;
+        let effect =
+            self.collector
+                .visit_expression_uses(iterable, self.domain, event, site.into())?;
         self.collector
             .record_effect(iterable.site, self.domain, effect);
         self.push_scoped(body, self.domain, true);
@@ -212,14 +207,9 @@ impl<'collector, 'node> NodeScheduler<'collector, 'node> {
     ) -> Result<(), ValueRecoveryError> {
         let event = self.collector.event();
         let site = selector.site.map(UseSite::Argument);
-        let point = site.map(UseSite::before);
-        let effect = self.collector.visit_expression_uses(
-            selector,
-            self.domain,
-            event,
-            site,
-            point.as_ref(),
-        )?;
+        let effect =
+            self.collector
+                .visit_expression_uses(selector, self.domain, event, site.into())?;
         self.collector
             .record_effect(selector.site, self.domain, effect);
         for case in cases.iter().rev() {
@@ -254,10 +244,9 @@ impl<'collector, 'node> NodeScheduler<'collector, 'node> {
     ) -> Result<(), ValueRecoveryError> {
         let event = self.collector.event();
         let site = lock.site.map(UseSite::Argument);
-        let point = site.map(UseSite::before);
         let effect = self
             .collector
-            .visit_expression_uses(lock, self.domain, event, site, point.as_ref())?
+            .visit_expression_uses(lock, self.domain, event, site.into())?
             .join(EffectSummary::synchronization());
         self.collector.record_effect(lock.site, self.domain, effect);
         let protection = self.collector.protection();
@@ -272,14 +261,12 @@ impl<'collector, 'node> NodeScheduler<'collector, 'node> {
         let event = self.collector.event();
         let effect = if let Some(value) = leave.value() {
             let site = leave.site.map(super::UseSite::Leave);
-            let origin = site.map(super::UseSite::before);
             self.collector.visit_leave_uses(
                 value,
                 leave.condition.as_ref(),
                 self.domain,
                 event,
-                site,
-                origin.as_ref(),
+                site.into(),
             )?
         } else {
             EffectSummary::pure()
@@ -295,14 +282,9 @@ impl<'collector, 'node> NodeScheduler<'collector, 'node> {
         site: Option<UseSite>,
     ) -> Result<(), ValueRecoveryError> {
         let event = self.collector.event();
-        let point = site.map(UseSite::before);
-        let effect = self.collector.visit_predicate_uses(
-            predicate,
-            self.domain,
-            event,
-            site,
-            point.as_ref(),
-        )?;
+        let effect =
+            self.collector
+                .visit_predicate_uses(predicate, self.domain, event, site.into())?;
         self.collector
             .record_effect(site.map(UseSite::id), self.domain, effect);
         Ok(())

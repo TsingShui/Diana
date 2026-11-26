@@ -268,7 +268,7 @@ impl<'a> ValuePlanner<'a> {
         let reaching = self.facts.reaching_definitions(definitions)?;
         for (usage, relation) in uses.iter().zip(&reaching.uses) {
             let candidates = reaching.candidates(relation);
-            let (Some(target), false) = (usage.point, candidates.is_empty()) else {
+            let (Some(target), false) = (usage.location.point(), candidates.is_empty()) else {
                 return Ok(None);
             };
             if !self.expression_visible_at(expression, usage.scope) {
@@ -558,7 +558,7 @@ impl<'a> ValuePlanner<'a> {
                 .iter()
                 .filter(|usage| {
                     matches!(
-                        usage.site,
+                        usage.location.site(),
                         Some(
                             UseSite::SelectedArgument(use_site, _)
                                 | UseSite::Statement(use_site)
@@ -817,14 +817,14 @@ impl<'a> ValuePlanner<'a> {
             .max()
             .unwrap_or_default();
         let mut site_uses = BTreeMap::new();
-        for site in uses.iter().filter_map(|usage| usage.site) {
+        for site in uses.iter().filter_map(|usage| usage.location.site()) {
             *site_uses.entry(site).or_insert(0usize) += 1;
         }
         let mut replacements = Vec::with_capacity(uses.len());
         let mut remove_definitions = BTreeSet::new();
         let control_only = uses.iter().all(|usage| {
             matches!(
-                usage.site,
+                usage.location.site(),
                 Some(
                     super::UseSite::Predicate(_)
                         | super::UseSite::SelectedPredicate(_, _)
@@ -836,7 +836,7 @@ impl<'a> ValuePlanner<'a> {
             let Some(definition) = definition else {
                 continue;
             };
-            let Some(site) = usage.site else {
+            let Some(site) = usage.location.site() else {
                 continue;
             };
             let site_count = site_uses.get(&site).copied().unwrap_or_default();
@@ -934,7 +934,7 @@ impl<'a> ValuePlanner<'a> {
         let [usage] = uses else {
             return Ok(None);
         };
-        let (Some(use_site), Some(target)) = (usage.site, usage.point) else {
+        let (Some(use_site), Some(target)) = (usage.location.site(), usage.location.point()) else {
             return Ok(None);
         };
         let reaching = self.facts.reaching_definitions(definitions)?;
@@ -1265,7 +1265,7 @@ impl<'a> ValuePlanner<'a> {
                     .graph()
                     .logic
                     .implies(usage.domain, definition.domain)?
-                || !usage.point.is_some_and(|target| {
+                || !usage.location.point().is_some_and(|target| {
                     self.facts.reaching_supports(source, target)
                         && self.facts.reaching_unchanged(key, source, target)
                 })
@@ -1360,7 +1360,7 @@ impl<'a> ValuePlanner<'a> {
         }
         let control_use = usage.context == UseContext::Predicate
             || matches!(
-                usage.site,
+                usage.location.site(),
                 Some(UseSite::SelectedArgument(_, _) | UseSite::SelectedPredicate(_, _))
             );
         Ok(control_use && usage.evaluation_prefix.clone().without_control().is_pure())
@@ -1393,7 +1393,7 @@ impl<'a> ValuePlanner<'a> {
     ) -> Result<bool, ValueRecoveryError> {
         let control_use = usage.context == UseContext::Predicate
             || matches!(
-                usage.site,
+                usage.location.site(),
                 Some(UseSite::SelectedArgument(_, _) | UseSite::SelectedPredicate(_, _))
             );
         if !control_use {
@@ -1447,7 +1447,7 @@ impl<'a> ValuePlanner<'a> {
         if effect.conflicts_with(&evaluation_prefix) {
             return Err(MovementRejection::EvaluationOrder);
         }
-        let (Some(site), Some(target)) = (definition.site, usage.point) else {
+        let (Some(site), Some(target)) = (definition.site, usage.location.point()) else {
             return Err(MovementRejection::MissingFlowPoint);
         };
         let source = crate::ir::analysis::SemanticFlowPoint::before(site);
@@ -1688,7 +1688,7 @@ impl<'a> ValuePlanner<'a> {
             definition
                 .site
                 .map(crate::ir::analysis::SemanticFlowPoint::before),
-            usage.point,
+            usage.location.point(),
         ) else {
             return false;
         };

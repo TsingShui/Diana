@@ -149,7 +149,7 @@ impl DefinitionFact<'_> {
 
 #[derive(Debug, Clone)]
 struct UseFact {
-    point: Option<crate::ir::analysis::SemanticFlowPoint>,
+    location: UseLocation,
     domain: ControlDomain,
     scope: ScopeId,
     protection: Option<u32>,
@@ -159,7 +159,6 @@ struct UseFact {
     evaluation_prefix: EffectSummary,
     context: UseContext,
     consumer: Option<InsnType>,
-    site: Option<UseSite>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,6 +180,41 @@ pub(super) enum UseSite {
 #[derive(Debug, Clone)]
 pub(super) struct ValueExpression {
     pub(super) value: SemanticExpression,
+}
+
+/// A read can have a known evaluation point even when the scheduler cannot
+/// substitute at that occurrence (the guard of a conditional transfer).
+#[derive(Debug, Clone, Copy)]
+enum UseLocation {
+    Replaceable(UseSite),
+    Observation(Option<crate::ir::SemanticSiteId>),
+}
+
+impl From<Option<UseSite>> for UseLocation {
+    fn from(site: Option<UseSite>) -> Self {
+        site.map_or(Self::Observation(None), Self::Replaceable)
+    }
+}
+
+impl UseLocation {
+    fn site(self) -> Option<UseSite> {
+        match self {
+            Self::Replaceable(site) => Some(site),
+            Self::Observation(_) => None,
+        }
+    }
+
+    fn id(self) -> Option<crate::ir::SemanticSiteId> {
+        match self {
+            Self::Replaceable(site) => Some(site.id()),
+            Self::Observation(site) => site,
+        }
+    }
+
+    fn point(self) -> Option<crate::ir::analysis::SemanticFlowPoint> {
+        self.id()
+            .map(crate::ir::analysis::SemanticFlowPoint::before)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -437,8 +471,8 @@ pub(super) struct ValueFlowGraph<'ir> {
     retained_phi_inputs: BTreeSet<SsaVar>,
     retained_values: BTreeSet<SsaVar>,
     effects: Vec<EffectFact>,
-    block_domains: BTreeMap<crate::ir::BlockId, ControlDomain>,
-    predicate_tests: BTreeMap<crate::ir::InstructionId, SemanticOperation>,
+    block_domains: foldhash::HashMap<crate::ir::BlockId, ControlDomain>,
+    predicate_tests: PredicateTests,
     predicate_uses: BTreeMap<crate::ir::InstructionId, BTreeSet<PredicateUseFact>>,
     canonical: Option<&'ir BTreeMap<SsaVar, InsnArg>>,
     identity_statements: Vec<(crate::ir::SemanticSiteId, usize)>,
@@ -517,7 +551,7 @@ impl<'ir> ValueFlowGraph<'ir> {
         semantic_flow: Option<ScheduledFlow<'ir>>,
         symbols: ControlSymbolClosure<'_>,
     ) -> Result<Self, ValueRecoveryError> {
-        let logic = DomainLogic::new(&symbols.variables);
+        let logic = DomainLogic::ordered(symbols.tests.variables());
         let graph = Self {
             identity: ValueIdentity::Ssa,
             logic,
@@ -535,7 +569,7 @@ impl<'ir> ValueFlowGraph<'ir> {
             retained_phi_inputs: BTreeSet::new(),
             retained_values: BTreeSet::new(),
             effects: Vec::new(),
-            block_domains: BTreeMap::new(),
+            block_domains: Default::default(),
             predicate_tests: symbols.tests,
             predicate_uses: BTreeMap::new(),
             canonical: Some(canonical),
@@ -582,7 +616,7 @@ impl<'ir> ValueFlowGraph<'ir> {
         cache: Option<&'ir SourceFlowCache>,
         symbols: ControlSymbolClosure<'_>,
     ) -> Result<Self, ValueRecoveryError> {
-        let logic = DomainLogic::new(&symbols.variables);
+        let logic = DomainLogic::ordered(symbols.tests.variables());
         let graph = Self {
             identity: ValueIdentity::Source,
             logic,
@@ -600,7 +634,7 @@ impl<'ir> ValueFlowGraph<'ir> {
             retained_phi_inputs: BTreeSet::new(),
             retained_values: BTreeSet::new(),
             effects: Vec::new(),
-            block_domains: BTreeMap::new(),
+            block_domains: Default::default(),
             predicate_tests: symbols.tests,
             predicate_uses: BTreeMap::new(),
             canonical: None,
@@ -810,7 +844,12 @@ impl<'ir> ValueFlowGraph<'ir> {
                     .site
                     .map(crate::ir::analysis::SemanticFlowPoint::after)
             })
-            .chain(self.uses.values().flatten().filter_map(|usage| usage.point))
+            .chain(
+                self.uses
+                    .values()
+                    .flatten()
+                    .filter_map(|usage| usage.location.point()),
+            )
             .chain(self.effects.iter().map(|effect| effect.point))
     }
 
@@ -1143,12 +1182,26 @@ struct DefinitionClass<'a> {
     bound: bool,
 }
 
+/// CFG-ordered symbols seed the BDD. Gated and source selection also read
+/// the last semantic test for each instruction. Ordinary SSA needs only IDs.
+#[derive(Default)]
+struct PredicateTests(BTreeMap<crate::ir::InstructionId, Option<SemanticOperation>>);
+
+impl PredicateTests {
+    fn variables(&self) -> impl ExactSizeIterator<Item = BoolVariable> + '_ {
+        self.0.keys().copied().map(BoolVariable::Instruction)
+    }
+
+    fn get(&self, instruction: &crate::ir::InstructionId) -> Option<&SemanticOperation> {
+        self.0.get(instruction)?.as_ref()
+    }
+}
+
 #[derive(Default)]
 struct ControlSymbolClosure<'a> {
     ssa_inputs: Option<(&'a SsaValueGraph, &'a BTreeMap<SsaVar, InsnArg>)>,
     has_select: bool,
-    variables: BTreeSet<BoolVariable>,
-    tests: BTreeMap<crate::ir::InstructionId, SemanticOperation>,
+    tests: PredicateTests,
     plan_required: bool,
 }
 
@@ -1232,18 +1285,9 @@ impl SemanticVisitor for ControlSymbolClosure<'_> {
         loop {
             match predicate {
                 SemanticPredicate::Test(instruction) => {
-                    self.variables
-                        .insert(BoolVariable::Instruction(instruction.id));
-                    // Over one Boolean symbol, all combinations of not/and/or
-                    // reduce to true, false, the symbol or its complement. No
-                    // domain allocation or proof limit can be reached solely
-                    // by this control flow. Keep evaluating every operand.
-                    self.plan_required |= self.variables.len() > 1;
-                    if self.ssa_inputs.is_none() {
-                        // Ordinary SSA scheduling has no predicate placement.
-                        // Gated SSA and both source modes consume these tests.
-                        self.tests.insert(instruction.id, instruction.clone());
-                    }
+                    let test = self.ssa_inputs.is_none().then(|| instruction.clone());
+                    self.tests.0.insert(instruction.id, test);
+                    self.plan_required |= self.tests.0.len() > 1;
                     self.visit_operation(instruction);
                 }
                 SemanticPredicate::Not(inner) => {
@@ -1302,14 +1346,20 @@ mod tests {
         closure.visit_predicate(&outer);
 
         assert_eq!(
-            closure.variables,
+            closure.tests.variables().collect::<BTreeSet<_>>(),
             BTreeSet::from([
                 BoolVariable::Instruction(InstructionId::new(20)),
                 BoolVariable::Instruction(InstructionId::new(21)),
             ])
         );
         assert_eq!(
-            closure.tests.keys().copied().collect::<BTreeSet<_>>(),
+            closure
+                .tests
+                .0
+                .values()
+                .flatten()
+                .map(|test| test.id)
+                .collect::<BTreeSet<_>>(),
             BTreeSet::from([InstructionId::new(20), InstructionId::new(21)])
         );
     }

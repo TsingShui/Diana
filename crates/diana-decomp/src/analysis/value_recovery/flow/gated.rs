@@ -1000,7 +1000,7 @@ impl<'a> PhiUseSpecializer<'a> {
 
         let mut use_domains = Vec::with_capacity(uses.len());
         for usage in uses {
-            let Some(site) = usage.site else {
+            let Some(site) = usage.location.site() else {
                 return Ok(Err(GatedPhiRejection::UnaddressableUse));
             };
             let Some(domain) = self.graph.logic.expression_under(

@@ -235,7 +235,7 @@ impl<'a, 'graph> ReachingDefinitions<'a, 'graph> {
         let mut previous_query = None;
 
         for usage in uses {
-            let Some(point) = usage.point else {
+            let Some(point) = usage.location.point() else {
                 return Err(ValueRecoveryError::MissingUsePoint(key));
             };
             let same_indices = if previous_point == Some(point) {
@@ -249,7 +249,7 @@ impl<'a, 'graph> ReachingDefinitions<'a, 'graph> {
                 same
             };
             let control = matches!(
-                usage.site,
+                usage.location.site(),
                 Some(
                     UseSite::Predicate(_) | UseSite::SelectedPredicate(_, _) | UseSite::Argument(_)
                 )

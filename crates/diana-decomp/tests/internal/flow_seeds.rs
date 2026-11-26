@@ -75,3 +75,47 @@ fn a_rejected_skeleton_retains_bodies_and_predicates_for_the_contracted_graph() 
         [0, 2, 3]
     );
 }
+
+#[test]
+fn pruning_follows_embedded_transfers_and_forgets_previous_reachability() {
+    let entry = BlockId::new(3);
+    let arm = BlockId::new(11);
+    let dead = BlockId::new(25);
+    let region = RegionId::new(4);
+    let jump = SemanticNode::Leave(crate::ir::SemanticLeave {
+        site: None,
+        condition: None,
+        kind: SemanticLeaveKind::Jump(arm),
+        edge: None,
+        origin: None,
+        source: region,
+        destination: region,
+        target: region,
+        cleanup: Vec::new(),
+    });
+    let node = |body, transfer| FlowNode {
+        body,
+        transfer,
+        facts: Default::default(),
+    };
+    let mut graph = SemanticFlowGraph {
+        region,
+        entry,
+        next_id: 26,
+        nodes: BTreeMap::from([
+            (entry, node(jump, FlowTransfer::Stop)),
+            (arm, node(SemanticNode::Empty, FlowTransfer::Jump(entry))),
+            (dead, node(SemanticNode::Empty, FlowTransfer::Jump(dead))),
+        ]),
+        continues: BTreeMap::new(),
+        exits: BTreeSet::new(),
+    };
+    graph.prune();
+    assert_eq!(
+        graph.nodes.keys().copied().collect::<Vec<_>>(),
+        [entry, arm]
+    );
+    graph.nodes.get_mut(&entry).unwrap().take_body();
+    graph.prune();
+    assert_eq!(graph.nodes.keys().copied().collect::<Vec<_>>(), [entry]);
+}
