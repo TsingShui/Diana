@@ -28,6 +28,7 @@ pub(crate) struct SourceSignatureInference<'a> {
 impl<'a> SourceSignatureInference<'a> {
     pub(crate) fn analyze(
         hierarchy: &'a dyn TypeHierarchy,
+        owner: &ArgType,
         methods: &[ClassMethodInput],
         nested: &[NestedClassInput],
     ) -> Self {
@@ -37,9 +38,16 @@ impl<'a> SourceSignatureInference<'a> {
             body_parameters: BTreeMap::new(),
             returns: BTreeMap::new(),
         };
-        analysis.cfgs(methods);
+        // Only declarations rendered in this compilation unit consume call-site evidence.
+        let mut owners = BTreeSet::from([owner]);
+        let mut pending: Vec<_> = nested.iter().collect();
+        while let Some(input) = pending.pop() {
+            owners.insert(input.class.class_type());
+            pending.extend(&input.nested);
+        }
+        analysis.cfgs(methods, &owners);
         for input in nested {
-            analysis.nested(input);
+            analysis.nested(input, &owners);
         }
         analysis
     }
@@ -81,20 +89,20 @@ impl<'a> SourceSignatureInference<'a> {
             .unwrap_or_default()
     }
 
-    fn nested(&mut self, input: &NestedClassInput) {
-        self.cfgs(&input.methods);
+    fn nested(&mut self, input: &NestedClassInput, owners: &BTreeSet<&ArgType>) {
+        self.cfgs(&input.methods, owners);
         for nested in &input.nested {
-            self.nested(nested);
+            self.nested(nested, owners);
         }
     }
 
-    fn cfgs(&mut self, methods: &[ClassMethodInput]) {
+    fn cfgs(&mut self, methods: &[ClassMethodInput], owners: &BTreeSet<&ArgType>) {
         for cfg in methods.iter().filter_map(ClassMethodInput::cfg) {
-            self.cfg(cfg);
+            self.cfg(cfg, owners);
         }
     }
 
-    fn cfg(&mut self, cfg: &CFG) {
+    fn cfg(&mut self, cfg: &CFG, owners: &BTreeSet<&ArgType>) {
         let incoming = ReachingCastTypes::analyze(cfg);
         let current_method = MethodReference {
             owner: cfg.method().owner().clone(),
@@ -102,8 +110,8 @@ impl<'a> SourceSignatureInference<'a> {
             descriptor: cfg.method().descriptor().clone(),
         };
         let parameter_registers = Self::parameter_registers(cfg);
-        for (block_id, block) in &cfg.blocks {
-            let Some(mut types) = incoming.get(block_id).cloned() else {
+        for (block_id, mut types) in incoming {
+            let Some(block) = cfg.block(block_id) else {
                 continue;
             };
             let mut pending_result = None;
@@ -151,9 +159,17 @@ impl<'a> SourceSignatureInference<'a> {
                 }
 
                 if instruction.insn_type == InsnType::Invoke {
-                    if let Some(MemberReference::Method(method)) =
-                        instruction.payload.reference.as_deref()
-                    {
+                    let method = instruction
+                        .payload
+                        .reference
+                        .as_deref()
+                        .and_then(|reference| match reference {
+                            MemberReference::Method(method) if owners.contains(&method.owner) => {
+                                Some(method)
+                            }
+                            _ => None,
+                        });
+                    if let Some(method) = method {
                         let skip_receiver = usize::from(
                             instruction
                                 .payload
@@ -245,17 +261,21 @@ impl<'a> SourceSignatureInference<'a> {
     }
 }
 
-type RegisterTypes = BTreeMap<u32, ArgType>;
+type RegisterTypes<'cfg> = BTreeMap<u32, &'cfg ArgType>;
 
 struct ReachingCastTypes;
 
 impl ReachingCastTypes {
-    fn analyze(cfg: &CFG) -> BTreeMap<BlockId, RegisterTypes> {
+    fn analyze(cfg: &CFG) -> BTreeMap<BlockId, RegisterTypes<'_>> {
         let mut incoming = BTreeMap::from([(cfg.entry, RegisterTypes::new())]);
         let mut pending = VecDeque::from([cfg.entry]);
         let mut queued = BTreeSet::from([cfg.entry]);
         while let Some(block) = pending.pop_front() {
             queued.remove(&block);
+            let mut successors = cfg.normal_successors(block).peekable();
+            if successors.peek().is_none() {
+                continue;
+            }
             let Some(mut outgoing) = incoming.get(&block).cloned() else {
                 continue;
             };
@@ -265,7 +285,7 @@ impl ReachingCastTypes {
                     Self::transfer(instruction, &mut outgoing, &mut pending_result);
                 }
             }
-            for successor in cfg.normal_successors(block) {
+            for successor in successors {
                 let changed = match incoming.get_mut(&successor) {
                     Some(current) => Self::intersect(current, &outgoing),
                     None => {
@@ -281,24 +301,24 @@ impl ReachingCastTypes {
         incoming
     }
 
-    fn transfer(
-        instruction: &InsnNode,
-        types: &mut RegisterTypes,
-        pending_result: &mut Option<ArgType>,
+    fn transfer<'cfg>(
+        instruction: &'cfg InsnNode,
+        types: &mut RegisterTypes<'cfg>,
+        pending_result: &mut Option<&'cfg ArgType>,
     ) {
         if instruction.insn_type == InsnType::Invoke {
             *pending_result = match instruction.payload.reference.as_deref() {
                 Some(MemberReference::Method(method))
                     if method.descriptor.return_type != ArgType::VOID =>
                 {
-                    Some(method.descriptor.return_type.clone())
+                    Some(&method.descriptor.return_type)
                 }
                 _ => None,
             };
             return;
         }
         if instruction.insn_type == InsnType::FilledNewArray {
-            *pending_result = instruction.payload.class_type.as_deref().cloned();
+            *pending_result = instruction.payload.class_type.as_deref();
             return;
         }
         if instruction.insn_type == InsnType::MoveResult {
@@ -308,7 +328,7 @@ impl ReachingCastTypes {
             };
             let ty = pending_result
                 .take()
-                .or_else(|| result.ty.is_known().then(|| result.ty.clone()));
+                .or_else(|| result.ty.is_known().then_some(&result.ty));
             match ty {
                 Some(ty) => {
                     types.insert(result.reg_num, ty);
@@ -325,7 +345,7 @@ impl ReachingCastTypes {
                 instruction.args.first().and_then(InsnArg::as_register),
                 instruction.conversion_type(),
             ) {
-                types.insert(register.reg_num, ty.clone());
+                types.insert(register.reg_num, ty);
             }
             return;
         }
@@ -337,9 +357,8 @@ impl ReachingCastTypes {
                 .args
                 .first()
                 .and_then(|argument| Self::argument_type(argument, types))
-                .cloned()
         } else {
-            result.ty.is_known().then(|| result.ty.clone())
+            result.ty.is_known().then_some(&result.ty)
         };
         match ty {
             Some(ty) => {
@@ -351,14 +370,17 @@ impl ReachingCastTypes {
         }
     }
 
-    fn argument_type<'a>(argument: &'a InsnArg, types: &'a RegisterTypes) -> Option<&'a ArgType> {
+    fn argument_type<'cfg>(
+        argument: &'cfg InsnArg,
+        types: &RegisterTypes<'cfg>,
+    ) -> Option<&'cfg ArgType> {
         argument
             .as_register()
-            .and_then(|register| types.get(&register.reg_num))
+            .and_then(|register| types.get(&register.reg_num).copied())
             .or_else(|| argument.declared_type().filter(|ty| ty.is_known()))
     }
 
-    fn intersect(current: &mut RegisterTypes, incoming: &RegisterTypes) -> bool {
+    fn intersect(current: &mut RegisterTypes<'_>, incoming: &RegisterTypes<'_>) -> bool {
         let before = current.len();
         current.retain(|register, ty| incoming.get(register) == Some(ty));
         current.len() != before

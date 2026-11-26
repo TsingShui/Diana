@@ -8,7 +8,7 @@ use crate::ir::{
     },
     ArgType, InsnType, MemberReference, PrimitiveType, SemanticNode,
 };
-use crate::language::java::{JavaIdentifier, JavaPrimitiveType, JavaType};
+use crate::language::java::{JavaIdentifier, JavaNameScope, JavaPrimitiveType, JavaType};
 
 use super::type_names::JavaTypeNameResolver;
 
@@ -459,9 +459,9 @@ impl<Model: VariableNameModel> VariableNameSolver for ConstrainedNameSolver<'_, 
             .collect::<Vec<_>>();
         proposals.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
 
-        let mut used = BTreeSet::new();
+        let mut used = JavaNameScope::default();
         for name in reserved {
-            used.insert(name.clone());
+            used.reserve(name.clone());
         }
 
         let mut solution = BTreeMap::new();
@@ -483,30 +483,14 @@ impl<Model: VariableNameModel> VariableNameSolver for ConstrainedNameSolver<'_, 
                 })
                 .map(|(candidate, _, conflicts)| {
                     if conflicts {
-                        return Self::claim_variant(&candidate.name, &mut used);
+                        return used.claim_hint_variant(&candidate.name);
                     }
-                    used.insert(candidate.name.clone());
-                    candidate.name.clone()
+                    used.reserve(candidate.name.clone())
                 })
-                .unwrap_or_else(|| Self::claim_variant(&candidates[0].name, &mut used));
+                .unwrap_or_else(|| used.claim_hint_variant(&candidates[0].name));
             solution.insert(variable, selected);
         }
         solution
-    }
-}
-
-impl<Model> ConstrainedNameSolver<'_, Model> {
-    fn claim_variant(
-        preferred: &JavaIdentifier,
-        used: &mut BTreeSet<JavaIdentifier>,
-    ) -> JavaIdentifier {
-        for suffix in 2u32.. {
-            let candidate = JavaIdentifier::from_hint(&format!("{}{suffix}", preferred.as_str()));
-            if used.insert(candidate.clone()) {
-                return candidate;
-            }
-        }
-        unreachable!()
     }
 }
 
@@ -611,9 +595,9 @@ fn fill_remaining_source_names(
     excluded: &BTreeSet<u32>,
     names: &mut BTreeMap<u32, JavaIdentifier>,
 ) {
-    let mut used = names.values().cloned().collect::<BTreeSet<_>>();
-    for name in reserved {
-        used.insert(name.clone());
+    let mut used = JavaNameScope::default();
+    for name in names.values().chain(reserved) {
+        used.reserve(name.clone());
     }
     for variable in graph.variables() {
         if !variable.is_source_binding() || excluded.contains(&variable.identity()) {
@@ -634,10 +618,10 @@ fn fill_remaining_source_names(
                     })
             })
             .unwrap_or_else(|| JavaIdentifier::from_hint("value"));
-        let name = if used.insert(preferred.clone()) {
-            preferred
+        let name = if used.contains(&preferred) {
+            used.claim_hint_variant(&preferred)
         } else {
-            ConstrainedNameSolver::<StructuralNameModel>::claim_variant(&preferred, &mut used)
+            used.reserve(preferred)
         };
         names.insert(variable.identity(), name);
     }

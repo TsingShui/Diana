@@ -178,8 +178,23 @@ pub(super) enum ValueAction {
 
 #[derive(Default)]
 pub(super) struct ValuePlan {
+    has_select: bool,
     pub(super) actions: Vec<ValueAction>,
     pub(super) constants: BTreeMap<SsaVar, InsnArg>,
+}
+
+impl ValuePlan {
+    pub(super) fn apply(
+        self,
+        root: &mut SemanticNode,
+        identity: ValueIdentity,
+    ) -> Result<bool, ValueRecoveryError> {
+        // Applying an empty schedule can only simplify an existing select.
+        if self.actions.is_empty() && !self.has_select {
+            return Ok(false);
+        }
+        super::schedule::ValueSchedule::compile(self.actions, identity)?.apply(root)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -313,6 +328,7 @@ impl UseSite {
 }
 
 pub(super) struct ValueFlowGraph<'ir> {
+    has_select: bool,
     scopes: LexicalScopes,
     identity: ValueIdentity,
     logic: DomainLogic,
@@ -341,16 +357,46 @@ impl<'ir> ValueFlowGraph<'ir> {
         values: &SsaValueGraph,
         canonical: &BTreeMap<SsaVar, InsnArg>,
     ) -> Result<Self, ValueRecoveryError> {
-        Self::build_ssa(root, values, canonical, true, &mut None)
+        Self::build_ssa(
+            root,
+            values,
+            canonical,
+            true,
+            &mut None,
+            ControlSymbolClosure::analyze(root),
+        )
     }
 
-    pub(super) fn build_with_flow_cache(
+    pub(super) fn plan_ssa(
         root: &'ir SemanticNode,
         values: &SsaValueGraph,
         canonical: &BTreeMap<SsaVar, InsnArg>,
         cache: &mut Option<super::source::SourceFlowCache>,
-    ) -> Result<Self, ValueRecoveryError> {
-        Self::build_ssa(root, values, canonical, true, cache)
+        schedule: impl FnOnce(Self) -> Result<ValuePlan, ValueRecoveryError>,
+    ) -> Result<ValuePlan, ValueRecoveryError> {
+        let mut symbols = ControlSymbolClosure {
+            ssa_inputs: Some((values, canonical)),
+            plan_required: !values.phis().is_empty() || !values.copies().is_empty(),
+            ..Default::default()
+        };
+        symbols.visit_node(root);
+        if !symbols.plan_required {
+            // A CFG constant can outlive all its semantic uses. It is still
+            // part of the SSA result consumed by type and variable recovery.
+            let constants = canonical
+                .iter()
+                .filter(|(_, value)| Self::is_constant(value))
+                .map(|(&key, value)| (key, value.clone()))
+                .collect();
+            return Ok(ValuePlan {
+                actions: Vec::new(),
+                constants,
+                has_select: symbols.has_select,
+            });
+        }
+        schedule(Self::build_ssa(
+            root, values, canonical, true, cache, symbols,
+        )?)
     }
 
     pub(super) fn build_gated(
@@ -358,7 +404,14 @@ impl<'ir> ValueFlowGraph<'ir> {
         values: &SsaValueGraph,
         canonical: &BTreeMap<SsaVar, InsnArg>,
     ) -> Result<Self, ValueRecoveryError> {
-        Self::build_ssa(root, values, canonical, false, &mut None)
+        Self::build_ssa(
+            root,
+            values,
+            canonical,
+            false,
+            &mut None,
+            ControlSymbolClosure::analyze(root),
+        )
     }
 
     fn build_ssa(
@@ -367,12 +420,13 @@ impl<'ir> ValueFlowGraph<'ir> {
         canonical: &BTreeMap<SsaVar, InsnArg>,
         semantic_flow: bool,
         cache: &mut Option<super::source::SourceFlowCache>,
+        symbols: ControlSymbolClosure<'_>,
     ) -> Result<Self, ValueRecoveryError> {
-        let symbols = ControlSymbolClosure::analyze(root);
         let logic = DomainLogic::new(&symbols.variables);
         let graph = Self {
             identity: ValueIdentity::Ssa,
             logic,
+            has_select: symbols.has_select,
             scopes: LexicalScopes::default(),
             definitions: BTreeMap::new(),
             bindings: BTreeSet::new(),
@@ -411,8 +465,11 @@ impl<'ir> ValueFlowGraph<'ir> {
         // With no statement defining a source identity the planner has no
         // action, including no identity move to eliminate. If evaluation can
         // fail, the collector still owns the original error and its ordering.
-        if !symbols.source_plan_required {
-            return Ok(ValuePlan::default());
+        if !symbols.plan_required {
+            return Ok(ValuePlan {
+                has_select: symbols.has_select,
+                ..Default::default()
+            });
         }
         Self::build_allocated(root, bindings, cache, symbols)?.schedule(mode)
     }
@@ -430,12 +487,13 @@ impl<'ir> ValueFlowGraph<'ir> {
         root: &'ir SemanticNode,
         bindings: &BTreeSet<SsaVar>,
         cache: &mut Option<super::source::SourceFlowCache>,
-        symbols: ControlSymbolClosure,
+        symbols: ControlSymbolClosure<'_>,
     ) -> Result<Self, ValueRecoveryError> {
         let logic = DomainLogic::new(&symbols.variables);
         let graph = Self {
             identity: ValueIdentity::Source,
             logic,
+            has_select: symbols.has_select,
             scopes: LexicalScopes::default(),
             definitions: BTreeMap::new(),
             bindings: bindings.clone(),
@@ -482,7 +540,10 @@ impl<'ir> ValueFlowGraph<'ir> {
 
     pub(super) fn schedule(&self, mode: RecoveryMode) -> Result<ValuePlan, ValueRecoveryError> {
         if !self.has_plan_inputs() {
-            return Ok(ValuePlan::default());
+            return Ok(ValuePlan {
+                has_select: self.has_select,
+                ..Default::default()
+            });
         }
         let planner = ValuePlanner::new(self, mode)?;
         planner.schedule()
@@ -954,17 +1015,19 @@ enum CanonicalKey {
 }
 
 #[derive(Default)]
-struct ControlSymbolClosure {
+struct ControlSymbolClosure<'a> {
+    ssa_inputs: Option<(&'a SsaValueGraph, &'a BTreeMap<SsaVar, InsnArg>)>,
+    has_select: bool,
     variables: BTreeSet<BoolVariable>,
     tests: BTreeMap<crate::ir::InstructionId, SemanticOperation>,
-    source_plan_required: bool,
+    plan_required: bool,
 }
 
-impl ControlSymbolClosure {
+impl ControlSymbolClosure<'_> {
     fn analyze(root: &SemanticNode) -> Self {
         // SSA scheduling also has CFG facts that are absent from this tree.
         let mut closure = Self {
-            source_plan_required: true,
+            plan_required: true,
             ..Self::default()
         };
         closure.visit_node(root);
@@ -978,11 +1041,33 @@ impl ControlSymbolClosure {
     }
 }
 
-impl SemanticVisitor for ControlSymbolClosure {
+impl SemanticVisitor for ControlSymbolClosure<'_> {
+    fn visit_expression(&mut self, expression: &SemanticExpression) {
+        self.has_select |= matches!(expression, SemanticExpression::Select { .. });
+        crate::ir::semantic::walk_expression(self, expression);
+    }
+
+    fn visit_register(&mut self, register: &crate::ir::RegisterArg) {
+        if let Some((values, constants)) = self.ssa_inputs.filter(|_| !self.plan_required) {
+            self.plan_required = SsaVar::from_reg(register).is_some_and(|key| {
+                values.value(key).is_none()
+                    || constants.get(&key).is_some_and(ValueFlowGraph::is_constant)
+            });
+        }
+    }
+
     fn visit_statement(&mut self, statement: &crate::ir::SemanticStatement) {
-        self.source_plan_required |= statement
-            .result()
-            .is_some_and(|result| result.code_var.is_some());
+        if !self.plan_required {
+            let identity = if self.ssa_inputs.is_some() {
+                ValueIdentity::Ssa
+            } else {
+                ValueIdentity::Source
+            };
+            self.plan_required = statement
+                .result()
+                .and_then(|result| identity.key(result))
+                .is_some();
+        }
         match &statement.kind {
             crate::ir::SemanticStatementKind::Instruction(op) => self.visit_operation(op),
             crate::ir::SemanticStatementKind::Definition { value, .. } => {
@@ -992,8 +1077,8 @@ impl SemanticVisitor for ControlSymbolClosure {
     }
 
     fn enter_operation(&mut self, operation: &SemanticOperation) {
-        if !self.source_plan_required && operation.evaluation_operands_iter().is_err() {
-            self.source_plan_required = true;
+        if !self.plan_required && operation.evaluation_operands_iter().is_err() {
+            self.plan_required = true;
         }
     }
 
@@ -1002,7 +1087,7 @@ impl SemanticVisitor for ControlSymbolClosure {
         while let Some(predicate) = pending.pop() {
             match predicate {
                 SemanticPredicate::Test(instruction) => {
-                    self.source_plan_required = true;
+                    self.plan_required = true;
                     self.variables
                         .insert(BoolVariable::Instruction(instruction.id));
                     self.tests.insert(instruction.id, instruction.clone());

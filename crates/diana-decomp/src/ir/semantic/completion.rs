@@ -307,17 +307,76 @@ impl SemanticTransfer {
     }
 }
 
+/// Keep the smallest abrupt outcome inline. A straight-line return or throw
+/// has one outcome and needs no tree allocation. Keeping the first outcome in
+/// order also makes equality independent of branch traversal order.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct AbruptOutcomes {
+    first: Option<AbruptCompletion>,
+    rest: BTreeSet<AbruptCompletion>,
+}
+
+impl AbruptOutcomes {
+    fn iter(&self) -> impl Iterator<Item = &AbruptCompletion> {
+        self.first.iter().chain(&self.rest)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.first.is_none()
+    }
+
+    fn insert(&mut self, mut item: AbruptCompletion) {
+        let Some(first) = &mut self.first else {
+            self.first = Some(item);
+            return;
+        };
+        match item.cmp(first) {
+            std::cmp::Ordering::Equal => return,
+            std::cmp::Ordering::Less => std::mem::swap(&mut item, first),
+            std::cmp::Ordering::Greater => {}
+        }
+        self.rest.insert(item);
+    }
+
+    fn extend(&mut self, mut other: Self) {
+        if self.is_empty() {
+            *self = other;
+            return;
+        }
+        if self.rest.len() < other.rest.len() {
+            std::mem::swap(self, &mut other);
+        }
+        if let Some(first) = other.first {
+            self.insert(first);
+            self.rest.extend(other.rest);
+        }
+    }
+
+    fn retain(&mut self, mut keep: impl FnMut(&AbruptCompletion) -> bool) {
+        self.rest.retain(&mut keep);
+        if self.first.as_ref().is_some_and(|item| !keep(item)) {
+            self.first = self.rest.pop_first();
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SemanticCompletion {
     normal: bool,
-    abrupt: BTreeSet<AbruptCompletion>,
+    abrupt: AbruptOutcomes,
 }
 
 impl SemanticCompletion {
     pub(crate) fn analyze(root: &SemanticNode) -> Self {
-        match CompletionInterpreter::analyze(root, &SemanticCompletionDomain) {
-            Ok(completion) => completion,
-            Err(error) => match error {},
+        fn child_outcomes(node: &SemanticNode) -> SemanticCompletion {
+            match CompletionInterpreter::analyze(node, &SemanticCompletionDomain) {
+                Ok(completion) => completion,
+                Err(error) => match error {},
+            }
+        }
+        match root {
+            SemanticNode::Sequence(children) => Self::sequence(children.iter().map(child_outcomes)),
+            _ => child_outcomes(root),
         }
     }
 
@@ -344,6 +403,9 @@ impl SemanticCompletion {
     }
 
     pub(crate) fn same_control_outcomes(&self, other: &Self) -> bool {
+        if self == other {
+            return true;
+        }
         self.normal == other.normal
             && self
                 .abrupt
@@ -369,7 +431,7 @@ impl SemanticCompletion {
             }
             outcomes
         }
-        outcomes(self) == outcomes(other)
+        self == other || outcomes(self) == outcomes(other)
     }
 
     pub(crate) fn has_break_to_region(&self, region: RegionId) -> bool {
@@ -386,7 +448,8 @@ impl SemanticCompletion {
 
     pub(crate) fn is_continue_to_region(&self, region: RegionId) -> bool {
         !self.normal
-            && self.abrupt.len() == 1
+            && self.abrupt.first.is_some()
+            && self.abrupt.rest.is_empty()
             && self
                 .abrupt
                 .iter()
@@ -417,14 +480,17 @@ impl SemanticCompletion {
     fn normal() -> Self {
         Self {
             normal: true,
-            abrupt: BTreeSet::new(),
+            abrupt: AbruptOutcomes::default(),
         }
     }
 
     fn abrupt(completion: AbruptCompletion) -> Self {
         Self {
             normal: false,
-            abrupt: BTreeSet::from([completion]),
+            abrupt: AbruptOutcomes {
+                first: Some(completion),
+                rest: BTreeSet::new(),
+            },
         }
     }
 
@@ -443,7 +509,7 @@ impl SemanticCompletion {
     fn alternatives(children: impl IntoIterator<Item = Self>) -> Self {
         let mut result = Self {
             normal: false,
-            abrupt: BTreeSet::new(),
+            abrupt: AbruptOutcomes::default(),
         };
         for child in children {
             result.normal |= child.normal;

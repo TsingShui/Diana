@@ -71,6 +71,36 @@ impl DominatorTree {
         Self::compute_with_predecessors(cfg, entry, blocks, &predecessors)
     }
 
+    /// With no exception edges every path originates at the method entry.
+    /// Adding the normal-flow forest's virtual root changes only the parent of
+    /// that entry. The real vertices keep their traversal and sibling order.
+    pub(super) fn with_virtual_root(&self) -> Result<Self, DominanceError> {
+        if self.contains(BlockId::INVALID) {
+            return Err(DominanceError::MissingEntry(BlockId::INVALID));
+        }
+        let mut nodes = Vec::with_capacity(self.nodes.len() + 1);
+        for vertex in &self.nodes {
+            nodes.push(DominatorNode {
+                block: vertex.block,
+                parent: vertex.parent.or(Some(BlockId::INVALID)),
+                children: vertex.children.clone(),
+                preorder: vertex.preorder + 1,
+                subtree_end: vertex.subtree_end + 1,
+            });
+        }
+        nodes.push(DominatorNode {
+            block: BlockId::INVALID,
+            parent: None,
+            children: vec![self.entry],
+            preorder: 0,
+            subtree_end: nodes.len() + 1,
+        });
+        Ok(Self {
+            entry: BlockId::INVALID,
+            nodes,
+        })
+    }
+
     /// Compute a dominator tree for an explicit topology snapshot.
     ///
     /// Structuring keeps original block bodies after removing graph-topology
@@ -278,6 +308,10 @@ impl DominatorTree {
             .map_or(&[][..], |i| self.nodes[i].children.as_slice())
             .iter()
             .copied()
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.nodes.len()
     }
 
     pub fn contains(&self, node: BlockId) -> bool {

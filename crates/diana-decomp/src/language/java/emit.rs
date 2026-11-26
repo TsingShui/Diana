@@ -895,9 +895,12 @@ impl JavaPrinter {
                             "init-direct {receiver}, {target}, [{args}]"
                         )));
                     }
-                    JavaExpr::StaticField { owner, name } => results.push(
-                        RenderedExpression::primary(format!("{}.{name}", owner.clone().into_raw())),
-                    ),
+                    JavaExpr::StaticField { owner, name } => {
+                        let mut text = String::new();
+                        Self::write_raw_type(&mut text, owner)?;
+                        write!(text, ".{name}")?;
+                        results.push(RenderedExpression::primary(text));
+                    }
                     JavaExpr::Field { owner, name } => {
                         pending.push(ExpressionTask::Rebuild(ExpressionFrame::Field {
                             name,
@@ -1163,8 +1166,8 @@ impl JavaPrinter {
                         .len()
                         .checked_sub(count)
                         .ok_or(JavaPrintError::MalformedExpression)?;
-                    let children = results.drain(start..).collect();
-                    results.push(frame.render(children)?);
+                    let parent = frame.render(results.drain(start..))?;
+                    results.push(parent);
                 }
             }
         }
@@ -1175,6 +1178,24 @@ impl JavaPrinter {
             .pop()
             .map(|rendered| rendered.text)
             .ok_or(JavaPrintError::MalformedExpression)
+    }
+
+    fn write_raw_type(output: &mut String, ty: &JavaType) -> std::fmt::Result {
+        let (base, dimensions) = ty.array_shape();
+        if let JavaType::Class(class) = base {
+            for (index, segment) in class.segments.iter().enumerate() {
+                if index != 0 {
+                    output.push('.');
+                }
+                write!(output, "{}", segment.name)?;
+            }
+        } else {
+            write!(output, "{base}")?;
+        }
+        for _ in 0..dimensions {
+            output.push_str("[]");
+        }
+        Ok(())
     }
 
     fn label(
@@ -1458,30 +1479,25 @@ impl ExpressionFrame<'_> {
 
     fn render(
         self,
-        children: Vec<RenderedExpression>,
+        children: impl IntoIterator<Item = RenderedExpression, IntoIter: ExactSizeIterator>,
     ) -> Result<RenderedExpression, JavaPrintError> {
-        let expected = self.child_count();
-        if children.len() != expected {
+        let mut children = children.into_iter();
+        if children.len() != self.child_count() {
             return Err(JavaPrintError::MalformedExpression);
         }
-        let mut children = children.into_iter();
         let (rendered, precedence, binary, requirement) = match self {
-            Self::Field { name, requirement } => (
-                format!("{}.{}", Self::child(&mut children)?, name),
-                ExpressionPrecedence::Primary,
-                None,
-                requirement,
-            ),
-            Self::ArrayAccess { requirement } => (
-                format!(
-                    "{}[{}]",
-                    Self::child(&mut children)?,
-                    Self::child(&mut children)?
-                ),
-                ExpressionPrecedence::Primary,
-                None,
-                requirement,
-            ),
+            Self::Field { name, requirement } => {
+                let mut text = Self::child(&mut children)?;
+                write!(text, ".{name}")?;
+                (text, ExpressionPrecedence::Primary, None, requirement)
+            }
+            Self::ArrayAccess { requirement } => {
+                let mut text = Self::child(&mut children)?;
+                text.push('[');
+                text.push_str(&Self::child(&mut children)?);
+                text.push(']');
+                (text, ExpressionPrecedence::Primary, None, requirement)
+            }
             Self::Call {
                 has_receiver,
                 owner,
@@ -1490,41 +1506,31 @@ impl ExpressionFrame<'_> {
                 args,
                 requirement,
             } => {
-                let receiver = if has_receiver {
-                    Some(Self::child(&mut children)?)
+                let mut text = if has_receiver {
+                    let mut receiver = Self::child(&mut children)?;
+                    receiver.push('.');
+                    receiver
                 } else {
-                    None
+                    let mut prefix = String::new();
+                    if let Some(owner) = owner {
+                        JavaPrinter::write_raw_type(&mut prefix, owner)?;
+                        prefix.push('.');
+                    }
+                    prefix
                 };
-                let arguments = children
-                    .take(args)
-                    .map(|child| child.text)
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let prefix =
-                    receiver.or_else(|| owner.map(|owner| owner.clone().into_raw().to_string()));
-                let type_arguments = (!type_arguments.is_empty()).then(|| {
-                    format!(
-                        "<{}>",
-                        type_arguments
-                            .iter()
-                            .map(ToString::to_string)
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                });
-                let method = match type_arguments {
-                    Some(type_arguments) => format!("{type_arguments}{method}"),
-                    None => method.to_string(),
-                };
-                (
-                    match prefix {
-                        Some(prefix) => format!("{prefix}.{method}({arguments})"),
-                        None => format!("{method}({arguments})"),
-                    },
-                    ExpressionPrecedence::Primary,
-                    None,
-                    requirement,
-                )
+                if !type_arguments.is_empty() {
+                    text.push('<');
+                    for (index, ty) in type_arguments.iter().enumerate() {
+                        if index != 0 {
+                            text.push_str(", ");
+                        }
+                        write!(text, "{ty}")?;
+                    }
+                    text.push('>');
+                }
+                write!(text, "{method}")?;
+                Self::arguments(&mut text, children.take(args));
+                (text, ExpressionPrecedence::Primary, None, requirement)
             }
             Self::MethodReference {
                 method,
@@ -1558,45 +1564,38 @@ impl ExpressionFrame<'_> {
                 let enclosing = has_enclosing
                     .then(|| Self::child(&mut children))
                     .transpose()?;
-                let arguments = children
-                    .take(args)
-                    .map(|child| child.text)
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let mut expression = match enclosing {
-                    Some(enclosing) => {
-                        let JavaType::Class(class) = ty else {
-                            return Err(JavaPrintError::MalformedExpression);
-                        };
-                        let member = class
-                            .segments
-                            .last()
-                            .ok_or(JavaPrintError::MalformedExpression)?;
-                        let mut member = member.clone();
-                        if diamond {
-                            member.arguments.clear();
-                        }
-                        format!(
-                            "{enclosing}.new {member}{}({arguments})",
-                            if diamond { "<>" } else { "" }
-                        )
+                let mut expression = enclosing.unwrap_or_default();
+                if has_enclosing {
+                    let JavaType::Class(class) = ty else {
+                        return Err(JavaPrintError::MalformedExpression);
+                    };
+                    let member = class
+                        .segments
+                        .last()
+                        .ok_or(JavaPrintError::MalformedExpression)?;
+                    expression.push_str(".new ");
+                    if diamond {
+                        write!(expression, "{}<>", member.name)?;
+                    } else {
+                        write!(expression, "{member}")?;
                     }
-                    None => {
-                        let mut ty = ty.clone();
-                        if diamond {
-                            let JavaType::Class(class) = &mut ty else {
-                                return Err(JavaPrintError::MalformedExpression);
-                            };
-                            class
-                                .segments
-                                .last_mut()
-                                .ok_or(JavaPrintError::MalformedExpression)?
-                                .arguments
-                                .clear();
-                        }
-                        format!("new {ty}{}({arguments})", if diamond { "<>" } else { "" })
+                } else if diamond {
+                    let JavaType::Class(class) = ty else {
+                        return Err(JavaPrintError::MalformedExpression);
+                    };
+                    let (member, parents) = class
+                        .segments
+                        .split_last()
+                        .ok_or(JavaPrintError::MalformedExpression)?;
+                    expression.push_str("new ");
+                    for parent in parents {
+                        write!(expression, "{parent}.")?;
                     }
-                };
+                    write!(expression, "{}<>", member.name)?;
+                } else {
+                    write!(expression, "new {ty}")?;
+                }
+                Self::arguments(&mut expression, children.take(args));
                 if let Some(body) = anonymous_body {
                     expression.push(' ');
                     expression.push_str(&body);
@@ -1686,12 +1685,12 @@ impl ExpressionFrame<'_> {
                 } else {
                     right.text
                 };
-                (
-                    format!("{left} {} {right}", op.token()),
-                    precedence,
-                    Some(op),
-                    requirement,
-                )
+                let mut text = left;
+                text.push(' ');
+                text.push_str(op.token());
+                text.push(' ');
+                text.push_str(&right);
+                (text, precedence, Some(op), requirement)
             }
             Self::Cast { ty, requirement } => (
                 format!("({ty}) {}", Self::child(&mut children)?),
@@ -1752,6 +1751,17 @@ impl ExpressionFrame<'_> {
             binary,
         }
         .requiring(requirement))
+    }
+
+    fn arguments(output: &mut String, values: impl Iterator<Item = RenderedExpression>) {
+        output.push('(');
+        for (index, value) in values.enumerate() {
+            if index != 0 {
+                output.push_str(", ");
+            }
+            output.push_str(&value.text);
+        }
+        output.push(')');
     }
 
     fn child(

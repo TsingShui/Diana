@@ -9,7 +9,8 @@ use crate::ir::{
     ArgType, FieldReference, InsnType, MemberReference, MethodDescriptor, MethodReference,
 };
 use crate::language::java::{JavaConstructorLayout, JavaIdentifier};
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::sync::{Arc, RwLock};
 
 use super::super::function_object_types::FunctionObjectMethodInference;
 
@@ -642,6 +643,7 @@ pub(crate) struct JavaSourceAbi {
     method_exceptions: std::collections::BTreeMap<MethodReference, Vec<ArgType>>,
 
     generic_methods: std::collections::BTreeMap<MethodReference, GenericMethodContract>,
+    resolved_methods: Arc<RwLock<HashMap<MethodReference, Option<GenericMethodContract>>>>,
     generic_method_declarations: std::collections::BTreeMap<
         (String, crate::ir::MethodDescriptor),
         Vec<(ArgType, GenericMethodContract)>,
@@ -804,31 +806,38 @@ impl JavaSourceAbi {
                     .get(class.class_type())
                     .cloned()
                     .unwrap_or_else(|| Self::direct_owner_type(class));
+                let declared_parameters = std::cell::OnceCell::new();
                 class.methods().iter().filter_map(move |method| {
-                    let declared_parameters = Self::declared_type_parameters(class);
+                    let owner_parameters = || {
+                        declared_parameters
+                            .get_or_init(|| Self::declared_type_parameters(class))
+                            .clone()
+                    };
                     let parsed_signature = method
                         .signature
                         .as_deref()
                         .and_then(|signature| GenericSignatures::method(signature).ok());
                     let contract = parsed_signature
                         .map(|signature| {
-                            let signature =
-                                ConstructorSourceAbi::analyze(class, method, generic_owner_types)
-                                    .map(|abi| {
-                                        abi.align(signature.clone(), method.param_types().len())
-                                    })
-                                    .unwrap_or(signature);
+                            let signature = match ConstructorSourceAbi::analyze(
+                                class,
+                                method,
+                                generic_owner_types,
+                            ) {
+                                Some(abi) => abi.align(signature, method.param_types().len()),
+                                None => signature,
+                            };
                             GenericMethodContract {
                                 signature,
                                 owner: owner.clone(),
-                                owner_parameters: declared_parameters.clone(),
+                                owner_parameters: owner_parameters(),
                             }
                         })
                         .or_else(|| {
                             method.is_constructor().then(|| {
                                 GenericMethodContract::erased_constructor(
                                     owner.clone(),
-                                    declared_parameters,
+                                    owner_parameters(),
                                     method.param_types(),
                                     method.throws(),
                                 )
@@ -962,6 +971,7 @@ impl JavaSourceAbi {
             method_exceptions,
 
             generic_methods,
+            resolved_methods: Default::default(),
             generic_method_declarations,
             function_object_types: std::collections::BTreeMap::new(),
             function_object_identities: std::sync::Arc::new(BTreeSet::new()),
@@ -1302,7 +1312,13 @@ impl JavaSourceAbi {
         if let Some(contract) = self.generic_methods.get(method) {
             return Some(contract.clone());
         }
-        self.generic_hierarchy
+        if let Ok(cache) = self.resolved_methods.read() {
+            if let Some(result) = cache.get(method) {
+                return result.clone();
+            }
+        }
+        let result = self
+            .generic_hierarchy
             .as_ref()
             .and_then(|hierarchy| hierarchy.method_contract(method))
             .or_else(|| {
@@ -1316,7 +1332,11 @@ impl JavaSourceAbi {
                 } else {
                     self.inherited_generic_method(method)
                 }
-            })
+            });
+        if let Ok(mut cache) = self.resolved_methods.write() {
+            cache.insert(method.clone(), result.clone());
+        }
+        result
     }
 
     fn inherited_generic_method(&self, method: &MethodReference) -> Option<GenericMethodContract> {

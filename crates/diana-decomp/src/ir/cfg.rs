@@ -448,6 +448,13 @@ impl CFG {
         self.predecessor_snapshot_for(|kind| kind != EdgeKind::Exception)
     }
 
+    pub(crate) fn has_exception_edges(&self) -> bool {
+        self.successors
+            .values()
+            .flatten()
+            .any(|(_, kind)| kind.is_exception())
+    }
+
     pub fn incoming_edges(&self, target: BlockId) -> Vec<(BlockId, EdgeKind)> {
         self.predecessors_with_kind(target).to_vec()
     }
@@ -457,6 +464,27 @@ impl CFG {
             .get(&target)
             .map(Vec::as_slice)
             .unwrap_or_default()
+    }
+
+    fn predecessor_groups(&self, target: BlockId) -> impl Iterator<Item = &[(BlockId, EdgeKind)]> {
+        self.predecessors_with_kind(target)
+            .chunk_by(|left, right| left.0 == right.0)
+    }
+
+    pub(crate) fn normal_predecessors(
+        &self,
+        target: BlockId,
+    ) -> impl Iterator<Item = BlockId> + '_ {
+        self.predecessor_groups(target).filter_map(|edges| {
+            edges
+                .iter()
+                .any(|(_, kind)| !kind.is_exception())
+                .then_some(edges[0].0)
+        })
+    }
+
+    pub(crate) fn incoming_sources(&self, target: BlockId) -> impl Iterator<Item = BlockId> + '_ {
+        self.predecessor_groups(target).map(|edges| edges[0].0)
     }
 
     fn predecessor_snapshot_for(
@@ -480,15 +508,7 @@ impl CFG {
 
     /// Sorted, distinct sources, regardless of how many edge kinds they carry.
     pub fn get_predecessors(&self, id: impl Into<BlockId>) -> Vec<BlockId> {
-        let mut sources: Vec<_> = self
-            .incoming
-            .get(&id.into())
-            .into_iter()
-            .flatten()
-            .map(|&(from, _)| from)
-            .collect();
-        sources.dedup();
-        sources
+        self.incoming_sources(id.into()).collect()
     }
 
     fn forget_incoming(

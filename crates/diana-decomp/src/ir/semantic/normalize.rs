@@ -76,6 +76,9 @@ impl<State> SemanticMethod<State> {
     }
 
     fn normalize_with(&mut self, reachability: ReachabilityMode) -> Result<(), SemanticFoldError> {
+        if SemanticNormalization::already_normal(&self.body) {
+            return Ok(());
+        }
         let required_cfg = reachability
             .preserves_cfg_topology()
             .then(|| SemanticCfgIdentity::collect(&self.body));
@@ -111,6 +114,9 @@ impl<State> SemanticMethod<State> {
 
 impl<State: SourceVariableContext> SemanticMethod<State> {
     pub(crate) fn normalize_source(&mut self) -> Result<(), SemanticFoldError> {
+        if SemanticNormalization::already_normal(&self.body) {
+            return Ok(());
+        }
         let body = std::mem::replace(&mut self.body, SemanticNode::Empty);
         self.body = CompletionPreservingRewrite::apply_control(
             "source-semantic-normalize",
@@ -125,6 +131,9 @@ impl<State: SourceVariableContext> SemanticMethod<State> {
     }
 
     pub(crate) fn normalize_source_variables(&mut self) -> Result<(), SemanticFoldError> {
+        if SemanticNormalization::already_normal(&self.body) {
+            return Ok(());
+        }
         let body = std::mem::replace(&mut self.body, SemanticNode::Empty);
         self.body =
             CompletionPreservingRewrite::apply("source-semantic-normalize", body, |body| {
@@ -136,6 +145,9 @@ impl<State: SourceVariableContext> SemanticMethod<State> {
 
 impl SemanticMethod<SourceSyntaxSemantics> {
     pub(crate) fn compact(&mut self) -> Result<(), SemanticFoldError> {
+        if SemanticNormalization::already_normal(&self.body) {
+            return Ok(());
+        }
         let body = std::mem::replace(&mut self.body, SemanticNode::Empty);
         self.body = CompletionPreservingRewrite::apply("kotlin-semantic-compact", body, |body| {
             SourceSemanticNormalizer.fold_node(body)
@@ -204,6 +216,30 @@ struct SemanticNormalization {
 }
 
 impl SemanticNormalization {
+    /// The structural rewrites act on control nodes, nested sequences, empty
+    /// blocks, or statements following an abrupt exit. A flat sequence of
+    /// live blocks and an optional final transfer is already in normal form.
+    fn already_normal(root: &SemanticNode) -> bool {
+        fn leaf(node: &SemanticNode) -> bool {
+            match node {
+                SemanticNode::BasicBlock(block) => !block.statements.is_empty(),
+                SemanticNode::Leave(_) => true,
+                _ => false,
+            }
+        }
+        match root {
+            SemanticNode::Empty => true,
+            SemanticNode::Sequence(nodes) if nodes.len() >= 2 => {
+                let (last, prefix) = nodes.split_last().expect("sequence has two or more nodes");
+                leaf(last) && prefix.iter().all(|node| {
+                    matches!(node, SemanticNode::BasicBlock(block) if !block.statements.is_empty())
+                        && NormalCompletion::can_complete(node)
+                })
+            }
+            _ => leaf(root),
+        }
+    }
+
     fn new(reachability: ReachabilityMode) -> Self {
         Self { reachability }
     }

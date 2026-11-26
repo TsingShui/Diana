@@ -39,7 +39,7 @@ pub use instructions::{SemanticExpressionTransform, SemanticInstructions};
 pub(crate) use sites::SemanticSiteNumbering;
 pub use string_building::{StringBuilderProtocol, StringBuildingRecovery};
 pub use verify::SemanticInvariantError;
-pub(crate) use visit::walk_statement;
+pub(crate) use visit::{walk_expression, walk_statement};
 pub use visit::{
     SemanticBindingKind, SemanticFoldControl, SemanticFoldError, SemanticFolder, SemanticVisitor,
 };

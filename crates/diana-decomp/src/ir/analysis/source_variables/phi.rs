@@ -1075,7 +1075,6 @@ impl<'a> NormalCopyPlacement<'a> {
             if self
                 .liveness
                 .edge_live(edge.source, target, kind)?
-                .iter()
                 .filter_map(|value| self.variables.variable_of(*value))
                 .any(|variable| destinations.contains(&variable))
             {

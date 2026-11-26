@@ -199,11 +199,12 @@ impl std::error::Error for SsaInvariantError {}
 
 impl SsaValueGraph {
     pub fn build(cfg: &CFG) -> Result<Self, SsaInvariantError> {
-        Self::build_with_dominators(cfg).map(|(graph, _)| graph)
+        Self::build_with_dominators(cfg, None).map(|(graph, _)| graph)
     }
 
     pub(crate) fn build_with_dominators(
         cfg: &CFG,
+        dominators: Option<super::DominatorTree>,
     ) -> Result<(Self, super::DominatorTree), SsaInvariantError> {
         let mut graph = Self::default();
         for (&block, body) in &cfg.blocks {
@@ -266,8 +267,10 @@ impl SsaValueGraph {
             }
         }
         graph.validate_phi_edges(cfg)?;
-        let dominators =
-            super::DominatorTree::compute(cfg).map_err(SsaInvariantError::Dominance)?;
+        let dominators = match dominators {
+            Some(tree) => tree,
+            None => super::DominatorTree::compute(cfg).map_err(SsaInvariantError::Dominance)?,
+        };
         graph.validate_dominance(cfg, &dominators)?;
         Ok((graph, dominators))
     }

@@ -24,7 +24,7 @@
 //! 3. Update PHI operands in successor blocks
 //! 4. Visit dominator tree children
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 
 use crate::ir::{
     analysis::{DominanceError, DominanceFrontier, DominatorTree, RegisterLiveness},
@@ -168,6 +168,14 @@ impl Pass for SSATransform {
     }
 
     fn run(&mut self, cfg: &mut CFG) -> Result<PassResult, Self::Error> {
+        Self::construct(cfg).map(|(change, _)| change)
+    }
+}
+
+impl SSATransform {
+    pub(super) fn construct(
+        cfg: &mut CFG,
+    ) -> Result<(PassResult, DominatorTree), SsaTransformError> {
         Self::model_refining_definitions(cfg);
         let exceptional_definitions = Self::validate_exception_boundaries(cfg)?;
 
@@ -176,29 +184,34 @@ impl Pass for SSATransform {
         let dom_frontier =
             DominanceFrontier::compute(cfg, &dom_tree).map_err(SsaTransformError::Dominance)?;
 
-        // Step 2: Find all registers that need PHI nodes
-        let variables = PhiPlacement::variables(cfg);
-
-        if variables.is_empty() {
-            return Ok(PassResult::Unchanged);
-        }
-
-        // Step 3: Place PHI nodes
+        // A join needs the complete register domain for iterated placement.
+        // Otherwise a declared input or result already proves renaming is
+        // required; its individual uses will be visited by the renamer.
         if exceptional_definitions || !dom_frontier.is_empty() {
+            let variables = PhiPlacement::variables(cfg);
+            if variables.is_empty() {
+                return Ok((PassResult::Unchanged, dom_tree));
+            }
             let liveness = RegisterLiveness::analyze(cfg);
-            let phi_placements = PhiPlacement::compute(cfg, &dom_frontier, &liveness, &variables);
-            PhiPlacement::insert(cfg, &phi_placements)?;
+            let placements = PhiPlacement::compute(cfg, &dom_frontier, &liveness, &variables);
+            PhiPlacement::insert(cfg, &placements)?;
+        } else if cfg.ins.min(cfg.registers) == 0
+            && !cfg
+                .blocks
+                .values()
+                .flat_map(|block| &block.insns)
+                .any(|insn| insn.result.is_some())
+            && PhiPlacement::variables(cfg).is_empty()
+        {
+            return Ok((PassResult::Unchanged, dom_tree));
         }
 
         // Step 4: Rename variables
-        let mut renamer = VariableRenamer::new(variables.len());
+        let mut renamer = VariableRenamer::default();
         renamer.rename(cfg, &dom_tree)?;
 
-        Ok(PassResult::Changed)
+        Ok((PassResult::Changed, dom_tree))
     }
-}
-
-impl SSATransform {
     fn validate_exception_boundaries(cfg: &CFG) -> Result<bool, SsaTransformError> {
         let mut has_definitions = false;
         for block in cfg.block_ids() {
@@ -412,102 +425,81 @@ impl PhiPlacement {
     }
 }
 
-/// Variable renaming state.
+/// A definition and its type have the same lifetime in the dominator walk.
+/// Exiting a block restores its previous bindings, but keeps version counters.
+#[derive(Default)]
 struct VariableRenamer {
-    /// Current SSA version counter for each register
-    counters: HashMap<u32, u32>,
-    /// Stack of SSA versions for each register
-    stacks: HashMap<u32, Vec<u32>>,
-    /// Type observed at each SSA definition.
-    types: HashMap<(u32, u32), ArgType>,
+    registers: foldhash::HashMap<u32, RegisterState>,
+    shadowed: Vec<(u32, Option<TypedVersion>)>,
     missing_use: Option<u32>,
+}
+
+#[derive(Default)]
+struct RegisterState {
+    next: u32,
+    active: Option<TypedVersion>,
+}
+
+struct TypedVersion {
+    version: u32,
+    ty: ArgType,
 }
 
 enum RenameTask {
     Enter(BlockId),
-    Exit(Vec<u32>),
-}
-
-struct BlockRename {
-    pushed: Vec<u32>,
-    exceptional: Option<BTreeMap<u32, (u32, ArgType)>>,
+    Exit(usize),
 }
 
 impl VariableRenamer {
-    fn new(_var_count: usize) -> Self {
-        Self {
-            counters: HashMap::new(),
-            stacks: HashMap::new(),
-            types: HashMap::new(),
-            missing_use: None,
-        }
-    }
-
-    /// Get the next SSA version for a register.
-    fn next_version(&mut self, reg: u32) -> u32 {
-        let counter = self.counters.entry(reg).or_insert(0);
-        let version = *counter;
-        *counter += 1;
+    fn define(&mut self, reg: u32, ty: &ArgType) -> u32 {
+        let state = self.registers.entry(reg).or_default();
+        let version = state.next;
+        state.next += 1;
+        let previous = state.active.replace(TypedVersion {
+            version,
+            ty: ty.clone(),
+        });
+        self.shadowed.push((reg, previous));
         version
     }
 
-    /// Push a new version onto the stack.
-    fn push_version(&mut self, reg: u32, version: u32) {
-        self.stacks.entry(reg).or_default().push(version);
+    fn active(&self, reg: u32) -> Option<&TypedVersion> {
+        self.registers.get(&reg)?.active.as_ref()
     }
 
-    /// Pop a version from the stack.
-    fn pop_version(&mut self, reg: u32) -> Result<(), SsaTransformError> {
-        let stack = self
-            .stacks
-            .get_mut(&reg)
-            .ok_or(SsaTransformError::UnbalancedStack(reg))?;
-        stack.pop().ok_or(SsaTransformError::UnbalancedStack(reg))?;
-        if stack.is_empty() {
-            self.stacks.remove(&reg);
-        }
-        Ok(())
-    }
-
-    /// Get the current version for a register.
-    fn current_version(&self, reg: u32) -> Option<u32> {
-        self.stacks.get(&reg).and_then(|s| s.last().copied())
-    }
-
-    fn current_type(&self, reg: u32) -> Option<&ArgType> {
-        let version = self.current_version(reg)?;
-        self.types.get(&(reg, version))
-    }
-
-    /// Rename all variables in the CFG.
     fn rename(&mut self, cfg: &mut CFG, dom_tree: &DominatorTree) -> Result<(), SsaTransformError> {
         self.seed_input_registers(cfg)?;
         let mut tasks = vec![RenameTask::Enter(cfg.entry)];
         while let Some(task) = tasks.pop() {
             match task {
                 RenameTask::Enter(block) => {
-                    let renamed = self.rename_definitions_and_uses(cfg, block)?;
-                    for (successor, kind) in cfg.successors_with_kind(block).to_vec() {
-                        let state = if kind == crate::ir::EdgeKind::Exception {
-                            Some(
-                                renamed
-                                    .exceptional
-                                    .as_ref()
-                                    .ok_or(SsaTransformError::MissingThrowingState(block))?,
-                            )
+                    let start = self.shadowed.len();
+                    let last_result = self.rename_definitions_and_uses(cfg, block)?;
+                    let edges = cfg
+                        .successors_with_kind(block)
+                        .iter()
+                        .copied()
+                        .collect::<smallvec::SmallVec<[_; 2]>>();
+                    for (successor, kind) in edges {
+                        // Protected blocks have exactly one throwing instruction,
+                        // at the end. Only its result differs on an exceptional
+                        // edge. All other bindings survive the throw unchanged.
+                        let previous = if kind == crate::ir::EdgeKind::Exception {
+                            last_result
                         } else {
                             None
                         };
-                        self.fill_phi_operands(cfg, block, successor, kind, state)?;
+                        self.fill_phi_operands(cfg, block, successor, kind, previous)?;
                     }
-
-                    tasks.push(RenameTask::Exit(renamed.pushed));
-                    let children = dom_tree.children(block).collect::<Vec<_>>();
-                    tasks.extend(children.into_iter().rev().map(RenameTask::Enter));
+                    tasks.push(RenameTask::Exit(start));
+                    tasks.extend(dom_tree.children(block).rev().map(RenameTask::Enter));
                 }
-                RenameTask::Exit(pushed) => {
-                    for register in pushed.into_iter().rev() {
-                        self.pop_version(register)?;
+                RenameTask::Exit(start) => {
+                    for (reg, previous) in self.shadowed.drain(start..).rev() {
+                        self.registers
+                            .get_mut(&reg)
+                            .ok_or(SsaTransformError::UnbalancedStack(reg))?
+                            .active = previous;
                     }
                 }
             }
@@ -515,32 +507,24 @@ impl VariableRenamer {
         Ok(())
     }
 
-    /// Method parameters live in the input register range before the entry block.
-    /// Seeding them gives uses-before-def a real SSA identity instead of falling
-    /// back to the physical Dalvik register.
+    /// Map wide parameters to both physical input slots before visiting entry.
     fn seed_input_registers(&mut self, cfg: &CFG) -> Result<(), SsaTransformError> {
-        let first_input = cfg.registers.saturating_sub(cfg.ins);
-        let mut input_types = BTreeMap::new();
-        let mut register = first_input;
-        if !cfg.method().is_static() && register < cfg.registers {
-            input_types.insert(register, cfg.method().owner().clone());
-            register += 1;
+        let method = cfg.method();
+        let receiver = (!method.is_static()).then_some(method.owner());
+        let mut types = receiver.into_iter().chain(
+            method
+                .descriptor()
+                .parameters
+                .iter()
+                .flat_map(|ty| std::iter::repeat_n(ty, 1 + usize::from(ty.is_wide()))),
+        );
+        for reg in cfg.registers.saturating_sub(cfg.ins)..cfg.registers {
+            self.define(
+                reg,
+                types.next().ok_or(SsaTransformError::UncoveredInput(reg))?,
+            );
         }
-        for ty in &cfg.method().descriptor().parameters {
-            let slots = if ty.is_wide() { 2 } else { 1 };
-            for slot in 0..slots {
-                input_types.insert(register + slot, ty.clone());
-            }
-            register += slots;
-        }
-        for reg in first_input..cfg.registers {
-            let version = self.next_version(reg);
-            self.push_version(reg, version);
-            let ty = input_types
-                .remove(&reg)
-                .ok_or(SsaTransformError::UncoveredInput(reg))?;
-            self.types.insert((reg, version), ty);
-        }
+        self.shadowed.clear();
         Ok(())
     }
 
@@ -548,64 +532,28 @@ impl VariableRenamer {
         &mut self,
         cfg: &mut CFG,
         block_id: BlockId,
-    ) -> Result<BlockRename, SsaTransformError> {
-        let mut pushed: Vec<u32> = Vec::new();
-        let mut exceptional = None;
+    ) -> Result<Option<u32>, SsaTransformError> {
         let block = cfg
             .blocks
             .get_mut(&block_id)
             .ok_or(SsaTransformError::MissingBlock(block_id))?;
         for insn in &mut block.insns {
             if insn.insn_type == InsnType::Phi {
-                let result = insn
-                    .result
-                    .as_mut()
-                    .ok_or(SsaTransformError::MissingPhiResult(block_id))?;
-                let version = self.next_version(result.reg_num);
-                result.ssa_version = Some(version);
-                self.types
-                    .insert((result.reg_num, version), result.ty.clone());
-                self.push_version(result.reg_num, version);
-                pushed.push(result.reg_num);
-                continue;
+                if insn.result.is_none() {
+                    return Err(SsaTransformError::MissingPhiResult(block_id));
+                }
+            } else {
+                self.rename_insn_uses(insn)?;
             }
-
-            self.rename_insn_uses(insn)?;
-            if insn.can_throw() {
-                exceptional = Some(self.current_state()?);
-            }
-
-            // Rename definition
             if let Some(result) = &mut insn.result {
-                let version = self.next_version(result.reg_num);
-                result.ssa_version = Some(version);
-                self.types
-                    .insert((result.reg_num, version), result.ty.clone());
-                self.push_version(result.reg_num, version);
-                pushed.push(result.reg_num);
+                result.ssa_version = Some(self.define(result.reg_num, &result.ty));
             }
         }
-        Ok(BlockRename {
-            pushed,
-            exceptional,
-        })
-    }
-
-    fn current_state(&self) -> Result<BTreeMap<u32, (u32, ArgType)>, SsaTransformError> {
-        let mut state = BTreeMap::new();
-        for register in self.stacks.keys() {
-            let version = self
-                .current_version(*register)
-                .ok_or(SsaTransformError::UnbalancedStack(*register))?;
-            let ty = self.types.get(&(*register, version)).cloned().ok_or(
-                SsaTransformError::MissingTypeDomain {
-                    register: *register,
-                    version,
-                },
-            )?;
-            state.insert(*register, (version, ty));
-        }
-        Ok(state)
+        Ok(block
+            .insns
+            .last()
+            .and_then(|insn| insn.result.as_ref())
+            .map(|result| result.reg_num))
     }
 
     fn rename_insn_uses(&mut self, insn: &mut InsnNode) -> Result<(), SsaTransformError> {
@@ -623,12 +571,10 @@ impl VariableRenamer {
 
 impl InstructionTransform for VariableRenamer {
     fn transform_register(&mut self, mut register: RegisterArg) -> InsnArg {
-        if let Some(version) = self.current_version(register.reg_num) {
-            register.ssa_version = Some(version);
+        if let Some(value) = self.active(register.reg_num) {
+            register.ssa_version = Some(value.version);
             if !register.ty.is_known() {
-                if let Some(ty) = self.current_type(register.reg_num) {
-                    register.ty = ty.clone();
-                }
+                register.ty = value.ty.clone();
             }
         } else {
             self.missing_use.get_or_insert(register.reg_num);
@@ -645,7 +591,7 @@ impl VariableRenamer {
         from: BlockId,
         to: BlockId,
         edge_kind: crate::ir::EdgeKind,
-        state: Option<&BTreeMap<u32, (u32, ArgType)>>,
+        previous_result: Option<u32>,
     ) -> Result<(), SsaTransformError> {
         // Update PHI nodes
         let block = cfg
@@ -671,18 +617,23 @@ impl VariableRenamer {
                 let reg = result.reg_num;
 
                 // Get current version for this predecessor
-                let version_and_type = match state {
-                    Some(state) => state.get(&reg).cloned(),
-                    None => self.current_version(reg).and_then(|version| {
-                        self.current_type(reg).cloned().map(|ty| (version, ty))
-                    }),
-                };
-                let (version, ty) =
-                    version_and_type.ok_or(SsaTransformError::MissingPhiDefinition {
-                        source: from,
-                        target: to,
-                        register: reg,
-                    })?;
+                let value = if previous_result == Some(reg) {
+                    let (saved_reg, previous) = self
+                        .shadowed
+                        .last()
+                        .ok_or(SsaTransformError::MissingThrowingState(from))?;
+                    if *saved_reg != reg {
+                        return Err(SsaTransformError::MissingThrowingState(from));
+                    }
+                    previous.as_ref()
+                } else {
+                    self.active(reg)
+                }
+                .ok_or(SsaTransformError::MissingPhiDefinition {
+                    source: from,
+                    target: to,
+                    register: reg,
+                })?;
                 let slot =
                     insn.args
                         .get_mut(pred_index)
@@ -690,8 +641,8 @@ impl VariableRenamer {
                             block: to,
                             index: pred_index,
                         })?;
-                let mut source_reg = RegisterArg::new(reg, ty);
-                source_reg.ssa_version = Some(version);
+                let mut source_reg = RegisterArg::new(reg, value.ty.clone());
+                source_reg.ssa_version = Some(value.version);
                 *slot = InsnArg::Reg(source_reg);
             } else {
                 return Err(SsaTransformError::MissingPhiResult(to));

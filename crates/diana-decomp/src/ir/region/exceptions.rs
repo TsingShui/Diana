@@ -344,9 +344,10 @@ impl<'a> TryRegionEnvelopeAnalysis<'a> {
             })
             .collect::<BTreeSet<_>>();
         let mut rejected = Vec::new();
+        let connectors = self.entry_connectors(entry, &protected, &source_handlers);
         let mut blocks = protected.clone();
-        blocks.extend(self.normal_connectors(&protected)?);
-        blocks.extend(self.entry_connectors(entry, &protected, &source_handlers)?);
+        blocks.extend(self.normal_connectors(&protected));
+        blocks.extend(&connectors);
         match self.prove(source, entry, blocks, &protected, &source_handlers)? {
             TryEnvelopeProof::Proven(envelope) => {
                 return Ok(TryEnvelopeProof::Proven(envelope));
@@ -356,7 +357,7 @@ impl<'a> TryRegionEnvelopeAnalysis<'a> {
 
         let mut lexical = self.range_blocks(source);
         lexical.extend(protected.iter().copied());
-        lexical.extend(self.entry_connectors(entry, &protected, &source_handlers)?);
+        lexical.extend(connectors);
         match self.prove(source, entry, lexical, &protected, &source_handlers)? {
             TryEnvelopeProof::Proven(envelope) => Ok(TryEnvelopeProof::Proven(envelope)),
             TryEnvelopeProof::Rejected(reasons) => {
@@ -674,52 +675,39 @@ impl<'a> TryRegionEnvelopeAnalysis<'a> {
             .collect()
     }
 
-    fn normal_connectors(
-        &self,
-        protected: &BTreeSet<BlockId>,
-    ) -> Result<BTreeSet<BlockId>, RegionInvariantError> {
-        let candidates = self
-            .cfg
-            .block_ids()
-            .into_iter()
-            .filter(|block| !protected.contains(block))
-            .map(|block| {
-                let body = self
-                    .cfg
-                    .block(block)
-                    .ok_or(RegionInvariantError::MissingBlock(block))?;
-                Ok((!self.effective_block_can_throw(body)).then_some(block))
-            })
-            .collect::<Result<Vec<_>, RegionInvariantError>>()?
-            .into_iter()
-            .flatten()
-            .collect::<BTreeSet<_>>();
-
+    fn normal_connectors(&self, protected: &BTreeSet<BlockId>) -> BTreeSet<BlockId> {
         let mut forward = BTreeSet::new();
         let mut pending = protected
             .iter()
-            .flat_map(|block| self.cfg.normal_successors(*block))
+            .flat_map(|&block| self.cfg.normal_successors(block))
             .collect::<Vec<_>>();
         while let Some(block) = pending.pop() {
-            if !candidates.contains(&block) || !forward.insert(block) {
+            if protected.contains(&block)
+                || forward.contains(&block)
+                || self
+                    .cfg
+                    .block(block)
+                    .is_none_or(|body| self.effective_block_can_throw(body))
+            {
                 continue;
             }
+            forward.insert(block);
             pending.extend(self.cfg.normal_successors(block));
         }
-
-        let predecessors = self.cfg.normal_predecessor_snapshot();
-        let mut backward = BTreeSet::new();
+        // Every intermediate on a path from a forward-reachable candidate
+        // back to the protected body is itself forward reachable.
+        let mut connectors = BTreeSet::new();
         let mut pending = protected
             .iter()
-            .flat_map(|block| predecessors.get(block).into_iter().flatten().copied())
+            .flat_map(|&block| self.cfg.normal_predecessors(block))
             .collect::<Vec<_>>();
         while let Some(block) = pending.pop() {
-            if !candidates.contains(&block) || !backward.insert(block) {
-                continue;
+            if forward.remove(&block) {
+                connectors.insert(block);
+                pending.extend(self.cfg.normal_predecessors(block));
             }
-            pending.extend(predecessors.get(&block).into_iter().flatten().copied());
         }
-        Ok(forward.intersection(&backward).copied().collect())
+        connectors
     }
 
     fn effective_block_can_throw(&self, block: &Block) -> bool {
@@ -746,34 +734,28 @@ impl<'a> TryRegionEnvelopeAnalysis<'a> {
         entry: BlockId,
         protected: &BTreeSet<BlockId>,
         excluded: &BTreeSet<BlockId>,
-    ) -> Result<BTreeSet<BlockId>, RegionInvariantError> {
-        if protected.contains(&entry) {
-            return Ok(BTreeSet::new());
+    ) -> BTreeSet<BlockId> {
+        let eligible = |block: BlockId| {
+            !protected.contains(&block)
+                && !excluded.contains(&block)
+                && self.cfg.block(block).is_some()
+        };
+        if !eligible(entry) {
+            return BTreeSet::new();
         }
-        let candidates = self
-            .cfg
-            .block_ids()
-            .into_iter()
-            .filter(|block| !protected.contains(block) && !excluded.contains(block))
-            .collect::<BTreeSet<_>>();
-        if !candidates.contains(&entry) {
-            return Ok(BTreeSet::new());
-        }
-
-        let predecessors = self.cfg.predecessor_snapshot();
         let mut backward = BTreeSet::new();
         let mut pending = protected
             .iter()
-            .flat_map(|block| predecessors.get(block).into_iter().flatten().copied())
+            .flat_map(|block| self.cfg.incoming_sources(*block))
             .collect::<Vec<_>>();
         while let Some(block) = pending.pop() {
-            if !candidates.contains(&block) || !backward.insert(block) {
+            if !eligible(block) || !backward.insert(block) {
                 continue;
             }
-            pending.extend(predecessors.get(&block).into_iter().flatten().copied());
+            pending.extend(self.cfg.incoming_sources(block));
         }
         if !backward.contains(&entry) {
-            return Ok(BTreeSet::new());
+            return BTreeSet::new();
         }
 
         let mut connectors = BTreeSet::new();
@@ -792,7 +774,7 @@ impl<'a> TryRegionEnvelopeAnalysis<'a> {
                     .map(|(target, _)| *target),
             );
         }
-        Ok(connectors)
+        connectors
     }
 }
 
@@ -808,15 +790,11 @@ pub(super) struct LexicalTryAnalysis<'a> {
 
 struct HandlerLexicalAnalysis<'a> {
     cfg: &'a CFG,
-    predecessors: BTreeMap<BlockId, Vec<BlockId>>,
 }
 
 impl<'a> HandlerLexicalAnalysis<'a> {
     fn new(cfg: &'a CFG) -> Self {
-        Self {
-            cfg,
-            predecessors: cfg.normal_predecessor_snapshot(),
-        }
+        Self { cfg }
     }
 
     fn analyze<'b>(
@@ -869,14 +847,11 @@ impl<'a> HandlerLexicalAnalysis<'a> {
         if body.insns.iter().any(|instruction| instruction.can_throw()) {
             return Ok(None);
         }
-        let predecessors = self
-            .predecessors
-            .get(&block)
-            .into_iter()
-            .flatten()
-            .copied()
-            .collect::<BTreeSet<_>>();
-        Ok((!predecessors.is_empty() && predecessors.is_subset(scope)).then_some(block))
+        let mut predecessors = self.cfg.normal_predecessors(block).peekable();
+        Ok(
+            (predecessors.peek().is_some() && predecessors.all(|source| scope.contains(&source)))
+                .then_some(block),
+        )
     }
 }
 
@@ -1619,7 +1594,6 @@ impl<'a> ExceptionRegionTreeBuilder<'a> {
     /// duplicate ownership from the outer envelope. This restores a laminar
     /// region tree without changing exception coverage.
     fn partition_crossing_handler_ownership(&mut self) -> Result<(), RegionInvariantError> {
-        let predecessors = self.cfg.normal_predecessor_snapshot();
         loop {
             let tries = self
                 .tree
@@ -1682,11 +1656,9 @@ impl<'a> ExceptionRegionTreeBuilder<'a> {
                             .iter()
                             .copied()
                             .filter(|block| {
-                                predecessors
-                                    .get(block)
-                                    .into_iter()
-                                    .flatten()
-                                    .any(|predecessor| !remainder.contains(predecessor))
+                                self.cfg
+                                    .normal_predecessors(*block)
+                                    .any(|source| !remainder.contains(&source))
                             })
                             .collect::<BTreeSet<_>>();
                         (entries.len() == 1)
@@ -1817,7 +1789,6 @@ impl<'a> ExceptionRegionTreeBuilder<'a> {
             return Ok(BTreeSet::new());
         }
         let owner = self.tree.owner(entry)?;
-        let predecessors = self.cfg.normal_predecessor_snapshot();
         let mut blocks = BTreeSet::new();
         let mut pending = vec![entry];
         while let Some(block) = pending.pop() {
@@ -1834,11 +1805,8 @@ impl<'a> ExceptionRegionTreeBuilder<'a> {
                 continue;
             }
             pending.extend(
-                predecessors
-                    .get(&block)
-                    .into_iter()
-                    .flatten()
-                    .copied()
+                self.cfg
+                    .normal_predecessors(block)
                     .chain(self.cfg.normal_successors(block)),
             );
         }
@@ -2004,16 +1972,11 @@ impl<'a> ExceptionRegionTreeBuilder<'a> {
 struct SingleEntryTryFragments<'a> {
     cfg: &'a CFG,
     facts: &'a ControlFlowFacts,
-    predecessors: BTreeMap<BlockId, Vec<BlockId>>,
 }
 
 impl<'a> SingleEntryTryFragments<'a> {
     fn new(cfg: &'a CFG, facts: &'a ControlFlowFacts) -> Self {
-        Self {
-            cfg,
-            facts,
-            predecessors: cfg.normal_predecessor_snapshot(),
-        }
+        Self { cfg, facts }
     }
 
     fn partition(&self, mut remaining: BTreeSet<BlockId>) -> Vec<(BlockId, BTreeSet<BlockId>)> {
@@ -2052,11 +2015,9 @@ impl<'a> SingleEntryTryFragments<'a> {
             .filter(|block| {
                 *block == self.cfg.entry
                     || self
-                        .predecessors
-                        .get(block)
-                        .into_iter()
-                        .flatten()
-                        .any(|predecessor| !remaining.contains(predecessor))
+                        .cfg
+                        .normal_predecessors(*block)
+                        .any(|source| !remaining.contains(&source))
             })
             .collect()
     }

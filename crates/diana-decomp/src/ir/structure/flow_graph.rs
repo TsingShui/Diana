@@ -185,19 +185,55 @@ impl FlowTransfer {
 struct FlowNode {
     body: SemanticNode,
     transfer: FlowTransfer,
+    facts: FlowBodyFacts,
+}
+
+#[derive(Debug, Clone, Default)]
+struct FlowBodyFacts {
     embedded_uses: std::cell::OnceCell<Box<[(BlockId, usize)]>>,
+    completion: std::cell::OnceCell<FlowCompletion>,
+}
+
+// Only these completion queries are used by graph contraction. Retaining
+// their answers avoids keeping a copy of every abrupt outcome and cleanup.
+#[derive(Debug, Clone, Copy)]
+struct FlowCompletion {
+    normal: bool,
+    open: bool,
+    open_to_region: bool,
+    closed: bool,
+    continues_region: bool,
+}
+
+impl FlowCompletion {
+    fn transfer_free(self) -> bool {
+        !self.open && !self.closed
+    }
 }
 
 impl FlowNode {
     fn take_body(&mut self) -> SemanticNode {
-        self.embedded_uses.take();
+        self.facts = FlowBodyFacts::default();
         std::mem::replace(&mut self.body, SemanticNode::Empty)
+    }
+
+    fn completion(&self, region: RegionId) -> FlowCompletion {
+        *self.facts.completion.get_or_init(|| {
+            let completion = SemanticCompletion::analyze(&self.body);
+            FlowCompletion {
+                normal: completion.can_complete_normally(),
+                open: completion.has_open_transfer(),
+                open_to_region: completion.has_open_transfer_to(region),
+                closed: completion.has_closed_transfer(),
+                continues_region: completion.is_continue_to_region(region),
+            }
+        })
     }
 
     // The region is fixed for the life of this fragment, including loop
     // subgraphs. Replacing the body invalidates only this node's counts.
     fn embedded_uses(&self, region: RegionId) -> &[(BlockId, usize)] {
-        self.embedded_uses.get_or_init(|| {
+        self.facts.embedded_uses.get_or_init(|| {
             let mut uses = BTreeMap::<BlockId, usize>::new();
             visit_open_targets(region, &self.body, |target| {
                 *uses.entry(target).or_default() += 1
@@ -295,7 +331,7 @@ impl SemanticFlowGraph {
                 FlowNode {
                     body,
                     transfer,
-                    embedded_uses: Default::default(),
+                    facts: Default::default(),
                 },
             );
         }
@@ -483,7 +519,7 @@ impl SemanticFlowGraph {
         let boundary = FlowBoundary::analyze(self.region, &body, external)
             .bind_targets(self.continues.keys().copied());
         let replacement = FlowNode {
-            embedded_uses: Default::default(),
+            facts: Default::default(),
             transfer: FlowTransfer::fragment(header, &body, boundary)?,
             body,
         };
@@ -1307,11 +1343,6 @@ struct FragmentNormalizer;
 impl FragmentNormalizer {
     fn apply(graph: &mut SemanticFlowGraph) -> Result<(), StructureError> {
         loop {
-            if let Some(continuation) = TerminalContinuation::analyze(graph)? {
-                continuation.apply(graph)?;
-                graph.prune();
-                continue;
-            }
             let fragments = graph
                 .nodes
                 .iter()
@@ -1319,6 +1350,14 @@ impl FragmentNormalizer {
                     matches!(&node.transfer, FlowTransfer::Fragment { .. }).then_some(*block)
                 })
                 .collect::<Vec<_>>();
+            if fragments.is_empty() {
+                return Ok(());
+            }
+            if let Some(continuation) = TerminalContinuation::analyze(graph)? {
+                continuation.apply(graph)?;
+                graph.prune();
+                continue;
+            }
             for block in fragments {
                 Self::normalize(graph, block)?;
             }
@@ -1342,14 +1381,14 @@ impl FragmentNormalizer {
         let completion = graph
             .nodes
             .get(&block)
-            .map(|node| SemanticCompletion::analyze(&node.body))
+            .map(|node| node.completion(graph.region))
             .ok_or(StructureError::MalformedFlowNode(block))?;
-        if !completion.has_open_transfer_to(graph.region) {
+        if !completion.open_to_region {
             let node = graph
                 .nodes
                 .get_mut(&block)
                 .ok_or(StructureError::MalformedFlowNode(block))?;
-            node.transfer = if completion.can_complete_normally() {
+            node.transfer = if completion.normal {
                 normal.map_or(FlowTransfer::Stop, FlowTransfer::Jump)
             } else {
                 FlowTransfer::Stop
@@ -1385,15 +1424,15 @@ impl FragmentNormalizer {
             label,
             body: Box::new(node.take_body()),
         };
-        let completion = SemanticCompletion::analyze(&node.body);
-        if completion.has_open_transfer_to(graph.region)
+        let completion = node.completion(graph.region);
+        if completion.open_to_region
             && open_targets(graph.region, &node.body)
                 .iter()
                 .any(|target| *target != graph.entry)
         {
             return Err(StructureError::MalformedFlowNode(block));
         }
-        if !completion.can_complete_normally() {
+        if !completion.normal {
             return Err(StructureError::MalformedFlowNode(block));
         }
         node.transfer = FlowTransfer::Jump(target);
@@ -1435,7 +1474,7 @@ impl TerminalContinuation {
                     };
                     if !uniquely_owned {
                         if blocks.is_empty()
-                            && Self::is_shareable_terminal(continuation)
+                            && Self::is_shareable_terminal(continuation, graph.region)
                             && LexicalTransferClosure::can_embed(
                                 graph,
                                 *source,
@@ -1451,11 +1490,11 @@ impl TerminalContinuation {
                         }
                         break;
                     }
-                    let completion = SemanticCompletion::analyze(&continuation.body);
+                    let completion = continuation.completion(graph.region);
                     blocks.push(current);
-                    if !completion.can_complete_normally()
-                        && !completion.has_open_transfer()
-                        && completion.has_closed_transfer()
+                    if !completion.normal
+                        && !completion.open
+                        && completion.closed
                         && matches!(&continuation.transfer, FlowTransfer::Stop)
                         && LexicalTransferClosure::can_embed(graph, *source, &blocks)
                     {
@@ -1465,7 +1504,7 @@ impl TerminalContinuation {
                             blocks,
                         }));
                     }
-                    if !completion.can_complete_normally() || !completion.is_transfer_free() {
+                    if !completion.normal || !completion.transfer_free() {
                         break;
                     }
                     let FlowTransfer::Jump(next) = &continuation.transfer else {
@@ -1479,12 +1518,10 @@ impl TerminalContinuation {
         Ok(None)
     }
 
-    fn is_shareable_terminal(node: &FlowNode) -> bool {
+    fn is_shareable_terminal(node: &FlowNode, region: RegionId) -> bool {
         matches!(&node.transfer, FlowTransfer::Stop) && Self::is_pure_control(&node.body) && {
-            let completion = SemanticCompletion::analyze(&node.body);
-            !completion.can_complete_normally()
-                && !completion.has_open_transfer()
-                && completion.has_closed_transfer()
+            let completion = node.completion(region);
+            !completion.normal && !completion.open && completion.closed
         }
     }
 
@@ -1853,11 +1890,11 @@ enum ContinuationUse {
 impl LinearContinuation {
     const DUPLICATION_BUDGET: usize = 32;
 
-    fn is_absorbable_adapter(body: &SemanticNode) -> bool {
-        let completion = SemanticCompletion::analyze(body);
-        completion.can_complete_normally()
-            && completion.is_transfer_free()
-            && LexicalIdentities::collect(body).labels.is_empty()
+    fn is_absorbable_adapter(node: &FlowNode, region: RegionId) -> bool {
+        let completion = node.completion(region);
+        completion.normal
+            && completion.transfer_free()
+            && LexicalIdentities::collect(&node.body).labels.is_empty()
     }
 
     fn analyze(graph: &SemanticFlowGraph) -> Result<Option<Self>, StructureError> {
@@ -1896,7 +1933,7 @@ impl LinearContinuation {
                     let Some(continuation) = graph.nodes.get(&current) else {
                         break;
                     };
-                    if !Self::is_absorbable_adapter(&continuation.body) {
+                    if !Self::is_absorbable_adapter(continuation, graph.region) {
                         break;
                     }
                     let FlowTransfer::Jump(next) = &continuation.transfer else {
@@ -2375,7 +2412,7 @@ impl BranchArm {
         !terminals.is_empty()
             && terminals
                 .iter()
-                .all(|node| !SemanticCompletion::analyze(&node.body).can_complete_normally())
+                .all(|node| !node.completion(graph.region).normal)
     }
 
     fn is_empty(&self) -> bool {
@@ -2417,13 +2454,14 @@ impl ContinuationTail {
             blocks.push(current);
             match &node.transfer {
                 FlowTransfer::Stop => {
-                    return SemanticCompletion::analyze(&node.body)
-                        .is_continue_to_region(graph.region)
+                    return node
+                        .completion(graph.region)
+                        .continues_region
                         .then_some(Self { entry, blocks });
                 }
                 FlowTransfer::Jump(next) => {
-                    let completion = SemanticCompletion::analyze(&node.body);
-                    if !completion.can_complete_normally() || !completion.is_transfer_free() {
+                    let completion = node.completion(graph.region);
+                    if !completion.normal || !completion.transfer_free() {
                         return None;
                     }
                     current = *next;
@@ -3410,7 +3448,7 @@ mod tests {
             nodes: BTreeMap::from([(
                 source,
                 FlowNode {
-                    embedded_uses: Default::default(),
+                    facts: Default::default(),
                     body: SemanticNode::Leave(crate::ir::SemanticLeave {
                         site: None,
                         condition: None,
@@ -3463,7 +3501,7 @@ mod tests {
                 (
                     entry,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Branch {
                             condition: SemanticPredicate::True,
@@ -3475,7 +3513,7 @@ mod tests {
                 (
                     branch,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(exit),
                     },
@@ -3510,7 +3548,7 @@ mod tests {
                 (
                     source,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Branch {
                             condition: SemanticPredicate::True,
@@ -3522,7 +3560,7 @@ mod tests {
                 (
                     arm,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(exit),
                     },
@@ -3551,7 +3589,7 @@ mod tests {
                 (
                     source,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Branch {
                             condition: SemanticPredicate::True,
@@ -3563,7 +3601,7 @@ mod tests {
                 (
                     terminal,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Leave(crate::ir::SemanticLeave {
                             site: None,
                             condition: None,
@@ -3601,7 +3639,7 @@ mod tests {
             nodes: BTreeMap::from([(
                 source,
                 FlowNode {
-                    embedded_uses: Default::default(),
+                    facts: Default::default(),
                     body: SemanticNode::Empty,
                     transfer: FlowTransfer::Branch {
                         condition: SemanticPredicate::True,
@@ -3650,7 +3688,7 @@ mod tests {
                 (
                     source,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::If {
                             condition: crate::ir::SemanticOperand::new(SemanticPredicate::True),
                             then_node: Box::new(leave(exit)),
@@ -3665,7 +3703,7 @@ mod tests {
                 (
                     terminal,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Leave(crate::ir::SemanticLeave {
                             site: None,
                             condition: None,
@@ -3721,7 +3759,7 @@ mod tests {
                 (
                     source,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Branch {
                             condition: SemanticPredicate::True,
@@ -3733,7 +3771,7 @@ mod tests {
                 (
                     join,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Stop,
                     },
@@ -3741,7 +3779,7 @@ mod tests {
                 (
                     tail_entry,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(update),
                     },
@@ -3749,7 +3787,7 @@ mod tests {
                 (
                     update,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(continuation),
                     },
@@ -3757,7 +3795,7 @@ mod tests {
                 (
                     continuation,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Leave(crate::ir::SemanticLeave {
                             site: None,
                             condition: None,
@@ -3806,7 +3844,7 @@ mod tests {
                 (
                     source,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Branch {
                             condition: SemanticPredicate::True,
@@ -3818,7 +3856,7 @@ mod tests {
                 (
                     when_true,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(continuation),
                     },
@@ -3826,7 +3864,7 @@ mod tests {
                 (
                     when_false,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(continuation),
                     },
@@ -3865,7 +3903,7 @@ mod tests {
                 (
                     source,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Branch {
                             condition: SemanticPredicate::True,
@@ -3877,7 +3915,7 @@ mod tests {
                 (
                     when_true,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(join),
                     },
@@ -3885,7 +3923,7 @@ mod tests {
                 (
                     when_false,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(join),
                     },
@@ -3893,7 +3931,7 @@ mod tests {
                 (
                     join,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(terminal),
                     },
@@ -3901,7 +3939,7 @@ mod tests {
                 (
                     terminal,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Leave(crate::ir::SemanticLeave {
                             site: None,
                             condition: None,
@@ -3981,7 +4019,7 @@ mod tests {
                 (
                     first,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::sequence([jump(second), jump(join)]),
                         transfer: FlowTransfer::Fragment {
                             normal: None,
@@ -3992,7 +4030,7 @@ mod tests {
                 (
                     second,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: labeled_second,
                         transfer: FlowTransfer::Jump(join),
                     },
@@ -4000,7 +4038,7 @@ mod tests {
                 (
                     join,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Stop,
                     },
@@ -4059,7 +4097,7 @@ mod tests {
                 (
                     source,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::If {
                             condition: crate::ir::SemanticOperand::new(condition),
                             then_node: Box::new(jump(arm)),
@@ -4074,7 +4112,7 @@ mod tests {
                 (
                     arm,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(join),
                     },
@@ -4082,7 +4120,7 @@ mod tests {
                 (
                     join,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(terminal),
                     },
@@ -4090,7 +4128,7 @@ mod tests {
                 (
                     terminal,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Leave(crate::ir::SemanticLeave {
                             site: None,
                             condition: None,
@@ -4146,7 +4184,7 @@ mod tests {
                 (
                     source,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: jump(terminal),
                         transfer: FlowTransfer::Fragment {
                             normal: None,
@@ -4157,7 +4195,7 @@ mod tests {
                 (
                     other,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(terminal),
                     },
@@ -4165,7 +4203,7 @@ mod tests {
                 (
                     terminal,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Leave(crate::ir::SemanticLeave {
                             site: None,
                             condition: None,
@@ -4236,7 +4274,7 @@ mod tests {
                 (
                     outside,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: jump(terminal),
                         transfer: FlowTransfer::Fragment {
                             normal: None,
@@ -4247,7 +4285,7 @@ mod tests {
                 (
                     other,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(terminal),
                     },
@@ -4255,7 +4293,7 @@ mod tests {
                 (
                     terminal,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Leave(crate::ir::SemanticLeave {
                             site: None,
                             condition: None,
@@ -4299,7 +4337,7 @@ mod tests {
                 (
                     source,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(test),
                     },
@@ -4307,7 +4345,7 @@ mod tests {
                 (
                     test,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Branch {
                             condition: SemanticPredicate::True,
@@ -4319,7 +4357,7 @@ mod tests {
                 (
                     abrupt,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(continuation),
                     },
@@ -4327,7 +4365,7 @@ mod tests {
                 (
                     join,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Stop,
                     },
@@ -4390,7 +4428,7 @@ mod tests {
             nodes: BTreeMap::from([(
                 entry,
                 FlowNode {
-                    embedded_uses: Default::default(),
+                    facts: Default::default(),
                     body: SemanticNode::Leave(crate::ir::SemanticLeave {
                         site: None,
                         condition: None,
@@ -4437,7 +4475,7 @@ mod tests {
             nodes: BTreeMap::from([(
                 outside,
                 FlowNode {
-                    embedded_uses: Default::default(),
+                    facts: Default::default(),
                     body: SemanticNode::Leave(crate::ir::SemanticLeave {
                         site: None,
                         condition: None,
@@ -4489,7 +4527,7 @@ mod tests {
             nodes: BTreeMap::from([(
                 entry,
                 FlowNode {
-                    embedded_uses: Default::default(),
+                    facts: Default::default(),
                     body: SemanticNode::Leave(crate::ir::SemanticLeave {
                         site: None,
                         condition: None,
@@ -4545,7 +4583,7 @@ mod tests {
                 (
                     first,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(second),
                     },
@@ -4553,7 +4591,7 @@ mod tests {
                 (
                     second,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: SemanticNode::Empty,
                         transfer: FlowTransfer::Jump(heavy),
                     },
@@ -4561,7 +4599,7 @@ mod tests {
                 (
                     heavy,
                     FlowNode {
-                        embedded_uses: Default::default(),
+                        facts: Default::default(),
                         body: heavy_body,
                         transfer: FlowTransfer::Jump(first),
                     },

@@ -301,8 +301,7 @@ impl JavaAstNormalizer {
                         .len()
                         .checked_sub(count)
                         .ok_or(super::JavaStructuralError::MalformedWorkStack)?;
-                    let children = results.drain(start..).collect();
-                    let (statement, local_change) = frame.rebuild(children)?;
+                    let (statement, local_change) = frame.rebuild(results.drain(start..))?;
                     changed |= local_change;
                     results.push(statement);
                 }
@@ -317,7 +316,7 @@ impl JavaAstNormalizer {
         Ok((root, changed))
     }
 
-    fn flatten(children: Vec<JavaStmt>) -> (Vec<JavaStmt>, bool) {
+    fn flatten(children: impl ExactSizeIterator<Item = JavaStmt>) -> (Vec<JavaStmt>, bool) {
         let mut flattened = Vec::with_capacity(children.len());
         let mut changed = false;
         for child in children {
@@ -1852,7 +1851,7 @@ impl SyntaxFrame {
 
     fn rebuild(
         self,
-        children: Vec<JavaStmt>,
+        mut children: impl ExactSizeIterator<Item = JavaStmt>,
     ) -> Result<(JavaStmt, bool), super::JavaStructuralError> {
         let expected = self.child_count();
         if children.len() != expected {
@@ -1861,10 +1860,9 @@ impl SyntaxFrame {
                 actual: children.len(),
             });
         }
-        let mut children = children.into_iter();
         let statement = match self {
             Self::Block(_) => {
-                let (children, changed) = JavaAstNormalizer::flatten(children.collect());
+                let (children, changed) = JavaAstNormalizer::flatten(children);
                 return Ok((JavaStmt::Block(children), changed));
             }
             Self::Labeled(label) => JavaStmt::Labeled {

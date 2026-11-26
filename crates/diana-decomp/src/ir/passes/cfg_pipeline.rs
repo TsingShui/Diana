@@ -1,6 +1,6 @@
 //! Canonical CFG normalization and SSA construction.
 
-use crate::ir::analysis::{SsaInvariantError, SsaValueGraph, TypeHierarchy};
+use crate::ir::analysis::{DominatorTree, SsaInvariantError, SsaValueGraph, TypeHierarchy};
 use crate::ir::passes::{
     BindResults, CanonicalizationError, CanonicalizeCFG, CfgInvariantError,
     ConstructorRecoveryError, MonitorSplitError, Pass, PassResult, PhiSimplificationError,
@@ -122,11 +122,24 @@ impl<'a> CfgPipeline<'a> {
         cfg: &mut CFG,
         observer: &dyn crate::ir::AnalysisObserver,
     ) -> Result<CfgAnalysis, CfgPipelineError> {
+        self.analyze_with_dominators(cfg, observer)
+            .map(|(analysis, _)| analysis)
+    }
+
+    pub(crate) fn analyze_with_dominators(
+        &self,
+        cfg: &mut CFG,
+        observer: &dyn crate::ir::AnalysisObserver,
+    ) -> Result<(CfgAnalysis, DominatorTree), CfgPipelineError> {
         if cfg.is_analysis_prepared() {
-            return Ok(CfgAnalysis {
-                values: Self::values(cfg)?,
-                change: PassResult::Unchanged,
-            });
+            let (values, tree) = SsaValueGraph::build_with_dominators(cfg, None)?;
+            return Ok((
+                CfgAnalysis {
+                    values,
+                    change: PassResult::Unchanged,
+                },
+                tree,
+            ));
         }
 
         cfg.capture_exception_coverage();
@@ -140,21 +153,15 @@ impl<'a> CfgPipeline<'a> {
         context.validate("ssa")?;
         context.cfg.identify_instructions();
         context.cfg.mark_analysis_prepared();
-        let values = match facts.snapshot {
-            Some((mut values, _)) => {
-                values.refresh_phi_identities(context.cfg);
-                values
-            }
-            None => Self::values(context.cfg)?,
-        };
-        Ok(CfgAnalysis {
-            values,
-            change: changed.into(),
-        })
-    }
-
-    fn values(cfg: &CFG) -> Result<SsaValueGraph, CfgPipelineError> {
-        SsaValueGraph::build(cfg).map_err(CfgPipelineError::SsaInvariant)
+        let (mut values, tree) = facts.finish(context.cfg)?;
+        values.refresh_phi_identities(context.cfg);
+        Ok((
+            CfgAnalysis {
+                values,
+                change: changed.into(),
+            },
+            tree,
+        ))
     }
 }
 
@@ -199,6 +206,7 @@ impl CfgStage for NormalizationStage {
 #[derive(Default)]
 pub(super) struct SsaPassFacts {
     snapshot: Option<(SsaValueGraph, crate::ir::analysis::DominatorTree)>,
+    reusable_tree: Option<DominatorTree>,
 }
 
 impl SsaPassFacts {
@@ -208,14 +216,28 @@ impl SsaPassFacts {
     ) -> Result<&(SsaValueGraph, crate::ir::analysis::DominatorTree), SsaInvariantError> {
         match self.snapshot {
             Some(ref snapshot) => Ok(snapshot),
-            None => Ok(self
-                .snapshot
-                .insert(SsaValueGraph::build_with_dominators(cfg)?)),
+            None => Ok(self.snapshot.insert(SsaValueGraph::build_with_dominators(
+                cfg,
+                self.reusable_tree.take(),
+            )?)),
+        }
+    }
+
+    fn finish(self, cfg: &CFG) -> Result<(SsaValueGraph, DominatorTree), SsaInvariantError> {
+        match self.snapshot {
+            Some(pair) => Ok(pair),
+            None => SsaValueGraph::build_with_dominators(cfg, self.reusable_tree),
+        }
+    }
+
+    pub(super) fn invalidate_values(&mut self) {
+        if let Some((_, tree)) = self.snapshot.take() {
+            self.reusable_tree = Some(tree);
         }
     }
 
     pub(super) fn invalidate(&mut self) {
-        self.snapshot = None;
+        *self = Self::default();
     }
 }
 
@@ -245,7 +267,13 @@ impl SsaStage<'_> {
         context: &mut StageContext<'_>,
         facts: &mut SsaPassFacts,
     ) -> Result<bool, CfgPipelineError> {
-        let mut changed = context.pass(Self::NAME, &mut self.construct)?;
+        let mut changed = context.pass_with(Self::NAME, self.construct.name(), |cfg| {
+            // Phi placement and renaming only change instructions. The same
+            // all-edge tree is valid for the SSA uses and subsequent regions.
+            let (change, tree) = SSATransform::construct(cfg)?;
+            facts.reusable_tree = Some(tree);
+            Ok::<_, SsaTransformError>(change)
+        })?;
         changed |= context.pass_with(Self::NAME, self.simplify.name(), |cfg| {
             self.simplify.run_reusing(cfg, facts)
         })?;

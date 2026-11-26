@@ -6,8 +6,12 @@ const DEX: &[u8] =
     include_bytes!("../../../quality/fixtures/branches/protected-branch-joins/classes.dex");
 
 fn recovered(name: &str) -> String {
+    recovered_in("Lfixture/ProtectedJoins;", name)
+}
+
+fn recovered_in(descriptor: &str, name: &str) -> String {
     let engine = support::engine(DEX);
-    let class = support::class(DEX, &engine, "Lfixture/ProtectedJoins;");
+    let class = support::class(DEX, &engine, descriptor);
     let method = MethodSelector {
         name: name.encode_utf16().collect(),
         prototype: "(II)I".encode_utf16().collect(),
@@ -136,4 +140,51 @@ fn split_protected_ranges_merge_only_within_their_own_stage() {
         }
     }
     assert!(stages.next().is_none());
+}
+
+#[test]
+fn cross_word_diamonds_call_one_arm_in_bit_order_with_the_carried_value() {
+    let source = recovered_in("Lfixture/CrossWordBranches;", "run");
+    let mut lines = source.lines().map(str::trim);
+    let signature = lines
+        .find(|line| line.contains("int run("))
+        .expect("signature");
+    let parameters = signature
+        .split_once("run(")
+        .unwrap()
+        .1
+        .split_once(')')
+        .unwrap()
+        .0;
+    let (key, value) = parameters.split_once(", ").expect("two parameters");
+    let key = key.strip_prefix("int ").unwrap();
+    let mut value = value.strip_prefix("int ").unwrap();
+    for bit in 0..24 {
+        let line = lines.next().expect("bit test");
+        let (shifted, _) = line.split_once(" & 1) == 0").expect("low bit test");
+        let guarded = shifted.rsplit_once('(').expect("guard expression").1;
+        let mut shifts = guarded.split(" >>> ");
+        assert_eq!(shifts.next(), Some(key));
+        let distance: usize = shifts
+            .map(|shift| shift.parse::<usize>().expect("logical shift"))
+            .sum();
+        assert_eq!(distance, bit);
+        if bit < 23 {
+            assert!(line.ends_with(&format!(
+                "? ProtectedJoins.left({value}) : ProtectedJoins.right({value});"
+            )));
+            value = source_variable(line);
+        } else {
+            assert!(line.starts_with("if ("));
+            assert_eq!(
+                lines.next(),
+                Some(format!("return ProtectedJoins.left({value});").as_str())
+            );
+            assert_eq!(lines.next(), Some("}"));
+            assert_eq!(
+                lines.next(),
+                Some(format!("return ProtectedJoins.right({value});").as_str())
+            );
+        }
+    }
 }

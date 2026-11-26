@@ -203,25 +203,27 @@ impl JavaTypeErasureIndex {
         std::borrow::Cow::Owned(key)
     }
 
-    fn class_erasure(&self, class: &JavaClassType) -> Option<ArgType> {
-        self.classes.get(Self::class_key(class).as_ref()).cloned()
+    fn class_erasure(&self, class: &JavaClassType) -> Option<&ArgType> {
+        self.classes.get(Self::class_key(class).as_ref())
     }
 
-    fn erasure_of(
-        &self,
+    fn erasure_of<'a>(
+        &'a self,
         ty: &JavaType,
-        variable_erasures: &BTreeMap<JavaIdentifier, ArgType>,
-    ) -> Option<ArgType> {
+        variable_erasures: &'a BTreeMap<JavaIdentifier, ArgType>,
+    ) -> Option<Cow<'a, ArgType>> {
         match ty {
-            JavaType::Array(element) => {
-                Some(ArgType::array(self.erasure_of(element, variable_erasures)?))
-            }
-            JavaType::Variable(variable) => variable_erasures
-                .get(variable)
-                .cloned()
-                .or_else(|| Some(ArgType::object("java/lang/Object"))),
-            JavaType::Class(class) => self.class_erasure(class),
-            JavaType::Primitive(_) => self.primitives.get(ty).cloned(),
+            JavaType::Array(element) => Some(Cow::Owned(ArgType::array(
+                self.erasure_of(element, variable_erasures)?.into_owned(),
+            ))),
+            JavaType::Variable(variable) => Some(
+                variable_erasures
+                    .get(variable)
+                    .map(Cow::Borrowed)
+                    .unwrap_or_else(|| Cow::Owned(ArgType::object("java/lang/Object"))),
+            ),
+            JavaType::Class(class) => self.class_erasure(class).map(Cow::Borrowed),
+            JavaType::Primitive(_) => self.primitives.get(ty).map(Cow::Borrowed),
         }
     }
 }
@@ -273,16 +275,11 @@ impl<'a> JavaTypeRelations<'a> {
     }
 
     pub(super) fn erasure_of(&self, ty: &JavaType) -> Option<ArgType> {
-        if let Some(erased) = self
-            .source_erasures
-            .and_then(|index| index.erasure_of(ty, self.variable_erasures))
-        {
-            return Some(erased);
-        }
         match ty {
             JavaType::Array(element) => Some(ArgType::array(self.erasure_of(element)?)),
             JavaType::Class(class) => self
                 .class_erasure(class)
+                .cloned()
                 .or_else(|| {
                     self.hierarchy
                         .and_then(|hierarchy| hierarchy.erasure_of(ty))
@@ -294,8 +291,8 @@ impl<'a> JavaTypeRelations<'a> {
                 .cloned()
                 .or_else(|| Some(ArgType::object("java/lang/Object"))),
             JavaType::Primitive(_) => {
-                if self.source_erasures.is_some() {
-                    None
+                if let Some(index) = self.source_erasures {
+                    index.primitives.get(ty).cloned()
                 } else {
                     self.source_types
                         .iter()
@@ -305,23 +302,24 @@ impl<'a> JavaTypeRelations<'a> {
         }
     }
 
-    fn class_erasure(&self, class: &JavaClassType) -> Option<ArgType> {
+    fn class_erasure(&self, class: &JavaClassType) -> Option<&ArgType> {
         if let Some(index) = self.source_erasures {
             return index.class_erasure(class);
         }
         self.source_types.iter().find_map(|(erased, source)| {
-            matches!(source, JavaType::Class(source) if source.same_name(class))
-                .then(|| erased.clone())
+            matches!(source, JavaType::Class(source) if source.same_name(class)).then_some(erased)
         })
     }
 
-    fn erased_class(&self, class: &JavaClassType) -> Option<ArgType> {
+    fn erased_class(&self, class: &JavaClassType) -> Option<Cow<'_, ArgType>> {
         self.class_erasure(class)
+            .map(Cow::Borrowed)
             .or_else(|| {
                 self.hierarchy
                     .and_then(|hierarchy| hierarchy.erasure_of(&JavaType::Class(class.clone())))
+                    .map(Cow::Owned)
             })
-            .or_else(|| Self::synthesized_class_erasure(class))
+            .or_else(|| Self::synthesized_class_erasure(class).map(Cow::Owned))
     }
 
     /// Recover a DEX binary name for a raw class that never entered `source_types`.
@@ -526,13 +524,10 @@ impl<'a> JavaTypeRelations<'a> {
     }
 
     fn is_array_supertype(ty: &ArgType) -> bool {
-        [
-            "java/lang/Object",
-            "java/lang/Cloneable",
-            "java/io/Serializable",
-        ]
-        .into_iter()
-        .any(|name| ty == &ArgType::object(name))
+        matches!(
+            ty.as_object(),
+            Some("java/lang/Object" | "java/lang/Cloneable" | "java/io/Serializable")
+        )
     }
 }
 
@@ -920,7 +915,9 @@ impl<'a> GenericTypeSolver<'a> {
     fn source_erasure(&self, ty: &JavaType) -> Option<ArgType> {
         if let Some(index) = self.source_erasures.as_deref() {
             let empty = BTreeMap::new();
-            return index.erasure_of(ty, self.visible_variables.unwrap_or(&empty));
+            return index
+                .erasure_of(ty, self.visible_variables.unwrap_or(&empty))
+                .map(Cow::into_owned);
         }
         match ty {
             JavaType::Array(element) => Some(ArgType::array(self.source_erasure(element)?)),
@@ -2086,20 +2083,18 @@ impl<'a> GenericRequirementLattice<'a> {
             (JavaType::Class(left), JavaType::Class(right)) if left.same_name(right) => {
                 let mut joined = left.clone();
                 for (segment, right) in joined.segments.iter_mut().zip(&right.segments) {
-                    segment.arguments =
-                        match (segment.arguments.is_empty(), right.arguments.is_empty()) {
-                            (true, false) => right.arguments.clone(),
-                            (false, true) | (true, true) => segment.arguments.clone(),
-                            (false, false) if segment.arguments.len() == right.arguments.len() => {
-                                segment
-                                    .arguments
-                                    .iter()
-                                    .zip(&right.arguments)
-                                    .map(|(left, right)| self.join_argument(left, right))
-                                    .collect::<Option<Vec<_>>>()?
-                            }
-                            (false, false) => return None,
-                        };
+                    if right.arguments.is_empty() {
+                        continue;
+                    }
+                    if segment.arguments.is_empty() {
+                        segment.arguments.clone_from(&right.arguments);
+                    } else if segment.arguments.len() == right.arguments.len() {
+                        for (left, right) in segment.arguments.iter_mut().zip(&right.arguments) {
+                            *left = self.join_argument(left, right)?;
+                        }
+                    } else {
+                        return None;
+                    }
                 }
                 return Some(JavaType::Class(joined));
             }
@@ -2373,6 +2368,15 @@ enum TypeState {
     Conflict,
 }
 
+impl TypeState {
+    fn exact(&self) -> Option<&JavaType> {
+        match self {
+            Self::Exact(ty) => Some(ty),
+            Self::Conflict => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TypeConstraintKind {
     Definition,
@@ -2387,7 +2391,7 @@ struct TypeEquation {
     value: SemanticExpression,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum SourceTypeFact {
     Variable(u32),
     Value(SsaVar),
@@ -2399,14 +2403,64 @@ struct TypeEquationCandidate {
     is_join: bool,
 }
 
+/// Keep a round's deduplicated equation indices in evaluation order. Most
+/// methods fit in the first word, including rounds with only one changed input.
+#[derive(Default)]
+struct PendingEquations {
+    first: u64,
+    remaining: BTreeMap<usize, u64>,
+}
+
+impl PendingEquations {
+    fn all(count: usize) -> Self {
+        let mask = |word: usize| {
+            let bits = (count - word * 64).min(64);
+            u64::MAX.checked_shr((64 - bits) as u32).unwrap_or(0)
+        };
+        Self {
+            first: mask(0),
+            remaining: (1..count.div_ceil(64))
+                .map(|word| (word, mask(word)))
+                .collect(),
+        }
+    }
+
+    fn extend(&mut self, indices: &[usize]) {
+        for &index in indices {
+            let word = index / 64;
+            let mask = 1u64 << (index % 64);
+            if word == 0 {
+                self.first |= mask;
+            } else {
+                *self.remaining.entry(word).or_default() |= mask;
+            }
+        }
+    }
+
+    fn indices(self) -> impl Iterator<Item = usize> {
+        std::iter::once((0, self.first))
+            .chain(self.remaining)
+            .flat_map(|(word, mut bits)| {
+                std::iter::from_fn(move || {
+                    if bits == 0 {
+                        return None;
+                    }
+                    let index = word * 64 + bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    Some(index)
+                })
+            })
+    }
+}
+
 #[derive(Default)]
 struct TypeEquationGraph {
-    dependents: BTreeMap<SourceTypeFact, SmallVec<[usize; 1]>>,
-    invocation_dependents: BTreeMap<SourceTypeFact, SmallVec<[usize; 1]>>,
-    outputs: BTreeMap<SourceTypeFact, SmallVec<[usize; 1]>>,
+    dependents: foldhash::HashMap<SourceTypeFact, SmallVec<[usize; 1]>>,
+    invocation_dependents: foldhash::HashMap<SourceTypeFact, SmallVec<[usize; 1]>>,
+    outputs: foldhash::HashMap<SourceTypeFact, SmallVec<[usize; 1]>>,
     candidates: Vec<Option<TypeEquationCandidate>>,
-    dirty: BTreeSet<usize>,
-    dirty_invocations: BTreeSet<usize>,
+    dirty: PendingEquations,
+    dirty_invocations: PendingEquations,
 }
 
 impl TypeEquationGraph {
@@ -2421,8 +2475,8 @@ impl TypeEquationGraph {
         self.invocation_dependents.clear();
         self.outputs.clear();
         self.candidates.clear();
-        self.dirty.clear();
-        self.dirty_invocations.clear();
+        self.dirty = PendingEquations::all(equations.len());
+        self.dirty_invocations = PendingEquations::all(invocations.len());
 
         for (index, equation) in equations.iter().enumerate() {
             for output in Self::register_facts(&equation.result) {
@@ -2455,7 +2509,6 @@ impl TypeEquationGraph {
                 );
             }
             self.candidates.push(None);
-            self.dirty.insert(index);
         }
         for (index, invocation) in invocations.iter().enumerate() {
             Self::record_dependencies(
@@ -2464,7 +2517,6 @@ impl TypeEquationGraph {
                 invocation.result.as_ref(),
                 invocation.operands(),
             );
-            self.dirty_invocations.insert(index);
         }
     }
 
@@ -2476,7 +2528,7 @@ impl TypeEquationGraph {
     }
 
     fn record_dependencies(
-        dependents: &mut BTreeMap<SourceTypeFact, SmallVec<[usize; 1]>>,
+        dependents: &mut foldhash::HashMap<SourceTypeFact, SmallVec<[usize; 1]>>,
         index: usize,
         result: Option<&RegisterArg>,
         operands: &[SemanticExpression],
@@ -2528,11 +2580,11 @@ impl TypeEquationGraph {
         }
     }
 
-    fn take_dirty(&mut self) -> BTreeSet<usize> {
+    fn take_dirty(&mut self) -> PendingEquations {
         std::mem::take(&mut self.dirty)
     }
 
-    fn take_dirty_invocations(&mut self) -> BTreeSet<usize> {
+    fn take_dirty_invocations(&mut self) -> PendingEquations {
         std::mem::take(&mut self.dirty_invocations)
     }
 
@@ -2675,8 +2727,8 @@ pub(super) struct SourceTypeFlow<'a> {
     equation_graph: TypeEquationGraph,
     elements: Vec<ElementEquation>,
     invocations: Vec<SemanticOperation>,
-    predicate_tests: Vec<SemanticOperation>,
-    runtime_type_tests: Vec<SemanticOperation>,
+    boolean_predicate_operands: Vec<SemanticExpression>,
+    runtime_type_tests: Vec<(ArgType, SemanticExpression)>,
     source_type_validity: RefCell<HashMap<JavaType, bool>>,
     collect_diagnostics: bool,
 }
@@ -2740,7 +2792,7 @@ impl<'a> SourceTypeFlow<'a> {
             equation_graph: TypeEquationGraph::default(),
             elements: Vec::new(),
             invocations: Vec::new(),
-            predicate_tests: Vec::new(),
+            boolean_predicate_operands: Vec::new(),
             runtime_type_tests: Vec::new(),
             source_type_validity: RefCell::new(HashMap::new()),
             collect_diagnostics,
@@ -2936,7 +2988,7 @@ impl<'a> SourceTypeFlow<'a> {
                         generic_projection,
                         &mut primary,
                         identity,
-                        ty,
+                        Cow::Owned(ty),
                     );
                 }
                 TypeState::Conflict => {
@@ -3073,6 +3125,15 @@ impl<'a> SourceTypeFlow<'a> {
         else {
             return None;
         };
+        let principal = self
+            .value_definition_states
+            .get(&value)
+            .and_then(TypeState::exact);
+        if !self.fact_differs(SourceTypeFact::Value(value), requirement)
+            && principal.is_none_or(|ty| ty == requirement)
+        {
+            return None;
+        }
         let relations = JavaTypeRelations::new(
             self.source_types,
             self.type_variable_erasures,
@@ -3086,7 +3147,7 @@ impl<'a> SourceTypeFlow<'a> {
                 .fact_differs(SourceTypeFact::Value(value), requirement)
                 .then(|| requirement.clone());
         }
-        if let Some(TypeState::Exact(principal)) = self.value_definition_states.get(&value) {
+        if let Some(principal) = principal {
             if let Some(specialized) =
                 self.specialize_value_principal_type(value, principal, requirement, &relations)
             {
@@ -3166,7 +3227,7 @@ impl<'a> SourceTypeFlow<'a> {
                     changed |= self.constrain_expression_context(iterable, expected);
                 }
             }
-            for index in self.equation_graph.take_dirty_invocations() {
+            for index in self.equation_graph.take_dirty_invocations().indices() {
                 changed |= self.constrain_invocation(&invocations[index]);
             }
             if !changed {
@@ -3179,11 +3240,11 @@ impl<'a> SourceTypeFlow<'a> {
         let mut any_changed = false;
         loop {
             let dirty = self.equation_graph.take_dirty();
-            if dirty.is_empty() {
+            if dirty.first == 0 && dirty.remaining.is_empty() {
                 break;
             }
             let mut affected_outputs = BTreeSet::new();
-            for index in dirty {
+            for index in dirty.indices() {
                 let equation = &self.equations[index];
                 let candidate = self
                     .expression_type_for_result(&equation.value, &equation.result.ty)
@@ -3322,6 +3383,18 @@ impl<'a> SourceTypeFlow<'a> {
         if self.abi_fixed.contains(&variable) {
             return None;
         }
+        let definition = self
+            .definition_states
+            .get(&variable)
+            .and_then(TypeState::exact);
+        // A replacement can only come from the requirement or either principal.
+        // Specialization requires a raw principal and a parameterized requirement.
+        if !self.fact_differs(SourceTypeFact::Variable(variable), requirement)
+            && definition.is_none_or(|ty| ty == requirement)
+            && self.value_principals(variable).all(|ty| ty == requirement)
+        {
+            return None;
+        }
         let relations = JavaTypeRelations::new(
             self.source_types,
             self.type_variable_erasures,
@@ -3343,24 +3416,17 @@ impl<'a> SourceTypeFlow<'a> {
                     .fact_differs(SourceTypeFact::Variable(variable), &specialized)
                     .then_some(specialized);
             }
-            let definition_is_stricter = self
-                .definition_states
-                .get(&variable)
-                .and_then(|state| match state {
-                    TypeState::Exact(ty) => Some(ty),
-                    TypeState::Conflict => None,
-                })
-                .is_some_and(|definition| {
-                    relations.is_assignable(definition, &principal)
-                        && !relations.is_assignable(&principal, definition)
-                });
+            let definition_is_stricter = definition.is_some_and(|definition| {
+                relations.is_assignable(definition, &principal)
+                    && !relations.is_assignable(&principal, definition)
+            });
             if !definition_is_stricter
                 && relations.is_assignable(&principal, requirement)
                 && self.definitions_fit(variable, &principal, &relations)
             {
                 return self
                     .fact_differs(SourceTypeFact::Variable(variable), &principal)
-                    .then_some(principal);
+                    .then(|| principal.into_owned());
             }
         }
         if self.erased_boundary_variables.contains(&variable)
@@ -3376,7 +3442,7 @@ impl<'a> SourceTypeFlow<'a> {
         {
             return None;
         }
-        if let Some(TypeState::Exact(principal)) = self.definition_states.get(&variable) {
+        if let Some(principal) = definition {
             if let Some(specialized) =
                 self.specialize_principal_type(variable, principal, requirement, &relations)
             {
@@ -3432,27 +3498,31 @@ impl<'a> SourceTypeFlow<'a> {
         }
     }
 
-    fn value_principal_type(&self, variable: u32) -> Option<JavaType> {
-        let mut principals = self
-            .equations_for_fact(SourceTypeFact::Variable(variable))
+    fn value_principals(&self, variable: u32) -> impl Iterator<Item = &JavaType> {
+        self.equations_for_fact(SourceTypeFact::Variable(variable))
             .filter_map(|equation| {
                 SsaVar::from_reg(&equation.result)
                     .and_then(|value| self.value_definition_states.get(&value))
-                    .and_then(|state| match state {
-                        TypeState::Exact(ty) => Some(ty.clone()),
-                        TypeState::Conflict => None,
-                    })
-            });
-        let principal = principals.next()?;
-        principals.try_fold(principal, |principal, incoming| {
+                    .and_then(TypeState::exact)
+            })
+    }
+
+    fn value_principal_type(&self, variable: u32) -> Option<Cow<'_, JavaType>> {
+        let mut principals = self.value_principals(variable);
+        let first = principals.next()?;
+        principals.try_fold(Cow::Borrowed(first), |principal, incoming| {
+            if principal.as_ref() == incoming {
+                return Some(principal);
+            }
             Self::least_common_source_type(
                 self.source_types,
                 Some(&self.source_erasures),
                 self.type_variable_erasures,
                 self.generic_projection,
                 &principal,
-                &incoming,
+                incoming,
             )
+            .map(Cow::Owned)
         })
     }
 
@@ -3964,55 +4034,47 @@ impl<'a> SourceTypeFlow<'a> {
         let Some(boolean) = self.resolved_type(&ArgType::BOOLEAN) else {
             return;
         };
-        for test in self.predicate_tests.clone() {
-            if !matches!(
-                test.payload.if_op,
-                Some(crate::ir::IfOp::Eq | crate::ir::IfOp::Ne)
-            ) {
-                continue;
-            }
-            let [left, right] = test.operands() else {
-                continue;
-            };
-            let value = if matches!(Self::constant(right), Some(0) | Some(1)) {
-                left
-            } else if matches!(Self::constant(left), Some(0) | Some(1)) {
-                right
-            } else {
-                continue;
-            };
-            if self.boolean_storage_expression(value, &mut BTreeSet::new())
-                && self.boolean_evidence(value, &mut BTreeSet::new())
+        for value in std::mem::take(&mut self.boolean_predicate_operands) {
+            if self.boolean_storage_expression(&value, &mut BTreeSet::new())
+                && self.boolean_evidence(&value, &mut BTreeSet::new())
             {
-                self.constrain_expression_context(value, boolean.clone());
+                self.constrain_expression_context(&value, boolean.clone());
             }
         }
     }
 
+    fn boolean_predicate_operand(operation: &SemanticOperation) -> Option<&SemanticExpression> {
+        if !matches!(
+            operation.payload.if_op,
+            Some(crate::ir::IfOp::Eq | crate::ir::IfOp::Ne)
+        ) {
+            return None;
+        }
+        let [left, right] = operation.operands() else {
+            return None;
+        };
+        if matches!(Self::constant(right), Some(0) | Some(1)) {
+            Some(left)
+        } else if matches!(Self::constant(left), Some(0) | Some(1)) {
+            Some(right)
+        } else {
+            None
+        }
+    }
+
     fn constrain_runtime_type_tests(&mut self) {
-        let tests = self.runtime_type_tests.clone();
-        for operation in tests {
-            let Some(value) = operation.operands().first() else {
+        for (target_erasure, value) in std::mem::take(&mut self.runtime_type_tests) {
+            let Some(target) = self.resolved_type(&target_erasure) else {
                 continue;
             };
-            let target = match operation.insn_type {
-                InsnType::InstanceOf => operation.payload.class_type.as_deref(),
-                InsnType::CheckCast => operation.conversion_type(),
-                _ => None,
-            };
-            let Some((target_erasure, target)) =
-                target.and_then(|target| self.resolved_type(target).map(|source| (target, source)))
-            else {
-                continue;
-            };
-            let Some(principal) = self.expression_principal_type(value) else {
+            let Some(principal) = self.expression_principal_type(&value) else {
                 continue;
             };
             let Some(principal_erasure) = self.indexed_erased_type(&principal) else {
                 continue;
             };
             let cast_convertible = self.generic_projection.is_none_or(|projection| {
-                projection.is_cast_convertible(&principal_erasure, target_erasure)
+                projection.is_cast_convertible(&principal_erasure, &target_erasure)
             });
             if cast_convertible {
                 continue;
@@ -4026,7 +4088,11 @@ impl<'a> SourceTypeFlow<'a> {
                 &target,
             );
             if let Some(declaration) = declaration {
-                self.constrain_expression_with(value, declaration, TypeConstraintKind::Declaration);
+                self.constrain_expression_with(
+                    &value,
+                    declaration,
+                    TypeConstraintKind::Declaration,
+                );
             }
         }
     }
@@ -4230,11 +4296,11 @@ impl<'a> SourceTypeFlow<'a> {
         generic_projection: Option<&dyn GenericTypeProjection>,
         requirements: &mut BTreeMap<K, TypeState>,
         identity: K,
-        incoming: JavaType,
+        incoming: Cow<'_, JavaType>,
     ) -> bool {
         let next = match requirements.get(&identity) {
-            None => TypeState::Exact(incoming),
-            Some(TypeState::Exact(current)) if current == &incoming => return false,
+            None => TypeState::Exact(incoming.into_owned()),
+            Some(TypeState::Exact(current)) if current == incoming.as_ref() => return false,
             Some(TypeState::Exact(current)) => {
                 let current_erasure = Self::erased_type(
                     source_types,
@@ -4284,14 +4350,14 @@ impl<'a> SourceTypeFlow<'a> {
                     .flatten()
                     .filter(|ty| Self::type_is_well_formed(ty, type_variable_erasures));
                 if incoming_is_subtype && !current_is_subtype {
-                    TypeState::Exact(incoming)
+                    TypeState::Exact(incoming.into_owned())
                 } else if let Some(refined) = refined {
                     if &refined == current {
                         return false;
                     }
                     TypeState::Exact(refined)
                 } else if same_erasure && !current_symbolic && incoming_symbolic {
-                    TypeState::Exact(incoming)
+                    TypeState::Exact(incoming.into_owned())
                 } else if same_erasure && current_symbolic && !incoming_symbolic {
                     return false;
                 } else {
@@ -4308,9 +4374,9 @@ impl<'a> SourceTypeFlow<'a> {
                             if !Self::has_source_specific_type(current)
                                 && Self::has_source_specific_type(&incoming) =>
                         {
-                            TypeState::Exact(incoming)
+                            TypeState::Exact(incoming.into_owned())
                         }
-                        (true, false) => TypeState::Exact(incoming),
+                        (true, false) => TypeState::Exact(incoming.into_owned()),
                         (false, true) | (true, true) => return false,
                         (false, false) => TypeState::Conflict,
                     }
@@ -4320,26 +4386,6 @@ impl<'a> SourceTypeFlow<'a> {
         };
         requirements.insert(identity, next);
         true
-    }
-
-    fn merge_receiver_requirement<K: Ord>(
-        source_types: &BTreeMap<ArgType, JavaType>,
-        source_erasures: Option<&JavaTypeErasureIndex>,
-        type_variable_erasures: &BTreeMap<JavaIdentifier, ArgType>,
-        generic_projection: Option<&dyn GenericTypeProjection>,
-        requirements: &mut BTreeMap<K, TypeState>,
-        identity: K,
-        incoming: JavaType,
-    ) -> bool {
-        Self::merge_requirement(
-            source_types,
-            source_erasures,
-            type_variable_erasures,
-            generic_projection,
-            requirements,
-            identity,
-            incoming,
-        )
     }
 
     fn contains_type_variable(ty: &JavaType) -> bool {
@@ -4574,7 +4620,9 @@ impl<'a> SourceTypeFlow<'a> {
         ty: &JavaType,
     ) -> Option<ArgType> {
         if let Some(index) = source_erasures {
-            return index.erasure_of(ty, type_variable_erasures);
+            return index
+                .erasure_of(ty, type_variable_erasures)
+                .map(Cow::into_owned);
         }
         match ty {
             JavaType::Array(element) => Some(ArgType::array(Self::erased_type(
@@ -4599,16 +4647,20 @@ impl<'a> SourceTypeFlow<'a> {
         }
     }
 
-    fn erased_source_type(&self, ty: &JavaType) -> Option<ArgType> {
-        self.indexed_erased_type(ty).or_else(|| {
-            self.generic_projection
-                .and_then(|projection| projection.erasure_of(ty))
-        })
+    fn erased_source_type(&self, ty: &JavaType) -> Option<Cow<'_, ArgType>> {
+        self.source_erasures
+            .erasure_of(ty, self.type_variable_erasures)
+            .or_else(|| {
+                self.generic_projection
+                    .and_then(|projection| projection.erasure_of(ty))
+                    .map(Cow::Owned)
+            })
     }
 
     fn indexed_erased_type(&self, ty: &JavaType) -> Option<ArgType> {
         self.source_erasures
             .erasure_of(ty, self.type_variable_erasures)
+            .map(Cow::into_owned)
     }
 
     fn constrain_invocation(&mut self, operation: &SemanticOperation) -> bool {
@@ -4842,6 +4894,7 @@ impl<'a> SourceTypeFlow<'a> {
                 register
                     .code_var
                     .and_then(|variable| self.value_principal_type(variable))
+                    .map(Cow::into_owned)
             })
     }
 
@@ -5154,17 +5207,18 @@ impl<'a> SourceTypeFlow<'a> {
                 self.constrain_register_with(register, ty, kind)
             }
             SemanticExpression::Operation(operation) => {
-                let mut changed = operation
-                    .result
-                    .as_ref()
-                    .is_some_and(|result| self.constrain_register_with(result, ty.clone(), kind));
-                if operation.insn_type == InsnType::Move {
-                    changed |= operation
-                        .operands()
-                        .first()
-                        .is_some_and(|operand| self.constrain_expression_with(operand, ty, kind));
+                let operand = (operation.insn_type == InsnType::Move)
+                    .then(|| operation.operands().first())
+                    .flatten();
+                match (operation.result.as_ref(), operand) {
+                    (Some(result), Some(operand)) => {
+                        let changed = self.constrain_register_with(result, ty.clone(), kind);
+                        self.constrain_expression_with(operand, ty, kind) || changed
+                    }
+                    (Some(result), None) => self.constrain_register_with(result, ty, kind),
+                    (None, Some(operand)) => self.constrain_expression_with(operand, ty, kind),
+                    (None, None) => false,
                 }
-                changed
             }
             SemanticExpression::Select {
                 when_true,
@@ -5194,8 +5248,9 @@ impl<'a> SourceTypeFlow<'a> {
         let Some(erased) = self.erased_source_type(&ty) else {
             return false;
         };
-        let object = ArgType::object("java/lang/Object");
-        if erased == object
+        let erased = erased.as_ref();
+        let erased_is_object = erased.as_object() == Some("java/lang/Object");
+        if erased_is_object
             && !Self::has_source_specific_type(&ty)
             && kind != TypeConstraintKind::Declaration
         {
@@ -5225,7 +5280,9 @@ impl<'a> SourceTypeFlow<'a> {
                 Some(&self.source_erasures),
                 self.type_variable_erasures,
                 function_type,
-            ) == Some(erased.clone());
+            )
+            .as_ref()
+                == Some(erased);
             if same_function_interface {
                 GenericTypeEvidence::reconcile_type(
                     function_type,
@@ -5239,8 +5296,10 @@ impl<'a> SourceTypeFlow<'a> {
         } else if (kind != TypeConstraintKind::Definition
             && declared_erasure.is_reference()
             && erased.is_reference())
-            || erased == *declared_erasure
-            || (*declared_erasure == object && erased.is_reference() && erased != object)
+            || erased == declared_erasure
+            || (declared_erasure.as_object() == Some("java/lang/Object")
+                && erased.is_reference()
+                && !erased_is_object)
             || (unknown_reference && erased.is_reference())
         {
             // A use constrains the capabilities required from a value. Keep
@@ -5250,7 +5309,7 @@ impl<'a> SourceTypeFlow<'a> {
             // requirement can replace the local's source type.
             ty
         } else if kind != TypeConstraintKind::Definition
-            && erased == ArgType::BOOLEAN
+            && erased == &ArgType::BOOLEAN
             && self.boolean_storage_expression(
                 &SemanticExpression::Register(register.clone()),
                 &mut BTreeSet::new(),
@@ -5302,27 +5361,15 @@ impl<'a> SourceTypeFlow<'a> {
                 } else {
                     &mut self.value_requirements
                 };
-                let value_changed = if kind == TypeConstraintKind::Receiver {
-                    Self::merge_receiver_requirement(
-                        self.source_types,
-                        Some(&self.source_erasures),
-                        self.type_variable_erasures,
-                        self.generic_projection,
-                        requirements,
-                        value,
-                        ty.clone(),
-                    )
-                } else {
-                    Self::merge_requirement(
-                        self.source_types,
-                        Some(&self.source_erasures),
-                        self.type_variable_erasures,
-                        self.generic_projection,
-                        requirements,
-                        value,
-                        ty.clone(),
-                    )
-                };
+                let value_changed = Self::merge_requirement(
+                    self.source_types,
+                    Some(&self.source_erasures),
+                    self.type_variable_erasures,
+                    self.generic_projection,
+                    requirements,
+                    value,
+                    Cow::Borrowed(&ty),
+                );
                 if value_changed {
                     self.equation_graph
                         .mark_changed(SourceTypeFact::Value(value));
@@ -5345,27 +5392,15 @@ impl<'a> SourceTypeFlow<'a> {
                 } else {
                     &mut self.requirements
                 };
-                let variable_changed = if kind == TypeConstraintKind::Receiver {
-                    Self::merge_receiver_requirement(
-                        self.source_types,
-                        Some(&self.source_erasures),
-                        self.type_variable_erasures,
-                        self.generic_projection,
-                        requirements,
-                        variable,
-                        ty.clone(),
-                    )
-                } else {
-                    Self::merge_requirement(
-                        self.source_types,
-                        Some(&self.source_erasures),
-                        self.type_variable_erasures,
-                        self.generic_projection,
-                        requirements,
-                        variable,
-                        ty.clone(),
-                    )
-                };
+                let variable_changed = Self::merge_requirement(
+                    self.source_types,
+                    Some(&self.source_erasures),
+                    self.type_variable_erasures,
+                    self.generic_projection,
+                    requirements,
+                    variable,
+                    Cow::Owned(ty),
+                );
                 if variable_changed {
                     self.equation_graph
                         .mark_changed(SourceTypeFact::Variable(variable));
@@ -5947,13 +5982,17 @@ impl SemanticVisitor for SourceTypeFlow<'_> {
             self.invocations.push(operation.clone());
         }
         if operation.insn_type == InsnType::If {
-            self.predicate_tests.push(operation.clone());
+            if let Some(value) = Self::boolean_predicate_operand(operation) {
+                self.boolean_predicate_operands.push(value.clone());
+            }
         }
-        if matches!(
-            operation.insn_type,
-            InsnType::InstanceOf | InsnType::CheckCast
-        ) {
-            self.runtime_type_tests.push(operation.clone());
+        let tested_type = match operation.insn_type {
+            InsnType::InstanceOf => operation.payload.class_type.as_deref(),
+            InsnType::CheckCast => operation.conversion_type(),
+            _ => None,
+        };
+        if let Some((ty, value)) = tested_type.zip(operation.operands().first()) {
+            self.runtime_type_tests.push((ty.clone(), value.clone()));
         }
     }
 }

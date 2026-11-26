@@ -34,6 +34,14 @@ value minus the stage number. If `right` throws it, the argument to
 `after` result, any nonmatching exception, and any failure of the initial
 `before`, of `after` or of the handlers themselves.
 
+The `CrossWordBranches.run` challenge contains a single acyclic routine
+with 24 consecutive diamonds. Its normal paths cross a 64-bit reachability
+row boundary. From the lowest bit through bit 23, a zero bit selects
+`left` and a one bit selects `right`. Each invocation consumes the result
+of the preceding selected invocation. The first consumes the input value.
+The method returns the final result. Any helper exception escapes without
+evaluating subsequent decisions.
+
 The fixture was assembled with Smali 3.0.9 on OpenJDK 21.0.12.1 at API 24.
 
 ```sh

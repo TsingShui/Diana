@@ -33,6 +33,13 @@ impl<'a> RegionGraphBuilder<'a> {
     }
 
     pub fn build(self) -> Result<RegionGraph, RegionInvariantError> {
+        self.build_with_dominators(None)
+    }
+
+    pub(crate) fn build_with_dominators(
+        self,
+        semantic_dominators: Option<crate::ir::analysis::DominatorTree>,
+    ) -> Result<RegionGraph, RegionInvariantError> {
         let cfg = self.cfg;
         let analysis = self.exceptions;
         let exceptional_cleanup = ExceptionalCleanupFlow::analyze(cfg, analysis);
@@ -53,7 +60,7 @@ impl<'a> RegionGraphBuilder<'a> {
                 }
             }
         }
-        let control_flow = ControlFlowFacts::analyze(cfg)?;
+        let control_flow = ControlFlowFacts::analyze_with_dominators(cfg, semantic_dominators)?;
         // Exact control-flow facts cover every reachable block. With no cleanup
         // contractions the projected graph and both dominance policies are identical.
         let projected = if cleanup_representatives.is_empty() {

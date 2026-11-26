@@ -71,3 +71,82 @@ fn scope_intervals_include_only_lexical_ancestors() {
         }
     }
 }
+
+#[test]
+fn empty_ssa_plan_preserves_unknown_input_diagnostics() {
+    use crate::ir::analysis::{SsaValueGraph, SsaVar};
+
+    let mut instruction = InsnNode::new(InsnType::Return, 1);
+    instruction.args.push(InsnArg::reg_ssa(4, 27, ArgType::INT));
+    let node = SemanticNode::BasicBlock(SemanticBlock {
+        id: BlockId::new(0),
+        statements: vec![SemanticStatement::instruction(instruction).unwrap()],
+    });
+    let unknown = ValueFlowGraph::plan_ssa(
+        &node,
+        &SsaValueGraph::default(),
+        &Default::default(),
+        &mut None,
+        |graph| graph.schedule(RecoveryMode::Full),
+    );
+    assert!(
+        matches!(unknown, Err(ValueRecoveryError::UnknownValue(value)) if value == SsaVar::new(4, 27))
+    );
+}
+
+#[test]
+fn empty_source_schedule_reduces_selects_nested_in_an_operand() {
+    use crate::ir::{
+        InstructionId, LiteralArg, RegisterArg, SemanticExpression, SemanticOperation,
+        SemanticPredicate,
+    };
+
+    let selected = SemanticExpression::select(
+        SemanticPredicate::True,
+        SemanticExpression::Literal(LiteralArg::new(8, ArgType::INT)),
+        SemanticExpression::Literal(LiteralArg::new(2, ArgType::INT)),
+    );
+    let nested = SemanticExpression::Operation(Box::new(SemanticOperation::from_parts(
+        InsnNode::new(InsnType::Neg, 1),
+        vec![selected],
+        None,
+    )));
+    let mut statement = SemanticStatement::definition(
+        InstructionId::new(1),
+        RegisterArg::new(0, ArgType::INT),
+        nested,
+    );
+    statement.site = Some(SemanticSiteId(3));
+    let mut node = SemanticNode::BasicBlock(SemanticBlock {
+        id: BlockId::new(0),
+        statements: vec![statement],
+    });
+    let plan =
+        ValueFlowGraph::plan_source(&node, &BTreeSet::new(), &mut None, RecoveryMode::Structural)
+            .unwrap();
+    assert!(plan.actions.is_empty());
+    assert!(plan.apply(&mut node, super::ValueIdentity::Source).unwrap());
+    assert!(!super::super::schedule::ValueSchedule::contains_select(
+        &node
+    ));
+}
+
+#[test]
+fn constants_without_semantic_uses_remain_in_the_ssa_product() {
+    use crate::ir::analysis::{SsaValueGraph, SsaVar};
+    let key = SsaVar::new(3, 12);
+    let constants = [(key, InsnArg::lit(83, ArgType::INT))].into();
+    let plan = ValueFlowGraph::plan_ssa(
+        &SemanticNode::Empty,
+        &SsaValueGraph::default(),
+        &constants,
+        &mut None,
+        |graph| graph.schedule(RecoveryMode::Full),
+    )
+    .unwrap();
+    assert!(plan.actions.is_empty());
+    assert_eq!(
+        plan.constants.get(&key).and_then(InsnArg::literal_value),
+        Some(83)
+    );
+}

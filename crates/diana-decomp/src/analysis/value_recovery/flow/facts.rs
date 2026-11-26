@@ -4,8 +4,8 @@
 //! versions are computed from one immutable value-flow graph. Scheduling owns
 //! no independent analysis state.
 
-use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
+use std::{borrow::Cow, cell::RefCell, rc::Rc};
 
 use crate::analysis::value_recovery::{
     numbering::{SyntheticUse, ValueAvailability, ValueNumbering, ValueNumberingResult},
@@ -20,6 +20,12 @@ use super::{
     DefinitionFact, UseFact, ValueFlowGraph, ValueIdentity,
 };
 
+struct CachedRelations {
+    key: SsaVar,
+    saturated: bool,
+    facts: Rc<ReachingDefinitionFacts>,
+}
+
 pub(super) struct SparseValueFacts<'a> {
     graph: &'a ValueFlowGraph<'a>,
     canonical: BTreeMap<SsaVar, InsnArg>,
@@ -27,6 +33,7 @@ pub(super) struct SparseValueFacts<'a> {
     uses: Cow<'a, BTreeMap<SsaVar, Vec<UseFact>>>,
     required_phi_inputs: BTreeSet<SsaVar>,
     reaching: SemanticReachingAnalysis<'a>,
+    last_relations: RefCell<Option<CachedRelations>>,
     effects: EffectVersions<'a>,
 }
 
@@ -66,6 +73,7 @@ impl<'a> SparseValueFacts<'a> {
             uses,
             required_phi_inputs,
             reaching,
+            last_relations: RefCell::new(None),
             effects,
         })
     }
@@ -125,9 +133,32 @@ impl<'a> SparseValueFacts<'a> {
     pub(super) fn reaching_definitions(
         &self,
         definitions: &[DefinitionFact],
-        uses: &[UseFact],
-    ) -> Result<ReachingDefinitionFacts, ValueRecoveryError> {
-        ReachingDefinitions::new(self.graph, &self.reaching).analyze(definitions, uses)
+    ) -> Result<Rc<ReachingDefinitionFacts>, ValueRecoveryError> {
+        let key = definitions
+            .first()
+            .ok_or(ValueRecoveryError::MissingSemanticSite)?
+            .key;
+        let saturated = self.graph.proof_budget_exhausted();
+        if let Some(previous) = self.last_relations.borrow().as_ref() {
+            if previous.key == key && previous.saturated == saturated {
+                return Ok(Rc::clone(&previous.facts));
+            }
+        }
+        let facts = Rc::new(
+            ReachingDefinitions::new(self.graph, &self.reaching)
+                .analyze(definitions, self.uses_of(key))?,
+        );
+        // Several rules inspect the same assignment class in succession. A
+        // proof that crossed the BDD budget cannot describe a later query:
+        // the earlier relations may include precise answers from before it.
+        if self.graph.proof_budget_exhausted() == saturated {
+            *self.last_relations.borrow_mut() = Some(CachedRelations {
+                key,
+                saturated,
+                facts: Rc::clone(&facts),
+            });
+        }
+        Ok(facts)
     }
 
     pub(super) fn reaching_candidates(

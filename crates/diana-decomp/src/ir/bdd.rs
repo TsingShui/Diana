@@ -98,10 +98,21 @@ struct ArenaNode {
     variable: usize,
     low: u16,
     high: u16,
-    complement: Option<u16>,
+    complement: u16,
+    has_complement: bool,
+    trivial_implications: u8,
 }
 
 impl ArenaNode {
+    fn complement(&self) -> Option<u16> {
+        self.has_complement.then_some(self.complement)
+    }
+
+    fn set_complement(&mut self, id: u16) {
+        self.has_complement = true;
+        self.complement = id;
+    }
+
     fn cofactors(&self, id: u16, variable: usize) -> (u16, u16) {
         if self.variable == variable {
             (self.low, self.high)
@@ -117,8 +128,10 @@ struct Manager {
     unique: HashMap<(usize, u32), u16>,
     binary_cache: HashMap<u64, u16>,
     apply_work: ApplyWork,
+    implication_work: ImplicationWork,
     complements: usize,
     implication_cache: HashMap<u32, bool>,
+    trivial_implications: usize,
     limits: BddLimits,
     operations_used: usize,
 }
@@ -129,22 +142,26 @@ impl Manager {
             variable: usize::MAX,
             low: 0,
             high: 1,
-            complement: Some(1),
+            complement: 1,
+            has_complement: true,
+            trivial_implications: 0,
         };
         Self {
             context,
             nodes: vec![
                 falsity,
                 ArenaNode {
-                    complement: Some(0),
+                    complement: 0,
                     ..falsity
                 },
             ],
             unique: HashMap::new(),
             binary_cache: HashMap::new(),
             apply_work: ApplyWork::default(),
+            implication_work: ImplicationWork::default(),
             complements: 2,
             implication_cache: HashMap::new(),
+            trivial_implications: 0,
             limits,
             operations_used: 0,
         }
@@ -208,7 +225,9 @@ impl Manager {
             variable,
             low,
             high,
-            complement: None,
+            complement: 0,
+            has_complement: false,
+            trivial_implications: 0,
         });
         entry.or_insert(id);
         Ok(id)
@@ -225,22 +244,15 @@ impl Manager {
     fn apply(&mut self, operation: BinaryOp, left: Bdd, right: Bdd) -> Result<Bdd, BddError> {
         self.validate(left)?;
         self.validate(right)?;
-        let mut work = std::mem::take(&mut self.apply_work);
-        let result = self.apply_nodes(operation, left.node, right.node, &mut work);
-        work.pending.clear();
-        work.results.clear();
-        self.apply_work = work;
+        let result = self.apply_nodes(operation, left.node, right.node);
+        if result.is_err() {
+            self.apply_work.pending.clear();
+            self.apply_work.results.clear();
+        }
         result.map(|id| self.handle(id))
     }
 
-    fn apply_nodes(
-        &mut self,
-        operation: BinaryOp,
-        left: u16,
-        right: u16,
-        work: &mut ApplyWork,
-    ) -> Result<u16, BddError> {
-        let ApplyWork { pending, results } = work;
+    fn apply_nodes(&mut self, operation: BinaryOp, left: u16, right: u16) -> Result<u16, BddError> {
         let mut task = ApplyTask::Visit(left, right);
         loop {
             let result = match task {
@@ -264,8 +276,12 @@ impl Manager {
                                 let variable = a.variable.min(b.variable);
                                 let (a_low, a_high) = a.cofactors(left, variable);
                                 let (b_low, b_high) = b.cofactors(right, variable);
-                                pending.push(ApplyTask::Combine { key, variable });
-                                pending.push(ApplyTask::Visit(a_high, b_high));
+                                self.apply_work
+                                    .pending
+                                    .push(ApplyTask::Combine { key, variable });
+                                self.apply_work
+                                    .pending
+                                    .push(ApplyTask::Visit(a_high, b_high));
                                 task = ApplyTask::Visit(a_low, b_low);
                                 continue;
                             }
@@ -273,25 +289,33 @@ impl Manager {
                     }
                 }
                 ApplyTask::Combine { key, variable } => {
-                    let high = results.pop().ok_or(BddError::MalformedEvaluation)?;
-                    let low = results.pop().ok_or(BddError::MalformedEvaluation)?;
+                    let high = self
+                        .apply_work
+                        .results
+                        .pop()
+                        .ok_or(BddError::MalformedEvaluation)?;
+                    let low = self
+                        .apply_work
+                        .results
+                        .pop()
+                        .ok_or(BddError::MalformedEvaluation)?;
                     let result = self.intern(variable, low, high)?;
                     self.reserve_cache_entries(1)?;
                     self.binary_cache.insert(key, result);
                     result
                 }
             };
-            let Some(next) = pending.pop() else {
+            let Some(next) = self.apply_work.pending.pop() else {
                 return Ok(result);
             };
-            results.push(result);
+            self.apply_work.results.push(result);
             task = next;
         }
     }
 
     fn negate(&mut self, value: Bdd) -> Result<Bdd, BddError> {
         self.validate(value)?;
-        if let Some(result) = self.nodes[usize::from(value.node)].complement {
+        if let Some(result) = self.nodes[usize::from(value.node)].complement() {
             return Ok(self.handle(result));
         }
         let mut tasks = vec![NotTask::Visit(value)];
@@ -299,7 +323,7 @@ impl Manager {
         while let Some(task) = tasks.pop() {
             match task {
                 NotTask::Visit(value) => {
-                    if let Some(result) = self.nodes[usize::from(value.node)].complement {
+                    if let Some(result) = self.nodes[usize::from(value.node)].complement() {
                         results.push(self.handle(result));
                         continue;
                     }
@@ -318,11 +342,11 @@ impl Manager {
                     let result = self.node(variable, low, high)?;
                     let first = usize::from(value.node);
                     let second = usize::from(result.node);
-                    let additional = usize::from(self.nodes[first].complement.is_none())
-                        + usize::from(self.nodes[second].complement.is_none());
+                    let additional = usize::from(!self.nodes[first].has_complement)
+                        + usize::from(!self.nodes[second].has_complement);
                     self.reserve_cache_entries(additional)?;
-                    self.nodes[first].complement = Some(result.node);
-                    self.nodes[second].complement = Some(value.node);
+                    self.nodes[first].set_complement(result.node);
+                    self.nodes[second].set_complement(value.node);
                     self.complements += additional;
                     results.push(result);
                 }
@@ -512,6 +536,28 @@ impl Manager {
     fn implies(&mut self, premise: Bdd, consequence: Bdd) -> Result<bool, BddError> {
         self.validate(premise)?;
         self.validate(consequence)?;
+        // Each identity or terminal pair has a fixed answer. Remember that
+        // exact cache entry on the other node and charge it once, just as for
+        // a pair stored in the general implication table.
+        let (a, b) = (premise.node, consequence.node);
+        let trivial = if a == b {
+            Some((a, 1, true))
+        } else if a <= 1 {
+            Some((b, 2 << a, a == 0))
+        } else if b <= 1 {
+            Some((a, 8 << b, b == 1))
+        } else {
+            None
+        };
+        if let Some((id, flag, answer)) = trivial {
+            let index = usize::from(id);
+            if self.nodes[index].trivial_implications & flag == 0 {
+                self.reserve_cache_entries(1)?;
+                self.nodes[index].trivial_implications |= flag;
+                self.trivial_implications += 1;
+            }
+            return Ok(answer);
+        }
         let key = premise.pair(consequence);
         if let Some(result) = self.implication_cache.get(&key) {
             return Ok(*result);
@@ -523,8 +569,8 @@ impl Manager {
     }
 
     fn implies_nodes(&mut self, premise: u16, consequence: u16) -> Result<bool, BddError> {
-        let mut pending = Vec::new();
-        let mut visited = HashSet::default();
+        self.implication_work.pending.clear();
+        self.implication_work.visited.clear();
         let mut next = (premise, consequence);
         loop {
             let (premise, consequence) = next;
@@ -532,19 +578,23 @@ impl Manager {
                 if premise == 1 || consequence == 0 {
                     return Ok(false);
                 }
-                if visited.insert(u32::from(premise) << 16 | u32::from(consequence)) {
+                if self
+                    .implication_work
+                    .visited
+                    .insert(u32::from(premise) << 16 | u32::from(consequence))
+                {
                     self.charge_operation()?;
                     let a = self.nodes[usize::from(premise)];
                     let b = self.nodes[usize::from(consequence)];
                     let variable = a.variable.min(b.variable);
                     let (a_low, a_high) = a.cofactors(premise, variable);
                     let (b_low, b_high) = b.cofactors(consequence, variable);
-                    pending.push((a_low, b_low));
+                    self.implication_work.pending.push((a_low, b_low));
                     next = (a_high, b_high);
                     continue;
                 }
             }
-            let Some(child) = pending.pop() else {
+            let Some(child) = self.implication_work.pending.pop() else {
                 return Ok(true);
             };
             next = child;
@@ -573,7 +623,8 @@ impl Manager {
             .binary_cache
             .len()
             .saturating_add(self.complements)
-            .saturating_add(self.implication_cache.len());
+            .saturating_add(self.implication_cache.len())
+            .saturating_add(self.trivial_implications);
         if entries.saturating_add(additional) > self.limits.cache_entries {
             return Err(BddError::ResourceLimit {
                 resource: BddResource::CacheEntries,
@@ -603,6 +654,12 @@ impl Manager {
 struct ApplyWork {
     pending: Vec<ApplyTask>,
     results: Vec<u16>,
+}
+
+#[derive(Default)]
+struct ImplicationWork {
+    pending: Vec<(u16, u16)>,
+    visited: HashSet<u32>,
 }
 
 enum ApplyTask {

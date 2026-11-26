@@ -496,6 +496,7 @@ pub(super) struct RegionScope<'a> {
     children: BTreeSet<RegionId>,
     ports: &'a BTreeSet<BlockId>,
     anchors: &'a RegionAnchors,
+    child_entries: std::cell::RefCell<foldhash::HashMap<RegionId, Option<BlockId>>>,
 }
 
 impl<'a> RegionScope<'a> {
@@ -512,6 +513,7 @@ impl<'a> RegionScope<'a> {
             children: children.iter().copied().collect(),
             ports,
             anchors,
+            child_entries: Default::default(),
         }
     }
 
@@ -523,19 +525,27 @@ impl<'a> RegionScope<'a> {
             return Ok(Some(block));
         }
         let block = self.anchors.representative(block);
-        let Some(mut owner) = self.graph.owner_of(block) else {
+        let Some(owner) = self.graph.owner_of(block) else {
             return Err(StructureError::RegionOwnerMissing {
                 region: self.region,
                 block,
             });
         };
-        if self.ports.contains(&block) {
+        if owner == self.region || self.ports.contains(&block) {
             return Ok(Some(block));
         }
+        if let Some(&entry) = self.child_entries.borrow().get(&owner) {
+            return Ok(entry);
+        }
+        // All blocks of a given foreign owner reach the same immediate
+        // lexical child (or none). Preserve ports and direct owners above.
+        let entry = self.child_entry(owner)?;
+        self.child_entries.borrow_mut().insert(owner, entry);
+        Ok(entry)
+    }
+
+    fn child_entry(&self, mut owner: RegionId) -> Result<Option<BlockId>, StructureError> {
         loop {
-            if owner == self.region {
-                return Ok(Some(block));
-            }
             let current = self
                 .graph
                 .tree()
@@ -572,21 +582,21 @@ impl<'a> RegionScope<'a> {
         let mut positions = BTreeMap::new();
         let mut path = Vec::new();
         loop {
+            if self.is_child_entry(current) || !self.is_epsilon(cfg, current)? {
+                return Ok(Some(current));
+            }
+            let mut successors = cfg.normal_successors(current);
+            let (Some(successor), None) = (successors.next(), successors.next()) else {
+                return Ok(Some(current));
+            };
+            let Some(next) = self.representative(successor)? else {
+                return Ok(Some(current));
+            };
             if let Some(&cycle_start) = positions.get(&current) {
                 return Ok(path[cycle_start..].iter().copied().min());
             }
             positions.insert(current, path.len());
             path.push(current);
-            if self.is_child_entry(current) || !self.is_epsilon(cfg, current)? {
-                return Ok(Some(current));
-            }
-            let successors = cfg.normal_successors(current).collect::<Vec<_>>();
-            let [successor] = successors.as_slice() else {
-                return Ok(Some(current));
-            };
-            let Some(next) = self.representative(*successor)? else {
-                return Ok(Some(current));
-            };
             current = next;
         }
     }

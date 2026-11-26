@@ -335,13 +335,8 @@ impl RegionTree {
                     || !kind.encloses_coincident(&region.kind)
             })
             .map(|region| {
-                self.parent_chain(region.id).map(|chain| {
-                    (
-                        region.blocks.len(),
-                        std::cmp::Reverse(chain.len()),
-                        region.id,
-                    )
-                })
+                self.depth(region.id)
+                    .map(|depth| (region.blocks.len(), std::cmp::Reverse(depth), region.id))
             })
             .collect::<Result<Vec<_>, _>>()?;
         let parent = candidates
@@ -675,24 +670,21 @@ impl RegionTree {
     pub(super) fn close_ancestor_ownership(&mut self) -> Result<(), RegionInvariantError> {
         let mut regions = self
             .regions()
-            .map(|region| {
-                self.parent_chain(region.id)
-                    .map(|chain| (chain.len(), region.id))
-            })
+            .map(|region| self.depth(region.id).map(|depth| (depth, region.id)))
             .collect::<Result<Vec<_>, _>>()?;
         regions.sort_by_key(|(depth, _)| std::cmp::Reverse(*depth));
         for (_, region) in regions {
             let current = self
                 .region(region)
-                .ok_or(RegionInvariantError::UnknownRegion(region))?
-                .clone();
+                .ok_or(RegionInvariantError::UnknownRegion(region))?;
             let Some(parent) = current.parent else {
                 continue;
             };
+            let blocks = current.blocks.clone();
             self.region_mut(parent)
                 .ok_or(RegionInvariantError::UnknownRegion(parent))?
                 .blocks
-                .extend(current.blocks);
+                .extend(blocks);
         }
         Ok(())
     }
@@ -759,6 +751,25 @@ impl RegionTree {
         Ok(())
     }
 
+    // Depth-only clients need no allocated path for a valid tree. A chain
+    // longer than the entire tree must cycle; the full walk then supplies
+    // the same first repeated region and error witnesses as parent_chain.
+    fn depth(&self, region: RegionId) -> Result<usize, RegionInvariantError> {
+        let mut depth = 0;
+        let mut current = Some(region);
+        while let Some(id) = current {
+            if depth == self.regions.len() {
+                return self.parent_chain(region).map(|chain| chain.len());
+            }
+            let node = self
+                .region(id)
+                .ok_or(RegionInvariantError::UnknownRegion(id))?;
+            depth += 1;
+            current = node.parent;
+        }
+        Ok(depth)
+    }
+
     pub fn parent_chain(
         &self,
         mut region: RegionId,
@@ -806,31 +817,30 @@ impl RegionTree {
     }
 
     pub fn owner(&self, block: BlockId) -> Result<RegionId, RegionInvariantError> {
-        let mut candidates = self
+        let mut depth = 0;
+        let mut deepest = SmallVec::<[RegionId; 1]>::new();
+        for region in self
             .regions
             .values()
             .filter(|region| region.owns_block(block))
-            .map(|region| {
-                self.parent_chain(region.id)
-                    .map(|chain| (chain.len(), region.id))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let depth = candidates
-            .iter()
-            .map(|(depth, _)| *depth)
-            .max()
-            .ok_or(RegionInvariantError::MissingOwner(block))?;
-        candidates.retain(|(candidate_depth, _)| *candidate_depth == depth);
-        if candidates.len() != 1 {
-            return Err(RegionInvariantError::AmbiguousOwner {
-                block,
-                regions: candidates.into_iter().map(|(_, region)| region).collect(),
-            });
+        {
+            let candidate = self.depth(region.id)?;
+            if candidate > depth {
+                deepest.clear();
+                depth = candidate;
+            }
+            if candidate == depth {
+                deepest.push(region.id);
+            }
         }
-        candidates
-            .first()
-            .map(|(_, owner)| *owner)
-            .ok_or(RegionInvariantError::MissingOwner(block))
+        match deepest.as_slice() {
+            [] => Err(RegionInvariantError::MissingOwner(block)),
+            [owner] => Ok(*owner),
+            _ => Err(RegionInvariantError::AmbiguousOwner {
+                block,
+                regions: deepest.into_vec(),
+            }),
+        }
     }
 
     /// Region entered when control transfers from `source` to `block`.
@@ -1368,10 +1378,7 @@ impl SynchronizationPlacement {
                     && !region.blocks.is_subset(&self.blocks)
                     && !self.blocks.is_subset(&region.blocks)
             })
-            .map(|region| {
-                tree.parent_chain(region.id)
-                    .map(|chain| (chain.len(), region.id))
-            })
+            .map(|region| tree.depth(region.id).map(|depth| (depth, region.id)))
             .collect::<Result<Vec<_>, _>>()?;
         // Every lexical cut must preserve laminar ownership. Partition the
         // deepest protected domains first so an ancestor never encounters an
@@ -1574,7 +1581,7 @@ impl SynchronizationPlacement {
             .release_segments
             .iter()
             .copied()
-            .map(|region| tree.parent_chain(region).map(|chain| (chain.len(), region)))
+            .map(|region| tree.depth(region).map(|depth| (depth, region)))
             .collect::<Result<Vec<_>, _>>()?;
         segments.sort_by_key(|(depth, _)| std::cmp::Reverse(*depth));
         let mut removed = BTreeSet::new();
@@ -1612,10 +1619,7 @@ impl SynchronizationPlacement {
                     && !region.blocks.is_subset(blocks)
                     && !blocks.is_subset(&region.blocks)
             })
-            .map(|region| {
-                tree.parent_chain(region.id)
-                    .map(|chain| (chain.len(), region.id))
-            })
+            .map(|region| tree.depth(region.id).map(|depth| (depth, region.id)))
             .collect::<Result<Vec<_>, _>>()?;
         // A lexical boundary propagates from nested domains to their
         // ancestors. Cutting a parent first would temporarily leave an
@@ -1935,7 +1939,7 @@ impl SynchronizationPlacement {
         let mut wrappers = wrappers
             .into_iter()
             .filter(|region| *region != self.owner)
-            .map(|region| tree.parent_chain(region).map(|chain| (chain.len(), region)))
+            .map(|region| tree.depth(region).map(|depth| (depth, region)))
             .collect::<Result<Vec<_>, _>>()?;
         wrappers.sort_by_key(|(depth, _)| std::cmp::Reverse(*depth));
         let mut removed = BTreeSet::new();

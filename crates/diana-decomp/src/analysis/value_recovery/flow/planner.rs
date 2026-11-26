@@ -193,7 +193,11 @@ impl<'a> ValuePlanner<'a> {
         self.retain_replacement_frontier(&mut actions)?;
         actions.sort_by_key(|action| std::cmp::Reverse(action.event()));
         let constants = self.facts.constants();
-        Ok(ValuePlan { actions, constants })
+        Ok(ValuePlan {
+            has_select: self.graph().has_select,
+            actions,
+            constants,
+        })
     }
 
     fn constant_class_action(
@@ -256,7 +260,7 @@ impl<'a> ValuePlanner<'a> {
             return Ok(None);
         }
 
-        let reaching = self.facts.reaching_definitions(definitions, uses)?;
+        let reaching = self.facts.reaching_definitions(definitions)?;
         for (usage, relation) in uses.iter().zip(&reaching.uses) {
             let (Some(target), false) = (usage.point, relation.candidates.is_empty()) else {
                 return Ok(None);
@@ -512,10 +516,10 @@ impl<'a> ValuePlanner<'a> {
         {
             return Ok(None);
         }
-        let reaching = self.facts.reaching_definitions(definitions, uses)?;
+        let reaching = self.facts.reaching_definitions(definitions)?;
         let dead = definitions
             .iter()
-            .zip(reaching.candidate_uses)
+            .zip(reaching.candidate_uses.iter().copied())
             .filter_map(|(definition, candidate_uses)| {
                 (candidate_uses == 0 && Self::selection_effect(definition).is_pure())
                     .then_some((definition.site?, definition.event))
@@ -958,7 +962,7 @@ impl<'a> ValuePlanner<'a> {
         let (Some(use_site), Some(target)) = (usage.site, usage.point) else {
             return Ok(None);
         };
-        let reaching = self.facts.reaching_definitions(definitions, uses)?;
+        let reaching = self.facts.reaching_definitions(definitions)?;
         let [relation] = reaching.uses.as_slice() else {
             return Ok(None);
         };
@@ -1213,7 +1217,7 @@ impl<'a> ValuePlanner<'a> {
         definitions: &[DefinitionFact],
         uses: &[UseFact],
     ) -> Result<Option<(Vec<Option<usize>>, Vec<usize>, Vec<usize>)>, ValueRecoveryError> {
-        let reaching = self.facts.reaching_definitions(definitions, uses)?;
+        let reaching = self.facts.reaching_definitions(definitions)?;
         let mut definition_uses = vec![0usize; definitions.len()];
         let mut matches = Vec::with_capacity(uses.len());
         for (usage, relation) in uses.iter().zip(&reaching.uses) {
@@ -1241,7 +1245,11 @@ impl<'a> ValuePlanner<'a> {
                 return Ok(None);
             }
         }
-        Ok(Some((matches, definition_uses, reaching.candidate_uses)))
+        Ok(Some((
+            matches,
+            definition_uses,
+            reaching.candidate_uses.clone(),
+        )))
     }
 
     fn can_remove_definition(

@@ -444,28 +444,28 @@ impl<'a> SsaValueSolver<'a> {
     ) -> Result<BTreeMap<SsaVar, crate::ir::InsnArg>, ValueRecoveryError> {
         let mut constants = BTreeMap::new();
         loop {
-            let value_plan = match first_plan.take() {
+            let mut value_plan = match first_plan.take() {
                 Some(plan) => plan,
                 None => {
                     crate::ir::SemanticSiteNumbering::assign(method.body_mut())?;
-                    let graph = ValueFlowGraph::build_with_flow_cache(
+                    ValueFlowGraph::plan_ssa(
                         method.body(),
                         method.state().values(),
                         self.constants,
                         flow_cache,
-                    )?;
-                    self.plan(graph)?
+                        |graph| self.plan(graph),
+                    )?
                 }
             };
-            constants.extend(value_plan.constants);
-            let schedule = ValueSchedule::compile(value_plan.actions, ValueIdentity::Ssa)?;
-            let changed = schedule.apply(method.body_mut())?;
+            constants.append(&mut value_plan.constants);
+            let changed = value_plan.apply(method.body_mut(), ValueIdentity::Ssa)?;
             if !changed {
                 break;
             }
             method.normalize_before_phi_lowering()?;
         }
-        crate::ir::SemanticSiteNumbering::assign(method.body_mut())?;
+        // The final plan reads the numbered tree and removed no sites. The
+        // gated first plan, when present, has the same numbering guarantee.
         Ok(constants)
     }
 }

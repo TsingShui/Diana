@@ -4,8 +4,11 @@
 //! is reached from the graph entry. ROBDD variables follow topological
 //! evaluation order and provide canonical equivalence and implication.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fmt;
+
+use foldhash::{HashMap, HashMapExt};
+use smallvec::SmallVec;
 
 use crate::ir::bdd::{Bdd, BddContext, BddError};
 use crate::ir::{BlockId, BoolExpr, BoolVariable, EdgeKind, InsnType, CFG};
@@ -23,7 +26,7 @@ impl ReachingCondition {
 
 pub struct ReachingConditions {
     order: Vec<BlockId>,
-    conditions: BTreeMap<BlockId, ReachingCondition>,
+    conditions: Vec<ReachingCondition>,
     reachability: ReachabilityMatrix,
     branch_variables: Vec<BlockId>,
     boolean_domain: BddContext,
@@ -48,7 +51,8 @@ impl ReachingConditions {
         if !nodes.contains(&entry) {
             return Err(ReachingConditionError::MissingEntry(entry));
         }
-        let (order, incoming) = AcyclicTopology::new(cfg, entry, nodes)?.sort()?;
+        let topology = AcyclicTopology { cfg, nodes };
+        let (order, ranks) = topology.sort(entry)?;
         let branch_variables = order
             .iter()
             .copied()
@@ -59,34 +63,29 @@ impl ReachingConditions {
                 })
             })
             .collect::<Vec<_>>();
-        let variables = branch_variables
-            .iter()
-            .copied()
-            .map(BoolVariable::Block)
-            .collect::<Vec<_>>();
-        let boolean_domain = BddContext::ordered(variables);
-        let mut conditions = BTreeMap::<BlockId, ReachingCondition>::new();
+        let boolean_domain =
+            BddContext::ordered(branch_variables.iter().copied().map(BoolVariable::Block));
+        let mut conditions = Vec::<ReachingCondition>::with_capacity(order.len());
         for block in &order {
             let domain = if *block == entry {
                 boolean_domain.truth()
             } else {
-                let terms = incoming
-                    .get(block)
-                    .into_iter()
-                    .flatten()
+                let terms = topology
+                    .incoming(*block)
                     .map(|(source, edge)| {
-                        let predecessor = conditions.get(source).ok_or(
-                            ReachingConditionError::MissingPredecessorCondition {
+                        let predecessor = ranks
+                            .get(&source)
+                            .and_then(|&rank| conditions.get(rank))
+                            .ok_or(ReachingConditionError::MissingPredecessorCondition {
                                 block: *block,
-                                predecessor: *source,
-                            },
-                        )?;
+                                predecessor: source,
+                            })?;
                         let edge = boolean_domain.compile(
-                            &EdgePredicate::new(cfg, *source, *block, *edge)?.expression(),
+                            &EdgePredicate::new(cfg, source, *block, edge)?.expression(),
                         )?;
                         Ok(boolean_domain.and(predecessor.domain, edge)?)
                     })
-                    .collect::<Result<Vec<_>, ReachingConditionError>>()?;
+                    .collect::<Result<SmallVec<[_; 2]>, ReachingConditionError>>()?;
                 terms
                     .into_iter()
                     .try_fold(boolean_domain.falsity(), |left, right| {
@@ -96,9 +95,9 @@ impl ReachingConditions {
             if domain.is_false() {
                 return Err(ReachingConditionError::UnreachableBlock(*block));
             }
-            conditions.insert(*block, ReachingCondition { domain });
+            conditions.push(ReachingCondition { domain });
         }
-        let reachability = ReachabilityMatrix::analyze(cfg, nodes, &order)?;
+        let reachability = ReachabilityMatrix::analyze(cfg, nodes, &order, ranks)?;
         Ok(Self {
             order,
             conditions,
@@ -127,7 +126,8 @@ impl ReachingConditions {
     }
 
     pub fn condition(&self, block: BlockId) -> Option<&ReachingCondition> {
-        self.conditions.get(&block)
+        self.rank(block)
+            .and_then(|index| self.conditions.get(index))
     }
 
     pub fn branch_variables(&self) -> &[BlockId] {
@@ -175,123 +175,74 @@ impl ReachingConditions {
     }
 
     pub fn any_reaches(&self, sources: &BTreeSet<BlockId>, targets: &BTreeSet<BlockId>) -> bool {
-        sources.iter().copied().any(|source| {
-            targets
-                .iter()
-                .copied()
-                .any(|target| self.reaches(source, target))
-        })
+        self.reachability.any_reaches(sources, targets)
     }
 }
 
-struct AcyclicTopology {
-    entry: BlockId,
-    nodes: BTreeSet<BlockId>,
-    indegree: BTreeMap<BlockId, usize>,
-    incoming: BTreeMap<BlockId, Vec<(BlockId, EdgeKind)>>,
-    successors: BTreeMap<BlockId, Vec<BlockId>>,
+struct AcyclicTopology<'a> {
+    cfg: &'a CFG,
+    nodes: &'a BTreeSet<BlockId>,
 }
 
-impl AcyclicTopology {
-    fn new(
-        cfg: &CFG,
-        entry: BlockId,
-        nodes: &BTreeSet<BlockId>,
-    ) -> Result<Self, ReachingConditionError> {
-        let mut indegree = nodes
+impl AcyclicTopology<'_> {
+    // The CFG already keeps incoming edges sorted by (source, kind), which
+    // is also the canonical order for combining predecessor BDD terms.
+    fn incoming(&self, block: BlockId) -> impl Iterator<Item = (BlockId, EdgeKind)> + '_ {
+        self.cfg
+            .predecessors_with_kind(block)
             .iter()
             .copied()
-            .map(|block| (block, 0usize))
-            .collect::<BTreeMap<_, _>>();
-        let mut incoming = nodes
-            .iter()
-            .copied()
-            .map(|block| (block, Vec::new()))
-            .collect::<BTreeMap<_, _>>();
-        let mut successors = incoming
-            .keys()
-            .copied()
-            .map(|block| (block, Vec::new()))
-            .collect::<BTreeMap<_, _>>();
-        for source in nodes {
-            for &(target, edge) in cfg.successors_with_kind(*source) {
-                if edge == EdgeKind::Exception || !nodes.contains(&target) {
-                    continue;
-                }
-                *indegree
-                    .get_mut(&target)
-                    .ok_or(ReachingConditionError::MissingBlock(target))? += 1;
-                incoming
-                    .get_mut(&target)
-                    .ok_or(ReachingConditionError::MissingBlock(target))?
-                    .push((*source, edge));
-                successors
-                    .get_mut(source)
-                    .ok_or(ReachingConditionError::MissingBlock(*source))?
-                    .push(target);
-            }
-        }
-        for edges in incoming.values_mut() {
-            edges.sort();
-        }
-        for edges in successors.values_mut() {
-            edges.sort();
-        }
-        Ok(Self {
-            entry,
-            nodes: nodes.clone(),
-            indegree,
-            incoming,
-            successors,
-        })
+            .filter(|(source, kind)| !kind.is_exception() && self.nodes.contains(source))
     }
 
     fn sort(
-        mut self,
-    ) -> Result<(Vec<BlockId>, BTreeMap<BlockId, Vec<(BlockId, EdgeKind)>>), ReachingConditionError>
-    {
-        let mut ready = self
-            .indegree
-            .iter()
-            .filter_map(|(block, degree)| (*degree == 0).then_some(*block))
-            .collect::<BTreeSet<_>>();
-        if ready != BTreeSet::from([self.entry]) {
+        &self,
+        entry: BlockId,
+    ) -> Result<(Vec<BlockId>, HashMap<BlockId, usize>), ReachingConditionError> {
+        let mut indegree = HashMap::with_capacity(self.nodes.len());
+        let mut ready = BTreeSet::new();
+        for &block in self.nodes {
+            let degree = self.incoming(block).count();
+            indegree.insert(block, degree);
+            if degree == 0 {
+                ready.insert(block);
+            }
+        }
+        if ready.len() != 1 || ready.first() != Some(&entry) {
             return Err(ReachingConditionError::MultipleEntries {
-                expected: self.entry,
+                expected: entry,
                 actual: ready.first().copied(),
             });
         }
         let mut order = Vec::with_capacity(self.nodes.len());
         while let Some(block) = ready.pop_first() {
             order.push(block);
-            for target in self.successors.get(&block).into_iter().flatten() {
-                let degree = self
-                    .indegree
-                    .get_mut(target)
-                    .ok_or(ReachingConditionError::MissingBlock(*target))?;
+            for target in self.cfg.normal_successors(block) {
+                let Some(degree) = indegree.get_mut(&target) else {
+                    continue;
+                };
                 *degree = degree
                     .checked_sub(1)
-                    .ok_or(ReachingConditionError::MalformedTopology(*target))?;
+                    .ok_or(ReachingConditionError::MalformedTopology(target))?;
                 if *degree == 0 {
-                    ready.insert(*target);
+                    ready.insert(target);
                 }
             }
         }
         if order.len() != self.nodes.len() {
             return Err(ReachingConditionError::CyclicGraph);
         }
-        if order.first().copied() != Some(self.entry) {
-            return Err(ReachingConditionError::MultipleEntries {
-                expected: self.entry,
-                actual: order.first().copied(),
-            });
+        // The degree table is dead after Kahn's traversal. Reuse its keys
+        // for reaching-condition rows and all later rank queries.
+        for (rank, block) in order.iter().copied().enumerate() {
+            indegree.insert(block, rank);
         }
-        Ok((order, self.incoming))
+        Ok((order, indegree))
     }
 }
 
 struct ReachabilityMatrix {
-    indices: BTreeMap<BlockId, usize>,
+    indices: HashMap<BlockId, usize>,
     row_words: usize,
     bits: Vec<u64>,
 }
@@ -303,13 +254,8 @@ impl ReachabilityMatrix {
         cfg: &CFG,
         nodes: &BTreeSet<BlockId>,
         order: &[BlockId],
+        indices: HashMap<BlockId, usize>,
     ) -> Result<Self, ReachingConditionError> {
-        let indices = order
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(index, block)| (block, index))
-            .collect::<BTreeMap<_, _>>();
         let words = order.len().div_ceil(u64::BITS as usize);
         let bytes = order
             .len()
@@ -350,6 +296,41 @@ impl ReachabilityMatrix {
             row_words: words,
             bits,
         })
+    }
+
+    fn any_reaches(&self, sources: &BTreeSet<BlockId>, targets: &BTreeSet<BlockId>) -> bool {
+        if sources.is_empty() || targets.is_empty() {
+            return false;
+        }
+        let mut rows = sources.iter().filter_map(|source| {
+            let start = self.indices.get(source)? * self.row_words;
+            Some(&self.bits[start..start + self.row_words])
+        });
+        // A single row needs no combined target mask.
+        if sources.len() == 1 {
+            return rows.next().is_some_and(|row| {
+                targets.iter().any(|target| {
+                    self.indices
+                        .get(target)
+                        .is_some_and(|&bit| row[bit / 64] & (1 << (bit % 64)) != 0)
+                })
+            });
+        }
+        if targets.len() == 1 {
+            return targets
+                .first()
+                .and_then(|target| self.indices.get(target))
+                .is_some_and(|&bit| rows.any(|row| row[bit / 64] & (1 << (bit % 64)) != 0));
+        }
+        // Index each target only once, even when two large branch arms have
+        // no edges between them. Small methods keep the mask on the stack.
+        let mut mask = SmallVec::<[u64; 4]>::from_elem(0, self.row_words);
+        for target in targets {
+            if let Some(&bit) = self.indices.get(target) {
+                mask[bit / 64] |= 1 << (bit % 64);
+            }
+        }
+        rows.any(|row| row.iter().zip(&mask).any(|(word, mask)| word & mask != 0))
     }
 
     fn reaches(&self, source: BlockId, target: BlockId) -> bool {

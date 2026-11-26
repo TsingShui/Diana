@@ -506,17 +506,11 @@ impl<'a> CleanupContractionClosure<'a> {
 
 struct CleanupCopyIsolation<'a> {
     cfg: &'a CFG,
-    predecessors: BTreeMap<BlockId, Vec<BlockId>>,
-    normal_predecessors: BTreeMap<BlockId, Vec<BlockId>>,
 }
 
 impl<'a> CleanupCopyIsolation<'a> {
     fn new(cfg: &'a CFG) -> Self {
-        Self {
-            cfg,
-            predecessors: cfg.predecessor_snapshot(),
-            normal_predecessors: cfg.normal_predecessor_snapshot(),
-        }
+        Self { cfg }
     }
 
     fn proves(
@@ -553,7 +547,7 @@ impl<'a> CleanupCopyIsolation<'a> {
         let body = owned.clone();
         let mut pending = owned.iter().copied().collect::<Vec<_>>();
         while let Some(block) = pending.pop() {
-            for predecessor in self.predecessors.get(&block).into_iter().flatten().copied() {
+            for predecessor in self.cfg.incoming_sources(block) {
                 if owned.contains(&predecessor) || ingress.contains(&predecessor) {
                     continue;
                 }
@@ -620,13 +614,7 @@ impl<'a> CleanupCopyIsolation<'a> {
             if !forward.contains(&block) || !corridor.insert(block) {
                 continue;
             }
-            pending.extend(
-                self.normal_predecessors
-                    .get(&block)
-                    .into_iter()
-                    .flatten()
-                    .copied(),
-            );
+            pending.extend(self.cfg.normal_predecessors(block));
         }
         corridor
     }

@@ -108,6 +108,7 @@ impl JavaDecompiler {
         let signature_started = std::time::Instant::now();
         let source_signatures = super::signature_inference::SourceSignatureInference::analyze(
             self.type_hierarchy.as_ref(),
+            class.class_type(),
             &methods,
             &inner,
         );

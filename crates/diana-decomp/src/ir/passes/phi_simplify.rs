@@ -105,7 +105,7 @@ impl PhiSimplify {
         }
         changed |= Self::remove_dead_phis(cfg)?;
         if changed {
-            facts.invalidate();
+            facts.invalidate_values();
         }
         Ok(changed.into())
     }

@@ -1,7 +1,7 @@
 //! Compact indices for immutable occurrence graphs.
 
 use super::{SemanticFlowGraph, SemanticFlowPoint, SemanticSiteId};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// Numbered method sites and synthetic program points each occupy contiguous
 /// ranges. Publicly constructed graphs can also use arbitrary 64-bit IDs.
@@ -16,32 +16,61 @@ pub(super) enum PointNumbers {
 }
 
 impl PointNumbers {
-    pub(super) fn new(points: impl Iterator<Item = SemanticFlowPoint> + Clone) -> Self {
-        let mut counts = [0usize; 3];
-        let mut maxima = [0u64; 3];
+    pub(super) fn from_occurrences(
+        points: impl Iterator<Item = SemanticFlowPoint> + Clone,
+        observations: usize,
+    ) -> Self {
+        let mut lengths = [0usize; 3];
         for point in points.clone() {
             let (kind, raw) = Self::parts(point);
-            counts[kind] += 1;
-            maxima[kind] = maxima[kind].max(raw);
+            let Some(end) = usize::try_from(raw).ok().and_then(|id| id.checked_add(1)) else {
+                return Self::sparse(points);
+            };
+            lengths[kind] = lengths[kind].max(end);
         }
-        // All points are distinct, so a nonempty range is dense iff its
-        // largest ID is exactly its cardinality minus one.
-        if counts
-            .iter()
-            .zip(maxima)
-            .all(|(&count, max)| count == 0 || max == (count - 1) as u64)
-        {
-            let [before, after, synthetic] = counts;
-            Self::Contiguous {
-                after: before,
-                synthetic: before + after,
-                end: before + after + synthetic,
+        let [before, after, synthetic] = lengths;
+        let Some(count) = before
+            .checked_add(after)
+            .and_then(|sum| sum.checked_add(synthetic))
+        else {
+            return Self::sparse(points);
+        };
+        // Publicly constructed graphs can use arbitrary 64-bit IDs. Only
+        // allocate a direct membership table that the input length bounds.
+        if count > observations {
+            return Self::sparse(points);
+        }
+        let dense = Self::Contiguous {
+            after: before,
+            synthetic: before + after,
+            end: count,
+        };
+        let mut seen = vec![false; count];
+        let mut distinct = 0;
+        for point in points {
+            let slot = dense.get(point).expect("within observed range");
+            if !std::mem::replace(&mut seen[slot], true) {
+                distinct += 1;
             }
-        } else {
-            let mut points = points.collect::<Vec<_>>();
-            points.sort_unstable();
-            Self::Sparse(points.into_boxed_slice())
         }
+        if distinct == count {
+            dense
+        } else {
+            Self::Sparse(
+                seen.into_iter()
+                    .enumerate()
+                    .filter(|(_, present)| *present)
+                    .map(|(id, _)| dense.point(id))
+                    .collect(),
+            )
+        }
+    }
+
+    fn sparse(points: impl Iterator<Item = SemanticFlowPoint>) -> Self {
+        let mut ordered = points.collect::<Vec<_>>();
+        ordered.sort_unstable();
+        ordered.dedup();
+        Self::Sparse(ordered.into_boxed_slice())
     }
 
     fn parts(point: SemanticFlowPoint) -> (usize, u64) {
@@ -118,6 +147,7 @@ pub(in crate::ir::analysis) struct GraphIndex {
     successors: EdgeRows,
     predecessors: EdgeRows,
     pub(super) entries: Vec<usize>,
+    blocks: OnceLock<FlowBlocks>,
 }
 
 impl GraphIndex {
@@ -134,7 +164,7 @@ impl GraphIndex {
     }
 
     pub(super) fn new(graph: &SemanticFlowGraph) -> Self {
-        let points = Arc::new(PointNumbers::new(graph.ordered_points()));
+        let points = Arc::clone(&graph.edges.points);
         let mut successors = EdgeRows::default();
         let mut predecessors = EdgeRows::default();
         for node in 0..points.len() {
@@ -163,7 +193,12 @@ impl GraphIndex {
             successors,
             predecessors,
             entries,
+            blocks: OnceLock::new(),
         }
+    }
+
+    pub(super) fn blocks(&self) -> &FlowBlocks {
+        self.blocks.get_or_init(|| FlowBlocks::new(self))
     }
 
     pub(super) fn successors(&self, node: usize) -> &[usize] {
@@ -172,5 +207,94 @@ impl GraphIndex {
 
     pub(in crate::ir::analysis) fn predecessors(&self, node: usize) -> &[usize] {
         self.predecessors.get(node)
+    }
+}
+
+/// Maximal straight-line runs reachable from an entry. A branch, join or
+/// additional entry starts a new run even when the occurrences share a DEX site.
+#[derive(Debug, Clone)]
+pub(super) struct FlowBlocks {
+    owner: Vec<usize>,
+    points: EdgeRows,
+    pub(super) order: Vec<usize>,
+}
+
+impl FlowBlocks {
+    fn new(index: &GraphIndex) -> Self {
+        let mut owner = vec![usize::MAX; index.len()];
+        let mut points = EdgeRows::default();
+        let mut entry = vec![false; index.len()];
+        for &node in &index.entries {
+            entry[node] = true;
+        }
+        let mut pending = index.entries.clone();
+        while let Some(mut node) = pending.pop() {
+            if owner[node] != usize::MAX {
+                continue;
+            }
+            let block = points.offsets.len();
+            points.offsets.push(points.targets.len());
+            loop {
+                owner[node] = block;
+                points.targets.push(node);
+                let successors = index.successors(node);
+                match successors {
+                    [next]
+                        if !entry[*next]
+                            && index.predecessors(*next).len() == 1
+                            && owner[*next] == usize::MAX =>
+                    {
+                        node = *next
+                    }
+                    _ => {
+                        pending.extend(successors);
+                        break;
+                    }
+                }
+            }
+        }
+        let count = points.offsets.len();
+        points.offsets.push(points.targets.len());
+
+        // Reverse postorder visits each acyclic predecessor before its
+        // successor. Only loop back edges can reopen an already solved block.
+        let mut order = Vec::with_capacity(count);
+        let mut visited = vec![false; count];
+        let mut stack = Vec::new();
+        for &entry in &index.entries {
+            let root = owner[entry];
+            if std::mem::replace(&mut visited[root], true) {
+                continue;
+            }
+            stack.push((root, 0));
+            while let Some((block, cursor)) = stack.last_mut() {
+                let last = *points.get(*block).last().expect("nonempty flow block");
+                if let Some(&successor) = index.successors(last).get(*cursor) {
+                    *cursor += 1;
+                    let next = owner[successor];
+                    if !std::mem::replace(&mut visited[next], true) {
+                        stack.push((next, 0));
+                    }
+                } else {
+                    order.push(*block);
+                    stack.pop();
+                }
+            }
+        }
+        order.reverse();
+        Self {
+            owner,
+            points,
+            order,
+        }
+    }
+
+    pub(super) fn owner(&self, point: usize) -> Option<usize> {
+        let block = self.owner[point];
+        (block != usize::MAX).then_some(block)
+    }
+
+    pub(super) fn points(&self, block: usize) -> &[usize] {
+        self.points.get(block)
     }
 }

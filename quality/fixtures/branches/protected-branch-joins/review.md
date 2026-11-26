@@ -40,3 +40,15 @@ typed handler bodies. Each returns immediately on recovery. Each normal exit
 passes the right result to an unprotected `after`. The first five results
 enter the next stage, and the sixth is returned. Nonmatching exceptions and
 failures in `after` or `recover` escape. I did not execute the native calls.
+
+In `CrossWordBranches.run`, I reviewed the sequential join after each of the
+24 bit tests. The first call uses the input value. Each subsequent
+conditional expression selects `left` for zero and `right` for one and
+uses the preceding assignment as its argument on both arms. Logical right
+shifts accumulate from zero through 23 and then mask with one, so signed
+keys select the same arms as the Smali. The last test emits two returns
+and both pass the 23rd result to the selected helper. Exactly one helper
+runs per bit on a normal path. A thrown helper result never reaches its
+assignment or the next decision. The initial and intermediate optimized
+builds produced identical ordinary class text. This comparison reviews the
+helper boundaries and their arguments without executing the native helpers.

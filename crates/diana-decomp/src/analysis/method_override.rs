@@ -868,7 +868,7 @@ fn method_visible_from(
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct LoadedClassHierarchy {
-    classes: BTreeMap<String, Arc<ClassDetails>>,
+    classes: BTreeMap<ArgType, Arc<ClassDetails>>,
 }
 
 impl LoadedClassHierarchy {
@@ -878,11 +878,11 @@ impl LoadedClassHierarchy {
         let mut decoder = MetadataDecoder::default();
         let classes = classes
             .into_iter()
-            .map(|class| decoder.class(class))
-            .collect::<OverrideResult<Vec<_>>>()?
-            .into_iter()
-            .map(|class| (class.descriptor.clone(), Arc::new(class)))
-            .collect();
+            .map(|class| {
+                let details = decoder.class(class)?;
+                Ok((class.class_type().clone(), Arc::new(details)))
+            })
+            .collect::<OverrideResult<_>>()?;
         Ok((Self { classes }, decoder.diagnostics))
     }
 }
@@ -909,8 +909,6 @@ fn remap_overloads(
 pub(crate) struct GenericTypeHierarchy {
     hierarchy: CompositeClassHierarchy,
     method_overloads: Arc<MethodOverloadIndex>,
-    method_contracts:
-        Arc<RwLock<HashMap<crate::ir::MethodReference, Option<GenericMethodContract>>>>,
 }
 
 impl GenericTypeHierarchy {
@@ -923,7 +921,6 @@ impl GenericTypeHierarchy {
         Ok(Self {
             hierarchy: CompositeClassHierarchy::from_loaded(loaded)?,
             method_overloads: Arc::new(MethodOverloadIndex::default()),
-            method_contracts: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -1176,24 +1173,6 @@ impl GenericTypeHierarchy {
     }
 
     pub(crate) fn method_contract(
-        &self,
-        method: &crate::ir::MethodReference,
-    ) -> Option<GenericMethodContract> {
-        if let Ok(guard) = self.method_contracts.read() {
-            if let Some(cached) = guard.get(method) {
-                return cached.clone();
-            }
-        }
-        let computed = self.method_contract_uncached(method);
-        if let Ok(mut guard) = self.method_contracts.write() {
-            guard
-                .entry(method.clone())
-                .or_insert_with(|| computed.clone());
-        }
-        computed
-    }
-
-    fn method_contract_uncached(
         &self,
         method: &crate::ir::MethodReference,
     ) -> Option<GenericMethodContract> {
@@ -1569,8 +1548,7 @@ pub fn platform_generic_method_contract(
 
 impl ClassHierarchy for LoadedClassHierarchy {
     fn class_details(&self, ty: &ArgType) -> Option<Arc<ClassDetails>> {
-        let descriptor = ty.to_descriptor();
-        self.classes.get(&descriptor).cloned()
+        self.classes.get(ty).cloned()
     }
 }
 
@@ -1601,10 +1579,10 @@ impl ClassHierarchy for CompositeClassHierarchy {
 
 #[derive(Debug)]
 enum DetailsTable {
-    Filling(HashMap<String, Arc<ClassDetails>>),
+    Filling(HashMap<ArgType, Arc<ClassDetails>>),
     Frozen {
-        map: Arc<HashMap<String, Arc<ClassDetails>>>,
-        extras: RwLock<HashMap<String, Arc<ClassDetails>>>,
+        map: Arc<HashMap<ArgType, Arc<ClassDetails>>>,
+        extras: RwLock<HashMap<ArgType, Arc<ClassDetails>>>,
     },
 }
 
@@ -1651,49 +1629,52 @@ impl PlatformClassSet {
     }
 
     fn class_details(&self, ty: &ArgType) -> Option<Arc<ClassDetails>> {
-        let descriptor = ty.to_descriptor();
         match self.details.read() {
             Ok(table) => match &*table {
                 DetailsTable::Frozen { map, extras } => {
-                    if let Some(details) = map.get(&descriptor) {
+                    if let Some(details) = map.get(ty) {
                         return Some(Arc::clone(details));
                     }
                     if let Ok(extra) = extras.read() {
-                        if let Some(details) = extra.get(&descriptor) {
+                        if let Some(details) = extra.get(ty) {
                             return Some(Arc::clone(details));
                         }
                     }
                 }
                 DetailsTable::Filling(map) => {
-                    if let Some(details) = map.get(&descriptor) {
+                    if let Some(details) = map.get(ty) {
                         return Some(Arc::clone(details));
                     }
                 }
             },
             Err(_) => {
-                return parse_symbol_class_details(&self.symbols, &descriptor).map(Arc::new);
+                return parse_symbol_class_details(&self.symbols, &ty.to_descriptor())
+                    .map(Arc::new);
             }
         }
 
-        let details = Arc::new(parse_symbol_class_details(&self.symbols, &descriptor)?);
+        let details = Arc::new(parse_symbol_class_details(
+            &self.symbols,
+            &ty.to_descriptor(),
+        )?);
         let mut table = match self.details.write() {
             Ok(table) => table,
             Err(_) => return Some(details),
         };
         match &mut *table {
             DetailsTable::Frozen { map, extras } => {
-                if let Some(existing) = map.get(&descriptor) {
+                if let Some(existing) = map.get(ty) {
                     return Some(Arc::clone(existing));
                 }
                 if let Ok(mut extra) = extras.write() {
                     extra
-                        .entry(descriptor)
+                        .entry(ty.clone())
                         .or_insert_with(|| Arc::clone(&details));
                 }
                 Some(details)
             }
             DetailsTable::Filling(map) => {
-                Some(Arc::clone(map.entry(descriptor).or_insert_with(|| details)))
+                Some(Arc::clone(map.entry(ty.clone()).or_insert_with(|| details)))
             }
         }
     }

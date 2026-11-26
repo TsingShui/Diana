@@ -199,6 +199,10 @@ impl<'a> AcyclicStructureAnalysis<'a> {
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             children.sort_by_key(|child| child.lexical_rank);
+            let mut blocks = BTreeSet::from([block]);
+            for child in &children {
+                blocks.extend(&child.blocks);
+            }
             let descendants = if children.is_empty() {
                 AcyclicStructureFact::Empty
             } else {
@@ -208,8 +212,6 @@ impl<'a> AcyclicStructureAnalysis<'a> {
                 structure
             };
             let block_structure = self.block_structure(block)?;
-            let mut blocks = BTreeSet::from([block]);
-            blocks.extend(Self::fact_blocks(&descendants));
             subtrees.insert(
                 block,
                 StructureItem {
@@ -353,30 +355,6 @@ impl<'a> AcyclicStructureAnalysis<'a> {
             matches!(terminator.insn_type, InsnType::If | InsnType::Switch)
         });
         Ok(AcyclicStructureFact::Block { block, prefix_only })
-    }
-
-    fn fact_blocks(structure: &AcyclicStructureFact) -> BTreeSet<BlockId> {
-        let mut blocks = BTreeSet::new();
-        let mut pending = vec![structure];
-        while let Some(structure) = pending.pop() {
-            match structure {
-                AcyclicStructureFact::Block { block, .. } => {
-                    blocks.insert(*block);
-                }
-                AcyclicStructureFact::Sequence(children) => pending.extend(children),
-                AcyclicStructureFact::Guard { body, .. } => pending.push(body),
-                AcyclicStructureFact::If {
-                    when_true,
-                    when_false,
-                    ..
-                } => {
-                    pending.push(when_true);
-                    pending.extend(when_false.iter().map(|node| node.as_ref()));
-                }
-                AcyclicStructureFact::Empty => {}
-            }
-        }
-        blocks
     }
 
     fn cluster(
@@ -556,12 +534,9 @@ impl<'a> AcyclicStructureAnalysis<'a> {
                     body: Box::new(item.structure),
                 }
             };
-            let terminal = item.blocks.iter().copied().try_fold(
+            let terminal = item.blocks.intersection(&self.closed).copied().try_fold(
                 self.facts.not(self.facts.truth())?,
                 |domain, block| -> Result<Bdd, AcyclicStructureError> {
-                    if !self.closed.contains(&block) {
-                        return Ok(domain);
-                    }
                     let reached = self
                         .facts
                         .condition(block)

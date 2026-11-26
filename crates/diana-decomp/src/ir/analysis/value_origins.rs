@@ -9,49 +9,36 @@ pub struct SsaOrigins(BTreeMap<SsaVar, BTreeSet<SsaVar>>);
 
 impl SsaOrigins {
     pub fn analyze(values: &SsaValueGraph) -> Self {
-        let mut sources = BTreeMap::<SsaVar, BTreeSet<SsaVar>>::new();
+        let mut origins = BTreeMap::<SsaVar, BTreeSet<SsaVar>>::new();
+        let mut dependents = BTreeMap::<SsaVar, Vec<SsaVar>>::new();
         for copy in values.copies() {
-            sources.entry(copy.result).or_default().insert(copy.source);
+            origins.entry(copy.result).or_default();
+            dependents.entry(copy.source).or_default().push(copy.result);
         }
         for phi in values.phis() {
-            sources
-                .entry(phi.result)
-                .or_default()
-                .extend(phi.inputs.iter().map(|input| input.value));
+            origins.entry(phi.result).or_default();
+            for input in &phi.inputs {
+                dependents.entry(input.value).or_default().push(phi.result);
+            }
         }
 
-        let mut origins = values
-            .values()
-            .map(|value| {
-                let roots = if !sources.contains_key(&value.variable) {
-                    BTreeSet::from([value.variable])
-                } else {
-                    Default::default()
-                };
-                (value.variable, roots)
-            })
-            .collect::<BTreeMap<_, _>>();
-        loop {
-            let additions = sources
-                .iter()
-                .map(|(result, inputs)| {
-                    let roots = inputs
-                        .iter()
-                        .flat_map(|input| origins.get(input).into_iter().flatten())
-                        .copied()
-                        .collect::<BTreeSet<_>>();
-                    (*result, roots)
-                })
-                .collect::<Vec<_>>();
-            let mut changed = false;
-            for (result, roots) in additions {
-                let current = origins.entry(result).or_default();
-                let previous = current.len();
-                current.extend(roots);
-                changed |= current.len() != previous;
-            }
-            if !changed {
-                break;
+        // Copies and Phis carry the union of their input roots. Send each
+        // known root through the reverse dependencies once. Rootless cycles
+        // and unknown inputs contribute no fact, just as an empty Phi does.
+        let mut pending = Vec::new();
+        for value in values.values() {
+            let root = value.variable;
+            let std::collections::btree_map::Entry::Vacant(entry) = origins.entry(root) else {
+                continue;
+            };
+            entry.insert(BTreeSet::from([root]));
+            pending.push(root);
+            while let Some(source) = pending.pop() {
+                for result in dependents.get(&source).into_iter().flatten() {
+                    if origins.entry(*result).or_default().insert(root) {
+                        pending.push(*result);
+                    }
+                }
             }
         }
         Self(origins)

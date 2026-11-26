@@ -19,7 +19,6 @@ use super::{
     initialization::SourceInitializationRecovery,
     loops::LoopInvariantMotion,
     predicate_regions::PredicateRegionFormation,
-    schedule::ValueSchedule,
     ValueRecoveryError,
 };
 
@@ -172,8 +171,7 @@ impl SourceValueRecovery {
                 #[cfg(debug_assertions)]
                 let before_schedule =
                     crate::ir::semantic::SemanticControlTopology::analyze(method.body());
-                let schedule = ValueSchedule::compile(plan.actions, ValueIdentity::Source)?;
-                let source = schedule.apply(method.body_mut())?;
+                let source = plan.apply(method.body_mut(), ValueIdentity::Source)?;
                 #[cfg(debug_assertions)]
                 Self::verify_topology(method, &before_schedule, "source-value-schedule")?;
                 let motion = LoopInvariantMotion::apply(method.body_mut())?;

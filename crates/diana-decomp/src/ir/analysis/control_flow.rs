@@ -10,7 +10,7 @@ use super::{DominanceError, DominatorTree, PostDominatorTree};
 #[derive(Debug, Clone)]
 pub struct ControlFlowFacts {
     predecessors: BTreeMap<BlockId, Vec<BlockId>>,
-    semantic_predecessors: BTreeMap<BlockId, Vec<BlockId>>,
+    semantic_predecessors: Option<BTreeMap<BlockId, Vec<BlockId>>>,
     dominators: Arc<DominatorTree>,
     semantic_dominators: DominatorTree,
     postdominators: PostDominatorTree,
@@ -20,15 +20,30 @@ pub struct ControlFlowFacts {
 
 impl ControlFlowFacts {
     pub fn analyze(cfg: &CFG) -> Result<Self, DominanceError> {
+        Self::analyze_with_dominators(cfg, None)
+    }
+
+    pub(crate) fn analyze_with_dominators(
+        cfg: &CFG,
+        semantic_dominators: Option<DominatorTree>,
+    ) -> Result<Self, DominanceError> {
         let predecessors = cfg.normal_predecessor_snapshot();
-        let semantic_predecessors = cfg.predecessor_snapshot();
-        let dominators = DominatorTree::compute_normal(cfg, cfg.block_ids(), &predecessors)?;
-        let semantic_dominators = DominatorTree::compute_with_predecessors(
-            cfg,
-            cfg.entry,
-            cfg.block_ids(),
-            &semantic_predecessors,
-        )?;
+        let semantic_predecessors = cfg
+            .has_exception_edges()
+            .then(|| cfg.predecessor_snapshot());
+        let dominators = match (&semantic_dominators, &semantic_predecessors) {
+            (Some(complete), None) => complete.with_virtual_root()?,
+            _ => DominatorTree::compute_normal(cfg, cfg.block_ids(), &predecessors)?,
+        };
+        let semantic_dominators = match semantic_dominators {
+            Some(tree) => tree,
+            None => DominatorTree::compute_with_predecessors(
+                cfg,
+                cfg.entry,
+                cfg.block_ids(),
+                semantic_predecessors.as_ref().unwrap_or(&predecessors),
+            )?,
+        };
         let postdominators = PostDominatorTree::compute(cfg)?;
         let boundaries = ControlContinuations::phi_boundaries(cfg);
         let phi_continuations =
@@ -56,7 +71,11 @@ impl ControlFlowFacts {
     }
 
     pub fn semantic_predecessors(&self, block: BlockId) -> Option<&[BlockId]> {
-        self.semantic_predecessors.get(&block).map(Vec::as_slice)
+        self.semantic_predecessors
+            .as_ref()
+            .unwrap_or(&self.predecessors)
+            .get(&block)
+            .map(Vec::as_slice)
     }
 
     pub fn dominators(&self) -> &DominatorTree {

@@ -66,14 +66,26 @@ pub(crate) fn create_file(root: &Path, relative: &Path) -> io::Result<File> {
 // Build input-derived directory chains iteratively. Sibling class workers can
 // legitimately race to create the same package.
 pub(crate) fn create_directories(root: &Path, relative: &Path) -> io::Result<()> {
-    let mut path = root.to_owned();
-    for part in relative.components() {
-        path.push(part);
-        match fs::create_dir(&path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => {}
-            Err(e) => return Err(e),
+    fn create(path: &Path) -> io::Result<()> {
+        match fs::create_dir(path) {
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => Ok(()),
+            result => result,
         }
+    }
+
+    // Most new packages share an existing parent. Try the requested
+    // directory first and walk upward only across missing parents.
+    let path = root.join(relative);
+    let mut missing = Vec::new();
+    for directory in path.ancestors().take_while(|&p| p != root) {
+        match create(directory) {
+            Ok(()) => break,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => missing.push(directory),
+            Err(error) => return Err(error),
+        }
+    }
+    for directory in missing.into_iter().rev() {
+        create(directory)?;
     }
     Ok(())
 }

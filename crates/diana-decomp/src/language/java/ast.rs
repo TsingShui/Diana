@@ -276,6 +276,7 @@ impl std::fmt::Display for JavaIdentifier {
 #[derive(Debug, Clone, Default)]
 pub struct JavaNameScope {
     used: std::collections::BTreeSet<JavaIdentifier>,
+    next_suffix: std::collections::BTreeMap<JavaIdentifier, u64>,
 }
 
 impl JavaNameScope {
@@ -284,14 +285,32 @@ impl JavaNameScope {
         name
     }
 
+    pub(crate) fn contains(&self, name: &JavaIdentifier) -> bool {
+        self.used.contains(name)
+    }
+
     pub fn claim(&mut self, preferred: JavaIdentifier) -> JavaIdentifier {
         if self.used.insert(preferred.clone()) {
             return preferred;
         }
-        let base = preferred.as_str();
-        for suffix in 2u32.. {
-            let candidate = preferred.with_source_name(format!("{base}{suffix}"));
+        self.claim_numbered(&preferred, |name| preferred.with_source_name(name))
+    }
+
+    pub(crate) fn claim_hint_variant(&mut self, preferred: &JavaIdentifier) -> JavaIdentifier {
+        self.claim_numbered(preferred, |name| JavaIdentifier::from_hint(&name))
+    }
+
+    fn claim_numbered(
+        &mut self,
+        preferred: &JavaIdentifier,
+        identifier: impl Fn(String) -> JavaIdentifier,
+    ) -> JavaIdentifier {
+        // Names stay reserved for the lifetime of this scope, including earlier suffixes.
+        let next = self.next_suffix.entry(preferred.clone()).or_insert(2);
+        for suffix in *next.. {
+            let candidate = identifier(format!("{}{suffix}", preferred.as_str()));
             if self.used.insert(candidate.clone()) {
+                *next = suffix + 1;
                 return candidate;
             }
         }
@@ -1079,5 +1098,13 @@ mod tests {
         let second = scope.claim(JavaIdentifier::from_dex("a!"));
         assert_eq!(second.as_str(), "a2");
         assert_eq!(with_preserved_dex_names(true, || second.to_string()), "a!");
+
+        scope.reserve(JavaIdentifier::from_hint("a4"));
+        scope.reserve(JavaIdentifier::from_hint("a22"));
+        for (dex, expected) in [("a?", "a3"), ("a2!", "a23"), ("a%", "a5")] {
+            let alias = scope.claim(JavaIdentifier::from_dex(dex));
+            assert_eq!(alias.as_str(), expected);
+            assert_eq!(with_preserved_dex_names(true, || alias.to_string()), dex);
+        }
     }
 }

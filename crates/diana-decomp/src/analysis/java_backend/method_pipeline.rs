@@ -55,7 +55,8 @@ impl<'a> MethodBodyPipeline<'a> {
         self.observer.checkpoint()?;
         let cfg_pipeline = CfgPipeline::new(self.hierarchy);
         let t = stats.then(std::time::Instant::now);
-        let cfg_analysis = { cfg_pipeline.analyze_observed(cfg, self.observer) }?;
+        let (cfg_analysis, dominators) =
+            cfg_pipeline.analyze_with_dominators(cfg, self.observer)?;
         mark(&mut stages, "cfg_ssa", t);
         self.observe_stage(cfg, "cfg_ssa:done")?;
         let ssa_values = cfg_analysis.values;
@@ -73,8 +74,8 @@ impl<'a> MethodBodyPipeline<'a> {
             .observe(crate::ir::AnalysisEvent::ControlFlow(cfg));
 
         let t = stats.then(std::time::Instant::now);
-        let region_graph =
-            RegionGraphBuilder::new(cfg, &exception_analysis, &ssa_values).build()?;
+        let region_graph = RegionGraphBuilder::new(cfg, &exception_analysis, &ssa_values)
+            .build_with_dominators(Some(dominators))?;
         drop(exception_analysis);
         mark(&mut stages, "regions", t);
         self.observe_stage(cfg, "regions:done")?;

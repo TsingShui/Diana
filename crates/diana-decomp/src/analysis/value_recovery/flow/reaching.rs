@@ -3,7 +3,7 @@
 //! Candidate selection is derived exclusively from the semantic control graph.
 //! Effect-aware movement and source rewriting remain planner responsibilities.
 
-use std::{cell::OnceCell, collections::BTreeMap};
+use std::{cell::OnceCell, collections::BTreeMap, sync::Arc};
 
 use super::{DefinitionFact, UseFact, UseSite, ValueFlowGraph, ValueIdentity};
 use crate::analysis::value_recovery::ValueRecoveryError;
@@ -27,7 +27,7 @@ enum ReachingModel<'a> {
 
 struct SourceReaching {
     values: BTreeMap<SsaVar, usize>,
-    facts: SemanticReachingValues,
+    facts: Arc<SemanticReachingValues>,
 }
 
 impl SourceReaching {
@@ -54,7 +54,7 @@ impl SourceReaching {
             })
             .collect::<Vec<_>>();
         let targets = graph.movement_points();
-        let facts = flow.reaching_values(&definitions, values.len(), &targets);
+        let facts = flow.cached_reaching_values(definitions, values.len(), targets);
         Self { values, facts }
     }
 }

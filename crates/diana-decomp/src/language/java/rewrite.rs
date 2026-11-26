@@ -32,17 +32,17 @@ pub trait JavaAstRewriter {
                 target,
                 args,
             } => JavaExpr::DirectInit {
-                receiver: Box::new(self.rewrite_expression(*receiver)),
+                receiver: rewrite_boxed_expression(self, receiver),
                 target,
                 args: self.rewrite_expressions(args),
             },
             JavaExpr::Field { owner, name } => JavaExpr::Field {
-                owner: Box::new(self.rewrite_expression(*owner)),
+                owner: rewrite_boxed_expression(self, owner),
                 name,
             },
             JavaExpr::ArrayAccess { array, index } => JavaExpr::ArrayAccess {
-                array: Box::new(self.rewrite_expression(*array)),
-                index: Box::new(self.rewrite_expression(*index)),
+                array: rewrite_boxed_expression(self, array),
+                index: rewrite_boxed_expression(self, index),
             },
             JavaExpr::Call {
                 receiver,
@@ -51,26 +51,26 @@ pub trait JavaAstRewriter {
                 method,
                 args,
             } => JavaExpr::Call {
-                receiver: receiver.map(|value| Box::new(self.rewrite_expression(*value))),
+                receiver: receiver.map(|value| rewrite_boxed_expression(self, value)),
                 owner,
                 type_arguments,
                 method,
                 args: self.rewrite_expressions(args),
             },
             JavaExpr::MethodReference { receiver, method } => JavaExpr::MethodReference {
-                receiver: Box::new(self.rewrite_expression(*receiver)),
+                receiver: rewrite_boxed_expression(self, receiver),
                 method,
             },
             JavaExpr::Lambda { parameters, body } if self.rewrite_nested_functions() => {
                 JavaExpr::Lambda {
                     parameters,
-                    body: Box::new(self.rewrite_expression(*body)),
+                    body: rewrite_boxed_expression(self, body),
                 }
             }
             JavaExpr::BlockLambda { parameters, body } if self.rewrite_nested_functions() => {
                 JavaExpr::BlockLambda {
                     parameters,
-                    body: Box::new(self.rewrite_statement(*body)),
+                    body: rewrite_boxed_statement(self, body),
                 }
             }
             JavaExpr::New {
@@ -80,7 +80,7 @@ pub trait JavaAstRewriter {
                 args,
                 anonymous_body,
             } => JavaExpr::New {
-                enclosing: enclosing.map(|value| Box::new(self.rewrite_expression(*value))),
+                enclosing: enclosing.map(|value| rewrite_boxed_expression(self, value)),
                 ty,
                 target_type,
                 args: self.rewrite_expressions(args),
@@ -100,24 +100,24 @@ pub trait JavaAstRewriter {
             },
             JavaExpr::Unary { op, operand } => JavaExpr::Unary {
                 op,
-                operand: Box::new(self.rewrite_expression(*operand)),
+                operand: rewrite_boxed_expression(self, operand),
             },
             JavaExpr::Update { op, target, prefix } => JavaExpr::Update {
                 op,
-                target: Box::new(self.rewrite_expression(*target)),
+                target: rewrite_boxed_expression(self, target),
                 prefix,
             },
             JavaExpr::Binary { left, op, right } => JavaExpr::Binary {
-                left: Box::new(self.rewrite_expression(*left)),
+                left: rewrite_boxed_expression(self, left),
                 op,
-                right: Box::new(self.rewrite_expression(*right)),
+                right: rewrite_boxed_expression(self, right),
             },
             JavaExpr::Cast { ty, value } => JavaExpr::Cast {
                 ty,
-                value: Box::new(self.rewrite_expression(*value)),
+                value: rewrite_boxed_expression(self, value),
             },
             JavaExpr::InstanceOf { value, ty } => JavaExpr::InstanceOf {
-                value: Box::new(self.rewrite_expression(*value)),
+                value: rewrite_boxed_expression(self, value),
                 ty,
             },
             JavaExpr::Conditional {
@@ -125,14 +125,14 @@ pub trait JavaAstRewriter {
                 when_true,
                 when_false,
             } => JavaExpr::Conditional {
-                condition: Box::new(self.rewrite_expression(*condition)),
-                when_true: Box::new(self.rewrite_expression(*when_true)),
-                when_false: Box::new(self.rewrite_expression(*when_false)),
+                condition: rewrite_boxed_expression(self, condition),
+                when_true: rewrite_boxed_expression(self, when_true),
+                when_false: rewrite_boxed_expression(self, when_false),
             },
             JavaExpr::Assignment { target, op, value } => JavaExpr::Assignment {
-                target: Box::new(self.rewrite_expression(*target)),
+                target: rewrite_boxed_expression(self, target),
                 op,
-                value: Box::new(self.rewrite_expression(*value)),
+                value: rewrite_boxed_expression(self, value),
             },
             leaf => leaf,
         };
@@ -144,7 +144,7 @@ pub trait JavaAstRewriter {
             JavaStmt::Block(statements) => JavaStmt::Block(self.rewrite_statements(statements)),
             JavaStmt::Labeled { label, body } => JavaStmt::Labeled {
                 label,
-                body: Box::new(self.rewrite_statement(*body)),
+                body: rewrite_boxed_statement(self, body),
             },
             JavaStmt::Variable { ty, name, value } => JavaStmt::Variable {
                 ty,
@@ -169,8 +169,8 @@ pub trait JavaAstRewriter {
                 else_stmt,
             } => JavaStmt::If {
                 condition: self.rewrite_expression(condition),
-                then_stmt: Box::new(self.rewrite_statement(*then_stmt)),
-                else_stmt: else_stmt.map(|statement| Box::new(self.rewrite_statement(*statement))),
+                then_stmt: rewrite_boxed_statement(self, then_stmt),
+                else_stmt: else_stmt.map(|statement| rewrite_boxed_statement(self, statement)),
             },
             JavaStmt::While {
                 label,
@@ -179,7 +179,7 @@ pub trait JavaAstRewriter {
             } => JavaStmt::While {
                 label,
                 condition: self.rewrite_expression(condition),
-                body: Box::new(self.rewrite_statement(*body)),
+                body: rewrite_boxed_statement(self, body),
             },
             JavaStmt::DoWhile {
                 label,
@@ -187,7 +187,7 @@ pub trait JavaAstRewriter {
                 condition,
             } => JavaStmt::DoWhile {
                 label,
-                body: Box::new(self.rewrite_statement(*body)),
+                body: rewrite_boxed_statement(self, body),
                 condition: self.rewrite_expression(condition),
             },
             JavaStmt::For {
@@ -201,7 +201,7 @@ pub trait JavaAstRewriter {
                 init: self.rewrite_statements(init),
                 condition: condition.map(|value| self.rewrite_expression(value)),
                 update: self.rewrite_expressions(update),
-                body: Box::new(self.rewrite_statement(*body)),
+                body: rewrite_boxed_statement(self, body),
             },
             JavaStmt::ForEach {
                 label,
@@ -214,7 +214,7 @@ pub trait JavaAstRewriter {
                 ty,
                 variable,
                 iterable: self.rewrite_expression(iterable),
-                body: Box::new(self.rewrite_statement(*body)),
+                body: rewrite_boxed_statement(self, body),
             },
             JavaStmt::Switch {
                 label,
@@ -240,14 +240,14 @@ pub trait JavaAstRewriter {
                     *body = self.rewrite_statement(std::mem::replace(body, JavaStmt::Empty));
                 }
                 JavaStmt::Try {
-                    body: Box::new(self.rewrite_statement(*body)),
+                    body: rewrite_boxed_statement(self, body),
                     catches,
-                    finally: finally.map(|body| Box::new(self.rewrite_statement(*body))),
+                    finally: finally.map(|body| rewrite_boxed_statement(self, body)),
                 }
             }
             JavaStmt::Synchronized { lock, body } => JavaStmt::Synchronized {
                 lock: self.rewrite_expression(lock),
-                body: Box::new(self.rewrite_statement(*body)),
+                body: rewrite_boxed_statement(self, body),
             },
             JavaStmt::Return(value) => {
                 JavaStmt::Return(value.map(|value| self.rewrite_expression(value)))
@@ -363,4 +363,20 @@ pub trait JavaAstRewriter {
             .map(|statement| self.rewrite_statement(statement))
             .collect()
     }
+}
+
+fn rewrite_boxed_expression<R: JavaAstRewriter + ?Sized>(
+    rewriter: &mut R,
+    mut child: Box<JavaExpr>,
+) -> Box<JavaExpr> {
+    *child = rewriter.rewrite_expression(std::mem::replace(&mut *child, JavaExpr::This));
+    child
+}
+
+fn rewrite_boxed_statement<R: JavaAstRewriter + ?Sized>(
+    rewriter: &mut R,
+    mut child: Box<JavaStmt>,
+) -> Box<JavaStmt> {
+    *child = rewriter.rewrite_statement(std::mem::replace(&mut *child, JavaStmt::Empty));
+    child
 }
