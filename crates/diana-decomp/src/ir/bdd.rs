@@ -95,7 +95,7 @@ struct ArenaNode {
     high: u16,
     complement: u16,
     has_complement: bool,
-    trivial_implications: u8,
+    cached_pairs: u8,
 }
 
 impl ArenaNode {
@@ -113,6 +113,10 @@ impl ArenaNode {
     fn set_complement(&mut self, id: u16) {
         self.has_complement = true;
         self.complement = id;
+    }
+
+    fn is_literal(&self) -> bool {
+        self.low <= 1 && self.high <= 1
     }
 
     fn cofactors(&self, id: u16, variable: usize) -> (u16, u16) {
@@ -187,20 +191,19 @@ impl BinaryMemo {
         }
     }
 
-    fn len(&self) -> usize {
-        self.len
-    }
-
-    fn get(&self, key: u32) -> Option<u16> {
-        let mask = self.slots.len() - 1;
+    fn lookup(&self, key: u32) -> MemoLookup {
+        let len = self.slots.len();
+        let mask = len - 1;
         let mut pos = self.hasher.hash_one(key) as usize & mask;
         loop {
             let entry = self.slots[pos];
             if entry == 0 {
-                return None;
+                // The highest bit identifies this power-of-two table size.
+                // An oversized table can still use the regular hash probe.
+                return MemoLookup::Vacant(MemoVacancy(u32::try_from(len | pos).unwrap_or(0)));
             }
             if entry as u32 == key {
-                return Some((entry >> 32) as u16);
+                return MemoLookup::Cached((entry >> 32) as u16);
             }
             pos = (pos + 1) & mask;
         }
@@ -215,7 +218,7 @@ impl BinaryMemo {
         slots[pos] = entry;
     }
 
-    fn insert(&mut self, key: u32, value: u16) {
+    fn insert(&mut self, key: u32, value: u16, vacancy: MemoVacancy) {
         // The caller missed this pair before descending. Every recursive
         // cofactor advances past its top variable, so descendants cannot
         // have installed this key while its frame was pending.
@@ -233,9 +236,22 @@ impl BinaryMemo {
             self.slots = larger;
         }
         let entry = u64::from(value) << 32 | u64::from(key);
-        Self::place(&mut self.slots, self.hasher.hash_one(key) as usize, entry);
+        // Descendants may have occupied the first vacant bucket or grown
+        // the table. Without growth, all earlier probe buckets stay full.
+        let position = (vacancy.0 as usize)
+            .checked_sub(self.slots.len())
+            .unwrap_or_else(|| self.hasher.hash_one(key) as usize);
+        Self::place(&mut self.slots, position, entry);
         self.len += 1;
     }
+}
+
+#[derive(Clone, Copy)]
+struct MemoVacancy(u32);
+
+enum MemoLookup {
+    Cached(u16),
+    Vacant(MemoVacancy),
 }
 
 #[derive(Clone)]
@@ -247,9 +263,8 @@ struct Manager {
     binary_cache: BinaryMemo,
     apply_work: Vec<ApplyFrame>,
     implication_work: ImplicationWork,
-    complements: usize,
+    cache_entries: usize,
     implication_cache: HashMap<u32, bool>,
-    trivial_implications: usize,
     limits: BddLimits,
     operations_used: usize,
 }
@@ -262,7 +277,7 @@ impl Manager {
             high: 1,
             complement: 1,
             has_complement: true,
-            trivial_implications: 0,
+            cached_pairs: 0,
         };
         Self {
             context,
@@ -277,9 +292,9 @@ impl Manager {
             binary_cache: BinaryMemo::new(),
             apply_work: Vec::new(),
             implication_work: ImplicationWork::default(),
-            complements: 2,
+            // Both terminals already know their complements.
+            cache_entries: 2,
             implication_cache: HashMap::new(),
-            trivial_implications: 0,
             limits,
             operations_used: 0,
         }
@@ -326,11 +341,22 @@ impl Manager {
         }
         let key = (variable, u32::from(low) << 16 | u32::from(high));
         let hash = self.unique.hasher.hash_one(key) as usize;
-        let mut slot = self.unique.slot(hash, &self.nodes, key);
+        let slot = self.unique.slot(hash, &self.nodes, key);
         let existing = self.unique.slots[slot];
         if existing != 0 {
             return Ok(existing);
         }
+        self.insert_node(variable, low, high, hash, slot)
+    }
+
+    fn insert_node(
+        &mut self,
+        variable: usize,
+        low: u16,
+        high: u16,
+        hash: usize,
+        mut slot: usize,
+    ) -> Result<u16, BddError> {
         if self.nodes.len() >= self.limits.nodes {
             return Err(BddError::ResourceLimit {
                 resource: BddResource::Nodes,
@@ -345,6 +371,7 @@ impl Manager {
         // for a genuinely new ID, after checking the method's node budget.
         if self.nodes.len() - 2 >= self.unique.slots.len() / 4 * 3 {
             self.unique.grow(&self.nodes);
+            let key = (variable, u32::from(low) << 16 | u32::from(high));
             slot = self.unique.slot(hash, &self.nodes, key);
         }
         self.nodes.push(ArenaNode {
@@ -353,10 +380,43 @@ impl Manager {
             high,
             complement: 0,
             has_complement: false,
-            trivial_implications: 0,
+            cached_pairs: 0,
         });
         self.unique.slots[slot] = id;
         Ok(id)
+    }
+
+    fn literal_prefix<const AND: bool>(
+        &mut self,
+        literal: ArenaNode,
+        other: u16,
+    ) -> Result<u16, BddError> {
+        // The resulting node has exactly one terminal child. Its variable,
+        // the position and value of that child, and its other child uniquely
+        // recover the earlier literal, operation and later operand.
+        const CACHED_PREFIX: u8 = 32;
+        let terminal = u16::from(!AND);
+        let (low, high) = if literal.low == terminal {
+            (terminal, other)
+        } else {
+            (other, terminal)
+        };
+        let key = (literal.variable, u32::from(low) << 16 | u32::from(high));
+        let hash = self.unique.hasher.hash_one(key) as usize;
+        let slot = self.unique.slot(hash, &self.nodes, key);
+        let existing = self.unique.slots[slot];
+        if existing != 0 && self.nodes[usize::from(existing)].cached_pairs & CACHED_PREFIX != 0 {
+            return Ok(existing);
+        }
+        self.charge_operation()?;
+        let result = if existing == 0 {
+            self.insert_node(literal.variable, low, high, hash, slot)?
+        } else {
+            existing
+        };
+        self.charge_cache_entries(1)?;
+        self.nodes[usize::from(result)].cached_pairs |= CACHED_PREFIX;
+        Ok(result)
     }
 
     fn and(&mut self, left: Bdd, right: Bdd) -> Result<Bdd, BddError> {
@@ -389,35 +449,46 @@ impl Manager {
             let (lo, hi) = (left.min(right), left.max(right));
             let (first, second) = if AND { (lo, hi) } else { (hi, lo) };
             let key = u32::from(first) << 16 | u32::from(second);
-            let mut result = if let Some(result) = self.binary_cache.get(key) {
-                result
+            let a = self.nodes[usize::from(left)];
+            let b = self.nodes[usize::from(right)];
+            let lookup = if a.variable < b.variable && a.is_literal() {
+                MemoLookup::Cached(self.literal_prefix::<AND>(a, right)?)
+            } else if b.variable < a.variable && b.is_literal() {
+                MemoLookup::Cached(self.literal_prefix::<AND>(b, left)?)
             } else {
-                self.charge_operation()?;
-                let a = self.nodes[usize::from(left)];
-                let b = self.nodes[usize::from(right)];
-                let variable = a.variable.min(b.variable);
-                let (a_low, a_high) = a.cofactors(left, variable);
-                let (b_low, b_high) = b.cofactors(right, variable);
-                // Terminal and equal cofactors have no memo entry, charge or
-                // allocation. Descend only for pairs that can produce work.
-                match (
-                    Self::terminal_apply::<AND>(a_low, b_low),
-                    Self::terminal_apply::<AND>(a_high, b_high),
-                ) {
-                    (Some(low), Some(high)) => self.finish_apply(key, variable, low, high)?,
-                    (low, high) => {
-                        let (pair, next) = match (low, high) {
-                            (Some(low), _) => ((a_high, b_high), ApplyChild::LowResult(low)),
-                            (_, Some(high)) => ((a_low, b_low), ApplyChild::HighResult(high)),
-                            _ => ((a_low, b_low), ApplyChild::High(a_high, b_high)),
-                        };
-                        self.apply_work.push(ApplyFrame {
-                            key,
-                            variable,
-                            next,
-                        });
-                        (left, right) = pair;
-                        continue;
+                self.binary_cache.lookup(key)
+            };
+            let mut result = match lookup {
+                MemoLookup::Cached(result) => result,
+                MemoLookup::Vacant(vacancy) => {
+                    self.charge_operation()?;
+                    let variable = a.variable.min(b.variable);
+                    let (a_low, a_high) = a.cofactors(left, variable);
+                    let (b_low, b_high) = b.cofactors(right, variable);
+                    // Terminal and equal cofactors have no memo entry, charge or
+                    // allocation. Descend only for pairs that can produce work.
+                    match (
+                        Self::terminal_apply::<AND>(a_low, b_low),
+                        Self::terminal_apply::<AND>(a_high, b_high),
+                    ) {
+                        (Some(low), Some(high)) => {
+                            self.finish_apply(key, variable, low, high, vacancy)?
+                        }
+                        (low, high) => {
+                            let (pair, next) = match (low, high) {
+                                (Some(low), _) => ((a_high, b_high), ApplyChild::LowResult(low)),
+                                (_, Some(high)) => ((a_low, b_low), ApplyChild::HighResult(high)),
+                                _ => ((a_low, b_low), ApplyChild::High(a_high, b_high)),
+                            };
+                            self.apply_work.push(ApplyFrame {
+                                vacancy,
+                                key,
+                                variable,
+                                next,
+                            });
+                            (left, right) = pair;
+                            continue;
+                        }
                     }
                 }
             };
@@ -431,9 +502,9 @@ impl Manager {
                     ApplyChild::LowResult(low) => (low, result),
                     ApplyChild::HighResult(high) => (result, high),
                 };
-                let (key, variable) = (frame.key, frame.variable);
+                let (key, variable, vacancy) = (frame.key, frame.variable, frame.vacancy);
                 self.apply_work.pop();
-                result = self.finish_apply(key, variable, low, high)?;
+                result = self.finish_apply(key, variable, low, high, vacancy)?;
             }
             return Ok(result);
         }
@@ -459,10 +530,11 @@ impl Manager {
         variable: usize,
         low: u16,
         high: u16,
+        vacancy: MemoVacancy,
     ) -> Result<u16, BddError> {
         let result = self.intern(variable, low, high)?;
-        self.reserve_cache_entries(1)?;
-        self.binary_cache.insert(key, result);
+        self.charge_cache_entries(1)?;
+        self.binary_cache.insert(key, result, vacancy);
         Ok(result)
     }
 
@@ -499,10 +571,9 @@ impl Manager {
                 let result = self.intern(current.variable, low, high)?;
                 let additional = usize::from(!self.nodes[usize::from(parent)].has_complement)
                     + usize::from(!self.nodes[usize::from(result)].has_complement);
-                self.reserve_cache_entries(additional)?;
+                self.charge_cache_entries(additional)?;
                 self.nodes[usize::from(parent)].set_complement(result);
                 self.nodes[usize::from(result)].set_complement(parent);
-                self.complements += additional;
                 parents.pop();
                 node = parent;
             }
@@ -702,10 +773,9 @@ impl Manager {
         };
         if let Some((id, flag, answer)) = trivial {
             let index = usize::from(id);
-            if self.nodes[index].trivial_implications & flag == 0 {
-                self.reserve_cache_entries(1)?;
-                self.nodes[index].trivial_implications |= flag;
-                self.trivial_implications += 1;
+            if self.nodes[index].cached_pairs & flag == 0 {
+                self.charge_cache_entries(1)?;
+                self.nodes[index].cached_pairs |= flag;
             }
             return Ok(answer);
         }
@@ -714,7 +784,7 @@ impl Manager {
             return Ok(*result);
         }
         let result = self.implies_nodes(premise.node, consequence.node)?;
-        self.reserve_cache_entries(1)?;
+        self.charge_cache_entries(1)?;
         self.implication_cache.insert(key, result);
         Ok(result)
     }
@@ -792,19 +862,15 @@ impl Manager {
         })
     }
 
-    fn reserve_cache_entries(&self, additional: usize) -> Result<(), BddError> {
-        let entries = self
-            .binary_cache
-            .len()
-            .saturating_add(self.complements)
-            .saturating_add(self.implication_cache.len())
-            .saturating_add(self.trivial_implications);
-        if entries.saturating_add(additional) > self.limits.cache_entries {
+    fn charge_cache_entries(&mut self, additional: usize) -> Result<(), BddError> {
+        let entries = self.cache_entries.saturating_add(additional);
+        if entries > self.limits.cache_entries {
             return Err(BddError::ResourceLimit {
                 resource: BddResource::CacheEntries,
                 limit: self.limits.cache_entries,
             });
         }
+        self.cache_entries = entries;
         Ok(())
     }
 
@@ -826,6 +892,7 @@ impl Manager {
 
 #[derive(Clone)]
 struct ApplyFrame {
+    vacancy: MemoVacancy,
     key: u32,
     variable: usize,
     next: ApplyChild,

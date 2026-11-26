@@ -659,6 +659,7 @@ impl<'a> Engine<'a> {
         }
         // Each pool thread can hold one class. While it waits for that class's
         // method jobs, the only stealable work is methods from an active class.
+        let projections = crate::p1::MemberProjections::new(&image.index);
         let next = AtomicU32::new(0);
         pool.broadcast(|_| {
             while let Ok(ordinal) =
@@ -677,7 +678,13 @@ impl<'a> Engine<'a> {
                 let result = (|| {
                     let facts = Arc::new(crate::p0::collect(&image.index, class)?);
                     let descriptor = facts.descriptor().units().to_vec();
-                    let input = request::backend_input_from_facts(image, facts, None, false)?;
+                    let input = request::backend_input_from_facts(
+                        image,
+                        facts,
+                        None,
+                        false,
+                        Some(&projections),
+                    )?;
                     // None selects the current Rayon pool in both CFG preparation and
                     // semantic recovery. A small class stays on its claiming thread.
                     let method_jobs = if workers > 1 && input.methods.len() >= 8 {

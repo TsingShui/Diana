@@ -1,6 +1,6 @@
 //! Path-sensitive source-observable effect stability.
 
-use std::cell::{Cell, OnceCell};
+use std::cell::{Cell, OnceCell, RefCell};
 
 use crate::ir::analysis::{SemanticFlowPoint, SemanticReachability};
 
@@ -63,6 +63,7 @@ struct EffectDomainRuns {
     by_effect: Vec<usize>,
     eligible: Vec<Cell<bool>>,
     previous: Cell<Option<(ControlDomain, bool)>>,
+    charged: RefCell<smallvec::SmallVec<[u64; 1]>>,
 }
 
 impl EffectDomainRuns {
@@ -88,7 +89,26 @@ impl EffectDomainRuns {
             by_effect,
             eligible,
             previous: Cell::new(None),
+            charged: RefCell::default(),
         })
+    }
+
+    // The most recent complete row already holds each eligibility bit.
+    // Earlier complete rows need only one bit per arena domain: all their
+    // intersections remain memoized for an interval query until saturation.
+    fn charged_earlier(&self, movement: ControlDomain) -> bool {
+        if self
+            .previous
+            .get()
+            .is_some_and(|(domain, _)| domain == movement)
+        {
+            return false;
+        }
+        let index = movement.index();
+        self.charged
+            .borrow()
+            .get(index / 64)
+            .is_some_and(|word| word & (1 << (index % 64)) != 0)
     }
 
     fn prepare(
@@ -120,8 +140,17 @@ impl EffectDomainRuns {
             self.eligible[i].set(eligible);
             any_overlap |= eligible;
         }
-        self.previous
-            .set((all_checked && !saturated()).then_some((movement, any_overlap)));
+        if all_checked && !saturated() {
+            self.previous.set(Some((movement, any_overlap)));
+            let index = movement.index();
+            let mut charged = self.charged.borrow_mut();
+            if charged.len() <= index / 64 {
+                charged.resize(index / 64 + 1, 0);
+            }
+            charged[index / 64] |= 1 << (index % 64);
+        } else {
+            self.previous.set(None);
+        }
         any_overlap
     }
 
@@ -187,7 +216,9 @@ impl<'a> EffectVersions<'a> {
         } else {
             None
         };
-        let changed = if uncharged {
+        // An earlier complete row made every possible intersection for
+        // this domain uncharged, including ones outside the current interval.
+        let changed = if uncharged || runs.is_some_and(|runs| runs.charged_earlier(domain)) {
             self.interval_conflict(flow, source, target, |i| {
                 conflicts(&effects[i]) && overlaps(effects[i].domain)
             })

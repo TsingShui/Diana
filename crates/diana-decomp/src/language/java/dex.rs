@@ -29,9 +29,9 @@ mod input;
 
 use super::members::JavaMemberNames;
 use super::source_types::{
-    invocation_expression_signature, GenericInvocationCompatibility, GenericTypeEvidence,
-    GenericTypeProjection, GenericTypeRelation, GenericTypeSolver, JavaTypeErasureIndex,
-    JavaTypeRelations, SourceObjectTypes, SourceTypeFlow, SourceTypeStates,
+    invocation_expression_signature, GenericInvocationCompatibility, GenericMethodContracts,
+    GenericTypeEvidence, GenericTypeProjection, GenericTypeRelation, GenericTypeSolver,
+    JavaTypeErasureIndex, JavaTypeRelations, SourceObjectTypes, SourceTypeFlow, SourceTypeStates,
 };
 use input::JavaInputBindings;
 
@@ -198,7 +198,7 @@ pub struct DexJavaDialect {
     source_field_types: Arc<BTreeMap<FieldReference, JavaType>>,
     generic_fields: Arc<BTreeMap<FieldReference, GenericFieldContract>>,
     source_object_types: Arc<SourceObjectTypes>,
-    generic_methods: Arc<BTreeMap<MethodReference, GenericMethodContract>>,
+    generic_methods: GenericMethodContracts,
     generic_type_projection: Option<Rc<dyn GenericTypeProjection>>,
     declared: BTreeSet<JavaIdentifier>,
     locals: BTreeMap<JavaIdentifier, JavaType>,
@@ -374,7 +374,7 @@ impl DexJavaDialect {
             source_field_types: Arc::new(BTreeMap::new()),
             generic_fields: Arc::new(BTreeMap::new()),
             source_object_types: Arc::new(SourceObjectTypes::default()),
-            generic_methods: Arc::new(BTreeMap::new()),
+            generic_methods: GenericMethodContracts::Shared(Arc::default()),
             generic_type_projection: None,
             declared: BTreeSet::new(),
             locals: BTreeMap::new(),
@@ -450,7 +450,15 @@ impl DexJavaDialect {
         mut self,
         methods: Arc<BTreeMap<MethodReference, GenericMethodContract>>,
     ) -> Self {
-        self.generic_methods = methods;
+        self.generic_methods = GenericMethodContracts::Owned(methods);
+        self
+    }
+
+    pub(crate) fn with_shared_generic_methods(
+        mut self,
+        methods: Arc<BTreeMap<MethodReference, Arc<GenericMethodContract>>>,
+    ) -> Self {
+        self.generic_methods = GenericMethodContracts::Shared(methods);
         self
     }
 

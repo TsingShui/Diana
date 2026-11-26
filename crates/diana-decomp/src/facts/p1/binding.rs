@@ -34,7 +34,7 @@ impl ResultKind {
 /// The already-produced prototype is the sole binding source. An unreadable
 /// target declaration need not erase a separate polymorphic prototype.
 pub(super) fn invoke_prototype<'f, 'a>(
-    facts: &'f [ReferenceFactEntry<'a>],
+    remaining: &mut &'f [ReferenceFactEntry<'a>],
     pc: CodeUnitOffset,
     opcode: u8,
 ) -> Result<&'f CheckedPrototype<'a>, InvokeIssue> {
@@ -43,13 +43,21 @@ pub(super) fn invoke_prototype<'f, 'a>(
     } else {
         ReferenceSlot::First
     };
-    let entry = facts
-        .binary_search_by(|e| (e.pc, e.slot).cmp(&(pc, slot)))
-        .ok()
-        .map(|i| &facts[i])
+    // Both walks follow original PC/slot order. Each preceding reference
+    // is discarded at most once, including the first polymorphic slot.
+    while remaining
+        .first()
+        .is_some_and(|entry| (entry.pc, entry.slot) < (pc, slot))
+    {
+        *remaining = &remaining[1..];
+    }
+    let entry = remaining
+        .first()
+        .filter(|entry| (entry.pc, entry.slot) == (pc, slot))
         .ok_or(InvokeIssue::Constraint(MethodError::InternalInvariant(
             "invoke lost its reference site",
         )))?;
+    *remaining = &remaining[1..];
     let fact = entry
         .fact
         .as_ref()
@@ -67,7 +75,7 @@ pub(super) fn invoke_prototype<'f, 'a>(
 /// Only argument grouping can fail here; a readable prototype still supplies a
 /// receiver rule and result category, including when the encoded word count is bad.
 pub(super) fn check_producer(
-    facts: &[ReferenceFactEntry<'_>],
+    facts: &mut &[ReferenceFactEntry<'_>],
     pc: CodeUnitOffset,
     spec: OpcodeSpec,
     operands: RawOperands,

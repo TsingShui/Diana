@@ -5,6 +5,8 @@
 //! instruction list and exception handlers the recovery backend consumes, so
 //! the engine performs no second decode or symbol mapping.
 
+use std::sync::{Arc, OnceLock};
+
 use crate::input::operands::RawRegisters;
 use crate::ir::{ArgType, ExceptionHandler, RegNum, RegisterArg};
 use crate::ir::{
@@ -22,13 +24,59 @@ use super::MethodIr;
 
 mod decode;
 
+/// Successful projections of checked DEX method and field declarations in a
+/// single logical program. Instruction-specific argument and layout checks
+/// remain local to every use. Nonstandard calls have their own prototype.
+pub(crate) struct MemberProjections<'p, 'image> {
+    pub(super) program: &'p crate::input::ProgramIndex<'image>,
+    fields: Vec<OnceLock<Arc<MemberReference>>>,
+    methods: Vec<OnceLock<Arc<MemberReference>>>,
+}
+
+impl<'p, 'image> MemberProjections<'p, 'image> {
+    pub(crate) fn new(program: &'p crate::input::ProgramIndex<'image>) -> Self {
+        fn slots(count: u32) -> Vec<OnceLock<Arc<MemberReference>>> {
+            // The ordinary field and method reference operands have 16 bits.
+            let count = count.min(u32::from(u16::MAX) + 1) as usize;
+            let mut slots = Vec::new();
+            if slots.try_reserve_exact(count).is_ok() {
+                slots.resize_with(count, OnceLock::new);
+            }
+            slots
+        }
+        Self {
+            program,
+            fields: slots(program.header.field_ids.count),
+            methods: slots(program.header.method_ids.count),
+        }
+    }
+
+    fn project(
+        slot: Option<&OnceLock<Arc<MemberReference>>>,
+        parse: impl FnOnce() -> Result<MemberReference, String>,
+    ) -> Result<Arc<MemberReference>, String> {
+        if let Some(cached) = slot.and_then(OnceLock::get) {
+            return Ok(Arc::clone(cached));
+        }
+        let projected = Arc::new(parse()?);
+        Ok(match slot {
+            Some(slot) => Arc::clone(slot.get_or_init(|| projected)),
+            None => projected,
+        })
+    }
+}
+
 /// Build the backend-ready instruction list and handlers from the published P1
 /// facts. Failures are retained as an explicit product gap instead of widening
 /// the method result.
-pub(super) fn build(facts: &DecodedMethod<'_>) -> Result<MethodIr, String> {
+pub(super) fn build(
+    facts: &DecodedMethod<'_>,
+    instruction_count: usize,
+    projections: Option<&MemberProjections<'_, '_>>,
+) -> Result<MethodIr, String> {
     let mut instructions = Vec::new();
     instructions
-        .try_reserve_exact(facts.instructions().count())
+        .try_reserve_exact(instruction_count)
         .map_err(|_| "IR instruction allocation failed".to_owned())?;
     let mut references = facts.reference_facts().peekable();
     let mut layouts = facts.layout().invoke_layouts().peekable();
@@ -55,6 +103,7 @@ pub(super) fn build(facts: &DecodedMethod<'_>) -> Result<MethodIr, String> {
                 first,
                 second,
                 layout,
+                projections,
             )?;
             instructions.push(instruction);
         }
@@ -84,6 +133,7 @@ fn bind_instruction(
     first: Option<ReferenceRead<'_, '_>>,
     second: Option<ReferenceRead<'_, '_>>,
     layout: Option<&InvokeLayout>,
+    projections: Option<&MemberProjections<'_, '_>>,
 ) -> Result<(), String> {
     if insn.insn_type == InsnType::Invoke {
         match insn.payload.invoke_type {
@@ -165,7 +215,7 @@ fn bind_instruction(
             _ => {}
         }
     }
-    if insn.payload.method_index.is_some() {
+    if let Some(index) = insn.payload.method_index {
         let fact = required_reference(first, pc)?;
         let CheckedReferenceFact::Method {
             owner,
@@ -176,16 +226,22 @@ fn bind_instruction(
         else {
             return Err(format!("method reference at {pc:?} has another kind"));
         };
-        let method = MethodReference {
-            owner: descriptor(*owner)?,
-            name: text(*name)?,
-            descriptor: prototype_descriptor(prototype)?,
+        let slot = projections.and_then(|table| table.methods.get(index as usize));
+        let reference = MemberProjections::project(slot, || {
+            Ok(MemberReference::Method(MethodReference {
+                owner: descriptor(*owner)?,
+                name: text(*name)?,
+                descriptor: prototype_descriptor(prototype)?,
+            }))
+        })?;
+        let MemberReference::Method(method) = reference.as_ref() else {
+            return Err(format!("method projection at {pc:?} has another kind"));
         };
-        apply_invoke_return_type(insn, &method);
+        apply_invoke_return_type(insn, method);
         bind_invoke_args(insn, registers, layout, pc, &method.descriptor)?;
-        insn.payload.reference = Some(std::sync::Arc::new(MemberReference::Method(method)));
+        insn.payload.reference = Some(reference);
     }
-    if insn.payload.field_index.is_some() {
+    if let Some(index) = insn.payload.field_index {
         let fact = required_reference(first, pc)?;
         let CheckedReferenceFact::Field {
             owner,
@@ -196,12 +252,14 @@ fn bind_instruction(
         else {
             return Err(format!("field reference at {pc:?} has another kind"));
         };
-        let field = FieldReference {
-            owner: descriptor(*owner)?,
-            name: text(*name)?,
-            field_type: descriptor(*field_type)?,
-        };
-        insn.payload.reference = Some(std::sync::Arc::new(MemberReference::Field(field)));
+        let slot = projections.and_then(|table| table.fields.get(index as usize));
+        insn.payload.reference = Some(MemberProjections::project(slot, || {
+            Ok(MemberReference::Field(FieldReference {
+                owner: descriptor(*owner)?,
+                name: text(*name)?,
+                field_type: descriptor(*field_type)?,
+            }))
+        })?);
     }
     if insn.payload.string_index.is_some() && insn.payload.string_value.is_none() {
         let fact = required_reference(first, pc)?;

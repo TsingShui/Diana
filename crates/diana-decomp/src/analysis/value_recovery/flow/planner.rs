@@ -1027,8 +1027,7 @@ impl<'a> ValuePlanner<'a> {
             if !effect.is_pure() && !equivalent(&active_domain, &gate)? {
                 return Ok(None);
             }
-            let evaluation_prefix = usage.evaluation_prefix.clone().without_control();
-            if effect.conflicts_with(&evaluation_prefix) {
+            if effect.conflicts_with_prefix(self.graph().evaluation_prefix(usage), true) {
                 return Ok(None);
             }
             if !effect.is_pure() {
@@ -1115,7 +1114,7 @@ impl<'a> ValuePlanner<'a> {
             if effect.is_pure() {
                 continue;
             }
-            if effect.conflicts_with(&usage.evaluation_prefix.clone().without_control()) {
+            if effect.conflicts_with_prefix(self.graph().evaluation_prefix(usage), true) {
                 return Ok(None);
             }
             let Some(occurrences) = self.graph().predicate_uses.get(&instruction) else {
@@ -1355,7 +1354,8 @@ impl<'a> ValuePlanner<'a> {
         {
             return Ok(false);
         }
-        if definition.scope == usage.scope && usage.evaluation_prefix.is_pure() {
+        let prefix = self.graph().evaluation_prefix(usage);
+        if definition.scope == usage.scope && prefix.is_pure() {
             return Ok(true);
         }
         let control_use = usage.context == UseContext::Predicate
@@ -1363,7 +1363,7 @@ impl<'a> ValuePlanner<'a> {
                 usage.location.site(),
                 Some(UseSite::SelectedArgument(_, _) | UseSite::SelectedPredicate(_, _))
             );
-        Ok(control_use && usage.evaluation_prefix.clone().without_control().is_pure())
+        Ok(control_use && prefix.is_pure_without_control())
     }
 
     fn can_move(
@@ -1439,12 +1439,7 @@ impl<'a> ValuePlanner<'a> {
         if !same_domain && !domain_sink {
             return Err(MovementRejection::ControlDomain);
         }
-        let evaluation_prefix = if domain_sink {
-            usage.evaluation_prefix.clone().without_control()
-        } else {
-            usage.evaluation_prefix.clone()
-        };
-        if effect.conflicts_with(&evaluation_prefix) {
+        if effect.conflicts_with_prefix(self.graph().evaluation_prefix(usage), domain_sink) {
             return Err(MovementRejection::EvaluationOrder);
         }
         let (Some(site), Some(target)) = (definition.site, usage.location.point()) else {

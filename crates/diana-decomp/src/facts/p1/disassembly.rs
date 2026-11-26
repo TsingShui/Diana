@@ -738,6 +738,7 @@ impl<'a> DecodedMethod<'a> {
 }
 
 pub(super) struct DecodedDirectory {
+    pub(super) instruction_count: usize,
     pub(super) items: Vec<DecodedItem>,
     pub(super) reference_count: usize,
 }
@@ -758,6 +759,7 @@ impl<'a> ProgramIndex<'a> {
         source: &RawMethodView<'a>,
     ) -> Result<DecodedDirectory, (Vec<DecodedItem>, MethodError)> {
         let mut reference_count = 0usize;
+        let mut payload_count = 0usize;
         let mut items = Vec::new();
         let result =
             (|| -> Result<(), MethodError> {
@@ -779,6 +781,7 @@ impl<'a> ProgramIndex<'a> {
                             producer_pc: None,
                         })
                     } else {
+                        payload_count += 1;
                         DecodedItem::Payload(DecodedPayload { pc, layout })
                     };
                     push(&mut items, item).map_err(scratch)?;
@@ -790,6 +793,7 @@ impl<'a> ProgramIndex<'a> {
             })();
         match result {
             Ok(()) => Ok(DecodedDirectory {
+                instruction_count: items.len() - payload_count,
                 items,
                 reference_count,
             }),

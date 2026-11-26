@@ -1211,7 +1211,7 @@ impl GenericTypeHierarchy {
     pub(crate) fn method_contract(
         &self,
         method: &crate::ir::MethodReference,
-    ) -> Option<GenericMethodContract> {
+    ) -> Option<Arc<GenericMethodContract>> {
         Self::lookup_method_contract(&ContractHierarchy::new(&self.hierarchy), method)
     }
 
@@ -1219,7 +1219,7 @@ impl GenericTypeHierarchy {
         &self,
         method: &crate::ir::MethodReference,
         platform: &Self,
-    ) -> Option<GenericMethodContract> {
+    ) -> Option<Arc<GenericMethodContract>> {
         let query = ContractHierarchy::new(&self.hierarchy);
         Self::lookup_method_contract(&query, method).or_else(|| {
             // If every class lookup saw the same platform, the second search
@@ -1245,8 +1245,34 @@ impl GenericTypeHierarchy {
     fn lookup_method_contract(
         hierarchy: &ContractHierarchy<'_>,
         method: &crate::ir::MethodReference,
-    ) -> Option<GenericMethodContract> {
+    ) -> Option<Arc<GenericMethodContract>> {
         let declared = hierarchy.class_details(&method.owner)?;
+        let platform = hierarchy
+            .hierarchy
+            .platform
+            .as_deref()
+            .filter(|_| !hierarchy.used_loaded.get());
+        if let Some(contract) = platform.and_then(|platform| {
+            platform.cached_method_contract(method, &hierarchy.hierarchy.loaded)
+        }) {
+            return contract;
+        }
+        let short_id = format!("{}{}", method.name, method.descriptor);
+        let direct = declared
+            .methods_named(method_name(&short_id), false)
+            .find(|candidate| candidate.reference.short_id == short_id);
+        // Only an actual declaration of this platform receiver can occupy a
+        // row. Unresolved input spellings never grow the shared table.
+        let platform = platform.filter(|_| {
+            direct.is_some_and(|details| {
+                method_name(&details.reference.short_id) == method.name
+                    && details.params == method.descriptor.parameters
+                    && details.return_type == method.descriptor.return_type
+            })
+        });
+        if platform.is_some() {
+            *hierarchy.contract_dependencies.borrow_mut() = Some(Default::default());
+        }
         let owner_parameters = declared
             .generic_signature
             .as_ref()
@@ -1262,41 +1288,62 @@ impl GenericTypeHierarchy {
                 .collect(),
             inner_segments: Vec::new(),
         };
-        let short_id = format!("{}{}", method.name, method.descriptor);
         let occurrence = JvmTypeSignature::ClassType(open_owner);
         let signature = find_in_bound_hierarchy(
             hierarchy,
             &declared,
             &occurrence,
             !method.is_constructor(),
-            |class, _, binding| match class
-                .methods_named(method_name(&short_id), false)
-                .find(|candidate| candidate.reference.short_id == short_id)
-            {
-                Some(candidate) => binding.method_signature(candidate),
-                None => Ok(None),
+            |class, _, binding| {
+                let candidate = if std::ptr::eq(class, declared.as_ref()) {
+                    direct
+                } else {
+                    class
+                        .methods_named(method_name(&short_id), false)
+                        .find(|candidate| candidate.reference.short_id == short_id)
+                };
+                match candidate {
+                    Some(candidate) => binding.method_signature(candidate),
+                    None => Ok(None),
+                }
             },
         )
         .ok()?;
         let JvmTypeSignature::ClassType(open_owner) = occurrence else {
             return None;
         };
-        if let Some(signature) = signature {
-            return Some(GenericMethodContract {
+        let result = if let Some(signature) = signature {
+            Some(GenericMethodContract {
                 signature,
                 owner: open_owner,
                 owner_parameters: owner_parameters.to_vec(),
-            });
-        }
-        if method.is_constructor() {
-            return GenericMethodContract::erased_constructor(
+            })
+        } else if method.is_constructor() {
+            GenericMethodContract::erased_constructor(
                 open_owner,
                 owner_parameters.to_vec(),
                 &method.descriptor.parameters,
                 &[],
-            );
+            )
+        } else {
+            None
+        };
+        let result = result.map(Arc::new);
+        if let Some(platform) = platform.filter(|_| !hierarchy.used_loaded.get()) {
+            if let Some(mut dependencies) = hierarchy.contract_dependencies.take() {
+                dependencies.sort_unstable();
+                dependencies.dedup();
+                if let Ok(mut cache) = platform.method_contracts.write() {
+                    cache
+                        .entry(method.clone())
+                        .or_insert_with(|| PlatformMethodContract {
+                            dependencies: dependencies.into_vec().into_boxed_slice(),
+                            contract: result.clone(),
+                        });
+                }
+            }
         }
-        None
+        result
     }
 
     pub(crate) fn specialize_subtype(
@@ -1613,7 +1660,7 @@ pub fn platform_generic_method_contract(
     method: &crate::ir::MethodReference,
 ) -> Result<Option<GenericMethodContract>, OverrideAnalysisError> {
     let hierarchy = GenericTypeHierarchy::from_classes(std::iter::empty::<&ClassNode>())?;
-    Ok(hierarchy.method_contract(method))
+    Ok(hierarchy.method_contract(method).map(Arc::unwrap_or_clone))
 }
 
 impl ClassHierarchy for LoadedClassHierarchy {
@@ -1657,6 +1704,7 @@ impl ClassHierarchy for CompositeClassHierarchy {
 struct ContractHierarchy<'a> {
     hierarchy: &'a CompositeClassHierarchy,
     used_loaded: std::cell::Cell<bool>,
+    contract_dependencies: std::cell::RefCell<Option<smallvec::SmallVec<[ArgType; 4]>>>,
 }
 
 impl<'a> ContractHierarchy<'a> {
@@ -1664,13 +1712,20 @@ impl<'a> ContractHierarchy<'a> {
         Self {
             hierarchy,
             used_loaded: Default::default(),
+            contract_dependencies: Default::default(),
         }
     }
 }
 
 impl ClassHierarchy for ContractHierarchy<'_> {
     fn class_details(&self, ty: &ArgType) -> Option<Arc<ClassDetails>> {
-        self.hierarchy.lookup(ty, || self.used_loaded.set(true))
+        let found = self.hierarchy.lookup(ty, || self.used_loaded.set(true));
+        if !self.used_loaded.get() {
+            if let Some(dependencies) = self.contract_dependencies.borrow_mut().as_mut() {
+                dependencies.push(ty.clone());
+            }
+        }
+        found
     }
 }
 
@@ -1684,16 +1739,38 @@ enum DetailsTable {
 }
 
 #[derive(Debug)]
+struct PlatformMethodContract {
+    dependencies: Box<[ArgType]>,
+    contract: Option<Arc<GenericMethodContract>>,
+}
+
+#[derive(Debug)]
 pub(crate) struct PlatformClassSet {
     symbols: Arc<PlatformSymbolSet>,
     details: RwLock<DetailsTable>,
+    method_contracts: RwLock<foldhash::HashMap<crate::ir::MethodReference, PlatformMethodContract>>,
 }
 
 impl PlatformClassSet {
+    fn cached_method_contract(
+        &self,
+        method: &crate::ir::MethodReference,
+        loaded: &LoadedClassHierarchy,
+    ) -> Option<Option<Arc<GenericMethodContract>>> {
+        let cache = self.method_contracts.read().ok()?;
+        let entry = cache.get(method)?;
+        entry
+            .dependencies
+            .iter()
+            .all(|ty| !loaded.classes.contains_key(ty))
+            .then(|| entry.contract.clone())
+    }
+
     pub fn load_default() -> io::Result<Self> {
         Ok(Self {
             symbols: default_platform_symbols()?,
             details: RwLock::new(DetailsTable::Filling(HashMap::new())),
+            method_contracts: Default::default(),
         })
     }
 
@@ -2178,3 +2255,7 @@ pub(crate) fn type_hierarchy_from_classes(
     // only for names actually queried while recovering its methods.
     index
 }
+
+#[cfg(test)]
+#[path = "../../tests/internal/platform_contract_scope.rs"]
+mod platform_contract_scope;

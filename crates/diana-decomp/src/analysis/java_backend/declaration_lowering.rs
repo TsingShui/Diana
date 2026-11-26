@@ -70,8 +70,10 @@ impl JavaCompilationUnitLowering {
                 source_abi.referenced_constructors(references.methods.iter()),
             )
         };
-        let generic_uses =
-            GenericTypeUses::contracts(generic_fields.values(), generic_methods.values());
+        let generic_uses = GenericTypeUses::contracts(
+            generic_fields.values(),
+            generic_methods.values().map(AsRef::as_ref),
+        );
         let mut type_uses = ClassTypeUses::collect(&class);
         type_uses.extend(&generic_uses);
         let (declared_types, imports) = type_uses.finish()?;
@@ -220,8 +222,10 @@ impl JavaSingleMethodLowering {
         let referenced_overloads = source_abi.referenced_overloads(references.methods.iter());
         let referenced_constructors = source_abi.referenced_constructors(references.methods.iter());
         let mut type_uses = JavaMethodTypeUses::collect(&method);
-        let generic_uses =
-            GenericTypeUses::contracts(generic_fields.values(), generic_methods.values());
+        let generic_uses = GenericTypeUses::contracts(
+            generic_fields.values(),
+            generic_methods.values().map(AsRef::as_ref),
+        );
         type_uses.extend(&generic_uses);
         let (declared_types, imports) = type_uses.finish()?;
         let current_type = Some(owner);
@@ -402,7 +406,7 @@ struct JavaTypeLowering<'a> {
     generic_methods: std::sync::Arc<
         std::collections::BTreeMap<
             crate::ir::MethodReference,
-            crate::ir::generic_types::GenericMethodContract,
+            std::sync::Arc<crate::ir::generic_types::GenericMethodContract>,
         >,
     >,
     generic_uses: Vec<ArgType>,
@@ -646,7 +650,7 @@ impl<'a> JavaTypeLowering<'a> {
         >,
         generic_methods: std::collections::BTreeMap<
             crate::ir::MethodReference,
-            crate::ir::generic_types::GenericMethodContract,
+            std::sync::Arc<crate::ir::generic_types::GenericMethodContract>,
         >,
         generic_uses: Vec<ArgType>,
         constructor_method_return_types: ConstructorMethodReturnTypes,

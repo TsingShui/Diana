@@ -136,8 +136,39 @@ fn a_repeated_point_still_applies_each_distinct_control_domain_after_budget_exha
     assert_eq!(output.candidates(&output.uses[3]), [0, 1]);
     assert_eq!(output.candidate_uses, [3, 3]);
     let mut missing = uses;
-    missing[1].location = super::super::UseLocation::Observation(None);
+    missing[1].location = super::super::UseLocation::Missing;
     assert!(
         matches!(ReachingDefinitions::new(&graph,&bdd).analyze(definitions,&missing), Err(ValueRecoveryError::MissingUsePoint(k)) if k == key)
     );
+}
+
+#[test]
+fn conditional_exit_observes_its_guard_and_replaces_only_its_return_operand() {
+    use crate::ir::{RegionId, SemanticLeave, SemanticLeaveKind, SemanticSiteId};
+
+    let region = RegionId::new(1);
+    for site in [Some(SemanticSiteId(u64::MAX)), None] {
+        let operand = SemanticExpression::Register(local());
+        let root = SemanticNode::Leave(SemanticLeave {
+            site,
+            condition: Some(predicate(11, vec![operand.clone()])),
+            kind: SemanticLeaveKind::Return(Some(operand)),
+            edge: None,
+            origin: None,
+            source: region,
+            destination: region,
+            target: region,
+            cleanup: Vec::new(),
+        });
+        let graph = ValueFlowGraph::build_source(&root, &Default::default()).unwrap();
+        let uses = &graph.uses[&SsaVar::new(17, 0)];
+        assert_eq!(uses.len(), 2);
+        assert_eq!(uses[0].location.id(), site);
+        assert!(uses[0].location.site().is_none());
+        assert_eq!(uses[1].location.id(), site);
+        assert_eq!(
+            uses[1].location.site(),
+            site.map(super::super::UseSite::Leave)
+        );
+    }
 }

@@ -180,7 +180,7 @@ impl JavaMethodBody {
         generic_methods: std::sync::Arc<
             std::collections::BTreeMap<
                 crate::ir::MethodReference,
-                crate::ir::generic_types::GenericMethodContract,
+                std::sync::Arc<crate::ir::generic_types::GenericMethodContract>,
             >,
         >,
         generic_uses: &[ArgType],
@@ -258,7 +258,7 @@ impl JavaMethodBody {
                 dialect
                     .with_source_field_types(source_field_types)
                     .with_generic_fields(generic_fields)
-                    .with_generic_methods(generic_methods)
+                    .with_shared_generic_methods(generic_methods)
                     .with_source_object_types(source_object_types)
                     .with_generic_type_projection(generic_type_projection)
                     .with_source_parameter_types(&self.parameter_code_vars, source_parameter_types)

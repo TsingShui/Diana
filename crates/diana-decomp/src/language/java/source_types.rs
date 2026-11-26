@@ -17,6 +17,22 @@ use crate::ir::{
 
 use super::{JavaClassType, JavaIdentifier, JavaType, JavaTypeArgument};
 
+/// An archive's method and declaration indexes can refer to the same signature.
+#[derive(Debug, Clone)]
+pub(super) enum GenericMethodContracts {
+    Owned(Arc<BTreeMap<MethodReference, GenericMethodContract>>),
+    Shared(Arc<BTreeMap<MethodReference, Arc<GenericMethodContract>>>),
+}
+
+impl GenericMethodContracts {
+    pub(super) fn get(&self, method: &MethodReference) -> Option<&GenericMethodContract> {
+        match self {
+            Self::Owned(methods) => methods.get(method),
+            Self::Shared(methods) => methods.get(method).map(AsRef::as_ref),
+        }
+    }
+}
+
 /// Function-object identities visible to Java body lowering.
 ///
 /// A miss is treated as "not a function object" at runtime. `identities` is the
@@ -2606,7 +2622,7 @@ impl TypeEquationGraph {
         equations: &[TypeEquation],
         invocations: &[SemanticOperation],
         generic_fields: &BTreeMap<FieldReference, GenericFieldContract>,
-        generic_methods: &BTreeMap<MethodReference, GenericMethodContract>,
+        generic_methods: &GenericMethodContracts,
         dynamic_formals: &BTreeSet<&ArgType>,
     ) {
         self.dependents.clear();
@@ -2636,7 +2652,7 @@ impl TypeEquationGraph {
                     }
                     InsnType::Invoke | InsnType::Constructor => {
                         matches!(operation.payload.reference.as_deref(),
-                            Some(MemberReference::Method(method)) if generic_methods.contains_key(method))
+                            Some(MemberReference::Method(method)) if generic_methods.get(method).is_some())
                     }
                     _ => false,
                 },
@@ -2658,7 +2674,7 @@ impl TypeEquationGraph {
             };
             let may_read_state =
                 |ty: &ArgType| matches!(ty, ArgType::Array(_)) || dynamic_formals.contains(ty);
-            let dynamic = generic_methods.contains_key(method)
+            let dynamic = generic_methods.get(method).is_some()
                 || may_read_state(&method.owner)
                 || method.descriptor.parameters.iter().any(may_read_state);
             if dynamic {
@@ -2881,7 +2897,7 @@ pub(super) struct SourceTypeFlow<'a> {
     fields: &'a BTreeMap<FieldReference, JavaType>,
     generic_fields: &'a BTreeMap<FieldReference, GenericFieldContract>,
     object_types: &'a SourceObjectTypes,
-    generic_methods: &'a BTreeMap<MethodReference, GenericMethodContract>,
+    generic_methods: &'a GenericMethodContracts,
     generic_projection: Option<&'a dyn GenericTypeProjection>,
     source_types: &'a BTreeMap<ArgType, JavaType>,
     source_erasures: Arc<JavaTypeErasureIndex>,
@@ -2916,7 +2932,7 @@ impl<'a> SourceTypeFlow<'a> {
         fields: &'a BTreeMap<FieldReference, JavaType>,
         generic_fields: &'a BTreeMap<FieldReference, GenericFieldContract>,
         object_types: &'a SourceObjectTypes,
-        generic_methods: &'a BTreeMap<MethodReference, GenericMethodContract>,
+        generic_methods: &'a GenericMethodContracts,
         generic_projection: Option<&'a dyn GenericTypeProjection>,
         source_types: &'a BTreeMap<ArgType, JavaType>,
         source_erasures: Arc<JavaTypeErasureIndex>,

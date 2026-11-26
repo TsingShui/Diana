@@ -109,36 +109,93 @@ impl Serialize for OriginalText {
     }
 }
 
-/// The original access word with the per-kind bit names the owning collection
-/// read and the remaining bits. Semantic queries are derived from `raw` through
-/// the shared per-kind flag types, so this struct never duplicates them.
-#[derive(Serialize)]
+/// Exact member access flags. Names and unknown bits are derived from the
+/// original word when publishing it as structured data.
 pub struct OriginalFlags {
     raw: u32,
-    names: Vec<&'static str>,
-    unknown_bits: u32,
+    kind: MemberKind,
 }
 
 impl OriginalFlags {
-    /// The original flag word. Semantic queries are derived from it through the
-    /// shared per-kind flag type, not by matching this whole value.
     pub fn raw(&self) -> u32 {
         self.raw
     }
-}
 
-impl OriginalFlags {
-    pub(super) fn new(raw: u32, names: Vec<&'static str>, unknown_bits: u32) -> Self {
-        Self {
-            raw,
-            names,
-            unknown_bits,
-        }
+    pub(super) fn new(raw: u32, kind: MemberKind) -> Self {
+        Self { raw, kind }
     }
 }
 
-/// Original class identity and declaration. `descriptor` keeps the exact input
-/// units; the access word keeps its raw value beside per-kind semantic queries.
+#[derive(Clone, Copy)]
+pub(super) enum MemberKind {
+    Class,
+    Field,
+    Method,
+}
+
+impl Serialize for OriginalFlags {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use crate::substrate::flags;
+        use serde::ser::SerializeStruct;
+
+        let entries: &[(u32, &'static str)] = match self.kind {
+            MemberKind::Class => &[
+                (flags::PUBLIC, "public"),
+                (flags::PRIVATE, "private"),
+                (flags::PROTECTED, "protected"),
+                (flags::STATIC, "static"),
+                (flags::FINAL, "final"),
+                (flags::INTERFACE, "interface"),
+                (flags::ABSTRACT, "abstract"),
+                (flags::SYNTHETIC, "synthetic"),
+                (flags::ANNOTATION, "annotation"),
+                (flags::ENUM, "enum"),
+            ],
+            MemberKind::Field => &[
+                (flags::PUBLIC, "public"),
+                (flags::PRIVATE, "private"),
+                (flags::PROTECTED, "protected"),
+                (flags::STATIC, "static"),
+                (flags::FINAL, "final"),
+                (flags::VOLATILE, "volatile"),
+                (flags::TRANSIENT, "transient"),
+                (flags::SYNTHETIC, "synthetic"),
+                (flags::ENUM, "enum"),
+            ],
+            MemberKind::Method => &[
+                (flags::PUBLIC, "public"),
+                (flags::PRIVATE, "private"),
+                (flags::PROTECTED, "protected"),
+                (flags::STATIC, "static"),
+                (flags::FINAL, "final"),
+                (flags::SYNCHRONIZED, "synchronized"),
+                (flags::BRIDGE, "bridge"),
+                (flags::VARARGS, "varargs"),
+                (flags::NATIVE, "native"),
+                (flags::ABSTRACT, "abstract"),
+                (flags::STRICT, "strict"),
+                (flags::SYNTHETIC, "synthetic"),
+                (flags::CONSTRUCTOR, "constructor"),
+                (flags::DECLARED_SYNCHRONIZED, "declared_synchronized"),
+            ],
+        };
+        let mut names = smallvec::SmallVec::<[&str; 16]>::new();
+        let mut known = 0;
+        for &(bit, name) in entries {
+            known |= bit;
+            if self.raw & bit != 0 {
+                names.push(name);
+            }
+        }
+        let mut record = serializer.serialize_struct("OriginalFlags", 3)?;
+        record.serialize_field("raw", &self.raw)?;
+        record.serialize_field("names", names.as_slice())?;
+        record.serialize_field("unknown_bits", &(self.raw & !known))?;
+        record.end()
+    }
+}
+
+/// Original class identity and declaration. The descriptor retains the exact input units.
 #[derive(Serialize)]
 pub struct ClassDeclaration {
     pub type_index: u32,

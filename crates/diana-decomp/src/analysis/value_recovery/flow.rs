@@ -24,7 +24,7 @@ use super::domain::{ControlDomain, DomainLogic};
 use super::source::SourceFlowCache;
 use super::ValueRecoveryError;
 use collector::FlowCollector;
-use effects::EffectSummary;
+use effects::{EffectSummary, EvaluationPrefix, EvaluationPrefixes};
 use gated::GatedPhiAnalysis;
 pub(super) use gated::{GatedControlFlow, PhiExpressionPlacement};
 use occurrences::OccurrenceRows;
@@ -156,7 +156,7 @@ struct UseFact {
     loop_owner: ScopeId,
     event: usize,
     repetitive: bool,
-    evaluation_prefix: EffectSummary,
+    evaluation_prefix: EvaluationPrefix,
     context: UseContext,
     consumer: Option<InsnType>,
 }
@@ -187,12 +187,13 @@ pub(super) struct ValueExpression {
 #[derive(Debug, Clone, Copy)]
 enum UseLocation {
     Replaceable(UseSite),
-    Observation(Option<crate::ir::SemanticSiteId>),
+    Observation(crate::ir::SemanticSiteId),
+    Missing,
 }
 
 impl From<Option<UseSite>> for UseLocation {
     fn from(site: Option<UseSite>) -> Self {
-        site.map_or(Self::Observation(None), Self::Replaceable)
+        site.map_or(Self::Missing, Self::Replaceable)
     }
 }
 
@@ -200,14 +201,15 @@ impl UseLocation {
     fn site(self) -> Option<UseSite> {
         match self {
             Self::Replaceable(site) => Some(site),
-            Self::Observation(_) => None,
+            Self::Observation(_) | Self::Missing => None,
         }
     }
 
     fn id(self) -> Option<crate::ir::SemanticSiteId> {
         match self {
             Self::Replaceable(site) => Some(site.id()),
-            Self::Observation(site) => site,
+            Self::Observation(site) => Some(site),
+            Self::Missing => None,
         }
     }
 
@@ -464,6 +466,7 @@ pub(super) struct ValueFlowGraph<'ir> {
     /// Their definition classes are intentionally open to statement scheduling.
     bindings: BTreeSet<SsaVar>,
     uses: OccurrenceRows<UseFact>,
+    prefixes: EvaluationPrefixes,
     semantic_roots: OnceCell<BTreeSet<SsaVar>>,
     ssa_values: Option<&'ir SsaValueGraph>,
     excluded_phis: BTreeSet<SsaVar>,
@@ -567,6 +570,7 @@ impl<'ir> ValueFlowGraph<'ir> {
             definitions_without_sites: BTreeSet::new(),
             bindings: BTreeSet::new(),
             uses: OccurrenceRows::default(),
+            prefixes: EvaluationPrefixes::default(),
             semantic_roots: OnceCell::new(),
             ssa_values: Some(values),
             excluded_phis: BTreeSet::new(),
@@ -632,6 +636,7 @@ impl<'ir> ValueFlowGraph<'ir> {
             definitions_without_sites: BTreeSet::new(),
             bindings: bindings.clone(),
             uses: OccurrenceRows::default(),
+            prefixes: EvaluationPrefixes::default(),
             semantic_roots: OnceCell::new(),
             ssa_values: None,
             excluded_phis: BTreeSet::new(),
@@ -838,6 +843,10 @@ impl<'ir> ValueFlowGraph<'ir> {
 
     fn semantic_flow(&self) -> Option<&crate::ir::analysis::SemanticFlowGraph> {
         self.semantic_flow.as_ref().map(ScheduledFlow::get)
+    }
+
+    fn evaluation_prefix(&self, usage: &UseFact) -> &EffectSummary {
+        self.prefixes.get(usage.evaluation_prefix)
     }
 
     fn movement_points(&self) -> impl Iterator<Item = crate::ir::analysis::SemanticFlowPoint> + '_ {

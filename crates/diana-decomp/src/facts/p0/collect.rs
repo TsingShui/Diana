@@ -3,7 +3,6 @@ use crate::input::catalog::{ClassDataShape, ClassDataWalk, MemberEntry, MemberSe
 
 use crate::input::values::{EncodedKind, EncodedValues, ValueStep};
 use crate::input::{InputError, ProgramIndex};
-use crate::substrate::flags;
 use crate::substrate::owned::{copy_units, push, reserve};
 use crate::{ClassKey, FailureKind, MethodId, RequestError};
 
@@ -31,68 +30,6 @@ fn optional_text(
         Ok(None) => Ok(Fact::Absent),
         Err(error) => local(Err(error.into())),
     }
-}
-
-/// Per-kind flag names and unknown bits. Names come from the shared semantic
-/// flag definitions, never from a whole-word comparison against one sample.
-fn access_flags(raw: u32, kind: MemberKind) -> Result<OriginalFlags, RequestError> {
-    let mut names = Vec::new();
-    let mut known = 0;
-    let entries: &[(u32, &'static str)] = match kind {
-        MemberKind::Class => &[
-            (flags::PUBLIC, "public"),
-            (flags::PRIVATE, "private"),
-            (flags::PROTECTED, "protected"),
-            (flags::STATIC, "static"),
-            (flags::FINAL, "final"),
-            (flags::INTERFACE, "interface"),
-            (flags::ABSTRACT, "abstract"),
-            (flags::SYNTHETIC, "synthetic"),
-            (flags::ANNOTATION, "annotation"),
-            (flags::ENUM, "enum"),
-        ],
-        MemberKind::Field => &[
-            (flags::PUBLIC, "public"),
-            (flags::PRIVATE, "private"),
-            (flags::PROTECTED, "protected"),
-            (flags::STATIC, "static"),
-            (flags::FINAL, "final"),
-            (flags::VOLATILE, "volatile"),
-            (flags::TRANSIENT, "transient"),
-            (flags::SYNTHETIC, "synthetic"),
-            (flags::ENUM, "enum"),
-        ],
-        MemberKind::Method => &[
-            (flags::PUBLIC, "public"),
-            (flags::PRIVATE, "private"),
-            (flags::PROTECTED, "protected"),
-            (flags::STATIC, "static"),
-            (flags::FINAL, "final"),
-            (flags::SYNCHRONIZED, "synchronized"),
-            (flags::BRIDGE, "bridge"),
-            (flags::VARARGS, "varargs"),
-            (flags::NATIVE, "native"),
-            (flags::ABSTRACT, "abstract"),
-            (flags::STRICT, "strict"),
-            (flags::SYNTHETIC, "synthetic"),
-            (flags::CONSTRUCTOR, "constructor"),
-            (flags::DECLARED_SYNCHRONIZED, "declared_synchronized"),
-        ],
-    };
-    for (bit, name) in entries {
-        known |= bit;
-        if raw & bit != 0 {
-            push(&mut names, *name)?;
-        }
-    }
-    Ok(OriginalFlags::new(raw, names, raw & !known))
-}
-
-#[derive(Clone, Copy)]
-enum MemberKind {
-    Class,
-    Field,
-    Method,
 }
 
 pub(super) struct FieldPreparation {
@@ -409,7 +346,7 @@ pub fn collect(index: &ProgramIndex<'_>, owner: ClassKey) -> Result<ClassFacts, 
     let declaration = ClassDeclaration {
         type_index: class.type_idx.0,
         descriptor: OriginalText::new(copy_units(class.descriptor)?),
-        access_flags: access_flags(class.access_flags, MemberKind::Class)?,
+        access_flags: OriginalFlags::new(class.access_flags, MemberKind::Class),
         superclass,
         superclass_type_index: context.superclass_type.map(|id| id.0),
         interfaces,
@@ -444,7 +381,7 @@ pub fn collect(index: &ProgramIndex<'_>, owner: ClassKey) -> Result<ClassFacts, 
                     &mut fields,
                     FieldDirectoryEntry {
                         field: crate::FieldId(field.field_idx.0),
-                        access_flags: access_flags(field.access_flags, MemberKind::Field)?,
+                        access_flags: OriginalFlags::new(field.access_flags, MemberKind::Field),
                         storage,
                         group_ordinal: field.ordinal,
                         declaration,
@@ -471,7 +408,7 @@ pub fn collect(index: &ProgramIndex<'_>, owner: ClassKey) -> Result<ClassFacts, 
                     &mut methods,
                     MethodDirectoryEntry {
                         method: MethodId(method_idx.0),
-                        access_flags: access_flags(raw_flags, MemberKind::Method)?,
+                        access_flags: OriginalFlags::new(raw_flags, MemberKind::Method),
                         group,
                         code_offset,
                         declaration,

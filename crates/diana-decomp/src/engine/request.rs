@@ -68,7 +68,7 @@ pub(super) fn backend_input<'a>(
     include_nested: bool,
 ) -> Result<BackendInput, RequestError> {
     let facts = image.index.class_facts_cached(class_def)?;
-    backend_input_from_facts(image, facts, selector, include_nested)
+    backend_input_from_facts(image, facts, selector, include_nested, None)
 }
 
 pub(super) fn backend_input_from_facts<'a>(
@@ -76,13 +76,25 @@ pub(super) fn backend_input_from_facts<'a>(
     facts: Arc<ClassFacts>,
     selector: Option<&MethodSelector>,
     include_nested: bool,
+    projections: Option<&crate::p1::MemberProjections<'_, 'a>>,
 ) -> Result<BackendInput, RequestError> {
     let class_def = facts.class_def();
-    let mut methods = Vec::new();
     let selected = selector
         .filter(|_| !facts.methods().is_empty())
         .map(|selector| facts.resolve_method(&selector.name, &selector.prototype))
         .transpose()?;
+    let mut methods = Vec::new();
+    let expected = if selected.is_some() {
+        1
+    } else {
+        facts
+            .methods()
+            .iter()
+            .filter(|entry| entry.code_offset().is_some())
+            .count()
+    };
+    // Malformed declaration-only entries may add a diagnostic outside this hint.
+    let _ = methods.try_reserve_exact(expected);
     for (ordinal, entry) in facts.methods().iter().enumerate() {
         let id = entry.method();
         if selected.is_some_and(|selected| selected != id) {
@@ -101,7 +113,10 @@ pub(super) fn backend_input_from_facts<'a>(
         if !matches!(source.raw(), crate::input::RawPrintable::Method(_)) {
             continue;
         }
-        let decoded = match image.index.decode_scoped_method_source(&source) {
+        let decoded = match image
+            .index
+            .decode_scoped_method_source(&source, projections)
+        {
             Ok(decoded) => decoded,
             Err(error) => {
                 methods.push(MethodFacts {

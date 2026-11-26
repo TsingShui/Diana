@@ -4,6 +4,7 @@ pub mod binding;
 mod decode;
 mod disassembly;
 mod ir;
+pub(crate) use ir::MemberProjections;
 mod reference;
 mod structure;
 

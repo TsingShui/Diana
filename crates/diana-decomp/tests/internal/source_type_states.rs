@@ -142,7 +142,7 @@ fn fixed_invocations_revisit_changed_requirements_and_dynamic_invocations_revisi
         &[],
         &calls,
         &BTreeMap::new(),
-        &generic,
+        &GenericMethodContracts::Owned(Arc::new(generic)),
         &BTreeSet::from([&ArgType::BOOLEAN]),
     );
     let ready = |graph: &mut TypeEquationGraph| {

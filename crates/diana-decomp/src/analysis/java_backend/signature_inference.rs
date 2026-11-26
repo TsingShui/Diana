@@ -107,11 +107,19 @@ impl<'a> SourceSignatureInference<'a> {
         if matches!(evidence, SignatureEvidence::None) {
             return;
         }
-        let current_method = MethodReference {
-            owner: cfg.method().owner().clone(),
-            name: cfg.method().name().to_string(),
-            descriptor: cfg.method().descriptor().clone(),
-        };
+        let current_method = cfg.method().reference();
+        let mut body_parameters = std::cell::LazyCell::new(|| {
+            self.body_parameters
+                .entry(current_method.clone())
+                .or_insert_with(|| {
+                    vec![TypeConstraint::Unseen; current_method.descriptor.parameters.len()]
+                })
+        });
+        let mut return_type = std::cell::LazyCell::new(|| {
+            self.returns
+                .entry(current_method.clone())
+                .or_insert(TypeConstraint::Unseen)
+        });
         let parameter_registers = std::cell::LazyCell::new(|| Self::parameter_registers(cfg));
         let mut visit = |block: &'cfg crate::ir::Block, mut types: RegisterTypes<'cfg>| {
             let mut pending_result = None;
@@ -122,15 +130,7 @@ impl<'a> SourceSignatureInference<'a> {
                         instruction.conversion_type(),
                     ) {
                         if let Some(index) = parameter_registers.get(&register.reg_num).copied() {
-                            let constraints = self
-                                .body_parameters
-                                .entry(current_method.clone())
-                                .or_insert_with(|| {
-                                    vec![
-                                        TypeConstraint::Unseen;
-                                        current_method.descriptor.parameters.len()
-                                    ]
-                                });
+                            let constraints = std::cell::LazyCell::force_mut(&mut body_parameters);
                             if let (Some(constraint), Some(erased)) = (
                                 constraints.get_mut(index),
                                 current_method.descriptor.parameters.get(index),
@@ -148,10 +148,7 @@ impl<'a> SourceSignatureInference<'a> {
                         .args
                         .first()
                         .and_then(|argument| ReachingCastTypes::argument_type(argument, &types));
-                    let current = self
-                        .returns
-                        .entry(current_method.clone())
-                        .or_insert(TypeConstraint::Unseen);
+                    let current = &mut **std::cell::LazyCell::force_mut(&mut return_type);
                     *current = Self::join(
                         self.hierarchy,
                         current,

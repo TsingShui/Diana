@@ -50,14 +50,39 @@ impl std::error::Error for DeclarationError {}
 
 #[derive(Debug, Clone, Copy)]
 struct Point {
-    scope: u32,
+    scope: usize,
     event: usize,
 }
 
 #[derive(Debug, Default)]
+enum Definitions {
+    #[default]
+    None,
+    One(Point),
+    Multiple,
+}
+
+#[derive(Debug, Default)]
 struct LocalFacts {
-    definitions: Vec<Point>,
-    uses: Vec<Point>,
+    definitions: Definitions,
+    first_use: Option<usize>,
+    use_scopes: smallvec::SmallVec<[usize; 1]>,
+}
+
+impl LocalFacts {
+    fn define(&mut self, point: Point) {
+        self.definitions = match self.definitions {
+            Definitions::None => Definitions::One(point),
+            _ => Definitions::Multiple,
+        };
+    }
+
+    fn read(&mut self, point: Point) {
+        self.first_use.get_or_insert(point.event);
+        if self.use_scopes.last() != Some(&point.scope) {
+            self.use_scopes.push(point.scope);
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -79,10 +104,9 @@ impl DeclarationFacts {
 #[derive(Debug, Default)]
 pub(super) struct DeclarationAnalysis {
     facts: BTreeMap<SourceVariable, LocalFacts>,
-    scope_parents: BTreeMap<u32, u32>,
-    catch_scopes: BTreeMap<SourceVariable, BTreeSet<u32>>,
-    scope: u32,
-    next_scope: u32,
+    scope_parents: Vec<usize>,
+    catch_scopes: BTreeMap<SourceVariable, BTreeSet<usize>>,
+    scope: usize,
     event: usize,
 }
 
@@ -92,34 +116,34 @@ impl DeclarationAnalysis {
         root: &SemanticNode,
     ) -> Result<DeclarationFacts, DeclarationError> {
         self.visit(root)?;
-        let mut inline_variables = self
+        let inline_variables = self
             .facts
             .iter()
             .filter_map(|(key, facts)| {
-                let [definition] = facts.definitions.as_slice() else {
+                let Definitions::One(definition) = facts.definitions else {
                     return None;
                 };
-                facts
-                    .uses
-                    .iter()
-                    .all(|usage| {
-                        self.scope_contains(definition.scope, usage.scope)
-                            && usage.event >= definition.event
-                    })
-                    .then_some(*key)
+                (facts
+                    .first_use
+                    .is_none_or(|event| event >= definition.event)
+                    && !self.catch_scopes.contains_key(key)
+                    && facts
+                        .use_scopes
+                        .iter()
+                        .all(|&scope| self.scope_contains(definition.scope, scope)))
+                .then_some(*key)
             })
-            .collect::<BTreeSet<_>>();
-        inline_variables.retain(|variable| !self.catch_scopes.contains_key(variable));
+            .collect();
 
         let catch_storage = self
             .catch_scopes
             .iter()
             .filter_map(|(variable, binding_scopes)| {
                 let escapes = self.facts.get(variable).is_some_and(|facts| {
-                    facts.uses.iter().any(|usage| {
+                    facts.use_scopes.iter().any(|&usage| {
                         !binding_scopes
                             .iter()
-                            .any(|scope| self.scope_contains(*scope, usage.scope))
+                            .any(|scope| self.scope_contains(*scope, usage))
                     })
                 });
                 escapes.then_some(*variable)
@@ -157,7 +181,7 @@ impl DeclarationAnalysis {
     fn schedule_node<'a>(
         &mut self,
         node: &'a SemanticNode,
-        scope: u32,
+        scope: usize,
         pending: &mut Vec<DeclarationTask<'a>>,
     ) -> Result<(), DeclarationError> {
         match node {
@@ -288,22 +312,17 @@ impl DeclarationAnalysis {
         Ok(())
     }
 
-    fn new_scope(&mut self, parent: u32) -> u32 {
-        self.next_scope += 1;
-        self.scope_parents.insert(self.next_scope, parent);
-        self.next_scope
+    fn new_scope(&mut self, parent: usize) -> usize {
+        self.scope_parents.push(parent);
+        self.scope_parents.len()
     }
 
-    fn scope_contains(&self, ancestor: u32, mut scope: u32) -> bool {
-        loop {
-            if scope == ancestor {
-                return true;
-            }
-            let Some(parent) = self.scope_parents.get(&scope) else {
-                return false;
-            };
-            scope = *parent;
+    fn scope_contains(&self, ancestor: usize, mut scope: usize) -> bool {
+        // Each non-root scope was appended after its parent.
+        while scope > ancestor {
+            scope = self.scope_parents[scope - 1];
         }
+        scope == ancestor
     }
 
     fn statement(
@@ -328,8 +347,7 @@ impl DeclarationAnalysis {
             self.facts
                 .entry(SourceVariable::of(result)?)
                 .or_default()
-                .definitions
-                .push(point);
+                .define(point);
         }
         Ok(())
     }
@@ -344,8 +362,7 @@ impl DeclarationAnalysis {
                 self.facts
                     .entry(SourceVariable::of(register)?)
                     .or_default()
-                    .uses
-                    .push(point);
+                    .read(point);
                 Ok(())
             }
             SemanticExpression::Literal(_) => Ok(()),
@@ -427,7 +444,7 @@ impl DeclarationAnalysis {
 }
 
 enum DeclarationTask<'a> {
-    Node(&'a SemanticNode, u32),
-    Statement(&'a crate::ir::SemanticStatement, u32),
-    Predicate(&'a SemanticPredicate, u32),
+    Node(&'a SemanticNode, usize),
+    Statement(&'a crate::ir::SemanticStatement, usize),
+    Predicate(&'a SemanticPredicate, usize),
 }

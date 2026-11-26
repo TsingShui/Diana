@@ -170,6 +170,7 @@ impl<'a> ProgramIndex<'a> {
         &self,
         original: &RawMethodView<'a>,
         items: &[super::DecodedItem],
+        instruction_count: usize,
         facts: &[super::reference::ReferenceFactEntry<'a>],
     ) -> Result<CheckedMethodLayout<'a>, MethodError> {
         if !std::ptr::eq(self.bytes, original.source_bytes)
@@ -179,13 +180,9 @@ impl<'a> ProgramIndex<'a> {
         }
 
         let mut boundaries = Boundaries::new(original.code_units())?;
-        let mut instruction_count = 0usize;
         for item in items {
             match item {
                 super::DecodedItem::Instruction(_) => {
-                    instruction_count = instruction_count
-                        .checked_add(1)
-                        .ok_or(MethodError::PlatformCapacity)?;
                     boundaries.set_start(item.pc(), Start::Instruction)?;
                 }
                 super::DecodedItem::Payload(payload) => {
@@ -561,7 +558,7 @@ impl<'a> Checker<'_, 'a> {
 
     fn check_instructions(
         &mut self,
-        facts: &[super::reference::ReferenceFactEntry<'a>],
+        mut facts: &[super::reference::ReferenceFactEntry<'a>],
     ) -> Result<(), MethodError> {
         enum Producer {
             Known(ResultKind),
@@ -624,7 +621,7 @@ impl<'a> Checker<'_, 'a> {
                     }
                     _ => {}
                 }
-                match check_producer(facts, pc, spec, operands) {
+                match check_producer(&mut facts, pc, spec, operands) {
                     Ok(Some(producer)) => {
                         if let Some(layout) = producer.invoke {
                             crate::substrate::owned::push(

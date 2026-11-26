@@ -13,7 +13,7 @@ use adjacency::EdgeRows;
 use exception_coverage::ExceptionCoverage;
 
 use super::block::{Block, BlockId, ExceptionHandler};
-use super::{ArgType, InstructionId, MethodDescriptor};
+use super::{ArgType, InstructionId, MethodDescriptor, MethodReference};
 
 /// Edge type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -38,9 +38,7 @@ impl EdgeKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MethodContext {
-    owner: ArgType,
-    name: String,
-    descriptor: MethodDescriptor,
+    reference: MethodReference,
     is_static: bool,
     declared_synchronized: bool,
 }
@@ -53,9 +51,11 @@ impl MethodContext {
         is_static: bool,
     ) -> Self {
         Self {
-            owner,
-            name: name.into(),
-            descriptor,
+            reference: MethodReference {
+                owner,
+                name: name.into(),
+                descriptor,
+            },
             is_static,
             declared_synchronized: false,
         }
@@ -73,16 +73,20 @@ impl MethodContext {
         )
     }
 
+    pub(crate) fn reference(&self) -> &MethodReference {
+        &self.reference
+    }
+
     pub fn owner(&self) -> &ArgType {
-        &self.owner
+        &self.reference.owner
     }
 
     pub fn name(&self) -> &str {
-        &self.name
+        &self.reference.name
     }
 
     pub fn descriptor(&self) -> &MethodDescriptor {
-        &self.descriptor
+        &self.reference.descriptor
     }
 
     pub fn is_static(&self) -> bool {

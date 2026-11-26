@@ -110,10 +110,7 @@ fn negation_can_resume_after_its_first_branch_used_the_last_cache_slots() {
     let first = context.and(vars[0], vars[1]).unwrap();
     let second = context.and(vars[2], vars[3]).unwrap();
     let formula = context.or(first, second).unwrap();
-    let entries = {
-        let manager = context.manager.borrow();
-        manager.binary_cache.len() + manager.complements
-    };
+    let entries = context.manager.borrow().cache_entries;
     context.manager.borrow_mut().limits.cache_entries = entries + 2;
     assert_eq!(
         context.not(formula),
@@ -287,7 +284,7 @@ fn fork_rebinds_cached_compounds_and_preserves_the_remaining_cache_budget() {
     let value = bdd.compile(&expression).unwrap();
     let limit = {
         let mut manager = bdd.manager.borrow_mut();
-        let used = manager.binary_cache.len() + manager.complements;
+        let used = manager.cache_entries;
         manager.limits.cache_entries = used;
         used
     };
@@ -346,5 +343,101 @@ fn variable_ordinals_keep_the_first_occurrence_in_any_input_order() {
             BddContext::ordered([z.clone(), y.clone(), z.clone(), x.clone(), y.clone()]);
         assert_eq!(reordered.variable_order(), &[z, y, x]);
         assert_eq!(context.variable_index(&BoolVariable::Atom(17)), None);
+    }
+}
+
+#[test]
+fn a_literal_prefix_charges_its_pair_even_when_the_result_already_exists() {
+    for and in [false, true] {
+        for positive in [false, true] {
+            let mut manager = Manager::new(
+                7,
+                BddLimits {
+                    nodes: 4,
+                    cache_entries: 2,
+                    operations: 0,
+                },
+            );
+            let (literal_low, literal_high) = if positive { (0, 1) } else { (1, 0) };
+            let literal = manager.intern(0, literal_low, literal_high).unwrap();
+            let later = manager.variable(1).unwrap();
+            let blocking = u16::from(!and);
+            let (low, high) = if literal_low == blocking {
+                (blocking, later.node)
+            } else {
+                (later.node, blocking)
+            };
+            let literal = manager.handle(literal);
+            let apply = |manager: &mut Manager| {
+                manager.begin_operation();
+                if and {
+                    manager.and(literal, later)
+                } else {
+                    manager.or(later, literal)
+                }
+            };
+            assert_eq!(
+                apply(&mut manager),
+                Err(BddError::ResourceLimit {
+                    resource: BddResource::Operations,
+                    limit: 0,
+                })
+            );
+            manager.limits.operations = 1;
+            assert_eq!(
+                apply(&mut manager),
+                Err(BddError::ResourceLimit {
+                    resource: BddResource::Nodes,
+                    limit: 4,
+                })
+            );
+            manager.limits.nodes = 5;
+            // Another operation could have interned this node first.
+            let result = manager.intern(0, low, high).unwrap();
+            assert_eq!(
+                apply(&mut manager),
+                Err(BddError::ResourceLimit {
+                    resource: BddResource::CacheEntries,
+                    limit: 2,
+                })
+            );
+            assert_eq!(manager.operations_used, 1);
+            manager.limits.cache_entries = 3;
+            assert_eq!(apply(&mut manager).unwrap().node, result);
+            assert_eq!(manager.operations_used, 1);
+            manager.limits.operations = 0;
+            assert_eq!(apply(&mut manager).unwrap().node, result);
+            assert_eq!(manager.operations_used, 0);
+        }
+    }
+}
+
+#[test]
+fn pending_memo_entries_survive_bucket_collisions_and_recursive_table_growth() {
+    for grow in [false, true] {
+        let mut memo = BinaryMemo::new();
+        let mask = memo.slots.len() - 1;
+        let mut buckets: [Vec<u32>; 4] = std::array::from_fn(|_| Vec::new());
+        for id in 3..131 {
+            let key = (2 << 16) | id;
+            buckets[memo.hasher.hash_one(key) as usize & mask].push(key);
+        }
+        let keys = buckets.into_iter().max_by_key(Vec::len).unwrap();
+        let MemoLookup::Vacant(parent) = memo.lookup(keys[0]) else {
+            panic!("new pair")
+        };
+        let descendants = if grow { &keys[1..24] } else { &keys[1..2] };
+        for &key in descendants {
+            let MemoLookup::Vacant(child) = memo.lookup(key) else {
+                panic!("new child pair")
+            };
+            memo.insert(key, key as u16, child);
+        }
+        assert_eq!(memo.slots.len() > 4, grow);
+        memo.insert(keys[0], 0, parent);
+        assert!(matches!(memo.lookup(keys[0]), MemoLookup::Cached(0)));
+        for &key in descendants {
+            assert!(matches!(memo.lookup(key), MemoLookup::Cached(result) if result == key as u16));
+        }
     }
 }

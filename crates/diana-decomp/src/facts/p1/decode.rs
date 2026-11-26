@@ -27,7 +27,7 @@ impl<'a> ProgramIndex<'a> {
         &self,
         source: &MethodSource<'_, 'a>,
     ) -> Result<DecodedOutcome<'a>, MethodError> {
-        self.decode_with_declaration(source, || {
+        self.decode_with_declaration(source, None, || {
             source
                 .declaration()
                 .try_copy()
@@ -41,11 +41,15 @@ impl<'a> ProgramIndex<'a> {
     pub(crate) fn decode_scoped_method_source<'s>(
         &self,
         source: &'s MethodSource<'_, 'a>,
+        projections: Option<&super::MemberProjections<'_, 'a>>,
     ) -> Result<DecodedOutcome<'s>, MethodError>
     where
         'a: 's,
     {
-        self.decode_with_declaration(source, || {
+        let projections = projections.filter(|table| {
+            std::ptr::eq(table.program, self) && std::ptr::eq(source.program(), self)
+        });
+        self.decode_with_declaration(source, projections, || {
             Ok(std::borrow::Cow::Borrowed(source.declaration()))
         })
     }
@@ -53,6 +57,7 @@ impl<'a> ProgramIndex<'a> {
     fn decode_with_declaration<'d>(
         &self,
         source: &MethodSource<'_, 'a>,
+        projections: Option<&super::MemberProjections<'_, 'a>>,
         declaration: impl FnOnce() -> Result<
             std::borrow::Cow<'d, crate::p0::MethodDeclaration>,
             MethodError,
@@ -69,15 +74,22 @@ impl<'a> ProgramIndex<'a> {
         let (_, return_shape) = source
             .program()
             .type_descriptor(crate::TypeId(source.declaration().return_type_id))?;
-        let (items, reference_count) = match self.decode_directory(code) {
-            Ok(directory) => (directory.items, directory.reference_count),
+        let directory = match self.decode_directory(code) {
+            Ok(directory) => directory,
             Err((prefix, error)) => return outcome(code, prefix, error),
         };
-        let references = match self.read_reference_facts(&items, reference_count, return_shape) {
-            Ok(facts) => facts,
-            Err(error) => return outcome(code, items, error),
-        };
-        let layout = match self.check_method_layout(code, &items, &references.facts) {
+        let items = directory.items;
+        let references =
+            match self.read_reference_facts(&items, directory.reference_count, return_shape) {
+                Ok(facts) => facts,
+                Err(error) => return outcome(code, items, error),
+            };
+        let layout = match self.check_method_layout(
+            code,
+            &items,
+            directory.instruction_count,
+            &references.facts,
+        ) {
             Ok(layout) => layout,
             Err(error) => return outcome(code, items, error),
         };
@@ -115,7 +127,7 @@ impl<'a> ProgramIndex<'a> {
                 issues: references.issues,
             },
         );
-        match super::ir::build(&decoded) {
+        match super::ir::build(&decoded, directory.instruction_count, projections) {
             Ok(ir) => decoded.set_ir(ir),
             Err(error) => decoded.set_ir_error(error),
         }

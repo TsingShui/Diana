@@ -242,23 +242,16 @@ impl JavaDecompiler {
                 Ok(cfg) => cfg,
                 Err(failure) => return Ok(Err(failure)),
             };
-            let method_reference = crate::ir::MethodReference {
-                owner: class.class_type().clone(),
-                name: decoded_method.name().to_string(),
-                descriptor: crate::ir::MethodDescriptor {
-                    parameters: decoded_method.param_types().to_vec(),
-                    return_type: decoded_method.return_type().clone(),
-                },
-            };
-            let inferred_parameter_types = source_signatures.parameter_types(&method_reference);
-            let inferred_return_type = source_signatures.return_type(&method_reference);
-            let body_parameter_types = source_signatures.body_parameter_types(&method_reference);
+            let method_reference = cfg.method().reference();
+            let inferred_parameter_types = source_signatures.parameter_types(method_reference);
+            let inferred_return_type = source_signatures.return_type(method_reference);
+            let exceptions = exception_contracts.get(method_reference).map(Vec::as_slice);
             let function_types = is_function_object
                 .then(|| {
                     super::function_object_types::FunctionObjectMethodInference::infer(
                         decoded_method,
                         &class.interfaces,
-                        &body_parameter_types,
+                        &source_signatures.body_parameter_types(method_reference),
                         inferred_return_type.as_ref(),
                         &self.source_abi,
                     )
@@ -294,9 +287,7 @@ impl JavaDecompiler {
                 class,
                 decoded_method,
                 &mut cfg,
-                exception_contracts
-                    .get(&method_reference)
-                    .map(Vec::as_slice),
+                exceptions,
                 (!source_parameter_types.is_empty()).then_some(source_parameter_types),
                 inferred_return_type.as_ref(),
                 function_types.as_ref().map(|types| types.interface()),

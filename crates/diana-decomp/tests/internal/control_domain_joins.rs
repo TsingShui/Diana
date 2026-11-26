@@ -242,3 +242,37 @@ fn branching_term_prefixes_preserve_each_sibling() {
         }
     }
 }
+
+#[test]
+fn interleaved_long_branches_extend_independent_term_pages() {
+    let names = (0..80).map(BoolVariable::Atom).collect::<BTreeSet<_>>();
+    for conjunction in [true, false] {
+        let mut logic = DomainLogic::new(&names);
+        let atoms: Vec<_> = names
+            .iter()
+            .map(|name| logic.symbol(name.clone()).unwrap())
+            .collect();
+        let mut base = atoms[0];
+        for &atom in &atoms[1..20] {
+            base = logic.junction(base, atom, conjunction).unwrap();
+        }
+        let mut branches =
+            [atoms[20], atoms[21]].map(|atom| logic.junction(base, atom, conjunction).unwrap());
+        for &atom in &atoms[22..] {
+            for branch in &mut branches {
+                *branch = logic.junction(*branch, atom, conjunction).unwrap();
+            }
+        }
+        assert_eq!(
+            logic.junction_terms(&base, conjunction).unwrap(),
+            &atoms[..20]
+        );
+        for (index, branch) in branches.iter().enumerate() {
+            let mut expected = atoms[..20].to_vec();
+            expected.push(atoms[20 + index]);
+            expected.extend_from_slice(&atoms[22..]);
+            assert_eq!(logic.junction_terms(branch, conjunction).unwrap(), expected);
+        }
+        assert!(logic.term_arena.len() <= 2 * atoms.len());
+    }
+}

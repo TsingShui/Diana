@@ -471,7 +471,10 @@ impl InheritedMethodAbi {
         reference: &MethodReference,
         owner: &ClassTypeSignature,
         owner_parameters: &[TypeParameter],
-        declarations: &BTreeMap<(String, MethodDescriptor), Vec<(ArgType, GenericMethodContract)>>,
+        declarations: &BTreeMap<
+            (String, MethodDescriptor),
+            Vec<(ArgType, Arc<GenericMethodContract>)>,
+        >,
         owner_ancestors: Option<&std::collections::BTreeSet<String>>,
         hierarchy: &crate::analysis::method_override::GenericTypeHierarchy,
         type_index: Option<&dyn TypeHierarchy>,
@@ -641,11 +644,11 @@ pub(crate) struct JavaSourceAbi {
         std::collections::BTreeMap<(String, ArgType), Vec<(ArgType, GenericFieldContract)>>,
     method_exceptions: std::collections::BTreeMap<MethodReference, Vec<ArgType>>,
 
-    generic_methods: std::collections::BTreeMap<MethodReference, GenericMethodContract>,
-    resolved_methods: Arc<RwLock<HashMap<MethodReference, Option<GenericMethodContract>>>>,
+    generic_methods: std::collections::BTreeMap<MethodReference, Arc<GenericMethodContract>>,
+    resolved_methods: Arc<RwLock<HashMap<MethodReference, Option<Arc<GenericMethodContract>>>>>,
     generic_method_declarations: std::collections::BTreeMap<
         (String, crate::ir::MethodDescriptor),
-        Vec<(ArgType, GenericMethodContract)>,
+        Vec<(ArgType, Arc<GenericMethodContract>)>,
     >,
     function_object_types: std::collections::BTreeMap<ArgType, JvmTypeSignature>,
     function_object_identities: std::sync::Arc<BTreeSet<ArgType>>,
@@ -854,7 +857,7 @@ impl JavaSourceAbi {
                                 return_type: method.return_type().clone(),
                             },
                         },
-                        contract,
+                        Arc::new(contract),
                     ))
                 })
             })
@@ -920,6 +923,7 @@ impl JavaSourceAbi {
                         hierarchy,
                         type_index,
                     ) {
+                        let contract = Arc::new(contract);
                         Self::index_generic_method(
                             &mut generic_method_declarations,
                             &reference,
@@ -1063,15 +1067,15 @@ impl JavaSourceAbi {
     fn index_generic_method(
         declarations: &mut BTreeMap<
             (String, MethodDescriptor),
-            Vec<(ArgType, GenericMethodContract)>,
+            Vec<(ArgType, Arc<GenericMethodContract>)>,
         >,
         method: &MethodReference,
-        contract: &GenericMethodContract,
+        contract: &Arc<GenericMethodContract>,
     ) {
         declarations
             .entry((method.name.clone(), method.descriptor.clone()))
             .or_default()
-            .push((method.owner.clone(), contract.clone()));
+            .push((method.owner.clone(), Arc::clone(contract)));
     }
 
     pub(crate) fn owner_type(&self, owner: &ArgType) -> Option<&ClassTypeSignature> {
@@ -1261,9 +1265,12 @@ impl JavaSourceAbi {
             .unwrap_or_default()
     }
 
-    pub(crate) fn generic_method(&self, method: &MethodReference) -> Option<GenericMethodContract> {
+    pub(crate) fn generic_method(
+        &self,
+        method: &MethodReference,
+    ) -> Option<Arc<GenericMethodContract>> {
         if let Some(contract) = self.generic_methods.get(method) {
-            return Some(contract.clone());
+            return Some(Arc::clone(contract));
         }
         if let Ok(cache) = self.resolved_methods.read() {
             if let Some(result) = cache.get(method) {
@@ -1290,11 +1297,14 @@ impl JavaSourceAbi {
         result
     }
 
-    fn inherited_generic_method(&self, method: &MethodReference) -> Option<GenericMethodContract> {
+    fn inherited_generic_method(
+        &self,
+        method: &MethodReference,
+    ) -> Option<Arc<GenericMethodContract>> {
         let candidates = self
             .generic_method_declarations
             .get(&(method.name.clone(), method.descriptor.clone()))?;
-        let mut best: Option<(&ArgType, &GenericMethodContract)> = None;
+        let mut best: Option<(&ArgType, &Arc<GenericMethodContract>)> = None;
         for (candidate_owner, contract) in candidates
             .iter()
             .filter(|(owner, _)| self.is_subtype(&method.owner, owner))
@@ -1315,7 +1325,7 @@ impl JavaSourceAbi {
     pub(crate) fn generic_methods<'a>(
         &self,
         methods: impl IntoIterator<Item = &'a MethodReference>,
-    ) -> std::collections::BTreeMap<MethodReference, GenericMethodContract> {
+    ) -> std::collections::BTreeMap<MethodReference, Arc<GenericMethodContract>> {
         methods
             .into_iter()
             .filter_map(|method| {

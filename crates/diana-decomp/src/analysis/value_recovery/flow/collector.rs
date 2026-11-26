@@ -275,7 +275,9 @@ impl<'ir> FlowCollector<'ir> {
             condition,
             domain,
             event,
-            UseLocation::Observation(location.id()),
+            location
+                .id()
+                .map_or(UseLocation::Missing, UseLocation::Observation),
         )?;
         self.visit_expression_in_order(
             value,
@@ -506,7 +508,7 @@ impl<'ir> FlowCollector<'ir> {
                     loop_owner: self.loop_owner,
                     event,
                     repetitive: self.loop_owner != ScopeId::default(),
-                    evaluation_prefix: prefix.clone(),
+                    evaluation_prefix: self.graph.prefixes.record(prefix),
                     context,
                     consumer,
                 },

@@ -9,13 +9,19 @@ use std::cell::{Cell, OnceCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::hash::BuildHasher;
-use std::ops::Range;
 
 use crate::ir::bdd::{Bdd, BddContext, BddError};
 use crate::ir::{BoolExpr, BoolVariable};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct ControlDomain(u32);
+
+impl ControlDomain {
+    /// Arena-local ordinal, including the two constant domains.
+    pub(super) fn index(self) -> usize {
+        self.0 as usize
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct DomainError {
@@ -84,6 +90,75 @@ impl From<BddError> for DomainError {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct TermSpan {
+    page: usize,
+    start: usize,
+    len: usize,
+}
+
+#[derive(Default)]
+struct TermArena {
+    pages: Vec<Vec<ControlDomain>>,
+    shared: Option<usize>,
+}
+
+impl TermArena {
+    fn terms(&self, span: TermSpan) -> &[ControlDomain] {
+        &self.pages[span.page][span.start..span.start + span.len]
+    }
+
+    fn store(&mut self, terms: &[ControlDomain], operand: Option<TermSpan>) -> TermSpan {
+        let mut separate = false;
+        if let Some(span) = operand {
+            let data = &mut self.pages[span.page];
+            let prefix_end = span.start + span.len;
+            if data[prefix_end - 1] == terms[span.len - 1] {
+                let end = span.start + terms.len();
+                let shared_end = end.min(data.len());
+                let shared_len = shared_end - span.start;
+                if data[prefix_end..shared_end] == terms[span.len..shared_len] {
+                    data.extend_from_slice(&terms[shared_len..]);
+                    return TermSpan {
+                        len: terms.len(),
+                        ..span
+                    };
+                }
+                // A long condition continues a different branch. Give it an
+                // independently growable prefix for its later descendants.
+                separate = terms.len() >= 16;
+            }
+        }
+        let page = if separate {
+            self.pages.push(terms.to_vec());
+            return TermSpan {
+                page: self.pages.len() - 1,
+                start: 0,
+                len: terms.len(),
+            };
+        } else if let Some(page) = self.shared.filter(|&page| self.pages[page].len() < 16384) {
+            page
+        } else {
+            let page = self.pages.len();
+            self.pages.push(Vec::new());
+            self.shared = Some(page);
+            page
+        };
+        let start = self.pages[page].len();
+        self.pages[page].extend_from_slice(terms);
+        TermSpan {
+            page,
+            start,
+            len: terms.len(),
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.pages.iter().map(Vec::len).sum()
+    }
+}
+
 #[derive(Debug)]
 enum DomainNode {
     True,
@@ -92,19 +167,15 @@ enum DomainNode {
     Not(ControlDomain),
     AndPair([ControlDomain; 2]),
     OrPair([ControlDomain; 2]),
-    And(Range<usize>),
-    Or(Range<usize>),
+    And(TermSpan),
+    Or(TermSpan),
 }
 
 impl DomainNode {
-    fn terms<'a>(
-        &'a self,
-        conjunction: bool,
-        arena: &'a [ControlDomain],
-    ) -> Option<&'a [ControlDomain]> {
+    fn terms<'a>(&'a self, conjunction: bool, arena: &'a TermArena) -> Option<&'a [ControlDomain]> {
         match (self, conjunction) {
             (Self::AndPair(terms), true) | (Self::OrPair(terms), false) => Some(terms),
-            (Self::And(range), true) | (Self::Or(range), false) => Some(&arena[range.clone()]),
+            (Self::And(range), true) | (Self::Or(range), false) => Some(arena.terms(*range)),
             _ => None,
         }
     }
@@ -158,7 +229,7 @@ pub(super) struct DomainLogic {
     joins: foldhash::HashMap<(ControlDomain, ControlDomain, bool), ControlDomain>,
     /// Larger canonical sets occupy one method-local arena. The table stores
     /// their creating domains and only accepts an exact ordered-term match.
-    term_arena: Vec<ControlDomain>,
+    term_arena: TermArena,
     term_work: Vec<ControlDomain>,
     junction_index: hashbrown::HashTable<(u64, ControlDomain)>,
     term_hasher: foldhash::fast::RandomState,
@@ -185,7 +256,7 @@ impl DomainLogic {
             nodes: Vec::new(),
             symbols: BTreeMap::new(),
             joins: Default::default(),
-            term_arena: Vec::new(),
+            term_arena: TermArena::default(),
             term_work: Vec::new(),
             junction_index: hashbrown::HashTable::new(),
             term_hasher: Default::default(),
@@ -768,27 +839,12 @@ impl DomainLogic {
         terms: &[ControlDomain],
         operand: ControlDomain,
         conjunction: bool,
-    ) -> Result<Range<usize>, DomainError> {
+    ) -> Result<TermSpan, DomainError> {
         let prefix = match (self.node(operand)?, conjunction) {
-            (DomainNode::And(range), true) | (DomainNode::Or(range), false) => Some(range.clone()),
+            (DomainNode::And(span), true) | (DomainNode::Or(span), false) => Some(*span),
             _ => None,
         };
-        if let Some(range) = prefix {
-            // The union contains every sorted operand term. If its maximum
-            // retains its ordinal, the entire operand is an unchanged prefix.
-            if self.term_arena[range.end - 1] == terms[range.len() - 1] {
-                let end = range.start + terms.len();
-                let shared_end = end.min(self.term_arena.len());
-                let shared = shared_end - range.start;
-                if self.term_arena[range.end..shared_end] == terms[range.len()..shared] {
-                    self.term_arena.extend_from_slice(&terms[shared..]);
-                    return Ok(range.start..end);
-                }
-            }
-        }
-        let start = self.term_arena.len();
-        self.term_arena.extend_from_slice(terms);
-        Ok(start..self.term_arena.len())
+        Ok(self.term_arena.store(terms, prefix))
     }
 
     fn junction_terms<'a>(

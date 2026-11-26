@@ -7,6 +7,13 @@ use crate::ir::{ArgType, InsnType, MemberReference, MethodDescriptor, MethodRefe
 
 use super::JavaSourceAbi;
 
+/// A local candidate can acquire effects between two sites in declaration
+/// order. Its ABI seeds apply only until its first sweep completes.
+enum InvokeExceptions {
+    Fixed(Vec<ArgType>),
+    Local(Option<Vec<ArgType>>),
+}
+
 /// Recovers checked-exception contracts absent from DEX method metadata.
 ///
 /// The analysis is a forward may-effect fixed point over the class-local call
@@ -58,8 +65,7 @@ impl<'a> DeclaredExceptionAnalysis<'a> {
             .map(|(reference, _)| reference)
             .collect::<BTreeSet<_>>();
         let mut callers = BTreeMap::<&MethodReference, Vec<(usize, u32)>>::new();
-        let mut generic = BTreeMap::new();
-        let mut external = BTreeMap::new();
+        let mut invoked = foldhash::HashMap::default();
         let mut checked = BTreeMap::new();
 
         // Preserve the first sweep's declaration order. Before a local method
@@ -85,27 +91,38 @@ impl<'a> DeclaredExceptionAnalysis<'a> {
                         escapes.insert(exception.clone());
                     }
                 };
-                if let Some(exceptions) = generic
-                    .entry(method)
-                    .or_insert_with(|| self.generic_exceptions(method))
-                {
-                    exceptions.iter().for_each(add_exception);
-                    continue;
-                }
-                if candidate_refs.contains(method) {
-                    callers
-                        .entry(method)
-                        .or_default()
-                        .push((caller, instruction.offset));
-                }
-                if let Some(local) = contracts.get(method) {
-                    local.iter().for_each(add_exception);
-                } else {
-                    external
-                        .entry(method)
-                        .or_insert_with(|| self.abi.method_exceptions(method))
-                        .iter()
-                        .for_each(add_exception);
+                let contract = invoked.entry(method).or_insert_with(|| {
+                    if let Some(exceptions) = self.generic_exceptions(method) {
+                        return InvokeExceptions::Fixed(exceptions);
+                    }
+                    if &method.owner == class.class_type() {
+                        if candidate_refs.contains(method) {
+                            return InvokeExceptions::Local(None);
+                        }
+                        if let Some(declared) = contracts.get(method) {
+                            return InvokeExceptions::Fixed(declared.iter().cloned().collect());
+                        }
+                    }
+                    InvokeExceptions::Fixed(self.abi.method_exceptions(method))
+                });
+                match contract {
+                    InvokeExceptions::Fixed(exceptions) => {
+                        exceptions.iter().for_each(add_exception)
+                    }
+                    InvokeExceptions::Local(initial) => {
+                        callers
+                            .entry(method)
+                            .or_default()
+                            .push((caller, instruction.offset));
+                        if let Some(local) = contracts.get(method) {
+                            local.iter().for_each(add_exception);
+                        } else {
+                            initial
+                                .get_or_insert_with(|| self.abi.method_exceptions(method))
+                                .iter()
+                                .for_each(add_exception);
+                        }
+                    }
                 }
             }
             contracts

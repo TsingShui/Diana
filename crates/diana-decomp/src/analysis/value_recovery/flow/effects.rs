@@ -27,6 +27,15 @@ enum Locations {
 }
 
 impl Locations {
+    fn same_storage(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Empty, Self::Empty) => true,
+            (Self::One(left), Self::One(right)) => left == right,
+            (Self::Many(left), Self::Many(right)) => Rc::ptr_eq(left, right),
+            _ => false,
+        }
+    }
+
     fn union(self, other: Self) -> Self {
         use Locations::*;
         match (self, other) {
@@ -67,6 +76,47 @@ pub(super) struct EffectSummary {
     instruction: InstructionEffects,
     reads: Locations,
     writes: Locations,
+}
+
+/// Indices live in the same immutable value graph as their use occurrences.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct EvaluationPrefix(usize);
+
+#[derive(Default)]
+pub(super) struct EvaluationPrefixes {
+    empty: EffectSummary,
+    nonempty: Vec<EffectSummary>,
+}
+
+impl EvaluationPrefixes {
+    pub(super) fn record(&mut self, prefix: &EffectSummary) -> EvaluationPrefix {
+        if prefix.instruction.is_pure()
+            && matches!(
+                (&prefix.reads, &prefix.writes),
+                (Locations::Empty, Locations::Empty)
+            )
+        {
+            return EvaluationPrefix(0);
+        }
+        // Consecutive operands often have the same prefix. Comparing shared
+        // set identities keeps recording constant-time even for many fields.
+        if !self.nonempty.last().is_some_and(|last| {
+            last.instruction == prefix.instruction
+                && last.reads.same_storage(&prefix.reads)
+                && last.writes.same_storage(&prefix.writes)
+        }) {
+            self.nonempty.push(prefix.clone());
+        }
+        EvaluationPrefix(self.nonempty.len())
+    }
+
+    pub(super) fn get(&self, index: EvaluationPrefix) -> &EffectSummary {
+        if index.0 == 0 {
+            &self.empty
+        } else {
+            &self.nonempty[index.0 - 1]
+        }
+    }
 }
 
 impl EffectSummary {
@@ -230,6 +280,10 @@ impl EffectSummary {
         self.instruction.is_pure()
     }
 
+    pub(super) fn is_pure_without_control(&self) -> bool {
+        self.instruction.without_control().is_pure()
+    }
+
     pub(super) fn can_relocate(&self) -> bool {
         self.instruction.can_relocate()
     }
@@ -239,22 +293,31 @@ impl EffectSummary {
     }
 
     pub(super) fn conflicts_with(&self, other: &Self) -> bool {
-        if self.is_pure() || other.is_pure() {
+        self.conflicts_with_prefix(other, false)
+    }
+
+    pub(super) fn conflicts_with_prefix(&self, prefix: &Self, ignore_control: bool) -> bool {
+        let instruction = if ignore_control {
+            prefix.instruction.without_control()
+        } else {
+            prefix.instruction
+        };
+        if self.is_pure() || instruction.is_pure() {
             return false;
         }
         if self.instruction.controls()
-            || other.instruction.controls()
+            || instruction.controls()
             || self.instruction.synchronizes()
-            || other.instruction.synchronizes()
+            || instruction.synchronizes()
             || self.instruction.calls()
-            || other.instruction.calls()
-            || (self.instruction.may_throw() && other.instruction.may_throw())
+            || instruction.calls()
+            || (self.instruction.may_throw() && instruction.may_throw())
         {
             return true;
         }
-        self.writes.overlaps(&other.reads)
-            || self.writes.overlaps(&other.writes)
-            || other.writes.overlaps(&self.reads)
+        self.writes.overlaps(&prefix.reads)
+            || self.writes.overlaps(&prefix.writes)
+            || prefix.writes.overlaps(&self.reads)
     }
 
     fn read(&mut self, location: MemoryLocation) {

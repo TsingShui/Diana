@@ -64,8 +64,8 @@ fn store_uses_receiver_before_value_and_keeps_both_field_locations() {
     assert_eq!(graph.effects.len(), 1);
     assert_eq!(graph.effects[0].effect, stored_effect);
     assert_eq!(
-        graph.uses[&SsaVar::new(3, 0)][0].evaluation_prefix,
-        EffectSummary::direct(&read)
+        graph.evaluation_prefix(&graph.uses[&SsaVar::new(3, 0)][0]),
+        &EffectSummary::direct(&read)
     );
 }
 
@@ -89,15 +89,58 @@ fn a_wide_call_resumes_siblings_after_a_deep_store_in_evaluation_order() {
     let uses = &graph.uses[&SsaVar::new(3, 0)];
     assert_eq!(uses.len(), 97);
     assert!(uses[..48].iter().all(|usage| {
-        usage.consumer == Some(InsnType::Invoke) && usage.evaluation_prefix.is_pure()
+        usage.consumer == Some(InsnType::Invoke) && graph.evaluation_prefix(usage).is_pure()
     }));
     assert_eq!(uses[48].consumer, Some(InsnType::Iput));
-    assert_eq!(uses[48].evaluation_prefix, EffectSummary::direct(&read));
+    assert_eq!(
+        graph.evaluation_prefix(&uses[48]),
+        &EffectSummary::direct(&read)
+    );
     assert!(uses[49..].iter().all(|usage| {
-        usage.consumer == Some(InsnType::Invoke) && usage.evaluation_prefix == after_store
+        usage.consumer == Some(InsnType::Invoke) && graph.evaluation_prefix(usage) == &after_store
     }));
     assert_eq!(graph.effects.len(), 1);
     assert_eq!(graph.effects[0].effect, total);
+}
+
+#[test]
+fn repeated_uses_keep_their_exact_field_prefix_as_later_reads_accumulate() {
+    let read = |field| {
+        let mut raw = InsnNode::new(InsnType::Sget, 0);
+        raw.payload.field_index = Some(field);
+        SemanticOperation::from_instruction(raw).unwrap()
+    };
+    let first = read(41);
+    let second = read(43);
+    let third = read(47);
+    let first_two = EffectSummary::direct(&first).join(EffectSummary::direct(&second));
+    let all_three = first_two.clone().join(EffectSummary::direct(&third));
+    let call = operation(
+        InsnType::Invoke,
+        vec![
+            value(),
+            nested(first),
+            nested(second),
+            value(),
+            value(),
+            nested(third),
+            value(),
+        ],
+    );
+    let root = block(vec![
+        SemanticStatementKind::Instruction(call),
+        definition(value()),
+    ]);
+    let graph = ValueFlowGraph::build_source(&root, &BTreeSet::new()).unwrap();
+    let uses = &graph.uses[&SsaVar::new(3, 0)];
+    let prefixes: Vec<_> = uses.iter().map(|u| graph.evaluation_prefix(u)).collect();
+    let empty = EffectSummary::pure();
+    assert_eq!(
+        prefixes,
+        [&empty, &first_two, &first_two, &all_three, &empty]
+    );
+    assert!(std::ptr::eq(prefixes[1], prefixes[2]));
+    assert!(std::ptr::eq(prefixes[0], prefixes[4]));
 }
 
 #[test]
@@ -116,8 +159,8 @@ fn selected_condition_control_applies_to_its_arm_use_only() {
         let graph = ValueFlowGraph::build_source(&root, &BTreeSet::new()).unwrap();
         assert!(graph.effects.is_empty());
         assert_eq!(
-            graph.uses[&SsaVar::new(3, 0)][0].evaluation_prefix,
-            EffectSummary::direct(&condition)
+            graph.evaluation_prefix(&graph.uses[&SsaVar::new(3, 0)][0]),
+            &EffectSummary::direct(&condition)
         );
     }
 }

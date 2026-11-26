@@ -95,6 +95,7 @@ fn shared_cycle_ranks_keep_all_effects_and_conditional_queries_preserve_proof_or
     ]);
     let mut graph = ValueFlowGraph::build_source(&root, &BTreeSet::new()).unwrap();
     let nonterminal = graph.logic.predicate(&condition).unwrap();
+    let opposite = graph.logic.not(nonterminal).unwrap();
     let versions = EffectVersions::new(&graph);
     let effect = EffectSummary::synchronization();
     for _ in 0..2 {
@@ -108,10 +109,13 @@ fn shared_cycle_ranks_keep_all_effects_and_conditional_queries_preserve_proof_or
     assert_eq!(versions.uncharged_facts.get(), Some(&false));
     let mut oracle = ValueFlowGraph::build_source(&root, &BTreeSet::new()).unwrap();
     let oracle_nonterminal = oracle.logic.predicate(&condition).unwrap();
+    let oracle_opposite = oracle.logic.not(oracle_nonterminal).unwrap();
     let domain = graph.logic.truth();
     let flow = graph.semantic_flow().unwrap();
     for (domain, oracle_domain) in [
         (domain, oracle.logic.truth()),
+        (nonterminal, oracle_nonterminal),
+        (opposite, oracle_opposite),
         (nonterminal, oracle_nonterminal),
     ] {
         for s in 0..18 {
@@ -144,6 +148,11 @@ fn shared_cycle_ranks_keep_all_effects_and_conditional_queries_preserve_proof_or
             }
         }
     }
+    // Revisiting the first movement after its complement uses only the
+    // queried interval. The complete complement row is still available.
+    let runs = versions.domain_runs.get().unwrap().as_ref().unwrap();
+    assert!(runs.charged_earlier(nonterminal));
+    assert!(!runs.charged_earlier(opposite));
     let order = versions.order.get().unwrap();
     let reachability = flow.indexed_reachability();
     assert_eq!(
@@ -288,6 +297,8 @@ fn only_complete_unsaturated_domain_rows_are_reused_for_new_conflicts() {
     for i in 0..10 {
         assert_eq!(runs.eligible(i), i >= 6);
     }
+
+    assert!(!runs.charged_earlier(domains[0]));
 
     // A different movement starts a fresh ordered scan, including domains
     // proved disjoint before saturation in the previous movement.
