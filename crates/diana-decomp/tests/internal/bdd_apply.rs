@@ -165,3 +165,62 @@ fn ordered_junctions_flatten_only_the_supplied_level_and_keep_duplicate_tests() 
         assert_eq!(combine(vec![neutral.clone(), b.clone()]), b);
     }
 }
+
+#[test]
+fn opposite_literal_shares_the_compound_budget_and_retains_its_completed_child() {
+    let first = BoolVariable::Atom(1);
+    let second = BoolVariable::Atom(2);
+    let mut context = BddContext::ordered([first.clone(), second.clone()]);
+    context.limits.cache_entries = 1;
+    let signed = BoolExpr::Not(Box::new(BoolExpr::Symbol(first.clone())));
+    let error = Err(BddError::ResourceLimit {
+        resource: BddResource::CacheEntries,
+        limit: 1,
+    });
+    assert_eq!(context.compile(&signed), error);
+    let positive = context.compile_literal(&first, true).unwrap();
+    assert_eq!(context.compile_literal(&second, true), error);
+    context.limits.cache_entries = 2;
+    let negative = context.compile(&signed).unwrap();
+    assert_eq!(context.compile_literal(&first, false), Ok(negative));
+    assert!(context.and(positive, negative).unwrap().is_false());
+    assert_eq!(
+        context.compile_literal(&second, true),
+        Err(BddError::ResourceLimit {
+            resource: BddResource::CacheEntries,
+            limit: 2
+        })
+    );
+}
+
+#[test]
+fn arena_growth_retains_canonical_ids_and_looks_up_existing_nodes_at_its_limit() {
+    let mut manager = Manager::new(
+        42,
+        BddLimits {
+            nodes: 65_536,
+            cache_entries: 1,
+            operations: 1,
+        },
+    );
+    for variable in 0..65_534 {
+        assert_eq!(
+            manager.intern(variable, 0, 1).unwrap(),
+            (variable + 2) as u16
+        );
+    }
+    for variable in (0..65_534).rev() {
+        assert_eq!(
+            manager.intern(variable, 0, 1).unwrap(),
+            (variable + 2) as u16
+        );
+    }
+    assert_eq!(
+        manager.intern(0, 1, 0),
+        Err(BddError::ResourceLimit {
+            resource: BddResource::Nodes,
+            limit: 65_536
+        })
+    );
+    assert_eq!(manager.intern(0, 1, 1), Ok(1));
+}

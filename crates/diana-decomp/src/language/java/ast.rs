@@ -277,7 +277,7 @@ thread_local! {
     static PRESERVE_DEX_NAMES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-fn preserve_dex_names() -> bool {
+pub(crate) fn preserve_dex_names() -> bool {
     PRESERVE_DEX_NAMES.get()
 }
 
@@ -458,6 +458,23 @@ impl JavaClassType {
                 .iter()
                 .zip(other.segments.iter())
                 .all(|(left, right)| left.name == right.name)
+    }
+
+    pub(crate) fn printed_class_name(&self) -> std::borrow::Cow<'_, str> {
+        let mut names = self
+            .segments
+            .iter()
+            .map(|segment| segment.name.printed_name());
+        let first = names.next().unwrap_or_default();
+        if names.len() == 0 {
+            return first.into();
+        }
+        let mut spelling = first.to_owned();
+        for name in names {
+            spelling.push('.');
+            spelling.push_str(name);
+        }
+        spelling.into()
     }
 
     pub fn name(&self) -> JavaClassName {

@@ -1,7 +1,6 @@
 //! Gated-SSA recovery for values selected by acyclic control flow.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 
 use crate::ir::{
     analysis::{
@@ -25,7 +24,7 @@ pub(in crate::analysis::value_recovery) struct GatedControlFlow {
     regions: BTreeMap<BlockId, SelectionRegion>,
     tests: BTreeMap<BlockId, InsnNode>,
     loop_headers: BTreeSet<BlockId>,
-    dominators: Arc<DominatorTree>,
+    dominators: DominatorTree,
 }
 
 impl GatedControlFlow {
@@ -33,18 +32,14 @@ impl GatedControlFlow {
 
     pub(in crate::analysis::value_recovery) fn analyze(cfg: &CFG) -> Result<Self, DominanceError> {
         let predecessors = cfg.normal_predecessor_snapshot();
-        let dominators = DominatorTree::compute_normal(cfg, cfg.block_ids(), &predecessors)?;
-        Ok(Self::from_normal_dominance(
-            cfg,
-            &predecessors,
-            Arc::new(dominators),
-        ))
+        let dominators = DominatorTree::normal(cfg)?;
+        Ok(Self::from_normal_dominance(cfg, &predecessors, dominators))
     }
 
     pub(in crate::analysis::value_recovery) fn from_normal_dominance(
         cfg: &CFG,
         predecessors: &BTreeMap<BlockId, Vec<BlockId>>,
-        dominators: Arc<DominatorTree>,
+        dominators: DominatorTree,
     ) -> Self {
         let phi_blocks = cfg
             .blocks_iter()
@@ -278,7 +273,7 @@ impl SelectionCost {
                     let Some(key) = graph.key(register) else {
                         continue;
                     };
-                    let Some([definition]) = graph.definitions.get(&key).map(Vec::as_slice) else {
+                    let Some([definition]) = graph.definitions.get(&key) else {
                         continue;
                     };
                     let single_use = graph.uses.get(&key).is_some_and(|uses| uses.len() == 1);

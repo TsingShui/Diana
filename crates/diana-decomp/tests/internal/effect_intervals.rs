@@ -103,31 +103,45 @@ fn shared_cycle_ranks_keep_all_effects_and_conditional_queries_preserve_proof_or
             EffectStability::Stable
         );
     }
-    assert!(versions.order.get().is_none());
+    assert!(versions.domain_runs.get().unwrap().is_some());
+    assert!(versions.order.get().is_some());
     assert_eq!(versions.uncharged_facts.get(), Some(&false));
+    let mut oracle = ValueFlowGraph::build_source(&root, &BTreeSet::new()).unwrap();
+    let oracle_nonterminal = oracle.logic.predicate(&condition).unwrap();
     let domain = graph.logic.truth();
     let flow = graph.semantic_flow().unwrap();
-    for s in 0..18 {
-        for t in 0..18 {
-            let (from, to) = (after(s), before(t));
-            let expected = if !flow.must_reach(from, to) {
-                EffectStability::DoesNotReach
-            } else if graph.effects.iter().any(|fact| {
-                fact.point != from
-                    && fact.point != to
-                    && !graph.logic.disjoint(domain, fact.domain).unwrap()
-                    && flow.reaches(from, fact.point)
-                    && flow.reaches(fact.point, to)
-            }) {
-                EffectStability::Changed
-            } else {
-                EffectStability::Stable
-            };
-            assert_eq!(
-                versions.stability(&effect, domain, from, to),
-                expected,
-                "{s} to {t}"
-            );
+    for (domain, oracle_domain) in [
+        (domain, oracle.logic.truth()),
+        (nonterminal, oracle_nonterminal),
+    ] {
+        for s in 0..18 {
+            for t in 0..18 {
+                let (from, to) = (after(s), before(t));
+                let expected = if !flow.must_reach(from, to) {
+                    EffectStability::DoesNotReach
+                } else {
+                    let mut changed = false;
+                    for fact in &oracle.effects {
+                        if fact.point != from
+                            && fact.point != to
+                            && !oracle.logic.disjoint(oracle_domain, fact.domain).unwrap()
+                        {
+                            changed |=
+                                flow.reaches(from, fact.point) && flow.reaches(fact.point, to);
+                        }
+                    }
+                    if changed {
+                        EffectStability::Changed
+                    } else {
+                        EffectStability::Stable
+                    }
+                };
+                assert_eq!(
+                    versions.stability(&effect, domain, from, to),
+                    expected,
+                    "{s} to {t}"
+                );
+            }
         }
     }
     let order = versions.order.get().unwrap();
@@ -141,4 +155,70 @@ fn shared_cycle_ranks_keep_all_effects_and_conditional_queries_preserve_proof_or
         versions.stability(&effect, domain, after(11), before(12)),
         EffectStability::Changed
     );
+}
+
+#[test]
+fn grouped_checks_keep_first_charges_and_recheck_separated_domains_after_saturation() {
+    use super::{EffectDomainRuns, EffectFact};
+    use crate::analysis::value_recovery::domain::DomainLogic;
+    use crate::ir::{BoolExpr, BoolVariable};
+
+    let variables = (0..4).map(BoolVariable::Atom).collect();
+    let mut logic = DomainLogic::new(&variables);
+    let domains = (0..4)
+        .map(|id| {
+            logic
+                .compile(&BoolExpr::Symbol(BoolVariable::Atom(id)))
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let mut effects = Vec::new();
+    for (domain, count) in [(0, 40), (1, 9), (2, 15), (3, 8), (0, 47)] {
+        for _ in 0..count {
+            effects.push(EffectFact {
+                point: after(effects.len() as u64),
+                domain: domains[domain],
+                effect: if domain == 1 {
+                    EffectSummary::pure()
+                } else {
+                    EffectSummary::synchronization()
+                },
+            });
+        }
+    }
+    let from = after(0);
+    let to = after(118);
+    let conflicts = |effect: &EffectFact| {
+        effect.point != from && effect.point != to && !effect.effect.is_pure()
+    };
+    // Before the proof limit, domain zero is disjoint. The first query on
+    // domain two crosses the limit, making subsequent checks conservative.
+    let mut saturated = false;
+    let expected: Vec<_> = effects
+        .iter()
+        .map(|fact| {
+            if !conflicts(fact) {
+                return false;
+            }
+            saturated |= fact.domain == domains[2];
+            saturated || fact.domain != domains[0]
+        })
+        .collect();
+    let runs = EffectDomainRuns::grouped(&effects).unwrap();
+    let mut saturated = false;
+    let mut checked = Vec::new();
+    assert!(runs.prepare(&effects, conflicts, |domain| {
+        checked.push(domain);
+        saturated |= domain == domains[2];
+        saturated || domain != domains[0]
+    }));
+    assert_eq!(checked, [domains[0], domains[2], domains[3], domains[0]]);
+    for (i, fact) in effects.iter().enumerate() {
+        assert_eq!(
+            runs.eligible(i) && conflicts(fact),
+            expected[i],
+            "effect {i}"
+        );
+    }
+    assert!(EffectDomainRuns::grouped(&[]).is_none());
 }

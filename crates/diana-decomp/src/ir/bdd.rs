@@ -124,12 +124,55 @@ impl ArenaNode {
     }
 }
 
+/// Arena keys are immutable and IDs 0 and 1 are the two terminals. Zero
+/// therefore marks an empty slot without a separate occupancy byte. The
+/// arena itself supplies a dense insertion-order sequence when growing.
+struct UniqueNodes {
+    slots: smallvec::SmallVec<[u16; 8]>,
+    hasher: foldhash::fast::RandomState,
+}
+
+impl UniqueNodes {
+    fn new() -> Self {
+        Self {
+            slots: smallvec::SmallVec::from_buf([0; 8]),
+            hasher: foldhash::fast::RandomState::default(),
+        }
+    }
+
+    fn slot(&self, hash: usize, nodes: &[ArenaNode], key: (usize, u32)) -> usize {
+        let mask = self.slots.len() - 1;
+        let mut slot = hash & mask;
+        loop {
+            let id = self.slots[slot];
+            if id == 0 || nodes[usize::from(id)].key() == key {
+                return slot;
+            }
+            slot = (slot + 1) & mask;
+        }
+    }
+
+    fn grow(&mut self, nodes: &[ArenaNode]) {
+        let len = self.slots.len() * 2;
+        let mask = len - 1;
+        let mut slots = smallvec::smallvec![0; len];
+        for (id, node) in nodes.iter().enumerate().skip(2) {
+            let mut slot = self.hasher.hash_one(node.key()) as usize & mask;
+            while slots[slot] != 0 {
+                slot = (slot + 1) & mask;
+            }
+            // The manager checked this ID before appending its node.
+            slots[slot] = id as u16;
+        }
+        self.slots = slots;
+    }
+}
+
 struct Manager {
     context: u64,
     nodes: Vec<ArenaNode>,
     // Nodes already own their immutable keys. Buckets only need their arena IDs.
-    unique: hashbrown::HashTable<u16>,
-    unique_hasher: foldhash::fast::RandomState,
+    unique: UniqueNodes,
     binary_cache: HashMap<u32, u16>,
     apply_work: Vec<ApplyFrame>,
     implication_work: ImplicationWork,
@@ -159,8 +202,7 @@ impl Manager {
                     ..falsity
                 },
             ],
-            unique: hashbrown::HashTable::new(),
-            unique_hasher: foldhash::fast::RandomState::default(),
+            unique: UniqueNodes::new(),
             binary_cache: HashMap::new(),
             apply_work: Vec::new(),
             implication_work: ImplicationWork::default(),
@@ -212,16 +254,12 @@ impl Manager {
             return Ok(low);
         }
         let key = (variable, u32::from(low) << 16 | u32::from(high));
-        let nodes = &self.nodes;
-        let hasher = &self.unique_hasher;
-        let entry = match self.unique.entry(
-            hasher.hash_one(key),
-            |&id| nodes[usize::from(id)].key() == key,
-            |&id| hasher.hash_one(nodes[usize::from(id)].key()),
-        ) {
-            hashbrown::hash_table::Entry::Occupied(existing) => return Ok(*existing.get()),
-            hashbrown::hash_table::Entry::Vacant(entry) => entry,
-        };
+        let hash = self.unique.hasher.hash_one(key) as usize;
+        let mut slot = self.unique.slot(hash, &self.nodes, key);
+        let existing = self.unique.slots[slot];
+        if existing != 0 {
+            return Ok(existing);
+        }
         if self.nodes.len() >= self.limits.nodes {
             return Err(BddError::ResourceLimit {
                 resource: BddResource::Nodes,
@@ -232,6 +270,12 @@ impl Manager {
             resource: BddResource::Nodes,
             limit: self.limits.nodes,
         })?;
+        // Maintain an empty probe slot even at the arena limit. Grow only
+        // for a genuinely new ID, after checking the method's node budget.
+        if self.nodes.len() - 2 >= self.unique.slots.len() / 4 * 3 {
+            self.unique.grow(&self.nodes);
+            slot = self.unique.slot(hash, &self.nodes, key);
+        }
         self.nodes.push(ArenaNode {
             variable,
             low,
@@ -240,7 +284,7 @@ impl Manager {
             has_complement: false,
             trivial_implications: 0,
         });
-        entry.insert(id);
+        self.unique.slots[slot] = id;
         Ok(id)
     }
 
@@ -792,7 +836,8 @@ impl DnfBuilder {
 
 struct Variable {
     index: usize,
-    compiled: Cell<Option<u16>>,
+    positive: Cell<Option<u16>>,
+    negative: Cell<Option<u16>>,
 }
 
 pub struct BddContext {
@@ -801,7 +846,7 @@ pub struct BddContext {
     variables_by_index: Vec<BoolVariable>,
     manager: RefCell<Manager>,
     expressions: RefCell<BTreeMap<BoolExpr, Bdd>>,
-    compiled_symbols: Cell<usize>,
+    compiled_literals: Cell<usize>,
     limits: BddLimits,
 }
 
@@ -833,17 +878,15 @@ impl BddContext {
         let mut variables = BTreeMap::new();
         let mut variables_by_index = Vec::new();
         for name in names {
-            if variables.contains_key(&name) {
+            let std::collections::btree_map::Entry::Vacant(slot) = variables.entry(name.clone())
+            else {
                 continue;
-            }
-            let index = variables_by_index.len();
-            variables.insert(
-                name.clone(),
-                Variable {
-                    index,
-                    compiled: Cell::new(None),
-                },
-            );
+            };
+            slot.insert(Variable {
+                index: variables_by_index.len(),
+                positive: Cell::new(None),
+                negative: Cell::new(None),
+            });
             variables_by_index.push(name);
         }
         let limits = BddLimits::for_variables(variables_by_index.len());
@@ -853,7 +896,7 @@ impl BddContext {
             variables_by_index,
             manager: RefCell::new(Manager::new(context, limits)),
             expressions: RefCell::new(BTreeMap::new()),
-            compiled_symbols: Cell::new(0),
+            compiled_literals: Cell::new(0),
             limits,
         }
     }
@@ -930,29 +973,60 @@ impl BddContext {
         manager.constrain(value, care)
     }
 
-    fn compile_symbol(&self, name: &BoolVariable) -> Result<Bdd, BddError> {
+    pub(crate) fn compile_literal(
+        &self,
+        name: &BoolVariable,
+        positive: bool,
+    ) -> Result<Bdd, BddError> {
         let symbol = self
             .variables
             .get(name)
             .ok_or_else(|| BddError::UnknownVariable(name.clone()))?;
-        if let Some(node) = symbol.compiled.get() {
-            return Ok(Bdd {
-                context: self.context,
-                node,
-            });
+        let slot = if positive {
+            &symbol.positive
+        } else {
+            &symbol.negative
+        };
+        let handle = |node| Bdd {
+            context: self.context,
+            node,
+        };
+        if let Some(node) = slot.get() {
+            return Ok(handle(node));
         }
-        let value = self.manager.borrow_mut().variable(symbol.index)?;
+        let value = if let Some(node) = symbol.positive.get() {
+            handle(node)
+        } else {
+            let value = self.manager.borrow_mut().variable(symbol.index)?;
+            self.record_literal(&symbol.positive, value)?;
+            value
+        };
+        if positive {
+            return Ok(value);
+        }
+        // Preserve the expression compiler's child-first budget and cache
+        // behavior, including when recording the negation fails.
+        let negated = self.not(value)?;
+        self.record_literal(&symbol.negative, negated)?;
+        Ok(negated)
+    }
+
+    fn record_literal(&self, slot: &Cell<Option<u16>>, value: Bdd) -> Result<(), BddError> {
         self.reserve_expression(self.expressions.borrow().len())?;
-        symbol.compiled.set(Some(value.node));
-        self.compiled_symbols.set(self.compiled_symbols.get() + 1);
-        Ok(value)
+        slot.set(Some(value.node));
+        self.compiled_literals.set(self.compiled_literals.get() + 1);
+        Ok(())
     }
 
     fn compiled(&self, expression: &BoolExpr) -> Result<Option<Bdd>, BddError> {
         match expression {
             BoolExpr::True => Ok(Some(self.truth())),
             BoolExpr::False => Ok(Some(self.falsity())),
-            BoolExpr::Symbol(name) => self.compile_symbol(name).map(Some),
+            BoolExpr::Symbol(name) => self.compile_literal(name, true).map(Some),
+            BoolExpr::Not(inner) => match inner.as_ref() {
+                BoolExpr::Symbol(name) => self.compile_literal(name, false).map(Some),
+                _ => Ok(self.expressions.borrow().get(expression).copied()),
+            },
             _ => Ok(self.expressions.borrow().get(expression).copied()),
         }
     }
@@ -1486,7 +1560,7 @@ impl BddContext {
     }
 
     fn reserve_expression(&self, compounds: usize) -> Result<(), BddError> {
-        if compounds.saturating_add(self.compiled_symbols.get()) >= self.limits.cache_entries {
+        if compounds.saturating_add(self.compiled_literals.get()) >= self.limits.cache_entries {
             return Err(BddError::ResourceLimit {
                 resource: BddResource::CacheEntries,
                 limit: self.limits.cache_entries,

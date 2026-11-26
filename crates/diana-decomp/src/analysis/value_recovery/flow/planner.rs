@@ -134,7 +134,7 @@ impl<'a> ValuePlanner<'a> {
                 statements: vec![*site],
             })
             .collect::<Vec<_>>();
-        for (key, definitions) in &self.graph().definitions {
+        for (key, definitions) in self.graph().definitions.iter() {
             if self.graph().is_retained(*key) || self.graph().is_bound(*key) {
                 continue;
             }
@@ -176,7 +176,7 @@ impl<'a> ValuePlanner<'a> {
                     continue;
                 }
             }
-            let [definition] = definitions.as_slice() else {
+            let [definition] = definitions else {
                 if Self::has_replicated_origin(definitions) {
                     if let Some(action) = self.source_selection_action(definitions, uses)? {
                         actions.push(action);
@@ -761,8 +761,7 @@ impl<'a> ValuePlanner<'a> {
                     if key == definition.key {
                         return false;
                     }
-                    let Some([producer]) = self.graph().definitions.get(&key).map(Vec::as_slice)
-                    else {
+                    let Some([producer]) = self.graph().definitions.get(&key) else {
                         continue;
                     };
                     if self.facts.uses_of(key).len() == 1 && expanded.insert(key) {

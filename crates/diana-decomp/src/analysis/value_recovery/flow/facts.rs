@@ -90,8 +90,8 @@ impl<'a> SparseValueFacts<'a> {
                         graph
                             .uses
                             .get(&link.representative)
-                            .cloned()
                             .unwrap_or_default()
+                            .to_vec()
                     })
                     .extend(eliminated.iter().cloned());
             }
@@ -125,8 +125,8 @@ impl<'a> SparseValueFacts<'a> {
     pub(super) fn uses_of(&self, key: SsaVar) -> &[UseFact] {
         self.uses_with_aliases
             .get(&key)
-            .or_else(|| self.graph.uses.get(&key))
             .map(Vec::as_slice)
+            .or_else(|| self.graph.uses.get(&key))
             .unwrap_or_default()
     }
 

@@ -1,4 +1,7 @@
+use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
+
+use foldhash::HashMap;
 
 use crate::ir::ty::ArgType;
 use crate::language::java::{
@@ -39,6 +42,7 @@ pub(super) struct JavaTypeNameResolver {
     simple_names: BTreeMap<String, String>,
     declarations: DeclaredTypes,
     lexical_scope: JavaLexicalTypeScope,
+    reverse_names: ReverseTypeNames,
     resolved_objects: std::cell::RefCell<BTreeMap<String, JavaClassType>>,
 }
 
@@ -108,6 +112,7 @@ impl JavaTypeNameResolver {
             simple_names,
             declarations,
             lexical_scope,
+            reverse_names: Default::default(),
             resolved_objects: Default::default(),
         }
     }
@@ -266,48 +271,9 @@ impl JavaTypeNameResolver {
     ) -> Option<crate::ir::generic_types::ClassTypeSignature> {
         use crate::ir::generic_types::{ClassTypeSignature, InnerClassTypeSignature};
 
-        let source_name = class.name().to_string();
-        let binary_name = self
-            .simple_names
-            .iter()
-            .find_map(|(binary, source)| (source == &source_name).then(|| binary.clone()))
-            .or_else(|| {
-                self.declarations
-                    .source_names
-                    .iter()
-                    .chain(&self.declarations.header_names)
-                    .find_map(|(binary, source)| {
-                        (source.name().to_string() == source_name).then(|| binary.clone())
-                    })
-            })
-            .or_else(|| {
-                let candidates = self
-                    .simple_names
-                    .keys()
-                    .chain(self.declarations.source_names.keys())
-                    .chain(self.declarations.header_names.keys())
-                    .filter(|binary| {
-                        self.lexical_scope.relative_name(binary).as_deref()
-                            == Some(source_name.as_str())
-                    })
-                    .cloned()
-                    .collect::<BTreeSet<_>>();
-                (candidates.len() == 1)
-                    .then(|| candidates.into_iter().next())
-                    .flatten()
-            })
-            .or_else(|| {
-                self.simple_names
-                    .keys()
-                    .chain(self.declarations.source_names.keys())
-                    .chain(self.declarations.header_names.keys())
-                    .find_map(|binary| {
-                        JavaTypeName::from_binary_name(binary)
-                            .filter(|name| name.qualified_source_name() == source_name)
-                            .map(|_| binary.clone())
-                    })
-            })?;
-        let name = JavaTypeName::from_binary_name(&binary_name)?;
+        let source_name = class.printed_class_name();
+        let binary_name = self.reverse_names.binary_name(self, &source_name)?;
+        let name = JavaTypeName::from_binary_name(binary_name)?;
         let binary_segments = name.segment_count();
         let source_offset = binary_segments.checked_sub(class.segments.len())?;
         let source_segment = |binary_index: usize| {
@@ -359,6 +325,79 @@ impl JavaTypeNameResolver {
             JavaTypeArgument::Extends(ty) => TypeArgument::Extends(self.source_signature(ty)?),
             JavaTypeArgument::Super(ty) => TypeArgument::Super(self.source_signature(ty)?),
         })
+    }
+}
+
+type BinaryNamesBySpelling = HashMap<String, Box<str>>;
+
+#[derive(Debug, Clone, Default)]
+struct ReverseTypeNames {
+    // Declaration identifiers follow the printer's active spelling mode.
+    exact: [OnceCell<BinaryNamesBySpelling>; 2],
+    fallback: OnceCell<BinaryNamesBySpelling>,
+}
+
+impl ReverseTypeNames {
+    fn binary_name<'a>(&'a self, names: &JavaTypeNameResolver, spelling: &str) -> Option<&'a str> {
+        let exact = self.exact[usize::from(crate::language::java::preserve_dex_names())]
+            .get_or_init(|| {
+                let mut exact = BinaryNamesBySpelling::default();
+                for (binary, source) in &names.simple_names {
+                    exact
+                        .entry(source.clone())
+                        .or_insert_with(|| binary.as_str().into());
+                }
+                for (binary, source) in names
+                    .declarations
+                    .source_names
+                    .iter()
+                    .chain(&names.declarations.header_names)
+                {
+                    exact
+                        .entry(source.printed_class_name().into_owned())
+                        .or_insert_with(|| binary.as_str().into());
+                }
+                exact
+            });
+        exact
+            .get(spelling)
+            .or_else(|| {
+                self.fallback
+                    .get_or_init(|| Self::fallback_names(names))
+                    .get(spelling)
+            })
+            .map(AsRef::as_ref)
+    }
+
+    fn fallback_names(names: &JavaTypeNameResolver) -> BinaryNamesBySpelling {
+        let mut qualified = BinaryNamesBySpelling::default();
+        let mut relative = HashMap::<String, Option<&str>>::default();
+        for binary in names
+            .simple_names
+            .keys()
+            .chain(names.declarations.source_names.keys())
+            .chain(names.declarations.header_names.keys())
+        {
+            if let Some(spelling) = names.lexical_scope.relative_name(binary) {
+                let candidate = relative.entry(spelling).or_insert(Some(binary));
+                if *candidate != Some(binary.as_str()) {
+                    *candidate = None;
+                }
+            }
+            if let Some(name) = JavaTypeName::from_binary_name(binary) {
+                qualified
+                    .entry(name.qualified_source_name())
+                    .or_insert_with(|| binary.as_str().into());
+            }
+        }
+        // A unique relative name wins even over a qualified spelling. Repeated
+        // occurrences of the same binary in source and header maps are one candidate.
+        for (spelling, binary) in relative {
+            if let Some(binary) = binary {
+                qualified.insert(spelling, binary.into());
+            }
+        }
+        qualified
     }
 }
 
@@ -956,3 +995,7 @@ mod tests {
             .all(|import| !import.to_string().ends_with(".Vz")));
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/reverse_type_names.rs"]
+mod reverse_type_names;

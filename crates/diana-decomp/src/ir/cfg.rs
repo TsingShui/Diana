@@ -8,7 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 mod adjacency;
+mod exception_coverage;
 use adjacency::EdgeRows;
+use exception_coverage::ExceptionCoverage;
 
 use super::block::{Block, BlockId, ExceptionHandler};
 use super::{ArgType, InstructionId, MethodDescriptor};
@@ -113,7 +115,7 @@ pub struct CFG {
     /// Exception handlers
     pub handlers: Vec<ExceptionHandler>,
     /// DEX protected-range membership captured before CFG topology edits.
-    exception_coverage: BTreeMap<BlockId, BTreeSet<(u32, u32)>>,
+    exception_coverage: ExceptionCoverage,
     coverage_captured: bool,
     /// Register count
     pub registers: u32,
@@ -142,7 +144,7 @@ impl CFG {
             successors: EdgeRows::default(),
             incoming: EdgeRows::default(),
             handlers: Vec::new(),
-            exception_coverage: BTreeMap::new(),
+            exception_coverage: ExceptionCoverage::default(),
             coverage_captured: false,
             registers: 0,
             ins: 0,
@@ -308,18 +310,14 @@ impl CFG {
     pub fn remove_block(&mut self, id: BlockId) {
         self.remove_block_from_graph(id);
         self.blocks.remove(&id);
-        self.exception_coverage.remove(&id);
+        self.exception_coverage.remove(id);
     }
 
     pub fn capture_exception_coverage(&mut self) {
         if self.coverage_captured {
             return;
         }
-        let mut coverage: BTreeMap<_, _> = self
-            .blocks
-            .keys()
-            .map(|&id| (id, BTreeSet::new()))
-            .collect();
+        let mut coverage = ExceptionCoverage::capture(&self.blocks);
         if !self.handlers.is_empty() {
             let mut sites: Vec<_> = self
                 .blocks
@@ -338,7 +336,7 @@ impl CFG {
                     .iter()
                     .take_while(|(offset, _)| *offset < end)
                 {
-                    coverage.entry(block).or_default().insert((start, end));
+                    coverage.protect(block, (start, end));
                 }
             }
         }
@@ -347,13 +345,11 @@ impl CFG {
     }
 
     pub fn exception_coverage(&self, block: BlockId) -> &BTreeSet<(u32, u32)> {
-        self.exception_coverage
-            .get(&block)
-            .unwrap_or_else(|| Self::empty_coverage())
+        self.exception_coverage.ranges(block)
     }
 
     pub fn set_exception_coverage(&mut self, block: BlockId, ranges: BTreeSet<(u32, u32)>) {
-        self.exception_coverage.insert(block, ranges);
+        self.exception_coverage.set(block, ranges);
     }
 
     pub fn common_exception_coverage(&self, left: BlockId, right: BlockId) -> BTreeSet<(u32, u32)> {
@@ -376,12 +372,7 @@ impl CFG {
     }
 
     pub fn has_exception_coverage(&self, block: BlockId) -> bool {
-        self.coverage_captured && self.exception_coverage.contains_key(&block)
-    }
-
-    fn empty_coverage() -> &'static BTreeSet<(u32, u32)> {
-        static EMPTY: std::sync::OnceLock<BTreeSet<(u32, u32)>> = std::sync::OnceLock::new();
-        EMPTY.get_or_init(BTreeSet::new)
+        self.coverage_captured && self.exception_coverage.contains(block)
     }
 
     /// Remove a block from the graph structure (edges only), but keep its content.

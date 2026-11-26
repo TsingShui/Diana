@@ -4,8 +4,9 @@
 //! used by region ownership and semantic scheduling.
 
 use super::ReachingConditions;
-use crate::ir::{BlockId, EdgeKind, CFG};
+use crate::ir::{BlockId, CFG};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 #[cfg(test)]
 #[path = "../../../tests/internal/dag_dominators.rs"]
@@ -55,14 +56,15 @@ impl std::error::Error for DominanceError {}
 pub struct DominatorTree {
     entry: BlockId,
     /// Sorted by block identity, independently of graph traversal order.
-    nodes: Vec<DominatorNode>,
+    nodes: Arc<Vec<DominatorNode>>,
+    virtual_child: Option<BlockId>,
 }
 
 #[derive(Debug, Clone)]
 struct DominatorNode {
     block: BlockId,
     parent: Option<BlockId>,
-    children: Vec<BlockId>,
+    children: smallvec::SmallVec<[BlockId; 2]>,
     preorder: usize,
     subtree_end: usize,
 }
@@ -70,10 +72,11 @@ struct DominatorNode {
 impl DominatorTree {
     /// Compute exact dominance over every CFG edge using Lengauer-Tarjan.
     pub fn compute(cfg: &CFG) -> Result<Self, DominanceError> {
-        let entry = cfg.entry;
-        let blocks: Vec<BlockId> = cfg.block_ids();
-        let predecessors = cfg.predecessor_snapshot();
-        Self::compute_with_predecessors(cfg, entry, blocks, &predecessors)
+        Self::solve(cfg.entry, Topology::from_cfg::<false>(cfg)?, true)
+    }
+
+    pub(super) fn compute_postdominance(cfg: &CFG) -> Result<Self, DominanceError> {
+        Self::solve(BlockId::INVALID, Topology::from_cfg::<true>(cfg)?, false)
     }
 
     /// With no exception edges every path originates at the method entry.
@@ -83,26 +86,10 @@ impl DominatorTree {
         if self.contains(BlockId::INVALID) {
             return Err(DominanceError::MissingEntry(BlockId::INVALID));
         }
-        let mut nodes = Vec::with_capacity(self.nodes.len() + 1);
-        for vertex in &self.nodes {
-            nodes.push(DominatorNode {
-                block: vertex.block,
-                parent: vertex.parent.or(Some(BlockId::INVALID)),
-                children: vertex.children.clone(),
-                preorder: vertex.preorder + 1,
-                subtree_end: vertex.subtree_end + 1,
-            });
-        }
-        nodes.push(DominatorNode {
-            block: BlockId::INVALID,
-            parent: None,
-            children: vec![self.entry],
-            preorder: 0,
-            subtree_end: nodes.len() + 1,
-        });
         Ok(Self {
             entry: BlockId::INVALID,
-            nodes,
+            nodes: Arc::clone(&self.nodes),
+            virtual_child: Some(self.entry),
         })
     }
 
@@ -170,7 +157,7 @@ impl DominatorTree {
             nodes.push(DominatorNode {
                 block,
                 parent,
-                children: Vec::new(),
+                children: Default::default(),
                 preorder: 0,
                 subtree_end: 0,
             });
@@ -186,47 +173,26 @@ impl DominatorTree {
         mut blocks: Vec<BlockId>,
         predecessors: &BTreeMap<BlockId, Vec<BlockId>>,
     ) -> Result<Self, DominanceError> {
-        let block_set = blocks.iter().copied().collect::<BTreeSet<_>>();
-        let virtual_root = BlockId::INVALID;
-        if block_set.contains(&virtual_root) {
-            return Err(DominanceError::MissingEntry(virtual_root));
+        // An explicit caller may supply missing rows in arbitrary order.
+        if blocks.contains(&BlockId::INVALID) {
+            return Err(DominanceError::MissingEntry(BlockId::INVALID));
         }
-        let mut normal_predecessors = blocks
-            .iter()
-            .copied()
-            .map(|block| {
-                let sources = predecessors
-                    .get(&block)
-                    .cloned()
-                    .ok_or(DominanceError::MissingTopology(block))?;
-                Ok((block, sources))
-            })
-            .collect::<Result<BTreeMap<_, _>, _>>()?;
-        let mut successors = blocks
-            .iter()
-            .copied()
-            .map(|block| {
-                let targets = cfg
-                    .successors_with_kind(block)
-                    .iter()
-                    .filter(|(_, kind)| *kind != EdgeKind::Exception)
-                    .map(|(target, _)| *target)
-                    .filter(|target| block_set.contains(target))
-                    .collect();
-                (block, targets)
-            })
-            .collect::<BTreeMap<_, _>>();
-        let roots = NormalFlowEntries::discover(cfg, &block_set, &successors)?;
-        for root in &roots {
-            normal_predecessors
-                .get_mut(root)
-                .ok_or(DominanceError::MissingTopology(*root))?
-                .push(virtual_root);
+        for &block in &blocks {
+            if !predecessors.contains_key(&block) {
+                return Err(DominanceError::MissingTopology(block));
+            }
         }
-        normal_predecessors.insert(virtual_root, Vec::new());
-        successors.insert(virtual_root, roots.into_iter().collect());
-        blocks.push(virtual_root);
-        Self::compute_topology(virtual_root, blocks, &normal_predecessors, &successors)
+        blocks.sort_unstable();
+        blocks.dedup();
+        let topology = Topology::normal_forest(cfg, blocks, Some(predecessors))?;
+        Self::solve(BlockId::INVALID, topology, true)
+    }
+
+    /// Ordinary dominance on the entire physical CFG. Its canonical
+    /// successor relation supplies both halves of the numbered topology.
+    pub(crate) fn normal(cfg: &CFG) -> Result<Self, DominanceError> {
+        let topology = Topology::normal_forest(cfg, cfg.block_ids(), None)?;
+        Self::solve(BlockId::INVALID, topology, true)
     }
 
     fn compute_in(
@@ -258,38 +224,31 @@ impl DominatorTree {
         predecessors: &BTreeMap<BlockId, Vec<BlockId>>,
         successors: &BTreeMap<BlockId, Vec<BlockId>>,
     ) -> Result<Self, DominanceError> {
-        Self::compute_topology_with_policy(entry, blocks, predecessors, successors, true)
+        Self::solve(
+            entry,
+            Topology::new(blocks, predecessors, successors)?,
+            true,
+        )
     }
 
-    pub(crate) fn compute_reachable_topology(
+    fn solve(
         entry: BlockId,
-        blocks: Vec<BlockId>,
-        predecessors: &BTreeMap<BlockId, Vec<BlockId>>,
-        successors: &BTreeMap<BlockId, Vec<BlockId>>,
-    ) -> Result<Self, DominanceError> {
-        Self::compute_topology_with_policy(entry, blocks, predecessors, successors, false)
-    }
-
-    fn compute_topology_with_policy(
-        entry: BlockId,
-        blocks: Vec<BlockId>,
-        predecessors: &BTreeMap<BlockId, Vec<BlockId>>,
-        successors: &BTreeMap<BlockId, Vec<BlockId>>,
+        topology: Topology,
         require_all_reachable: bool,
     ) -> Result<Self, DominanceError> {
-        let topology = Topology::new(blocks, predecessors, successors)?;
         let start = Topology::position(&topology.nodes, entry)
             .ok_or(DominanceError::MissingEntry(entry))?;
         if topology.nodes.len() == 1 {
             return Ok(Self {
                 entry,
-                nodes: vec![DominatorNode {
+                virtual_child: None,
+                nodes: Arc::new(vec![DominatorNode {
                     block: entry,
                     parent: None,
-                    children: Vec::new(),
+                    children: Default::default(),
                     preorder: 0,
                     subtree_end: 1,
-                }],
+                }]),
             });
         }
         let traversal = DepthFirstNumbering::compute(start, &topology);
@@ -313,75 +272,78 @@ impl DominatorTree {
 
     fn from_parents(entry: BlockId, mut nodes: Vec<DominatorNode>) -> Result<Self, DominanceError> {
         nodes.sort_unstable_by_key(|node| node.block);
-        let mut tree = Self { entry, nodes };
-        for i in 0..tree.nodes.len() {
-            let child = &tree.nodes[i];
+        for i in 0..nodes.len() {
+            let child = &nodes[i];
             if let Some(parent) = child.parent {
                 let block = child.block;
-                let parent_index = tree
-                    .index_of(parent)
+                let parent_index = Self::position(&nodes, parent)
                     .ok_or(DominanceError::MissingDominator(parent))?;
-                tree.nodes[parent_index].children.push(block);
+                nodes[parent_index].children.push(block);
             }
         }
         // A subtree occupies a contiguous range in dominator-tree preorder.
         // Queries on a chain can use these bounds without following every parent.
         let mut next = 0;
-        let root = tree
-            .index_of(entry)
-            .ok_or(DominanceError::MissingEntry(entry))?;
+        let root = Self::position(&nodes, entry).ok_or(DominanceError::MissingEntry(entry))?;
         let mut pending = vec![(root, false)];
         while let Some((index, exiting)) = pending.pop() {
             if exiting {
-                tree.nodes[index].subtree_end = next;
+                nodes[index].subtree_end = next;
             } else {
-                tree.nodes[index].preorder = next;
+                nodes[index].preorder = next;
                 next += 1;
                 pending.push((index, true));
-                for &child in tree.nodes[index].children.iter().rev() {
-                    let child = tree
-                        .index_of(child)
+                for &child in nodes[index].children.iter().rev() {
+                    let child = Self::position(&nodes, child)
                         .ok_or(DominanceError::MissingDominator(child))?;
                     pending.push((child, false));
                 }
             }
         }
-        Ok(tree)
+        Ok(Self {
+            entry,
+            nodes: Arc::new(nodes),
+            virtual_child: None,
+        })
     }
 
     fn index_of(&self, block: BlockId) -> Option<usize> {
+        Self::position(&self.nodes, block)
+    }
+
+    fn position(nodes: &[DominatorNode], block: BlockId) -> Option<usize> {
         let index = block.raw() as usize;
-        if self
-            .nodes
-            .get(index)
-            .is_some_and(|node| node.block == block)
-        {
+        if nodes.get(index).is_some_and(|node| node.block == block) {
             return Some(index);
         }
-        self.nodes
-            .binary_search_by_key(&block, |node| node.block)
-            .ok()
+        nodes.binary_search_by_key(&block, |node| node.block).ok()
     }
 
     /// Get immediate dominator of a node.
     pub fn idom(&self, node: BlockId) -> Option<BlockId> {
+        if self.virtual_child == Some(node) {
+            return Some(BlockId::INVALID);
+        }
         self.nodes[self.index_of(node)?].parent
     }
 
     /// Get children of a node in block identity order.
     pub fn children(&self, node: BlockId) -> impl DoubleEndedIterator<Item = BlockId> + '_ {
-        self.index_of(node)
-            .map_or(&[][..], |i| self.nodes[i].children.as_slice())
-            .iter()
-            .copied()
+        let children = if node == BlockId::INVALID && self.virtual_child.is_some() {
+            self.virtual_child.as_slice()
+        } else {
+            self.index_of(node)
+                .map_or(&[][..], |i| self.nodes[i].children.as_slice())
+        };
+        children.iter().copied()
     }
 
     pub(super) fn len(&self) -> usize {
-        self.nodes.len()
+        self.nodes.len() + usize::from(self.virtual_child.is_some())
     }
 
     pub fn contains(&self, node: BlockId) -> bool {
-        self.index_of(node).is_some()
+        (node == BlockId::INVALID && self.virtual_child.is_some()) || self.index_of(node).is_some()
     }
 
     /// Get all nodes dominated by the given node (including itself)
@@ -401,6 +363,9 @@ impl DominatorTree {
 
     /// Check if `dom` dominates `node`
     pub fn dominates(&self, dom: BlockId, node: BlockId) -> bool {
+        if dom == BlockId::INVALID && self.virtual_child.is_some() {
+            return self.contains(node);
+        }
         let (Some(dom), Some(node)) = (self.index_of(dom), self.index_of(node)) else {
             return false;
         };
@@ -496,51 +461,6 @@ impl DagAncestor {
     }
 }
 
-struct NormalFlowEntries;
-
-impl NormalFlowEntries {
-    fn discover(
-        cfg: &CFG,
-        blocks: &BTreeSet<BlockId>,
-        successors: &BTreeMap<BlockId, Vec<BlockId>>,
-    ) -> Result<BTreeSet<BlockId>, DominanceError> {
-        let reachable = Self::reachable_from(cfg.entry, successors)?;
-        let mut entries = BTreeSet::from([cfg.entry]);
-        for source in blocks {
-            entries.extend(
-                cfg.successors_with_kind(*source)
-                    .iter()
-                    .filter(|(target, kind)| {
-                        *kind == EdgeKind::Exception
-                            && blocks.contains(target)
-                            && !reachable.contains(target)
-                    })
-                    .map(|(target, _)| *target),
-            );
-        }
-        Ok(entries)
-    }
-
-    fn reachable_from(
-        entry: BlockId,
-        successors: &BTreeMap<BlockId, Vec<BlockId>>,
-    ) -> Result<BTreeSet<BlockId>, DominanceError> {
-        let mut reachable = BTreeSet::new();
-        let mut pending = vec![entry];
-        while let Some(block) = pending.pop() {
-            if !reachable.insert(block) {
-                continue;
-            }
-            pending.extend(
-                successors
-                    .get(&block)
-                    .ok_or(DominanceError::MissingTopology(block))?,
-            );
-        }
-        Ok(reachable)
-    }
-}
-
 type Neighbors = smallvec::SmallVec<[usize; 2]>;
 
 struct Topology {
@@ -583,31 +503,178 @@ impl Topology {
             outgoing.push(neighbors(successors)?);
             incoming.push(neighbors(predecessors)?);
         }
-        for (source, targets) in outgoing.iter().enumerate() {
-            for &target in targets {
-                if incoming[target].binary_search(&source).is_err() {
-                    return Err(DominanceError::InconsistentEdge {
-                        source: nodes[source],
-                        target: nodes[target],
-                    });
-                }
-            }
-        }
-        for (target, sources) in incoming.iter().enumerate() {
-            for &source in sources {
-                if outgoing[source].binary_search(&target).is_err() {
-                    return Err(DominanceError::InconsistentEdge {
-                        source: nodes[source],
-                        target: nodes[target],
-                    });
-                }
-            }
-        }
-        Ok(Self {
+        let topology = Self {
             nodes,
             predecessors: incoming,
             successors: outgoing,
-        })
+        };
+        topology.check_inverse()?;
+        Ok(topology)
+    }
+
+    fn check_inverse(&self) -> Result<(), DominanceError> {
+        for (source, targets) in self.successors.iter().enumerate() {
+            for &target in targets {
+                if self.predecessors[target].binary_search(&source).is_err() {
+                    return Err(DominanceError::InconsistentEdge {
+                        source: self.nodes[source],
+                        target: self.nodes[target],
+                    });
+                }
+            }
+        }
+        for (target, sources) in self.predecessors.iter().enumerate() {
+            for &source in sources {
+                if self.successors[source].binary_search(&target).is_err() {
+                    return Err(DominanceError::InconsistentEdge {
+                        source: self.nodes[source],
+                        target: self.nodes[target],
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn normal_forest(
+        cfg: &CFG,
+        mut nodes: Vec<BlockId>,
+        supplied: Option<&BTreeMap<BlockId, Vec<BlockId>>>,
+    ) -> Result<Self, DominanceError> {
+        let root = nodes.len();
+        if nodes.last() == Some(&BlockId::INVALID) {
+            return Err(DominanceError::MissingEntry(BlockId::INVALID));
+        }
+        let entry =
+            Self::position(&nodes, cfg.entry).ok_or(DominanceError::MissingTopology(cfg.entry))?;
+        nodes.push(BlockId::INVALID);
+        let mut incoming = vec![Neighbors::new(); nodes.len()];
+        let mut outgoing = Vec::with_capacity(nodes.len());
+        let mut roots = vec![false; root];
+        for (source, &block) in nodes[..root].iter().enumerate() {
+            let mut targets = Neighbors::new();
+            for &(target, kind) in cfg.successors_with_kind(block) {
+                if let Some(index) = Self::position(&nodes[..root], target) {
+                    if kind.is_exception() {
+                        roots[index] = true;
+                    } else {
+                        targets.push(index);
+                    }
+                }
+            }
+            targets.sort_unstable();
+            targets.dedup();
+            if let Some(snapshot) = supplied {
+                let row = &mut incoming[source];
+                row.extend(
+                    snapshot[&block]
+                        .iter()
+                        .filter_map(|&id| Self::position(&nodes, id)),
+                );
+                row.sort_unstable();
+                row.dedup();
+            } else {
+                for &target in &targets {
+                    incoming[target].push(source);
+                }
+            }
+            outgoing.push(targets);
+        }
+        // Only exception entries outside ordinary entry reachability need a
+        // virtual edge. The method entry itself is always a forest root.
+        let mut visited = vec![false; root];
+        let mut pending = vec![entry];
+        visited[entry] = true;
+        while let Some(source) = pending.pop() {
+            roots[source] = false;
+            for &target in &outgoing[source] {
+                if !std::mem::replace(&mut visited[target], true) {
+                    pending.push(target);
+                }
+            }
+        }
+        roots[entry] = true;
+        let mut entries = Neighbors::new();
+        for (index, is_root) in roots.into_iter().enumerate() {
+            if is_root {
+                entries.push(index);
+                if incoming[index].last() != Some(&root) {
+                    incoming[index].push(root);
+                }
+            }
+        }
+        outgoing.push(entries);
+        let topology = Self {
+            nodes,
+            predecessors: incoming,
+            successors: outgoing,
+        };
+        if supplied.is_some() {
+            topology.check_inverse()?;
+        }
+        Ok(topology)
+    }
+
+    /// Physical edges are the owning CFG's canonical relation. Number each
+    /// distinct target once and build the transpose directly from that row.
+    fn from_cfg<const POST: bool>(cfg: &CFG) -> Result<Self, DominanceError> {
+        let mut nodes = cfg.block_ids();
+        let physical = nodes.len();
+        if POST && nodes.last() != Some(&BlockId::INVALID) {
+            nodes.push(BlockId::INVALID);
+        }
+        let mut outgoing = Vec::with_capacity(nodes.len());
+        let mut incoming = vec![Neighbors::new(); nodes.len()];
+        let mut exits = Neighbors::new();
+        let mut physical_exit_reference = false;
+        for (source, &block) in nodes.iter().enumerate() {
+            let mut targets = Neighbors::new();
+            if source < physical {
+                let mut has_successor = false;
+                for &(target, kind) in cfg.successors_with_kind(block) {
+                    if POST && kind.is_exception() {
+                        continue;
+                    }
+                    has_successor = true;
+                    if let Some(target_index) = Self::position(&nodes, target) {
+                        targets.push(target_index);
+                        if POST && target == BlockId::INVALID {
+                            physical_exit_reference = true;
+                        }
+                    }
+                }
+                if POST && !has_successor {
+                    targets.push(nodes.len() - 1);
+                    exits.push(source);
+                }
+            }
+            targets.sort_unstable();
+            targets.dedup();
+            for &target in &targets {
+                incoming[target].push(source);
+            }
+            outgoing.push(targets);
+        }
+        let mut topology = Self {
+            nodes,
+            predecessors: incoming,
+            successors: outgoing,
+        };
+        if POST {
+            std::mem::swap(&mut topology.predecessors, &mut topology.successors);
+            // The virtual exit dispatches only to physical blocks with no
+            // normal successor, including when their sole edge is exceptional.
+            *topology
+                .successors
+                .last_mut()
+                .expect("virtual exit present") = exits;
+            if physical_exit_reference {
+                // A caller-supplied edge using the reserved exit ID may
+                // conflict with the virtual row. Preserve the classified error.
+                topology.check_inverse()?;
+            }
+        }
+        Ok(topology)
     }
 }
 
@@ -722,7 +789,7 @@ impl LengauerTarjan {
             .map(|(i, &block)| DominatorNode {
                 block,
                 parent: self.immediate[i].map(|parent| self.vertices[parent]),
-                children: Vec::new(),
+                children: Default::default(),
                 preorder: 0,
                 subtree_end: 0,
             })

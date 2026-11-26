@@ -83,3 +83,55 @@ fn cyclic_live_ins_cross_machine_words_with_edge_specific_phi_arguments() {
     loop_inputs.insert(var(64));
     assert_eq!(edge(body, header, EdgeKind::True), loop_inputs);
 }
+
+#[test]
+fn transfers_keep_retained_operand_groups_and_skip_empty_instructions_across_blocks() {
+    let [entry, exit] = [BlockId(0), BlockId(90)];
+    let mut cfg = CFG::new("transfer_groups");
+    let reg = |id| RegisterArg::new_ssa(id, 0, ArgType::INT);
+    let arg = |id| InsnArg::reg_ssa(id, 0, ArgType::INT);
+    let mut first = Block::new(entry);
+    first.push(InsnNode::nop());
+    first.push(InsnNode::invoke(
+        InvokeType::Static,
+        0,
+        vec![arg(11), arg(9), arg(11), arg(18)],
+    ));
+    first.push(InsnNode::move_insn(reg(18), arg(11)));
+    cfg.add_block(first);
+    let mut second = Block::new(exit);
+    second.push(InsnNode::const_value(reg(9), 1));
+    second.push(InsnNode::nop());
+    second.push(InsnNode::return_value(arg(18)));
+    cfg.add_block(second);
+    cfg.add_edge(entry, exit, EdgeKind::Normal);
+
+    let retained = [11, 18].map(|id| SsaVar::new(id, 0));
+    let live = SsaLiveness::analyze(&cfg, &retained.into()).unwrap();
+    let transfers = |block| {
+        live.blocks[&block]
+            .transfers
+            .clone()
+            .map(|i| {
+                let transfer = &live.transfers[i];
+                let start = i
+                    .checked_sub(1)
+                    .map_or(0, |prev| live.transfers[prev].uses_end);
+                let uses: Vec<_> = live.operands[start..transfer.uses_end]
+                    .iter()
+                    .map(|&n| live.names[n].reg_num)
+                    .collect();
+                (
+                    transfer.position,
+                    transfer.definition.map(|n| live.names[n].reg_num),
+                    uses,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        transfers(entry),
+        [(1, None, vec![11, 18]), (2, Some(18), vec![11])]
+    );
+    assert_eq!(transfers(exit), [(2, None, vec![18])]);
+}

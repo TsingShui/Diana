@@ -84,9 +84,8 @@ impl ReachingConditions {
                                 block: *block,
                                 predecessor: source,
                             })?;
-                        let edge = boolean_domain.compile(
-                            &EdgePredicate::new(cfg, source, *block, edge)?.expression(),
-                        )?;
+                        let edge =
+                            EdgePredicate::compile(&boolean_domain, cfg, source, *block, edge)?;
                         Ok(boolean_domain.and(predecessor.domain, edge)?)
                     })
                     .collect::<Result<SmallVec<[_; 2]>, ReachingConditionError>>()?;
@@ -118,7 +117,7 @@ impl ReachingConditions {
         target: BlockId,
         edge: EdgeKind,
     ) -> Result<Bdd, ReachingConditionError> {
-        self.compile(&EdgePredicate::new(cfg, source, target, edge)?.expression())
+        EdgePredicate::compile(&self.boolean_domain, cfg, source, target, edge)
     }
 
     pub fn order(&self) -> &[BlockId] {
@@ -356,24 +355,27 @@ impl ReachabilityMatrix {
     }
 }
 
-struct EdgePredicate {
-    expression: BoolExpr,
-}
+struct EdgePredicate;
 
 impl EdgePredicate {
-    fn new(
+    fn compile(
+        domain: &BddContext,
         cfg: &CFG,
         source: BlockId,
         target: BlockId,
         edge: EdgeKind,
-    ) -> Result<Self, ReachingConditionError> {
+    ) -> Result<Bdd, ReachingConditionError> {
         let block = cfg
             .block(source)
             .ok_or(ReachingConditionError::MissingBlock(source))?;
         let terminator = block.terminator().map(|instruction| instruction.insn_type);
         let expression = match (terminator, edge) {
-            (Some(InsnType::If), EdgeKind::True) => BoolExpr::block(source),
-            (Some(InsnType::If), EdgeKind::False) => BoolExpr::not(BoolExpr::block(source)),
+            (Some(InsnType::If), EdgeKind::True) => {
+                domain.compile_literal(&BoolVariable::Block(source), true)?
+            }
+            (Some(InsnType::If), EdgeKind::False) => {
+                domain.compile_literal(&BoolVariable::Block(source), false)?
+            }
             (Some(InsnType::If), _) => {
                 return Err(ReachingConditionError::MalformedBranchEdge {
                     source,
@@ -384,7 +386,7 @@ impl EdgePredicate {
             (Some(InsnType::Switch), _) => {
                 return Err(ReachingConditionError::UnownedSwitch(source));
             }
-            (_, EdgeKind::Normal) => BoolExpr::True,
+            (_, EdgeKind::Normal) => domain.truth(),
             (_, _) => {
                 return Err(ReachingConditionError::UnexpectedEdge {
                     source,
@@ -393,11 +395,7 @@ impl EdgePredicate {
                 });
             }
         };
-        Ok(Self { expression })
-    }
-
-    fn expression(self) -> BoolExpr {
-        self.expression
+        Ok(expression)
     }
 }
 

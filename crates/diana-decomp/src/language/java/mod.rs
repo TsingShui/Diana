@@ -16,6 +16,9 @@ mod unit;
 
 pub use aggregate::AggregateInitializer;
 pub use assignment::DefiniteAssignment;
+pub(crate) use ast::preserve_dex_names;
+#[cfg(test)]
+pub(crate) use ast::with_preserved_dex_names;
 pub use ast::{
     JavaAssignOp, JavaBinaryOp, JavaCatch, JavaClassName, JavaClassType, JavaClassTypeSegment,
     JavaConstructorTarget, JavaExpr, JavaField, JavaIdentifier, JavaLiteral, JavaMethodBody,

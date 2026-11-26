@@ -123,7 +123,7 @@ fn a_repeated_point_still_applies_each_distinct_control_domain_after_budget_exha
     assert!(graph.proof_budget_exhausted());
     let key = SsaVar::new(17, 0);
     let definitions = &graph.definitions[&key];
-    let mut uses = graph.uses[&key].clone();
+    let mut uses = graph.uses[&key].to_vec();
     // A dead use retains no feasible candidate, even when the proof arena is saturated.
     uses[1].domain = graph.logic.falsity();
     let bdd = SemanticReachingAnalysis::new(&graph);

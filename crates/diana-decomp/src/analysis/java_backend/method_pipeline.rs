@@ -62,8 +62,8 @@ impl<'a> MethodBodyPipeline<'a> {
         let ssa_values = cfg_analysis.values;
 
         let t = stats.then(std::time::Instant::now);
-        let exception_analysis =
-            { ExceptionAnalyzer::new(cfg, &ssa_values, self.hierarchy).analyze() }?;
+        let (exception_analysis, normal_dominance) =
+            ExceptionAnalyzer::new(cfg, &ssa_values, self.hierarchy).analyze_with_dominators()?;
         mark(&mut stages, "exceptions", t);
         self.observe_stage(cfg, "exceptions:done")?;
         self.observer.observe(crate::ir::AnalysisEvent::Exceptions {
@@ -75,7 +75,7 @@ impl<'a> MethodBodyPipeline<'a> {
 
         let t = stats.then(std::time::Instant::now);
         let region_graph = RegionGraphBuilder::new(cfg, &exception_analysis, &ssa_values)
-            .build_with_dominators(Some(dominators))?;
+            .build_with_dominators(Some(dominators), normal_dominance)?;
         drop(exception_analysis);
         mark(&mut stages, "regions", t);
         self.observe_stage(cfg, "regions:done")?;

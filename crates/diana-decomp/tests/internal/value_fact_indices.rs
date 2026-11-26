@@ -73,10 +73,7 @@ fn numbered_occurrences_keep_original_and_alias_order_and_share_unaffected_uses(
     assert_eq!(events(54), [5, 6, 7, 3]);
     assert_eq!(events(3), [6, 7]);
     assert_eq!(events(22), [3]);
-    assert!(std::ptr::eq(
-        facts.uses_of(key(99)),
-        graph.uses[&key(99)].as_slice()
-    ));
+    assert!(std::ptr::eq(facts.uses_of(key(99)), &graph.uses[&key(99)]));
 }
 
 #[test]

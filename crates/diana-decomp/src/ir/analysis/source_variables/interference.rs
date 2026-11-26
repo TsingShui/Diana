@@ -19,6 +19,7 @@ struct BlockLiveness {
     input: LiveSet,
     output: LiveSet,
     phi_definitions: LiveSet,
+    transfers: std::ops::Range<usize>,
 }
 
 impl BlockLiveness {
@@ -28,8 +29,19 @@ impl BlockLiveness {
     }
 }
 
+/// Only instructions with a retained use or definition participate in
+/// interference. Keep their positions for move-source exclusions and their
+/// ordered operand indices in a common array across all physical blocks.
+struct InstructionTransfer {
+    position: usize,
+    definition: Option<usize>,
+    uses_end: usize,
+}
+
 pub(super) struct SsaLiveness {
     names: Box<[SsaVar]>,
+    transfers: Vec<InstructionTransfer>,
+    operands: Vec<usize>,
     blocks: BTreeMap<BlockId, BlockLiveness>,
     phi_uses: BTreeMap<(BlockId, BlockId, crate::ir::EdgeKind), LiveSet>,
 }
@@ -43,17 +55,21 @@ impl SsaLiveness {
         let id = |name: SsaVar| names.binary_search(&name).ok();
         let mut blocks = BTreeMap::new();
         let mut phi_uses = BTreeMap::<_, LiveSet>::new();
+        let mut transfers = Vec::new();
+        let mut operands = Vec::new();
         for (&block, body) in &cfg.blocks {
             let mut facts = BlockLiveness::default();
-            for instruction in &body.insns {
+            let start = transfers.len();
+            for (position, instruction) in body.insns.iter().enumerate() {
+                let uses_start = operands.len();
+                let definition = instruction
+                    .result
+                    .as_ref()
+                    .and_then(SsaVar::from_reg)
+                    .and_then(id);
+
                 if instruction.insn_type == InsnType::Phi {
-                    if let Some(result) = instruction
-                        .result
-                        .as_ref()
-                        .and_then(SsaVar::from_reg)
-                        .and_then(id)
-                    {
-                        facts.definitions.insert(result);
+                    if let Some(result) = definition {
                         facts.phi_definitions.insert(result);
                     }
                     for (&(predecessor, edge_kind), argument) in
@@ -70,25 +86,29 @@ impl SsaLiveness {
                                 .insert(value);
                         }
                     }
-                    continue;
-                }
-                for usage in InstructionUses::collect(instruction)
-                    .into_iter()
-                    .filter_map(id)
-                {
-                    if !facts.definitions.contains(usage) {
-                        facts.input.insert(usage);
+                } else {
+                    for usage in InstructionUses::collect(instruction)
+                        .into_iter()
+                        .filter_map(id)
+                    {
+                        if !facts.definitions.contains(usage) {
+                            facts.input.insert(usage);
+                        }
+                        operands.push(usage);
                     }
                 }
-                if let Some(result) = instruction
-                    .result
-                    .as_ref()
-                    .and_then(SsaVar::from_reg)
-                    .and_then(id)
-                {
+                if definition.is_some() || operands.len() != uses_start {
+                    transfers.push(InstructionTransfer {
+                        position,
+                        definition,
+                        uses_end: operands.len(),
+                    });
+                }
+                if let Some(result) = definition {
                     facts.definitions.insert(result);
                 }
             }
+            facts.transfers = start..transfers.len();
             blocks.insert(block, facts);
         }
 
@@ -130,6 +150,8 @@ impl SsaLiveness {
         }
         Ok(Self {
             names,
+            transfers,
+            operands,
             blocks,
             phi_uses,
         })
@@ -243,22 +265,12 @@ impl InterferenceGraph {
                 .get(&block)
                 .ok_or(SourceVariableError::MissingBlock(block))?;
             let mut live = facts.output.clone();
-            for instruction in body.insns.iter().rev() {
-                let id = |name: SsaVar| liveness.names.binary_search(&name).ok();
-                let definition = instruction
-                    .result
-                    .as_ref()
-                    .and_then(SsaVar::from_reg)
-                    .and_then(id);
-                let uses: smallvec::SmallVec<[usize; 4]> = if instruction.insn_type == InsnType::Phi
-                {
-                    Default::default()
-                } else {
-                    InstructionUses::collect(instruction)
-                        .into_iter()
-                        .filter_map(id)
-                        .collect()
-                };
+            for index in facts.transfers.clone().rev() {
+                let step = &liveness.transfers[index];
+                let start = index
+                    .checked_sub(1)
+                    .map_or(0, |i| liveness.transfers[i].uses_end);
+                let uses = &liveness.operands[start..step.uses_end];
                 if needs_interference {
                     Self::add_clique(
                         graph.groups.as_ref(),
@@ -266,9 +278,13 @@ impl InterferenceGraph {
                         uses.iter().map(|&id| liveness.names[id]),
                     );
                 }
-                if let Some(id) = definition {
+                if let Some(id) = step.definition {
                     let definition = liveness.names[id];
                     if needs_interference && graph.participates(definition) {
+                        let instruction = body
+                            .insns
+                            .get(step.position)
+                            .ok_or(SourceVariableError::LivenessMismatch(block))?;
                         let move_source = (instruction.insn_type == InsnType::Move)
                             .then(|| instruction.args.first())
                             .flatten()
@@ -284,7 +300,7 @@ impl InterferenceGraph {
                     }
                     live.remove(id);
                 }
-                for id in uses {
+                for &id in uses {
                     live.insert(id);
                 }
             }

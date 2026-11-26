@@ -19,6 +19,7 @@ pub(super) struct EffectVersions<'a> {
     prior_query: Cell<bool>,
     uncharged_facts: OnceCell<bool>,
     order: OnceCell<EffectOrder>,
+    domain_runs: OnceCell<Option<EffectDomainRuns>>,
 }
 
 /// Keep occurrence identities for all points in a cycle. The interval is
@@ -54,6 +55,62 @@ impl EffectOrder {
     }
 }
 
+/// Consecutive effects in one control domain have the same intersection with
+/// a movement's domain. The first conflicting occurrence charges the shared
+/// proof arena. Every later one in that run reuses that exact intersection.
+struct EffectDomainRuns {
+    starts: Vec<usize>,
+    by_effect: Vec<usize>,
+    eligible: Vec<Cell<bool>>,
+}
+
+impl EffectDomainRuns {
+    fn grouped(effects: &[EffectFact]) -> Option<Self> {
+        let starts = effects
+            .iter()
+            .enumerate()
+            .filter_map(|(i, fact)| (i == 0 || fact.domain != effects[i - 1].domain).then_some(i))
+            .collect::<Vec<_>>();
+        // Two scans (run discovery and the topological interval) are useful
+        // only when enough occurrences share their domain.
+        if starts.is_empty() || starts.len() > effects.len() / 2 {
+            return None;
+        }
+        let mut by_effect = Vec::with_capacity(effects.len());
+        for (index, &end) in starts.iter().skip(1).enumerate() {
+            by_effect.resize(end, index);
+        }
+        by_effect.resize(effects.len(), starts.len() - 1);
+        let eligible = vec![Cell::new(false); starts.len()];
+        Some(Self {
+            starts,
+            by_effect,
+            eligible,
+        })
+    }
+
+    fn prepare(
+        &self,
+        effects: &[EffectFact],
+        conflicts: impl Fn(&EffectFact) -> bool,
+        mut overlaps: impl FnMut(ControlDomain) -> bool,
+    ) -> bool {
+        let mut any = false;
+        for (i, &start) in self.starts.iter().enumerate() {
+            let end = self.starts.get(i + 1).copied().unwrap_or(effects.len());
+            let run = &effects[start..end];
+            let eligible = run.iter().any(&conflicts) && overlaps(run[0].domain);
+            self.eligible[i].set(eligible);
+            any |= eligible;
+        }
+        any
+    }
+
+    fn eligible(&self, index: usize) -> bool {
+        self.eligible[self.by_effect[index]].get()
+    }
+}
+
 impl<'a> EffectVersions<'a> {
     pub(super) fn new(graph: &'a ValueFlowGraph<'a>) -> Self {
         Self {
@@ -61,6 +118,7 @@ impl<'a> EffectVersions<'a> {
             prior_query: Cell::new(false),
             uncharged_facts: OnceCell::new(),
             order: OnceCell::new(),
+            domain_runs: OnceCell::new(),
         }
     }
 
@@ -91,40 +149,40 @@ impl<'a> EffectVersions<'a> {
             return EffectStability::DoesNotReach;
         }
         let conflicts = |fact: &EffectFact| {
-            fact.point != source
-                && fact.point != target
-                && effect.conflicts_with(&fact.effect)
-                && !self
-                    .graph
-                    .logic
-                    .disjoint(domain, fact.domain)
-                    .unwrap_or(false)
+            fact.point != source && fact.point != target && effect.conflicts_with(&fact.effect)
         };
-        // A bounded scan, or a single query, costs no persistent index.
-        // Slicing/reordering domain checks is exact only if none can charge
-        // the BDD arena. Otherwise every original check executes in order.
+        let overlaps = |other| !self.graph.logic.disjoint(domain, other).unwrap_or(false);
         let effects = &self.graph.effects;
-        let changed = if effects.len() > 8
-            && self.prior_query.replace(true)
+        let repeated = effects.len() > 8 && self.prior_query.replace(true);
+        let uncharged = repeated
             && (self.graph.logic.disjoint_without_bdd_work(domain)
                 || *self.uncharged_facts.get_or_init(|| {
                     effects
                         .iter()
                         .all(|fact| self.graph.logic.disjoint_without_bdd_work(fact.domain))
-                })) {
-            let reachability = flow.indexed_reachability();
-            let order = self
-                .order
-                .get_or_init(|| EffectOrder::new(reachability, effects));
-            let candidates = order
-                .between(reachability, source, target)
-                .iter()
-                .filter_map(|&(_, i)| conflicts(&effects[i]).then_some(&effects[i].point));
-            reachability.reaches_any_between(source, target, candidates)
+                }));
+        let runs = if repeated && !uncharged {
+            self.domain_runs
+                .get_or_init(|| EffectDomainRuns::grouped(effects))
+                .as_ref()
         } else {
-            let mut conflicting = effects
-                .iter()
-                .filter_map(|fact| conflicts(fact).then_some(&fact.point));
+            None
+        };
+        let changed = if uncharged {
+            self.interval_conflict(flow, source, target, |i| {
+                conflicts(&effects[i]) && overlaps(effects[i].domain)
+            })
+        } else if let Some(runs) = runs {
+            // Keep the full sequence of first domain checks, even after a
+            // reachable conflict. Saturation can change a later run's answer.
+            runs.prepare(effects, conflicts, overlaps)
+                && self.interval_conflict(flow, source, target, |i| {
+                    runs.eligible(i) && conflicts(&effects[i])
+                })
+        } else {
+            let mut conflicting = effects.iter().filter_map(|fact| {
+                (conflicts(fact) && overlaps(fact.domain)).then_some(&fact.point)
+            });
             let Some(first) = conflicting.next() else {
                 return EffectStability::Stable;
             };
@@ -143,6 +201,25 @@ impl<'a> EffectVersions<'a> {
         } else {
             EffectStability::Stable
         }
+    }
+
+    fn interval_conflict(
+        &self,
+        flow: &crate::ir::analysis::SemanticFlowGraph,
+        source: SemanticFlowPoint,
+        target: SemanticFlowPoint,
+        candidate: impl Fn(usize) -> bool,
+    ) -> bool {
+        let effects = &self.graph.effects;
+        let reachability = flow.indexed_reachability();
+        let order = self
+            .order
+            .get_or_init(|| EffectOrder::new(reachability, effects));
+        let points = order
+            .between(reachability, source, target)
+            .iter()
+            .filter_map(|&(_, i)| candidate(i).then_some(&effects[i].point));
+        reachability.reaches_any_between(source, target, points)
     }
 }
 

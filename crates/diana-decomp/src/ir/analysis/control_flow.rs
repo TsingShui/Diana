@@ -1,17 +1,23 @@
 //! Immutable ordinary-control-flow facts shared by region analyses.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 
 use crate::ir::{BlockId, InsnType, CFG};
 
 use super::{DominanceError, DominatorTree, PostDominatorTree};
 
+/// Ordinary CFG facts already built on the same immutable topology while
+/// assigning DEX handler scopes. Region analysis can take direct ownership.
+pub(crate) struct NormalDominance {
+    pub(crate) predecessors: BTreeMap<BlockId, Vec<BlockId>>,
+    pub(crate) tree: DominatorTree,
+}
+
 #[derive(Debug, Clone)]
 pub struct ControlFlowFacts {
     predecessors: BTreeMap<BlockId, Vec<BlockId>>,
     semantic_predecessors: Option<BTreeMap<BlockId, Vec<BlockId>>>,
-    dominators: Arc<DominatorTree>,
+    dominators: DominatorTree,
     semantic_dominators: DominatorTree,
     postdominators: PostDominatorTree,
     phi_continuations: Option<ControlContinuations>,
@@ -20,20 +26,30 @@ pub struct ControlFlowFacts {
 
 impl ControlFlowFacts {
     pub fn analyze(cfg: &CFG) -> Result<Self, DominanceError> {
-        Self::analyze_with_dominators(cfg, None)
+        Self::analyze_with_dominators(cfg, None, None)
     }
 
     pub(crate) fn analyze_with_dominators(
         cfg: &CFG,
         semantic_dominators: Option<DominatorTree>,
+        normal: Option<NormalDominance>,
     ) -> Result<Self, DominanceError> {
-        let predecessors = cfg.normal_predecessor_snapshot();
         let semantic_predecessors = cfg
             .has_exception_edges()
             .then(|| cfg.predecessor_snapshot());
-        let dominators = match (&semantic_dominators, &semantic_predecessors) {
-            (Some(complete), None) => complete.with_virtual_root()?,
-            _ => DominatorTree::compute_normal(cfg, cfg.block_ids(), &predecessors)?,
+        let NormalDominance {
+            predecessors,
+            tree: dominators,
+        } = match normal {
+            Some(facts) => facts,
+            None => {
+                let predecessors = cfg.normal_predecessor_snapshot();
+                let tree = match (&semantic_dominators, &semantic_predecessors) {
+                    (Some(complete), None) => complete.with_virtual_root()?,
+                    _ => DominatorTree::normal(cfg)?,
+                };
+                NormalDominance { predecessors, tree }
+            }
         };
         let semantic_dominators = match semantic_dominators {
             Some(tree) => tree,
@@ -52,7 +68,7 @@ impl ControlFlowFacts {
         Ok(Self {
             predecessors,
             semantic_predecessors,
-            dominators: Arc::new(dominators),
+            dominators,
             semantic_dominators,
             postdominators,
             phi_continuations,
@@ -64,10 +80,8 @@ impl ControlFlowFacts {
         self.predecessors.get(&block).map(Vec::as_slice)
     }
 
-    pub(crate) fn normal_dominance(
-        &self,
-    ) -> (&BTreeMap<BlockId, Vec<BlockId>>, Arc<DominatorTree>) {
-        (&self.predecessors, Arc::clone(&self.dominators))
+    pub(crate) fn normal_dominance(&self) -> (&BTreeMap<BlockId, Vec<BlockId>>, DominatorTree) {
+        (&self.predecessors, self.dominators.clone())
     }
 
     pub fn semantic_predecessors(&self, block: BlockId) -> Option<&[BlockId]> {

@@ -15,6 +15,7 @@ mod effect_versions;
 mod effects;
 mod facts;
 mod gated;
+mod occurrences;
 mod planner;
 mod reaching;
 
@@ -26,6 +27,7 @@ use collector::FlowCollector;
 use effects::EffectSummary;
 use gated::GatedPhiAnalysis;
 pub(super) use gated::{GatedControlFlow, PhiExpressionPlacement};
+use occurrences::OccurrenceRows;
 use planner::ValuePlanner;
 
 /// Scopes receive their number on entry. All descendants are visited before
@@ -275,10 +277,7 @@ struct SsaCopyFlow {
 }
 
 impl SsaCopyFlow {
-    fn analyze(
-        values: &SsaValueGraph,
-        definitions: &BTreeMap<SsaVar, Vec<DefinitionFact>>,
-    ) -> Self {
+    fn analyze(values: &SsaValueGraph, definitions: &OccurrenceRows<DefinitionFact>) -> Self {
         let sources: BTreeMap<_, _> = values
             .copies()
             .iter()
@@ -425,12 +424,12 @@ pub(super) struct ValueFlowGraph<'ir> {
     scopes: LexicalScopes,
     identity: ValueIdentity,
     logic: DomainLogic,
-    definitions: BTreeMap<SsaVar, Vec<DefinitionFact<'ir>>>,
+    definitions: OccurrenceRows<DefinitionFact<'ir>>,
     definitions_without_sites: BTreeSet<SsaVar>,
     /// Values introduced by lexical binders rather than executable statements.
     /// Their definition classes are intentionally open to statement scheduling.
     bindings: BTreeSet<SsaVar>,
-    uses: BTreeMap<SsaVar, Vec<UseFact>>,
+    uses: OccurrenceRows<UseFact>,
     semantic_roots: OnceCell<BTreeSet<SsaVar>>,
     ssa_values: Option<&'ir SsaValueGraph>,
     excluded_phis: BTreeSet<SsaVar>,
@@ -525,10 +524,10 @@ impl<'ir> ValueFlowGraph<'ir> {
             has_select: symbols.has_select,
             has_predicate_uses: false,
             scopes: LexicalScopes::default(),
-            definitions: BTreeMap::new(),
+            definitions: OccurrenceRows::default(),
             definitions_without_sites: BTreeSet::new(),
             bindings: BTreeSet::new(),
-            uses: BTreeMap::new(),
+            uses: OccurrenceRows::default(),
             semantic_roots: OnceCell::new(),
             ssa_values: Some(values),
             excluded_phis: BTreeSet::new(),
@@ -590,10 +589,10 @@ impl<'ir> ValueFlowGraph<'ir> {
             has_select: symbols.has_select,
             has_predicate_uses: false,
             scopes: LexicalScopes::default(),
-            definitions: BTreeMap::new(),
+            definitions: OccurrenceRows::default(),
             definitions_without_sites: BTreeSet::new(),
             bindings: bindings.clone(),
-            uses: BTreeMap::new(),
+            uses: OccurrenceRows::default(),
             semantic_roots: OnceCell::new(),
             ssa_values: None,
             excluded_phis: BTreeSet::new(),
@@ -826,7 +825,7 @@ impl<'ir> ValueFlowGraph<'ir> {
     }
 
     fn validate(&self, values: &SsaValueGraph) -> Result<(), ValueRecoveryError> {
-        for (value, definitions) in &self.definitions {
+        for (value, definitions) in self.definitions.iter() {
             if definitions.len() > 1 && !Self::are_structural_replicas(definitions) {
                 return Err(ValueRecoveryError::DuplicateDefinition(*value));
             }

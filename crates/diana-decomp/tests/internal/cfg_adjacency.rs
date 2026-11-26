@@ -1,5 +1,5 @@
 use super::*;
-use crate::ir::CFG;
+use crate::ir::{Block, CFG};
 use std::collections::BTreeSet;
 
 #[test]
@@ -71,5 +71,48 @@ fn block_rows_keep_sparse_targets_and_parallel_kinds_through_topology_edits() {
                 .collect();
             assert!(cfg.predecessors_with_kind(id).iter().copied().eq(incoming));
         }
+    }
+}
+
+#[test]
+fn coverage_remembers_only_captured_or_explicit_blocks_across_graph_edits() {
+    for ids in [
+        [8, 9, 10],
+        [0, 9, u32::MAX],
+        [u32::MAX - 2, u32::MAX - 1, u32::MAX],
+    ] {
+        let [first, mid, last] = ids.map(BlockId);
+        let extra = BlockId(3);
+        let ranges = BTreeSet::from([(2, 5), (3, 9)]);
+        let mut cfg = CFG::new("coverage");
+        cfg.set_exception_coverage(extra, ranges.clone());
+        assert_eq!(cfg.exception_coverage(extra), &ranges);
+        assert!(!cfg.has_exception_coverage(extra));
+        for id in [first, mid, last] {
+            cfg.add_block(Block::new(id));
+        }
+        cfg.capture_exception_coverage();
+        assert!(cfg.exception_coverage(extra).is_empty());
+        assert!(!cfg.has_exception_coverage(extra));
+        for id in [first, mid, last] {
+            assert!(cfg.has_exception_coverage(id));
+            assert!(cfg.exception_coverage(id).is_empty());
+        }
+        cfg.set_exception_coverage(mid, ranges.clone());
+        cfg.remove_block_from_graph(mid);
+        assert_eq!(cfg.exception_coverage(mid), &ranges);
+        cfg.remove_block(mid);
+        cfg.add_block(Block::new(mid));
+        cfg.add_block(Block::new(extra));
+        cfg.capture_exception_coverage();
+        assert!(!cfg.has_exception_coverage(mid));
+        assert!(!cfg.has_exception_coverage(extra));
+        cfg.set_exception_coverage(mid, BTreeSet::new());
+        cfg.set_exception_coverage(extra, ranges.clone());
+        assert!(cfg.has_exception_coverage(mid));
+        assert!(cfg.has_exception_coverage(extra));
+        assert_eq!(cfg.exception_coverage(extra), &ranges);
+        assert!(cfg.has_exception_coverage(first));
+        assert!(cfg.has_exception_coverage(last));
     }
 }

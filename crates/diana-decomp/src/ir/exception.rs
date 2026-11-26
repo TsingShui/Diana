@@ -82,8 +82,8 @@ pub use cleanup::{
 };
 
 use super::analysis::{
-    DominanceError, DominatorTree, InstructionEffects, LexicalBoundaryAnalysis, SsaValueGraph,
-    SsaVar, SubtypeRelation, ThrowEffect, TypeHierarchy,
+    DominanceError, DominatorTree, InstructionEffects, LexicalBoundaryAnalysis, NormalDominance,
+    SsaValueGraph, SsaVar, SubtypeRelation, ThrowEffect, TypeHierarchy,
 };
 use super::semantic::StatementOrigin;
 use super::{ArgType, BlockId, EdgeKind, InsnArg, InsnType, MemberReference, RegisterArg, CFG};
@@ -487,6 +487,12 @@ impl<'a> ExceptionAnalyzer<'a> {
     }
 
     pub fn analyze(&self) -> Result<ExceptionAnalysis, ExceptionInvariantError> {
+        self.analyze_with_dominators().map(|(analysis, _)| analysis)
+    }
+
+    pub(crate) fn analyze_with_dominators(
+        &self,
+    ) -> Result<(ExceptionAnalysis, Option<NormalDominance>), ExceptionInvariantError> {
         for &block in self.cfg.blocks.keys() {
             if !self.cfg.has_exception_coverage(block) {
                 return Err(ExceptionInvariantError::MissingCoverage(block));
@@ -494,7 +500,7 @@ impl<'a> ExceptionAnalyzer<'a> {
         }
         let no_handlers = self.cfg.handlers.is_empty() && trivial_early_returns();
         if no_handlers && is_straight_line(self.cfg, self.values) {
-            return Ok(ExceptionAnalysis::default());
+            return Ok((ExceptionAnalysis::default(), None));
         }
         let ordinary = ExceptionRegions::normal_reachable(self.cfg, self.cfg.entry);
         // Empty metadata contributes no exception scopes or contractions.
@@ -504,9 +510,11 @@ impl<'a> ExceptionAnalyzer<'a> {
             && !self.cfg.blocks.contains_key(&BlockId::INVALID)
             && ordinary.iter().eq(self.cfg.blocks.keys())
         {
-            return Ok(ExceptionAnalysis::default());
+            return Ok((ExceptionAnalysis::default(), None));
         }
-        ExceptionRegions::new(self.cfg, self.values, self.hierarchy, ordinary).analyze()
+        ExceptionRegions::new(self.cfg, self.values, self.hierarchy, ordinary)
+            .analyze()
+            .map(|(analysis, normal)| (analysis, Some(normal)))
     }
 }
 
@@ -563,7 +571,7 @@ impl<'a> ExceptionRegions<'a> {
         }
     }
 
-    fn analyze(&self) -> Result<ExceptionAnalysis, ExceptionInvariantError> {
+    fn analyze(self) -> Result<(ExceptionAnalysis, NormalDominance), ExceptionInvariantError> {
         for clause in &self.cfg.handlers {
             if !self.handler_entries.contains_key(&clause.handler) {
                 return Err(ExceptionInvariantError::MissingHandlerEntry(clause.handler));
@@ -578,7 +586,7 @@ impl<'a> ExceptionRegions<'a> {
             HandlerBodies::new(self.cfg, &self.handler_entries, &self.ordinary_reachable);
         let own_ms = t2.elapsed();
         let t1 = std::time::Instant::now();
-        let scopes = HandlerStackForest::new(self).build(raw, &ownership)?;
+        let scopes = HandlerStackForest::new(&self).build(raw, &ownership)?;
         let forest_ms = t1.elapsed();
         let t2b = std::time::Instant::now();
         let semantics = HandlerSemanticDomains::analyze(self.cfg, &self.handler_entries);
@@ -598,12 +606,8 @@ impl<'a> ExceptionRegions<'a> {
             ExceptionScopeNormalization::new(self.cfg, &self.normal_predecessors).apply(regions)?;
         let norm_ms = t2d.elapsed();
         let t3 = std::time::Instant::now();
-        let normal_dominators = DominatorTree::compute_normal(
-            self.cfg,
-            self.cfg.block_ids(),
-            &self.normal_predecessors,
-        )
-        .map_err(ExceptionInvariantError::Dominance)?;
+        let normal_dominators =
+            DominatorTree::normal(self.cfg).map_err(ExceptionInvariantError::Dominance)?;
         HandlerDomains::assign(self.cfg, &mut regions, &self.ordinary_reachable);
         let nested_handlers = NestedHandlerDomains::analyze(&regions);
         let recovery_order = Self::cleanup_recovery_order(&regions);
@@ -753,7 +757,13 @@ impl<'a> ExceptionRegions<'a> {
                     .extend(handler.blocks.iter().copied());
             }
         }
-        Ok(analysis)
+        Ok((
+            analysis,
+            NormalDominance {
+                predecessors: self.normal_predecessors,
+                tree: normal_dominators,
+            },
+        ))
     }
 
     fn cleanup_recovery_order(regions: &[TryRegion]) -> Vec<u32> {

@@ -12,7 +12,6 @@ use super::bounds::{BoundKind, TypeBound, TypeBounds};
 
 pub(super) struct TypeConstraintGraph {
     classes: Option<SsaClasses>,
-    values: BTreeSet<SsaVar>,
     bounds: BTreeMap<SsaVar, TypeBounds>,
     flows: BTreeSet<(SsaVar, SsaVar)>,
     upper_flows: BTreeSet<(SsaVar, SsaVar)>,
@@ -40,14 +39,14 @@ impl TypeConstraintGraph {
         values: &SsaValueGraph,
         constants: &BTreeMap<SsaVar, InsnArg>,
     ) -> Result<Self, TypeConstraintError> {
-        let all_values = values
-            .values()
-            .map(|value| value.variable)
-            .collect::<BTreeSet<_>>();
+        // An empty row records a known SSA identity even before type evidence
+        // reaches it. Bounds from synthetic inputs extend the same index.
         let mut graph = Self {
             classes: None,
-            values: all_values,
-            bounds: BTreeMap::new(),
+            bounds: values
+                .values()
+                .map(|value| (value.variable, TypeBounds::default()))
+                .collect(),
             flows: BTreeSet::new(),
             upper_flows: BTreeSet::new(),
             arrays: BTreeSet::new(),
@@ -88,17 +87,29 @@ impl TypeConstraintGraph {
     }
 
     pub(super) fn normalize(mut self) -> NormalizedTypeConstraints {
-        let mut roots = BTreeMap::new();
-        for value in self.values {
-            let root = self
-                .classes
-                .as_mut()
-                .map_or(value, |classes| classes.root(value));
-            roots.insert(value, root);
+        let roots: BTreeMap<_, _> = self
+            .bounds
+            .keys()
+            .map(|&value| {
+                let root = self
+                    .classes
+                    .as_mut()
+                    .map_or(value, |classes| classes.root(value));
+                (value, root)
+            })
+            .collect();
+        if self.classes.is_none() {
+            self.flows.retain(|(source, target)| source != target);
+            self.upper_flows.retain(|(source, target)| source != target);
+            return NormalizedTypeConstraints {
+                members: roots,
+                bounds: self.bounds,
+                flows: self.flows,
+                upper_flows: self.upper_flows,
+                arrays: self.arrays,
+            };
         }
-        let bounds = if self.classes.is_none() {
-            self.bounds
-        } else {
+        let bounds = {
             let mut merged = BTreeMap::<SsaVar, TypeBounds>::new();
             for (value, bounds) in self.bounds {
                 let root = roots.get(&value).copied().unwrap_or(value);
@@ -555,14 +566,16 @@ impl TypeConstraintGraph {
     }
 
     fn observe_register_type(&mut self, register: &RegisterArg) {
-        self.add_register_bound(register, BoundKind::Domain, register.ty.clone());
-        if register.ty.is_known() {
-            self.add_register_bound(register, BoundKind::Fallback, register.ty.clone());
+        if let Some(value) = SsaVar::from_reg(register) {
+            let bounds = self.bounds.entry(value).or_default();
+            bounds.insert(TypeBound::new(BoundKind::Domain, register.ty.clone()));
+            if register.ty.is_known() {
+                bounds.insert(TypeBound::new(BoundKind::Fallback, register.ty.clone()));
+            }
         }
     }
 
     fn add_value_bound(&mut self, value: SsaVar, kind: BoundKind, ty: ArgType) {
-        self.values.insert(value);
         self.bounds
             .entry(value)
             .or_default()
@@ -657,8 +670,10 @@ mod tests {
         let value = SsaVar::new(2, 1);
         let mut graph = TypeConstraintGraph {
             classes: None,
-            values: BTreeSet::from([value]),
-            bounds: BTreeMap::new(),
+            bounds: [value]
+                .into_iter()
+                .map(|id| (id, TypeBounds::default()))
+                .collect(),
             flows: BTreeSet::new(),
             upper_flows: BTreeSet::new(),
             arrays: BTreeSet::new(),
@@ -679,8 +694,10 @@ mod tests {
         let result = SsaVar::new(2, 1);
         let mut graph = TypeConstraintGraph {
             classes: None,
-            values: BTreeSet::from([left, right, result]),
-            bounds: BTreeMap::new(),
+            bounds: [left, right, result]
+                .into_iter()
+                .map(|id| (id, TypeBounds::default()))
+                .collect(),
             flows: BTreeSet::new(),
             upper_flows: BTreeSet::new(),
             arrays: BTreeSet::new(),
@@ -708,8 +725,10 @@ mod tests {
         let value_type = ArgType::object("android/content/pm/ActivityInfo");
         let mut graph = TypeConstraintGraph {
             classes: None,
-            values: BTreeSet::from([array]),
-            bounds: BTreeMap::new(),
+            bounds: [array]
+                .into_iter()
+                .map(|id| (id, TypeBounds::default()))
+                .collect(),
             flows: BTreeSet::new(),
             upper_flows: BTreeSet::new(),
             arrays: BTreeSet::new(),
@@ -738,8 +757,10 @@ mod tests {
         let value = SsaVar::new(3, 14);
         let mut graph = TypeConstraintGraph {
             classes: None,
-            values: BTreeSet::from([value]),
-            bounds: BTreeMap::new(),
+            bounds: [value]
+                .into_iter()
+                .map(|id| (id, TypeBounds::default()))
+                .collect(),
             flows: BTreeSet::new(),
             upper_flows: BTreeSet::new(),
             arrays: BTreeSet::new(),

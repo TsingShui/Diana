@@ -1330,7 +1330,6 @@ dependencies = [
  "bitflags 2.13.2",
  "crc32fast",
  "foldhash",
- "hashbrown 0.16.1",
  "memchr",
  "pretty_assertions",
  "rayon",

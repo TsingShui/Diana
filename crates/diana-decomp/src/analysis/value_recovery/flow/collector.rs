@@ -167,11 +167,9 @@ impl<'ir> FlowCollector<'ir> {
         if statement.site.is_none() {
             self.graph.definitions_without_sites.insert(key);
         }
-        self.graph
-            .definitions
-            .entry(key)
-            .or_default()
-            .push(DefinitionFact {
+        self.graph.definitions.push(
+            key,
+            DefinitionFact {
                 key,
                 site: statement.site,
                 origin: statement.origin.as_ref(),
@@ -184,7 +182,8 @@ impl<'ir> FlowCollector<'ir> {
                 loop_owner: self.loop_owner,
                 event,
                 repetitive: self.loop_owner != ScopeId::default(),
-            });
+            },
+        );
     }
 
     fn visit_semantic_value_uses(
@@ -520,19 +519,22 @@ impl<'ir> FlowCollector<'ir> {
     ) {
         if let Some(key) = self.graph.key(register) {
             self.graph.has_predicate_uses |= context == UseContext::Predicate;
-            self.graph.uses.entry(key).or_default().push(UseFact {
-                point: origin.cloned(),
-                domain,
-                scope: self.scope,
-                protection: self.protections.last().copied(),
-                loop_owner: self.loop_owner,
-                event,
-                repetitive: self.loop_owner != ScopeId::default(),
-                evaluation_prefix: prefix.clone(),
-                context,
-                consumer,
-                site,
-            });
+            self.graph.uses.push(
+                key,
+                UseFact {
+                    point: origin.cloned(),
+                    domain,
+                    scope: self.scope,
+                    protection: self.protections.last().copied(),
+                    loop_owner: self.loop_owner,
+                    event,
+                    repetitive: self.loop_owner != ScopeId::default(),
+                    evaluation_prefix: prefix.clone(),
+                    context,
+                    consumer,
+                    site,
+                },
+            );
         }
     }
 

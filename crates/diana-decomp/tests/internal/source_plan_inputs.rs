@@ -445,7 +445,7 @@ fn source_instruction_definition_borrows_its_original_operation() {
     };
     let source = original.statements[0].instruction_ref().unwrap();
     let flow = ValueFlowGraph::build_source(&block, &BTreeSet::new()).unwrap();
-    let [fact] = flow.definitions[&SsaVar::new(8, 0)].as_slice() else {
+    let [fact] = &flow.definitions[&SsaVar::new(8, 0)] else {
         panic!("single definition")
     };
     let ValueRef::Operation(value) = fact.expression() else {

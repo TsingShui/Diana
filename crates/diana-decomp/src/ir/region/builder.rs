@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ir::{
-    analysis::{ControlFlowFacts, SsaValueGraph},
+    analysis::{ControlFlowFacts, NormalDominance, SsaValueGraph},
     exception::{ExceptionAnalysis, HandlerKind},
     EdgeKind, CFG,
 };
@@ -33,12 +33,13 @@ impl<'a> RegionGraphBuilder<'a> {
     }
 
     pub fn build(self) -> Result<RegionGraph, RegionInvariantError> {
-        self.build_with_dominators(None)
+        self.build_with_dominators(None, None)
     }
 
     pub(crate) fn build_with_dominators(
         self,
         semantic_dominators: Option<crate::ir::analysis::DominatorTree>,
+        normal_dominance: Option<NormalDominance>,
     ) -> Result<RegionGraph, RegionInvariantError> {
         let cfg = self.cfg;
         let analysis = self.exceptions;
@@ -60,7 +61,8 @@ impl<'a> RegionGraphBuilder<'a> {
                 }
             }
         }
-        let control_flow = ControlFlowFacts::analyze_with_dominators(cfg, semantic_dominators)?;
+        let control_flow =
+            ControlFlowFacts::analyze_with_dominators(cfg, semantic_dominators, normal_dominance)?;
         // Exact control-flow facts cover every reachable block. With no cleanup
         // contractions the projected graph and both dominance policies are identical.
         let projected = if cleanup_representatives.is_empty() {

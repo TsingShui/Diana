@@ -25,6 +25,7 @@ mod value_origins;
 mod variable_semantics;
 
 pub use control_contractions::{ControlContractions, NormalCopySite};
+pub(crate) use control_flow::NormalDominance;
 pub use control_flow::{ControlContinuations, ControlFlowFacts};
 pub use dominance_frontier::DominanceFrontier;
 pub use dominator_tree::{DominanceError, DominatorTree};

@@ -13,43 +13,8 @@ pub struct PostDominatorTree {
 
 impl PostDominatorTree {
     pub fn compute(cfg: &CFG) -> Result<Self, DominanceError> {
-        let virtual_exit = BlockId::INVALID;
-        let mut nodes = cfg.block_ids();
-        nodes.push(virtual_exit);
-
-        let mut predecessors = nodes
-            .iter()
-            .copied()
-            .map(|node| (node, Vec::new()))
-            .collect::<BTreeMap<_, _>>();
-        let mut successors = predecessors.clone();
-        let mut exits = Vec::new();
-
-        for source in cfg.block_ids() {
-            let targets = cfg.normal_successors(source).collect::<Vec<_>>();
-            if targets.is_empty() {
-                exits.push(source);
-                predecessors.entry(source).or_default().push(virtual_exit);
-                continue;
-            }
-            for target in targets {
-                successors.entry(target).or_default().push(source);
-                predecessors.entry(source).or_default().push(target);
-            }
-        }
-        successors.insert(virtual_exit, exits);
-        for edges in predecessors.values_mut().chain(successors.values_mut()) {
-            edges.sort();
-            edges.dedup();
-        }
-
         Ok(Self {
-            tree: DominatorTree::compute_reachable_topology(
-                virtual_exit,
-                nodes,
-                &predecessors,
-                &successors,
-            )?,
+            tree: DominatorTree::compute_postdominance(cfg)?,
         })
     }
 
