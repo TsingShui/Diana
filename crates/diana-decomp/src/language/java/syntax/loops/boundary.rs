@@ -25,16 +25,6 @@ impl StatementBoundary {
         Some(statements)
     }
 
-    pub(super) fn is_reorderable(node: &SemanticNode) -> bool {
-        Self::linear(node).is_some_and(|statements| {
-            statements.iter().all(|statement| {
-                statement
-                    .instruction_ref()
-                    .is_some_and(|instruction| instruction.effects().is_pure())
-            })
-        })
-    }
-
     pub(super) fn first(node: &SemanticNode) -> Option<&SemanticStatement> {
         Self::find(node, Boundary::First)
     }

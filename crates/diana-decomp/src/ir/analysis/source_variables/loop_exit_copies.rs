@@ -35,7 +35,7 @@ impl LoopExitCopyPlacement {
                 body: Box::new(body),
             };
         };
-        let references = LabelReferenceCount::of(&SemanticNode::Sequence(nodes.clone()), label);
+        let references = LabelReferenceCount::of(&nodes, label);
         if references == 0 {
             return SemanticNode::sequence(nodes);
         }
@@ -44,11 +44,10 @@ impl LoopExitCopyPlacement {
             let Some(control) = Self::loop_control(&nodes[loop_index]) else {
                 continue;
             };
-            if LabelReferenceCount::of(&nodes[loop_index], label) != references {
+            if LabelReferenceCount::of(&nodes[loop_index..=loop_index], label) != references {
                 continue;
             }
-            let continuation = SemanticNode::sequence(nodes[loop_index + 1..].iter().cloned());
-            let Some(copies) = EdgeCopySet::analyze(&continuation) else {
+            let Some(copies) = EdgeCopySet::analyze(&nodes[loop_index + 1..]) else {
                 continue;
             };
             let empty_edge = copies.destinations.is_empty();
@@ -83,7 +82,7 @@ impl LoopExitCopyPlacement {
 
             let mut rewritten = nodes.drain(..loop_index).collect::<Vec<_>>();
             if !empty_edge {
-                rewritten.push(continuation);
+                rewritten.push(SemanticNode::sequence(nodes.drain(1..)));
             }
             rewritten.push(loop_node);
             return SemanticNode::sequence(rewritten);
@@ -312,12 +311,12 @@ struct EdgeCopySet {
 }
 
 impl EdgeCopySet {
-    fn analyze(node: &SemanticNode) -> Option<Self> {
+    fn analyze(nodes: &[SemanticNode]) -> Option<Self> {
         let mut copies = Self {
             destinations: BTreeSet::new(),
             sources: BTreeSet::new(),
         };
-        let mut pending = vec![node];
+        let mut pending: Vec<_> = nodes.iter().collect();
         while let Some(node) = pending.pop() {
             match node {
                 SemanticNode::Empty => {}
@@ -454,9 +453,11 @@ struct LabelReferenceCount {
 }
 
 impl LabelReferenceCount {
-    fn of(node: &SemanticNode, target: SemanticLabel) -> usize {
+    fn of(nodes: &[SemanticNode], target: SemanticLabel) -> usize {
         let mut counter = Self { target, count: 0 };
-        crate::ir::SemanticVisitor::visit_node(&mut counter, node);
+        for node in nodes {
+            crate::ir::SemanticVisitor::visit_node(&mut counter, node);
+        }
         counter.count
     }
 }

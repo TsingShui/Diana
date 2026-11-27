@@ -18,14 +18,13 @@ impl LoopGuardCondition {
         else {
             return node;
         };
-        let body = *body;
-        let Some((guard, guarded_body)) = GuardedIteration::analyze(control, body.clone()) else {
+        let Some((guard, guarded_body)) = GuardedIteration::analyze(control, &body) else {
             return SemanticNode::Loop {
                 control,
                 header,
                 kind: SemanticLoopKind::PreTested,
                 test,
-                body: Box::new(body),
+                body,
             };
         };
         test.condition.value = Self::and(test.condition.value, guard);
@@ -67,12 +66,12 @@ struct GuardedIteration;
 impl GuardedIteration {
     fn analyze(
         control: SemanticLoopControl,
-        body: SemanticNode,
+        body: &SemanticNode,
     ) -> Option<(SemanticPredicate, SemanticNode)> {
-        if let Some(guarded) = Self::guard_with_trailing_exit(control, &body) {
+        if let Some(guarded) = Self::guard_with_trailing_exit(control, body) {
             return Some(guarded);
         }
-        let (mut prefix, decision, suffix) = Self::single_decision(body)?;
+        let (prefix, decision, suffix) = Self::single_decision(body)?;
         let SemanticNode::If {
             condition,
             then_node,
@@ -81,20 +80,26 @@ impl GuardedIteration {
         else {
             return None;
         };
-        let else_node = else_node?;
-        let condition = condition.into_inner();
-        let (guard, continuing, exiting) = if Self::is_local_break(&then_node, control) {
-            (condition.clone().negate(), *else_node, *then_node)
-        } else if Self::is_local_break(&else_node, control) {
-            (condition, *then_node, *else_node)
+        let else_node = else_node.as_deref()?;
+        let (invert, continuing, exiting) = if Self::is_local_break(then_node, control) {
+            (true, else_node, then_node.as_ref())
+        } else if Self::is_local_break(else_node, control) {
+            (false, then_node.as_ref(), else_node)
         } else {
             return None;
         };
         let continuing = Self::remove_terminal_continue(continuing, control)?;
-        prefix.push(continuing);
-        prefix.extend(Self::empty_blocks(&exiting));
-        prefix.extend(suffix);
-        Some((guard, SemanticNode::sequence(prefix)))
+        let mut nodes = prefix.to_vec();
+        nodes.push(continuing);
+        nodes.extend(Self::empty_blocks(exiting));
+        nodes.extend_from_slice(suffix);
+        let condition = condition.value.clone();
+        let guard = if invert {
+            condition.negate()
+        } else {
+            condition
+        };
+        Some((guard, SemanticNode::sequence(nodes)))
     }
 
     fn guard_with_trailing_exit(
@@ -105,71 +110,66 @@ impl GuardedIteration {
             SemanticNode::Sequence(nodes) => nodes,
             node => std::slice::from_ref(node),
         };
-        let meaningful = nodes
+        let mut meaningful = nodes
             .iter()
             .enumerate()
-            .filter(|(_, node)| !Self::empty(node))
-            .map(|(index, _)| index)
-            .collect::<Vec<_>>();
-        let [guard_index, exit_index] = meaningful.as_slice() else {
+            .filter(|(_, node)| !Self::empty(node));
+        let (guard_index, guard) = meaningful.next()?;
+        let (exit_index, exit) = meaningful.next()?;
+        if meaningful.next().is_some() || !Self::is_local_break(exit, control) {
             return None;
-        };
-        Self::is_local_break(&nodes[*exit_index], control).then_some(())?;
+        }
         let SemanticNode::If {
             condition,
             then_node,
             else_node,
-        } = &nodes[*guard_index]
+        } = guard
         else {
             return None;
         };
         else_node.as_deref().is_none_or(Self::empty).then_some(())?;
-        let continuing = Self::remove_terminal_continue((**then_node).clone(), control)?;
-        let mut result = nodes[..*guard_index].to_vec();
+        let continuing = Self::remove_terminal_continue(then_node, control)?;
+        let mut result = nodes[..guard_index].to_vec();
         result.push(continuing);
         if let Some(else_node) = else_node {
             result.extend(Self::empty_blocks(else_node));
         }
-        result.extend(Self::empty_blocks(&nodes[*exit_index]));
-        result.extend(nodes[*exit_index + 1..].iter().cloned());
+        result.extend(Self::empty_blocks(exit));
+        result.extend(nodes[exit_index + 1..].iter().cloned());
         Some((condition.value.clone(), SemanticNode::sequence(result)))
     }
 
     fn single_decision(
-        body: SemanticNode,
-    ) -> Option<(Vec<SemanticNode>, SemanticNode, Vec<SemanticNode>)> {
+        body: &SemanticNode,
+    ) -> Option<(&[SemanticNode], &SemanticNode, &[SemanticNode])> {
         let nodes = match body {
-            SemanticNode::Sequence(nodes) => nodes,
-            node => vec![node],
+            SemanticNode::Sequence(nodes) => nodes.as_slice(),
+            node => std::slice::from_ref(node),
         };
-        let index = nodes
+        let mut meaningful = nodes
             .iter()
             .enumerate()
-            .filter(|(_, node)| !Self::empty(node))
-            .map(|(index, _)| index)
-            .collect::<Vec<_>>();
-        let [decision] = index.as_slice() else {
-            return None;
-        };
-        let mut prefix = nodes[..*decision].to_vec();
-        let selected = nodes[*decision].clone();
-        let suffix = nodes[decision + 1..].to_vec();
-        prefix.retain(Self::empty);
-        Some((prefix, selected, suffix))
+            .filter(|(_, node)| !Self::empty(node));
+        let (index, decision) = meaningful.next()?;
+        meaningful
+            .next()
+            .is_none()
+            .then_some((&nodes[..index], decision, &nodes[index + 1..]))
     }
 
     fn remove_terminal_continue(
-        body: SemanticNode,
+        body: &SemanticNode,
         control: SemanticLoopControl,
     ) -> Option<SemanticNode> {
-        let mut nodes = match body {
-            SemanticNode::Sequence(nodes) => nodes,
-            node => vec![node],
+        let nodes = match body {
+            SemanticNode::Sequence(nodes) => nodes.as_slice(),
+            node => std::slice::from_ref(node),
         };
         let index = nodes.iter().rposition(|node| !Self::empty(node))?;
         Self::is_local_continue(&nodes[index], control).then_some(())?;
-        nodes.remove(index);
-        Some(SemanticNode::sequence(nodes))
+        Some(SemanticNode::sequence(
+            nodes[..index].iter().chain(&nodes[index + 1..]).cloned(),
+        ))
     }
 
     fn is_local_break(node: &SemanticNode, control: SemanticLoopControl) -> bool {

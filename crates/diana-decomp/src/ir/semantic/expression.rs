@@ -591,7 +591,7 @@ impl SemanticOperation {
         &self.operands
     }
 
-    pub(super) fn children_mut(
+    pub(crate) fn children_mut(
         &mut self,
     ) -> impl DoubleEndedIterator<Item = &mut SemanticExpression> {
         let data = std::ops::DerefMut::deref_mut(self);

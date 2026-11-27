@@ -143,8 +143,9 @@ impl<'a> LoopAnalysis<'a> {
         LoopBody::trim_discardable(&mut body, self.preserved_blocks);
         body = LoopGuard::unwrap_equivalent(body, &condition)?;
         if after.is_some() {
-            let completion = crate::ir::semantic::SemanticCompletion::analyze(
-                &SemanticNode::sequence(body.iter().cloned()),
+            let completion = crate::ir::semantic::SemanticCompletion::sequence(
+                body.iter()
+                    .map(crate::ir::semantic::SemanticCompletion::analyze),
             );
             let conflicting_break = completion.has_break_to_region(self.region)
                 || self

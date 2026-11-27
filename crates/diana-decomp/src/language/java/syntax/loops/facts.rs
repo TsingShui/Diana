@@ -72,7 +72,7 @@ impl<'a> LoopSyntaxProof<'a> {
 
     pub(super) fn prove(
         &self,
-        previous: &SemanticNode,
+        statements: &[&SemanticStatement],
         loop_node: &SemanticNode,
     ) -> Option<LoopSyntaxFact> {
         let SemanticNode::Loop {
@@ -85,7 +85,6 @@ impl<'a> LoopSyntaxProof<'a> {
         else {
             return None;
         };
-        let statements = StatementBoundary::linear(previous)?;
         for (index, init) in statements.iter().enumerate().rev() {
             let fact = IteratorLoopProof::new(self.hierarchy)
                 .prove(init, test, body)

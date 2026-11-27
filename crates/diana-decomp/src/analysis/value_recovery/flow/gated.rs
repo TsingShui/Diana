@@ -22,9 +22,32 @@ use crate::analysis::value_recovery::{
 #[derive(Debug)]
 pub(in crate::analysis::value_recovery) struct GatedControlFlow {
     regions: BTreeMap<BlockId, SelectionRegion>,
-    tests: BTreeMap<BlockId, InsnNode>,
+    tests: BTreeMap<BlockId, GatedTest>,
     loop_headers: BTreeSet<BlockId>,
     dominators: DominatorTree,
+}
+
+/// The source graph reuses the original identity even for predicates that
+/// cannot be moved. Pure CFG predicates can share their Semantic IR across
+/// selections, since later expression transforms edit through copy-on-write.
+#[derive(Debug)]
+struct GatedTest {
+    id: crate::ir::InstructionId,
+    predicate: Option<SemanticOperation>,
+}
+
+impl GatedTest {
+    fn from_instruction(test: &InsnNode) -> Self {
+        let predicate = InstructionEffects::of_tree(test)
+            .without_control()
+            .is_pure()
+            .then(|| SemanticOperation::from_borrowed_instruction(test).ok())
+            .flatten();
+        Self {
+            id: test.id,
+            predicate,
+        }
+    }
 }
 
 impl GatedControlFlow {
@@ -85,8 +108,7 @@ impl GatedControlFlow {
                 block
                     .terminator()
                     .filter(|instruction| instruction.insn_type == InsnType::If)
-                    .cloned()
-                    .map(|instruction| (block.id, instruction))
+                    .map(|instruction| (block.id, GatedTest::from_instruction(instruction)))
             })
             .collect();
         Self {
@@ -101,7 +123,7 @@ impl GatedControlFlow {
         self.regions.get(&join)
     }
 
-    fn test(&self, block: BlockId) -> Option<&InsnNode> {
+    fn test(&self, block: BlockId) -> Option<&GatedTest> {
         self.tests.get(&block)
     }
 
@@ -1169,12 +1191,7 @@ impl PredicateLookup for GatedControlFlow {
         let BoolVariable::Block(block) = variable else {
             return None;
         };
-        let test = self.test(*block)?;
-        InstructionEffects::of_tree(test)
-            .without_control()
-            .is_pure()
-            .then(|| SemanticOperation::from_borrowed_instruction(test).ok())
-            .flatten()
+        self.test(*block)?.predicate.clone()
     }
 }
 

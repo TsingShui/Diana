@@ -323,7 +323,7 @@ impl<'a> ValuePlanner<'a> {
         let ssa = self.graph().identity() == ValueIdentity::Ssa;
         let mut dependencies = Vec::with_capacity(replacement_keys.len());
         let mut blocking = BTreeSet::new();
-        for action in actions.iter() {
+        for action in actions.iter_mut() {
             let Some(key) = Self::replacement_key(action) else {
                 continue;
             };
@@ -446,12 +446,24 @@ impl<'a> ValuePlanner<'a> {
     }
 
     fn visit_replacements(
-        action: &ValueAction,
+        action: &mut ValueAction,
         mut visit: impl FnMut(&SemanticExpression),
     ) -> Result<(), ValueRecoveryError> {
         match action {
-            ValueAction::Propagate { replacement, .. } => {
-                visit(&SemanticExpression::from_argument(replacement.clone())?);
+            ValueAction::Propagate {
+                event,
+                key,
+                replacement,
+            } => {
+                // The frontier needs the same semantic value that the schedule
+                // will substitute. Keep the conversion in the action once read.
+                let expression = SemanticExpression::from_argument(replacement.clone())?;
+                visit(&expression);
+                *action = ValueAction::Inline {
+                    event: *event,
+                    key: *key,
+                    expression,
+                };
             }
             ValueAction::Inline { expression, .. } => visit(expression),
             ValueAction::InlineAt { replacements, .. } => {

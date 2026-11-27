@@ -10,6 +10,7 @@ mod guard;
 
 use crate::ir::{
     analysis::TypeHierarchy, SemanticFolder, SemanticLoopControl, SemanticLoopKind, SemanticNode,
+    SemanticVisitor,
 };
 
 use self::{
@@ -91,13 +92,20 @@ impl SemanticFolder for JavaLoopSyntax<'_> {
                 continue;
             }
             let mut start = index;
+            let mut statements = Vec::new();
             while start != 0 {
                 let candidate = start - 1;
-                if StatementBoundary::linear(&children[candidate]).is_none() {
+                let Some(prefix) = StatementBoundary::linear(&children[candidate]) else {
                     break;
-                }
+                };
+                let reorderable = prefix.iter().all(|statement| {
+                    statement
+                        .instruction_ref()
+                        .is_some_and(|instruction| instruction.effects().is_pure())
+                });
+                statements.extend(prefix.into_iter().rev());
                 start = candidate;
-                if !StatementBoundary::is_reorderable(&children[candidate]) {
+                if !reorderable {
                     break;
                 }
             }
@@ -105,22 +113,22 @@ impl SemanticFolder for JavaLoopSyntax<'_> {
                 index += 1;
                 continue;
             }
-            let previous = SemanticNode::sequence(children[start..index].iter().cloned());
+            statements.reverse();
             let Some(fact) =
-                LoopSyntaxProof::new(self.hierarchy).prove(&previous, &children[index])
+                LoopSyntaxProof::new(self.hierarchy).prove(&statements, &children[index])
             else {
                 index += 1;
                 continue;
             };
-            let local_facts =
-                crate::ir::SemanticExpressionFacts::of_node(&SemanticNode::sequence([
-                    previous.clone(),
-                    children[index].clone(),
-                ]));
+            let mut local_facts = crate::ir::SemanticExpressionFacts::default();
+            for node in &children[start..=index] {
+                local_facts.visit_node(node);
+            }
             if fact.escapes(&self.method_facts, &local_facts) {
                 index += 1;
                 continue;
             }
+            let previous = SemanticNode::sequence(children[start..index].iter().cloned());
             let Some((previous, loop_node)) =
                 LoopForm::apply(fact, previous, children[index].clone())
             else {

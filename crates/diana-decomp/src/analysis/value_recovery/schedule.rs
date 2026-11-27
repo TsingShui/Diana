@@ -550,26 +550,28 @@ impl SemanticExpressionReduction {
     ) -> Result<(SemanticExpression, bool), ValueRecoveryError> {
         let mut pending = vec![ValueReductionTask::Visit(value)];
         let mut results = Vec::<SemanticExpression>::new();
+        let mut operations = Vec::new();
         let mut changed = false;
         while let Some(task) = pending.pop() {
             match task {
                 ValueReductionTask::Visit(
                     expression @ (SemanticExpression::Register(_) | SemanticExpression::Literal(_)),
                 ) => results.push(expression),
-                ValueReductionTask::Visit(SemanticExpression::Operation(operation)) => {
-                    let (instruction, operands, compound_target) = operation.into_parts();
-                    pending.push(ValueReductionTask::Operation {
-                        instruction,
-                        operand_count: operands.len(),
-                        has_compound_target: compound_target.is_some(),
-                    });
-                    pending.extend(
-                        operands
-                            .into_iter()
-                            .chain(compound_target)
-                            .rev()
-                            .map(ValueReductionTask::Visit),
-                    );
+                ValueReductionTask::Visit(SemanticExpression::Operation(mut operation)) => {
+                    // Select reduction only changes choices. Plain sibling operations
+                    // retain their original operand storage and shared metadata.
+                    if !operation.contains_select() {
+                        results.push(SemanticExpression::Operation(operation));
+                        continue;
+                    }
+                    pending.push(ValueReductionTask::FinishOperation);
+                    pending.extend(operation.children_mut().rev().map(|value| {
+                        ValueReductionTask::Visit(std::mem::replace(
+                            value,
+                            SemanticExpression::Literal(crate::ir::LiteralArg::int(0)),
+                        ))
+                    }));
+                    operations.push(operation);
                 }
                 ValueReductionTask::Visit(SemanticExpression::Select {
                     condition,
@@ -597,29 +599,20 @@ impl SemanticExpressionReduction {
                         results.push(SemanticExpression::select(condition, when_true, when_false));
                     }
                 }
-                ValueReductionTask::Operation {
-                    instruction,
-                    operand_count,
-                    has_compound_target,
-                } => {
-                    let count = operand_count + usize::from(has_compound_target);
+                ValueReductionTask::FinishOperation => {
+                    let mut operation = operations
+                        .pop()
+                        .ok_or(crate::ir::SemanticFoldError::MalformedWorkStack)?;
+                    let count = operation.operands().len()
+                        + usize::from(operation.compound_target().is_some());
                     let start = results
                         .len()
                         .checked_sub(count)
                         .ok_or(crate::ir::SemanticFoldError::MalformedWorkStack)?;
-                    let (operands, compound_target) = {
-                        let mut children = results.drain(start..);
-                        let operands = children.by_ref().take(operand_count).collect();
-                        let compound_target =
-                            has_compound_target.then(|| children.next()).flatten();
-                        (operands, compound_target)
-                    };
-                    if has_compound_target && compound_target.is_none() {
-                        return Err(crate::ir::SemanticFoldError::MalformedWorkStack.into());
+                    for (slot, value) in operation.children_mut().zip(results.drain(start..)) {
+                        *slot = value;
                     }
-                    results.push(SemanticExpression::Operation(
-                        SemanticOperation::from_parts(instruction, operands, compound_target),
-                    ));
+                    results.push(SemanticExpression::Operation(operation));
                 }
             }
         }
@@ -743,11 +736,7 @@ impl SemanticExpressionReduction {
 enum ValueReductionTask {
     Visit(SemanticExpression),
     Select(SemanticPredicate),
-    Operation {
-        instruction: crate::ir::InsnNode,
-        operand_count: usize,
-        has_compound_target: bool,
-    },
+    FinishOperation,
 }
 
 struct ReplacementEdges {
@@ -1082,6 +1071,10 @@ impl SemanticExpressionTransform for ValueSubstitution<'_> {
         expression
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/selection_reduction_storage.rs"]
+mod selection_reduction_storage;
 
 #[cfg(test)]
 mod tests {
