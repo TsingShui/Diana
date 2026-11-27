@@ -2,7 +2,6 @@
 use super::output::{Failure, Format, publish_with};
 use crate::analysis::{
     outline::{self, Document, Expansion},
-    request::RequestScope,
     selector::{self, Selector},
 };
 use clap::Args;
@@ -11,20 +10,20 @@ use std::{io::Write, path::PathBuf};
 
 #[derive(Args)]
 pub struct OutlineArgs {
-    /// Input APK, ZIP or bare DEX
-    input: PathBuf,
+    /// Input APK, ZIP, DEX, JAR, JVM class or JVM project
+    pub(super) input: PathBuf,
     /// Original locator or exact class/method reference
-    selector: String,
+    pub(super) selector: String,
     /// Number of cross-method levels (default: current members only)
     #[arg(long, conflicts_with = "expand_all")]
-    call_depth: Option<usize>,
+    pub(super) call_depth: Option<usize>,
     /// Expand all available referenced declaration bodies once; cycles are links
     #[arg(long)]
-    expand_all: bool,
+    pub(super) expand_all: bool,
     #[arg(long, value_enum, default_value_t = Format::Text)]
-    format: Format,
+    pub(super) format: Format,
     #[arg(short, long)]
-    output: Option<PathBuf>,
+    pub(super) output: Option<PathBuf>,
 }
 #[derive(Args)]
 pub struct ClassArgs {
@@ -53,7 +52,12 @@ pub fn class(args: ClassArgs) -> Result<(), Failure> {
 pub fn method(args: OutlineArgs) -> Result<(), Failure> {
     run(args, false, 1)
 }
+
 fn run(args: OutlineArgs, class: bool, jobs: usize) -> Result<(), Failure> {
+    let scope = super::open_scope(&args.input, args.output.as_deref())?;
+    if crate::analysis::jvm::JvmRoots::supports(&scope) {
+        return super::jvm_outline::run(&scope, &args, class, jobs);
+    }
     let selected = if class {
         selector::class(&args.selector).map(Selector::Class)
     } else {
@@ -63,7 +67,6 @@ fn run(args: OutlineArgs, class: bool, jobs: usize) -> Result<(), Failure> {
         code: e.code(),
         message: e.to_string(),
     })?;
-    let scope = RequestScope::open(&args.input, &super::options()).map_err(Failure::input)?;
     let expansion = if args.expand_all {
         Expansion::All
     } else {

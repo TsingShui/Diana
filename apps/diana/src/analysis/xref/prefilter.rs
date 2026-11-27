@@ -41,7 +41,7 @@ impl Prefilter {
                     Target::Type(_) => 2 | 16,
                     Target::Method { .. } => 8,
                     Target::Field { .. } => 4,
-                    Target::Resource(_) | Target::Hierarchy { .. } => 0,
+                    Target::Resource(_) | Target::JvmResource(_) | Target::Hierarchy { .. } => 0,
                 }
         });
         // Typed-use expansion matches a type through every member signature that
@@ -120,7 +120,7 @@ impl Prefilter {
                         ids.push(id);
                     }
                 }
-                Target::Resource(_) | Target::Hierarchy { .. } => {}
+                Target::Resource(_) | Target::JvmResource(_) | Target::Hierarchy { .. } => {}
             }
         }
         // No resolved index leaves an all-zero table: no body can reference the

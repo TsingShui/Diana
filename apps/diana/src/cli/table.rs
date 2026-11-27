@@ -16,7 +16,7 @@ use std::path::Path;
 
 use super::output::{Failure, Format, publish_with};
 use crate::analysis::at::{self, Mode};
-use crate::analysis::query::QueryError;
+use crate::analysis::query::{JvmItem, JvmRow, QueryError, QueryIssue};
 use diana_decomp::input::DexString;
 
 /// One row in original locator order.
@@ -98,6 +98,28 @@ impl<'a> RowFormat<'a> {
         out: &mut Vec<u8>,
         first: bool,
     ) -> Result<(), QueryError> {
+        self.write_query(out, first, |out, column, mode| {
+            write_column(out, column, row, mode)
+        })
+    }
+
+    pub(super) fn jvm_row(
+        &self,
+        row: &JvmRow<'_>,
+        out: &mut Vec<u8>,
+        first: bool,
+    ) -> Result<(), QueryError> {
+        self.write_query(out, first, |out, column, mode| {
+            write_jvm_column(out, column, row, mode)
+        })
+    }
+
+    fn write_query(
+        &self,
+        out: &mut Vec<u8>,
+        first: bool,
+        mut write: impl FnMut(&mut Vec<u8>, &str, Mode) -> Result<(), QueryError>,
+    ) -> Result<(), QueryError> {
         let mode = mode(self.format);
         match self.format {
             Format::Text => {
@@ -105,7 +127,7 @@ impl<'a> RowFormat<'a> {
                     if index > 0 {
                         out.push(b'\t');
                     }
-                    write_column(out, column, row, mode)?;
+                    write(out, column, mode)?;
                 }
                 out.push(b'\n');
             }
@@ -119,7 +141,7 @@ impl<'a> RowFormat<'a> {
                         out.push(b',');
                     }
                     out.extend_from_slice(key);
-                    write_column(out, column, row, mode)?;
+                    write(out, column, mode)?;
                 }
                 out.push(b'}');
             }
@@ -256,6 +278,72 @@ fn write_column(
     if quoted {
         out.push(b'"');
     }
+    Ok(())
+}
+
+fn write_jvm_column(
+    out: &mut Vec<u8>,
+    column: &str,
+    row: &JvmRow<'_>,
+    mode: Mode,
+) -> Result<(), QueryError> {
+    let quoted = mode == Mode::Json;
+    if quoted {
+        out.push(b'"');
+    }
+    match column {
+        "at" => {
+            row.location.write(out);
+            let prefix = match row.item {
+                JvmItem::Class(_) => None,
+                JvmItem::Method { .. } => Some(b":m"),
+                JvmItem::Field { .. } => Some(b":f"),
+                JvmItem::String { .. } => Some(b":s"),
+            };
+            if let Some(prefix) = prefix {
+                out.extend_from_slice(prefix);
+                at::push_decimal(out, u64::from(row.item.index()));
+            }
+        }
+        _ => match row.item {
+            JvmItem::Class(name) => write_jvm_owner(out, mode, name)?,
+            JvmItem::Method {
+                owner,
+                name,
+                descriptor,
+                ..
+            }
+            | JvmItem::Field {
+                owner,
+                name,
+                descriptor,
+                ..
+            } => {
+                write_jvm_owner(out, mode, owner)?;
+                out.extend_from_slice(b"->");
+                at::write_jvm(out, mode, name)?;
+                if matches!(row.item, JvmItem::Field { .. }) {
+                    out.push(b':');
+                }
+                at::write_jvm(out, mode, descriptor)?;
+            }
+            JvmItem::String { value, .. } => at::write_jvm(out, mode, value)?,
+        },
+    }
+    if quoted {
+        out.push(b'"');
+    }
+    Ok(())
+}
+
+fn write_jvm_owner(
+    out: &mut Vec<u8>,
+    mode: Mode,
+    name: diana_decomp::input::jvm::JvmString<'_>,
+) -> Result<(), QueryError> {
+    out.push(b'L');
+    at::write_jvm(out, mode, name)?;
+    out.push(b';');
     Ok(())
 }
 
@@ -438,6 +526,7 @@ pub(super) struct ChunkSink<'w> {
     failure: Option<std::io::Error>,
     /// The display limit dropped matching rows.
     truncated: bool,
+    issues: Vec<QueryIssue>,
 }
 
 impl<'w> ChunkSink<'w> {
@@ -455,6 +544,7 @@ impl<'w> ChunkSink<'w> {
             started: false,
             failure: None,
             truncated: false,
+            issues: Vec::new(),
         })
     }
 
@@ -528,13 +618,34 @@ impl<'w> ChunkSink<'w> {
         }
     }
 
+    pub(super) fn issues(&mut self, issues: Vec<QueryIssue>) {
+        self.issues = issues;
+    }
+
     fn finish(self) -> std::io::Result<()> {
         if self.format == Format::Json {
             self.writer.write_all(b"]")?;
             if self.truncated {
                 self.writer.write_all(b",\"truncated\":true")?;
             }
+            if !self.issues.is_empty() {
+                self.writer.write_all(b",\"complete\":false,\"issues\":")?;
+                serde_json::to_writer(&mut *self.writer, &self.issues)?;
+            }
             self.writer.write_all(b"}")?;
+        } else {
+            for issue in &self.issues {
+                self.writer.write_all(b"//Diana Warn: incomplete at ")?;
+                write_cells(
+                    self.writer,
+                    [
+                        issue.context.as_str(),
+                        issue.kind.as_str(),
+                        issue.reason.as_str(),
+                    ]
+                    .into_iter(),
+                )?;
+            }
         }
         Ok(())
     }

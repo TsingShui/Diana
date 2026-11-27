@@ -400,7 +400,7 @@ impl SsaCopyFlow {
         self.omitted
             .iter()
             .copied()
-            .map(|result| (result, self.source(result)))
+            .map(|result| (result, self.omitted_source(result)))
             .filter(|(result, source)| result != source)
     }
 }

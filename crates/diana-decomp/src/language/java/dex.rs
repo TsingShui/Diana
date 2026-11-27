@@ -212,6 +212,7 @@ pub struct DexJavaDialect {
     source_type_bounds: BTreeMap<JavaIdentifier, JavaType>,
     generic_throw_types: Vec<JavaSourceErasure>,
     this_code_var: Option<u32>,
+    parameter_code_vars: smallvec::SmallVec<[u32; 4]>,
     types: SourceTypeEnvironment,
     source_erasures: Arc<JavaTypeErasureIndex>,
     inline_declarations: BTreeSet<SourceVariable>,
@@ -388,6 +389,7 @@ impl DexJavaDialect {
             source_type_bounds: BTreeMap::new(),
             generic_throw_types: Vec::new(),
             this_code_var,
+            parameter_code_vars: smallvec::SmallVec::new(),
             types: types.into_owned(),
             source_erasures,
             inline_declarations: BTreeSet::new(),
@@ -409,6 +411,7 @@ impl DexJavaDialect {
                 .names
                 .insert(SourceVariable::new(code_var), name.clone());
             values.source_names.insert(code_var, name.clone());
+            values.parameter_code_vars.push(code_var);
             values.declared.insert(name.clone());
             values.name_scope.reserve(name.clone());
         }
@@ -1540,6 +1543,36 @@ impl DexJavaDialect {
                     },
                 )?)?,
             )),
+            InsnType::RecordOperation => {
+                let site = insn.payload.record_operation.clone().ok_or(
+                    JavaLoweringError::MissingPayload {
+                        instruction: insn.insn_type,
+                        field: "record operation",
+                    },
+                )?;
+                let operands = insn
+                    .operands()
+                    .iter()
+                    .map(|arg| self.arg(arg))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(JavaExpr::RecordOperation { site, operands })
+            }
+            InsnType::Unavailable => {
+                let operands = insn
+                    .operands()
+                    .iter()
+                    .map(|arg| self.arg(arg))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(JavaExpr::Unavailable {
+                    reason: insn
+                        .payload
+                        .unavailable
+                        .as_deref()
+                        .unwrap_or("Unavailable operation")
+                        .to_owned(),
+                    operands,
+                })
+            }
             InsnType::Move => self.arg(
                 insn.operands()
                     .first()
@@ -1940,15 +1973,32 @@ impl DexJavaDialect {
                 )?;
                 Ok(JavaExpr::Allocate(self.source_type(ty)?))
             }
-            InsnType::NewArray => Ok(JavaExpr::NewArray {
-                element_type: self.source_type(self.array_element_type(insn)?)?,
-                dimensions: vec![self.arg(
-                    insn.operands()
-                        .first()
-                        .ok_or(JavaLoweringError::MissingArgument(insn.insn_type))?,
-                )?],
-                initializer: Vec::new(),
-            }),
+            InsnType::NewArray => {
+                let args = insn.operands();
+                if args.is_empty() {
+                    return Err(JavaLoweringError::MissingArgument(insn.insn_type));
+                }
+                let mut element = self.array_element_type(insn)?;
+                for _ in &args[1..] {
+                    element = element.as_array_element().ok_or_else(|| {
+                        JavaLoweringError::InvalidArrayType {
+                            instruction: insn.insn_type,
+                            offset: insn.offset,
+                            ty: element.clone(),
+                        }
+                    })?;
+                }
+                let element_type = self.source_type(element)?;
+                let dimensions = args
+                    .iter()
+                    .map(|count| self.arg_as(count, &ArgType::INT))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(JavaExpr::NewArray {
+                    element_type,
+                    dimensions,
+                    initializer: Vec::new(),
+                })
+            }
             InsnType::FilledNewArray => Ok(JavaExpr::NewArray {
                 element_type: self.source_type(self.array_element_type(insn)?)?,
                 dimensions: Vec::new(),
@@ -2160,15 +2210,57 @@ impl DexJavaDialect {
         solver.assume_raw_owner_if_unbound(owner_signature);
     }
 
-    /// Recover a `LambdaMetafactory` call site as a Java method reference when
-    /// the implementation, captures and SAM signature have that exact shape.
-    /// Synthetic lambda bodies stay on the explicit call-site presentation.
-    fn lambda_method_reference(
+    /// Lower an exact delegation to the original implementation. The
+    /// immutable-parameter evidence permits the Java lambda to bind those
+    /// original values without moving their computation into the body.
+    fn lambda_expression(
         &mut self,
         insn: &SemanticOperation,
         lambda: &crate::ir::LambdaSite,
     ) -> Result<Option<JavaExpr>, JavaLoweringError> {
-        if lambda.implementation.name.starts_with("lambda$") {
+        if let Some(forwarding) = &lambda.forwarding {
+            let captures = &forwarding.captured_parameters;
+            let mut args =
+                Vec::with_capacity(captures.len() + lambda.sam_descriptor.parameters.len());
+            for &index in captures.as_ref() {
+                let code_var = self.parameter_code_vars.get(usize::from(index)).ok_or(
+                    JavaLoweringError::MissingParameterSourceVariable(usize::from(index)),
+                )?;
+                let name = self.source_names.get(code_var).ok_or(
+                    JavaLoweringError::MissingParameterSourceVariable(usize::from(index)),
+                )?;
+                args.push(JavaExpr::Name(name.clone()));
+            }
+            let parameters = (0..lambda.sam_descriptor.parameters.len())
+                .map(|_| self.name_scope.claim(JavaIdentifier::from_hint("argument")))
+                .collect::<Vec<_>>();
+            for (index, name) in parameters.iter().cloned().enumerate() {
+                let value = JavaExpr::Name(name);
+                let value = match forwarding
+                    .argument_casts
+                    .get(index)
+                    .and_then(Option::as_ref)
+                {
+                    Some(ty) => JavaExpr::Cast {
+                        ty: self.source_type(ty)?,
+                        value: Box::new(value),
+                    },
+                    None => value,
+                };
+                args.push(value);
+            }
+            return Ok(Some(JavaExpr::Lambda {
+                parameters,
+                body: Box::new(JavaExpr::Call {
+                    receiver: None,
+                    owner: Some(self.source_type(&lambda.implementation.owner)?),
+                    type_arguments: Vec::new(),
+                    method: self.member_names.method(&lambda.implementation),
+                    args,
+                }),
+            }));
+        }
+        if lambda.implementation.name.starts_with("lambda$") && !lambda.checked_synthetic_target {
             return Ok(None);
         }
         let operands = insn.operands();
@@ -2221,7 +2313,7 @@ impl DexJavaDialect {
         expected_source_type: Option<&JavaType>,
     ) -> Result<JavaExpr, JavaLoweringError> {
         if let Some(lambda) = insn.payload.lambda.as_deref() {
-            if let Some(expression) = self.lambda_method_reference(insn, lambda)? {
+            if let Some(expression) = self.lambda_expression(insn, lambda)? {
                 return Ok(expression);
             }
         }
@@ -5064,6 +5156,7 @@ impl JavaDialect for DexJavaDialect {
                     },
                 }
             }
+            InsnType::Unavailable | InsnType::RecordOperation => JavaStmt::Expression(self.insn_expr(insn, None, None)?),
             InsnType::Nop => Err(JavaLoweringError::UnsupportedStatement(InsnType::Nop))?,
             InsnType::Phi => Err(JavaLoweringError::UnrecoveredPhi(insn.offset))?,
             InsnType::MoveResult => {

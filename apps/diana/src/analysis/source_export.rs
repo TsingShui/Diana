@@ -3,6 +3,10 @@
 use std::io;
 
 use diana_decomp::input::DexContainer;
+use diana_decomp::jvm::{self, ClassFailure, ClassText, SourceError};
+
+use super::jvm::{JvmRoots, Location};
+use super::query::{QueryError, QueryIssue};
 use diana_decomp::{DexId, DexImage, Engine, ImageOrigin, InputId, MethodFailure, RequestError};
 
 use super::request::RequestScope;
@@ -22,12 +26,20 @@ pub enum SourceEvent {
         class_def: Option<u32>,
         reason: String,
     },
+    JvmClass {
+        at: Location,
+        versioned: bool,
+        source: ClassText,
+    },
+    JvmIssue(QueryIssue),
 }
 
 #[derive(thiserror::Error, Debug)]
 enum VisitError {
     #[error(transparent)]
     Engine(#[from] RequestError),
+    #[error(transparent)]
+    Jvm(#[from] SourceError),
     #[error(transparent)]
     Sink(#[from] io::Error),
 }
@@ -115,8 +127,55 @@ pub fn visit(
                 Ok(()) => {}
                 Err(VisitError::Engine(error)) => issue(Some(logical), error.to_string())?,
                 Err(VisitError::Sink(error)) => return Err(error),
+                Err(error @ VisitError::Jvm(_)) => return Err(io::Error::other(error)),
             }
         }
     }
     Ok(())
+}
+
+/// Visits each JVM class through the same engine path as get-class.
+/// The sink runs on the claiming worker, so source text does not queue.
+pub fn visit_jvm(
+    roots: &JvmRoots<'_>,
+    jobs: usize,
+    sink: impl Fn(SourceEvent) -> io::Result<()> + Sync,
+) -> io::Result<()> {
+    for issue in roots.issues() {
+        sink(SourceEvent::JvmIssue(issue.clone()))?;
+    }
+    let result = jvm::visit_class_texts(
+        roots.len(),
+        jobs,
+        || (roots.reader(), roots),
+        |(reader, roots), ordinal| reader.read(roots.get(ordinal).ok_or(QueryError::WorkerLost)?),
+        |ordinal, result| {
+            let root = roots
+                .get(ordinal)
+                .ok_or_else(|| VisitError::Sink(io::Error::other("missing original JVM class")))?;
+            let at = root.location();
+            let event = match result {
+                Ok(source) => SourceEvent::JvmClass {
+                    at: at.clone(),
+                    versioned: root
+                        .entry_name()
+                        .is_some_and(|name| name.starts_with("META-INF/versions/")),
+                    source,
+                },
+                Err(ClassFailure::Read(error)) => {
+                    SourceEvent::JvmIssue(QueryIssue::new(at.to_string(), &error))
+                }
+                Err(ClassFailure::Recover(error)) => SourceEvent::JvmIssue(QueryIssue {
+                    context: at.to_string(),
+                    kind: format!("{:?}", error.kind()),
+                    reason: error.to_string(),
+                }),
+            };
+            sink(event).map_err(VisitError::Sink)
+        },
+    );
+    result.map_err(|error| match error {
+        VisitError::Sink(error) => error,
+        error => io::Error::other(error),
+    })
 }

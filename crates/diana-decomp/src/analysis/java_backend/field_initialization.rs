@@ -334,6 +334,9 @@ impl<'a> FieldInitializationAnalysis<'a> {
     fn expression(&mut self, expression: &JavaExpr, state: AssignmentCounts) -> AssignmentCounts {
         match expression {
             JavaExpr::Allocate(_) => state,
+            JavaExpr::Unavailable { operands, .. } | JavaExpr::RecordOperation { operands, .. } => {
+                self.expressions(operands, state)
+            }
             JavaExpr::DirectInit { receiver, args, .. } => {
                 let state = self.expression(receiver, state);
                 self.expressions(args, state)
@@ -492,6 +495,8 @@ impl<'a> FieldInitializationAnalysis<'a> {
         while let Some(expression) = pending.pop() {
             match expression {
                 JavaExpr::Allocate(_) => {}
+                JavaExpr::Unavailable { operands, .. }
+                | JavaExpr::RecordOperation { operands, .. } => pending.extend(operands),
                 JavaExpr::DirectInit { receiver, args, .. } => {
                     pending.extend(args);
                     pending.push(receiver);

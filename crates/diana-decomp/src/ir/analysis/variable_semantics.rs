@@ -804,7 +804,7 @@ impl SemanticVisitor for VariableSemanticGraphBuilder<'_> {
             let contextual = match (operation.insn_type, index) {
                 (InsnType::Aget, 1) | (InsnType::Aput, 2) => Some(VariableEdgeKind::ArrayIndex),
                 (InsnType::Aput, 0) => Some(VariableEdgeKind::ArrayValue),
-                (InsnType::NewArray, 0) => Some(VariableEdgeKind::Dimension),
+                (InsnType::NewArray, _) => Some(VariableEdgeKind::Dimension),
                 (InsnType::MonitorEnter | InsnType::MonitorExit, 0) => Some(VariableEdgeKind::Lock),
                 _ => None,
             };

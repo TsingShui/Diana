@@ -38,29 +38,65 @@ where
     E: Send + From<EmitFailed>,
     P: Fn(&mut C, usize, &mut dyn FnMut(T) -> Result<(), E>) -> Result<(), E> + Sync,
 {
+    run_indexed(images, jobs, |_| context(), produce, sink)
+}
+
+/// Associates request-owned scratch with a worker, independently of its claims.
+pub(super) fn run_indexed<T, C, P, E>(
+    images: usize,
+    jobs: usize,
+    context: impl Fn(usize) -> C + Sync,
+    produce: P,
+    sink: &mut impl FnMut(T) -> Result<(), E>,
+) -> Result<(), E>
+where
+    T: Send,
+    C: Send,
+    E: Send + From<EmitFailed>,
+    P: Fn(&mut C, usize, &mut dyn FnMut(T) -> Result<(), E>) -> Result<(), E> + Sync,
+{
+    run_indexed_with_finish(images, jobs, context, produce, |_, _| Ok(()), sink)
+}
+
+/// Flushes worker-owned output after its last claim through ordinary delivery.
+pub(super) fn run_indexed_with_finish<T, C, P, F, E>(
+    images: usize,
+    jobs: usize,
+    context: impl Fn(usize) -> C + Sync,
+    produce: P,
+    finish: F,
+    sink: &mut impl FnMut(T) -> Result<(), E>,
+) -> Result<(), E>
+where
+    T: Send,
+    C: Send,
+    E: Send + From<EmitFailed>,
+    P: Fn(&mut C, usize, &mut dyn FnMut(T) -> Result<(), E>) -> Result<(), E> + Sync,
+    F: Fn(&mut C, &mut dyn FnMut(T) -> Result<(), E>) -> Result<(), E> + Sync,
+{
     let workers = jobs.min(images.max(1));
     // One image needs no channel and no thread: a single-DEX request must not pay
     // pool startup. Multi-image runs keep their producer/consumer split, which is
     // what lets formatting overlap the caller's output even with one worker.
     if images <= 1 {
-        let mut context = context();
+        let mut context = context(0);
         for ordinal in 0..images {
-            let mut emit = |row| sink(row);
-            produce(&mut context, ordinal, &mut emit)?;
+            produce(&mut context, ordinal, sink)?;
         }
-        return Ok(());
+        return finish(&mut context, sink);
     }
     let (sender, receiver) = sync_channel::<Message<T, E>>(workers);
     let next = AtomicUsize::new(0);
     thread::scope(|scope| {
-        for _ in 0..workers {
+        for worker in 0..workers {
             let sender = sender.clone();
             let produce = &produce;
             let context = &context;
+            let finish = &finish;
             let next = &next;
             scope.spawn(move || {
-                let mut context = context();
-                worker_loop(next, images, &mut context, produce, &sender);
+                let mut context = context(worker);
+                worker_loop(next, images, &mut context, produce, finish, &sender);
             });
         }
         drop(sender);
@@ -68,24 +104,23 @@ where
     })
 }
 
-fn worker_loop<T, C, P, E>(
+fn worker_loop<T, C, P, F, E>(
     next: &AtomicUsize,
     images: usize,
     context: &mut C,
     produce: &P,
+    finish: &F,
     sender: &SyncSender<Message<T, E>>,
 ) where
     T: Send,
     E: Send + From<EmitFailed>,
     P: Fn(&mut C, usize, &mut dyn FnMut(T) -> Result<(), E>) -> Result<(), E> + Sync,
+    F: Fn(&mut C, &mut dyn FnMut(T) -> Result<(), E>) -> Result<(), E>,
 {
     loop {
         // Claim whole roots dynamically: a slow image must not leave the other
         // workers idle behind a fixed stride assignment.
         let ordinal = next.fetch_add(1, Ordering::Relaxed);
-        if ordinal >= images {
-            return;
-        }
         // A closed channel means the consumer already failed; the producer keeps
         // its own error type and stops through the ordinary failure path.
         let mut batch: Vec<T> = Vec::new();
@@ -103,7 +138,11 @@ fn worker_loop<T, C, P, E>(
                 }
                 Ok(())
             };
-            produce(context, ordinal, &mut emit)
+            if ordinal < images {
+                produce(context, ordinal, &mut emit)
+            } else {
+                finish(context, &mut emit)
+            }
         };
         if closed {
             return;
@@ -113,6 +152,9 @@ fn worker_loop<T, C, P, E>(
         }
         if let Err(error) = result {
             let _ = sender.send(Message::Failed(error));
+            return;
+        }
+        if ordinal >= images {
             return;
         }
     }

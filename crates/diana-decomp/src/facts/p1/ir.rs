@@ -331,6 +331,8 @@ fn lambda_site<'a>(
         // 0x06 invoke-constructor, 0x07 invoke-direct, 0x08 invoke-interface.
         implementation_static: handle.kind() == 4,
         implementation_constructor: handle.kind() == 6,
+        checked_synthetic_target: false,
+        forwarding: None,
     }))
 }
 

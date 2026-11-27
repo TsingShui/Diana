@@ -14,6 +14,7 @@ use crate::{
     ByteOffset, ClassDefId, ClassKey, DexId, ImageFact, ImageOrigin, MethodId, RequestError,
 };
 
+pub mod jvm;
 mod outline;
 mod request;
 
@@ -623,18 +624,13 @@ impl<'a> Engine<'a> {
     where
         E: From<RequestError> + Send,
     {
-        use std::sync::atomic::{AtomicU32, Ordering};
-
         let image = self.image(dex).ok_or(RequestError::UnknownDex)?;
         let count = image.index.class_count();
         if count == 0 {
             return Ok(());
         }
-        let workers = jobs.clamp(1, usize::try_from(count).unwrap_or(usize::MAX));
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(workers)
-            .build()
-            .map_err(RequestError::MethodScheduling)?;
+        let bound = usize::try_from(count).unwrap_or(usize::MAX);
+        let workers = jobs.clamp(1, bound);
         // One unusually long method can otherwise run alone after its image
         // has drained. Start its class first, leaving all other claims in DEX
         // order so multiple large classes do not all become resident at once.
@@ -660,13 +656,13 @@ impl<'a> Engine<'a> {
         // Each pool thread can hold one class. While it waits for that class's
         // method jobs, the only stealable work is methods from an active class.
         let projections = crate::p1::MemberProjections::new(&image.index);
-        let next = AtomicU32::new(0);
-        pool.broadcast(|_| {
-            while let Ok(ordinal) =
-                next.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |ordinal| {
-                    (ordinal < count).then(|| ordinal + 1)
-                })
-            {
+        run_class_workers(
+            bound,
+            workers,
+            RequestError::MethodScheduling,
+            || (),
+            |_, ordinal, parallel| {
+                let ordinal = ordinal as u32;
                 let class_def = ClassDefId(if ordinal == 0 {
                     first
                 } else if ordinal == first {
@@ -685,9 +681,7 @@ impl<'a> Engine<'a> {
                         false,
                         Some(&projections),
                     )?;
-                    // None selects the current Rayon pool in both CFG preparation and
-                    // semantic recovery. A small class stays on its claiming thread.
-                    let method_jobs = if workers > 1 && input.methods.len() >= 8 {
+                    let method_jobs = if parallel && input.methods.len() >= 8 {
                         None
                     } else {
                         Some(1)
@@ -704,15 +698,9 @@ impl<'a> Engine<'a> {
                         },
                     ))
                 })();
-                if let Err(error) = deliver(class_def, result) {
-                    next.store(count, Ordering::Relaxed);
-                    return Err(error);
-                }
-            }
-            Ok(())
-        })
-        .into_iter()
-        .collect()
+                deliver(class_def, result)
+            },
+        )
     }
 
     pub fn analyze(&self, request: Request) -> Result<ClassAnalysis, RequestError> {
@@ -775,6 +763,46 @@ impl<'a> Engine<'a> {
             failures: source.failures,
         })
     }
+}
+
+/// Workers claim an independent class, recover it in the same pool, and
+/// deliver it before claiming another one. Method work may be stolen within
+/// the pool without bringing another class into memory on that worker.
+fn run_class_workers<C, E, S>(
+    count: usize,
+    jobs: usize,
+    scheduling: impl FnOnce(rayon::ThreadPoolBuildError) -> S,
+    context: impl Fn() -> C + Sync,
+    work: impl Fn(&mut C, usize, bool) -> Result<(), E> + Sync,
+) -> Result<(), E>
+where
+    E: From<S> + Send,
+{
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    if count == 0 {
+        return Ok(());
+    }
+    let workers = jobs.clamp(1, count);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(workers)
+        .build()
+        .map_err(scheduling)?;
+    let next = AtomicUsize::new(0);
+    pool.broadcast(|_| {
+        let mut local = context();
+        while let Ok(ordinal) = next.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |ordinal| {
+            (ordinal < count).then(|| ordinal + 1)
+        }) {
+            if let Err(error) = work(&mut local, ordinal, workers > 1) {
+                next.store(count, Ordering::Relaxed);
+                return Err(error);
+            }
+        }
+        Ok(())
+    })
+    .into_iter()
+    .collect()
 }
 
 fn descriptor_hash(descriptor: &str) -> u64 {

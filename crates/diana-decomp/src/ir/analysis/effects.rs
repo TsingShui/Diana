@@ -140,6 +140,8 @@ impl InstructionEffects {
             | InsnType::Iput
             | InsnType::Sput => Self(Self::WRITES | Self::MAY_THROW),
             InsnType::Invoke
+            | InsnType::Unavailable
+            | InsnType::RecordOperation
             | InsnType::StringConcat
             | InsnType::FilledNewArray
             | InsnType::NewArray

@@ -151,7 +151,7 @@ pub(super) fn roots(
             }
             Ok(roots)
         }
-        InputKind::Opaque => Err(InputError::NotDex),
+        InputKind::BareClass | InputKind::Opaque => Err(InputError::NotDex),
     }
 }
 

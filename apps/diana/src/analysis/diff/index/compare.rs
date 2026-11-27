@@ -1,7 +1,7 @@
 //! Compare original control targets in the coordinate system of an aligned
 //! method pair. The method-end sentinel is a valid exception-range boundary.
-use super::Body;
 use super::body::{read_uint, records};
+use super::{Body, Format};
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -36,6 +36,11 @@ impl Body {
         symbols: &HashMap<String, String>,
         targets: &[Option<usize>],
     ) -> bool {
+        if self.format == Format::Jvm
+            && !(self.code[i].known_operands && other.code[j].known_operands)
+        {
+            return true;
+        }
         let alignment = Alignment {
             old: self,
             new: other,
@@ -58,7 +63,7 @@ impl Body {
             };
             let equal = match a.0 {
                 b'B' | b'D' => alignment.encoded_target(a.1, b.1),
-                b'K' if matches!(self.code[i].opcode, 0x2b | 0x2c) => {
+                b'K' if self.format.switch(self.code[i].opcode) => {
                     a.1.len() == 12
                         && b.1.len() == 12
                         && a.1[..8] == b.1[..8]

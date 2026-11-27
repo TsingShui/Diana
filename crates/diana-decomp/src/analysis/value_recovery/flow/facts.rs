@@ -78,21 +78,21 @@ impl<'a> SparseValueFacts<'a> {
 
     /// Use order is the representative's own occurrences followed by the
     /// original occurrences of each eliminated value, in numbering order.
+    /// A CFG copy absent from the semantic tree still reads its nearest
+    /// materialized source at each surviving occurrence.
     fn uses_with_aliases(
         graph: &'a ValueFlowGraph<'a>,
         links: &[SyntheticUse],
     ) -> BTreeMap<SsaVar, Vec<UseFact>> {
         let mut uses = BTreeMap::new();
-        for link in links {
-            if let Some(eliminated) = graph.uses.get(&link.eliminated) {
-                uses.entry(link.representative)
-                    .or_insert_with(|| {
-                        graph
-                            .uses
-                            .get(&link.representative)
-                            .unwrap_or_default()
-                            .to_vec()
-                    })
+        let aliases = links
+            .iter()
+            .map(|link| (link.eliminated, link.representative))
+            .chain(graph.copies.aliases());
+        for (alias, representative) in aliases {
+            if let Some(eliminated) = graph.uses.get(&alias) {
+                uses.entry(representative)
+                    .or_insert_with(|| graph.uses.get(&representative).unwrap_or_default().to_vec())
                     .extend(eliminated.iter().cloned());
             }
         }

@@ -73,6 +73,7 @@ pub struct JavaDecompiler {
     observer: Arc<dyn crate::ir::AnalysisObserver>,
     source_abi: Arc<JavaSourceAbi>,
     parallel_methods: bool,
+    physical_methods: bool,
 }
 
 impl JavaDecompiler {
@@ -84,11 +85,17 @@ impl JavaDecompiler {
             observer: Arc::new(crate::ir::NullAnalysisObserver),
             source_abi: Arc::new(JavaSourceAbi::default()),
             parallel_methods: true,
+            physical_methods: false,
         }
     }
 
     pub fn with_parallel_methods(mut self, parallel_methods: bool) -> Self {
         self.parallel_methods = parallel_methods;
+        self
+    }
+
+    pub(crate) fn with_physical_methods(mut self) -> Self {
+        self.physical_methods = true;
         self
     }
 

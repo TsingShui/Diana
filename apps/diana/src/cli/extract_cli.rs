@@ -4,23 +4,27 @@ use std::path::Path;
 
 use super::output::Failure;
 use crate::analysis::extract::{self, ExtractError, Request};
-use crate::analysis::request::RequestScope;
+use crate::analysis::jvm::Location;
 
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     input: &Path,
     entry: &str,
     index: Option<usize>,
+    at: bool,
     output: &Path,
     raw: bool,
     force: bool,
     strict: bool,
 ) -> Result<(), Failure> {
-    let scope = RequestScope::open(
-        input,
-        &crate::analysis::input::InputOptions { allowed_root: None },
-    )
-    .map_err(Failure::input)?;
+    let scope = super::open_scope(input, Some(output))?;
+    if at {
+        let at = entry.parse::<Location>().map_err(|error| Failure {
+            code: 2,
+            message: error.to_string(),
+        })?;
+        return extract::publish_jvm(&scope, &at, output, input, force).map_err(extract_failure);
+    }
     let extracted = extract::prepare(
         &scope,
         &Request {

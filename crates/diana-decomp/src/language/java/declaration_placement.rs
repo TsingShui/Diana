@@ -255,6 +255,10 @@ impl LexicalReferenceAnalysis {
         while let Some(expression) = pending.pop() {
             match expression {
                 JavaExpr::Allocate(_) => {}
+                JavaExpr::Unavailable { operands, .. }
+                | JavaExpr::RecordOperation { operands, .. } => {
+                    pending.extend(operands.iter().rev())
+                }
                 JavaExpr::DirectInit { receiver, args, .. } => {
                     pending.extend(args.iter().rev());
                     pending.push(receiver);
@@ -622,6 +626,10 @@ impl ExpressionNames {
         while let Some(expression) = pending.pop() {
             match expression {
                 JavaExpr::Allocate(_) => {}
+                JavaExpr::Unavailable { operands, .. }
+                | JavaExpr::RecordOperation { operands, .. } => {
+                    pending.extend(operands.iter().rev())
+                }
                 JavaExpr::DirectInit { receiver, args, .. } => {
                     pending.extend(args.iter().rev());
                     pending.push(receiver);

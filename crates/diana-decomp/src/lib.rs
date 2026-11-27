@@ -63,6 +63,8 @@ pub use substrate::ids::{
 pub use substrate::report::{Diagnostic, DiagnosticCause, ImageFact, ImageOrigin};
 pub use substrate::slots::{RegisterSlot, SlotWidth};
 
+pub use engine::jvm;
+
 // Engine facade over original facts and the recovery backend.
 pub use engine::{
     ClassAnalysis, ClassSource, DexImage, Engine, ImageLoader, MethodFailure, MethodSelector,

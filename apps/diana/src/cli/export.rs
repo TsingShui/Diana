@@ -10,12 +10,14 @@ use serde_json::json;
 use super::output::Failure;
 use crate::analysis::export_path::{SourceFiles, create_file, path_conflict, portable_component};
 use crate::analysis::export_resources::{self, ResourceNotice};
+use crate::analysis::jvm::JvmRoots;
+use crate::analysis::jvm_source;
 use crate::analysis::request::RequestScope;
 use crate::analysis::source_export::{self, SourceEvent};
 
 #[derive(clap::Args)]
 pub(super) struct Args {
-    /// APK, ZIP or standalone DEX
+    /// APK, JAR, ZIP, standalone DEX or JVM class
     input: PathBuf,
     /// New output directory (its parent must exist)
     #[arg(short, long)]
@@ -90,14 +92,31 @@ fn write_export(scope: &RequestScope, output: &Path, jobs: usize) -> io::Result<
     let source_root = root.join("sources");
     fs::create_dir(&source_root)?;
     let source_files = SourceFiles::new(&source_root);
+    let jvm = JvmRoots::select_with_jobs(scope, jobs).map_err(io::Error::other)?;
     let mut warnings = 0;
-    let resources = export_resources::write(scope, root, |entry, notice, reason| {
-        warnings += usize::from(notice == ResourceNotice::Warning);
-        lock_report(&report)?.record(root, notice == ResourceNotice::Issue, &json!({
-            "kind": "resource", "notice": format!("{notice:?}"), "entry": entry.index().0, "name":entry.name(), "reason": reason
-        }))
-    })?;
-    source_export::visit(scope, jobs, |event| {
+    let resources =
+        if let Some(roots) = &jvm {
+            export_resources::write_jvm(scope, roots, root, |at, entry, notice, reason| {
+                warnings += usize::from(notice == ResourceNotice::Warning);
+                lock_report(&report)?.record(
+                    root,
+                    notice == ResourceNotice::Issue,
+                    &json!({
+                        "kind": "resource", "notice": format!("{notice:?}"), "at": at,
+                        "name": entry.name(), "reason": reason
+                    }),
+                )
+            })?
+        } else {
+            export_resources::write(scope, root, |entry, notice, reason| {
+                warnings += usize::from(notice == ResourceNotice::Warning);
+                lock_report(&report)?.record(root, notice == ResourceNotice::Issue, &json!({
+                "kind": "resource", "notice": format!("{notice:?}"), "entry": entry.index().0,
+                "name": entry.name(), "reason": reason
+            }))
+            })?
+        };
+    let write = |event| {
         match event {
             SourceEvent::Class {
                 entry,
@@ -107,28 +126,17 @@ fn write_export(scope: &RequestScope, output: &Path, jobs: usize) -> io::Result<
                 text,
                 failures,
             } => {
-                let name = String::from_utf16(&descriptor).ok();
-                let normal = match name.as_deref().and_then(class_path) {
-                    Some(relative) => match source_files.create(&relative) {
-                        Ok(file) => Some(file),
-                        Err(error) if path_conflict(&error) => None,
-                        Err(error) => return Err(error),
-                    },
-                    None => None,
-                };
-                let mut file = if let Some(file) = normal {
-                    file
-                } else {
-                    let image = entry.map_or_else(|| "input".to_owned(), |n| format!("e{n}"));
-                    let path = format!("source-definitions/{image}-l{logical}-c{class_def}.java");
-                    let file = create_file(root, Path::new(&path))?;
+                if let Some(path) =
+                    write_definition(root, &source_files, &descriptor, true, &text, || {
+                        let image = entry.map_or_else(|| "input".to_owned(), |n| format!("e{n}"));
+                        format!("source-definitions/{image}-l{logical}-c{class_def}.java")
+                    })?
+                {
                     lock_report(&report)?.record(root, false, &json!({
                         "kind": "class-path", "entry":entry, "logical":logical, "class_def":class_def,
                         "descriptor_units":descriptor, "path":path
                     }))?;
-                    file
-                };
-                file.write_all(text.as_bytes())?;
+                }
                 classes.fetch_add(1, Ordering::Relaxed);
                 if !failures.is_empty() {
                     lock_report(&report)?.record(root, true, &json!({
@@ -147,9 +155,67 @@ fn write_export(scope: &RequestScope, output: &Path, jobs: usize) -> io::Result<
                     "kind":"source", "entry":entry, "logical":logical, "class_def":class_def, "reason":reason
                 }))?;
             }
+            SourceEvent::JvmClass {
+                at,
+                versioned,
+                mut source,
+            } => {
+                let mut descriptor = source.name;
+                descriptor.insert(0, u16::from(b'L'));
+                descriptor.push(u16::from(b';'));
+                let class_at = std::cell::LazyCell::new(|| at.to_string());
+                let failures = if source.issues.is_empty() {
+                    Vec::new()
+                } else {
+                    jvm_source::export_issues(&class_at, &mut source.text, source.issues)
+                        .map_err(io::Error::other)?
+                };
+                if let Some(path) = write_definition(
+                    root,
+                    &source_files,
+                    &descriptor,
+                    scope.java_version().is_some() || !versioned,
+                    &source.text,
+                    || format!("source-definitions/{}.java", class_at.replace('/', "-")),
+                )? {
+                    lock_report(&report)?.record(
+                        root,
+                        false,
+                        &json!({
+                            "kind": "class-path", "at": class_at.as_str(),
+                            "descriptor_units": descriptor, "path": path
+                        }),
+                    )?;
+                }
+                classes.fetch_add(1, Ordering::Relaxed);
+                if !failures.is_empty() {
+                    lock_report(&report)?.record(
+                        root,
+                        true,
+                        &json!({
+                            "kind": "methods", "at": class_at.as_str(), "failures": failures
+                        }),
+                    )?;
+                }
+            }
+            SourceEvent::JvmIssue(issue) => {
+                lock_report(&report)?.record(
+                    root,
+                    true,
+                    &json!({
+                        "kind": "source", "at": issue.context,
+                        "classification": issue.kind, "reason": issue.reason
+                    }),
+                )?;
+            }
         }
         Ok(())
-    })?;
+    };
+    if let Some(roots) = &jvm {
+        source_export::visit_jvm(roots, jobs, write)?;
+    } else {
+        source_export::visit(scope, jobs, write)?;
+    }
     let mut report = report
         .into_inner()
         .map_err(|_| io::Error::other("export report lock poisoned"))?;
@@ -192,6 +258,34 @@ impl Report {
         self.issues += usize::from(incomplete);
         Ok(())
     }
+}
+
+fn write_definition(
+    stage: &Path,
+    sources: &SourceFiles<'_>,
+    descriptor: &[u16],
+    package_path: bool,
+    text: &str,
+    fallback: impl FnOnce() -> String,
+) -> io::Result<Option<String>> {
+    if package_path
+        && let Some(relative) = String::from_utf16(descriptor)
+            .ok()
+            .as_deref()
+            .and_then(class_path)
+    {
+        match sources.create(&relative) {
+            Ok(mut file) => {
+                file.write_all(text.as_bytes())?;
+                return Ok(None);
+            }
+            Err(error) if path_conflict(&error) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    let path = fallback();
+    create_file(stage, Path::new(&path))?.write_all(text.as_bytes())?;
+    Ok(Some(path))
 }
 
 fn class_path(descriptor: &str) -> Option<PathBuf> {

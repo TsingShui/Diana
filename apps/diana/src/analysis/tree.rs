@@ -12,9 +12,8 @@ use std::sync::Mutex;
 use serde::Serialize;
 
 use super::at;
-use super::dex::ClassRow;
 use super::input::InputError;
-use super::query::{Query, QueryError, QueryKind, QueryPlan, Row};
+use super::query::{JvmItem, JvmRow, Query, QueryError, QueryIssue, QueryKind, QueryPlan, Row};
 use super::request::RequestScope;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
@@ -51,6 +50,7 @@ pub struct PackageTree {
 pub struct TreeResult {
     pub tree: PackageTree,
     pub issue: Option<QueryError>,
+    pub issues: Vec<QueryIssue>,
 }
 
 struct Builder {
@@ -123,9 +123,8 @@ impl Builder {
 
     fn add(
         &mut self,
-        row: ClassRow<'_>,
         units: Vec<u16>,
-        entry: Option<usize>,
+        locator: impl FnOnce(&[u16]) -> String,
         prefix: &[u16],
         level: Option<NonZeroUsize>,
         classes: bool,
@@ -178,7 +177,7 @@ impl Builder {
         if classes && level.is_none_or(|level| depth <= level.get()) {
             let leaf = ClassLeaf {
                 name: at::escape_units(name),
-                at: at::class(entry, row.logical.0, row.class_def.0, &units),
+                at: locator(&units),
                 descriptor_units: units,
             };
             let leaves = &mut self.tree.packages[current.0].classes;
@@ -249,33 +248,58 @@ pub fn build(
     )?;
     let mut shards = Vec::new();
     shards
-        .try_reserve_exact(query.images().len())
+        .try_reserve_exact(query.shard_count())
         .map_err(InputError::Allocation)?;
-    for _ in query.images() {
+    for _ in 0..query.shard_count() {
         shards.push(Mutex::new(Builder::new(prefix)?));
     }
-    let issue = query
-        .run(
-            &|row, _, _| {
-                let Row::Class(row) = row else {
-                    return Err(diana_decomp::input::InputError::InternalInvariant(
-                        "tree query delivered a non-class",
-                    )
-                    .into());
-                };
+    let outcome = query.run_detailed(
+        &|row, _, _| match row {
+            Row::Class(row) => {
                 let image = query
                     .images()
                     .get(row.image.0)
                     .ok_or(QueryError::WorkerLost)?;
                 let units = row.descriptor.units()?;
-                let mut builder = shards[row.image.0].lock().map_err(|_| {
-                    diana_decomp::input::InputError::InternalInvariant("tree builder poisoned")
-                })?;
-                builder.add(row, units, image.entry.map(|e| e.0), prefix, level, classes)
-            },
-            &mut |_| Ok(()),
-        )
-        .err();
+                let mut builder = shards[row.image.0]
+                    .lock()
+                    .map_err(|_| QueryError::WorkerLost)?;
+                builder.add(
+                    units,
+                    |units| {
+                        at::class(
+                            image.entry.map(|e| e.0),
+                            row.logical.0,
+                            row.class_def.0,
+                            units,
+                        )
+                    },
+                    prefix,
+                    level,
+                    classes,
+                )
+            }
+            Row::Jvm(JvmRow {
+                item: JvmItem::Class(name),
+                location,
+                shard,
+                ..
+            }) => {
+                let units = super::query::jvm::descriptor(name)?;
+                let mut builder = shards[shard].lock().map_err(|_| QueryError::WorkerLost)?;
+                builder.add(units, |_| location.to_string(), prefix, level, classes)
+            }
+            _ => Err(diana_decomp::input::InputError::InternalInvariant(
+                "tree query delivered a non-class",
+            )
+            .into()),
+        },
+        &mut |_| Ok(()),
+    );
+    let (issue, issues) = match outcome {
+        Ok(outcome) => (None, outcome.issues),
+        Err(issue) => (Some(issue), Vec::new()),
+    };
     let mut combined = Builder::new(prefix)?;
     for shard in shards {
         let builder = shard.into_inner().map_err(|_| {
@@ -286,5 +310,6 @@ pub fn build(
     Ok(TreeResult {
         tree: combined.tree,
         issue,
+        issues,
     })
 }

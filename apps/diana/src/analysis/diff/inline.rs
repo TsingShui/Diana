@@ -1,7 +1,9 @@
 //! Evidence for a straight-line callee body replacing a static call in its original caller.
 use std::collections::HashMap;
 
-use super::index::Body;
+use super::index::{Body, Format, Method};
+
+mod jvm;
 
 /// Context used to establish a register correspondence or corroborate the enclosing caller.
 /// Method and fragment delivery still retain their complete original ranges.
@@ -13,16 +15,24 @@ pub(super) struct InlineSite {
     pub corroborates_outer: bool,
 }
 
-pub(super) fn is_call(opcode: u8) -> bool {
-    // Range invokes have already been normalized by the index.
-    opcode == 0x71
+pub(super) fn is_call(body: &Body, index: usize) -> bool {
+    let opcode = match body.format {
+        // Range invokes have already been normalized by the index.
+        Format::Dex => 0x71,
+        Format::Jvm => 0xb8,
+    };
+    body.code.get(index).is_some_and(|op| op.opcode == opcode)
 }
 
 fn straight(opcode: u8) -> bool {
     !matches!(opcode, 0x0d..=0x11 | 0x26..=0x2c | 0x32..=0x40)
 }
 
-pub(super) fn eligible(helper: &Body) -> Option<usize> {
+pub(super) fn eligible(method: &Method) -> Option<usize> {
+    let helper = method.body.as_ref()?;
+    if helper.format == Format::Jvm {
+        return jvm::eligible(method, helper).map(|site| site.count);
+    }
     let (last, prefix) = helper.code.split_last()?;
     (helper.protection.is_empty()
         && matches!(last.opcode, 0x0e..=0x11)
@@ -79,7 +89,50 @@ fn aligned_target(aligned: &[(usize, usize)], i: usize) -> Option<usize> {
 /// Candidate boundaries come from the adjacent aligned instructions. If the ordered
 /// region is the only insertion, its independently checked positional boundary also
 /// covers ties between a removed invoke and an invoke inside the helper.
+pub(super) fn replaced_count(helper: &Method, count: usize) -> Option<usize> {
+    let body = helper.body.as_ref()?;
+    Some(match body.format {
+        Format::Dex if body.code.get(count)?.opcode == 0x0e => 1,
+        Format::Dex => 2,
+        Format::Jvm => jvm::eligible(helper, body)?.descriptor.parameters.len() + 1,
+    })
+}
+
+pub(super) enum Context {
+    Dex(Vec<(usize, usize)>),
+    Jvm(jvm::Outside),
+}
+
+impl Context {
+    pub(super) fn new(old: &Body, new: &Body) -> Self {
+        match old.format {
+            Format::Dex => Self::Dex(super::alignment::align(&old.code, &new.code)),
+            Format::Jvm => Self::Jvm(jvm::Outside::new(old, new)),
+        }
+    }
+}
 pub(super) fn find(
+    caller: &Method,
+    helper: &Method,
+    target: &Method,
+    invoke: usize,
+    context: &Context,
+) -> Option<InlineSite> {
+    let source = caller.body.as_ref()?;
+    let embedded = helper.body.as_ref()?;
+    let updated = target.body.as_ref()?;
+    match (source.format, embedded.format, updated.format, context) {
+        (Format::Dex, Format::Dex, Format::Dex, Context::Dex(aligned)) => {
+            dex_window(source, embedded, updated, invoke, aligned)
+        }
+        (Format::Jvm, Format::Jvm, Format::Jvm, Context::Jvm(outside)) => {
+            jvm::find(caller, helper, target, invoke, outside)
+        }
+        _ => None,
+    }
+}
+
+fn dex_window(
     caller: &Body,
     helper: &Body,
     target: &Body,
@@ -88,7 +141,7 @@ pub(super) fn find(
 ) -> Option<InlineSite> {
     let count = helper.code.len().checked_sub(1)?;
     let ret = helper.code[count].opcode;
-    if !is_call(caller.code.get(invoke)?.opcode)
+    if !is_call(caller, invoke)
         || !(0x0e..=0x11).contains(&ret)
         || !helper.protection.is_empty()
         || count < 4

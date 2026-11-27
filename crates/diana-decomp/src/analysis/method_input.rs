@@ -4,6 +4,7 @@ use crate::ir::{AnalysisEvent, AnalysisObserver, CFG};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MethodRecoveryStage {
     Decode,
+    JvmDecode,
     Metadata,
     Semantics,
     SourceLowering,
@@ -13,6 +14,7 @@ impl MethodRecoveryStage {
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Decode => "DEX decoding",
+            Self::JvmDecode => "JVM decoding",
             Self::Metadata => "method metadata",
             Self::Semantics => "semantic recovery",
             Self::SourceLowering => "source lowering",

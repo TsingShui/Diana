@@ -317,46 +317,59 @@ impl<'a> ValuePlanner<'a> {
             .iter()
             .filter_map(Self::replacement_key)
             .collect::<BTreeSet<_>>();
-        if replacement_keys.len() < 2 {
+        if replacement_keys.is_empty() {
+            return Ok(());
+        }
+        let erased = self.unconditionally_erased_sites(actions);
+        if replacement_keys.len() == 1 && erased.is_empty() {
             return Ok(());
         }
         let ssa = self.graph().identity() == ValueIdentity::Ssa;
         let mut dependencies = Vec::with_capacity(replacement_keys.len());
-        let mut blocking = BTreeSet::new();
+        let mut effectful = BTreeSet::new();
         for action in actions.iter_mut() {
             let Some(key) = Self::replacement_key(action) else {
                 continue;
             };
             let mut inputs = ExpressionInputs::new(self.graph().identity());
-            let mut effectful = false;
+            let mut evaluates_effect = false;
             Self::visit_replacements(action, |expression| {
                 inputs.visit_expression(expression);
-                effectful = effectful || (ssa && !EffectSummary::expression(expression).is_pure());
+                evaluates_effect |=
+                    (ssa || !erased.is_empty()) && !EffectSummary::expression(expression).is_pure();
             })?;
             inputs.keys.remove(&key);
-            if !ssa || effectful {
-                blocking.insert(key);
+            if evaluates_effect {
+                effectful.insert(key);
             }
             dependencies.push((key, inputs.keys));
         }
-        if blocking.is_empty() {
-            return Ok(());
-        }
-        if ssa && blocking.len() < replacement_keys.len() {
+        if !effectful.is_empty() && effectful.len() < replacement_keys.len() {
             let mut dependents = BTreeMap::new();
             for (key, inputs) in &dependencies {
                 for input in inputs.intersection(&replacement_keys) {
                     dependents.entry(*input).or_insert_with(Vec::new).push(*key);
                 }
             }
-            Self::extend_dependents(&mut blocking, &dependents);
+            Self::extend_dependents(&mut effectful, &dependents);
         }
+        let blocking = if ssa { &effectful } else { &replacement_keys };
         let mut deferred = BTreeSet::new();
         for (key, inputs) in dependencies {
-            if !inputs.is_disjoint(&blocking)
-                && (!ssa
-                    || self.facts.uses_of(key).len() > 1
-                    || self.replacement_changes_execution_context(key, &inputs, &blocking))
+            let uses = self.facts.uses_of(key);
+            // An unused copy is pure in the current tree. If its incoming
+            // value is inlined into it, deleting that destination in this
+            // same plan would silently discard the producer's effects.
+            let lost_effect = effectful.contains(&key)
+                && uses
+                    .iter()
+                    .filter_map(|usage| usage.location.id())
+                    .any(|site| erased.contains(&site));
+            if lost_effect
+                || (!inputs.is_disjoint(blocking)
+                    && (!ssa
+                        || uses.len() > 1
+                        || self.replacement_changes_execution_context(key, &inputs, blocking)))
             {
                 deferred.insert(key);
             }
@@ -386,6 +399,32 @@ impl<'a> ValuePlanner<'a> {
             Self::replacement_key(action).is_none_or(|key| !deferred.contains(&key))
         });
         Ok(())
+    }
+
+    fn unconditionally_erased_sites(
+        &self,
+        actions: &[ValueAction],
+    ) -> BTreeSet<crate::ir::SemanticSiteId> {
+        let mut sites = BTreeSet::new();
+        for action in actions {
+            match action {
+                ValueAction::EliminateStatements { statements, .. } => {
+                    sites.extend(statements.iter().copied());
+                }
+                ValueAction::Remove { key, .. } => {
+                    sites.extend(
+                        self.graph()
+                            .definitions
+                            .get(key)
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|definition| definition.site),
+                    );
+                }
+                _ => {}
+            }
+        }
+        sites
     }
 
     fn extend_dependents(keys: &mut BTreeSet<SsaVar>, dependents: &BTreeMap<SsaVar, Vec<SsaVar>>) {
@@ -1299,7 +1338,7 @@ impl<'a> ValuePlanner<'a> {
             .is_some_and(|operation| {
                 matches!(
                     operation.insn_type,
-                    InsnType::Invoke | InsnType::Constructor
+                    InsnType::Invoke | InsnType::Constructor | InsnType::RecordOperation
                 )
             })
             .then_some(ValueAction::DiscardResult {

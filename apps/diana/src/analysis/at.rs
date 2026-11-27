@@ -171,6 +171,21 @@ pub fn write_value(
     }
 }
 
+pub fn write_jvm(
+    out: &mut Vec<u8>,
+    mode: Mode,
+    value: diana_decomp::input::jvm::JvmString<'_>,
+) -> Result<(), diana_decomp::input::jvm::ClassError> {
+    if plain_ascii(value.bytes(), mode) {
+        out.extend_from_slice(value.bytes());
+    } else if let Some(text) = value.utf8() {
+        write_text(out, mode, text);
+    } else {
+        write_units(out, mode, &value.to_utf16()?);
+    }
+    Ok(())
+}
+
 /// Appends text with display escapes.
 ///
 /// Runs that need nothing are copied whole and only the bytes that change go

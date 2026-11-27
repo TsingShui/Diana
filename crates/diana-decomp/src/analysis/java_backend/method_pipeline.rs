@@ -480,6 +480,10 @@ impl SemanticVisitor for MethodSourceInputCollector<'_> {
             self.lambda_types.insert(lambda.interface.clone());
             self.lambda_types
                 .insert(lambda.implementation.owner.clone());
+            if let Some(forwarding) = lambda.forwarding.as_ref() {
+                self.lambda_types
+                    .extend(forwarding.argument_casts.iter().flatten().cloned());
+            }
         }
         self.insert_option(operation.payload.class_type.as_deref());
         self.insert_option(operation.payload.cast_type.as_deref());

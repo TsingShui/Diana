@@ -2,7 +2,7 @@
 //! comparison. Payload partitions are data, never normal successors.
 use super::body::records;
 use super::compare::{clause, region};
-use super::{Body, Op};
+use super::{Body, Format, Op};
 use diana_decomp::input::formats::{FlowKind, OpcodeSpec};
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -24,6 +24,15 @@ impl Flow {
             Return | Throw | Goto => Self::TERMINATES,
         };
         Self(flow | if spec.may_throw { Self::THROWS } else { 0 })
+    }
+
+    pub(super) fn jvm(op: diana_decomp::input::jvm::bytecode::Instruction<'_>) -> Self {
+        let flow = match op.wide_opcode().unwrap_or_else(|| op.opcode()) {
+            0x99..=0xa6 | 0xc6..=0xc7 => Self::FALLTHROUGH | Self::TERMINATES,
+            0xa7..=0xb1 | 0xbf | 0xc8..=0xc9 => Self::TERMINATES,
+            _ => Self::FALLTHROUGH,
+        };
+        Self(flow | if op.may_throw() { Self::THROWS } else { 0 })
     }
 
     pub(super) fn may_throw(self) -> bool {
@@ -69,13 +78,14 @@ impl Body {
             if op.flow.has(Flow::TERMINATES) {
                 leader[i + 1] = true;
             }
-            if !op.flow.has(Flow::TERMINATES) && op.opcode != 0x26 {
+            if !op.flow.has(Flow::TERMINATES) && !(self.format == Format::Dex && op.opcode == 0x26)
+            {
                 continue;
             }
             for (kind, bytes) in records(self.operand_without_registers(i)) {
                 let target = match kind {
                     b'B' | b'D' => bytes,
-                    b'K' if matches!(op.opcode, 0x2b | 0x2c) => bytes.get(8..)?,
+                    b'K' if self.format.switch(op.opcode) => bytes.get(8..)?,
                     _ => continue,
                 };
                 let target = u32::from_le_bytes(target.try_into().ok()?) as usize;

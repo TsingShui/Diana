@@ -321,7 +321,7 @@ impl<'a> TypeConstraintGraph<'a> {
                     }
                 }
                 if instruction.insn_type == InsnType::NewArray {
-                    if let Some(size) = instruction.args.first() {
+                    for size in &instruction.args {
                         self.add_argument_bound(size, BoundKind::Upper, ArgType::INT);
                     }
                 } else if let Some(array) = instruction.result.as_ref().and_then(SsaVar::from_reg) {

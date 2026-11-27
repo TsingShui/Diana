@@ -10,6 +10,7 @@ use super::archive::{CopyError, EntryRecord, ExportReader};
 use super::axml;
 use super::export_path::{create_directories, create_file, path_conflict, portable_component};
 use super::input::{InputOptions, open_input};
+use super::jvm::{JvmRoots, archive_coordinate};
 use super::manifest::{MANIFEST_NAME, selected};
 use super::request::RequestScope;
 
@@ -56,16 +57,89 @@ pub fn write(
     let Some(archive) = scope.input().archive() else {
         return Ok(0);
     };
-    let resource_root = stage.join("resources");
-    fs::create_dir(&resource_root)?;
     let manifest = selected(archive).map(EntryRecord::index);
-    let mut copier = ExportReader::new(scope.input());
+    write_archive(
+        stage,
+        Path::new("resources"),
+        archive
+            .entries()
+            .iter()
+            .filter(|entry| !is_root_name(entry.name())),
+        &mut ExportReader::new(scope.input()),
+        |entry| entry.index().0.to_string(),
+        manifest,
+        &mut notice,
+    )
+}
+
+/// Copies the outer JAR's non-class files, then the resources from each
+/// successfully opened nested archive under that archive's physical location.
+pub fn write_jvm(
+    scope: &RequestScope,
+    roots: &JvmRoots<'_>,
+    stage: &Path,
+    mut notice: impl FnMut(&str, &EntryRecord, ResourceNotice, &str) -> io::Result<()>,
+) -> io::Result<usize> {
     let mut count = 0;
-    for entry in archive
-        .entries()
-        .iter()
-        .filter(|entry| !is_root_name(entry.name()))
-    {
+    for archive in roots.archives() {
+        let mut reader = if archive.path().is_empty() {
+            let lease = match scope.jvm_artifact(archive.artifact) {
+                Some(Ok(lease)) => lease,
+                None => scope.input(),
+                Some(Err(_)) => return Err(io::Error::other("JVM archive lease disappeared")),
+            };
+            ExportReader::new(lease)
+        } else {
+            ExportReader::from_slice(archive.bytes)
+        };
+        let resource_root = if archive.artifact == 0 && archive.path().is_empty() {
+            PathBuf::from("resources")
+        } else {
+            let coordinate = archive_coordinate(archive.path());
+            let name = match (archive.artifact, coordinate.is_empty()) {
+                (0, _) => coordinate,
+                (artifact, true) => format!("a{artifact}"),
+                (artifact, false) => format!("a{artifact}-{coordinate}"),
+            };
+            Path::new("archive-resources").join(name)
+        };
+        let files = write_archive(
+            stage,
+            &resource_root,
+            archive
+                .entries
+                .iter()
+                .filter(|entry| !entry.name().ends_with(".class")),
+            &mut reader,
+            |entry| archive.entry_location(entry).flat(),
+            None,
+            |entry, kind, reason| {
+                notice(
+                    &archive.entry_location(entry).to_string(),
+                    entry,
+                    kind,
+                    reason,
+                )
+            },
+        )?;
+        count += files;
+    }
+    Ok(count)
+}
+
+fn write_archive<'a>(
+    stage: &Path,
+    resource_directory: &Path,
+    entries: impl Iterator<Item = &'a EntryRecord>,
+    copier: &mut ExportReader<'_>,
+    fallback_name: impl Fn(&EntryRecord) -> String,
+    manifest: Option<super::input::EntryIndex>,
+    mut notice: impl FnMut(&EntryRecord, ResourceNotice, &str) -> io::Result<()>,
+) -> io::Result<usize> {
+    create_directories(stage, resource_directory)?;
+    let resource_root = stage.join(resource_directory);
+    let mut count = 0;
+    for entry in entries {
         let directory = entry.name().ends_with('/') && entry.uncompressed_size().0 == 0;
         if directory {
             match copier.copy(entry, io::sink()) {
@@ -85,7 +159,7 @@ pub fn write(
         let (path, target) = match create_target(&resource_root, name, directory) {
             Ok(output) => output,
             Err(error) if path_conflict(&error) => {
-                let relative = format!("resource-entries/{}", entry.index().0);
+                let relative = format!("resource-entries/{}", fallback_name(entry));
                 let target = create_target(stage, &relative, directory)?;
                 notice(
                     entry,

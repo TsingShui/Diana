@@ -9,12 +9,11 @@ use serde::Serialize;
 
 use super::output::{Failure, Format, publish_with};
 use crate::analysis::input::InputError;
-use crate::analysis::request::RequestScope;
 use crate::analysis::tree::{self, Package, PackageId, PackageTree};
 
 #[derive(Args)]
 pub(super) struct TreeArgs {
-    /// Input file (APK, ZIP or bare DEX)
+    /// Input file (APK, DEX, JAR or JVM class)
     input: PathBuf,
     /// Exact root package, in dotted or slash-separated form
     #[arg(long)]
@@ -22,10 +21,10 @@ pub(super) struct TreeArgs {
     /// Visible package depth below the root; class leaves do not consume depth
     #[arg(short = 'L', long)]
     level: Option<NonZeroUsize>,
-    /// Include original class definitions and their get-class locators
+    /// Include original class definitions and their locators
     #[arg(long)]
     classes: bool,
-    /// Workers for independent DEX images (default: available CPUs)
+    /// Workers for independent input units (default: available CPUs)
     #[arg(long)]
     jobs: Option<NonZeroUsize>,
     /// Presentation of the same selected hierarchy
@@ -43,6 +42,12 @@ struct Document<'a> {
     complete: bool,
     tree: &'a PackageTree,
     issue: Option<Issue>,
+    #[serde(skip_serializing_if = "slice_is_empty")]
+    issues: &'a [crate::analysis::query::QueryIssue],
+}
+
+fn slice_is_empty<T>(slice: &&[T]) -> bool {
+    slice.is_empty()
 }
 
 #[derive(Serialize)]
@@ -53,7 +58,7 @@ struct Issue {
 
 pub(super) fn run(args: TreeArgs) -> Result<(), Failure> {
     let prefix = normalize_prefix(args.prefix.as_deref().unwrap_or(""))?;
-    let scope = RequestScope::open(&args.input, &super::options()).map_err(Failure::input)?;
+    let scope = super::open_scope(&args.input, args.output.as_deref())?;
     let jobs = args
         .jobs
         .unwrap_or_else(|| NonZeroUsize::new(super::default_jobs()).unwrap_or(NonZeroUsize::MIN));
@@ -62,8 +67,9 @@ pub(super) fn run(args: TreeArgs) -> Result<(), Failure> {
     let document = Document {
         schema_version: 1,
         command: "tree",
-        complete: result.issue.is_none(),
+        complete: result.issue.is_none() && result.issues.is_empty(),
         tree: &result.tree,
+        issues: &result.issues,
         issue: result.issue.as_ref().map(|error| Issue {
             kind: format!("{:?}", error.kind()),
             message: error.to_string(),
@@ -77,6 +83,14 @@ pub(super) fn run(args: TreeArgs) -> Result<(), Failure> {
                     writeln!(writer, "[incomplete: {}: {}]", issue.kind, issue.message)
                         .map_err(Failure::output)?;
                 }
+                for issue in document.issues {
+                    writeln!(
+                        writer,
+                        "[incomplete at {}: {}: {}]",
+                        issue.context, issue.kind, issue.reason
+                    )
+                    .map_err(Failure::output)?;
+                }
             }
             Format::Json => serde_json::to_writer(&mut writer, &document)
                 .map_err(|e| Failure::output(io::Error::other(e)))?,
@@ -85,7 +99,14 @@ pub(super) fn run(args: TreeArgs) -> Result<(), Failure> {
     })?;
     match result.issue {
         Some(error) => Err(Failure::query(error, 1)),
-        None => Ok(()),
+        None if result.issues.is_empty() => Ok(()),
+        None => Err(Failure {
+            code: 1,
+            message: format!(
+                "{} JVM input issue(s), see tree output",
+                result.issues.len()
+            ),
+        }),
     }
 }
 

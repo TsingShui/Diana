@@ -1996,7 +1996,10 @@ impl ConstructorSyntaxRecovery {
 
     fn static_expression(expression: &JavaExpr, scope: &BTreeSet<JavaIdentifier>) -> bool {
         match expression {
-            JavaExpr::Allocate(_) | JavaExpr::DirectInit { .. } => false,
+            JavaExpr::Allocate(_)
+            | JavaExpr::DirectInit { .. }
+            | JavaExpr::Unavailable { .. }
+            | JavaExpr::RecordOperation { .. } => false,
             JavaExpr::Name(name) => scope.contains(name),
             JavaExpr::Literal(_) | JavaExpr::ClassLiteral(_) | JavaExpr::StaticField { .. } => true,
             JavaExpr::Field { owner, .. } => Self::static_expression(owner, scope),
@@ -4068,6 +4071,10 @@ impl ExpressionNames {
         while let Some(expression) = pending.pop() {
             match expression {
                 JavaExpr::Allocate(_) => {}
+                JavaExpr::Unavailable { operands, .. }
+                | JavaExpr::RecordOperation { operands, .. } => {
+                    pending.extend(operands.iter().rev())
+                }
                 JavaExpr::DirectInit { receiver, args, .. } => {
                     pending.extend(args.iter().rev());
                     pending.push(receiver);
@@ -4192,6 +4199,11 @@ impl ImmediateExpressionUses {
     fn expression(expression: &JavaExpr, uses: &mut BTreeMap<JavaIdentifier, usize>) {
         match expression {
             JavaExpr::Allocate(_) => {}
+            JavaExpr::Unavailable { operands, .. } | JavaExpr::RecordOperation { operands, .. } => {
+                for operand in operands {
+                    Self::expression(operand, uses);
+                }
+            }
             JavaExpr::DirectInit { receiver, args, .. } => {
                 Self::expression(receiver, uses);
                 for argument in args {

@@ -8,6 +8,7 @@ use crate::analysis::input::InputError;
 pub(super) enum Batch {
     Streaming(Vec<u8>),
     Ranked(Vec<RankedRow>),
+    Issue(super::QueryIssue),
 }
 
 pub(super) struct RankedRow {
@@ -18,6 +19,7 @@ pub(super) struct RankedRow {
 
 pub(super) struct Buffer {
     ranked: bool,
+    chunk_bytes: usize,
     bytes: Vec<u8>,
     rows: Vec<RankedRow>,
     size: usize,
@@ -26,8 +28,13 @@ pub(super) struct Buffer {
 
 impl Buffer {
     pub(super) fn new(ranked: bool) -> Self {
+        Self::with_chunk_bytes(ranked, CHUNK_BYTES)
+    }
+
+    pub(super) fn with_chunk_bytes(ranked: bool, chunk_bytes: usize) -> Self {
         Self {
             ranked,
+            chunk_bytes,
             bytes: Vec::new(),
             rows: Vec::new(),
             size: 0,
@@ -77,7 +84,7 @@ impl Buffer {
             self.first = false;
             self.size = self.bytes.len();
         }
-        if self.size >= CHUNK_BYTES {
+        if self.size >= self.chunk_bytes {
             self.flush(emit)?;
         }
         Ok(())
@@ -103,6 +110,7 @@ impl Buffer {
 #[derive(Default)]
 pub(super) struct Collected {
     rows: Vec<RankedRow>,
+    pub(super) issues: Vec<super::QueryIssue>,
 }
 
 impl Collected {
@@ -113,6 +121,11 @@ impl Collected {
     ) -> Result<(), QueryError> {
         match batch {
             Batch::Streaming(bytes) => sink(bytes),
+            Batch::Issue(issue) => {
+                self.issues.try_reserve(1).map_err(InputError::Allocation)?;
+                self.issues.push(issue);
+                Ok(())
+            }
             Batch::Ranked(mut rows) => {
                 self.rows
                     .try_reserve(rows.len())

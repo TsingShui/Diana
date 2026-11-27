@@ -1,6 +1,6 @@
 # diana-decomp
 
-Diana's DEX recovery backend.
+Diana's DEX and JVM source recovery engine.
 
 Forked from [asLody/dexdec](https://github.com/asLody/dexdec) at revision
 `08ed478781ddddb16381c31b9cf6d8946fdf2919`.
@@ -27,3 +27,9 @@ These explicit operations keep their original sites, aliases and effects.
 DEX map kind `0xF000` (platform hidden-API class-data metadata) is admitted as an
 opaque section under the shared map envelope checks. Its hidden-API flags are
 not interpreted or used to infer source declarations or values.
+
+The JVM entry `jvm::recover` accepts borrowed bytes from `input::jvm::ClassFile`
+and an optional original method ordinal. JVM stack, local, and exception facts
+feed the same register CFG and Java renderer used for DEX. A JVM recovery issue
+can identify an original member and a byte range within its Code attribute.
+The app owns archive inspection, entry decompression and physical coordinates.

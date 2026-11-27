@@ -729,6 +729,9 @@ impl AssignmentAnalysis {
     fn expression(&mut self, expression: &JavaExpr, assigned: &mut Assigned) {
         match expression {
             JavaExpr::Allocate(_) => {}
+            JavaExpr::Unavailable { operands, .. } | JavaExpr::RecordOperation { operands, .. } => {
+                self.expressions(operands, assigned)
+            }
             JavaExpr::DirectInit { receiver, args, .. } => {
                 self.expression(receiver, assigned);
                 self.expressions(args, assigned);

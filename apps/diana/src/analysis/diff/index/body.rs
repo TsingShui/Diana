@@ -8,13 +8,13 @@ use diana_decomp::p1::{DecodedInstruction, DecodedItem, DecodedMethod, DecodedOu
 use diana_decomp::raw::RawLiteral;
 use diana_decomp::{CodeUnitOffset, TypeId};
 
-use super::{Body, Method, Op, reference};
+use super::{Body, Format, Method, Op, reference};
 
 // Bound expanded operands as well as the source code: a tiny const-string site
 // can reference a multi-megabyte string many times. A stopped method retains
 // its completed prefix and a local diagnostic.
 pub(super) const MAX_BYTES: usize = 64 * 1024 * 1024;
-const CAPACITY: &str = "expanded method operands exceed the index capacity";
+pub(super) const CAPACITY: &str = "expanded method operands exceed the index capacity";
 const PACKED: u8 = 0x3e;
 const SPARSE: u8 = 0x3f;
 const ARRAY: u8 = 0x40;
@@ -22,14 +22,14 @@ const ARRAY: u8 = 0x40;
 // Each operation starts with a counted list of canonical register words.
 // The following typed records are length-prefixed, including arbitrary strings
 // and payloads; DEX text can therefore never introduce another operand.
-fn uint(out: &mut Vec<u8>, mut n: u32) {
+pub(super) fn uint(out: &mut Vec<u8>, mut n: u32) {
     while n >= 128 {
         out.push(n as u8 | 128);
         n >>= 7;
     }
     out.push(n as u8);
 }
-fn value(out: &mut Vec<u8>, tag: u8, bytes: &[u8]) -> Result<(), String> {
+pub(super) fn value(out: &mut Vec<u8>, tag: u8, bytes: &[u8]) -> Result<(), String> {
     if out.len().saturating_add(bytes.len()).saturating_add(6) > MAX_BYTES {
         return Err(CAPACITY.into());
     }
@@ -92,22 +92,44 @@ impl Body {
             .and_then(|(_, bytes)| self.symbol(bytes))
     }
 
+    pub fn field_reference(&self, i: usize) -> Option<&str> {
+        records(self.operand_without_registers(i))
+            .find(|(tag, _)| *tag == b'f')
+            .and_then(|(_, bytes)| self.symbol(bytes))
+    }
+
+    pub fn operand_tag(&self, i: usize) -> Option<u8> {
+        records(self.operand_without_registers(i))
+            .next()
+            .map(|(tag, _)| tag)
+    }
+
     pub fn describe_op(&self, i: usize) -> String {
         use std::fmt::Write;
         let opcode = self.code[i].opcode;
-        let mnemonic = match opcode {
-            PACKED => "packed-switch-payload",
-            SPARSE => "sparse-switch-payload",
-            ARRAY => "array-data-payload",
-            _ => opcode_mnemonic(opcode).unwrap_or("unknown"),
+        let mnemonic = match self.format {
+            Format::Jvm => diana_decomp::input::jvm::bytecode::opcode_mnemonic(opcode),
+            Format::Dex => match opcode {
+                PACKED => "packed-switch-payload",
+                SPARSE => "sparse-switch-payload",
+                ARRAY => "array-data-payload",
+                _ => opcode_mnemonic(opcode).unwrap_or("unknown"),
+            },
         };
         let mut out = mnemonic.to_owned();
         for reg in self.registers(i) {
-            let _ = write!(out, " v{reg}");
+            match self.format {
+                Format::Dex => {
+                    let _ = write!(out, " v{reg}");
+                }
+                Format::Jvm => {
+                    let _ = write!(out, " local {reg}");
+                }
+            }
         }
         for (tag, data) in records(self.operand_without_registers(i)) {
             match tag {
-                b'm' | b's' | b't' | b'f' | b'p' | b'h' | b'c' => {
+                b'm' | b's' | b't' | b'f' | b'p' | b'h' | b'c' | b'y' => {
                     out.push(' ');
                     out.push_str(self.symbol(data).unwrap_or("<unavailable>"));
                 }
@@ -126,12 +148,27 @@ impl Body {
                         }
                     }
                 }
-                b'K' if matches!(opcode, 0x2b | 0x2c) && data.len() == 12 => {
+                b'K' if self.format.switch(opcode) && data.len() == 12 => {
                     let key = i64::from_le_bytes(data[..8].try_into().expect("eight-byte key"));
                     let target =
                         u32::from_le_bytes(data[8..].try_into().expect("four-byte target"));
                     if let Some(op) = self.code.get(target as usize) {
                         let _ = write!(out, " case {key} -> @0x{:x}", op.pc);
+                    }
+                }
+                b'I' => {
+                    if let Ok(word) = data.try_into() {
+                        let _ = write!(out, " {}", i32::from_le_bytes(word));
+                    }
+                }
+                b'J' => {
+                    if let Ok(word) = data.try_into() {
+                        let _ = write!(out, " {}", i64::from_le_bytes(word));
+                    }
+                }
+                b'E' => {
+                    if let [count] = data {
+                        let _ = write!(out, " {count}");
                     }
                 }
                 b'W' => {
@@ -394,6 +431,8 @@ pub(super) fn collect(
         symbols,
     };
     let mut body = Body {
+        format: Format::Dex,
+        jvm_major: 0,
         frame: [raw.registers_size(), raw.ins_size(), raw.outs_size()],
         code_units: raw.code_units().0,
         code: Vec::with_capacity(items.len().min(MAX_BYTES / size_of::<Op>())),
@@ -500,6 +539,7 @@ pub(super) fn collect(
                 pc: item.pc().0,
                 end: body.operands.len() as u32,
                 register_end: body.raw_registers.len() as u32,
+                known_operands: true,
             })
         })();
         match result {
@@ -525,6 +565,7 @@ pub(super) fn collect(
                     shape: u16::from(opcode) << 8,
                     end: body.operands.len() as u32,
                     register_end: regs as u32,
+                    known_operands: false,
                 });
             }
         }

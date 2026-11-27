@@ -10,6 +10,7 @@ use crate::analysis::{at, images::ImageError, request::RequestScope, runner};
 mod blocks;
 mod body;
 mod compare;
+pub(super) mod jvm;
 mod protection_diff;
 mod reference;
 mod symbols;
@@ -34,7 +35,41 @@ impl ExpansionBudget {
 pub(super) struct Index<T = Method> {
     pub methods: Vec<T>,
     /// Root, image or class errors mean the declaration inventory is incomplete.
-    pub issues: Vec<String>,
+    pub issues: Vec<InventoryIssue>,
+}
+
+#[derive(Debug)]
+pub(super) struct InventoryIssue {
+    pub at: Option<String>,
+    pub reason: String,
+}
+
+impl From<String> for InventoryIssue {
+    fn from(reason: String) -> Self {
+        Self { at: None, reason }
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct JvmDeclaration {
+    /// Outer None means the original optional metadata was unavailable.
+    pub signature: Option<Option<String>>,
+    pub exceptions: Option<Vec<String>>,
+}
+
+impl Default for JvmDeclaration {
+    fn default() -> Self {
+        Self {
+            signature: Some(None),
+            exceptions: Some(Vec::new()),
+        }
+    }
+}
+
+impl JvmDeclaration {
+    fn is_empty(&self) -> bool {
+        matches!(self.signature, Some(None)) && self.exceptions.as_ref().is_some_and(Vec::is_empty)
+    }
 }
 
 impl<T> Default for Index<T> {
@@ -61,6 +96,7 @@ pub(super) struct Method {
     pub name: String,
     pub prototype: String,
     pub access: u32,
+    pub jvm: Option<Box<JvmDeclaration>>,
     pub body: Option<Body>,
     /// Empty on a fully inspected body or a valid native/abstract declaration.
     pub issues: Vec<String>,
@@ -83,7 +119,19 @@ impl Method {
                 + b.calls.capacity() * size_of::<u32>()
                 + b.anchors.capacity() * size_of::<u64>()
         });
-        declarations + diagnostics + body
+        let metadata = self.jvm.as_ref().map_or(0, |declaration| {
+            size_of::<JvmDeclaration>()
+                + declaration
+                    .signature
+                    .as_ref()
+                    .and_then(Option::as_ref)
+                    .map_or(0, String::capacity)
+                + declaration.exceptions.as_ref().map_or(0, |entries| {
+                    entries.capacity() * size_of::<String>()
+                        + entries.iter().map(String::capacity).sum::<usize>()
+                })
+        });
+        declarations + diagnostics + body + metadata
     }
 
     pub(super) fn identity(&self) -> String {
@@ -93,17 +141,42 @@ impl Method {
 
 #[derive(Debug, Default)]
 pub(super) struct Body {
+    pub format: Format,
     pub code: Vec<Op>,
     pub operands: Vec<u8>,
     raw_registers: Vec<u16>,
     pub frame: [u16; 3],
+    pub jvm_major: u16,
     code_units: u32,
     pub protection: Vec<u8>,
     pub calls: Vec<u32>,
     names: symbols::Names,
     pub anchors: Vec<u64>,
     has_symbol_dependency: bool,
-    complete_control: bool,
+    pub(super) complete_control: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum Format {
+    #[default]
+    Dex,
+    Jvm,
+}
+
+impl Format {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Dex => "DEX code",
+            Self::Jvm => "JVM Code",
+        }
+    }
+
+    fn switch(self, opcode: u8) -> bool {
+        match self {
+            Self::Dex => matches!(opcode, 0x2b | 0x2c),
+            Self::Jvm => matches!(opcode, 0xaa | 0xab),
+        }
+    }
 }
 
 impl Body {
@@ -135,6 +208,7 @@ pub(super) struct Op {
     pub end: u32,
     register_end: u32,
     flow: blocks::Flow,
+    pub(super) known_operands: bool,
 }
 
 pub(super) fn build(
@@ -173,7 +247,9 @@ fn build_with<T: Send>(
             let mut index = Index::default();
             let root = &roots[pos];
             if let Err(reason) = scan_root(root, reader, scratch, &mut index, symbols, publish) {
-                index.issues.push(format!("{}: {reason}", root.label()));
+                index
+                    .issues
+                    .push(format!("{}: {reason}", root.label()).into());
             }
             emit((pos, index))
         },
@@ -182,6 +258,12 @@ fn build_with<T: Send>(
             Ok(())
         },
     )?;
+    Ok(merge_ordered(results)?)
+}
+
+fn merge_ordered<T>(
+    mut results: Vec<(usize, Index<T>)>,
+) -> Result<Index<T>, crate::analysis::input::InputError> {
     results.sort_unstable_by_key(|(pos, _)| *pos);
     if results.len() == 1 {
         return Ok(results.pop().expect("checked single root").1);
@@ -238,7 +320,7 @@ fn scan_root<T>(
             }
             Err(error) => out
                 .issues
-                .push(format!("e{}:l{logical}: {error}", entry.unwrap_or(0))),
+                .push(format!("e{}:l{logical}: {error}", entry.unwrap_or(0)).into()),
         }
     }
     Ok(())
@@ -262,18 +344,19 @@ fn scan_image<T>(
         let facts = match p0::collect(index, key) {
             Ok(facts) => facts,
             Err(error) => {
-                out.issues.push(format!(
-                    "e{}:l{logical}:c{class}: {error}",
-                    entry.unwrap_or(0)
-                ));
+                out.issues
+                    .push(format!("e{}:l{logical}:c{class}: {error}", entry.unwrap_or(0)).into());
                 continue;
             }
         };
         if let Some(error) = facts.methods_issue() {
-            out.issues.push(format!(
-                "{}: {error}",
-                at::class(entry, logical, class, facts.descriptor().units())
-            ));
+            out.issues.push(
+                format!(
+                    "{}: {error}",
+                    at::class(entry, logical, class, facts.descriptor().units())
+                )
+                .into(),
+            );
         }
         let owner = at::escape_units(facts.descriptor().units());
         for (ordinal, item) in facts.methods().iter().enumerate() {
@@ -285,7 +368,7 @@ fn scan_image<T>(
                     .unavailable()
                     .map(ToString::to_string)
                     .unwrap_or_else(|| "method declaration unavailable".into());
-                out.issues.push(format!("{loc}: {reason}"));
+                out.issues.push(format!("{loc}: {reason}").into());
                 continue;
             };
             let mut method = Method {
@@ -302,6 +385,7 @@ fn scan_image<T>(
                 name: at::escape_units(decl.name_units()),
                 prototype: at::escape_units(decl.prototype_units()),
                 access: item.access_flags().raw(),
+                jvm: None,
                 body: None,
                 issues: Vec::new(),
             };
@@ -316,10 +400,8 @@ fn scan_image<T>(
                 Err(error) => method.issues.push(error.to_string()),
             }
             if !cache.budget.charge(method.retained_bytes()) {
-                out.issues.push(format!(
-                    "{}: {ROOT_CAPACITY}; coverage stops here",
-                    method.at
-                ));
+                out.issues
+                    .push(format!("{}: {ROOT_CAPACITY}; coverage stops here", method.at).into());
                 return false;
             }
             out.methods.push(publish(method));

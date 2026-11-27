@@ -20,6 +20,7 @@ mod prefilter;
 mod relations;
 pub use coordinate::resolve_coordinate;
 pub use delivery::{Event, Issue};
+pub(crate) use relations::run_jvm as jvm_relations;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum Relation {
@@ -36,6 +37,7 @@ pub enum Target {
     String(TextMatch),
     Type(TextMatch),
     Resource(crate::analysis::resources::ResourceTarget),
+    JvmResource(crate::analysis::jvm_resources::PathTargets),
     Method {
         owner: Option<TextMatch>,
         name: TextMatch,
@@ -57,6 +59,7 @@ pub enum Target {
 impl Target {
     pub fn is_ranked(&self) -> bool {
         match self {
+            Self::JvmResource(target) => target.is_ranked(),
             Self::Resource(target) => target
                 .entries
                 .values()

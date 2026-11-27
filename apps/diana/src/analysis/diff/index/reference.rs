@@ -26,6 +26,7 @@ impl<'a> Cache<'a> {
     }
 }
 
+#[derive(Clone, Copy)]
 pub(super) struct Symbol {
     pub tag: u8,
     pub id: u32,

@@ -17,6 +17,8 @@ pub struct EntryIndex(pub usize);
 pub enum InputKind {
     /// The whole leased input is one DEX container.
     BareDex,
+    /// The whole leased input is one JVM class file.
+    BareClass,
     /// The leased input is a ZIP archive whose entries are available.
     Archive,
     /// A leased regular file that is neither of the above.
@@ -41,8 +43,8 @@ pub enum ArchiveProblem {
     UnsupportedCompression(u16),
     /// The entry declares encryption.
     EncryptedEntry,
-    /// ZIP64 record fields are outside the supported container profile.
-    UnsupportedZip64,
+    /// The archive spans multiple disks.
+    MultiDisk,
     /// The deflate stream is truncated, over-long or otherwise undecodable.
     DecompressionFailed,
     /// Reserved table capacity could not be allocated.
@@ -65,8 +67,14 @@ pub enum InputError {
     PlatformCapacity,
     #[error("input allocation failed: {0}")]
     Allocation(#[source] std::collections::TryReserveError),
+    #[error("archive entry declares {size} bytes, exceeding the {limit}-byte limit")]
+    EntrySizeLimit { size: u64, limit: u64 },
     #[error("input is not a DEX container or archive")]
     NotDex,
+    #[error("project artifact is not a JAR, WAR or standalone JVM class")]
+    NotJvm,
+    #[error("invalid JVM project: {0}")]
+    JvmProject(String),
 }
 
 impl InputError {
@@ -77,17 +85,21 @@ impl InputError {
     pub fn kind(&self) -> diana_decomp::FailureKind {
         use diana_decomp::FailureKind as Kind;
         match self {
-            Self::PlatformCapacity | Self::Allocation(_) => Kind::ResourceExhausted,
+            Self::PlatformCapacity | Self::Allocation(_) | Self::EntrySizeLimit { .. } => {
+                Kind::ResourceExhausted
+            }
             Self::Io(_)
             | Self::NotRegularFile(_)
             | Self::OutsideRoot(_)
             | Self::Changed
-            | Self::NotDex => Kind::Unsupported,
+            | Self::NotDex
+            | Self::NotJvm => Kind::Unsupported,
+            Self::JvmProject(_) => Kind::Malformed,
             Self::MalformedArchive(problem) => match problem {
                 ArchiveProblem::Allocation(_) => Kind::ResourceExhausted,
                 ArchiveProblem::UnsupportedCompression(_)
                 | ArchiveProblem::EncryptedEntry
-                | ArchiveProblem::UnsupportedZip64
+                | ArchiveProblem::MultiDisk
                 | ArchiveProblem::NameEncoding => Kind::Unsupported,
                 ArchiveProblem::MissingDirectory
                 | ArchiveProblem::InconsistentDirectory
@@ -318,6 +330,8 @@ fn map_input(file: &std::fs::File, offset: u64, len: u64) -> Result<InputBytes, 
 fn classify(bytes: &[u8]) -> InputKind {
     if bytes.starts_with(b"dex\n") {
         InputKind::BareDex
+    } else if bytes.starts_with(&[0xca, 0xfe, 0xba, 0xbe]) {
+        InputKind::BareClass
     } else if bytes.starts_with(b"PK\x03\x04")
         || bytes.starts_with(b"PK\x05\x06")
         || bytes.starts_with(b"PK\x06\x06")

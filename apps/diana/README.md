@@ -16,12 +16,13 @@ external classpaths, declarations and runtimes are not required.
 
 ```text
 get-class   Decompile one class
-get-method  Decompile one method
+get-method  Decompile one DEX method
+bytecode    Show the original instructions of one JVM method
 outline-class   Show class members and structured method outlines
 outline-method  Show one method outline, with optional call expansion
 entries     List physical archive entries
-diff        Compare DEX methods in two APK or standalone DEX inputs
-export      Export all root DEX classes and APK resources to a new directory
+diff        Compare methods in two DEX or two JVM inputs
+export      Export Java-like sources and archive resources to a new directory
 extract     Extract one physical entry
 strings     List original string values
 xref        Find references, hierarchy and method relationships
@@ -44,23 +45,22 @@ Fuzzy searches rank matches across all input images before presentation. Fuzzy
 is the default for filtered searches and xref; unfiltered lists and the other
 matching modes retain completion order.
 
-`classes`, `fields`, `methods`, `strings`, `xref`, the outline commands and the
-decompilation commands read root DEX images only: `classes.dex` and
-`classes<N>.dex` at the archive root, or the whole input for a bare DEX. DEX
-stored elsewhere, such as `assets/`, `res/raw/` or a nested archive, is not
-scanned. `entries` lists those records and `extract` writes one out for analysis
-as a bare DEX input.
+On APK inputs, code queries read `classes.dex` and `classes<N>.dex` at the
+archive root. Use `entries` and `extract` to locate and read DEX files stored
+elsewhere in the archive. Code queries also accept standalone DEX files.
 
 | Command | Presentation |
 |---|---|
 | `entries` | `name, compressed_size, uncompressed_size, compression` |
-| `classes`, `fields`, `methods` | `at` |
+| `classes` | `at, descriptor` |
+| `fields`, `methods` | `at, member` |
 | `tree` | Package hierarchy and subtree definition counts; optional class leaves |
 | `strings` | `at, value` |
 | `xref` | `context, match, use` |
 | `resources` | `context, id, name, config, value` |
 | `manifest` | XML, or JSON with `status, xml, warnings` |
-| `get-class`, `get-method` | Backend Java-like text, or JSON schema 5 |
+| `get-class`, `get-method` | Recovered Java-like text for DEX and JVM inputs, or JSON schema 5 |
+| `bytecode` | JVM instructions, operands, byte offsets and exception table |
 | `outline-class`, `outline-method` | Structured tree with call links, or JSON schema 1 |
 | `extract` | One output file |
 
@@ -122,15 +122,96 @@ larger query roots started first. Logical headers within a root retain their own
 identities. `get-class --jobs` instead sets Engine's
 method worker count; its default is one. Explicit job counts must be positive.
 
+## JVM archives and class files
+
+`classes`, `tree`, `fields`, `methods`, `strings`, `xref`, `bytecode`,
+`outline-class`, `outline-method`, `get-class`, `get-method`, `diff` and
+`export` accept JAR inputs and standalone class files. A class descriptor
+comes from the original `this_class` reference. ZIP entry names identify
+physical records. The scan follows Minecraft bundler catalogs, Fabric
+declarations, Spring Boot libraries and WAR libraries. JARs can use ZIP64.
+In an archive containing root DEX files, shared commands use the APK view.
+
+```sh
+diana classes client.jar --filter Entity
+diana methods client.jar --class net.minecraft.world.entity.Entity --jobs 16
+diana xref client.jar method 'Lnet/minecraft/world/entity/Entity;->getId()I' --exact
+diana get-class client.jar net.minecraft.world.entity.Entity -o Entity.java
+diana get-method client.jar 'Lnet/minecraft/world/entity/Entity;->getId()I'
+diana outline-class client.jar net.minecraft.world.entity.Entity --call-depth 1
+```
+
+JVM coordinates use zero-based physical archive entries and original member
+ordinals. A `j4:m2` coordinate identifies method two of class entry four,
+`j6/j4:m2` identifies the method in a nested archive, and `j0` identifies a
+standalone class. A string coordinate uses its original one-based constant pool
+index. JVM `strings` lists `CONSTANT_String` literals.
+
+JVM `get-class` also accepts a unique class descriptor or dotted class name.
+JVM `get-method` also accepts a complete `Lowner;->name(args)return` reference
+whose owner is unique. Use the physical locator when the input has several
+definitions of the same class. Physical retrieval reads the selected archive
+chain and class. Class retrieval includes fields and methods in declaration
+order, and method retrieval analyzes the selected body. The Java renderer
+uses original JVM signatures and parameter names when the class provides them.
+An unavailable operation can appear as `<unavailable>(...)` with its original
+byte offset and readable operands. Retrieval publishes available source and
+its diagnostics before returning exit status 1 for incomplete recovery.
+
+JVM `xref` reports direct declaration relations and references. It supports
+method caller expansion with `--transitive`, inherited declarations with
+`--relation`, and recursive hierarchy queries. Code hits include
+`offset_byte`. Resource references identify original string literals
+matching archive entry paths. Known bootstrap references appear with their
+call sites. Outlines show exact declarations and input-side dispatch
+candidates, and mark unresolved runtime choices.
+
+A malformed class or method can produce a local issue while independent
+entries remain queryable. A declaration table with incomplete coverage exits
+1 after publishing its rows and issues.
+
+### Explicit JVM projects
+
+Save a descriptor such as `game.diana-jvm.json` beside its archives.
+
+```json
+{
+  "archives": ["client.jar", "libraries/helper.jar"],
+  "java_version": 21
+}
+```
+
+Pass the descriptor where a JVM analysis command accepts input. Each archive
+names a portable relative path inside the descriptor's directory. The first
+input uses `jN`, and later artifacts use coordinates such as `a1/jN:m2`. A
+missing or damaged artifact retains its ordinal and can produce a local issue.
+
+With no `java_version`, the physical view retains every original definition.
+With a target release, each declared multi-release archive contributes its
+highest eligible version for a logical class path. Explicit physical
+coordinates can still inspect an excluded original class. Multiple
+definitions at the selected version remain distinct.
+
+`entries` lists original project entries. `resources` lists non-class file
+entries across the archive chain. Use `extract --at` with such a coordinate
+to copy original bytes.
+
+```sh
+diana resources game.diana-jvm.json --filter sound
+diana extract game.diana-jvm.json a1/j12 --at -o sound.ogg
+```
+
 ## Comparing two versions
 
 ```sh
 diana diff old.apk new.apk
 diana diff old.dex new.dex --format json -o changes.json --jobs 4
+diana diff old.jar new.jar --format json --jobs 16
 ```
 
-`diff OLD NEW` compares methods across the root DEX images of both inputs.
-It accepts APKs and standalone DEX files and reads checked DEX facts directly.
+`diff OLD NEW` compares methods from two DEX inputs or two JVM inputs.
+APK analysis covers root DEX images. JVM comparisons cover the selected
+archive or project definitions and use checked class and bytecode facts.
 Each method location includes its original signature and an `at` locator.
 Pass an old locator to `get-method` on the old input and a new locator to
 `get-method` on the new input.
@@ -138,7 +219,9 @@ Pass an old locator to `get-method` on the old input and a new locator to
 Text and JSON carry the full comparison. JSON schema 1 includes the input
 labels, method counts, candidate-pair count, matched pairs with their evidence
 and changes, unresolved groups, matching fragments and local issues. Change
-sites and fragments use DEX code-unit offsets within their respective methods.
+sites use the respective method's original offsets. DEX uses code units.
+JVM comparisons label `offset_unit` as `byte` and compare resolved operand
+contents and ordered bootstrap and exception facts across physical layouts.
 The evidence list identifies what supported a pairing, such as normalized
 instructions, a rare reference, a paired owner or paired callers and callees.
 An original signature can contribute evidence. Independently paired structure
@@ -158,7 +241,8 @@ from an unmatched old method that corresponds to a range in a new caller.
 When the surrounding calls and the fragment both correspond, this evidence
 can pair the enclosing methods across a static inline. Optimizer outlining
 can separate the instructions into several methods and leave the fragment
-relationship unresolved.
+relationship unresolved. JVM inline evidence covers checked same-class static
+helpers with straight-line bodies and confirmed parameter origins.
 
 Ordinary differences exit 0. A comparison with local read issues publishes the
 available result and exits 1.
@@ -170,10 +254,11 @@ both inputs.
 ```sh
 diana export app.apk -o project
 diana export classes.dex -o project-dex --jobs 4
+diana export server.jar -o project-jvm --jobs 16
 ```
 
 Use a new output directory under an existing parent. Each class definition
-gets a Java-like file under `sources/`, following its DEX package. Member
+gets a Java-like file under `sources/`, following its original package. Member
 classes get their own files. Definitions whose paths collide or cannot be
 represented portably use `source-definitions/` with their original coordinates
 and UTF-16 descriptor recorded in `export-report.jsonl`.
@@ -185,8 +270,20 @@ A readable presentation of the selected manifest is written to
 `resources/` or the reported alternate path. Unsafe or conflicting entry names
 use `resource-entries/<physical index>`.
 
-Export processes one DEX image at a time. `--jobs N` sets the worker limit.
-Workers can share method recovery for a larger class within the same pool.
+For a JAR, `resources/` preserves non-class entries, including
+`META-INF/MANIFEST.MF`, native libraries, assets, and original nested JAR bytes.
+Resources from a nested archive are also copied under `archive-resources/`
+with a directory named for that archive's physical location. A declared JVM
+definition receives a source file through the same recovery as `get-class`.
+Versioned definitions in a physical inventory use `source-definitions/`;
+their entries and fallback paths appear in the report. The `manifest` command
+prints the primary JAR manifest. The `resources` command lists original
+resource entry names and physical locations.
+
+Export processes one DEX image at a time. A JVM export claims independent
+class definitions in the same pool used for their method work. `--jobs N` sets
+the worker limit. Workers deliver the recovered file before claiming another
+class.
 The default uses the available CPU count up to 16 workers. Lower values
 limit the number of classes and methods being analyzed concurrently.
 When a class, method or entry has a recovery issue, the CLI publishes the
@@ -495,6 +592,19 @@ exit with code 1 and report the recovery failure on stderr after writing the
 available result, including when `-o` selects a file. A shared rendering failure is returned as a
 request error; an unfinished prefix is never reported as a successful complete
 result.
+
+For JVM input, schema 5 uses the same top-level keys and physical JVM identities.
+
+- `selection.input_kind` is `"jvm"`. The selection carries `class` as the original
+  descriptor, `class_at` as the class locator, and `method` and `method_at` as the
+  original method ordinal and locator. Both method fields are `null` for class
+  retrieval.
+- `result` carries `class`, `notation`, `text` and `methods`. Each method entry
+  carries its `at`, `ordinal`, `name`, `prototype` and original `access_flags`.
+- Each `issues` entry carries `context` as its original class or member locator,
+  `kind`, `stage`, `reason` and optional `range_bytes`. A present range is
+  half-open relative to the member's original JVM bytecode. An issue that
+  prevents proving a named selection unique can accompany its readable match.
 
 The old schema 3 `{kind, product}` wrapper, schema 2, Java/Mixed status
 projections, whole-class method-text slicing, `--verbose` diagnostic gate and

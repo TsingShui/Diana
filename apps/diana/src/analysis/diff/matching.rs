@@ -3,7 +3,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 
 use super::UnmatchedGroup;
 use super::index::{Index, Method};
-use super::{alignment, inline};
+use super::inline;
 
 // A common feature is useful within a method pair but cannot justify comparing
 // every member of its Cartesian product. Exact shape groups survive as groups.
@@ -36,10 +36,14 @@ impl Evidence {
         }
     }
 
-    pub(super) fn names(self) -> Vec<&'static str> {
+    pub(super) fn names(self, jvm: bool) -> Vec<&'static str> {
         let mut names = Vec::new();
         if self.identity {
-            names.push("same_dex_signature");
+            names.push(if jvm {
+                "same_jvm_signature"
+            } else {
+                "same_dex_signature"
+            });
         }
         if self.exact {
             names.push("same_normalized_body");
@@ -205,6 +209,7 @@ fn profile_and_postings(
     methods: &[Method],
     identities: &[String],
     is_new: bool,
+    paired: &[Option<usize>],
     postings: &mut Vec<Posting>,
 ) -> Vec<Profile> {
     methods
@@ -225,18 +230,22 @@ fn profile_and_postings(
                     .rsplit_once(')')
                     .map_or("", |(_, result)| result),
             );
+            let declaration = || Profile {
+                prototype,
+                return_type,
+                shape: None,
+                size: 0,
+                independent_body: false,
+                has_anchors: false,
+                declaration: entry.issues.is_empty(),
+                special: special_method(entry),
+            };
+            if paired[method].is_some() {
+                return declaration();
+            }
             push(Feature::Identity(digest(&identities[method])));
             let Some(body) = &entry.body else {
-                return Profile {
-                    prototype,
-                    return_type,
-                    shape: None,
-                    size: 0,
-                    independent_body: false,
-                    has_anchors: false,
-                    declaration: entry.issues.is_empty(),
-                    special: special_method(entry),
-                };
+                return declaration();
             };
 
             let mut hash = DefaultHasher::new();
@@ -808,29 +817,24 @@ fn inspect_inline_candidates(search: &mut Search<'_>, old_identities: &[String])
             {
                 continue;
             }
-            let Some(helper) = &search.old[helper_index].body else {
-                continue;
-            };
+            let helper = &search.old[helper_index];
             let Some(count) = inline::eligible(helper) else {
                 continue;
             };
-            let replaced = if helper.code[count].opcode == 0x0e {
-                1
-            } else {
-                2
+            let Some(replaced) = inline::replaced_count(helper, count) else {
+                continue;
             };
-            if target.code.len().saturating_sub(caller.code.len()) != count - replaced {
+            if target.code.len().checked_sub(caller.code.len()) != count.checked_sub(replaced) {
                 continue;
             }
-            for (invoke, op) in caller.code.iter().enumerate() {
-                if !inline::is_call(op.opcode)
+            for invoke in 0..caller.code.len() {
+                if !inline::is_call(caller, invoke)
                     || caller.callee(invoke) != Some(old_identities[helper_index].as_str())
                 {
                     continue;
                 }
-                let aligned =
-                    alignment.get_or_insert_with(|| alignment::align(&caller.code, &target.code));
-                if inline::find(caller, helper, target, invoke, aligned)
+                let aligned = alignment.get_or_insert_with(|| inline::Context::new(caller, target));
+                if inline::find(&search.old[i], helper, &search.new[j], invoke, aligned)
                     .is_some_and(|site| site.corroborates_outer)
                 {
                     reports.push((i, helper_index, j));
@@ -853,14 +857,80 @@ fn inspect_inline_candidates(search: &mut Search<'_>, old_identities: &[String])
     }
 }
 
-pub(super) fn compare(old: &[Method], new: &[Method]) -> Matching {
+/// A JVM linkage name identifies a versioned declaration when it is unique
+/// in both input scopes. Body evidence can still pair remaining renames and
+/// relocate duplicate definitions whose signatures alone are ambiguous.
+fn jvm_pairs(
+    old: &[Method],
+    new: &[Method],
+    old_identities: &[String],
+    new_identities: &[String],
+) -> Vec<Pair> {
+    fn unique(ids: &[String]) -> HashMap<&str, Option<usize>> {
+        let mut map = HashMap::with_capacity(ids.len());
+        for (index, id) in ids.iter().enumerate() {
+            map.entry(id.as_str())
+                .and_modify(|entry| *entry = None)
+                .or_insert(Some(index));
+        }
+        map
+    }
+    let old_unique = unique(old_identities);
+    let new_unique = unique(new_identities);
+    old_identities
+        .iter()
+        .enumerate()
+        .filter_map(|(i, identity)| {
+            let identity = identity.as_str();
+            if old_unique.get(identity).copied().flatten() != Some(i) {
+                return None;
+            }
+            let j = new_unique.get(identity).copied().flatten()?;
+            Some(Pair {
+                old: i,
+                new: j,
+                evidence: Evidence {
+                    identity: true,
+                    exact: exact_body(&old[i], &new[j]),
+                    shape: same_shape(&old[i], &new[j]),
+                    ..Evidence::default()
+                },
+            })
+        })
+        .collect()
+}
+
+pub(super) fn compare(old: &[Method], new: &[Method], jvm: bool) -> Matching {
     let identities = (
         old.iter().map(Method::identity).collect::<Vec<_>>(),
         new.iter().map(Method::identity).collect::<Vec<_>>(),
     );
+    let mut pairs = if jvm {
+        jvm_pairs(old, new, &identities.0, &identities.1)
+    } else {
+        Vec::new()
+    };
+    let exact = pairs.len();
+    let mut old_to_new = vec![None; old.len()];
+    let mut new_to_old = vec![None; new.len()];
+    for pair in &pairs {
+        old_to_new[pair.old] = Some(pair.new);
+        new_to_old[pair.new] = Some(pair.old);
+    }
+    if exact == old.len() && exact == new.len() {
+        return Matching {
+            pairs,
+            old_to_new,
+            new_to_old,
+            callees: HashMap::new(),
+            candidate_pairs: exact,
+            pending: Vec::new(),
+            owners: HashMap::new(),
+        };
+    }
     let mut postings = Vec::new();
-    let mut before = profile_and_postings(old, &identities.0, false, &mut postings);
-    let mut after = profile_and_postings(new, &identities.1, true, &mut postings);
+    let mut before = profile_and_postings(old, &identities.0, false, &old_to_new, &mut postings);
+    let mut after = profile_and_postings(new, &identities.1, true, &new_to_old, &mut postings);
     let mut edges = candidates(postings, &before, &after, &identities);
     let mut old_edges = vec![Vec::new(); old.len()];
     let mut new_edges = vec![Vec::new(); new.len()];
@@ -891,14 +961,18 @@ pub(super) fn compare(old: &[Method], new: &[Method]) -> Matching {
         new_dirty: (0..new.len()).collect(),
         old_choice: vec![Choice::default(); old.len()],
         new_choice: vec![Choice::default(); new.len()],
-        old_to_new: vec![None; old.len()],
-        new_to_old: vec![None; new.len()],
+        old_to_new,
+        new_to_old,
         old_owner: HashMap::new(),
         new_owner: HashMap::new(),
         anchors_only: true,
     };
     inspect_inline_candidates(&mut search, &identities.0);
-    let mut pairs = search.infer();
+    for pair in &pairs {
+        search.expand(pair.old, pair.new, true);
+        search.expand(pair.old, pair.new, false);
+    }
+    pairs.extend(search.infer());
     search.seed_owners(&pairs);
     search.anchors_only = false;
     pairs.extend(search.infer());
@@ -944,7 +1018,7 @@ pub(super) fn compare(old: &[Method], new: &[Method]) -> Matching {
         old_to_new: search.old_to_new,
         new_to_old: search.new_to_old,
         callees,
-        candidate_pairs: search.edges.len(),
+        candidate_pairs: search.edges.len() + exact,
         pending,
         owners,
     }

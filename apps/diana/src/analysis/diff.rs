@@ -1,8 +1,8 @@
-//! Compare the DEX methods of two independently leased inputs.
+//! Compare the methods of two independently leased inputs.
 
 use serde::Serialize;
 
-use super::request::RequestScope;
+use super::{jvm::JvmRoots, query::QueryError, request::RequestScope};
 use index::{Index, InventoryMethod, Method};
 
 mod alignment;
@@ -17,11 +17,20 @@ pub(crate) enum DiffError {
         side: &'static str,
         source: super::images::ImageError,
     },
+    #[error("{side} input: {source}")]
+    Jvm {
+        side: &'static str,
+        source: QueryError,
+    },
+    #[error("comparison requires two DEX inputs or two JVM inputs")]
+    MixedFormats,
 }
 
 #[derive(Serialize)]
 pub(crate) struct Report {
     pub schema: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offset_unit: Option<&'static str>,
     pub summary: Summary,
     pub matches: Vec<MatchedMethod>,
     pub unmatched: Vec<UnmatchedGroup>,
@@ -102,13 +111,49 @@ pub(crate) fn compare(
     jobs: usize,
 ) -> Result<Report, DiffError> {
     let symbols = index::Symbols::default();
+    let jvm = JvmRoots::supports(old);
+    if jvm != JvmRoots::supports(new) {
+        return Err(DiffError::MixedFormats);
+    }
+    if jvm {
+        let open = |scope, side| {
+            JvmRoots::select_with_jobs(scope, jobs)
+                .map_err(|source| DiffError::Jvm { side, source })?
+                .ok_or(DiffError::MixedFormats)
+        };
+        // A project descriptor's bytes do not identify the archives it
+        // resolves beside the descriptor.
+        if old.jvm_artifacts().is_none()
+            && new.jvm_artifacts().is_none()
+            && old.input().bytes() == new.input().bytes()
+        {
+            let side = "old and new";
+            let roots = open(old, side)?;
+            let index = index::jvm::build(&roots, jobs, &symbols, |method| InventoryMethod {
+                signature: method.identity(),
+                at: method.at,
+                issues: method.issues,
+            })
+            .map_err(|source| DiffError::Jvm { side, source })?;
+            return Ok(compare_identical(index, Some("byte")));
+        }
+        let build = |scope, side| {
+            let roots = open(scope, side)?;
+            index::jvm::build(&roots, jobs, &symbols, std::convert::identity)
+                .map_err(|source| DiffError::Jvm { side, source })
+        };
+        let before = build(old, "old")?;
+        let after = build(new, "new")?;
+        symbols.finish();
+        return Ok(compare_indexes(before, after, Some("byte")));
+    }
     if old.input().bytes() == new.input().bytes() {
         let index =
             index::build_identical(old, jobs, &symbols).map_err(|source| DiffError::Input {
                 side: "old and new",
                 source,
             })?;
-        return Ok(compare_identical(index));
+        return Ok(compare_identical(index, None));
     }
     let old = index::build(old, jobs, &symbols).map_err(|source| DiffError::Input {
         side: "old",
@@ -119,14 +164,14 @@ pub(crate) fn compare(
         source,
     })?;
     symbols.finish();
-    Ok(compare_indexes(old, new))
+    Ok(compare_indexes(old, new, None))
 }
 
-fn compare_identical(index: Index<InventoryMethod>) -> Report {
+fn compare_identical(index: Index<InventoryMethod>, offset_unit: Option<&'static str>) -> Report {
     let mut issues = Vec::new();
     let count = index.methods.len();
     for side in ["old", "new"] {
-        add_issues(&mut issues, side, None, &index.issues);
+        add_inventory_issues(&mut issues, side, &index.issues);
     }
     let matches = index
         .methods
@@ -156,6 +201,7 @@ fn compare_identical(index: Index<InventoryMethod>) -> Report {
         .collect();
     Report {
         schema: 1,
+        offset_unit,
         summary: Summary {
             old_methods: count,
             new_methods: count,
@@ -168,8 +214,8 @@ fn compare_identical(index: Index<InventoryMethod>) -> Report {
     }
 }
 
-fn compare_indexes(old: Index, new: Index) -> Report {
-    let paired = matching::compare(&old.methods, &new.methods);
+fn compare_indexes(old: Index, new: Index, offset_unit: Option<&'static str>) -> Report {
+    let paired = matching::compare(&old.methods, &new.methods, offset_unit.is_some());
     let mut issues = Vec::new();
     let mut matches = Vec::with_capacity(paired.pairs.len());
     let symbols_renamed = paired.callees.iter().any(|(before, after)| before != after);
@@ -177,19 +223,20 @@ fn compare_indexes(old: Index, new: Index) -> Report {
         let before = &old.methods[pair.old];
         let after = &new.methods[pair.new];
         let mut method = alignment::method(before, after, &paired.callees, symbols_renamed);
-        method.evidence = pair.evidence.names();
+        method.evidence = pair.evidence.names(offset_unit.is_some());
         matches.push(method);
     }
     let unmatched = paired.unmatched(&old, &new);
     let fragments = alignment::fragments(&old.methods, &new.methods, &paired);
     for (side, index) in [("old", &old), ("new", &new)] {
-        add_issues(&mut issues, side, None, &index.issues);
+        add_inventory_issues(&mut issues, side, &index.issues);
         for method in &index.methods {
             add_issues(&mut issues, side, Some(&method.at), &method.issues);
         }
     }
     Report {
         schema: 1,
+        offset_unit,
         summary: Summary {
             old_methods: old.methods.len(),
             new_methods: new.methods.len(),
@@ -207,5 +254,17 @@ fn add_issues(out: &mut Vec<Issue>, side: &'static str, at: Option<&str>, reason
         side,
         at: at.map(str::to_owned),
         reason: reason.clone(),
+    }));
+}
+
+fn add_inventory_issues(
+    out: &mut Vec<Issue>,
+    side: &'static str,
+    issues: &[index::InventoryIssue],
+) {
+    out.extend(issues.iter().map(|issue| Issue {
+        side,
+        at: issue.at.clone(),
+        reason: issue.reason.clone(),
     }));
 }

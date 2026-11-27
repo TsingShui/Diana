@@ -251,6 +251,9 @@ impl<R: JavaAstRewriter + ?Sized> Children for OwnedChildren<'_, R> {
 
 fn walk_expression(visitor: &mut impl Children, expression: &mut JavaExpr) {
     match expression {
+        JavaExpr::Unavailable { operands, .. } | JavaExpr::RecordOperation { operands, .. } => {
+            visitor.expressions(operands)
+        }
         JavaExpr::DirectInit { receiver, args, .. } => {
             visitor.expression(receiver);
             visitor.expressions(args);

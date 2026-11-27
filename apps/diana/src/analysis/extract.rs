@@ -5,11 +5,14 @@
 //! decoded by default, and the file is published atomically from a private
 //! temporary name in the target directory.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use super::archive::read_entry;
+use super::archive::{CopyError, ExportReader, read_entry};
 use super::axml::{ManifestWarning, decode};
 use super::input::{ArchiveProblem, EntryIndex, InputError, InputKind};
+use super::jvm::{JvmRoots, Location};
+use super::query::QueryError;
 use super::request::RequestScope;
 
 #[derive(Debug, thiserror::Error)]
@@ -18,7 +21,9 @@ pub enum ExtractError {
     Input(#[from] InputError),
     #[error(transparent)]
     Engine(#[from] diana_decomp::input::InputError),
-    #[error("extract requires a ZIP/APK input")]
+    #[error(transparent)]
+    Jvm(#[from] QueryError),
+    #[error("extract requires an archive input")]
     NotArchive,
     #[error("the input has no entry named {0}")]
     Missing(String),
@@ -120,6 +125,39 @@ pub fn prepare(scope: &RequestScope, request: &Request) -> Result<Extracted, Ext
     })
 }
 
+/// Publishes the exact original payload from an explicit JVM physical
+/// coordinate. Only the named archive chain is opened.
+pub fn publish_jvm(
+    scope: &RequestScope,
+    at: &Location,
+    target: &Path,
+    input: &Path,
+    force: bool,
+) -> Result<(), ExtractError> {
+    let roots = JvmRoots::focus_archive(scope, at)?;
+    let archive = roots.archive_for(at).ok_or(ExtractError::NotArchive)?;
+    let entry = archive
+        .entries
+        .get(at.entry())
+        .ok_or_else(|| ExtractError::Missing(at.to_string()))?;
+    let mut reader = if archive.path().is_empty() {
+        let lease = match scope.jvm_artifact(archive.artifact) {
+            Some(Ok(lease)) => lease,
+            None => scope.input(),
+            Some(Err(_)) => return Err(ExtractError::NotArchive),
+        };
+        ExportReader::new(lease)
+    } else {
+        ExportReader::from_slice(archive.bytes)
+    };
+    publish_payload(target, input, force, |file| {
+        reader.copy(entry, file).map_err(|error| match error {
+            CopyError::Input(error) => ExtractError::Input(error),
+            CopyError::Output(error) => ExtractError::Io(error),
+        })
+    })
+}
+
 fn is_binary_xml(bytes: &[u8]) -> bool {
     bytes.len() >= 2 && bytes[0] == 0x03 && bytes[1] == 0x00
 }
@@ -133,6 +171,17 @@ pub fn publish(
     input: &Path,
     force: bool,
 ) -> Result<(), ExtractError> {
+    publish_payload(target, input, force, |file| {
+        Ok(file.write_all(&extracted.bytes)?)
+    })
+}
+
+fn publish_payload(
+    target: &Path,
+    input: &Path,
+    force: bool,
+    write: impl FnOnce(&mut std::fs::File) -> Result<(), ExtractError>,
+) -> Result<(), ExtractError> {
     if target.is_dir() {
         return Err(ExtractError::UnsafeTarget);
     }
@@ -141,7 +190,7 @@ pub fn publish(
             if !metadata.file_type().is_file() {
                 return Err(ExtractError::UnsafeTarget);
             }
-            if aliases_input(target, input) {
+            if target.canonicalize()? == input.canonicalize()? || aliases_input(target, input) {
                 return Err(ExtractError::UnsafeTarget);
             }
             if !force {
@@ -153,15 +202,11 @@ pub fn publish(
     }
     let directory = target.parent().unwrap_or_else(|| Path::new("."));
     let (mut temporary, temporary_path) = temporary_in(directory)?;
-    let written = (|| -> std::io::Result<()> {
-        use std::io::Write;
-        temporary.write_all(&extracted.bytes)?;
-        temporary.flush()
-    })();
+    let written = write(&mut temporary).and_then(|()| Ok(temporary.flush()?));
     drop(temporary);
     if let Err(error) = written {
         let _ = std::fs::remove_file(&temporary_path);
-        return Err(ExtractError::Io(error));
+        return Err(error);
     }
     if force {
         if let Err(error) = std::fs::rename(&temporary_path, target) {

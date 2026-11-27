@@ -101,6 +101,8 @@ pub enum InsnType {
     // ==================== Method Invocation ====================
     /// Method invocation
     Invoke,
+    /// A checked Java record operation linked through ObjectMethods.bootstrap.
+    RecordOperation,
     /// Move result of method call
     MoveResult,
 
@@ -108,6 +110,8 @@ pub enum InsnType {
     Constructor,
 
     // ==================== SSA/Analysis ====================
+    /// An original operation whose semantics are unavailable.
+    Unavailable,
     /// No operation
     Nop,
     /// PHI node for SSA
@@ -151,6 +155,7 @@ impl InsnType {
                 | InsnType::ConstClass
                 | InsnType::Arith
                 | InsnType::StringConcat
+                | InsnType::RecordOperation
                 | InsnType::Neg
                 | InsnType::Not
                 | InsnType::Move
@@ -375,6 +380,9 @@ impl InsnType {
                 integral && matches!(arithmetic, Some(ArithOp::Div | ArithOp::Rem))
             }
             InsnType::Throw
+            | InsnType::Unavailable
+            | InsnType::StringConcat
+            | InsnType::RecordOperation
             | InsnType::Invoke
             | InsnType::Constructor
             | InsnType::ConstClass
@@ -433,7 +441,9 @@ impl InsnPayload {
         if std::ptr::eq(left, right) {
             return true;
         }
-        left.string_value == right.string_value
+        left.unavailable == right.unavailable
+            && left.record_operation == right.record_operation
+            && left.string_value == right.string_value
             && left.class_type == right.class_type
             && left.cast_type == right.cast_type
             && left.fill_array_data == right.fill_array_data
@@ -455,6 +465,8 @@ impl InsnPayload {
                         && left.implementation == right.implementation
                         && left.implementation_static == right.implementation_static
                         && left.implementation_constructor == right.implementation_constructor
+                        && left.checked_synthetic_target == right.checked_synthetic_target
+                        && left.forwarding == right.forwarding
                 }
                 (None, None) => true,
                 _ => false,
@@ -577,6 +589,47 @@ pub struct LambdaSite {
     pub implementation: crate::ir::MethodReference,
     pub implementation_static: bool,
     pub implementation_constructor: bool,
+    /// The original class declares this exact synthetic static helper.
+    pub checked_synthetic_target: bool,
+    /// Evidence for a lambda that forwards to the original synthetic helper.
+    pub forwarding: Option<LambdaForwarding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LambdaForwarding {
+    /// Original immutable method-parameter ordinals in factory argument order.
+    pub captured_parameters: Box<[u16]>,
+    /// Casts from erased Object slots to the original invocation types. An
+    /// empty list means every invocation parameter already has its exact type.
+    pub argument_casts: Box<[Option<ArgType>]>,
+}
+
+/// Operation selected by the original ObjectMethods call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordOperation {
+    Equals,
+    HashCode,
+    ToString,
+}
+
+impl RecordOperation {
+    pub fn mnemonic(self) -> &'static str {
+        match self {
+            Self::Equals => "record-equals",
+            Self::HashCode => "record-hash-code",
+            Self::ToString => "record-to-string",
+        }
+    }
+}
+
+/// Checked bootstrap owner and ordered original REF_getField targets. The
+/// operation consumes the receiver and its original dynamic arguments. The
+/// record implementation's hash combination and formatting remain symbolic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordSite {
+    pub operation: RecordOperation,
+    pub owner: ArgType,
+    pub components: Vec<super::FieldReference>,
 }
 
 /// Additional instruction-specific data. Common opcodes keep their operands
@@ -645,6 +698,11 @@ pub struct InsnPayload {
 /// instruction clone can share this data until its own pass edits it.
 #[derive(Debug, Clone, Default)]
 pub struct ExtendedInsnPayload {
+    pub record_operation: Option<std::sync::Arc<RecordSite>>,
+
+    /// Diagnostic for an unavailable original operation.
+    pub unavailable: Option<Box<str>>,
+
     /// For ConstStr: string value
     pub string_value: Option<Box<super::Utf16String>>,
 
@@ -687,6 +745,8 @@ impl std::ops::Deref for InsnPayload {
 
     fn deref(&self) -> &Self::Target {
         static EMPTY: ExtendedInsnPayload = ExtendedInsnPayload {
+            unavailable: None,
+            record_operation: None,
             string_value: None,
             string_index: None,
             class_type: None,
@@ -719,6 +779,8 @@ impl fmt::Debug for InsnPayload {
             .field("invoke_type", &self.invoke_type)
             .field("no_return", &self.no_return)
             .field("reference", &self.reference)
+            .field("unavailable", &self.unavailable)
+            .field("record_operation", &self.record_operation)
             .field("string_value", &self.string_value)
             .field("string_index", &self.string_index)
             .field("class_type", &self.class_type)
@@ -819,6 +881,12 @@ impl InsnNode {
     // ==================== Builder Methods ====================
 
     /// Create a NOP instruction
+    pub fn unavailable(reason: impl Into<Box<str>>) -> Self {
+        let mut instruction = Self::new(InsnType::Unavailable, 0);
+        instruction.payload.unavailable = Some(reason.into());
+        instruction
+    }
+
     pub fn nop() -> Self {
         Self::new(InsnType::Nop, 0)
     }

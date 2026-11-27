@@ -237,6 +237,29 @@ impl JavaPrinter {
                 JavaExpr::Literal(value) => output.push_str(&JavaLiterals::render(value)),
                 JavaExpr::ClassLiteral(ty) => write!(output, "{ty}.class")?,
                 JavaExpr::Allocate(ty) => write!(output, "allocate-instance {ty}")?,
+                JavaExpr::Unavailable { reason, operands } => {
+                    let reason = reason.escape_debug().to_string().replace("*/", "* /");
+                    write!(output, "/* Diana: {reason} */ <unavailable>(")?;
+                    pending.push(Text(")"));
+                    sequence(&mut pending, operands, Standalone);
+                }
+                JavaExpr::RecordOperation { site, operands } => {
+                    write!(
+                        output,
+                        "{}<{}>[",
+                        site.operation.mnemonic(),
+                        site.owner.to_descriptor().escape_debug()
+                    )?;
+                    for (index, component) in site.components.iter().enumerate() {
+                        if index != 0 {
+                            output.push_str(", ");
+                        }
+                        write!(output, "getfield {}", component.to_string().escape_debug())?;
+                    }
+                    output.push_str("](");
+                    pending.push(Text(")"));
+                    sequence(&mut pending, operands, Standalone);
+                }
                 JavaExpr::DirectInit {
                     receiver,
                     target,

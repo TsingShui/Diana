@@ -751,6 +751,14 @@ pub enum JavaExpr {
     Literal(JavaLiteral),
     ClassLiteral(JavaType),
     Allocate(JavaType),
+    Unavailable {
+        reason: String,
+        operands: Vec<JavaExpr>,
+    },
+    RecordOperation {
+        site: std::sync::Arc<crate::ir::RecordSite>,
+        operands: Vec<JavaExpr>,
+    },
     DirectInit {
         receiver: Box<JavaExpr>,
         target: Box<crate::ir::MethodReference>,
@@ -1031,6 +1039,9 @@ impl JavaExpr {
             };
             match expression {
                 Self::Allocate(_) => {}
+                Self::Unavailable { operands, .. } | Self::RecordOperation { operands, .. } => {
+                    pending.extend(operands)
+                }
                 Self::DirectInit { receiver, args, .. } => {
                     pending.extend(args);
                     pending.push(receiver);

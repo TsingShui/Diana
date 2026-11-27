@@ -112,7 +112,10 @@ impl Splitter {
                     leaders.extend(insn.get_target().map(|target| target as u32));
                 }
                 InsnType::Switch => {
-                    insn.payload.switch_default = next.and_then(|pc| i32::try_from(pc).ok());
+                    if insn.payload.switch_default.is_none() {
+                        insn.payload.switch_default = next.and_then(|pc| i32::try_from(pc).ok());
+                    }
+                    leaders.extend(insn.payload.switch_default.map(|target| target as u32));
                     leaders.push(insn.offset);
                     if let Some(cases) = insn.get_switch_cases() {
                         leaders.extend(cases.iter().map(|&(_, target)| target as u32));
@@ -248,10 +251,12 @@ impl Splitter {
                             }
                         }
                     }
-                    if let Some(next) = next_offset() {
-                        if let Some(to) = block_for(next) {
-                            edges.push((block_id, to, EdgeKind::SwitchDefault));
-                        }
+                    if let Some(to) = term
+                        .payload
+                        .switch_default
+                        .and_then(|target| block_for(target as u32))
+                    {
+                        edges.push((block_id, to, EdgeKind::SwitchDefault));
                     }
                 }
                 InsnType::Return | InsnType::Throw => {}

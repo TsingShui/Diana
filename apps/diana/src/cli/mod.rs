@@ -9,6 +9,8 @@ mod diff;
 mod export;
 mod extract_cli;
 mod get;
+mod jvm_code;
+mod jvm_outline;
 mod matching;
 mod outline;
 mod output;
@@ -39,10 +41,13 @@ const AFTER_HELP: &str = "Examples:
   diana manifest app.apk
   diana export app.apk -o project
   diana diff old.apk new.apk
-Copy classes.at to get-class, methods.at to get-method/outline-method; locators (entry:index) skip the APK-wide scan.
-Root DEX only: classes.dex and classes<N>.dex at the archive root, or a bare DEX; DEX in assets/, res/raw/ or nested archives needs extract, then a bare-DEX run.
-Lists show 50 rows by default and warn on truncation; --no-limit reaches several MB on a large APK, so prefer --filter or -o.
-Outline crosses root DEX; a class outside the input stays [other-dex]. Java may contain explicit stubs.";
+  diana get-class game.jar com.example.Start
+  diana export game.diana-jvm.json -o project
+Reuse classes.at with get-class and methods.at with get-method or outline-method to focus on one original definition.
+APK commands inspect root classes.dex and classes<N>.dex. Extract DEX stored elsewhere to analyze it directly.
+JVM commands accept JARs, class files, and .diana-jvm.json descriptors for multiple archives or a Java release view.
+Lists show 50 rows by default and report truncation. Use --filter or -o for large inventories.
+Recovered code and declaration graphs mark local gaps in the available input.";
 
 use output::{Failure, Format, publish};
 use table::{Locator, QueryRow, RowFormat};
@@ -50,7 +55,7 @@ use table::{Locator, QueryRow, RowFormat};
 #[derive(Parser)]
 #[command(
     name = "diana",
-    about = "Analyze APK archives and standalone DEX files",
+    about = "Analyze APK, DEX, JAR, JVM class files and JVM projects",
     after_help = AFTER_HELP,
     version
 )]
@@ -61,11 +66,22 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Compare DEX methods across two APK or standalone DEX inputs
+    /// Compare methods across two APK, DEX, JAR or JVM class inputs
     #[command(
-        long_about = "Compare DEX methods in OLD and NEW. Reports paired methods, evidence for each pairing, changes within methods, unresolved groups, matching fragments and local read issues. Each method locator belongs to its own input. APK scans include classes.dex and classes<N>.dex at the archive root."
+        long_about = "Compare methods in two DEX inputs or two JVM inputs. Reports paired methods, pairing evidence, changes within methods, unresolved groups, and local read issues. Each method locator belongs to its own input."
     )]
     Diff(diff::Args),
+    /// Show the original bytecode of a JVM method
+    Bytecode {
+        /// JAR or standalone class file
+        input: PathBuf,
+        /// JVM method coordinate from methods, such as j4:m2
+        selector: String,
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
     /// Print the Diana Agent Skill, or install it with -i
     Skill {
         #[arg(short = 'i', long)]
@@ -86,12 +102,12 @@ enum Command {
         /// Write the result to this file instead of stdout
         output: Option<PathBuf>,
     },
-    /// List classes defined in every root DEX
+    /// List classes defined in APK, DEX or JVM inputs
     #[command(
-        long_about = "Column: at. Root DEX only: classes.dex and classes<N>.dex at the archive root, or a bare DEX; DEX elsewhere is not scanned. --filter, --extends, --implements, --subinterface and --kind restrict; hierarchy filters use direct edges only. 50 rows by default; --no-limit reaches several MB, so prefer --filter or -o."
+        long_about = "DEX scope: classes.dex and classes<N>.dex at the archive root, or a bare DEX; DEX elsewhere is not scanned. JAR and standalone class files also supported. --filter, --extends, --implements, --subinterface and --kind restrict; hierarchy filters use direct edges only. 50 rows by default; --no-limit reaches several MB, so prefer --filter or -o."
     )]
     Classes {
-        /// Input file (APK, ZIP or bare DEX)
+        /// Input file (APK, DEX, JAR or JVM class)
         input: PathBuf,
         #[arg(long)]
         /// Ranked case-insensitive fuzzy matching over the descriptor; select another matching mode explicitly
@@ -111,7 +127,7 @@ enum Command {
         /// Restrict to classes or interfaces
         kind: Option<KindArg>,
         #[arg(long)]
-        /// Workers for independent DEX images (default: available CPUs)
+        /// Workers for independent input units (default: available CPUs)
         jobs: Option<usize>,
         #[arg(long, default_value_t = xref::DEFAULT_LIMIT, conflicts_with = "no_limit")]
         /// Maximum rows to show; use --no-limit for every match
@@ -128,12 +144,12 @@ enum Command {
     },
     /// Show the package hierarchy of defined classes
     Tree(tree::TreeArgs),
-    /// List every field declared in every root DEX
+    /// List fields declared in APK, DEX or JVM inputs
     #[command(
-        long_about = "Column: at. Root DEX only: classes.dex and classes<N>.dex at the archive root, or a bare DEX; DEX elsewhere is not scanned. Only class_data definitions; --class selects the defining class exactly. 50 rows by default; --no-limit reaches several MB, so prefer --filter or -o."
+        long_about = "DEX scope: classes.dex and classes<N>.dex at the archive root, or a bare DEX; DEX elsewhere is not scanned. JAR and standalone class files also supported. Only declared fields; --class selects the defining class exactly. 50 rows by default; --no-limit reaches several MB, so prefer --filter or -o."
     )]
     Fields {
-        /// Input file (APK, ZIP or bare DEX)
+        /// Input file (APK, DEX, JAR or JVM class)
         input: PathBuf,
         #[arg(long)]
         /// Ranked case-insensitive fuzzy matching over the name; select another matching mode explicitly
@@ -144,7 +160,7 @@ enum Command {
         /// Exact defining class (descriptor or dotted name)
         class: Option<String>,
         #[arg(long)]
-        /// Workers for independent DEX images (default: available CPUs)
+        /// Workers for independent input units (default: available CPUs)
         jobs: Option<usize>,
         #[arg(long, default_value_t = xref::DEFAULT_LIMIT, conflicts_with = "no_limit")]
         /// Maximum rows to show; use --no-limit for every match
@@ -159,12 +175,12 @@ enum Command {
         /// Write the result to this file instead of stdout
         output: Option<PathBuf>,
     },
-    /// List defined methods, excluding reference-only method_ids entries
+    /// List methods defined in APK, DEX or JVM inputs
     #[command(
-        long_about = "Column: at. Root DEX only: classes.dex and classes<N>.dex at the archive root, or a bare DEX; DEX elsewhere is not scanned. Only class_data definitions, including abstract, native, constructor and clinit. 50 rows by default; --no-limit reaches several MB, so prefer --filter or -o."
+        long_about = "DEX scope: classes.dex and classes<N>.dex at the archive root, or a bare DEX; DEX elsewhere is not scanned. JAR and standalone class files also supported. Only defined members, including abstract, native, constructor and class initializer methods. 50 rows by default; --no-limit reaches several MB, so prefer --filter or -o."
     )]
     Methods {
-        /// Input file (APK, ZIP or bare DEX)
+        /// Input file (APK, DEX, JAR or JVM class)
         input: PathBuf,
         #[arg(long)]
         /// Ranked case-insensitive fuzzy matching over the name; select another matching mode explicitly
@@ -175,7 +191,7 @@ enum Command {
         /// Exact defining class (descriptor or dotted name)
         class: Option<String>,
         #[arg(long)]
-        /// Workers for independent DEX images (default: available CPUs)
+        /// Workers for independent input units (default: available CPUs)
         jobs: Option<usize>,
         #[arg(long, default_value_t = xref::DEFAULT_LIMIT, conflicts_with = "no_limit")]
         /// Maximum rows to show; use --no-limit for every match
@@ -190,12 +206,12 @@ enum Command {
         /// Write the result to this file instead of stdout
         output: Option<PathBuf>,
     },
-    /// List every string in every root DEX
+    /// List DEX strings or JVM string constants
     #[command(
-        long_about = "Columns: at, value. Root DEX only: classes.dex and classes<N>.dex at the archive root, or a bare DEX; DEX elsewhere is not scanned. One row per string_ids entry per root, so equal values are not merged; text escapes control characters. Find code reference sites with xref. 50 rows by default; --no-limit reaches several MB, so prefer --filter or -o."
+        long_about = "Columns: at, value. Root DEX only: classes.dex and classes<N>.dex at the archive root, or a bare DEX; DEX elsewhere is not scanned. JAR and standalone class files also supported. Each DEX string_ids or JVM CONSTANT_String entry keeps its own row. Text escapes control characters. Find code reference sites with xref. 50 rows by default; --no-limit reaches several MB, so prefer --filter or -o."
     )]
     Strings {
-        /// Input file (APK, ZIP or bare DEX)
+        /// Input file (APK, DEX, JAR or JVM class)
         input: PathBuf,
         #[arg(long)]
         /// Ranked case-insensitive fuzzy matching over the value; select another matching mode explicitly
@@ -203,7 +219,7 @@ enum Command {
         #[command(flatten)]
         matching: MatchArgs,
         #[arg(long)]
-        /// Workers for independent DEX images (default: available CPUs)
+        /// Workers for independent input units (default: available CPUs)
         jobs: Option<usize>,
         #[arg(long, default_value_t = xref::DEFAULT_LIMIT, conflicts_with = "no_limit")]
         /// Maximum rows to show; use --no-limit for every match
@@ -218,7 +234,7 @@ enum Command {
         /// Write the result to this file instead of stdout
         output: Option<PathBuf>,
     },
-    /// List resources.arsc IDs, names, configurations and original values
+    /// List Android resource values or original JAR resource entries
     Resources {
         input: PathBuf,
         #[arg(long)]
@@ -230,12 +246,12 @@ enum Command {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-    /// Locate a class in an APK or DEX and decompile it
+    /// Decompile a class from an APK, DEX, JAR or standalone JVM class
     #[command(
-        long_about = "Displays the Engine/P9 Java-like text, including original members and local recovery gaps. JSON schema 5 carries the same text, source facts, byte spans and method-local issues."
+        long_about = "Displays Java-like source recovered by the engine, including original members and local recovery gaps. JSON schema 5 carries the same source and classified issues."
     )]
     GetClass {
-        /// Input file (APK, ZIP or bare DEX)
+        /// Input file (APK, ZIP, DEX, JAR or JVM class)
         input: PathBuf,
         /// Original class locator, descriptor or dotted name
         selector: String,
@@ -249,12 +265,12 @@ enum Command {
         #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
         jobs: Option<u32>,
     },
-    /// Decompile one method as Java, selected by its methods.at coordinate
+    /// Decompile an original method from an APK, DEX, JAR or JVM class
     #[command(
-        long_about = "Displays the selected original method through the shared Engine/P9 chain, without analyzing sibling methods."
+        long_about = "Displays Java-like source for the original method selected by a locator or exact reference."
     )]
     GetMethod {
-        /// Input file (APK, ZIP or bare DEX)
+        /// Input file (APK, ZIP, DEX, JAR or JVM class)
         input: PathBuf,
         /// Original method locator or complete owner/name/prototype reference
         selector: String,
@@ -269,20 +285,23 @@ enum Command {
     OutlineClass(outline::ClassArgs),
     /// Show the call tree below one method
     OutlineMethod(outline::OutlineArgs),
-    /// Export Java-like sources by package, APK resources and the manifest
+    /// Export Java-like sources by package, archive resources and manifest files
     Export(export::Args),
     /// Write one original entry to -o; --raw keeps binary XML
     #[command(
         long_about = "Writes exactly one entry. A binary XML payload is decoded to text XML by default; --raw keeps the original payload. Publication is atomic."
     )]
     Extract {
-        /// Input file (APK, ZIP or bare DEX)
+        /// Input APK, JAR, ZIP or JVM project
         input: PathBuf,
-        /// Exact physical entry name
+        /// Exact physical entry name, or a JVM location with --at
         entry: String,
         #[arg(long)]
         /// Physical record index when the name repeats
         entry_index: Option<usize>,
+        /// Interpret the entry as a JVM archive coordinate and copy its original bytes
+        #[arg(long, conflicts_with = "entry_index")]
+        at: bool,
         #[arg(short, long)]
         /// Output file for the extracted payload
         output: PathBuf,
@@ -299,12 +318,12 @@ enum Command {
         /// Exit non-zero when the delivered document is partial
         strict: bool,
     },
-    /// Find code references in every root DEX
+    /// Find code references in the input
     #[command(
-        long_about = "Columns: context, match, use. Root DEX only: classes.dex and classes<N>.dex at the archive root, or a bare DEX; DEX elsewhere is not scanned. Kinds: string, type, method, field, impl, extend, resource. Canonical coordinates always select exact values. 50 rows by default; --no-limit reaches several MB, so prefer --filter or -o."
+        long_about = "Columns: context, match, use. Inspects root DEX images or the selected JVM archive and project classes. Kinds: string, type, method, field, impl, extend, resource. Canonical coordinates select exact values. Use --filter or -o for large inventories."
     )]
     Xref {
-        /// Input file (APK, ZIP or bare DEX)
+        /// Input file (APK, DEX, JAR or JVM class)
         input: PathBuf,
         /// Target kind: string, type, method, field, impl, extend or resource
         kind: String,
@@ -328,7 +347,7 @@ enum Command {
         /// Exact referencing class (descriptor or dotted name)
         class: Option<String>,
         #[arg(long)]
-        /// Workers for independent DEX images (default: available CPUs)
+        /// Workers for independent input units (default: available CPUs)
         jobs: Option<usize>,
         #[arg(long)]
         /// Follow callers upstream for this many levels (``method`` kind only)
@@ -346,9 +365,9 @@ enum Command {
         /// Write the result to this file instead of stdout
         output: Option<PathBuf>,
     },
-    /// Decode the binary AndroidManifest.xml
+    /// Display the Android or JAR manifest
     #[command(
-        long_about = "Selects the last physical AndroidManifest.xml and prints text XML or JSON with warnings for any recovered gap."
+        long_about = "Displays the last physical AndroidManifest.xml or META-INF/MANIFEST.MF in text or JSON."
     )]
     Manifest {
         /// Input file (APK, ZIP or bare DEX)
@@ -384,6 +403,12 @@ pub fn run() -> std::process::ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Diff(args) => diff::run(args),
+        Command::Bytecode {
+            input,
+            selector,
+            format,
+            output,
+        } => jvm_bytecode_command(&input, &selector, format, output.as_deref()),
         Command::Skill { install } => skill::run(install),
         Command::Resources {
             input,
@@ -444,11 +469,12 @@ pub fn run() -> std::process::ExitCode {
             input,
             entry,
             entry_index,
+            at,
             output,
             raw,
             force,
             strict,
-        } => extract_cli::run(&input, &entry, entry_index, &output, raw, force, strict),
+        } => extract_cli::run(&input, &entry, entry_index, at, &output, raw, force, strict),
         Command::Xref {
             input,
             kind,
@@ -613,12 +639,46 @@ fn options() -> InputOptions {
     InputOptions::default()
 }
 
+fn open_scope(
+    input: &std::path::Path,
+    output: Option<&std::path::Path>,
+) -> Result<RequestScope, Failure> {
+    let scope = RequestScope::open(input, &options()).map_err(Failure::input)?;
+    output::protect_project_targets(&scope, output)?;
+    Ok(scope)
+}
+
+fn jvm_bytecode_command(
+    input: &std::path::Path,
+    selector: &str,
+    format: Format,
+    output: Option<&std::path::Path>,
+) -> Result<(), Failure> {
+    let scope = open_scope(input, output)?;
+    let (location, _) =
+        crate::analysis::jvm_code::method_at(selector).map_err(|error| Failure {
+            code: 2,
+            message: error.to_string(),
+        })?;
+    let roots = crate::analysis::jvm::JvmRoots::focused(&scope, &location)
+        .map_err(|error| Failure::query(error, 1))?;
+    jvm_code::bytecode(&roots, selector, format, input, output)
+}
+
 fn entries(
     input: &std::path::Path,
     format: Format,
     output: Option<&std::path::Path>,
 ) -> Result<(), Failure> {
-    let scope = RequestScope::open(input, &options()).map_err(Failure::input)?;
+    let scope = open_scope(input, output)?;
+    if scope.jvm_artifacts().is_some() {
+        let roots = crate::analysis::jvm::JvmRoots::select_with_jobs(&scope, default_jobs())
+            .map_err(|error| Failure::query(error, 1))?
+            .ok_or_else(|| {
+                Failure::output(std::io::Error::other("JVM project roots are unavailable"))
+            })?;
+        return resources::publish_jvm(&roots, "entries", None, input, format, output);
+    }
     let query = Query::new(
         &scope,
         QueryPlan {
@@ -675,7 +735,34 @@ fn manifest_command(
     output: Option<&std::path::Path>,
     strict: bool,
 ) -> Result<(), Failure> {
-    let scope = RequestScope::open(input, &options()).map_err(Failure::input)?;
+    let scope = open_scope(input, output)?;
+    if crate::analysis::jvm::JvmRoots::supports(&scope) {
+        use crate::analysis::{jvm::MANIFEST_NAME, jvm_resources};
+        let (at, bytes) = jvm_resources::manifest(&scope)
+            .map_err(|error| Failure::query(error, 1))?
+            .ok_or_else(|| Failure {
+                code: 3,
+                message: format!("the input has no {MANIFEST_NAME} entry"),
+            })?;
+        return match format {
+            Format::Text => output::publish_with(output, input, |writer| {
+                use std::io::Write;
+                writer.write_all(&bytes).map_err(Failure::output)
+            }),
+            Format::Json => {
+                let text = std::str::from_utf8(&bytes).ok();
+                let document = serde_json::json!({
+                    "schema_version": 2, "command": "manifest", "kind": "jar",
+                    "status": "complete", "at": at.to_string(), "text": text,
+                    "bytes": text.is_none().then_some(&bytes),
+                });
+                output::publish_with(output, input, |writer| {
+                    serde_json::to_writer(writer, &document)
+                        .map_err(|error| Failure::output(std::io::Error::other(error)))
+                })
+            }
+        };
+    }
     let manifest = match manifest::read(&scope) {
         Ok(manifest) => manifest,
         Err(error) => {
@@ -748,7 +835,7 @@ fn query_command(
     limit: usize,
 ) -> Result<(), Failure> {
     let filter = args.matching.filter(args.filter.as_deref())?;
-    let scope = RequestScope::open(input, &options()).map_err(Failure::input)?;
+    let scope = open_scope(input, output)?;
     let jobs = match args.jobs {
         Some(0) => {
             return Err(Failure {
@@ -784,23 +871,36 @@ fn query_command(
         QueryKind::Entries => "entries",
     };
     let rows = RowFormat::new(format, columns);
+    let mut issue_count = 0;
     table::publish_table(command, "items", columns, format, input, output, |sink| {
         query
-            .run(
+            .run_detailed(
                 &|row, out, first| {
+                    if let Row::Jvm(row) = &row {
+                        return rows.jvm_row(row, out, first);
+                    }
                     let row = query_row(&row, &images)?;
                     rows.query_row(&row, out, first)
                 },
                 &mut |chunk: Vec<u8>| sink.chunk(&chunk),
             )
-            .and_then(|truncated| {
-                if truncated {
+            .and_then(|outcome| {
+                if outcome.truncated {
                     sink.truncated(limit)?;
                 }
+                issue_count = outcome.issues.len();
+                sink.issues(outcome.issues);
                 Ok(())
             })
             .map_err(|error| Failure::query(error, 1))
-    })
+    })?;
+    if issue_count > 0 {
+        return Err(Failure {
+            code: 1,
+            message: format!("{issue_count} JVM input issue(s), see query output"),
+        });
+    }
+    Ok(())
 }
 
 /// One analysis row as the columns this command publishes.
@@ -810,7 +910,7 @@ fn query_row<'a>(row: &'a Row<'a>, images: &[ImageInfo]) -> Result<QueryRow<'a>,
         Row::Method(row) => row.image.0,
         Row::Field(row) => row.image.0,
         Row::String(row) => row.image.0,
-        Row::Entry(_) => return Err(QueryError::WorkerLost),
+        Row::Entry(_) | Row::Jvm(_) => return Err(QueryError::WorkerLost),
     };
     let image = images.get(image_index).ok_or(QueryError::WorkerLost)?;
     let entry = image.entry.map(|entry| entry.0);
@@ -857,6 +957,6 @@ fn query_row<'a>(row: &'a Row<'a>, images: &[ImageInfo]) -> Result<QueryRow<'a>,
             },
             value: Some(row.value),
         },
-        Row::Entry(_) => return Err(QueryError::WorkerLost),
+        Row::Entry(_) | Row::Jvm(_) => return Err(QueryError::WorkerLost),
     })
 }

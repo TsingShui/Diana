@@ -1,14 +1,188 @@
 //! Input-local declaration relations. Witnesses are original header paths, not
 //! runtime dispatch or a claim that the input is a valid Java program.
-use super::declarations::{self, Location};
+use super::declarations;
 use super::{
-    Event, Issue, Matched, MethodRelation, QueryError, Relation, Site, Target, Xref, copy,
+    Event, FilterMatch, Issue, Matched, MethodRelation, QueryError, Relation, Site, Target, Xref,
+    copy,
 };
-use crate::analysis::{at, dex, input::InputError};
+use crate::analysis::{
+    at, dex,
+    input::InputError,
+    jvm::{JvmRoots, Location as JvmLocation},
+    jvm_code::{self, Hit, MemberSite},
+};
 use diana_decomp::p0::Fact;
 use std::collections::{HashMap, HashSet, VecDeque};
 
-type Paths = Vec<(usize, Vec<usize>)>;
+// Hierarchy and method relationships consume original declaration facts from
+// either input format. The reader adapter owns physical locations and errors.
+struct Location {
+    address: Address,
+    descriptor: Vec<u16>,
+}
+
+enum Address {
+    Dex {
+        image: dex::ImageIndex,
+        logical: crate::analysis::images::LogicalDex,
+        class_def: diana_decomp::ClassDefId,
+    },
+    Jvm(JvmLocation),
+}
+
+struct RelationHit {
+    member: Option<MethodSiteFact>,
+    matched: Matched,
+    selected: FilterMatch,
+    use_: String,
+    depth: u32,
+}
+
+struct MethodSiteFact {
+    ordinal: u32,
+    name: Vec<u16>,
+    prototype: Vec<u16>,
+}
+
+struct Plan<'a> {
+    class: Option<&'a [u16]>,
+    targets: &'a [Target],
+    method_relation: MethodRelation,
+}
+
+trait Sink {
+    fn issue(&mut self, issue: Issue) -> Result<(), QueryError>;
+    fn hit(&mut self, location: &Location, hit: RelationHit) -> Result<(), QueryError>;
+}
+
+struct DexSink<'a>(&'a mut dyn FnMut(Event) -> Result<(), QueryError>);
+
+impl Sink for DexSink<'_> {
+    fn issue(&mut self, issue: Issue) -> Result<(), QueryError> {
+        (self.0)(Event::Issue(issue))
+    }
+
+    fn hit(&mut self, location: &Location, hit: RelationHit) -> Result<(), QueryError> {
+        let Address::Dex {
+            image,
+            logical,
+            class_def,
+        } = location.address
+        else {
+            return Err(QueryError::WorkerLost);
+        };
+        let site = hit.member.map_or(Site::Class, |member| Site::Method {
+            method: diana_decomp::MethodId(member.ordinal),
+            name: member.name,
+            prototype: member.prototype,
+        });
+        (self.0)(Event::Row(super::XrefRow {
+            image,
+            logical,
+            class_def,
+            class_descriptor: copy(&location.descriptor)?,
+            site,
+            relevance: hit.selected.relevance,
+            matched: hit.matched,
+            use_: hit.use_,
+            depth: hit.depth,
+        }))
+    }
+}
+
+struct JvmSink<'a>(&'a mut dyn FnMut(jvm_code::Event) -> Result<(), QueryError>);
+
+impl Sink for JvmSink<'_> {
+    fn issue(&mut self, issue: Issue) -> Result<(), QueryError> {
+        (self.0)(jvm_code::Event::Issue(issue))
+    }
+
+    fn hit(&mut self, location: &Location, hit: RelationHit) -> Result<(), QueryError> {
+        let Address::Jvm(location) = &location.address else {
+            return Err(QueryError::WorkerLost);
+        };
+        let member = hit
+            .member
+            .map(|member| u16::try_from(member.ordinal).map(MemberSite::Method))
+            .transpose()
+            .map_err(|_| InputError::PlatformCapacity)?;
+        let matched = match hit.matched {
+            Matched::Type(units) => at::escape_units(&units),
+            Matched::Method {
+                owner,
+                name,
+                prototype,
+            } => {
+                format!(
+                    "{}->{}{}",
+                    at::escape_units(&owner),
+                    at::escape_units(&name),
+                    at::escape_units(&prototype)
+                )
+            }
+            _ => return Err(QueryError::WorkerLost),
+        };
+        (self.0)(jvm_code::Event::Hit(Hit {
+            location: location.clone(),
+            member,
+            offset_byte: None,
+            matched,
+            use_: hit.use_.into(),
+            relevance: hit.selected.relevance,
+            depth: hit.depth,
+            caller: None,
+        }))
+    }
+}
+
+impl Location {
+    fn context(&self) -> String {
+        match &self.address {
+            Address::Dex {
+                image,
+                logical,
+                class_def,
+            } => format!("image:{}:l{}:c{}", image.0, logical.0, class_def.0),
+            Address::Jvm(location) => location.to_string(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct Paths {
+    visits: Vec<Visit>,
+}
+
+struct Visit {
+    node: usize,
+    through: Option<usize>,
+    depth: usize,
+}
+
+impl Paths {
+    fn reach(&mut self, node: usize, through: Option<usize>) -> Result<usize, QueryError> {
+        let depth = through
+            .map_or(0, |parent| self.visits[parent].depth)
+            .checked_add(1)
+            .ok_or(InputError::PlatformCapacity)?;
+        let index = self.visits.len();
+        push(
+            &mut self.visits,
+            Visit {
+                node,
+                through,
+                depth,
+            },
+        )?;
+        Ok(index)
+    }
+
+    fn nodes(&self, from: Option<usize>) -> impl Iterator<Item = usize> + '_ {
+        std::iter::successors(from, |&index| self.visits[index].through)
+            .map(|index| self.visits[index].node)
+    }
+}
+
 struct Edge {
     descriptor: Vec<u16>,
     interface: bool,
@@ -26,10 +200,11 @@ struct Signature {
 }
 struct Method {
     owner: usize,
-    id: diana_decomp::MethodId,
+    ordinal: u32,
     flags: u32,
     signature: Signature,
 }
+#[derive(Default)]
 struct Graph {
     nodes: Vec<Node>,
     methods: Vec<Method>,
@@ -47,7 +222,7 @@ impl Graph {
         &mut self,
         context: String,
         reason: String,
-        emit: &mut dyn FnMut(Event) -> Result<(), QueryError>,
+        sink: &mut impl Sink,
     ) -> Result<(), QueryError> {
         let key = format!("{context}: {reason}");
         if self.gaps.contains(&key) {
@@ -55,17 +230,17 @@ impl Graph {
         }
         self.gaps.try_reserve(1).map_err(InputError::Allocation)?;
         self.gaps.insert(key);
-        emit(Event::Issue(Issue {
+        sink.issue(Issue {
             context,
             kind: "Unknown".to_owned(),
             reason,
             range_bytes: None,
-        }))
+        })
     }
     fn resolve(
         &mut self,
         descriptor: &[u16],
-        emit: &mut dyn FnMut(Event) -> Result<(), QueryError>,
+        sink: &mut impl Sink,
     ) -> Result<Option<usize>, QueryError> {
         match self.names.get(descriptor).map(Vec::as_slice) {
             Some([index]) => Ok(Some(*index)),
@@ -78,30 +253,21 @@ impl Graph {
                 self.gap(
                     format!("type:{}", at::escape_units(descriptor)),
                     reason.to_owned(),
-                    emit,
+                    sink,
                 )?;
                 Ok(None)
             }
         }
     }
-    fn load(
-        query: &Xref<'_>,
-        emit: &mut dyn FnMut(Event) -> Result<(), QueryError>,
-    ) -> Result<Self, QueryError> {
-        let mut graph = Self {
-            nodes: Vec::new(),
-            methods: Vec::new(),
-            names: HashMap::new(),
-            children: HashMap::new(),
-            gaps: HashSet::new(),
-        };
+    fn load_dex(query: &Xref<'_>, sink: &mut impl Sink) -> Result<Self, QueryError> {
+        let mut graph = Self::default();
         // One pass over declarations: the payload lives in this scratch instead
         // of every root retaining its own.
         let mut scratch = Vec::new();
         for (image, root) in query.roots.iter().enumerate() {
             let stopped = std::cell::Cell::new(false);
-            let mut forward = |event| {
-                let result = emit(event);
+            let mut forward = |issue| {
+                let result = sink.issue(issue);
                 if result.is_err() {
                     stopped.set(true);
                 }
@@ -117,18 +283,20 @@ impl Graph {
                             let facts = match declarations::collect(&index, class_def) {
                                 Ok(facts) => facts,
                                 Err(error) => {
-                                    forward(Event::Issue(Issue::new(
+                                    forward(Issue::new(
                                         format!("image:{image}:l{}:c{ordinal}", logical.0),
                                         &error,
                                         None,
-                                    )))?;
+                                    ))?;
                                     continue;
                                 }
                             };
                             let location = Location {
-                                image: dex::ImageIndex(image),
-                                logical,
-                                class_def,
+                                address: Address::Dex {
+                                    image: dex::ImageIndex(image),
+                                    logical,
+                                    class_def,
+                                },
                                 descriptor: copy(facts.descriptor().units())?,
                             };
                             let mut parents = Vec::new();
@@ -140,13 +308,13 @@ impl Graph {
                                         interface: false,
                                     },
                                 )?,
-                                Fact::Unavailable(error) => forward(Event::Issue(
-                                    Issue::from_request(location.context(), error),
-                                ))?,
-                                Fact::NotRead => forward(Event::Issue(Issue::unknown(
+                                Fact::Unavailable(error) => {
+                                    forward(Issue::from_request(location.context(), error))?
+                                }
+                                Fact::NotRead => forward(Issue::unknown(
                                     location.context(),
                                     "superclass not read",
-                                )))?,
+                                ))?,
                                 Fact::Absent => (),
                             }
                             match facts.interfaces() {
@@ -160,56 +328,53 @@ impl Graph {
                                                     interface: true,
                                                 },
                                             )?,
-                                            Fact::Unavailable(error) => forward(Event::Issue(
+                                            Fact::Unavailable(error) => forward(
                                                 Issue::from_request(location.context(), error),
-                                            ))?,
-                                            _ => forward(Event::Issue(Issue::unknown(
+                                            )?,
+                                            _ => forward(Issue::unknown(
                                                 location.context(),
                                                 "interface descriptor unavailable",
-                                            )))?,
+                                            ))?,
                                         }
                                     }
                                 }
-                                Fact::Unavailable(error) => forward(Event::Issue(
-                                    Issue::from_request(location.context(), error),
-                                ))?,
-                                Fact::NotRead => forward(Event::Issue(Issue::unknown(
+                                Fact::Unavailable(error) => {
+                                    forward(Issue::from_request(location.context(), error))?
+                                }
+                                Fact::NotRead => forward(Issue::unknown(
                                     location.context(),
                                     "interface list not read",
-                                )))?,
+                                ))?,
                                 Fact::Absent => (),
                             }
                             let owner = graph.nodes.len();
                             if query.plan.method_relation != MethodRelation::References {
                                 if let Some(error) = facts.methods_issue() {
-                                    forward(Event::Issue(Issue::from_request(
-                                        location.context(),
-                                        error,
-                                    )))?;
+                                    forward(Issue::from_request(location.context(), error))?;
                                 }
                                 for method in facts.methods() {
                                     let declaration = match method.declaration() {
                                         Fact::Present(value) => value,
                                         Fact::Unavailable(error) => {
-                                            forward(Event::Issue(Issue::from_request(
+                                            forward(Issue::from_request(
                                                 format!(
                                                     "{}:m{}",
                                                     location.context(),
                                                     method.method().0
                                                 ),
                                                 error,
-                                            )))?;
+                                            ))?;
                                             continue;
                                         }
                                         _ => {
-                                            forward(Event::Issue(Issue::unknown(
+                                            forward(Issue::unknown(
                                                 format!(
                                                     "{}:m{}",
                                                     location.context(),
                                                     method.method().0
                                                 ),
                                                 "method declaration unavailable",
-                                            )))?;
+                                            ))?;
                                             continue;
                                         }
                                     };
@@ -231,7 +396,7 @@ impl Graph {
                                         &mut graph.methods,
                                         Method {
                                             owner,
-                                            id: method.method(),
+                                            ordinal: method.method().0,
                                             flags,
                                             signature: Signature {
                                                 name: copy(declaration.name_units())?,
@@ -243,29 +408,11 @@ impl Graph {
                                     )?;
                                 }
                             }
-                            graph.names.try_reserve(1).map_err(InputError::Allocation)?;
-                            push(
-                                graph.names.entry(copy(&location.descriptor)?).or_default(),
-                                owner,
-                            )?;
-                            for edge in &parents {
-                                graph
-                                    .children
-                                    .try_reserve(1)
-                                    .map_err(InputError::Allocation)?;
-                                push(
-                                    graph.children.entry(copy(&edge.descriptor)?).or_default(),
-                                    (owner, edge.interface),
-                                )?;
-                            }
-                            push(
-                                &mut graph.nodes,
-                                Node {
-                                    location,
-                                    flags: facts.access_flags().raw(),
-                                    parents,
-                                },
-                            )?;
+                            graph.push_node(Node {
+                                location,
+                                flags: facts.access_flags().raw(),
+                                parents,
+                            })?;
                             // P0 metadata/preparation and unneeded directories are dropped
                             // here. The graph retains only the facts its queries consume.
                         }
@@ -276,35 +423,69 @@ impl Graph {
                 if stopped.get() {
                     return Err(error);
                 }
-                forward(Event::Issue(Issue::new(
-                    format!("image:{image}"),
-                    &error,
-                    None,
-                )))?;
+                forward(Issue::new(format!("image:{image}"), &error, None))?;
             }
         }
         Ok(graph)
     }
-    fn path_label(&self, path: &[usize]) -> String {
-        path.iter()
-            .map(|&index| at::escape_units(&self.nodes[index].location.descriptor))
-            .collect::<Vec<_>>()
-            .join(" → ")
+    fn push_node(&mut self, node: Node) -> Result<(), QueryError> {
+        let owner = self.nodes.len();
+        self.names.try_reserve(1).map_err(InputError::Allocation)?;
+        push(
+            self.names
+                .entry(copy(&node.location.descriptor)?)
+                .or_default(),
+            owner,
+        )?;
+        for edge in &node.parents {
+            self.children
+                .try_reserve(1)
+                .map_err(InputError::Allocation)?;
+            push(
+                self.children.entry(copy(&edge.descriptor)?).or_default(),
+                (owner, edge.interface),
+            )?;
+        }
+        push(&mut self.nodes, node)
     }
+    fn path_label(&self, path: impl Iterator<Item = usize>) -> Result<String, QueryError> {
+        let mut label = String::new();
+        for index in path {
+            let name = at::escape_units(&self.nodes[index].location.descriptor);
+            let separator = if label.is_empty() { "" } else { " → " };
+            let remaining = separator
+                .len()
+                .checked_add(name.len())
+                .ok_or(InputError::PlatformCapacity)?;
+            label
+                .try_reserve(remaining)
+                .map_err(InputError::Allocation)?;
+            label.push_str(separator);
+            label.push_str(&name);
+        }
+        Ok(label)
+    }
+
     fn descendants(
         &mut self,
         descriptor: &[u16],
         relation: Relation,
-        emit: &mut dyn FnMut(Event) -> Result<(), QueryError>,
+        sink: &mut impl Sink,
     ) -> Result<Paths, QueryError> {
-        let mut queue = VecDeque::new();
+        let mut queue = VecDeque::<Option<usize>>::new();
         queue.try_reserve(1).map_err(InputError::Allocation)?;
-        queue.push_back((copy(descriptor)?, Vec::<usize>::new()));
+        queue.push_back(None);
         let mut visited = HashSet::new();
-        let mut found = Vec::new();
-        while let Some((parent, path)) = queue.pop_front() {
+        let mut found = Paths::default();
+        while let Some(path) = queue.pop_front() {
+            let parent = path.map_or(descriptor, |index| {
+                self.nodes[found.visits[index].node]
+                    .location
+                    .descriptor
+                    .as_slice()
+            });
             let mut edges = Vec::new();
-            if let Some(values) = self.children.get(&parent) {
+            if let Some(values) = self.children.get(parent) {
                 edges
                     .try_reserve_exact(values.len())
                     .map_err(InputError::Allocation)?;
@@ -312,73 +493,53 @@ impl Graph {
             }
             for (node, interface_edge) in edges {
                 if relation == Relation::Extend && interface_edge
-                    || relation == Relation::Impl && path.is_empty() && !interface_edge
+                    || relation == Relation::Impl && path.is_none() && !interface_edge
                 {
                     continue;
                 }
-                if path.contains(&node) {
-                    self.gap(
-                        self.nodes[node].location.context(),
-                        "cyclic hierarchy path".to_owned(),
-                        emit,
-                    )?;
-                    continue;
-                }
                 if visited.contains(&node) {
+                    if found.nodes(path).any(|ancestor| ancestor == node) {
+                        self.gap(
+                            self.nodes[node].location.context(),
+                            "cyclic hierarchy path".to_owned(),
+                            sink,
+                        )?;
+                    }
                     continue;
                 }
                 visited.try_reserve(1).map_err(InputError::Allocation)?;
                 visited.insert(node);
-                let mut witness = Vec::new();
-                witness
-                    .try_reserve(
-                        path.len()
-                            .checked_add(1)
-                            .ok_or(InputError::PlatformCapacity)?,
-                    )
-                    .map_err(InputError::Allocation)?;
-                witness.push(node);
-                witness.extend_from_slice(&path);
-                let mut retained = Vec::new();
-                retained
-                    .try_reserve_exact(witness.len())
-                    .map_err(InputError::Allocation)?;
-                retained.extend_from_slice(&witness);
-                push(&mut found, (node, retained))?;
+                let entry = found.reach(node, path)?;
                 let name = copy(&self.nodes[node].location.descriptor)?;
                 if name == descriptor {
                     self.gap(
                         self.nodes[node].location.context(),
                         "cyclic hierarchy path".to_owned(),
-                        emit,
+                        sink,
                     )?;
                     continue;
                 }
-                if self.resolve(&name, emit)?.is_some() {
+                if self.resolve(&name, sink)?.is_some() {
                     queue.try_reserve(1).map_err(InputError::Allocation)?;
-                    queue.push_back((name, witness));
+                    queue.push_back(Some(entry));
                 }
             }
         }
         Ok(found)
     }
+
     fn ancestors(
         &mut self,
         start: usize,
         interfaces: bool,
-        emit: &mut dyn FnMut(Event) -> Result<(), QueryError>,
+        sink: &mut impl Sink,
     ) -> Result<Paths, QueryError> {
         let mut queue = VecDeque::new();
         queue.try_reserve(1).map_err(InputError::Allocation)?;
-        queue.push_back((start, Vec::<usize>::new()));
+        queue.push_back((start, None));
         let mut visited = HashSet::new();
-        let mut found = Vec::new();
+        let mut found = Paths::default();
         while let Some((node, path)) = queue.pop_front() {
-            if visited.contains(&node) {
-                continue;
-            }
-            visited.try_reserve(1).map_err(InputError::Allocation)?;
-            visited.insert(node);
             let mut names = Vec::new();
             for edge in &self.nodes[node].parents {
                 if interfaces || !edge.interface {
@@ -386,35 +547,24 @@ impl Graph {
                 }
             }
             for name in names {
-                let Some(parent) = self.resolve(&name, emit)? else {
+                let Some(parent) = self.resolve(&name, sink)? else {
                     continue;
                 };
-                if parent == start || path.contains(&parent) {
-                    self.gap(
-                        self.nodes[parent].location.context(),
-                        "cyclic hierarchy path".to_owned(),
-                        emit,
-                    )?;
+                if parent == start || visited.contains(&parent) {
+                    if parent == start || found.nodes(path).any(|ancestor| ancestor == parent) {
+                        self.gap(
+                            self.nodes[parent].location.context(),
+                            "cyclic hierarchy path".to_owned(),
+                            sink,
+                        )?;
+                    }
                     continue;
                 }
-                let mut witness = Vec::new();
-                witness
-                    .try_reserve(
-                        path.len()
-                            .checked_add(1)
-                            .ok_or(InputError::PlatformCapacity)?,
-                    )
-                    .map_err(InputError::Allocation)?;
-                witness.extend_from_slice(&path);
-                witness.push(parent);
-                let mut retained = Vec::new();
-                retained
-                    .try_reserve_exact(witness.len())
-                    .map_err(InputError::Allocation)?;
-                retained.extend_from_slice(&witness);
-                push(&mut found, (parent, retained))?;
+                visited.try_reserve(1).map_err(InputError::Allocation)?;
+                visited.insert(parent);
+                let entry = found.reach(parent, path)?;
                 queue.try_reserve(1).map_err(InputError::Allocation)?;
-                queue.push_back((parent, witness));
+                queue.push_back((parent, Some(entry)));
             }
         }
         Ok(found)
@@ -423,7 +573,7 @@ impl Graph {
         &mut self,
         mut child: &[u16],
         mut parent: &[u16],
-        emit: &mut dyn FnMut(Event) -> Result<(), QueryError>,
+        sink: &mut impl Sink,
     ) -> Result<bool, QueryError> {
         loop {
             if child == parent {
@@ -451,7 +601,7 @@ impl Graph {
             if child.first() != Some(&u16::from(b'L')) || parent.first() != Some(&u16::from(b'L')) {
                 return Ok(false);
             }
-            let Some(start) = self.resolve(child, emit)? else {
+            let Some(start) = self.resolve(child, sink)? else {
                 return Ok(false);
             };
             // Matching an encoded direct parent requires no target definition.
@@ -471,7 +621,7 @@ impl Graph {
                     push(&mut edges, copy(&edge.descriptor)?)?;
                 }
                 for name in edges {
-                    if let Some(next) = self.resolve(&name, emit)? {
+                    if let Some(next) = self.resolve(&name, sink)? {
                         push(&mut pending, next)?;
                     }
                 }
@@ -483,12 +633,12 @@ impl Graph {
         &mut self,
         child: &Signature,
         parent: &Signature,
-        emit: &mut dyn FnMut(Event) -> Result<(), QueryError>,
+        sink: &mut impl Sink,
     ) -> Result<bool, QueryError> {
         if child.name != parent.name || child.parameters != parent.parameters {
             return Ok(false);
         }
-        self.covariant(&child.returns, &parent.returns, emit)
+        self.covariant(&child.returns, &parent.returns, sink)
     }
     fn same_package(&self, left: usize, right: usize) -> bool {
         let prefix = |value: &[u16]| {
@@ -507,18 +657,58 @@ pub(super) fn run(
     query: &Xref<'_>,
     emit: &mut dyn FnMut(Event) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
-    let mut graph = Graph::load(query, emit)?;
-    if query.plan.method_relation != MethodRelation::References {
-        for target in &query.plan.targets {
+    let mut sink = DexSink(emit);
+    let graph = Graph::load_dex(query, &mut sink)?;
+    run_relations(
+        graph,
+        Plan {
+            class: query.plan.class.as_deref(),
+            targets: &query.plan.targets,
+            method_relation: query.plan.method_relation,
+        },
+        &mut sink,
+    )
+}
+
+pub(crate) fn run_jvm(
+    roots: &JvmRoots<'_>,
+    target: &Target,
+    class: Option<&[u16]>,
+    method_relation: MethodRelation,
+    jobs: usize,
+    emit: &mut dyn FnMut(jvm_code::Event) -> Result<(), QueryError>,
+) -> Result<(), QueryError> {
+    let mut sink = JvmSink(emit);
+    let method_name = match target {
+        Target::Method { name, .. } if method_relation != MethodRelation::References => Some(name),
+        _ => None,
+    };
+    let graph = jvm::load(roots, method_name, jobs, &mut sink)?;
+    run_relations(
+        graph,
+        Plan {
+            class,
+            targets: std::slice::from_ref(target),
+            method_relation,
+        },
+        &mut sink,
+    )
+}
+
+mod jvm;
+
+fn run_relations(mut graph: Graph, plan: Plan<'_>, sink: &mut impl Sink) -> Result<(), QueryError> {
+    if plan.method_relation != MethodRelation::References {
+        for target in plan.targets {
             if let Target::Method {
                 owner: Some(super::TextMatch::Exact(owner)),
                 ..
             } = target
             {
-                graph.resolve(owner, emit)?;
+                graph.resolve(owner, sink)?;
             }
         }
-        return method_relations(&mut graph, query, emit);
+        return method_relations(&mut graph, &plan, sink);
     }
     let mut names = Vec::new();
     for descriptor in graph.children.keys() {
@@ -526,16 +716,16 @@ pub(super) fn run(
     }
     // Unknown intermediate declarations make global negative results incomplete.
     // Known reverse edges are still independently usable positive witnesses.
-    if let Some(class) = query.plan.class.as_deref() {
-        if let Some(node) = graph.resolve(class, emit)? {
-            graph.ancestors(node, true, emit)?;
+    if let Some(class) = plan.class {
+        if let Some(node) = graph.resolve(class, sink)? {
+            graph.ancestors(node, true, sink)?;
         }
     } else {
         for descriptor in &names {
-            graph.resolve(descriptor, emit)?;
+            graph.resolve(descriptor, sink)?;
         }
     }
-    for target in &query.plan.targets {
+    for target in plan.targets {
         let Target::Hierarchy { relation, target } = target else {
             continue;
         };
@@ -543,11 +733,11 @@ pub(super) fn run(
             let Some(selected) = target.evaluate_units(descriptor)? else {
                 continue;
             };
-            for (node, path) in graph.descendants(descriptor, *relation, emit)? {
-                if query
-                    .plan
+            let paths = graph.descendants(descriptor, *relation, sink)?;
+            for path in &paths.visits {
+                let node = path.node;
+                if plan
                     .class
-                    .as_deref()
                     .is_some_and(|filter| filter != graph.nodes[node].location.descriptor)
                 {
                     continue;
@@ -562,19 +752,25 @@ pub(super) fn run(
                         }
                     }
                 };
-                let use_ = if path.len() == 1 {
-                    label.to_owned()
+                let use_ = if let Some(parent) = path.through {
+                    format!(
+                        "{label}-indirect via {}",
+                        graph.path_label(paths.nodes(Some(parent)))?
+                    )
                 } else {
-                    format!("{label}-indirect via {}", graph.path_label(&path[1..]))
+                    label.to_owned()
                 };
-                let depth = u32::try_from(path.len()).map_err(|_| InputError::PlatformCapacity)?;
-                emit(graph.nodes[node].location.row(
-                    Site::Class,
-                    Matched::Type(copy(descriptor)?),
-                    selected,
-                    use_,
-                    depth,
-                )?)?;
+                let depth = u32::try_from(path.depth).map_err(|_| InputError::PlatformCapacity)?;
+                sink.hit(
+                    &graph.nodes[node].location,
+                    RelationHit {
+                        member: None,
+                        matched: Matched::Type(copy(descriptor)?),
+                        selected,
+                        use_,
+                        depth,
+                    },
+                )?;
             }
         }
     }
@@ -583,8 +779,8 @@ pub(super) fn run(
 
 fn method_relations(
     graph: &mut Graph,
-    query: &Xref<'_>,
-    emit: &mut dyn FnMut(Event) -> Result<(), QueryError>,
+    plan: &Plan<'_>,
+    sink: &mut impl Sink,
 ) -> Result<(), QueryError> {
     let methods = std::mem::take(&mut graph.methods);
     let mut by_name: HashMap<&[u16], Vec<usize>> = HashMap::new();
@@ -592,7 +788,7 @@ fn method_relations(
         by_name.try_reserve(1).map_err(InputError::Allocation)?;
         push(by_name.entry(&method.signature.name).or_default(), index)?;
     }
-    let implementing = query.plan.method_relation == MethodRelation::Implementations;
+    let implementing = plan.method_relation == MethodRelation::Implementations;
     for target in &methods {
         let interface = graph.nodes[target.owner].flags & 0x200 != 0;
         if implementing && !interface || !implementing && target.flags & 0x10 != 0 {
@@ -604,10 +800,10 @@ fn method_relations(
             name: copy(&target.signature.name)?,
             prototype: copy(&target.signature.prototype)?,
         };
-        let Some((_, selected)) = declarations::matched_value(value, &query.plan.targets)? else {
+        let Some((_, selected)) = declarations::matched_value(value, plan.targets)? else {
             continue;
         };
-        if graph.resolve(&descriptor, emit)? != Some(target.owner) {
+        if graph.resolve(&descriptor, sink)? != Some(target.owner) {
             continue;
         }
         let relation = if interface {
@@ -615,26 +811,26 @@ fn method_relations(
         } else {
             Relation::Extend
         };
-        for (class, witness) in graph.descendants(&descriptor, relation, emit)? {
-            if query
-                .plan
+        let paths = graph.descendants(&descriptor, relation, sink)?;
+        for (path_index, witness) in paths.visits.iter().enumerate() {
+            let class = witness.node;
+            if plan
                 .class
-                .as_deref()
                 .is_some_and(|filter| filter != graph.nodes[class].location.descriptor)
             {
                 continue;
             }
             if !interface
                 && target.flags & (0x1 | 0x4) == 0
-                && !witness
-                    .iter()
-                    .all(|&node| graph.same_package(node, target.owner))
+                && !paths
+                    .nodes(Some(path_index))
+                    .all(|node| graph.same_package(node, target.owner))
             {
                 graph.gap(
                     graph.nodes[class].location.context(),
                     "package-private inheritance across package boundaries is not established"
                         .to_owned(),
-                    emit,
+                    sink,
                 )?;
                 continue;
             }
@@ -642,9 +838,9 @@ fn method_relations(
             owners.try_reserve(1).map_err(InputError::Allocation)?;
             owners.insert(class, 0usize);
             if implementing {
-                for (owner, path) in graph.ancestors(class, true, emit)? {
+                for path in graph.ancestors(class, true, sink)?.visits {
                     owners.try_reserve(1).map_err(InputError::Allocation)?;
-                    owners.entry(owner).or_insert(path.len());
+                    owners.entry(path.node).or_insert(path.depth);
                 }
             }
             let mut candidates = Vec::new();
@@ -658,16 +854,16 @@ fn method_relations(
                     continue;
                 };
                 if candidate.owner == target.owner
-                    && candidate.id == target.id
+                    && candidate.ordinal == target.ordinal
                     && (!implementing || target.flags & 0x400 != 0)
                 {
                     continue;
                 }
-                if !graph.compatible(&candidate.signature, &target.signature, emit)? {
+                if !graph.compatible(&candidate.signature, &target.signature, sink)? {
                     continue;
                 }
                 if interface && candidate.flags & 0x1 == 0 {
-                    graph.gap(graph.nodes[candidate.owner].location.context(), "non-public declaration does not establish a public interface implementation".to_owned(), emit)?;
+                    graph.gap(graph.nodes[candidate.owner].location.context(), "non-public declaration does not establish a public interface implementation".to_owned(), sink)?;
                     continue;
                 }
                 push(
@@ -701,9 +897,10 @@ fn method_relations(
                             continue;
                         }
                         if graph
-                            .ancestors(other.owner, true, emit)?
+                            .ancestors(other.owner, true, sink)?
+                            .visits
                             .iter()
-                            .any(|(ancestor, _)| *ancestor == candidate.owner)
+                            .any(|path| path.node == candidate.owner)
                         {
                             dominated = true;
                             break;
@@ -721,7 +918,7 @@ fn method_relations(
                     graph.gap(
                         graph.nodes[class].location.context(),
                         "ambiguous interface default declarations".to_owned(),
-                        emit,
+                        sink,
                     )?;
                     continue;
                 }
@@ -731,8 +928,8 @@ fn method_relations(
                 if implementing && candidate.flags & 0x400 != 0 {
                     continue;
                 }
-                let site = Site::Method {
-                    method: candidate.id,
+                let site = MethodSiteFact {
+                    ordinal: candidate.ordinal,
                     name: copy(&candidate.signature.name)?,
                     prototype: copy(&candidate.signature.prototype)?,
                 };
@@ -751,20 +948,24 @@ fn method_relations(
                         ""
                     },
                     at::escape_units(&graph.nodes[class].location.descriptor),
-                    graph.path_label(&witness)
+                    graph.path_label(paths.nodes(Some(path_index)))?
                 );
                 let value = Matched::Method {
                     owner: copy(&descriptor)?,
                     name: copy(&target.signature.name)?,
                     prototype: copy(&target.signature.prototype)?,
                 };
-                emit(graph.nodes[candidate.owner].location.row(
-                    site,
-                    value,
-                    selected,
-                    use_,
-                    u32::try_from(witness.len()).map_err(|_| InputError::PlatformCapacity)?,
-                )?)?;
+                sink.hit(
+                    &graph.nodes[candidate.owner].location,
+                    RelationHit {
+                        member: Some(site),
+                        matched: value,
+                        selected,
+                        use_,
+                        depth: u32::try_from(witness.depth)
+                            .map_err(|_| InputError::PlatformCapacity)?,
+                    },
+                )?;
             }
         }
     }

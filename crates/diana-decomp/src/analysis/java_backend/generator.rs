@@ -354,7 +354,7 @@ impl JavaDecompiler {
             .methods()
             .iter()
             .enumerate()
-            .filter(|(_, method)| !method.access_flags.is_bridge())
+            .filter(|(_, method)| self.physical_methods || !method.access_flags.is_bridge())
         {
             let Some(index) = input_positions[position] else {
                 let declaration = match JavaMethodDeclaration::from_method_node(
@@ -488,10 +488,12 @@ impl JavaDecompiler {
         {
             let param_names = collect_param_debug_names(cfg);
             for (idx, parameter) in declaration.parameters.iter_mut().enumerate() {
-                parameter.name = param_names
-                    .get(idx)
-                    .and_then(|name| name.as_deref())
-                    .map(crate::language::java::JavaIdentifier::from_dex);
+                if parameter.name.is_none() {
+                    parameter.name = param_names
+                        .get(idx)
+                        .and_then(|name| name.as_deref())
+                        .map(crate::language::java::JavaIdentifier::from_dex);
+                }
             }
         };
         let mut options = declaration.body_options(Some(class));

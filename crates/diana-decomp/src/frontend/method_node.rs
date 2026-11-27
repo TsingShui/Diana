@@ -162,6 +162,8 @@ pub struct MethodNode {
     pub annotations: Vec<AnnotationNode>,
     /// Kotlin source annotations attached to each declared parameter.
     pub parameter_annotations: Vec<Vec<AnnotationNode>>,
+    /// Original parameter names carried by a declaration attribute.
+    pub parameter_names: Vec<Option<String>>,
     /// Semantic override relationship synthesized from class hierarchy.
     pub override_semantics: Option<MethodOverrideSemantics>,
 }
@@ -177,6 +179,7 @@ impl MethodNode {
             signature: None,
             annotations: Vec::new(),
             parameter_annotations: Vec::new(),
+            parameter_names: Vec::new(),
             override_semantics: None,
         }
     }
@@ -300,6 +303,7 @@ impl Clone for MethodNode {
             signature: self.signature.clone(),
             annotations: self.annotations.clone(),
             parameter_annotations: self.parameter_annotations.clone(),
+            parameter_names: self.parameter_names.clone(),
             override_semantics: self.override_semantics.clone(),
         }
     }

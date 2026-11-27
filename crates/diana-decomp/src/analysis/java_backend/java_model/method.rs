@@ -574,7 +574,11 @@ impl JavaMethodDeclaration {
                     .cloned()
                     .unwrap_or_default(),
                 ty,
-                name: None,
+                name: method
+                    .parameter_names
+                    .get(idx)
+                    .and_then(|name| name.as_deref())
+                    .map(JavaIdentifier::from_dex),
                 hidden: false,
                 varargs: method.access_flags.is_varargs() && idx + 1 == method.param_types().len(),
             })

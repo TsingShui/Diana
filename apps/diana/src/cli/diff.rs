@@ -10,11 +10,11 @@ use crate::analysis::request::RequestScope;
 
 #[derive(clap::Args)]
 pub(super) struct Args {
-    /// Original APK or standalone DEX
+    /// Original APK, DEX, JAR, JVM class or JVM project
     old: PathBuf,
-    /// Updated APK or standalone DEX
+    /// Updated APK, DEX, JAR, JVM class or JVM project
     new: PathBuf,
-    /// Maximum concurrent DEX workers
+    /// Maximum concurrent input workers
     #[arg(long)]
     jobs: Option<NonZeroUsize>,
     /// Presentation of the same result
@@ -42,6 +42,9 @@ struct Document<'a> {
 pub(super) fn run(args: Args) -> Result<(), Failure> {
     let old = open(&args.old, "old")?;
     let new = open(&args.new, "new")?;
+    super::output::protect_project_targets(&old, args.output.as_deref())?;
+    super::output::protect_project_targets(&new, args.output.as_deref())?;
+
     let jobs = args
         .jobs
         .map_or_else(super::default_jobs, NonZeroUsize::get);
@@ -102,6 +105,9 @@ fn write_text(writer: &mut impl Write, document: &Document<'_>) -> io::Result<()
         "\n{} old methods, {} new methods, {} candidate pairs",
         report.summary.old_methods, report.summary.new_methods, report.summary.candidate_pairs,
     )?;
+    if let Some(unit) = report.offset_unit {
+        writeln!(writer, "method offset unit {unit}")?;
+    }
     for pair in &report.matches {
         writeln!(writer, "\nmatch {}", pair.status)?;
         write_location(writer, "old", &pair.old)?;

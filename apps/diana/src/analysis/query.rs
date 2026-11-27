@@ -8,10 +8,14 @@ use super::dex::{
 };
 use super::filter::{self, Relevance, TextFilter};
 
+pub(super) mod jvm;
 mod ranking;
+
 use super::images::LogicalDex;
 use super::input::{EntryIndex, InputError};
+use super::jvm::JvmRoots;
 use super::request::RequestScope;
+pub use jvm::{JvmItem, JvmRow};
 
 /// One physical ZIP record, listed in directory order.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -37,6 +41,7 @@ pub enum Row<'a> {
     Method(MethodRow<'a>),
     Field(FieldRow<'a>),
     String(StringRow<'a>),
+    Jvm(JvmRow<'a>),
 }
 
 impl Row<'_> {
@@ -47,6 +52,7 @@ impl Row<'_> {
             Self::Method(row) => row.relevance,
             Self::Field(row) => row.relevance,
             Self::String(row) => row.relevance,
+            Self::Jvm(row) => row.relevance,
         }
     }
 
@@ -58,6 +64,7 @@ impl Row<'_> {
             Self::Method(row) => (row.image.0, row.logical.0, row.class_def.0, row.method.0),
             Self::Field(row) => (row.image.0, row.logical.0, row.class_def.0, row.field.0),
             Self::String(row) => (row.image.0, row.logical.0, 0, row.string.0),
+            Self::Jvm(row) => (row.ordinal, 0, 0, row.item.index() as u32),
         }
     }
 }
@@ -85,6 +92,8 @@ pub enum QueryError {
     Method(#[from] diana_decomp::input::MethodError),
     #[error(transparent)]
     Request(#[from] RequestError),
+    #[error(transparent)]
+    JvmClass(#[from] diana_decomp::input::jvm::ClassError),
     #[error("query worker stopped before delivering its rows")]
     WorkerLost,
     #[error("entries lists physical archive records only; a bare DEX has none")]
@@ -107,10 +116,34 @@ impl QueryError {
             Self::Engine(error) => error.kind(),
             Self::Method(error) => error.kind(),
             Self::Request(error) => error.kind(),
+            Self::JvmClass(error) => error.kind(),
             Self::WorkerLost => FailureKind::InternalInvariant,
             Self::NotArchive | Self::InvalidJobs => FailureKind::Unsupported,
         }
     }
+}
+
+/// Local scan failure with its original physical location.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct QueryIssue {
+    pub context: String,
+    pub kind: String,
+    pub reason: String,
+}
+
+impl QueryIssue {
+    pub fn new(context: String, error: &QueryError) -> Self {
+        Self {
+            context,
+            kind: format!("{:?}", error.kind()),
+            reason: error.to_string(),
+        }
+    }
+}
+
+pub struct QueryOutcome {
+    pub truncated: bool,
+    pub issues: Vec<QueryIssue>,
 }
 
 /// One root image's display metadata. It is not an original identity by itself.
@@ -143,6 +176,7 @@ pub struct QueryPlan {
 /// fuzzy products. Root images and original row identities are resolved once.
 pub struct Query<'a> {
     roots: Vec<DexRoot<'a>>,
+    jvm: Option<JvmRoots<'a>>,
     images: Vec<ImageInfo>,
     kind: QueryKind,
     filter: Option<TextFilter>,
@@ -160,7 +194,12 @@ impl<'a> Query<'a> {
         if plan.jobs == 0 {
             return Err(QueryError::InvalidJobs);
         }
-        let roots = if plan.kind == QueryKind::Entries {
+        let jvm = if plan.kind == QueryKind::Entries {
+            None
+        } else {
+            JvmRoots::select_with_jobs(scope, plan.jobs)?
+        };
+        let roots = if plan.kind == QueryKind::Entries || jvm.is_some() {
             Vec::new()
         } else {
             scope.roots()?
@@ -177,6 +216,7 @@ impl<'a> Query<'a> {
         let entries = scope.input().archive().map(|directory| directory.entries());
         Ok(Self {
             roots,
+            jvm,
             images,
             kind: plan.kind,
             filter: plan.filter,
@@ -190,6 +230,12 @@ impl<'a> Query<'a> {
 
     pub fn images(&self) -> &[ImageInfo] {
         &self.images
+    }
+
+    pub fn shard_count(&self) -> usize {
+        self.jvm.as_ref().map_or(self.roots.len(), |roots| {
+            Self::jvm_batches(roots).min(self.jobs)
+        })
     }
 
     /// Streams every matching row, formatted inside the scan.
@@ -206,6 +252,24 @@ impl<'a> Query<'a> {
         R: for<'r> Fn(Row<'r>, &mut Vec<u8>, bool) -> Result<(), QueryError> + Sync,
         S: FnMut(Vec<u8>) -> Result<(), QueryError>,
     {
+        let outcome = self.run_detailed(render, sink)?;
+        if let Some(issue) = outcome.issues.first() {
+            return Err(QueryError::Local {
+                kind: FailureKind::Malformed,
+                reason: format!("{}: {}", issue.context, issue.reason),
+            });
+        }
+        Ok(outcome.truncated)
+    }
+
+    pub fn run_detailed<R, S>(&self, render: &R, sink: &mut S) -> Result<QueryOutcome, QueryError>
+    where
+        R: for<'r> Fn(Row<'r>, &mut Vec<u8>, bool) -> Result<(), QueryError> + Sync,
+        S: FnMut(Vec<u8>) -> Result<(), QueryError>,
+    {
+        if let Some(roots) = &self.jvm {
+            return self.run_jvm(roots, render, sink);
+        }
         let ranked = self.filter.as_ref().is_some_and(TextFilter::is_fuzzy);
         let mut collected = ranking::Collected::default();
         let emitted = std::sync::atomic::AtomicUsize::new(0);
@@ -239,7 +303,10 @@ impl<'a> Query<'a> {
             }
             buffer.flush(&mut |batch| collected.accept(batch, sink))?;
             collected.finish(sink)?;
-            return Ok(truncated.load(std::sync::atomic::Ordering::Relaxed));
+            return Ok(QueryOutcome {
+                truncated: truncated.load(std::sync::atomic::Ordering::Relaxed),
+                issues: Vec::new(),
+            });
         }
         let kind = self.kind;
         let mut work = Vec::new();
@@ -315,7 +382,10 @@ impl<'a> Query<'a> {
         let delivered = collected.finish(sink);
         scanned?;
         delivered?;
-        Ok(truncated.load(std::sync::atomic::Ordering::Relaxed))
+        Ok(QueryOutcome {
+            truncated: truncated.load(std::sync::atomic::Ordering::Relaxed),
+            issues: Vec::new(),
+        })
     }
 }
 

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
 
-use super::index::{Body, Method, Op};
+use super::index::{Body, Format, JvmDeclaration, Method, Op};
 use super::inline;
 use super::matching::Matching;
 use super::{Change, Fragment, MatchedMethod, MethodLocation, Site};
@@ -31,19 +31,43 @@ pub(super) fn method(
             new.prototype.clone(),
         ));
     }
+    if old.jvm.is_some() || new.jvm.is_some() {
+        let empty = JvmDeclaration::default();
+        let old = old.jvm.as_deref().unwrap_or(&empty);
+        let new = new.jvm.as_deref().unwrap_or(&empty);
+        if let (Some(a), Some(b)) = (&old.signature, &new.signature)
+            && a != b
+        {
+            changes.push(attribute(
+                "generic_signature",
+                a.as_deref().unwrap_or("absent").to_owned(),
+                b.as_deref().unwrap_or("absent").to_owned(),
+            ));
+        }
+        if let (Some(a), Some(b)) = (&old.exceptions, &new.exceptions)
+            && a != b
+        {
+            changes.push(attribute("declared_exceptions", a.join(", "), b.join(", ")));
+        }
+    }
     let complete = old.issues.is_empty() && new.issues.is_empty();
     match (&old.body, &new.body) {
         (Some(a), Some(b)) => {
-            compare_bodies(a, b, symbols, symbols_renamed, complete, &mut changes)
+            let control = if a.format == Format::Jvm {
+                a.complete_control && b.complete_control
+            } else {
+                complete
+            };
+            compare_bodies(a, b, symbols, symbols_renamed, control, &mut changes)
         }
-        (None, Some(_)) if complete => changes.push(Change {
+        (None, Some(body)) if complete => changes.push(Change {
             kind: "method_body",
             old: Some(site("declaration only".into())),
-            new: Some(site("DEX code".into())),
+            new: Some(site(body.format.code().into())),
         }),
-        (Some(_), None) if complete => changes.push(Change {
+        (Some(body), None) if complete => changes.push(Change {
             kind: "method_body",
-            old: Some(site("DEX code".into())),
+            old: Some(site(body.format.code().into())),
             new: Some(site("declaration only".into())),
         }),
         _ => {}
@@ -108,7 +132,10 @@ fn compare_bodies(
     changes: &mut Vec<Change>,
 ) {
     if old.code.len() == new.code.len()
-        && old.frame[1] == new.frame[1]
+        && (match old.format {
+            Format::Dex => old.frame[1] == new.frame[1],
+            Format::Jvm => old.frame == new.frame,
+        })
         && old.operands == new.operands
         && old.protection == new.protection
         && old
@@ -127,6 +154,17 @@ fn compare_bodies(
             old.frame[1].to_string(),
             new.frame[1].to_string(),
         ));
+    }
+    if old.format == Format::Jvm {
+        for (index, field) in [(0, "max_locals"), (2, "max_stack")] {
+            if old.frame[index] != new.frame[index] {
+                changes.push(attribute(
+                    field,
+                    old.frame[index].to_string(),
+                    new.frame[index].to_string(),
+                ));
+            }
+        }
     }
     let (aligned, relocated) = align_bodies(old, new, complete);
     let mut targets = vec![None; old.code.len() + 1];
@@ -474,7 +512,7 @@ pub(super) fn fragments(old: &[Method], new: &[Method], matched: &Matching) -> V
     let mut unknown = HashMap::new();
     for (id, method) in old.iter().enumerate() {
         let target = if matched.old_to_new[id].is_none() && method.issues.is_empty() {
-            method.body.as_ref().and_then(inline::eligible).map(|_| id)
+            inline::eligible(method).map(|_| id)
         } else {
             None
         };
@@ -498,7 +536,7 @@ pub(super) fn fragments(old: &[Method], new: &[Method], matched: &Matching) -> V
         }
         let mut aligned = None;
         for i in 0..a.code.len() {
-            if !inline::is_call(a.code[i].opcode) {
+            if !inline::is_call(a, i) {
                 continue;
             }
             let Some(id) = a
@@ -512,8 +550,8 @@ pub(super) fn fragments(old: &[Method], new: &[Method], matched: &Matching) -> V
             let Some(helper) = &old[id].body else {
                 continue;
             };
-            let targets = aligned.get_or_insert_with(|| align(&a.code, &b.code));
-            let Some(site) = inline::find(a, helper, b, i, targets) else {
+            let targets = aligned.get_or_insert_with(|| inline::Context::new(a, b));
+            let Some(site) = inline::find(before, &old[id], after, i, targets) else {
                 continue;
             };
             fragments.push(Fragment {

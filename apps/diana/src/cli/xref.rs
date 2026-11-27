@@ -7,9 +7,8 @@ use super::output::{Failure, Format};
 use super::table::{RowSummary, publish_encoded};
 use crate::analysis::at;
 use crate::analysis::filter::{MatchMode, best_first};
-use crate::analysis::input::{InputError, InputOptions};
+use crate::analysis::input::InputError;
 use crate::analysis::query::QueryError;
-use crate::analysis::request::RequestScope;
 use crate::analysis::selector;
 use crate::analysis::xref::{Matched, Relation, RowView, Site, Target, TextMatch, Xref, XrefPlan};
 
@@ -61,6 +60,60 @@ pub fn run(
             "--transitive follows callers and requires the method kind",
         ));
     }
+    let scope = {
+        #[cfg(feature = "perf")]
+        let _span = fastrace::local::LocalSpan::enter_with_local_parent("xref.open-input");
+        super::open_scope(input, output)?
+    };
+    if let Some(roots) =
+        crate::analysis::jvm::JvmRoots::select_with_jobs(&scope, jobs).map_err(query_failure)?
+    {
+        let is_jvm_location = target
+            .split(':')
+            .next()
+            .is_some_and(|location| location.parse::<crate::analysis::jvm::Location>().is_ok())
+            && (kind != "string" || mode != MatchMode::Exact);
+        let target = if kind == "resource" {
+            use crate::analysis::jvm_resources::PathTargets;
+            let paths =
+                if mode != MatchMode::Exact && is_jvm_location {
+                    let at = target.parse().map_err(
+                        |error: crate::analysis::jvm::InvalidLocation| invalid(error.to_string()),
+                    )?;
+                    PathTargets::at(&roots, &at)
+                } else {
+                    PathTargets::named(&roots, &text_match(target, mode)?)
+                }
+                .map_err(query_failure)?;
+            Target::JvmResource(paths)
+        } else if is_jvm_location {
+            crate::analysis::jvm_code::target_at(&roots, kind, target).map_err(query_failure)?
+        } else {
+            parse_target(kind, target, mode)?
+        };
+        let class = class
+            .map(selector::class)
+            .transpose()
+            .map_err(selection_failure)?
+            .map(|selector| selector.descriptor);
+        return super::jvm_code::xref(
+            &roots,
+            &crate::analysis::jvm_code::Plan {
+                target: &target,
+                class: class.as_deref(),
+                jobs,
+                typed_uses,
+                parameter_types,
+                recursive,
+                method_relation,
+                transitive,
+            },
+            limit,
+            format,
+            input,
+            output,
+        );
+    }
     let coordinate = if kind == "resource" || mode == MatchMode::Exact && kind == "string" {
         None
     } else {
@@ -76,11 +129,6 @@ pub fn run(
         .transpose()
         .map_err(selection_failure)?
         .map(|selector| selector.descriptor);
-    let scope = {
-        #[cfg(feature = "perf")]
-        let _span = fastrace::local::LocalSpan::enter_with_local_parent("xref.open-input");
-        RequestScope::open(input, &InputOptions { allowed_root: None }).map_err(Failure::input)?
-    };
     let mut issues = Vec::new();
     let target = match target {
         QueryTarget::Resource(pattern) => {

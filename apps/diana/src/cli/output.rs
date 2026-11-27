@@ -131,6 +131,22 @@ fn write_buffered(
     flushed
 }
 
+/// Project descriptors explicitly add several read-only command inputs.
+pub(super) fn protect_project_targets(
+    scope: &crate::analysis::request::RequestScope,
+    target: Option<&Path>,
+) -> Result<(), Failure> {
+    if let (Some(artifacts), Some(target)) = (scope.jvm_artifacts(), target) {
+        for input in artifacts.iter().filter_map(|artifact| artifact.path()) {
+            match check_target(target, input) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                result => result.map_err(Failure::output)?,
+            }
+        }
+    }
+    Ok(())
+}
+
 fn check_target(target: &Path, input: &Path) -> std::io::Result<()> {
     let metadata = match std::fs::symlink_metadata(target) {
         Ok(metadata) => metadata,

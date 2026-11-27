@@ -38,7 +38,7 @@ fn manifest_entry_kind(problem: &ArchiveProblem) -> diana_decomp::FailureKind {
         ArchiveProblem::Allocation(_) => Kind::ResourceExhausted,
         ArchiveProblem::UnsupportedCompression(_)
         | ArchiveProblem::EncryptedEntry
-        | ArchiveProblem::UnsupportedZip64
+        | ArchiveProblem::MultiDisk
         | ArchiveProblem::NameEncoding => Kind::Unsupported,
         _ => Kind::Malformed,
     }

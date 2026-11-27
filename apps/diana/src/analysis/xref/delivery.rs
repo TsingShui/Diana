@@ -1,6 +1,6 @@
 use super::{QueryError, XrefRow};
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, serde::Serialize)]
 pub struct Issue {
     pub context: String,
     pub kind: String,

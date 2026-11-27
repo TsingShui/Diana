@@ -13,6 +13,7 @@ mod dynamic;
 mod error;
 pub mod formats;
 mod header;
+pub mod jvm;
 mod method;
 mod reference_leaves;
 mod retained;

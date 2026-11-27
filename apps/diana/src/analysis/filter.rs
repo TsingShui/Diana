@@ -148,6 +148,17 @@ impl TextFilter {
         Ok(matched.then_some(FilterMatch::default()))
     }
 
+    pub(super) fn evaluate_jvm(
+        &self,
+        value: diana_decomp::input::jvm::JvmString<'_>,
+    ) -> Result<Option<FilterMatch>, super::query::QueryError> {
+        if let Some(text) = value.utf8() {
+            self.evaluate_text(text)
+        } else {
+            self.evaluate_units(&value.to_utf16()?)
+        }
+    }
+
     pub(super) fn evaluate_units(
         &self,
         units: &[u16],

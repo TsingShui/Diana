@@ -357,6 +357,8 @@ impl EnumDeclarationRecovery {
         while let Some(expression) = pending.pop() {
             match expression {
                 JavaExpr::Allocate(_) => {}
+                JavaExpr::Unavailable { operands, .. }
+                | JavaExpr::RecordOperation { operands, .. } => pending.extend(operands),
                 JavaExpr::DirectInit { receiver, args, .. } => {
                     pending.extend(args);
                     pending.push(receiver);

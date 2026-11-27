@@ -685,7 +685,10 @@ impl JavaAstNormalizer {
 
     fn pure_condition(expression: &JavaExpr) -> bool {
         match expression {
-            JavaExpr::Allocate(_) | JavaExpr::DirectInit { .. } => false,
+            JavaExpr::Allocate(_)
+            | JavaExpr::DirectInit { .. }
+            | JavaExpr::Unavailable { .. }
+            | JavaExpr::RecordOperation { .. } => false,
             JavaExpr::This
             | JavaExpr::QualifiedThis(_)
             | JavaExpr::Super
@@ -872,7 +875,10 @@ impl ConditionalResultJoin {
         let mut pending = vec![expression];
         while let Some(expression) = pending.pop() {
             match expression {
-                JavaExpr::Allocate(_) | JavaExpr::DirectInit { .. } => return false,
+                JavaExpr::Allocate(_)
+                | JavaExpr::DirectInit { .. }
+                | JavaExpr::Unavailable { .. }
+                | JavaExpr::RecordOperation { .. } => return false,
                 JavaExpr::This
                 | JavaExpr::QualifiedThis(_)
                 | JavaExpr::Super
