@@ -913,10 +913,42 @@ impl OwnerOverloads {
     }
 }
 
+/// Only an exhaustive physical parent walk proves that a target is absent.
+#[derive(Debug)]
+struct AncestorProof {
+    root: ArgType,
+    reachable: BTreeSet<ArgType>,
+    covers_generic_paths: bool,
+}
+
+/// Keep retained ancestor facts bounded even for deep or mutually recursive inputs.
+/// Slots belong to this declaration hierarchy and may be replaced independently.
+#[derive(Debug, Default)]
+struct AncestorIndex {
+    slots: [RwLock<Option<AncestorProof>>; 32],
+    hash: foldhash::fast::RandomState,
+}
+
+impl AncestorIndex {
+    fn slot(&self, ty: &ArgType) -> &RwLock<Option<AncestorProof>> {
+        use std::hash::BuildHasher;
+        &self.slots[self.hash.hash_one(ty) as usize % self.slots.len()]
+    }
+
+    fn get<T>(&self, root: &ArgType, inspect: impl FnOnce(&AncestorProof) -> T) -> Option<T> {
+        let entry = self.slot(root).read().ok()?;
+        entry
+            .as_ref()
+            .filter(|proof| &proof.root == root)
+            .map(inspect)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct GenericTypeHierarchy {
     hierarchy: CompositeClassHierarchy,
     method_overloads: Arc<MethodOverloadIndex>,
+    ancestors: Arc<AncestorIndex>,
 }
 
 impl GenericTypeHierarchy {
@@ -929,6 +961,7 @@ impl GenericTypeHierarchy {
         Ok(Self {
             hierarchy: CompositeClassHierarchy::from_loaded(loaded)?,
             method_overloads: Arc::new(MethodOverloadIndex::default()),
+            ancestors: Arc::default(),
         })
     }
 
@@ -974,23 +1007,53 @@ impl GenericTypeHierarchy {
     }
 
     pub(crate) fn is_subtype(&self, subtype: &ArgType, supertype: &ArgType) -> bool {
-        {
-            let mut pending = VecDeque::from([subtype.clone()]);
-            let mut visited = BTreeSet::new();
-            while let Some(candidate) = pending.pop_front() {
-                if candidate == *supertype {
-                    return true;
-                }
-                if !visited.insert(candidate.clone()) {
-                    continue;
-                }
-                let Some(declared) = self.hierarchy.class_details(&candidate) else {
-                    continue;
-                };
-                pending.extend(declared.parents.iter().cloned());
-            }
-            false
+        if subtype == supertype {
+            return true;
         }
+        if let Some(found) = self
+            .ancestors
+            .get(subtype, |proof| proof.reachable.contains(supertype))
+        {
+            return found;
+        }
+        const MAX_RETAINED_ANCESTORS: usize = 64;
+        let mut pending = VecDeque::from([subtype.clone()]);
+        let mut visited = BTreeSet::new();
+        let mut covers_generic_paths = true;
+        while let Some(candidate) = pending.pop_front() {
+            if candidate == *supertype {
+                return true;
+            }
+            if !visited.insert(candidate.clone()) {
+                continue;
+            }
+            let Some(declared) = self.hierarchy.class_details(&candidate) else {
+                continue;
+            };
+            // Class substitutions can change arguments but preserve a class
+            // parent's erasure. Mismatched directory and generic parents must
+            // continue through the occurrence-sensitive projection walk.
+            if visited.len() <= MAX_RETAINED_ANCESTORS && covers_generic_paths {
+                covers_generic_paths = declared.parents.len() == declared.generic_parents.len()
+                    && declared.generic_parents.iter().zip(&declared.parents).all(
+                        |(generic, physical)| match generic {
+                            JvmTypeSignature::ClassType(class) => class.erased_type() == *physical,
+                            _ => false,
+                        },
+                    );
+            }
+            pending.extend(declared.parents.iter().cloned());
+        }
+        if visited.len() <= MAX_RETAINED_ANCESTORS {
+            if let Ok(mut slot) = self.ancestors.slot(subtype).write() {
+                *slot = Some(AncestorProof {
+                    root: subtype.clone(),
+                    reachable: visited,
+                    covers_generic_paths,
+                });
+            }
+        }
+        false
     }
 
     /// Every type reachable from `ty` through parent links, including `ty`.
@@ -1450,7 +1513,14 @@ impl GenericTypeHierarchy {
         subtype: &JvmTypeSignature,
         expected_supertype: &ArgType,
     ) -> Option<JvmTypeSignature> {
-        let declared = self.hierarchy.class_details(&subtype.erased())?;
+        let erased = subtype.erased();
+        if self.ancestors.get(&erased, |proof| {
+            proof.covers_generic_paths && !proof.reachable.contains(expected_supertype)
+        }) == Some(true)
+        {
+            return None;
+        }
+        let declared = self.hierarchy.class_details(&erased)?;
         let declared_parameters = declared
             .generic_signature
             .as_ref()

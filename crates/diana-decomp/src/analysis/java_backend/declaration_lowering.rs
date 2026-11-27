@@ -403,12 +403,7 @@ struct JavaTypeLowering<'a> {
             crate::ir::generic_types::GenericFieldContract,
         >,
     >,
-    generic_methods: std::sync::Arc<
-        std::collections::BTreeMap<
-            crate::ir::MethodReference,
-            std::sync::Arc<crate::ir::generic_types::GenericMethodContract>,
-        >,
-    >,
+    generic_methods: std::sync::Arc<crate::language::java::GenericMethodIndex>,
     generic_uses: Vec<ArgType>,
     constructor_method_return_types: ConstructorMethodReturnTypes,
     source_object_types: std::sync::Arc<SourceObjectTypes>,
@@ -684,7 +679,7 @@ impl<'a> JavaTypeLowering<'a> {
             constants: JavaConstantLowering::new(names, members),
             source_field_types: std::sync::Arc::new(source_field_types),
             generic_fields: std::sync::Arc::new(generic_fields),
-            generic_methods: std::sync::Arc::new(generic_methods),
+            generic_methods: std::sync::Arc::new(generic_methods.into()),
             generic_uses,
             constructor_method_return_types,
             source_object_types: std::sync::Arc::new(source_object_types),

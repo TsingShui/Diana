@@ -177,12 +177,7 @@ impl JavaMethodBody {
                 crate::ir::generic_types::GenericFieldContract,
             >,
         >,
-        generic_methods: std::sync::Arc<
-            std::collections::BTreeMap<
-                crate::ir::MethodReference,
-                std::sync::Arc<crate::ir::generic_types::GenericMethodContract>,
-            >,
-        >,
+        generic_methods: std::sync::Arc<crate::language::java::GenericMethodIndex>,
         generic_uses: &[ArgType],
         source_object_types: std::sync::Arc<crate::language::java::SourceObjectTypes>,
         generic_type_projection: std::rc::Rc<dyn crate::language::java::GenericTypeProjection>,

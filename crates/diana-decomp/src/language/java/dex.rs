@@ -456,7 +456,7 @@ impl DexJavaDialect {
 
     pub(crate) fn with_shared_generic_methods(
         mut self,
-        methods: Arc<BTreeMap<MethodReference, Arc<GenericMethodContract>>>,
+        methods: Arc<super::GenericMethodIndex>,
     ) -> Self {
         self.generic_methods = GenericMethodContracts::Shared(methods);
         self

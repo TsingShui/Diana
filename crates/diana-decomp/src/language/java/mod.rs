@@ -37,7 +37,7 @@ pub use normalize::{
 };
 pub(crate) use rewrite::JavaAstMutator;
 pub use rewrite::JavaAstRewriter;
-pub(crate) use source_types::{GenericTypeProjection, SourceObjectTypes};
+pub(crate) use source_types::{GenericMethodIndex, GenericTypeProjection, SourceObjectTypes};
 pub use syntax::{JavaValueSyntax, SourceSyntaxRecovery};
 pub use unit::{
     JavaAnnotation, JavaAnnotationElement, JavaAnnotationValue, JavaAnonymousClassBody,

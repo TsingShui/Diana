@@ -748,10 +748,13 @@ impl PlatformSymbolSet {
     }
 
     pub(crate) fn hierarchy_of(&self, class: &str) -> Option<PlatformHierarchyEntry<'_>> {
-        let descriptor = format!("L{class};");
+        self.descriptor_hierarchy(&format!("L{class};"))
+    }
+
+    fn descriptor_hierarchy(&self, descriptor: &str) -> Option<PlatformHierarchyEntry<'_>> {
         match &self.store {
             SymbolStore::Eager(classes) => {
-                let class = classes.get(&descriptor)?;
+                let class = classes.get(descriptor)?;
                 Some(PlatformHierarchyEntry {
                     descriptor: &class.descriptor,
                     super_class: class.super_class.as_deref(),
@@ -760,7 +763,7 @@ impl PlatformSymbolSet {
                 })
             }
             SymbolStore::Archive(archive) => {
-                let position = self.position(&descriptor)?;
+                let position = self.position(descriptor)?;
                 let (descriptor, super_class, interfaces, access_flags) =
                     archive.hierarchy(self.selected[position]);
                 Some(PlatformHierarchyEntry {
@@ -775,26 +778,20 @@ impl PlatformSymbolSet {
 
     /// Walks index-level parents, so a subtype question never decodes a class.
     pub fn is_subtype(&self, subtype: &str, supertype: &str) -> bool {
-        let mut pending = std::collections::VecDeque::from([subtype.to_string()]);
-        let mut seen = std::collections::BTreeSet::new();
-        while let Some(candidate) = pending.pop_front() {
+        let mut pending = smallvec::SmallVec::<[&str; 8]>::new();
+        pending.push(subtype);
+        let mut seen = foldhash::HashSet::<&str>::default();
+        while let Some(candidate) = pending.pop() {
             if candidate == supertype {
                 return true;
             }
-            if !seen.insert(candidate.clone()) {
+            if !seen.insert(candidate) || !candidate.starts_with('L') || !candidate.ends_with(';') {
                 continue;
             }
-            let Some(name) = candidate
-                .strip_prefix('L')
-                .and_then(|value| value.strip_suffix(';'))
-            else {
-                continue;
-            };
-            let Some(entry) = self.hierarchy_of(name) else {
-                continue;
-            };
-            pending.extend(entry.super_class.map(str::to_string));
-            pending.extend(entry.interfaces.iter().map(|parent| parent.to_string()));
+            if let Some(entry) = self.descriptor_hierarchy(candidate) {
+                pending.extend(entry.interfaces);
+                pending.extend(entry.super_class);
+            }
         }
         false
     }

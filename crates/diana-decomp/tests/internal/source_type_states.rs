@@ -475,3 +475,63 @@ fn source_type_lookup_preserves_boolean_aliases_missing_entries_and_first_revers
     ]);
     assert!(SourceTypeLookup::new(&plain).is_dynamic_formal(&first));
 }
+
+#[test]
+fn shared_and_reconstructed_class_shapes_keep_the_first_erasure_alias() {
+    let first = ArgType::object("fixture/A");
+    let next = ArgType::object("fixture/B");
+    let from_a = JavaType::source_class("names.Shared");
+    let from_b = JavaType::source_class("names.Shared");
+    let index = JavaTypeErasureIndex::from_source_types(BTreeMap::from([
+        (first.clone(), from_a.clone()),
+        (next, from_b.clone()),
+    ]));
+    let variables = BTreeMap::new();
+    for source in [from_a, from_b, JavaType::source_class("names.Shared")] {
+        assert_eq!(
+            index.erasure_of(&source, &variables).as_deref(),
+            Some(&first)
+        );
+    }
+    assert!(index
+        .erasure_of(&JavaType::source_class("other.Shared"), &variables)
+        .is_none());
+}
+
+#[test]
+fn contracts_with_the_same_name_remain_distinct_by_owner_and_descriptor() {
+    use crate::ir::generic_types::GenericSignatures;
+    let mut methods = BTreeMap::new();
+    for (owner, parameter, generic) in [
+        ("One", "I", "()Ljava/lang/String;"),
+        ("One", "J", "()Ljava/lang/Long;"),
+        ("Two", "I", "()Ljava/lang/Integer;"),
+    ] {
+        let reference = format!("Lfixture/{owner};->value({parameter})Ljava/lang/Object;")
+            .parse::<MethodReference>()
+            .unwrap();
+        let contract = Arc::new(GenericMethodContract {
+            owner: ClassTypeSignature {
+                raw_name: format!("fixture/{owner}"),
+                type_arguments: Vec::new(),
+                inner_segments: Vec::new(),
+            },
+            owner_parameters: Vec::new(),
+            signature: GenericSignatures::method(generic).unwrap(),
+        });
+        methods.insert(reference, contract);
+    }
+    let index = GenericMethodIndex::from(methods.clone());
+    for (method, expected) in &methods {
+        assert!(std::ptr::eq(
+            index.contract(method).unwrap(),
+            expected.as_ref()
+        ));
+    }
+    for missing in [
+        "Lfixture/Two;->value(J)Ljava/lang/Object;",
+        "Lfixture/One;->other(I)Ljava/lang/Object;",
+    ] {
+        assert!(index.contract(&missing.parse().unwrap()).is_none());
+    }
+}

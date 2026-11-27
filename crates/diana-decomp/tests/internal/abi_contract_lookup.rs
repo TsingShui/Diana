@@ -118,3 +118,47 @@ fn overload_fallback_preserves_shadowed_and_independent_declarations_on_cache_hi
         assert_eq!(output, expected);
     }
 }
+
+#[test]
+fn a_physical_ancestor_miss_keeps_a_different_declared_generic_parent_reachable() {
+    let mut hierarchy = GenericTypeHierarchy::from_classes(std::iter::empty()).unwrap();
+    let root = ArgType::object("fixture/Root");
+    let target = ArgType::object("java/lang/String");
+    let object = ArgType::object("java/lang/Object");
+    let mut owner = (*hierarchy.hierarchy.class_details(&object).unwrap()).clone();
+    owner.descriptor = root.to_descriptor();
+    owner.generic_signature = Some(GenericSignatures::class("Ljava/lang/String;").unwrap());
+    owner.parents = vec![object.clone()];
+    let generic = GenericSignatures::field("Ljava/lang/String;").unwrap();
+    owner.generic_parents = vec![generic.clone()];
+    hierarchy
+        .hierarchy
+        .loaded
+        .classes
+        .insert(root.clone(), Arc::new(owner));
+    let child = ArgType::object("fixture/Child");
+    let root_signature = GenericSignatures::field("Lfixture/Root;").unwrap();
+    let mut derived = (*hierarchy.hierarchy.class_details(&object).unwrap()).clone();
+    derived.descriptor = child.to_descriptor();
+    derived.generic_signature = None;
+    derived.parents = vec![root.clone()];
+    derived.generic_parents = vec![root_signature.clone()];
+    hierarchy
+        .hierarchy
+        .loaded
+        .classes
+        .insert(child.clone(), Arc::new(derived));
+    for (owner, source) in [
+        (&root, root_signature),
+        (&child, GenericSignatures::field("Lfixture/Child;").unwrap()),
+    ] {
+        for _ in 0..2 {
+            assert!(!hierarchy.is_subtype(owner, &target));
+            assert!(hierarchy.is_subtype(owner, &object));
+            assert_eq!(
+                hierarchy.project_supertype(&source, &target).as_ref(),
+                Some(&generic)
+            );
+        }
+    }
+}

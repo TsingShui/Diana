@@ -21,14 +21,48 @@ use super::{JavaClassType, JavaIdentifier, JavaType, JavaTypeArgument};
 #[derive(Debug, Clone)]
 pub(super) enum GenericMethodContracts {
     Owned(Arc<BTreeMap<MethodReference, GenericMethodContract>>),
-    Shared(Arc<BTreeMap<MethodReference, Arc<GenericMethodContract>>>),
+    Shared(Arc<GenericMethodIndex>),
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct GenericMethodIndex {
+    // Class preparation already orders each full member identity. Filtering by the
+    // original member name preserves that order within each overload set.
+    named: foldhash::HashMap<String, Vec<(MethodReference, Arc<GenericMethodContract>)>>,
+}
+
+impl From<BTreeMap<MethodReference, Arc<GenericMethodContract>>> for GenericMethodIndex {
+    fn from(methods: BTreeMap<MethodReference, Arc<GenericMethodContract>>) -> Self {
+        let mut index = Self::default();
+        for (method, contract) in methods {
+            index
+                .named
+                .entry(method.name.clone())
+                .or_default()
+                .push((method, contract));
+        }
+        index
+    }
+}
+
+impl GenericMethodIndex {
+    fn contract(&self, method: &MethodReference) -> Option<&GenericMethodContract> {
+        let entries = self.named.get(&method.name)?;
+        if let [(reference, contract)] = entries.as_slice() {
+            return (reference == method).then_some(contract.as_ref());
+        }
+        let index = entries
+            .binary_search_by(|(reference, _)| reference.cmp(method))
+            .ok()?;
+        Some(&entries[index].1)
+    }
 }
 
 impl GenericMethodContracts {
     pub(super) fn get(&self, method: &MethodReference) -> Option<&GenericMethodContract> {
         match self {
             Self::Owned(methods) => methods.get(method),
-            Self::Shared(methods) => methods.get(method).map(AsRef::as_ref),
+            Self::Shared(methods) => methods.contract(method),
         }
     }
 }
@@ -183,6 +217,9 @@ pub(super) struct JavaTypeErasureIndex {
 #[derive(Debug, Clone, Default)]
 struct ReverseJavaTypes {
     classes: foldhash::HashMap<smol_str::SmolStr, ArgType>,
+    // The forward table owns these immutable segment allocations for the index's lifetime.
+    // Named aliases continue to resolve to the first descriptor in BTree order.
+    shapes: foldhash::HashMap<usize, ArgType>,
     // Each primitive retains the first erased descriptor with that source spelling.
     primitives: [Option<ArgType>; super::JavaPrimitiveType::Double as usize + 1],
 }
@@ -205,10 +242,15 @@ impl JavaTypeErasureIndex {
             for (erased, source) in &self.source_types {
                 match source {
                     JavaType::Class(class) => {
-                        index
+                        let first = index
                             .classes
                             .entry(Self::class_key(class).as_ref().into())
                             .or_insert_with(|| erased.clone());
+                        if class.segments.len() != 1 {
+                            index
+                                .shapes
+                                .insert(class.segments.as_ptr().addr(), first.clone());
+                        }
                     }
                     JavaType::Primitive(primitive) => {
                         index.primitives[*primitive as usize].get_or_insert_with(|| erased.clone());
@@ -235,7 +277,14 @@ impl JavaTypeErasureIndex {
     }
 
     fn class_erasure(&self, class: &JavaClassType) -> Option<&ArgType> {
-        self.reverse().classes.get(Self::class_key(class).as_ref())
+        let reverse = self.reverse();
+        if let [segment] = class.segments.as_ref() {
+            return reverse.classes.get(segment.name.as_str());
+        }
+        reverse
+            .shapes
+            .get(&class.segments.as_ptr().addr())
+            .or_else(|| reverse.classes.get(Self::class_key(class).as_ref()))
     }
 
     fn erasure_of<'a>(
@@ -5779,23 +5828,11 @@ impl<'a> SourceTypeFlow<'a> {
             ..
         } = value
         else {
-            let inferred = self.expression_type(value)?;
-            if !value
-                .as_operation()
-                .is_some_and(|op| op.insn_type == InsnType::Invoke)
-            {
-                return Some(inferred);
-            }
-            let inferred_erasure = self.indexed_erased_type(&inferred);
-            let invocation_erasure_mismatch = inferred_erasure.as_ref() != Some(erased_result)
-                && !inferred_erasure.as_ref().is_some_and(|inferred| {
-                    self.generic_projection
-                        .is_some_and(|projection| projection.is_subtype(inferred, erased_result))
-                });
-            return if invocation_erasure_mismatch {
-                self.resolved_type(erased_result)
-            } else {
-                Some(inferred)
+            return match value.as_operation() {
+                Some(operation) if operation.insn_type == InsnType::Invoke => {
+                    self.invocation_type(operation, Some(erased_result))
+                }
+                _ => self.expression_type(value),
             };
         };
         if erased_result == &ArgType::BOOLEAN
@@ -5893,7 +5930,7 @@ impl<'a> SourceTypeFlow<'a> {
                 .class_type
                 .as_ref()
                 .and_then(|represented| self.class_literal_type(represented)),
-            InsnType::Invoke => self.invocation_type(operation),
+            InsnType::Invoke => return self.invocation_type(operation, None),
             InsnType::Constructor => operation
                 .allocation_type()
                 .and_then(|owner| self.object_types.get(owner))
@@ -5911,14 +5948,43 @@ impl<'a> SourceTypeFlow<'a> {
             .and_then(|result| self.resolved_type(&result.ty))
     }
 
-    fn invocation_type(&self, operation: &SemanticOperation) -> Option<JavaType> {
-        let MemberReference::Method(method) = operation.payload.reference.as_deref()? else {
-            return None;
+    fn invocation_type(
+        &self,
+        operation: &SemanticOperation,
+        result: Option<&ArgType>,
+    ) -> Option<JavaType> {
+        let inferred = match operation.payload.reference.as_deref() {
+            Some(MemberReference::Method(method)) => match self.invocation_solver(operation) {
+                Some((solver, arguments, contract)) => {
+                    self.solved_invocation_type(operation, &solver, arguments, contract)
+                }
+                None => {
+                    let declared = self.resolved_type(&method.descriptor.return_type);
+                    // A reverse-erasure mismatch would select this same forward
+                    // declaration as its fallback, including for source aliases.
+                    if declared.is_some() && result == Some(&method.descriptor.return_type) {
+                        return declared;
+                    }
+                    declared
+                }
+            },
+            _ => None,
         };
-        let Some((solver, arguments, contract)) = self.invocation_solver(operation) else {
-            return self.resolved_type(&method.descriptor.return_type);
+        let inferred = inferred.or_else(|| self.erased_result_type(operation))?;
+        let Some(result) = result else {
+            return Some(inferred);
         };
-        self.solved_invocation_type(operation, &solver, arguments, contract)
+        let erased = self.indexed_erased_type(&inferred);
+        if erased.as_ref() == Some(result)
+            || erased.as_ref().is_some_and(|actual| {
+                self.generic_projection
+                    .is_some_and(|projection| projection.is_subtype(actual, result))
+            })
+        {
+            Some(inferred)
+        } else {
+            self.resolved_type(result)
+        }
     }
 
     fn solved_invocation_type(
