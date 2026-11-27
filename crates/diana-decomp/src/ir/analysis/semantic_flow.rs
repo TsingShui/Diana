@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ops::Range;
+mod cleanup_reaching;
 mod edges;
 mod index;
 use edges::FlowEdge;
@@ -901,211 +902,16 @@ impl SemanticFlowGraph {
                 )));
             }
         }
-        let definition_count = definitions.len();
-        let mut by_value = DefinitionsByValue::new(definitions, value_count);
-        let mut next = by_value.offsets[..value_count].to_vec();
+        let by_value = DefinitionsByValue::new(definitions, value_count);
+        let next = by_value.offsets[..value_count].to_vec();
         if !cleanup {
             return self.reaching_values_plain(definitions, targets, by_value, next);
         }
-        let mut generated = BTreeMap::<SemanticFlowPoint, DefinitionSet>::new();
-        let mut killed = BTreeMap::<SemanticFlowPoint, DefinitionSet>::new();
-        for definition in definitions {
-            let value = definition.value;
-            let index = next[value];
-            next[value] += 1;
-            by_value.ordinals[index] = definition.ordinal;
-            generated
-                .entry(definition.point)
-                .or_insert_with(|| DefinitionSet::new(definition_count))
-                .insert(index);
-            killed
-                .entry(definition.point)
-                .or_insert_with(|| DefinitionSet::new(definition_count))
-                .insert_range(by_value.offsets[value]..by_value.offsets[value + 1]);
-        }
-        self.reaching_values_with_cleanup(definitions, targets, generated, killed, by_value)
+        cleanup_reaching::analyze(&self.index, definitions, targets, by_value, next)
     }
 
     fn has_cleanup_continuations(&self) -> bool {
         self.index.cleanup
-    }
-
-    fn reaching_values_with_cleanup(
-        &self,
-        definitions: &[SemanticValueDefinition],
-        targets: &DefinitionSet,
-        generated: BTreeMap<SemanticFlowPoint, DefinitionSet>,
-        killed: BTreeMap<SemanticFlowPoint, DefinitionSet>,
-        by_value: DefinitionsByValue,
-    ) -> SemanticReachingValues {
-        let definition_count = definitions.len();
-        let nodes = self.reaching_slice(targets);
-        let mut outgoing =
-            BTreeMap::<SemanticFlowPoint, Vec<(SemanticFlowPoint, SemanticFlowEdgeKind)>>::new();
-        for &target in &nodes {
-            for (predecessor, edge) in self.index.incoming_points(target) {
-                if nodes.contains(&predecessor) {
-                    outgoing
-                        .entry(predecessor)
-                        .or_default()
-                        .push((target, edge));
-                }
-            }
-        }
-
-        let mut states = Vec::<(SemanticFlowPoint, Vec<u64>)>::new();
-        let mut state_ids = BTreeMap::<(SemanticFlowPoint, Vec<u64>), usize>::new();
-        let mut successors = Vec::<Vec<usize>>::new();
-        let mut predecessors = Vec::<Vec<usize>>::new();
-        let mut entries = Vec::<bool>::new();
-        let mut pending = VecDeque::new();
-        for entry in self
-            .index
-            .entries
-            .iter()
-            .map(|&id| self.index.point(id))
-            .filter(|entry| nodes.contains(entry))
-        {
-            let id = states.len();
-            let state = (entry, Vec::new());
-            if state_ids.insert(state.clone(), id).is_none() {
-                states.push(state);
-                successors.push(Vec::new());
-                predecessors.push(Vec::new());
-                entries.push(true);
-                pending.push_back(id);
-            }
-        }
-        while let Some(state_id) = pending.pop_front() {
-            let (point, continuation) = states[state_id].clone();
-            for (successor, edge) in outgoing.get(&point).into_iter().flat_map(Vec::as_slice) {
-                let Some(next_continuation) = edge.transfer(&continuation) else {
-                    continue;
-                };
-                let next_state = (*successor, next_continuation);
-                let next_id = if let Some(id) = state_ids.get(&next_state) {
-                    *id
-                } else {
-                    let id = states.len();
-                    state_ids.insert(next_state.clone(), id);
-                    states.push(next_state);
-                    successors.push(Vec::new());
-                    predecessors.push(Vec::new());
-                    entries.push(false);
-                    pending.push_back(id);
-                    id
-                };
-                if !successors[state_id].contains(&next_id) {
-                    successors[state_id].push(next_id);
-                    predecessors[next_id].push(state_id);
-                }
-            }
-        }
-
-        let mut facts = vec![DefinitionSet::new(definition_count); states.len()];
-        let mut initialized = vec![false; states.len()];
-        let mut pending = (0..states.len()).collect::<VecDeque<_>>();
-        let mut queued = vec![true; states.len()];
-        while let Some(state_id) = pending.pop_front() {
-            queued[state_id] = false;
-            let mut next = DefinitionSet::new(definition_count);
-            let mut reachable = entries[state_id];
-            for predecessor in &predecessors[state_id] {
-                if initialized[*predecessor] {
-                    reachable = true;
-                    next.union_with(&facts[*predecessor]);
-                }
-            }
-            if !reachable {
-                continue;
-            }
-            let point = states[state_id].0;
-            if let Some(generated_at_point) = generated.get(&point) {
-                next.remove_with(&killed[&point]);
-                next.union_with(generated_at_point);
-            }
-            if initialized[state_id] && facts[state_id] == next {
-                continue;
-            }
-            facts[state_id] = next;
-            initialized[state_id] = true;
-            for successor in &successors[state_id] {
-                if !queued[*successor] {
-                    queued[*successor] = true;
-                    pending.push_back(*successor);
-                }
-            }
-        }
-
-        let mut reaching = BTreeMap::<SemanticFlowPoint, DefinitionSet>::new();
-        for (((point, _), facts), initialized) in states.into_iter().zip(facts).zip(initialized) {
-            if initialized && self.index.id(point).is_some_and(|id| targets.contains(id)) {
-                match reaching.entry(point) {
-                    std::collections::btree_map::Entry::Vacant(entry) => {
-                        entry.insert(facts);
-                    }
-                    std::collections::btree_map::Entry::Occupied(mut entry) => {
-                        entry.get_mut().union_with(&facts)
-                    }
-                }
-            }
-        }
-        self.insert_unreachable_target_bottoms(&mut reaching, targets, definition_count);
-        SemanticReachingValues::dataflow(reaching, by_value)
-    }
-
-    fn insert_unreachable_target_bottoms(
-        &self,
-        reaching: &mut BTreeMap<SemanticFlowPoint, DefinitionSet>,
-        targets: &DefinitionSet,
-        definition_count: usize,
-    ) {
-        for id in targets.members(0..self.index.len()) {
-            let target = self.index.point(id);
-            reaching
-                .entry(target)
-                .or_insert_with(|| DefinitionSet::new(definition_count));
-        }
-    }
-
-    fn reaching_slice(&self, targets: &DefinitionSet) -> BTreeSet<SemanticFlowPoint> {
-        let mut nodes = targets
-            .members(0..self.index.len())
-            .map(|id| self.index.point(id))
-            .collect::<BTreeSet<_>>();
-        let mut ancestors = nodes.iter().copied().collect::<VecDeque<_>>();
-        while let Some(node) = ancestors.pop_front() {
-            for (predecessor, _) in self.index.incoming_points(node) {
-                if nodes.insert(predecessor) {
-                    ancestors.push_back(predecessor);
-                }
-            }
-        }
-        nodes
-    }
-}
-
-impl SemanticFlowEdgeKind {
-    fn transfer(self, continuation: &[u64]) -> Option<Vec<u64>> {
-        let mut result = continuation.to_vec();
-        match self {
-            Self::Normal | Self::Exceptional | Self::LoopBack => {}
-            Self::FinallyEnter(token) => {
-                if result.contains(&token) {
-                    return None;
-                }
-                result.push(token);
-            }
-            Self::FinallyResume(token) => {
-                if result.pop() != Some(token) {
-                    return None;
-                }
-            }
-            Self::FinallyOverride => {
-                result.pop()?;
-            }
-        }
-        Some(result)
     }
 }
 

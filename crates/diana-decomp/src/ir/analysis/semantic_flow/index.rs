@@ -172,13 +172,27 @@ pub(super) struct FlowBlocks {
 
 impl FlowBlocks {
     pub(super) fn new(index: &GraphIndex) -> Self {
-        let mut owner = vec![usize::MAX; index.len()];
+        Self::from_edges(
+            index.len(),
+            &index.entries,
+            |node| index.successors(node),
+            |node| index.predecessors(node).len(),
+        )
+    }
+
+    pub(super) fn from_edges<'a>(
+        count: usize,
+        entries: &[usize],
+        outgoing: impl Fn(usize) -> &'a [usize],
+        indegree: impl Fn(usize) -> usize,
+    ) -> Self {
+        let mut owner = vec![usize::MAX; count];
         let mut points = EdgeRows::default();
-        let mut entry = vec![false; index.len()];
-        for &node in &index.entries {
+        let mut entry = vec![false; count];
+        for &node in entries {
             entry[node] = true;
         }
-        let mut pending = index.entries.clone();
+        let mut pending = entries.to_vec();
         while let Some(mut node) = pending.pop() {
             if owner[node] != usize::MAX {
                 continue;
@@ -188,12 +202,10 @@ impl FlowBlocks {
             loop {
                 owner[node] = block;
                 points.targets.push(node);
-                let successors = index.successors(node);
+                let successors = outgoing(node);
                 match successors {
                     [next]
-                        if !entry[*next]
-                            && index.predecessors(*next).len() == 1
-                            && owner[*next] == usize::MAX =>
+                        if !entry[*next] && indegree(*next) == 1 && owner[*next] == usize::MAX =>
                     {
                         node = *next
                     }
@@ -212,7 +224,7 @@ impl FlowBlocks {
         let mut order = Vec::with_capacity(count);
         let mut visited = vec![false; count];
         let mut stack = Vec::new();
-        for &entry in &index.entries {
+        for &entry in entries {
             let root = owner[entry];
             if std::mem::replace(&mut visited[root], true) {
                 continue;
@@ -220,7 +232,7 @@ impl FlowBlocks {
             stack.push((root, 0));
             while let Some((block, cursor)) = stack.last_mut() {
                 let last = *points.get(*block).last().expect("nonempty flow block");
-                if let Some(&successor) = index.successors(last).get(*cursor) {
+                if let Some(&successor) = outgoing(last).get(*cursor) {
                     *cursor += 1;
                     let next = owner[successor];
                     if !std::mem::replace(&mut visited[next], true) {

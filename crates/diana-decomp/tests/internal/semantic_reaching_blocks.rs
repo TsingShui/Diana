@@ -483,3 +483,53 @@ fn completeness_is_available_before_clones_share_the_frozen_adjacency() {
     });
     assert_eq!(builds.load(Ordering::Relaxed), 1);
 }
+
+#[test]
+fn cleanup_routes_keep_distinct_definition_words_across_nested_override_and_resume() {
+    use SemanticFlowEdgeKind::{FinallyEnter, FinallyOverride, FinallyResume, LoopBack, Normal};
+    let mut builder = SemanticFlowBuilder::new();
+    for (from, to, edge) in [
+        (0, 1, Normal),
+        (0, 2, Normal),
+        (1, 3, FinallyEnter(10)),
+        (2, 3, FinallyEnter(20)),
+        (3, 4, Normal),
+        (4, 5, FinallyEnter(30)),
+        (5, 6, FinallyOverride),
+        (6, 4, LoopBack),
+        (6, 7, FinallyResume(10)),
+        (6, 8, FinallyResume(20)),
+        (6, 9, FinallyResume(30)),
+        (5, 10, FinallyEnter(30)),
+        (0, 11, FinallyOverride),
+    ] {
+        builder.add_edge(point(from), point(to), edge);
+    }
+    let graph = builder.finish(&[point(0)]);
+    let left = (0..73).map(|id| SemanticValueDefinition::new(point(1), 0, id));
+    let right = (73..149).map(|id| SemanticValueDefinition::new(point(2), 0, id));
+    let defs = left
+        .chain(right)
+        .chain([
+            SemanticValueDefinition::new(point(0), 1, 200),
+            SemanticValueDefinition::new(point(5), 1, 201),
+            SemanticValueDefinition::new(point(7), 2, 202),
+            SemanticValueDefinition::new(point(99), 0, 999),
+        ])
+        .collect::<Vec<_>>();
+    let targets = (3..=11).map(point).collect();
+    let facts = graph.reaching_values(&defs, 3, &targets);
+    assert_eq!(facts.at(0, point(3)), Some((0..149).collect()));
+    assert_eq!(facts.at(0, point(7)), Some((0..73).collect()));
+    assert_eq!(facts.at(0, point(8)), Some((73..149).collect()));
+    assert_eq!(facts.at(1, point(3)), Some(vec![200]));
+    for exit in [7, 8] {
+        assert_eq!(facts.at(1, point(exit)), Some(vec![201]));
+    }
+    assert_eq!(facts.at(2, point(7)), Some(vec![202]));
+    assert_eq!(facts.at(2, point(8)), Some(vec![]));
+    for unreachable in [9, 10, 11] {
+        assert_eq!(facts.at(0, point(unreachable)), Some(vec![]));
+    }
+    assert_eq!(facts.at(0, point(99)), None);
+}

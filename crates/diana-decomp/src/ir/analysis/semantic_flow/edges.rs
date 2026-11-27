@@ -202,13 +202,17 @@ impl GraphIndex {
         &points[start..end]
     }
 
+    pub(super) fn incoming_edges(&self, node: usize) -> &[(usize, SemanticFlowEdgeKind)] {
+        self.predecessors.get(node)
+    }
+
     pub(super) fn incoming_points(
         &self,
         point: SemanticFlowPoint,
     ) -> impl Iterator<Item = (SemanticFlowPoint, SemanticFlowEdgeKind)> + '_ {
         self.id(point)
             .into_iter()
-            .flat_map(|node| self.predecessors.get(node))
+            .flat_map(|node| self.incoming_edges(node))
             .map(|&(node, kind)| (self.point(node), kind))
     }
 }
