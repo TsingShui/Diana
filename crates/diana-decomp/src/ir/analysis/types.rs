@@ -206,6 +206,15 @@ pub struct SourceTypeEnvironment {
     additional: BTreeMap<u32, ArgType>,
 }
 
+fn next_ssa_row<I: Iterator>(
+    rows: &mut std::iter::Peekable<I>,
+    value: SsaVar,
+    key: impl Fn(&I::Item) -> SsaVar,
+) -> Option<I::Item> {
+    while rows.next_if(|row| key(row) < value).is_some() {}
+    rows.next_if(|row| key(row) == value)
+}
+
 impl SourceTypeEnvironment {
     pub(super) fn from_ssa(
         ssa: SsaTypeEnvironment,
@@ -216,21 +225,28 @@ impl SourceTypeEnvironment {
     ) -> Result<Self, TypeConstraintError> {
         let lattice = SourceTypeLattice::new(hierarchy);
         let mut source_types = vec![None::<(ArgType, SsaVar)>; variables.next_id() as usize];
+        // Assignments and all three inputs have unique, increasing SSA keys.
+        // A missing row in one source has no bearing on either of the others.
+        let mut observations = values.values().peekable();
+        let mut inferred_types = ssa.types.iter().peekable();
+        let mut constants = constants.iter().peekable();
         for &(value, variable) in variables.assignments() {
-            let observed = values.value(value).map(|fact| &fact.observed_types);
-            let null_reference = (constants.get(&value).and_then(InsnArg::literal_value)
-                == Some(0))
-            .then(|| {
-                lattice.select_known(
-                    observed
-                        .into_iter()
-                        .flatten()
-                        .filter(|ty| ty.is_reference()),
-                )
-            })
-            .flatten();
+            let observed = next_ssa_row(&mut observations, value, |fact| fact.variable)
+                .map(|fact| &fact.observed_types);
+            let inferred = next_ssa_row(&mut inferred_types, value, |row| row.0).map(|(_, ty)| ty);
+            let constant = next_ssa_row(&mut constants, value, |&(key, _)| *key)
+                .and_then(|(_, arg)| arg.literal_value());
+            let null_reference = (constant == Some(0))
+                .then(|| {
+                    lattice.select_known(
+                        observed
+                            .into_iter()
+                            .flatten()
+                            .filter(|ty| ty.is_reference()),
+                    )
+                })
+                .flatten();
             let ty = null_reference.or_else(|| {
-                let inferred = ssa.value_type(value);
                 let observed = observed.and_then(|types| lattice.select_observed(types));
                 match (inferred, observed) {
                     (Some(inferred), Some(observed)) if inferred != &observed => lattice

@@ -119,3 +119,125 @@ fn pruning_follows_embedded_transfers_and_forgets_previous_reachability() {
     graph.prune();
     assert_eq!(graph.nodes.keys().copied().collect::<Vec<_>>(), [entry]);
 }
+
+#[test]
+fn fragment_boundaries_preserve_scoped_use_counts_and_normal_completion() {
+    let region = RegionId::new(1);
+    let foreign = RegionId::new(2);
+    let block = BlockId::new(6);
+    let target = BlockId::new(10);
+    let other = BlockId::new(14);
+    let jump = |scope, target| {
+        SemanticNode::Leave(crate::ir::SemanticLeave {
+            site: None,
+            condition: None,
+            kind: SemanticLeaveKind::Jump(target),
+            edge: None,
+            origin: None,
+            source: scope,
+            destination: scope,
+            target: scope,
+            cleanup: Vec::new(),
+        })
+    };
+    // Completion stops at the first abrupt statement. Embedded-use counts
+    // include every lexical occurrence, but only for the enclosing region.
+    let body = SemanticNode::Sequence(vec![
+        jump(region, target),
+        jump(region, target),
+        jump(foreign, other),
+    ]);
+    let targets = BTreeSet::from([other, target]);
+    let mut node = FlowNode::fragment(block, region, body, targets.clone(), [other]).unwrap();
+    assert!(
+        matches!(&node.transfer, FlowTransfer::Fragment { normal: None, open }
+        if open == &BTreeSet::from([target]))
+    );
+    assert_eq!(node.embedded_uses(region), [(target, 2)]);
+    assert!(!node.completion(region).normal);
+    let body = node.take_body();
+    assert!(node.embedded_uses(region).is_empty());
+    assert!(node.completion(region).normal);
+    assert!(matches!(
+        FlowNode::fragment(block, region, body, targets.clone(), []),
+        Err(StructureError::MalformedFlowNode(id)) if id == block
+    ));
+    assert!(matches!(
+        FlowNode::fragment(block, region, SemanticNode::Empty, targets, []),
+        Err(StructureError::MalformedFlowNode(id)) if id == block
+    ));
+}
+
+#[test]
+fn continuation_ownership_counts_reachable_sources_once_per_target() {
+    let entry = BlockId::new(0);
+    let arm = BlockId::new(3);
+    let join = BlockId::new(8);
+    let dead = BlockId::new(14);
+    let outside = BlockId::new(20);
+    let region = RegionId::new(2);
+    let jump = |target| {
+        SemanticNode::Leave(crate::ir::SemanticLeave {
+            site: None,
+            condition: None,
+            kind: SemanticLeaveKind::Jump(target),
+            edge: None,
+            origin: None,
+            source: region,
+            destination: region,
+            target: region,
+            cleanup: Vec::new(),
+        })
+    };
+    let node = |body, transfer| FlowNode {
+        body,
+        transfer,
+        facts: Default::default(),
+    };
+    let half_open = SemanticNode::If {
+        condition: crate::ir::SemanticOperand::new(SemanticPredicate::True),
+        then_node: Box::new(jump(join)),
+        else_node: None,
+    };
+    let mut graph = SemanticFlowGraph {
+        region,
+        entry,
+        next_id: 21,
+        nodes: BTreeMap::from([
+            (
+                entry,
+                node(
+                    half_open,
+                    FlowTransfer::Fragment {
+                        normal: Some(arm),
+                        open: BTreeSet::from([join]),
+                    },
+                ),
+            ),
+            (
+                arm,
+                node(
+                    SemanticNode::Empty,
+                    FlowTransfer::Branch {
+                        condition: SemanticPredicate::True,
+                        when_true: join,
+                        when_false: join,
+                    },
+                ),
+            ),
+            (join, node(jump(outside), FlowTransfer::Stop)),
+            (dead, node(SemanticNode::Empty, FlowTransfer::Jump(join))),
+        ]),
+        continues: BTreeMap::new(),
+        exits: BTreeSet::from([outside]),
+    };
+    let mut predecessors = ContinuationPredecessors::default();
+    assert_eq!(predecessors.counts(&graph)[&join], 3);
+    predecessors.prune(&mut graph);
+    assert!(!graph.nodes.contains_key(&dead));
+    let counts = predecessors.counts(&graph);
+    assert_eq!(counts[&join], 2);
+    assert_eq!(counts[&arm], 1);
+    assert_eq!(counts[&outside], 1);
+    assert!(!graph.is_internal_target(outside));
+}

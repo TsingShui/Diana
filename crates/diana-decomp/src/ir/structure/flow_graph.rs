@@ -52,12 +52,11 @@ struct FlowBoundary {
 }
 
 impl FlowBoundary {
-    fn analyze(region: RegionId, body: &SemanticNode, targets: BTreeSet<BlockId>) -> Self {
-        let jumps = open_targets(region, body);
-        let open = targets
-            .intersection(&jumps)
-            .copied()
-            .collect::<BTreeSet<_>>();
+    fn new(targets: BTreeSet<BlockId>, jumps: impl IntoIterator<Item = BlockId>) -> Self {
+        let open = jumps
+            .into_iter()
+            .filter(|target| targets.contains(target))
+            .collect();
         Self {
             targets,
             open,
@@ -157,13 +156,12 @@ impl FlowTransfer {
 
     fn fragment(
         block: BlockId,
-        body: &SemanticNode,
+        can_complete_normally: bool,
         boundary: FlowBoundary,
     ) -> Result<Self, StructureError> {
         let normal_candidates = boundary.implicit_targets();
-        let completion = SemanticCompletion::analyze(body);
         let malformed = || StructureError::MalformedFlowNode(block);
-        let normal = if completion.can_complete_normally() {
+        let normal = if can_complete_normally {
             match normal_candidates.len() {
                 0 => None,
                 1 => normal_candidates.first().copied(),
@@ -240,15 +238,10 @@ impl FlowCompletion {
     }
 }
 
-impl FlowNode {
-    fn take_body(&mut self) -> SemanticNode {
-        self.facts = FlowNodeFacts::default();
-        std::mem::replace(&mut self.body, SemanticNode::Empty)
-    }
-
-    fn completion(&self, region: RegionId) -> FlowCompletion {
-        *self.facts.completion.get_or_init(|| {
-            let completion = SemanticCompletion::analyze(&self.body);
+impl FlowNodeFacts {
+    fn completion(&self, region: RegionId, body: &SemanticNode) -> FlowCompletion {
+        *self.completion.get_or_init(|| {
+            let completion = SemanticCompletion::analyze(body);
             FlowCompletion {
                 normal: completion.can_complete_normally(),
                 open: completion.has_open_transfer(),
@@ -259,16 +252,51 @@ impl FlowNode {
         })
     }
 
+    fn embedded_uses(&self, region: RegionId, body: &SemanticNode) -> &[(BlockId, usize)] {
+        self.embedded_uses.get_or_init(|| {
+            let mut uses = BTreeMap::<BlockId, usize>::new();
+            visit_open_targets(region, body, |target| *uses.entry(target).or_default() += 1);
+            uses.into_iter().collect()
+        })
+    }
+}
+
+impl FlowNode {
+    fn fragment(
+        block: BlockId,
+        region: RegionId,
+        body: SemanticNode,
+        targets: BTreeSet<BlockId>,
+        bound: impl IntoIterator<Item = BlockId>,
+    ) -> Result<Self, StructureError> {
+        let facts = FlowNodeFacts::default();
+        let jumps = facts
+            .embedded_uses(region, &body)
+            .iter()
+            .map(|&(target, _)| target);
+        let boundary = FlowBoundary::new(targets, jumps).bind_targets(bound);
+        let transfer =
+            FlowTransfer::fragment(block, facts.completion(region, &body).normal, boundary)?;
+        Ok(Self {
+            body,
+            transfer,
+            facts,
+        })
+    }
+
+    fn take_body(&mut self) -> SemanticNode {
+        self.facts = FlowNodeFacts::default();
+        std::mem::replace(&mut self.body, SemanticNode::Empty)
+    }
+
+    fn completion(&self, region: RegionId) -> FlowCompletion {
+        self.facts.completion(region, &self.body)
+    }
+
     // The region is fixed for the life of this fragment, including loop
     // subgraphs. Replacing the body invalidates only this node's counts.
     fn embedded_uses(&self, region: RegionId) -> &[(BlockId, usize)] {
-        self.facts.embedded_uses.get_or_init(|| {
-            let mut uses = BTreeMap::<BlockId, usize>::new();
-            visit_open_targets(region, &self.body, |target| {
-                *uses.entry(target).or_default() += 1
-            });
-            uses.into_iter().collect()
-        })
+        self.facts.embedded_uses(region, &self.body)
     }
 }
 
@@ -411,21 +439,17 @@ impl SemanticFlowGraph {
                 Some(body) => body,
                 None => semantic.block(*block, prefix_only)?,
             };
-            let transfer = if fragments.contains(block) {
+            let node = if fragments.contains(block) {
                 let targets = successors.iter().map(|(target, _)| *target).collect();
-                let boundary = FlowBoundary::analyze(region, &body, targets);
-                FlowTransfer::fragment(*block, &body, boundary)?
+                FlowNode::fragment(*block, region, body, targets, [])?
             } else {
-                Self::transfer(semantic, *block, source.terminator(), &successors)?
-            };
-            nodes.insert(
-                *block,
                 FlowNode {
                     body,
-                    transfer,
+                    transfer: Self::transfer(semantic, *block, source.terminator(), &successors)?,
                     facts: Default::default(),
-                },
-            );
+                }
+            };
+            nodes.insert(*block, node);
         }
         let next_id = graph_nodes
             .iter()
@@ -606,7 +630,7 @@ impl SemanticFlowGraph {
         let (body, next_id) = inner.reduce_state(semantic)?;
         self.next_id = self.next_id.max(next_id);
 
-        let boundary = FlowBoundary::analyze(self.region, &body, external.clone())
+        let boundary = FlowBoundary::new(external.clone(), open_targets(self.region, &body))
             .bind_targets(self.continues.keys().copied());
         let follow = boundary.unique_implicit_target();
         let body = LoopClassifier::for_label(label, follow)
@@ -618,13 +642,13 @@ impl SemanticFlowGraph {
                 label,
             });
         }
-        let boundary = FlowBoundary::analyze(self.region, &body, external)
-            .bind_targets(self.continues.keys().copied());
-        let replacement = FlowNode {
-            facts: Default::default(),
-            transfer: FlowTransfer::fragment(header, &body, boundary)?,
+        let replacement = FlowNode::fragment(
+            header,
+            self.region,
             body,
-        };
+            external,
+            self.continues.keys().copied(),
+        )?;
         self.nodes.insert(header, replacement);
         let mapping = component
             .iter()
@@ -1150,6 +1174,10 @@ impl SemanticFlowGraph {
     }
 
     fn prune(&mut self) {
+        self.prune_with(|_, _| {});
+    }
+
+    fn prune_with(&mut self, mut visit: impl FnMut(&[BlockId], &[(BlockId, usize)])) {
         // Reachability only needs membership. Follow the original transfers
         // directly, including embedded exits whose destination is in this graph.
         let mut pending = vec![self.entry];
@@ -1161,12 +1189,11 @@ impl SemanticFlowGraph {
                 continue;
             }
             node.facts.reached = true;
-            pending.extend(node.transfer.targets());
-            pending.extend(
-                node.embedded_uses(self.region)
-                    .iter()
-                    .map(|&(target, _)| target),
-            );
+            let explicit = node.transfer.targets();
+            let embedded = node.embedded_uses(self.region);
+            visit(&explicit, embedded);
+            pending.extend(explicit);
+            pending.extend(embedded.iter().map(|&(target, _)| target));
         }
         self.nodes
             .retain(|_, node| std::mem::take(&mut node.facts.reached));
@@ -1430,10 +1457,59 @@ impl SemanticFolder for BlockExitBinding {
     }
 }
 
+// A continuation always follows an explicit edge from a known source. Its
+// ownership proof needs the number of distinct incoming sources, not their IDs.
+#[derive(Default)]
+struct ContinuationPredecessors(std::cell::OnceCell<foldhash::HashMap<BlockId, usize>>);
+
+impl ContinuationPredecessors {
+    fn counts(&self, graph: &SemanticFlowGraph) -> &foldhash::HashMap<BlockId, usize> {
+        self.0.get_or_init(|| {
+            let mut counts =
+                foldhash::HashMap::with_capacity_and_hasher(graph.nodes.len(), Default::default());
+            for node in graph.nodes.values() {
+                Self::count_targets(
+                    &mut counts,
+                    &node.transfer.targets(),
+                    node.embedded_uses(graph.region),
+                );
+            }
+            counts
+        })
+    }
+
+    fn count_targets(
+        counts: &mut foldhash::HashMap<BlockId, usize>,
+        explicit: &[BlockId],
+        embedded: &[(BlockId, usize)],
+    ) {
+        for &target in explicit {
+            *counts.entry(target).or_default() += 1;
+        }
+        // Both input sets contain distinct targets. A body transfer and an
+        // explicit exit from the same source form a single graph edge.
+        for &(target, _) in embedded {
+            if explicit.binary_search(&target).is_err() {
+                *counts.entry(target).or_default() += 1;
+            }
+        }
+    }
+
+    fn prune(&mut self, graph: &mut SemanticFlowGraph) {
+        if let Some(counts) = self.0.get_mut() {
+            counts.clear();
+            graph.prune_with(|explicit, embedded| Self::count_targets(counts, explicit, embedded));
+        } else {
+            graph.prune();
+        }
+    }
+}
+
 struct FragmentNormalizer;
 
 impl FragmentNormalizer {
     fn apply(graph: &mut SemanticFlowGraph) -> Result<(), StructureError> {
+        let mut predecessors = ContinuationPredecessors::default();
         loop {
             let fragments = graph
                 .nodes
@@ -1445,58 +1521,56 @@ impl FragmentNormalizer {
             if fragments.is_empty() {
                 return Ok(());
             }
-            if let Some(continuation) = TerminalContinuation::analyze(graph)? {
+            if let Some(continuation) =
+                TerminalContinuation::analyze(graph, &fragments, &predecessors)?
+            {
                 continuation.apply(graph)?;
-                graph.prune();
+                predecessors.prune(graph);
                 continue;
             }
-            for block in fragments {
-                Self::normalize(graph, block)?;
+            for &block in &fragments {
+                if Self::normalize(graph, block)? {
+                    predecessors.0.take();
+                }
             }
-            let Some(continuation) = LinearContinuation::analyze(graph)? else {
+            let Some(continuation) = LinearContinuation::analyze(graph, &fragments, &predecessors)?
+            else {
                 return Ok(());
             };
             continuation.apply(graph)?;
-            graph.prune();
+            predecessors.prune(graph);
         }
     }
 
-    fn normalize(graph: &mut SemanticFlowGraph, block: BlockId) -> Result<(), StructureError> {
-        let transfer = graph
+    // Return whether this rewrite may have changed the set of outgoing targets.
+    fn normalize(graph: &mut SemanticFlowGraph, block: BlockId) -> Result<bool, StructureError> {
+        let node = graph
             .nodes
-            .get(&block)
-            .map(|node| node.transfer.clone())
+            .get_mut(&block)
             .ok_or(StructureError::MalformedFlowNode(block))?;
-        let FlowTransfer::Fragment { normal, open } = transfer else {
-            return Ok(());
+        let FlowTransfer::Fragment { normal, open } = &node.transfer else {
+            return Ok(false);
         };
-        let completion = graph
-            .nodes
-            .get(&block)
-            .map(|node| node.completion(graph.region))
-            .ok_or(StructureError::MalformedFlowNode(block))?;
+        if normal.is_none() && open.is_empty() {
+            node.transfer = FlowTransfer::Stop;
+            return Ok(false);
+        }
+        let completion = node.completion(graph.region);
         if !completion.open_to_region {
-            let node = graph
-                .nodes
-                .get_mut(&block)
-                .ok_or(StructureError::MalformedFlowNode(block))?;
+            let targets_changed = !open.is_empty() || (!completion.normal && normal.is_some());
             node.transfer = if completion.normal {
                 normal.map_or(FlowTransfer::Stop, FlowTransfer::Jump)
             } else {
                 FlowTransfer::Stop
             };
-            return Ok(());
+            return Ok(targets_changed);
         }
         if open.is_empty() {
-            let node = graph
-                .nodes
-                .get_mut(&block)
-                .ok_or(StructureError::MalformedFlowNode(block))?;
             node.transfer = normal.map_or(FlowTransfer::Stop, FlowTransfer::Jump);
-            return Ok(());
+            return Ok(false);
         }
         if normal.is_some() || open.len() != 1 {
-            return Ok(());
+            return Ok(false);
         }
         let target = open
             .first()
@@ -1528,7 +1602,7 @@ impl FragmentNormalizer {
             return Err(StructureError::MalformedFlowNode(block));
         }
         node.transfer = FlowTransfer::Jump(target);
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -1542,12 +1616,23 @@ struct TerminalContinuation {
 impl TerminalContinuation {
     const DUPLICATION_BUDGET: usize = 32;
 
-    fn analyze(graph: &SemanticFlowGraph) -> Result<Option<Self>, StructureError> {
-        let predecessors = graph.predecessors();
-        for (source, node) in &graph.nodes {
-            let FlowTransfer::Fragment { open, .. } = &node.transfer else {
+    fn analyze(
+        graph: &SemanticFlowGraph,
+        fragments: &[BlockId],
+        predecessors: &ContinuationPredecessors,
+    ) -> Result<Option<Self>, StructureError> {
+        for source in fragments {
+            let Some(FlowNode {
+                transfer: FlowTransfer::Fragment { open, .. },
+                ..
+            }) = graph.nodes.get(source)
+            else {
                 continue;
             };
+            if open.is_empty() {
+                continue;
+            }
+            let predecessors = predecessors.counts(graph);
             for target in open.iter().copied() {
                 let mut blocks = Vec::new();
                 let mut visited = BTreeSet::new();
@@ -1557,10 +1642,9 @@ impl TerminalContinuation {
                     if blocks.len() >= Self::DUPLICATION_BUDGET || !visited.insert(current) {
                         break;
                     }
-                    let uniquely_owned =
-                        predecessors.get(&current).is_some_and(|incoming| {
-                            incoming.len() == 1 && incoming.contains(&expected_predecessor)
-                        }) && graph.target_use_count(expected_predecessor, current) == 1;
+                    let uniquely_owned = graph.is_internal_target(current)
+                        && predecessors.get(&current) == Some(&1)
+                        && graph.target_use_count(expected_predecessor, current) == 1;
                     let Some(continuation) = graph.nodes.get(&current) else {
                         break;
                     };
@@ -1989,19 +2073,26 @@ impl LinearContinuation {
             && LexicalIdentities::collect(&node.body).labels.is_empty()
     }
 
-    fn analyze(graph: &SemanticFlowGraph) -> Result<Option<Self>, StructureError> {
-        let predecessors = graph.predecessors();
-        for (source, node) in &graph.nodes {
-            let FlowTransfer::Fragment { normal: None, open } = &node.transfer else {
+    fn analyze(
+        graph: &SemanticFlowGraph,
+        fragments: &[BlockId],
+        predecessors: &ContinuationPredecessors,
+    ) -> Result<Option<Self>, StructureError> {
+        for source in fragments {
+            let Some(FlowNode {
+                transfer: FlowTransfer::Fragment { normal: None, open },
+                ..
+            }) = graph.nodes.get(source)
+            else {
                 continue;
             };
             if open.len() <= 1 {
                 continue;
             }
+            let predecessors = predecessors.counts(graph);
             for target in open.iter().copied() {
                 let mut blocks = Vec::new();
                 let mut visited = BTreeSet::new();
-                let mut expected_predecessor = *source;
                 let mut current = target;
                 let mut use_kind = ContinuationUse::Exclusive;
                 loop {
@@ -2014,12 +2105,11 @@ impl LinearContinuation {
                         || graph.continues.contains_key(&current)
                         || !visited.insert(current)
                         || blocks.len() >= Self::DUPLICATION_BUDGET
-                        || !incoming
-                            .is_some_and(|incoming| incoming.contains(&expected_predecessor))
+                        || incoming.is_none()
                     {
                         break;
                     }
-                    if incoming.is_some_and(|incoming| incoming.len() != 1) {
+                    if incoming != Some(&1) {
                         use_kind = ContinuationUse::Shared;
                     }
                     let Some(continuation) = graph.nodes.get(&current) else {
@@ -2032,7 +2122,6 @@ impl LinearContinuation {
                         break;
                     };
                     blocks.push(current);
-                    expected_predecessor = current;
                     current = *next;
                 }
                 if !blocks.is_empty()
@@ -3547,11 +3636,10 @@ mod tests {
             target: region,
             cleanup: Vec::new(),
         });
-        let boundary = FlowBoundary::analyze(region, &body, BTreeSet::from([open, bound]))
-            .bind_targets([bound]);
-
         let transfer =
-            FlowTransfer::fragment(source, &body, boundary).expect("classified boundary");
+            FlowNode::fragment(source, region, body, BTreeSet::from([open, bound]), [bound])
+                .expect("classified boundary")
+                .transfer;
 
         assert!(matches!(
             transfer,
@@ -4343,9 +4431,10 @@ mod tests {
             exits: BTreeSet::new(),
         };
 
-        let continuation = TerminalContinuation::analyze(&graph)
-            .expect("terminal continuation analysis")
-            .expect("shared pure control continuation");
+        let continuation =
+            TerminalContinuation::analyze(&graph, &[source], &ContinuationPredecessors::default())
+                .expect("terminal continuation analysis")
+                .expect("shared pure control continuation");
         continuation
             .apply(&mut graph)
             .expect("terminal continuation application");
@@ -4436,9 +4525,13 @@ mod tests {
             exits: BTreeSet::new(),
         };
 
-        assert!(TerminalContinuation::analyze(&graph)
-            .expect("terminal continuation analysis")
-            .is_none());
+        assert!(TerminalContinuation::analyze(
+            &graph,
+            &[outside],
+            &ContinuationPredecessors::default()
+        )
+        .expect("terminal continuation analysis")
+        .is_none());
     }
 
     #[test]

@@ -305,8 +305,13 @@ impl SsaValueGraph {
     }
 
     pub fn value(&self, variable: SsaVar) -> Option<&SsaValue> {
+        self.value_position(variable)
+            .map(|index| &self.values[index])
+    }
+
+    pub(super) fn value_position(&self, variable: SsaVar) -> Option<usize> {
         self.registers
-            .find(&self.values, variable, |value| value.variable)
+            .position(&self.values, variable, |value| value.variable)
     }
 
     pub fn use_site<'a>(

@@ -10,9 +10,54 @@ use super::TypeConstraintError;
 
 use super::bounds::{BoundKind, TypeBound, TypeBounds};
 
-pub(super) struct TypeConstraintGraph {
+/// Constraints use the immutable graph's existing SSA row numbers. Method
+/// inputs and observations absent from the graph still own independent rows.
+struct ObservedBounds<'a> {
+    values: &'a SsaValueGraph,
+    indexed: Vec<(SsaVar, TypeBounds)>,
+    additional: BTreeMap<SsaVar, TypeBounds>,
+}
+
+impl<'a> ObservedBounds<'a> {
+    fn new(values: &'a SsaValueGraph) -> Self {
+        Self {
+            values,
+            indexed: values
+                .values()
+                .map(|fact| (fact.variable, TypeBounds::default()))
+                .collect(),
+            additional: BTreeMap::new(),
+        }
+    }
+
+    fn for_value(&mut self, value: SsaVar) -> &mut TypeBounds {
+        match self.values.value_position(value) {
+            Some(row) => &mut self.indexed[row].1,
+            None => self.additional.entry(value).or_default(),
+        }
+    }
+
+    fn into_sorted(self) -> Vec<(SsaVar, TypeBounds)> {
+        if self.additional.is_empty() {
+            return self.indexed;
+        }
+        let rows = self.indexed.into_iter();
+        let mut additional = self.additional.into_iter().peekable();
+        let mut sorted = Vec::with_capacity(rows.len() + additional.len());
+        for (value, bounds) in rows {
+            while let Some(row) = additional.next_if(|(key, _)| *key < value) {
+                sorted.push(row);
+            }
+            sorted.push((value, bounds));
+        }
+        sorted.extend(additional);
+        sorted
+    }
+}
+
+pub(super) struct TypeConstraintGraph<'a> {
     classes: Option<SsaClasses>,
-    bounds: BTreeMap<SsaVar, TypeBounds>,
+    bounds: ObservedBounds<'a>,
     flows: BTreeSet<(SsaVar, SsaVar)>,
     upper_flows: BTreeSet<(SsaVar, SsaVar)>,
     arrays: BTreeSet<ArrayConstraint>,
@@ -21,8 +66,8 @@ pub(super) struct TypeConstraintGraph {
 pub(super) struct NormalizedTypeConstraints {
     /// Maps observed values to roots when copies merge identities. Otherwise the
     /// original bounds keys are precisely the observed singleton values.
-    pub(super) members: Option<BTreeMap<SsaVar, SsaVar>>,
-    pub(super) bounds: BTreeMap<SsaVar, TypeBounds>,
+    pub(super) members: Option<Vec<(SsaVar, SsaVar)>>,
+    pub(super) bounds: Vec<(SsaVar, TypeBounds)>,
     pub(super) flows: BTreeSet<(SsaVar, SsaVar)>,
     pub(super) upper_flows: BTreeSet<(SsaVar, SsaVar)>,
     pub(super) arrays: BTreeSet<ArrayConstraint>,
@@ -34,24 +79,25 @@ pub(super) enum ArrayConstraint {
     Write { array: SsaVar, value: SsaVar },
 }
 
-impl TypeConstraintGraph {
-    pub(super) fn collect(
-        cfg: &CFG,
-        values: &SsaValueGraph,
-        constants: &BTreeMap<SsaVar, InsnArg>,
-    ) -> Result<Self, TypeConstraintError> {
+impl<'a> TypeConstraintGraph<'a> {
+    fn new(values: &'a SsaValueGraph) -> Self {
         // An empty row records a known SSA identity even before type evidence
         // reaches it. Bounds from synthetic inputs extend the same index.
-        let mut graph = Self {
+        Self {
             classes: None,
-            bounds: values
-                .values()
-                .map(|value| (value.variable, TypeBounds::default()))
-                .collect(),
+            bounds: ObservedBounds::new(values),
             flows: BTreeSet::new(),
             upper_flows: BTreeSet::new(),
             arrays: BTreeSet::new(),
-        };
+        }
+    }
+
+    pub(super) fn collect(
+        cfg: &CFG,
+        values: &'a SsaValueGraph,
+        constants: &BTreeMap<SsaVar, InsnArg>,
+    ) -> Result<Self, TypeConstraintError> {
+        let mut graph = Self::new(values);
         for copy in values.copies() {
             if !constants.contains_key(&copy.source) {
                 graph
@@ -88,43 +134,51 @@ impl TypeConstraintGraph {
     }
 
     pub(super) fn normalize(mut self) -> NormalizedTypeConstraints {
-        let Some(classes) = self.classes.as_mut() else {
+        let mut rows = self.bounds.into_sorted();
+        let Some(classes) = self.classes else {
             self.flows.retain(|(source, target)| source != target);
             self.upper_flows.retain(|(source, target)| source != target);
             return NormalizedTypeConstraints {
                 members: None,
-                bounds: self.bounds,
+                bounds: rows,
                 flows: self.flows,
                 upper_flows: self.upper_flows,
                 arrays: self.arrays,
             };
         };
-        let roots: BTreeMap<_, _> = self
-            .bounds
-            .keys()
-            .map(|&value| (value, classes.root(value)))
+        let copies = classes.into_roots();
+        let members: Vec<_> = rows
+            .iter()
+            .map(|&(value, _)| (value, copies.get(&value).copied().unwrap_or(value)))
             .collect();
-        let bounds = {
-            let mut merged = BTreeMap::<SsaVar, TypeBounds>::new();
-            for (value, bounds) in self.bounds {
-                let root = roots.get(&value).copied().unwrap_or(value);
-                match merged.entry(root) {
-                    std::collections::btree_map::Entry::Vacant(entry) => {
-                        entry.insert(bounds);
-                    }
-                    std::collections::btree_map::Entry::Occupied(mut entry) => {
-                        entry.get_mut().merge(bounds);
-                    }
+        let positions = super::RegisterRows::new(&members, |row| row.0);
+        let position = |value| positions.position(&members, value, |row| row.0);
+        let root_of = |value| position(value).map_or(value, |index| members[index].1);
+        // A component root is its least identity. Accumulate evidence in that
+        // row, visiting the members in their original SSA order. A root absent
+        // from the observations can still collect evidence from its members.
+        let mut unobserved = BTreeMap::<SsaVar, TypeBounds>::new();
+        for (index, &(value, root)) in members.iter().enumerate() {
+            if value != root {
+                let bounds = std::mem::take(&mut rows[index].1);
+                if let Some(owner) = position(root) {
+                    rows[owner].1.merge(bounds);
+                } else {
+                    unobserved.entry(root).or_default().merge(bounds);
                 }
             }
-            merged
-        };
+        }
+        rows.retain(|(value, _)| copies.get(value).is_none_or(|root| root == value));
+        if !unobserved.is_empty() {
+            rows.extend(unobserved);
+            rows.sort_unstable_by_key(|row| row.0);
+        }
         let flows = self
             .flows
             .into_iter()
             .filter_map(|(source, target)| {
-                let source = roots.get(&source).copied().unwrap_or(source);
-                let target = roots.get(&target).copied().unwrap_or(target);
+                let source = root_of(source);
+                let target = root_of(target);
                 (source != target).then_some((source, target))
             })
             .collect();
@@ -132,8 +186,8 @@ impl TypeConstraintGraph {
             .upper_flows
             .into_iter()
             .filter_map(|(source, target)| {
-                let source = roots.get(&source).copied().unwrap_or(source);
-                let target = roots.get(&target).copied().unwrap_or(target);
+                let source = root_of(source);
+                let target = root_of(target);
                 (source != target).then_some((source, target))
             })
             .collect();
@@ -142,18 +196,18 @@ impl TypeConstraintGraph {
             .into_iter()
             .map(|constraint| match constraint {
                 ArrayConstraint::Read { array, result } => ArrayConstraint::Read {
-                    array: roots.get(&array).copied().unwrap_or(array),
-                    result: roots.get(&result).copied().unwrap_or(result),
+                    array: root_of(array),
+                    result: root_of(result),
                 },
                 ArrayConstraint::Write { array, value } => ArrayConstraint::Write {
-                    array: roots.get(&array).copied().unwrap_or(array),
-                    value: roots.get(&value).copied().unwrap_or(value),
+                    array: root_of(array),
+                    value: root_of(value),
                 },
             })
             .collect();
         NormalizedTypeConstraints {
-            members: Some(roots),
-            bounds,
+            members: Some(members),
+            bounds: rows,
             flows,
             upper_flows,
             arrays,
@@ -562,14 +616,13 @@ impl TypeConstraintGraph {
 
     fn observe_register_type(&mut self, register: &RegisterArg) {
         if let Some(value) = SsaVar::from_reg(register) {
-            self.bounds.entry(value).or_default().observe(&register.ty);
+            self.bounds.for_value(value).observe(&register.ty);
         }
     }
 
     fn add_value_bound(&mut self, value: SsaVar, kind: BoundKind, ty: ArgType) {
         self.bounds
-            .entry(value)
-            .or_default()
+            .for_value(value)
             .insert(TypeBound::new(kind, ty));
     }
 
@@ -636,11 +689,11 @@ impl TypeConstraintGraph {
     }
 }
 
-struct TypeObservation<'a> {
-    graph: &'a mut TypeConstraintGraph,
+struct TypeObservation<'a, 'graph> {
+    graph: &'a mut TypeConstraintGraph<'graph>,
 }
 
-impl InstructionVisitor for TypeObservation<'_> {
+impl InstructionVisitor for TypeObservation<'_, '_> {
     fn visit_register(&mut self, register: &RegisterArg) {
         self.graph.observe_register_type(register);
     }
@@ -659,21 +712,18 @@ mod tests {
     #[test]
     fn concrete_register_observations_are_weak_type_evidence() {
         let value = SsaVar::new(2, 1);
-        let mut graph = TypeConstraintGraph {
-            classes: None,
-            bounds: [value]
-                .into_iter()
-                .map(|id| (id, TypeBounds::default()))
-                .collect(),
-            flows: BTreeSet::new(),
-            upper_flows: BTreeSet::new(),
-            arrays: BTreeSet::new(),
-        };
+        let values = SsaValueGraph::default();
+        let mut graph = TypeConstraintGraph::new(&values);
+        graph.bounds.for_value(value);
         let register = RegisterArg::new_ssa(2, 1, ArgType::INT);
 
         graph.observe_register_type(&register);
 
-        let bounds = graph.bounds.get(&value).expect("observed value bounds");
+        let bounds = graph
+            .bounds
+            .additional
+            .get(&value)
+            .expect("observed value bounds");
         assert!(bounds.contains(&TypeBound::new(BoundKind::Domain, ArgType::INT)));
         assert!(bounds.contains(&TypeBound::new(BoundKind::Fallback, ArgType::INT)));
     }
@@ -683,16 +733,11 @@ mod tests {
         let left = SsaVar::new(0, 1);
         let right = SsaVar::new(1, 1);
         let result = SsaVar::new(2, 1);
-        let mut graph = TypeConstraintGraph {
-            classes: None,
-            bounds: [left, right, result]
-                .into_iter()
-                .map(|id| (id, TypeBounds::default()))
-                .collect(),
-            flows: BTreeSet::new(),
-            upper_flows: BTreeSet::new(),
-            arrays: BTreeSet::new(),
-        };
+        let values = SsaValueGraph::default();
+        let mut graph = TypeConstraintGraph::new(&values);
+        for value in [left, right, result] {
+            graph.bounds.for_value(value);
+        }
         let instruction = InsnNode::arith(
             ArithOp::Or,
             RegisterArg::new_ssa(2, 1, ArgType::INT),
@@ -705,7 +750,7 @@ mod tests {
 
         assert!(graph.flows.contains(&(left, result)));
         assert!(graph.flows.contains(&(right, result)));
-        assert!(!graph.bounds.get(&result).is_some_and(|bounds| {
+        assert!(!graph.bounds.additional.get(&result).is_some_and(|bounds| {
             bounds.contains(&TypeBound::new(BoundKind::Lower, ArgType::INT))
         }));
     }
@@ -714,16 +759,9 @@ mod tests {
     fn physical_array_write_type_is_fallback_evidence() {
         let array = SsaVar::new(4, 1);
         let value_type = ArgType::object("android/content/pm/ActivityInfo");
-        let mut graph = TypeConstraintGraph {
-            classes: None,
-            bounds: [array]
-                .into_iter()
-                .map(|id| (id, TypeBounds::default()))
-                .collect(),
-            flows: BTreeSet::new(),
-            upper_flows: BTreeSet::new(),
-            arrays: BTreeSet::new(),
-        };
+        let values = SsaValueGraph::default();
+        let mut graph = TypeConstraintGraph::new(&values);
+        graph.bounds.for_value(array);
         let instruction = InsnNode::aput(
             InsnArg::reg_ssa(1, 0, value_type.clone()),
             InsnArg::reg_ssa(4, 1, ArgType::unknown_object()),
@@ -732,7 +770,7 @@ mod tests {
 
         graph.constrain_array_put(&instruction);
 
-        let bounds = graph.bounds.get(&array).expect("array bounds");
+        let bounds = graph.bounds.additional.get(&array).expect("array bounds");
         assert!(bounds.contains(&TypeBound::new(
             BoundKind::Fallback,
             ArgType::array(value_type.clone()),
@@ -746,16 +784,9 @@ mod tests {
     #[test]
     fn move_exception_is_constrained_to_throwable() {
         let value = SsaVar::new(3, 14);
-        let mut graph = TypeConstraintGraph {
-            classes: None,
-            bounds: [value]
-                .into_iter()
-                .map(|id| (id, TypeBounds::default()))
-                .collect(),
-            flows: BTreeSet::new(),
-            upper_flows: BTreeSet::new(),
-            arrays: BTreeSet::new(),
-        };
+        let values = SsaValueGraph::default();
+        let mut graph = TypeConstraintGraph::new(&values);
+        graph.bounds.for_value(value);
         let instruction = InsnNode::move_exception(RegisterArg::new_ssa(
             value.reg_num,
             value.version,
@@ -766,7 +797,7 @@ mod tests {
             .constrain_instruction(&instruction, &CFG::new("handler"))
             .expect("move-exception constraint");
 
-        assert!(graph.bounds.get(&value).is_some_and(|bounds| {
+        assert!(graph.bounds.additional.get(&value).is_some_and(|bounds| {
             bounds.contains(&TypeBound::new(BoundKind::Upper, ArgType::throwable()))
         }));
     }

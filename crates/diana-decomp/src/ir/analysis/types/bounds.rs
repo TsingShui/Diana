@@ -87,6 +87,16 @@ impl Default for TypeBounds {
 }
 
 impl TypeBounds {
+    pub(super) fn sole_type(&self) -> Option<&ArgType> {
+        match &self.0 {
+            BoundStorage::Small(types) => match types.as_slice() {
+                [entry] => Some(&entry.ty),
+                _ => None,
+            },
+            BoundStorage::Tree(_) => None,
+        }
+    }
+
     pub(super) fn observe(&mut self, ty: &ArgType) {
         let mut kinds = BoundKinds::one(BoundKind::Domain);
         if ty.is_known() {

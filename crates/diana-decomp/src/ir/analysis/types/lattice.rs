@@ -29,15 +29,17 @@ impl TypeLattice {
         mut constraints: NormalizedTypeConstraints,
         hierarchy: &dyn TypeHierarchy,
     ) -> super::SsaTypeEnvironment {
-        let mut states = std::mem::take(&mut constraints.bounds);
-        if !(constraints.flows.is_empty()
+        let rows = std::mem::take(&mut constraints.bounds);
+        let resolved = if constraints.flows.is_empty()
             && constraints.upper_flows.is_empty()
-            && constraints.arrays.is_empty())
+            && constraints.arrays.is_empty()
         {
-            // Propagation may introduce an unobserved relation endpoint. Keep it
-            // available to transitive constraints, then exclude it from the result.
+            Self::resolve_rows(rows, hierarchy)
+        } else {
+            let mut states = rows.into_iter().collect::<BTreeMap<_, _>>();
+            // Unobserved endpoints may transmit evidence without becoming outputs.
             let observed = if let Some(members) = &constraints.members {
-                for &root in members.values() {
+                for &(_, root) in members {
                     states.entry(root).or_default();
                 }
                 None
@@ -50,29 +52,27 @@ impl TypeLattice {
                     states.retain(|value, _| observed.binary_search(value).is_ok());
                 }
             }
-        }
-
-        let resolved = states.into_iter().filter_map(|(root, state)| {
-            Self::resolve_state(&state, hierarchy).map(|ty| (root, ty))
-        });
-        // Singleton components already arrive in register/version order.
-        let Some(members) = constraints.members else {
-            return super::SsaTypeEnvironment::from_sorted(resolved.collect());
+            Self::resolve_rows(states, hierarchy)
         };
-        let mut types = resolved.collect::<BTreeMap<_, _>>();
-        for (&value, &root) in &members {
-            if value != root {
-                if let Some(ty) = types.get(&root) {
-                    types.insert(value, ty.clone());
-                }
-            }
-        }
+        let Some(members) = constraints.members else {
+            return super::SsaTypeEnvironment::from_sorted(resolved);
+        };
+        let roots = super::SsaTypeEnvironment::from_sorted(resolved);
         super::SsaTypeEnvironment::from_sorted(
-            types
+            members
                 .into_iter()
-                .filter(|(value, _)| members.contains_key(value))
+                .filter_map(|(value, root)| roots.value_type(root).cloned().map(|ty| (value, ty)))
                 .collect(),
         )
+    }
+
+    fn resolve_rows(
+        rows: impl IntoIterator<Item = (SsaVar, TypeBounds)>,
+        hierarchy: &dyn TypeHierarchy,
+    ) -> Vec<(SsaVar, ArgType)> {
+        rows.into_iter()
+            .filter_map(|(root, state)| Self::resolve_state(&state, hierarchy).map(|ty| (root, ty)))
+            .collect()
     }
 
     fn propagate(
@@ -80,44 +80,58 @@ impl TypeLattice {
         states: &mut BTreeMap<SsaVar, TypeBounds>,
         hierarchy: &dyn TypeHierarchy,
     ) {
-        let mut outgoing = BTreeMap::<SsaVar, BTreeSet<SsaVar>>::new();
-        let mut incoming = BTreeMap::<SsaVar, BTreeSet<SsaVar>>::new();
-        for (source, target) in &constraints.flows {
-            outgoing.entry(*source).or_default().insert(*target);
-            incoming.entry(*target).or_default().insert(*source);
+        #[derive(Default)]
+        struct Relations {
+            outgoing: smallvec::SmallVec<[SsaVar; 1]>,
+            incoming: smallvec::SmallVec<[SsaVar; 1]>,
+            arrays: smallvec::SmallVec<[(SsaVar, BoundKind); 1]>,
         }
-        for (source, target) in &constraints.upper_flows {
-            incoming.entry(*target).or_default().insert(*source);
+        let mut relations = BTreeMap::<SsaVar, Relations>::new();
+        for &(source, target) in &constraints.flows {
+            relations.entry(source).or_default().outgoing.push(target);
+            relations.entry(target).or_default().incoming.push(source);
         }
-        // Keep each component's constraints in the same order as the original
-        // array relation. A self relation contributes its array side only.
-        let mut arrays = BTreeMap::<SsaVar, Vec<(SsaVar, BoundKind)>>::new();
+        for &(source, target) in &constraints.upper_flows {
+            let incoming = &mut relations.entry(target).or_default().incoming;
+            if let Err(index) = incoming.binary_search(&source) {
+                incoming.insert(index, source);
+            }
+        }
         for constraint in &constraints.arrays {
             let (array, value, bound) = match *constraint {
                 ArrayConstraint::Read { array, result } => (array, result, BoundKind::Exact),
                 ArrayConstraint::Write { array, value } => (array, value, BoundKind::Upper),
             };
-            arrays.entry(array).or_default().push((value, bound));
+            relations
+                .entry(array)
+                .or_default()
+                .arrays
+                .push((value, bound));
             if value != array {
-                arrays
+                relations
                     .entry(value)
                     .or_default()
+                    .arrays
                     .push((array, BoundKind::Lower));
             }
         }
-
-        let mut pending = states.keys().copied().collect::<VecDeque<_>>();
-        let mut queued = states.keys().copied().collect::<foldhash::HashSet<_>>();
+        // Only a row with outgoing work can propagate an initial bound.
+        let mut pending = relations
+            .keys()
+            .filter(|key| states.contains_key(*key))
+            .copied()
+            .collect::<VecDeque<_>>();
+        let mut queued = pending.iter().copied().collect::<foldhash::HashSet<_>>();
         let mut fallback = Vec::new();
         let mut upper = Vec::new();
         while let Some(root) = pending.pop_front() {
             queued.remove(&root);
-            let outgoing = outgoing.get(&root);
-            let incoming = incoming.get(&root);
-            let arrays = arrays.get(&root);
-            if outgoing.is_none() && incoming.is_none() && arrays.is_none() {
+            let Some(edges) = relations.get(&root) else {
                 continue;
-            }
+            };
+            let outgoing = (!edges.outgoing.is_empty()).then_some(&edges.outgoing);
+            let incoming = (!edges.incoming.is_empty()).then_some(&edges.incoming);
+            let arrays = (!edges.arrays.is_empty()).then_some(&edges.arrays);
             let state = &states[&root];
             let produced = (outgoing.is_some() || arrays.is_some())
                 .then(|| state.produced_type(hierarchy))
@@ -207,6 +221,11 @@ impl TypeLattice {
     }
 
     fn resolve_state(state: &TypeBounds, hierarchy: &dyn TypeHierarchy) -> Option<ArgType> {
+        // Every kind accepts its only concrete type: a producer satisfies its
+        // own upper bound, and an observation is itself a concrete hint.
+        if let Some(ty) = state.sole_type().filter(|ty| Self::is_concrete(ty)) {
+            return Some(ty.clone());
+        }
         let strong = state.produced_type(hierarchy);
         if let Some(ty) = strong.as_ref().filter(|ty| Self::is_concrete(ty)) {
             if state
@@ -492,8 +511,8 @@ mod tests {
         let source = SsaVar::new(2, 5);
         let target = SsaVar::new(2, 7);
         let constraints = NormalizedTypeConstraints {
-            members: Some(BTreeMap::from([(source, source), (target, target)])),
-            bounds: BTreeMap::from([
+            members: Some(Vec::from([(source, source), (target, target)])),
+            bounds: Vec::from([
                 (
                     source,
                     TypeBounds::from([
@@ -526,8 +545,8 @@ mod tests {
         let value = SsaVar::new(1, 0);
         let value_type = ArgType::object("android/content/pm/ActivityInfo");
         let constraints = NormalizedTypeConstraints {
-            members: Some(BTreeMap::from([(array, array), (value, value)])),
-            bounds: BTreeMap::from([
+            members: Some(Vec::from([(array, array), (value, value)])),
+            bounds: Vec::from([
                 (
                     array,
                     TypeBounds::from([TypeBound::new(
@@ -560,12 +579,12 @@ mod tests {
         let value = SsaVar::new(2, 0);
         let element = ArgType::object("androidx/compose/ui/node/LayoutNode");
         let constraints = NormalizedTypeConstraints {
-            members: Some(BTreeMap::from([
+            members: Some(Vec::from([
                 (source, source),
                 (destination, destination),
                 (value, value),
             ])),
-            bounds: BTreeMap::from([
+            bounds: Vec::from([
                 (
                     source,
                     TypeBounds::from([TypeBound::new(
@@ -617,8 +636,8 @@ mod tests {
     fn incompatible_primitive_producer_does_not_use_the_consumer_type() {
         let value = SsaVar::new(0, 0);
         let constraints = NormalizedTypeConstraints {
-            members: Some(BTreeMap::from([(value, value)])),
-            bounds: BTreeMap::from([(
+            members: Some(Vec::from([(value, value)])),
+            bounds: Vec::from([(
                 value,
                 TypeBounds::from([
                     TypeBound::new(BoundKind::Exact, ArgType::BOOLEAN),
@@ -641,8 +660,8 @@ mod tests {
         let view = ArgType::object("android/view/View");
         let callback = ArgType::object("com/example/SelectionCallback");
         let constraints = NormalizedTypeConstraints {
-            members: Some(BTreeMap::from([(value, value)])),
-            bounds: BTreeMap::from([(
+            members: Some(Vec::from([(value, value)])),
+            bounds: Vec::from([(
                 value,
                 TypeBounds::from([
                     TypeBound::new(BoundKind::Lower, view.clone()),
