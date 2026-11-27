@@ -3,10 +3,11 @@ use crate::ir::semantic::ControlCompletion;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ir::{
+    analysis::SsaVar,
     bdd::{Bdd, BddContext, BddError},
     semantic::SemanticCompletion,
-    BoolVariable, InstructionId, SemanticFoldError, SemanticNode, SemanticOperand,
-    SemanticPredicate,
+    BoolVariable, InstructionId, RegisterArg, SemanticExpressionFacts, SemanticFoldError,
+    SemanticNode, SemanticOperand, SemanticOperation, SemanticPredicate, SemanticVisitor,
 };
 
 pub(super) struct GuardDistribution;
@@ -49,7 +50,7 @@ impl GuardDistribution {
             Err(error) if error.is_resource_limit() => return Ok(None),
             Err(error) => return Err(error.into()),
         };
-        if !covered {
+        if !covered || !plan.inputs_are_stable(&domain, guard) {
             return Ok(None);
         }
 
@@ -233,7 +234,7 @@ impl<'a> PathInjector<'a> {
                             .domain
                             .bdd
                             .and(path, self.domain.bdd.not(condition_domain)?)?;
-                        tasks.push(InjectionTask::If(condition));
+                        tasks.push(InjectionTask::If(condition, node));
                         tasks.push(InjectionTask::Visit {
                             node: else_node.as_deref().unwrap_or(&SemanticNode::Empty),
                             path: false_path,
@@ -256,11 +257,11 @@ impl<'a> PathInjector<'a> {
                     }
                 },
                 InjectionTask::Sequence(prefix) => steps.push(InjectionStep::Sequence(prefix)),
-                InjectionTask::If(condition) => {
+                InjectionTask::If(condition, node) => {
                     let when_false = regions.pop().ok_or(BddError::MalformedEvaluation)?;
                     let when_true = regions.pop().ok_or(BddError::MalformedEvaluation)?;
                     regions.push(self.domain.bdd.or(when_true, when_false)?);
-                    steps.push(InjectionStep::If(condition));
+                    steps.push(InjectionStep::If(condition, node));
                 }
             }
         }
@@ -285,6 +286,83 @@ struct InjectionPlan<'a> {
 }
 
 impl InjectionPlan<'_> {
+    /// Reusing a BDD atom assumes its evaluations observe the same value.
+    /// Source locals, including the flags used for lexical exits, can change
+    /// between the branch test and the original position of the tail guard.
+    fn inputs_are_stable(&self, domain: &PredicateDomain, guard: &SemanticPredicate) -> bool {
+        let conditions = self.steps.iter().filter_map(|step| match step {
+            InjectionStep::If(condition, node) => Some((*condition, *node)),
+            _ => None,
+        });
+        let mut seen = BTreeMap::<&BoolVariable, (&SemanticOperation, bool)>::new();
+        for predicate in std::iter::once(guard).chain(conditions.clone().map(|(value, _)| value)) {
+            if !Self::all_tests(predicate, |test| {
+                let Some(symbol) = domain.symbols.get(&test.id) else {
+                    return false;
+                };
+                match seen.entry(symbol) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert((test, false));
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut entry) => {
+                        let (first, repeated) = entry.get_mut();
+                        if !test.effects().without_control().is_pure()
+                            || !first.effects().without_control().is_pure()
+                            || !AtomIdentity::Source.equivalent(first, test)
+                        {
+                            return false;
+                        }
+                        *repeated = true;
+                    }
+                }
+                true
+            }) {
+                return false;
+            }
+        }
+        for (condition, suffix) in conditions {
+            let mut writes = None;
+            if !Self::all_tests(condition, |test| {
+                let symbol = &domain.symbols[&test.id];
+                if !seen[symbol].1 {
+                    return true;
+                }
+                // The planner only descends into the final child of sequences.
+                // Once this test runs, all remaining writes before the tail
+                // are in its own branches. Earlier assignments can initialize
+                // a local whose newly observed value remains stable.
+                let mut inputs = UnchangedInputs {
+                    writes: writes.get_or_insert_with(|| SemanticExpressionFacts::of_node(suffix)),
+                    stable: true,
+                };
+                inputs.visit_operation(test);
+                inputs.stable
+            }) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn all_tests<'a>(
+        predicate: &'a SemanticPredicate,
+        mut check: impl FnMut(&'a SemanticOperation) -> bool,
+    ) -> bool {
+        let mut pending = smallvec::SmallVec::<[_; 4]>::new();
+        pending.push(predicate);
+        while let Some(predicate) = pending.pop() {
+            match predicate {
+                SemanticPredicate::Test(test) if !check(test) => return false,
+                SemanticPredicate::And(terms) | SemanticPredicate::Or(terms) => {
+                    pending.extend(terms)
+                }
+                SemanticPredicate::Not(inner) => pending.push(inner),
+                _ => {}
+            }
+        }
+        true
+    }
+
     fn materialize(self, tail: &SemanticNode) -> Result<SemanticNode, BddError> {
         let mut results = Vec::new();
         for step in self.steps {
@@ -300,7 +378,7 @@ impl InjectionPlan<'_> {
                     let last = results.pop().ok_or(BddError::MalformedEvaluation)?;
                     SemanticNode::sequence(prefix.iter().cloned().chain(std::iter::once(last)))
                 }
-                InjectionStep::If(condition) => {
+                InjectionStep::If(condition, _) => {
                     let when_false = results.pop().ok_or(BddError::MalformedEvaluation)?;
                     let when_true = results.pop().ok_or(BddError::MalformedEvaluation)?;
                     SemanticNode::branch(
@@ -320,19 +398,36 @@ impl InjectionPlan<'_> {
     }
 }
 
+struct UnchangedInputs<'a> {
+    writes: &'a SemanticExpressionFacts,
+    stable: bool,
+}
+
+impl SemanticVisitor for UnchangedInputs<'_> {
+    fn visit_register(&mut self, input: &RegisterArg) {
+        self.stable &= if let Some(variable) = input.code_var {
+            self.writes.definition_count(variable) == 0
+        } else if let Some(variable) = SsaVar::from_reg(input) {
+            self.writes.ssa_definition_count(variable) == 0
+        } else {
+            false
+        };
+    }
+}
+
 enum InjectionStep<'a> {
     Leaf {
         node: &'a SemanticNode,
         append: bool,
     },
     Sequence(&'a [SemanticNode]),
-    If(&'a SemanticPredicate),
+    If(&'a SemanticPredicate, &'a SemanticNode),
 }
 
 enum InjectionTask<'a> {
     Visit { node: &'a SemanticNode, path: Bdd },
     Sequence(&'a [SemanticNode]),
-    If(&'a SemanticPredicate),
+    If(&'a SemanticPredicate, &'a SemanticNode),
 }
 
 #[cfg(test)]

@@ -19,15 +19,9 @@ impl AtomIdentity {
         if self == Self::Distribution && left.id == right.id {
             return true;
         }
-        if !left.operation_equivalent(right)
-            || left.operands().len() != right.operands().len()
-            || left.compound_target().is_some() != right.compound_target().is_some()
-        {
+        let mut pending = SmallVec::new();
+        if !Self::pair_operands(left, right, &mut pending) {
             return false;
-        }
-        let mut pending: SmallVec<[_; 2]> = left.operands().iter().zip(right.operands()).collect();
-        if let (Some(left), Some(right)) = (left.compound_target(), right.compound_target()) {
-            pending.push((left, right));
         }
         while let Some((left, right)) = pending.pop() {
             match (left, right) {
@@ -36,13 +30,26 @@ impl AtomIdentity {
                 (SemanticExpression::Literal(left), SemanticExpression::Literal(right))
                     if left == right => {}
                 (SemanticExpression::Operation(left), SemanticExpression::Operation(right))
-                    if left.operation_equivalent(right)
-                        && left.operands().len() == right.operands().len() =>
-                {
-                    pending.extend(left.operands().iter().zip(right.operands()));
-                }
+                    if Self::pair_operands(left, right, &mut pending) => {}
                 _ => return false,
             }
+        }
+        true
+    }
+
+    fn pair_operands<'a>(
+        left: &'a SemanticOperation,
+        right: &'a SemanticOperation,
+        pending: &mut SmallVec<[(&'a SemanticExpression, &'a SemanticExpression); 2]>,
+    ) -> bool {
+        if !left.operation_equivalent(right) || left.operands().len() != right.operands().len() {
+            return false;
+        }
+        pending.extend(left.operands().iter().zip(right.operands()));
+        match (left.compound_target(), right.compound_target()) {
+            (Some(left), Some(right)) => pending.push((left, right)),
+            (None, None) => {}
+            _ => return false,
         }
         true
     }

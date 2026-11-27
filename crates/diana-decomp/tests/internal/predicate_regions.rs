@@ -492,3 +492,108 @@ fn equivalent_large_guards_share_the_same_bounded_proof_refusal() {
     }
     assert_eq!(queries.answers.len(), 2);
 }
+
+#[test]
+fn distributing_a_guard_requires_the_same_source_value_at_both_evaluations() {
+    use crate::ir::{InsnArg, RegisterArg, SemanticOperand, SemanticOperation};
+
+    let variable = |slot, source| {
+        let mut register = RegisterArg::new_ssa(slot, 1, ArgType::INT);
+        register.code_var = Some(source);
+        register
+    };
+    let test = |reg: RegisterArg| {
+        let mut node = InsnNode::new(InsnType::If, 1);
+        node.id = InstructionId::new(12);
+        node.args.push(InsnArg::Reg(reg));
+        SemanticPredicate::Test(SemanticOperation::from_instruction(node).unwrap())
+    };
+    let first = variable(1, 10);
+    let write = |written: RegisterArg| {
+        let statement = SemanticStatement::definition(
+            InstructionId::new(19),
+            written,
+            SemanticExpression::Literal(LiteralArg::new(0, ArgType::INT)),
+        );
+        SemanticNode::BasicBlock(SemanticBlock {
+            id: BlockId::new(1),
+            statements: vec![statement],
+        })
+    };
+    let choose = |body| {
+        SemanticNode::branch(
+            test(first.clone()),
+            body,
+            Some(leave(SemanticLeaveKind::Return(None))),
+        )
+    };
+    let prefix = |written| choose(write(written));
+    let guard = |input: RegisterArg| {
+        let read = test(input);
+        SemanticOperand::new(SemanticPredicate::And(vec![read.clone(), read]))
+    };
+    let tail = block(2);
+    // The value established by a preceding assignment is first observed
+    // by the branch and stays unchanged between that test and the guard.
+    let initialized = SemanticNode::sequence([write(variable(2, 10)), choose(block(1))]);
+    assert!(
+        GuardDistribution::apply(&initialized, &guard(first.clone()), &tail)
+            .unwrap()
+            .is_some()
+    );
+    // A second SSA register bound to the same mutable source local changes
+    // the result even though the original instruction identity is shared.
+    assert!(
+        GuardDistribution::apply(&prefix(variable(2, 10)), &guard(first.clone()), &tail)
+            .unwrap()
+            .is_none()
+    );
+    // Reused instruction provenance does not make different inputs equal.
+    assert!(
+        GuardDistribution::apply(&prefix(variable(2, 11)), &guard(variable(3, 12)), &tail)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        GuardDistribution::apply(&prefix(variable(2, 11)), &guard(first), &tail)
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn source_predicate_identity_compares_nested_compound_assignment_targets() {
+    use crate::ir::{ArithOp, RegisterArg, SemanticOperation};
+
+    let predicate = |destination: Option<u32>| {
+        let target = destination.map(|code_var| {
+            let mut local = RegisterArg::new(0, ArgType::INT);
+            local.code_var = Some(code_var);
+            SemanticExpression::Register(local)
+        });
+        let mut assignment = InsnNode::new(InsnType::CompoundAssign, 1);
+        assignment.payload.arith_op = Some(ArithOp::Add);
+        let value = SemanticOperation::from_parts(
+            assignment,
+            vec![SemanticExpression::Literal(LiteralArg::new(
+                1,
+                ArgType::INT,
+            ))],
+            target,
+        );
+        let nested = SemanticOperation::from_parts(
+            InsnNode::new(InsnType::Move, 1),
+            vec![SemanticExpression::Operation(value)],
+            None,
+        );
+        SemanticOperation::from_parts(
+            InsnNode::new(InsnType::If, 1),
+            vec![SemanticExpression::Operation(nested)],
+            None,
+        )
+    };
+    let original = predicate(Some(4));
+    assert!(AtomIdentity::Source.equivalent(&original, &predicate(Some(4))));
+    assert!(!AtomIdentity::Source.equivalent(&original, &predicate(Some(5))));
+    assert!(!AtomIdentity::Source.equivalent(&original, &predicate(None)));
+}
