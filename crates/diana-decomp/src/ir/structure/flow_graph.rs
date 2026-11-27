@@ -544,7 +544,7 @@ impl SemanticFlowGraph {
         mut pattern_budget: PatternReductionBudget,
     ) -> Result<(SemanticNode, u32), StructureError> {
         loop {
-            FragmentNormalizer::apply(&mut self)?;
+            FragmentNormalizer::apply_to_pruned(&mut self)?;
             self.bind_embedded_continuations()?;
             self.verify_lexical_domains()?;
             let Some((component, predecessors)) = self.first_cyclic_component() else {
@@ -1508,31 +1508,141 @@ impl ContinuationPredecessors {
     }
 }
 
+/// The only removed entry to a continuation is the source edge to its
+/// first block. Every chain block must have exactly its recorded successor
+/// among both explicit and embedded edges. A surviving frontier stays
+/// reachable from the rewritten source, so no node beyond it can be cut.
+struct ContinuationCut<'a> {
+    source: BlockId,
+    chain: &'a [BlockId],
+    frontier: Option<BlockId>,
+    original: SmallVec<[BlockId; 2]>,
+}
+
+impl<'a> ContinuationCut<'a> {
+    fn prepare(
+        graph: &SemanticFlowGraph,
+        source: BlockId,
+        chain: &'a [BlockId],
+        frontier: Option<BlockId>,
+    ) -> Option<Self> {
+        // Traversal is cheaper when the chain accounts for most of the graph.
+        if chain.is_empty() || graph.nodes.len() <= chain.len().saturating_mul(2) {
+            return None;
+        }
+        for (index, &block) in chain.iter().enumerate() {
+            let successor = chain.get(index + 1).copied().or(frontier);
+            if graph.targets(block).as_slice() != successor.as_slice() {
+                return None;
+            }
+        }
+        Some(Self {
+            source,
+            chain,
+            frontier,
+            original: graph.targets(source),
+        })
+    }
+
+    fn prune(
+        self,
+        graph: &mut SemanticFlowGraph,
+        predecessors: &mut ContinuationPredecessors,
+    ) -> bool {
+        let Some(counts) = predecessors.0.get_mut() else {
+            return false;
+        };
+        let target = self.chain[0];
+        let rewritten = graph.targets(self.source);
+        if self
+            .original
+            .iter()
+            .any(|block| *block != target && !rewritten.contains(block))
+            || rewritten
+                .iter()
+                .any(|block| Some(*block) != self.frontier && !self.original.contains(block))
+            || self
+                .frontier
+                .is_some_and(|block| !rewritten.contains(&block))
+        {
+            return false;
+        }
+        if self.original.contains(&target) && !rewritten.contains(&target) {
+            Self::remove_edge(counts, target);
+        }
+        if let Some(frontier) = self.frontier.filter(|block| !self.original.contains(block)) {
+            *counts.entry(frontier).or_default() += 1;
+        }
+        for (index, &block) in self.chain.iter().enumerate() {
+            // Exclusive absorption can already have moved the node. A
+            // retained node with another incoming edge stays reachable.
+            if graph.nodes.contains_key(&block) {
+                if block == graph.entry || counts.contains_key(&block) {
+                    break;
+                }
+                graph.nodes.remove(&block);
+            }
+            if let Some(successor) = self.chain.get(index + 1).copied().or(self.frontier) {
+                Self::remove_edge(counts, successor);
+            }
+        }
+        true
+    }
+
+    fn remove_edge(counts: &mut foldhash::HashMap<BlockId, usize>, target: BlockId) {
+        if let std::collections::hash_map::Entry::Occupied(mut count) = counts.entry(target) {
+            *count.get_mut() -= 1;
+            if *count.get() == 0 {
+                count.remove();
+            }
+        }
+    }
+}
+
 struct FragmentNormalizer;
 
 impl FragmentNormalizer {
-    fn apply(graph: &mut SemanticFlowGraph) -> Result<(), StructureError> {
+    /// On entry all nodes are reachable under the graph's complete edge set.
+    fn apply_to_pruned(graph: &mut SemanticFlowGraph) -> Result<(), StructureError> {
         let mut predecessors = ContinuationPredecessors::default();
+        let mut fragments = graph
+            .nodes
+            .iter()
+            .filter_map(|(&block, node)| {
+                matches!(node.transfer, FlowTransfer::Fragment { .. }).then_some(block)
+            })
+            .collect::<Vec<_>>();
         loop {
-            let fragments = graph
-                .nodes
-                .iter()
-                .filter_map(|(block, node)| {
-                    matches!(&node.transfer, FlowTransfer::Fragment { .. }).then_some(*block)
-                })
-                .collect::<Vec<_>>();
+            // Embedding a continuation can remove nodes or resolve an existing
+            // fragment. It never introduces a fragment at a new block.
+            fragments.retain(|block| {
+                graph
+                    .nodes
+                    .get(block)
+                    .is_some_and(|node| matches!(node.transfer, FlowTransfer::Fragment { .. }))
+            });
             if fragments.is_empty() {
                 return Ok(());
             }
             if let Some(continuation) =
                 TerminalContinuation::analyze(graph, &fragments, &predecessors)?
             {
+                let cut = ContinuationCut::prepare(
+                    graph,
+                    continuation.source,
+                    &continuation.blocks,
+                    None,
+                );
                 continuation.apply(graph)?;
-                predecessors.prune(graph);
+                if !cut.is_some_and(|cut| cut.prune(graph, &mut predecessors)) {
+                    predecessors.prune(graph);
+                }
                 continue;
             }
+            let mut targets_changed = false;
             for &block in &fragments {
                 if Self::normalize(graph, block)? {
+                    targets_changed = true;
                     predecessors.0.take();
                 }
             }
@@ -1540,8 +1650,20 @@ impl FragmentNormalizer {
             else {
                 return Ok(());
             };
+            let cut = if targets_changed {
+                None
+            } else {
+                ContinuationCut::prepare(
+                    graph,
+                    continuation.source,
+                    &continuation.blocks,
+                    Some(continuation.frontier),
+                )
+            };
             continuation.apply(graph)?;
-            predecessors.prune(graph);
+            if !cut.is_some_and(|cut| cut.prune(graph, &mut predecessors)) {
+                predecessors.prune(graph);
+            }
         }
     }
 
@@ -1613,7 +1735,7 @@ impl FragmentNormalizer {
 struct TerminalContinuation {
     source: BlockId,
     target: BlockId,
-    blocks: Vec<BlockId>,
+    blocks: SmallVec<[BlockId; 4]>,
 }
 
 impl TerminalContinuation {
@@ -1637,12 +1759,11 @@ impl TerminalContinuation {
             }
             let predecessors = predecessors.counts(graph);
             for target in open.iter().copied() {
-                let mut blocks = Vec::new();
-                let mut visited = BTreeSet::new();
+                let mut blocks = SmallVec::new();
                 let mut expected_predecessor = *source;
                 let mut current = target;
                 loop {
-                    if blocks.len() >= Self::DUPLICATION_BUDGET || !visited.insert(current) {
+                    if blocks.len() >= Self::DUPLICATION_BUDGET || blocks.contains(&current) {
                         break;
                     }
                     let uniquely_owned = graph.is_internal_target(current)
@@ -1723,7 +1844,7 @@ impl TerminalContinuation {
         }
     }
 
-    fn apply(self, graph: &mut SemanticFlowGraph) -> Result<(), StructureError> {
+    fn apply(&self, graph: &mut SemanticFlowGraph) -> Result<(), StructureError> {
         let continuation = SemanticNode::sequence(
             self.blocks
                 .iter()
@@ -2056,7 +2177,7 @@ struct LinearContinuation {
     source: BlockId,
     target: BlockId,
     frontier: BlockId,
-    blocks: Vec<BlockId>,
+    blocks: SmallVec<[BlockId; 4]>,
     use_kind: ContinuationUse,
 }
 
@@ -2094,8 +2215,7 @@ impl LinearContinuation {
             }
             let predecessors = predecessors.counts(graph);
             for target in open.iter().copied() {
-                let mut blocks = Vec::new();
-                let mut visited = BTreeSet::new();
+                let mut blocks = SmallVec::new();
                 let mut current = target;
                 let mut use_kind = ContinuationUse::Exclusive;
                 loop {
@@ -2106,7 +2226,7 @@ impl LinearContinuation {
                     if current == graph.entry
                         || graph.exits.contains(&current)
                         || graph.continues.contains_key(&current)
-                        || !visited.insert(current)
+                        || blocks.contains(&current)
                         || blocks.len() >= Self::DUPLICATION_BUDGET
                         || incoming.is_none()
                     {
@@ -2118,12 +2238,12 @@ impl LinearContinuation {
                     let Some(continuation) = graph.nodes.get(&current) else {
                         break;
                     };
-                    if !Self::is_absorbable_adapter(continuation, graph.region) {
-                        break;
-                    }
                     let FlowTransfer::Jump(next) = &continuation.transfer else {
                         break;
                     };
+                    if !Self::is_absorbable_adapter(continuation, graph.region) {
+                        break;
+                    }
                     blocks.push(current);
                     current = *next;
                 }
@@ -2144,7 +2264,7 @@ impl LinearContinuation {
         Ok(None)
     }
 
-    fn apply(self, graph: &mut SemanticFlowGraph) -> Result<(), StructureError> {
+    fn apply(&self, graph: &mut SemanticFlowGraph) -> Result<(), StructureError> {
         let continuation = SemanticNode::sequence(
             self.blocks
                 .iter()
@@ -2178,7 +2298,7 @@ impl LinearContinuation {
         open.remove(&self.target);
         open.insert(self.frontier);
         if self.use_kind == ContinuationUse::Exclusive {
-            for block in self.blocks {
+            for &block in &self.blocks {
                 graph.nodes.remove(&block);
                 graph.exits.remove(&block);
             }
@@ -4134,7 +4254,8 @@ mod tests {
             exits: BTreeSet::new(),
         };
 
-        FragmentNormalizer::apply(&mut graph).expect("fragment normalization");
+        graph.prune();
+        FragmentNormalizer::apply_to_pruned(&mut graph).expect("fragment normalization");
 
         assert!(
             graph.nodes.contains_key(&second),
@@ -4234,7 +4355,8 @@ mod tests {
             exits: BTreeSet::new(),
         };
 
-        FragmentNormalizer::apply(&mut graph).expect("fragment normalization");
+        graph.prune();
+        FragmentNormalizer::apply_to_pruned(&mut graph).expect("fragment normalization");
 
         assert!(graph.nodes.contains_key(&join));
         assert!(matches!(

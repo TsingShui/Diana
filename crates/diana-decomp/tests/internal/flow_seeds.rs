@@ -347,3 +347,112 @@ fn branch_candidates_keep_independent_members_after_rejected_shared_entries() {
         }
     }
 }
+
+#[test]
+fn a_continuation_cut_preserves_shared_suffixes_and_external_frontiers() {
+    let id = BlockId::new;
+    let entry = id(3);
+    let source = id(40);
+    let side = id(71);
+    let middle = id(112);
+    let chain = [id(124), id(155)];
+    let frontier = id(900);
+    let absent = id(1000);
+    let region = RegionId::new(2);
+    let jump = FlowTransfer::Jump;
+    let stop = FlowTransfer::Stop;
+    let branch = |when_true, when_false| FlowTransfer::Branch {
+        condition: SemanticPredicate::False,
+        when_true,
+        when_false,
+    };
+    for keep_entry in [false, true] {
+        for shared in [None, Some(chain[0]), Some(chain[1])] {
+            for (frontier, back_edge) in [
+                (None, false),
+                (Some(frontier), false),
+                (Some(frontier), true),
+                (Some(absent), false),
+            ] {
+                for old_frontier in [false, true] {
+                    let original = if let Some(exit) = frontier.filter(|_| old_frontier) {
+                        branch(chain[0], exit)
+                    } else {
+                        jump(chain[0])
+                    };
+                    let rewritten = match (keep_entry, frontier) {
+                        (true, Some(exit)) => branch(chain[0], exit),
+                        (true, None) => jump(chain[0]),
+                        (false, Some(exit)) => jump(exit),
+                        (false, None) => stop.clone(),
+                    };
+                    let mut nodes = BTreeMap::from([
+                        (entry, branch(source, side)),
+                        (source, original),
+                        (side, branch(middle, shared.unwrap_or(middle))),
+                        (middle, stop.clone()),
+                        (chain[0], jump(chain[1])),
+                        (chain[1], frontier.map_or_else(|| stop.clone(), jump)),
+                    ]);
+                    if let Some(exit) = frontier.filter(|&exit| exit != absent) {
+                        nodes.insert(
+                            exit,
+                            if back_edge {
+                                jump(chain[1])
+                            } else {
+                                stop.clone()
+                            },
+                        );
+                    }
+                    let mut graph = SemanticFlowGraph {
+                        region,
+                        entry,
+                        nodes: nodes
+                            .into_iter()
+                            .map(|(block, transfer)| {
+                                (
+                                    block,
+                                    FlowNode {
+                                        body: SemanticNode::Empty,
+                                        transfer,
+                                        facts: Default::default(),
+                                    },
+                                )
+                            })
+                            .collect(),
+                        exits: BTreeSet::from([absent]),
+                        continues: BTreeMap::new(),
+                        next_id: 2000,
+                    };
+                    graph.prune();
+                    let mut counts = ContinuationPredecessors::default();
+                    counts.counts(&graph);
+                    let cut = ContinuationCut::prepare(&graph, source, &chain, frontier).unwrap();
+                    graph.nodes.get_mut(&source).unwrap().transfer = rewritten;
+                    // The ordinary linear absorption moves its exclusive
+                    // nodes into the source before updating reachability.
+                    if !keep_entry && shared.is_none() && frontier.is_some() && !back_edge {
+                        for block in chain {
+                            graph.nodes.remove(&block);
+                        }
+                    }
+                    let mut expected = SemanticFlowGraph {
+                        region,
+                        entry,
+                        nodes: graph.nodes.clone(),
+                        exits: graph.exits.clone(),
+                        continues: BTreeMap::new(),
+                        next_id: graph.next_id,
+                    };
+                    expected.prune();
+                    assert!(cut.prune(&mut graph, &mut counts));
+                    assert!(graph.nodes.keys().eq(expected.nodes.keys()));
+                    assert_eq!(
+                        counts.counts(&graph),
+                        ContinuationPredecessors::default().counts(&expected)
+                    );
+                }
+            }
+        }
+    }
+}
