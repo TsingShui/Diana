@@ -1,0 +1,9 @@
+# Semantic review
+
+The original and updated get-class outputs for stable return the product only when mode is positive and value is nonzero. On the nonpositive branch and on the secondary zero branch they return the subtraction. Smali shows the shared destination of those two paths in both versions. The change in physical placement neither evaluates an extra operation nor changes the arithmetic.
+
+The original redirect uses the same condition to select AND 7 and otherwise returns XOR 13. The updated method reaches XOR 13 only when the mode is positive and the value is zero. Following each branch explains the changed nonpositive case and the two preserved positive cases. The Java-like results on both inputs have the same path conditions and return expressions as their own Smali. Neither method has helper calls or handlers.
+
+Reading the assembled instruction words locates both entry conditionals at code-unit offset 0. In redirect the operand changes from 6 to 3 and those positions hold XOR and AND respectively. Other PC-relative displacements also change with layout: for example the immediate goto after the first conditional still takes the secondary dispatch path even though its destination moves from 3 to 9. This difference in encoded displacement alone carries no change in branch meaning. These observations were made by reading original DEX and actual decompiled output. The fixture methods were not executed on Android.
+
+The block-aligned comparison reported both original method identities and locators, no differences for stable, and exactly one delta for redirect. It located the old and new if-lez at offset 0 with targets 6 and 3. This accounts for the observed changed return on the nonpositive-mode path. It also retains the two secondary-dispatch outcomes and the shared return without reporting their relocated instructions as changes.

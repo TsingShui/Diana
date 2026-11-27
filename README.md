@@ -54,6 +54,7 @@ Commands:
   get-method      Decompile one method as Java, selected by its methods.at coordinate
   outline-class   Show one class call tree with aggregated imports
   outline-method  Show the call tree below one method
+  diff            Compare DEX methods across two versions
   export          Export Java-like sources by package, APK resources and the manifest
   extract         Write one original entry to -o; --raw keeps binary XML
   xref            Find code references in every root DEX
@@ -70,6 +71,7 @@ Examples:
   diana get-class app.apk 'e0:l0:c123'
   diana get-method app.apk 'e0:l0:c123:m45'
   diana outline-class app.apk 'e0:l0:c123' --call-depth 2
+  diana diff old.apk new.apk --format json -o changes.json
   diana xref app.apk string Authorization
   diana manifest app.apk
 Copy classes.at to get-class, methods.at to get-method/outline-method; locators (entry:index) skip the APK-wide scan.

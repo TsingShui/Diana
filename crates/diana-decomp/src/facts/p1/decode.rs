@@ -18,6 +18,11 @@ struct ReferenceReads<'a> {
     issues: Vec<(CodeUnitOffset, MethodError)>,
 }
 
+enum DecodeProduct<'p, 'image> {
+    Disassembly,
+    Recovery(Option<&'p super::MemberProjections<'p, 'image>>),
+}
+
 impl<'a> ProgramIndex<'a> {
     /// P1: validates the original instruction structure, decodes the complete
     /// instruction/payload directory and associates original references with
@@ -27,7 +32,24 @@ impl<'a> ProgramIndex<'a> {
         &self,
         source: &MethodSource<'_, 'a>,
     ) -> Result<DecodedOutcome<'a>, MethodError> {
-        self.decode_with_declaration(source, None, || {
+        self.decode_owned_method(source, DecodeProduct::Recovery(None))
+    }
+
+    /// Returns the checked original instructions, references and protection for
+    /// bytecode consumers that finish before recovery IR is needed.
+    pub fn disassemble_method_source(
+        &self,
+        source: &MethodSource<'_, 'a>,
+    ) -> Result<DecodedOutcome<'a>, MethodError> {
+        self.decode_owned_method(source, DecodeProduct::Disassembly)
+    }
+
+    fn decode_owned_method(
+        &self,
+        source: &MethodSource<'_, 'a>,
+        product: DecodeProduct<'_, 'a>,
+    ) -> Result<DecodedOutcome<'a>, MethodError> {
+        self.decode_with_declaration(source, product, || {
             source
                 .declaration()
                 .try_copy()
@@ -49,7 +71,7 @@ impl<'a> ProgramIndex<'a> {
         let projections = projections.filter(|table| {
             std::ptr::eq(table.program, self) && std::ptr::eq(source.program(), self)
         });
-        self.decode_with_declaration(source, projections, || {
+        self.decode_with_declaration(source, DecodeProduct::Recovery(projections), || {
             Ok(std::borrow::Cow::Borrowed(source.declaration()))
         })
     }
@@ -57,7 +79,7 @@ impl<'a> ProgramIndex<'a> {
     fn decode_with_declaration<'d>(
         &self,
         source: &MethodSource<'_, 'a>,
-        projections: Option<&super::MemberProjections<'_, 'a>>,
+        product: DecodeProduct<'_, 'a>,
         declaration: impl FnOnce() -> Result<
             std::borrow::Cow<'d, crate::p0::MethodDeclaration>,
             MethodError,
@@ -127,9 +149,11 @@ impl<'a> ProgramIndex<'a> {
                 issues: references.issues,
             },
         );
-        match super::ir::build(&decoded, directory.instruction_count, projections) {
-            Ok(ir) => decoded.set_ir(ir),
-            Err(error) => decoded.set_ir_error(error),
+        if let DecodeProduct::Recovery(projections) = product {
+            match super::ir::build(&decoded, directory.instruction_count, projections) {
+                Ok(ir) => decoded.set_ir(ir),
+                Err(error) => decoded.set_ir_error(error),
+            }
         }
         Ok(DecodedOutcome {
             decoded: Some(decoded),

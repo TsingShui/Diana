@@ -1,0 +1,4 @@
+-keep,allowoptimization,allowobfuscation class bench.** { public static <methods>; }
+-keepattributes SourceFile,LineNumberTable
+-dontwarn **
+-keepclassmembers,allowobfuscation class bench.Before { public static int calc(int,int); }

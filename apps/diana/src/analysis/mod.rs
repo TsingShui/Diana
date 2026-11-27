@@ -13,6 +13,7 @@ mod attr_names;
 pub mod axml;
 pub mod decompile;
 pub mod dex;
+pub(crate) mod diff;
 pub(crate) mod export_path;
 pub(crate) mod export_resources;
 pub mod extract;

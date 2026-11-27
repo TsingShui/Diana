@@ -69,9 +69,20 @@ pub fn publish_with(
     input: &Path,
     write: impl FnOnce(&mut buffer::Buffered<'_>) -> Result<(), Failure>,
 ) -> Result<(), Failure> {
+    publish_for_inputs(output, &[input], write)
+}
+
+/// Refuses a target that aliases any of the inputs of a multi-input command.
+pub(super) fn publish_for_inputs(
+    output: Option<&Path>,
+    inputs: &[&Path],
+    write: impl FnOnce(&mut buffer::Buffered<'_>) -> Result<(), Failure>,
+) -> Result<(), Failure> {
     match output {
         Some(path) => {
-            check_target(path, input).map_err(Failure::output)?;
+            for input in inputs {
+                check_target(path, input).map_err(Failure::output)?;
+            }
             let directory = path
                 .parent()
                 .filter(|path| !path.as_os_str().is_empty())

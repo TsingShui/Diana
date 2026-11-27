@@ -1,0 +1,15 @@
+# Semantic review
+
+The ordinary `methods --no-limit` and `get-class` commands were run on both assembled DEX files with Diana 0.3.0. Both inputs yielded all six independently specified methods. Reading the two helper bodies against their Smali instructions shows the rotate receives the first and second parameters in order, then XOR affects the returned result. Register relocation has no effect on either input or the return.
+
+The old caller returns 17 for strictly smaller input. Its other arm calls v with the original order. The new caller returns 19 for smaller or equal input and calls j with the reverse order on its other arm. The readable expressions preserve the distinct equal case, helper identity, argument order and each immediate result. The two unreferenced pairs return the same XOR expression. Their individual historical correspondence remains unknown. The unrelated forwards call two different library methods with the original argument. This establishes a concrete difference even though their three opcode sequences have the same shape.
+
+This comparison was a path-by-path reading of the Java-like output, original Smali and Java specifications. No Android execution of the fixture methods was performed.
+
+The assembled code_item words independently locate all three changed sites in each caller. At code-unit offset 0, the low opcode byte changes from 0x34 to 0x37. At offset 2, the invoke argument word decodes as v1,v2 in the original and v4,v3 in the update, whose two parameter words start at v3. At offset 7, const/16 carries 0x11 and 0x13 respectively. An implementation that reports only a changed renamed call target misses its argument-order change.
+
+The other caller in each class passes the same two arguments to its corresponding helper, then applies highestOneBit to the returned value. The bridge from the old helper signature to the new one is independently established by reading the helper bodies. Changing that call reference alone preserves the caller's operations.
+
+The candidate comparison listed the changed predicate at offset 0, both original invoke register sequences and helper identities at offset 2, and the two constants at offset 7. Those sites account for the three independent caller paths above. It paired the helper and highestOneBit caller as unchanged. It retained the four copies as ambiguous, and declined to pair the different library forwards. No input-specific mapping was provided.
+
+The R8 comparison pairs the source editDistance, knapsack and longestIncreasing methods with a, b and c under La;, as the repository's compiler mapping specifies. The candidate observed instruction differences in all three bodies. For example, moving an existing value can take the place of loading another constant at a comparison site. A register or instruction change in such a pair records a DEX-level observation. The R8 run exercises correspondence; the separately authored caller scenarios above establish which of their own path results differ.
