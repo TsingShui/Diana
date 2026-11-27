@@ -15,7 +15,6 @@ fastrace = { version = "0.7", optional = true }
 libdeflater = "1"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 memmap2 = "0.9"
-mimalloc = "0.1"
 nucleo-matcher = { version = "=0.3.1", default-features = false, features = ["unicode-casefold", "unicode-normalization"] }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
@@ -25,6 +24,12 @@ tempfile = "3"
 
 [target.'cfg(any(target_os = "linux", target_vendor = "apple", target_os = "android"))'.dependencies]
 rustix = { version = "1", features = ["fs"] }
+
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+mimalloc = { version = "0.1", features = ["override"] }
+
+[target.'cfg(not(all(target_os = "linux", target_env = "gnu")))'.dependencies]
+mimalloc = "0.1"
 
 [lints.rust]
 # one allow: the read-only input mapping in `analysis::input`.
