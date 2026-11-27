@@ -6,7 +6,7 @@
 //! value recovery or expanding formulas into trees.
 
 use std::cell::{Cell, OnceCell};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fmt;
 use std::hash::BuildHasher;
 
@@ -275,7 +275,7 @@ pub(super) struct DomainLogic {
     bdd: OnceCell<BddContext>,
     collection: Option<Box<Collection>>,
     nodes: Vec<DomainRecord>,
-    symbols: BTreeMap<BoolVariable, ControlDomain>,
+    symbols: foldhash::HashMap<BoolVariable, ControlDomain>,
     joins: foldhash::HashMap<(ControlDomain, ControlDomain, bool), ControlDomain>,
     /// Larger canonical sets occupy one method-local arena. The table stores
     /// their creating domains and only accepts an exact ordered-term match.
@@ -307,7 +307,7 @@ impl DomainLogic {
         Self {
             collection: None,
             nodes: Vec::new(),
-            symbols: BTreeMap::new(),
+            symbols: Default::default(),
             joins: Default::default(),
             term_arena: TermArena::default(),
             term_work: Vec::new(),
