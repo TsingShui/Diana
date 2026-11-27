@@ -112,7 +112,7 @@ impl From<&MethodReference> for ConstructorKey {
 #[derive(Debug, Clone, Default)]
 pub struct JavaMemberNames {
     fields: BTreeMap<JavaFieldSymbol, JavaIdentifier>,
-    methods: Vec<(JavaMethodSymbol, JavaIdentifier)>,
+    renamed_methods: Vec<(JavaMethodSymbol, JavaIdentifier)>,
     overloads: BTreeMap<MethodOverloadKey, BTreeSet<MethodDescriptor>>,
     constructors: BTreeMap<ConstructorKey, ConstructorSourceLayout>,
 }
@@ -139,19 +139,23 @@ impl JavaMemberNames {
             |a, b| a.descriptor.parameters == b.descriptor.parameters,
         );
         let mut overloads = BTreeMap::<MethodOverloadKey, BTreeSet<MethodDescriptor>>::new();
-        for (method, name) in &methods {
+        let mut renamed_methods = Vec::new();
+        for (method, name) in methods {
+            if name != method.name {
+                renamed_methods.push((method.clone(), name.clone()));
+            }
             overloads
                 .entry(MethodOverloadKey {
-                    owner: method.owner.clone(),
-                    name: name.clone(),
+                    owner: method.owner,
+                    name,
                     arity: method.descriptor.parameters.len(),
                 })
                 .or_default()
-                .insert(method.descriptor.clone());
+                .insert(method.descriptor);
         }
         Self {
             fields: fields.into_iter().collect(),
-            methods,
+            renamed_methods,
             overloads,
             constructors: BTreeMap::new(),
         }
@@ -182,6 +186,10 @@ impl JavaMemberNames {
     }
 
     pub fn with_hidden_fields(mut self, fields: impl IntoIterator<Item = JavaFieldSymbol>) -> Self {
+        let fields = fields.into_iter().collect::<BTreeSet<_>>();
+        if fields.is_empty() {
+            return self;
+        }
         let mut scopes = BTreeMap::<ArgType, JavaNameScope>::new();
         for (field, name) in &self.fields {
             scopes
@@ -189,7 +197,7 @@ impl JavaMemberNames {
                 .or_default()
                 .reserve(name.clone());
         }
-        for field in fields.into_iter().collect::<BTreeSet<_>>() {
+        for field in fields {
             if self.fields.contains_key(&field) {
                 continue;
             }
@@ -221,12 +229,18 @@ impl JavaMemberNames {
         &self,
         reference: &MethodReference,
     ) -> Option<&BTreeSet<usize>> {
+        if self.constructors.is_empty() {
+            return None;
+        }
         self.constructors
             .get(&ConstructorKey::from(reference))
             .map(|layout| &layout.hidden_parameters)
     }
 
     pub fn enclosing_constructor_parameter(&self, reference: &MethodReference) -> Option<usize> {
+        if self.constructors.is_empty() {
+            return None;
+        }
         self.constructors
             .get(&ConstructorKey::from(reference))
             .and_then(|layout| layout.enclosing_parameter)
@@ -259,11 +273,11 @@ impl JavaMemberNames {
     pub fn method(&self, reference: &MethodReference) -> JavaIdentifier {
         let name = JavaIdentifier::from_dex(&reference.name);
         let key = (&reference.owner, &name, &reference.descriptor);
-        self.methods
+        self.renamed_methods
             .binary_search_by(|(symbol, _)| {
                 (&symbol.owner, &symbol.name, &symbol.descriptor).cmp(&key)
             })
-            .map_or(name, |index| self.methods[index].1.clone())
+            .map_or(name, |index| self.renamed_methods[index].1.clone())
     }
 
     pub fn null_argument_requires_cast(
@@ -300,11 +314,11 @@ impl JavaMemberNames {
     }
 
     pub fn method_symbol(&self, symbol: &JavaMethodSymbol) -> JavaIdentifier {
-        self.methods
+        self.renamed_methods
             .binary_search_by(|(key, _)| key.cmp(symbol))
             .map_or_else(
                 |_| symbol.name.clone(),
-                |index| self.methods[index].1.clone(),
+                |index| self.renamed_methods[index].1.clone(),
             )
     }
 }
@@ -317,19 +331,26 @@ fn allocate_names<T: Ord>(
     same_parameters: fn(&T, &T) -> bool,
 ) -> Vec<(T, JavaIdentifier)> {
     let same_group = |a: &T, b: &T| names(a) == names(b) && same_parameters(a, b);
-    let mut scopes = BTreeMap::<ArgType, JavaNameScope>::new();
-    if members
+    if !members
         .iter()
         .zip(members.iter().skip(1))
         .any(|(a, b)| same_group(a, b))
     {
-        for member in &members {
-            let (owner, name) = names(member);
-            scopes
-                .entry(owner.clone())
-                .or_default()
-                .reserve(name.clone());
-        }
+        return members
+            .into_iter()
+            .map(|member| {
+                let name = names(&member).1.clone();
+                (member, name)
+            })
+            .collect();
+    }
+    let mut scopes = BTreeMap::<ArgType, JavaNameScope>::new();
+    for member in &members {
+        let (owner, name) = names(member);
+        scopes
+            .entry(owner.clone())
+            .or_default()
+            .reserve(name.clone());
     }
     let mut result = Vec::with_capacity(members.len());
     let mut members = members.into_iter().peekable();

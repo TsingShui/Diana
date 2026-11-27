@@ -261,9 +261,37 @@ impl JavaTypeErasureIndex {
     }
 }
 
+#[derive(Default)]
+// Each entry retains its two immutable class shapes. Mutating generic
+// arguments detaches the shared segments and requires a fresh relation query.
+struct AssignabilityCache {
+    entries: SmallVec<[(JavaClassType, JavaClassType, bool); 2]>,
+    next: usize,
+}
+impl AssignabilityCache {
+    fn get(&self, source: &JavaClassType, target: &JavaClassType) -> Option<bool> {
+        self.entries
+            .iter()
+            .find(|(from, to, _)| {
+                Arc::ptr_eq(&from.segments, &source.segments)
+                    && Arc::ptr_eq(&to.segments, &target.segments)
+            })
+            .map(|(_, _, assignable)| *assignable)
+    }
+    fn insert(&mut self, source: &JavaClassType, target: &JavaClassType, assignable: bool) {
+        let record = (source.clone(), target.clone(), assignable);
+        if self.entries.len() < 8 {
+            self.entries.push(record);
+        } else {
+            self.entries[self.next] = record;
+            self.next = (self.next + 1) % 8;
+        }
+    }
+}
 pub(super) struct JavaTypeRelations<'a> {
     source_types: &'a BTreeMap<ArgType, JavaType>,
     source_erasures: Option<&'a JavaTypeErasureIndex>,
+    assignability: Option<&'a RefCell<AssignabilityCache>>,
     direct_supertypes: Option<&'a SourceObjectTypes>,
     variable_erasures: &'a BTreeMap<JavaIdentifier, ArgType>,
     variable_bounds: Option<&'a BTreeMap<JavaIdentifier, JavaType>>,
@@ -279,6 +307,7 @@ impl<'a> JavaTypeRelations<'a> {
         Self {
             source_types,
             source_erasures: None,
+            assignability: None,
             direct_supertypes: None,
             variable_erasures,
             variable_bounds: None,
@@ -438,6 +467,19 @@ impl<'a> JavaTypeRelations<'a> {
         source: &super::JavaClassType,
         target: &super::JavaClassType,
     ) -> bool {
+        if let Some(cache) = self.assignability {
+            if let Some(result) = cache.borrow().get(source, target) {
+                return result;
+            }
+
+            let result = self.compute_class_assignability(source, target);
+            cache.borrow_mut().insert(source, target, result);
+            return result;
+        }
+        self.compute_class_assignability(source, target)
+    }
+
+    fn compute_class_assignability(&self, source: &JavaClassType, target: &JavaClassType) -> bool {
         let target_erasure = self.erased_class(target);
         if target_erasure
             .as_ref()
@@ -1054,13 +1096,9 @@ impl<'a> GenericTypeSolver<'a> {
             .zip(actual.segments.iter().skip(actual_offset))
         {
             if !formal.is_empty() {
-                let parameters = formal
-                    .iter()
-                    .filter_map(|argument| owner_type_parameter_name(argument))
-                    .collect::<Vec<_>>();
+                let parameters = formal.iter().filter_map(owner_type_parameter_name);
                 if actual.arguments.is_empty() {
-                    self.raw_owner
-                        .extend(parameters.into_iter().map(ToOwned::to_owned));
+                    self.raw_owner.extend(parameters.map(ToOwned::to_owned));
                 } else {
                     for parameter in parameters {
                         self.raw_owner.remove(parameter);
@@ -1100,20 +1138,28 @@ impl<'a> GenericTypeSolver<'a> {
 
     pub(super) fn complete_with_bounds(&mut self, parameters: &[TypeParameter]) {
         loop {
-            let before = self.values.clone();
+            // Only bounds containing an inference variable can change a binding.
+            // Compare the whole pass when such a bound has an available value.
+            let mut before = None;
             for parameter in parameters {
-                let Some((value, origin)) = self.bound_value(&parameter.name) else {
-                    continue;
-                };
-                for bound in parameter
+                let mut bounds = parameter
                     .class_bound
                     .iter()
                     .chain(&parameter.interface_bounds)
-                {
+                    .filter(|bound| bound.contains_type_variable())
+                    .peekable();
+                if bounds.peek().is_none() {
+                    continue;
+                }
+                let Some((value, origin)) = self.bound_value(&parameter.name) else {
+                    continue;
+                };
+                before.get_or_insert_with(|| self.values.clone());
+                for bound in bounds {
                     self.constrain_with_origin(bound, &value, origin);
                 }
             }
-            if self.values == before {
+            if before.is_none_or(|before| self.values == before) {
                 break;
             }
         }
@@ -1175,6 +1221,9 @@ impl<'a> GenericTypeSolver<'a> {
         actual: &JavaType,
         origin: GenericConstraintOrigin,
     ) {
+        if !formal.contains_type_variable() {
+            return;
+        }
         match (formal, actual) {
             (JvmTypeSignature::TypeVariable(name), actual) => {
                 self.bind(
@@ -1186,7 +1235,7 @@ impl<'a> GenericTypeSolver<'a> {
             (JvmTypeSignature::Array(formal), JavaType::Array(actual)) => {
                 self.constrain_with_origin(formal, actual, origin);
             }
-            (JvmTypeSignature::ClassType(formal), JavaType::Variable(actual)) => {
+            (JvmTypeSignature::ClassType(_), JavaType::Variable(actual)) => {
                 let Some(bound) = self
                     .visible_bounds
                     .and_then(|bounds| bounds.get(actual))
@@ -1195,15 +1244,10 @@ impl<'a> GenericTypeSolver<'a> {
                 else {
                     return;
                 };
-                self.constrain_with_origin(
-                    &JvmTypeSignature::ClassType(formal.clone()),
-                    &bound,
-                    origin,
-                );
+                self.constrain_with_origin(formal, &bound, origin);
             }
-            (JvmTypeSignature::ClassType(formal), JavaType::Class(actual)) => {
-                let formal_type = JvmTypeSignature::ClassType(formal.clone());
-                let formal_erasure = formal_type.erased();
+            (JvmTypeSignature::ClassType(class), JavaType::Class(actual)) => {
+                let formal_erasure = class.erased_type();
                 let Some(JavaType::Class(expected)) = self.resolve_source_type(&formal_erasure)
                 else {
                     return;
@@ -1215,21 +1259,14 @@ impl<'a> GenericTypeSolver<'a> {
                     }) else {
                         return;
                     };
-                    self.constrain_with_origin(&formal_type, &projected, origin);
+                    self.constrain_with_origin(formal, &projected, origin);
                     return;
                 }
-                let formal_arguments = std::iter::once(formal.type_arguments.as_slice())
-                    .chain(
-                        formal
-                            .inner_segments
-                            .iter()
-                            .map(|segment| segment.type_arguments.as_slice()),
-                    )
-                    .collect::<Vec<_>>();
-                let formal_offset = formal_arguments.len().saturating_sub(actual.segments.len());
-                let actual_offset = actual.segments.len().saturating_sub(formal_arguments.len());
-                for (formal_segment, actual_segment) in formal_arguments
-                    .into_iter()
+                let group_count = class.inner_segments.len() + 1;
+                let formal_offset = group_count.saturating_sub(actual.segments.len());
+                let actual_offset = actual.segments.len().saturating_sub(group_count);
+                for (formal_segment, actual_segment) in class
+                    .argument_groups()
                     .skip(formal_offset)
                     .zip(actual.segments.iter().skip(actual_offset))
                 {
@@ -2682,6 +2719,9 @@ impl TypeEquationGraph {
             .chain(register.code_var.map(SourceTypeFact::Variable))
     }
 
+    // Plain operations read declaration types. Recompute expressions only for
+    // the operand types they consume. Generic calls can also read target
+    // requirements attached to the results of wrapped argument expressions.
     fn record_equation_inputs(
         dependents: &mut foldhash::HashMap<SourceTypeFact, SmallVec<[usize; 1]>>,
         index: usize,
@@ -2964,11 +3004,22 @@ pub(super) struct SourceTypeFlow<'a> {
     invocations: Vec<SemanticOperation>,
     boolean_predicate_operands: Vec<SemanticExpression>,
     runtime_type_tests: Vec<(ArgType, SemanticExpression)>,
+    assignability: RefCell<AssignabilityCache>,
     source_type_validity: RefCell<HashMap<JavaType, bool>>,
     collect_diagnostics: bool,
 }
 
 impl<'a> SourceTypeFlow<'a> {
+    fn relations(&self) -> JavaTypeRelations<'_> {
+        let mut relations = JavaTypeRelations::new(
+            self.source_types,
+            self.type_variable_erasures,
+            self.generic_projection,
+        )
+        .with_erasure_index(Some(self.source_erasures.as_ref()));
+        relations.assignability = Some(&self.assignability);
+        relations
+    }
     pub(super) fn solve(
         root: &crate::ir::SemanticNode,
         fields: &'a BTreeMap<FieldReference, JavaType>,
@@ -3032,6 +3083,7 @@ impl<'a> SourceTypeFlow<'a> {
             invocations: Vec::new(),
             boolean_predicate_operands: Vec::new(),
             runtime_type_tests: Vec::new(),
+            assignability: RefCell::default(),
             source_type_validity: RefCell::new(HashMap::new()),
             collect_diagnostics,
         };
@@ -3367,12 +3419,7 @@ impl<'a> SourceTypeFlow<'a> {
         if current == Some(requirement) && principal.is_none_or(|ty| ty == requirement) {
             return None;
         }
-        let relations = JavaTypeRelations::new(
-            self.source_types,
-            self.type_variable_erasures,
-            self.generic_projection,
-        )
-        .with_erasure_index(Some(self.source_erasures.as_ref()));
+        let relations = self.relations();
         if self.roles.has(value, TypeRole::DECLARATION)
             && self.value_definition_fits(value, requirement, &relations)
         {
@@ -3620,12 +3667,7 @@ impl<'a> SourceTypeFlow<'a> {
         {
             return None;
         }
-        let relations = JavaTypeRelations::new(
-            self.source_types,
-            self.type_variable_erasures,
-            self.generic_projection,
-        )
-        .with_erasure_index(Some(self.source_erasures.as_ref()));
+        let relations = self.relations();
         if self.roles.has(variable, TypeRole::DECLARATION)
             && self.definitions_fit(variable, requirement, &relations)
         {
@@ -3831,7 +3873,13 @@ impl<'a> SourceTypeFlow<'a> {
         requirement: &JavaType,
         relations: &JavaTypeRelations<'_>,
     ) -> bool {
-        if self.verifier_join_fits(variable, requirement) {
+        let definitions = self
+            .equation_graph
+            .equations_for_output(SourceTypeFact::Variable(variable));
+        if definitions.is_empty() {
+            return false;
+        }
+        if self.verifier_join_fits(definitions, requirement) {
             return true;
         }
         let needs_target_evidence = Self::has_source_specific_type(requirement)
@@ -3842,14 +3890,9 @@ impl<'a> SourceTypeFlow<'a> {
                 }
                 TypeState::Conflict => false,
             });
-        let mut definitions = self
-            .equations_for_fact(SourceTypeFact::Variable(variable))
-            .peekable();
-        if definitions.peek().is_none() {
-            return false;
-        }
         let mut target_evidence = false;
-        let fits = definitions.all(|equation| {
+        let fits = definitions.iter().all(|&index| {
+            let equation = &self.equations[index];
             let fits = self.expression_fits(&equation.value, requirement, relations);
             if fits && (!needs_target_evidence || target_evidence) {
                 return true;
@@ -3861,7 +3904,7 @@ impl<'a> SourceTypeFlow<'a> {
         fits && (!needs_target_evidence || target_evidence)
     }
 
-    fn verifier_join_fits(&self, variable: u32, requirement: &JavaType) -> bool {
+    fn verifier_join_fits(&self, definitions: &[usize], requirement: &JavaType) -> bool {
         if Self::has_source_specific_type(requirement) {
             return false;
         }
@@ -3871,43 +3914,38 @@ impl<'a> SourceTypeFlow<'a> {
         else {
             return false;
         };
-        let definitions = self
-            .equations_for_fact(SourceTypeFact::Variable(variable))
-            .collect::<Vec<_>>();
-        let exact_join = definitions
-            .iter()
-            .any(|equation| equation.result.ty == target);
-        let edge_join = target.as_object().is_some()
-            && definitions.iter().any(|equation| {
-                equation
-                    .value
-                    .as_operation()
-                    .is_some_and(|operation| operation.payload.edge_copy)
-            });
-        let constrained_join = target.as_object().is_some()
-            && definitions.len() > 1
-            && definitions.iter().all(|equation| {
+        let mut definitions = definitions.iter().map(|&index| &self.equations[index]);
+        if definitions
+            .clone()
+            .any(|equation| equation.result.ty == target)
+            && definitions
+                .clone()
+                .all(|equation| self.expression_is_reference(&equation.value))
+        {
+            return true;
+        }
+        if target.as_object().is_none() {
+            return false;
+        }
+        if definitions.len() > 1
+            && definitions.clone().all(|equation| {
                 SsaVar::from_reg(&equation.result).is_some_and(|value| {
                     self.value_requirements
                         .get(&value)
                         .or_else(|| self.receiver_value_requirements.get(&value))
-                        .is_some_and(|state| match state {
-                            TypeState::Exact(ty) => {
-                                self.indexed_erased_type(ty) == Some(target.clone())
-                            }
-                            TypeState::Conflict => false,
-                        })
+                        .and_then(TypeState::exact)
+                        .is_some_and(|ty| self.indexed_erased_type(ty).as_ref() == Some(&target))
                 })
-            });
-        (exact_join
-            && definitions
-                .iter()
-                .all(|equation| self.expression_is_reference(&equation.value)))
-            || constrained_join
-            || (edge_join
-                && definitions
-                    .iter()
-                    .all(|equation| self.expression_fits_object_join(&equation.value, &target)))
+            })
+        {
+            return true;
+        }
+        definitions.clone().any(|equation| {
+            equation
+                .value
+                .as_operation()
+                .is_some_and(|operation| operation.payload.edge_copy)
+        }) && definitions.all(|equation| self.expression_fits_object_join(&equation.value, &target))
     }
 
     fn expression_fits_object_join(
@@ -3994,15 +4032,9 @@ impl<'a> SourceTypeFlow<'a> {
             let source = self.expression_type(expression);
             let source_has_generic_evidence =
                 source.as_ref().is_some_and(Self::has_source_specific_type);
-            let source_is_assignable = source.as_ref().is_some_and(|source| {
-                JavaTypeRelations::new(
-                    self.source_types,
-                    self.type_variable_erasures,
-                    self.generic_projection,
-                )
-                .with_erasure_index(Some(self.source_erasures.as_ref()))
-                .is_assignable(source, target)
-            });
+            let source_is_assignable = source
+                .as_ref()
+                .is_some_and(|source| self.relations().is_assignable(source, target));
             if !source_has_generic_evidence || source_is_assignable {
                 return true;
             }
@@ -4083,13 +4115,7 @@ impl<'a> SourceTypeFlow<'a> {
                 let Some(output) = solver.instantiate(result.as_ref()) else {
                     return false;
                 };
-                JavaTypeRelations::new(
-                    self.source_types,
-                    self.type_variable_erasures,
-                    self.generic_projection,
-                )
-                .with_erasure_index(Some(self.source_erasures.as_ref()))
-                .is_assignable(&output, target)
+                self.relations().is_assignable(&output, target)
             }
             SemanticExpression::Register(_)
             | SemanticExpression::Literal(_)

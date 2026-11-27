@@ -163,3 +163,138 @@ fn loop_backedges_propagate_word_and_sparse_registers_across_distinct_kill_sets(
         );
     }
 }
+
+#[test]
+fn throwing_result_seeds_the_handler_phi_and_its_normal_join() {
+    use diana_decomp::ir::passes::SSATransform;
+    use diana_decomp::ir::{InsnType, Pass};
+
+    let reg = |n| RegisterArg::new(n, ArgType::INT);
+    let mut cfg = CFG::new("exceptionalPhiSeed");
+    cfg.add_block(Block::with_instructions(
+        0,
+        0,
+        vec![
+            InsnNode::const_value(reg(65), 12),
+            InsnNode::const_value(RegisterArg::new(2, ArgType::array(ArgType::INT)), 0),
+        ],
+    ));
+    cfg.add_block(Block::with_instructions(
+        1,
+        1,
+        vec![InsnNode::array_length(
+            reg(65),
+            InsnArg::reg(2, ArgType::array(ArgType::INT)),
+        )],
+    ));
+    cfg.add_block(Block::new(2));
+    cfg.add_block(Block::new(3));
+    cfg.add_block(Block::with_instructions(
+        4,
+        4,
+        vec![InsnNode::return_value(InsnArg::reg(65, ArgType::INT))],
+    ));
+    for (source, target, kind) in [
+        (0, 1, EdgeKind::Normal),
+        (1, 2, EdgeKind::Normal),
+        (1, 3, EdgeKind::Exception),
+        (2, 4, EdgeKind::Normal),
+        (3, 4, EdgeKind::Normal),
+    ] {
+        cfg.add_edge(BlockId(source), BlockId(target), kind);
+    }
+    SSATransform.run(&mut cfg).unwrap();
+    let version = |id| {
+        cfg.block(BlockId(id)).unwrap().insns[0]
+            .result
+            .as_ref()
+            .unwrap()
+            .ssa_version
+            .unwrap()
+    };
+    assert_ne!(version(0), version(1));
+    let handler = &cfg.block(BlockId(3)).unwrap().insns[0];
+    assert_eq!(handler.insn_type, InsnType::Phi);
+    assert_eq!(
+        handler.payload.phi_edges,
+        [(BlockId(1), EdgeKind::Exception)]
+    );
+    assert_eq!(
+        handler.args[0].as_register().unwrap().ssa_version,
+        Some(version(0))
+    );
+    let join = &cfg.block(BlockId(4)).unwrap().insns[0];
+    assert_eq!(join.insn_type, InsnType::Phi);
+    let pairs: Vec<_> = join
+        .payload
+        .phi_edges
+        .iter()
+        .copied()
+        .zip(
+            join.args
+                .iter()
+                .map(|arg| arg.as_register().unwrap().ssa_version.unwrap()),
+        )
+        .collect();
+    assert_eq!(
+        pairs,
+        [
+            ((BlockId(2), EdgeKind::Normal), version(1)),
+            ((BlockId(3), EdgeKind::Normal), version(3))
+        ]
+    );
+}
+
+#[test]
+fn invalid_throwing_boundaries_preserve_each_instruction_position() {
+    use diana_decomp::ir::passes::{SSATransform, SsaTransformError};
+    use diana_decomp::ir::Pass;
+    for sites in [vec![], vec![0], vec![0, 1, 3]] {
+        let mut cfg = CFG::new("invalidExceptionPoint");
+        let mut source = Block::new(0);
+        for index in 0..4 {
+            let reg = RegisterArg::new(0, ArgType::INT);
+            source.push(if sites.contains(&index) {
+                InsnNode::array_length(reg, InsnArg::reg(1, ArgType::array(ArgType::INT)))
+            } else {
+                InsnNode::const_value(reg, 0)
+            });
+        }
+        cfg.add_block(source);
+        cfg.add_block(Block::new(1));
+        cfg.add_edge(BlockId(0), BlockId(1), EdgeKind::Exception);
+        assert!(matches!(
+            SSATransform.run(&mut cfg),
+            Err(SsaTransformError::InvalidExceptionBoundary { block: BlockId(0), throwing }) if throwing == sites
+        ));
+    }
+}
+
+#[test]
+fn duplicate_body_id_keeps_earlier_seed_uses_and_the_last_body_definitions() {
+    let mut cfg = CFG::new("declaredBodyIds");
+    cfg.add_block(Block::new(0));
+    let make_use = |reg| InsnNode::return_value(InsnArg::reg(reg, ArgType::INT));
+    cfg.blocks.insert(
+        BlockId(1),
+        Block::with_instructions(9, 0, vec![make_use(2)]),
+    );
+    cfg.blocks.insert(
+        BlockId(2),
+        Block::with_instructions(
+            9,
+            0,
+            vec![
+                InsnNode::const_value(RegisterArg::new(3, ArgType::INT), 7),
+                make_use(65),
+            ],
+        ),
+    );
+    cfg.add_edge(BlockId(0), BlockId(9), EdgeKind::Normal);
+    let live = RegisterLiveness::analyze(&cfg);
+    assert!(live.is_live_in(BlockId(0), 2));
+    assert!(live.is_live_in(BlockId(0), 65));
+    assert!(!live.is_live_in(BlockId(9), 2));
+    assert!(live.is_live_in(BlockId(9), 65));
+    assert_eq!(live.definition_blocks(3).collect::<Vec<_>>(), [BlockId(9)]);
+}

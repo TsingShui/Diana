@@ -300,3 +300,54 @@ fn constructor_initialization_skips_only_the_implicit_receiver_for_constraints()
     graph.mark_requirement(SourceTypeFact::Variable(5), RequirementChange::Updated);
     assert_eq!(ready(&mut graph), [70, 71]);
 }
+
+#[test]
+fn bound_completion_propagates_through_later_parameters_and_fills_closed_defaults() {
+    use crate::ir::generic_types::GenericSignatures;
+    let parameters =
+        GenericSignatures::method("<E:Ljava/lang/Object;U:TE;T:TU;R:Ljava/lang/String;>()V")
+            .unwrap()
+            .type_parameters;
+    let object = JavaType::source_class("java.lang.Object");
+    let string = JavaType::source_class("java.lang.String");
+    let types = BTreeMap::from([
+        (ArgType::object("java/lang/Object"), object),
+        (ArgType::object("java/lang/String"), string.clone()),
+    ]);
+    let mut solver = GenericTypeSolver::new(&types).with_inference_variables(&parameters);
+    solver.constrain(&JvmTypeSignature::TypeVariable("T".into()), &string);
+    solver.complete_with_bounds(&parameters);
+    for name in ["E", "U", "T", "R"] {
+        assert_eq!(solver.get(name).as_ref(), Some(&string), "{name}");
+    }
+}
+
+#[test]
+fn class_assignability_cache_keeps_ordered_immutable_type_pairs() {
+    fn class(name: &str) -> JavaClassType {
+        match JavaType::source_class(name) {
+            JavaType::Class(class) => class,
+            _ => unreachable!(),
+        }
+    }
+    let left = class("fixture.Left");
+    let right = class("fixture.Right");
+    let mut cache = AssignabilityCache::default();
+    cache.insert(&left, &right, true);
+    cache.insert(&right, &left, false);
+    assert_eq!(cache.get(&left.clone(), &right), Some(true));
+    assert_eq!(cache.get(&right, &left), Some(false));
+    let mut parameterized = left.clone();
+    parameterized
+        .segments_mut()
+        .last_mut()
+        .unwrap()
+        .arguments
+        .push(JavaTypeArgument::Any);
+    assert_eq!(cache.get(&parameterized, &right), None);
+    assert_eq!(cache.get(&left, &right), Some(true));
+    for index in 0..8 {
+        cache.insert(&class(&format!("fixture.C{index}")), &right, false);
+    }
+    assert_eq!(cache.get(&left, &right), None);
+}

@@ -187,9 +187,10 @@ impl SSATransform {
         if !PhiPlacement::has_registers(cfg) {
             return Ok((PassResult::Unchanged, dom_tree));
         }
-        if exceptional_definitions || !dom_frontier.is_empty() {
+        if !exceptional_definitions.is_empty() || !dom_frontier.is_empty() {
             let liveness = RegisterLiveness::analyze(cfg);
-            let placements = PhiPlacement::compute(cfg, &dom_frontier, &liveness);
+            let placements =
+                PhiPlacement::compute(&dom_frontier, &liveness, &exceptional_definitions);
             PhiPlacement::insert(cfg, &placements)?;
         }
 
@@ -199,32 +200,39 @@ impl SSATransform {
 
         Ok((PassResult::Changed, dom_tree))
     }
-    fn validate_exception_boundaries(cfg: &CFG) -> Result<bool, SsaTransformError> {
-        let mut has_definitions = false;
-        for block in cfg.block_ids() {
-            let has_exception_edge = cfg
+    /// A throwing result is visible only on the normal edge. Keep precisely
+    /// the register and handler pairs needed for pruned phi placement.
+    fn validate_exception_boundaries(cfg: &CFG) -> Result<Vec<(u32, BlockId)>, SsaTransformError> {
+        let mut exceptional_definitions = Vec::new();
+        for (&block, body) in &cfg.blocks {
+            let mut handlers = cfg
                 .successors_with_kind(block)
                 .iter()
-                .any(|(_, kind)| *kind == crate::ir::EdgeKind::Exception);
-            if !has_exception_edge {
+                .filter_map(|&(target, edge)| edge.is_exception().then_some(target))
+                .peekable();
+            if handlers.peek().is_none() {
                 continue;
             }
-            let body = cfg
-                .block(block)
-                .ok_or(SsaTransformError::MissingExceptionSource(block))?;
-            let throwing = body
-                .insns
-                .iter()
-                .enumerate()
-                .filter(|(_, instruction)| instruction.can_throw())
-                .map(|(index, _)| index)
-                .collect::<Vec<_>>();
-            if throwing.as_slice() != [body.insns.len().saturating_sub(1)] {
+            let Some((throwing, _)) = body.insns.split_last().filter(|(last, prefix)| {
+                last.can_throw() && !prefix.iter().any(|instruction| instruction.can_throw())
+            }) else {
+                let throwing = body
+                    .insns
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, instruction)| instruction.can_throw().then_some(index))
+                    .collect();
                 return Err(SsaTransformError::InvalidExceptionBoundary { block, throwing });
+            };
+            if let Some(result) = &throwing.result {
+                exceptional_definitions.extend(
+                    handlers
+                        .filter(|target| cfg.blocks.contains_key(target))
+                        .map(|target| (result.reg_num, target)),
+                );
             }
-            has_definitions |= body.insns.last().is_some_and(|insn| insn.result.is_some());
         }
-        Ok(has_definitions)
+        Ok(exceptional_definitions)
     }
 
     fn model_refining_definitions(cfg: &mut CFG) {
@@ -276,48 +284,32 @@ impl PhiPlacement {
     /// Returns a map from block ID to the set of registers that need PHI nodes.
     /// Uses BTreeMap to ensure deterministic iteration order.
     fn compute(
-        cfg: &CFG,
         dom_frontier: &DominanceFrontier,
         liveness: &RegisterLiveness,
+        exceptional_sites: &[(u32, BlockId)],
     ) -> BTreeMap<BlockId, BTreeSet<u32>> {
         let mut phi_placements: BTreeMap<BlockId, BTreeSet<u32>> = BTreeMap::new();
         let mut exceptional_definitions = BTreeMap::<u32, BTreeSet<BlockId>>::new();
-        for &block in cfg.blocks.keys() {
-            for &(predecessor, kind) in cfg.predecessors_with_kind(block) {
-                if !kind.is_exception() {
-                    continue;
-                }
-                let Some(register) = cfg
-                    .block(predecessor)
-                    .and_then(|body| body.insns.last())
-                    .and_then(|throwing| throwing.result.as_ref())
-                    .map(|result| result.reg_num)
-                else {
-                    continue;
-                };
-                if liveness.is_live_in(block, register) {
-                    exceptional_definitions
-                        .entry(register)
-                        .or_default()
-                        .insert(block);
-                }
+        for &(register, block) in exceptional_sites {
+            if liveness.is_live_in(block, register) {
+                exceptional_definitions
+                    .entry(register)
+                    .or_default()
+                    .insert(block);
             }
         }
 
         // Every exceptional clobber is also an instruction definition. Inputs
         // and read-only registers have no definition frontier to propagate.
         let mut pending = Vec::new();
-        let mut queued = foldhash::HashSet::default();
         for (register, definitions) in liveness.definitions() {
-            queued.clear();
-            for &block in definitions {
-                queued.insert(block);
-                pending.push(block);
-            }
+            // Definitions are already distinct and sorted. Every other block
+            // enters the worklist only when its first phi is inserted.
+            pending.extend_from_slice(definitions);
             if let Some(edges) = exceptional_definitions.get(&register) {
                 for &block in edges {
                     phi_placements.entry(block).or_default().insert(register);
-                    if queued.insert(block) {
+                    if definitions.binary_search(&block).is_err() {
                         pending.push(block);
                     }
                 }
@@ -326,7 +318,7 @@ impl PhiPlacement {
                 for join in dom_frontier.frontier(block) {
                     if liveness.is_live_in(join, register)
                         && phi_placements.entry(join).or_default().insert(register)
-                        && queued.insert(join)
+                        && definitions.binary_search(&join).is_err()
                     {
                         pending.push(join);
                     }
