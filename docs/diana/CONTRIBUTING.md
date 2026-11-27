@@ -71,8 +71,6 @@ implementation and [engine README](../../crates/diana-decomp/README.md).
 Identify the actual producer/consumer, consumed facts, full or partial guarantees,
 invariants, classified failure/resource behavior and independent evidence.
 The active public entry is `Engine` in `crates/diana-decomp/src/engine.rs`.
-The retired numbered-stage design does not authorize a migration or define
-current interfaces.
 
 - Contributors MUST keep one shared ordinary-method analysis chain. Rendering
   consumes delivered products and original facts without starting another analysis.

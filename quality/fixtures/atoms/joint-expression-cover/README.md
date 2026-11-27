@@ -63,7 +63,7 @@ operation and result-commit anchor for each nested producer. The blocked subject
 keeps all effects in source order after refusing compact condition ownership.
 
 Baseline: `93580c4`. This input challenges the shared expression-ownership
-migration in [the recovery-core design](../../../../docs/diana/UNIFIED_RECOVERY_IR_DESIGN.md).
+migration in [the recovery-core design](https://github.com/TsingShui/Diana/blob/6569b3a42a2efdd1121dd3edcf5d50508ae64ad0/docs/diana/UNIFIED_RECOVERY_IR_DESIGN.md).
 It adds a joint operand forest, short-circuit routing, a refusal after speculative
 argument composition, and reversed effectful arguments. Architecture compatibility
 and new recovery capability are separate observations. Historical fixtures are

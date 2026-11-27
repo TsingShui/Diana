@@ -119,9 +119,7 @@ For each algorithm ported during implementation, add a record of source project/
 
 Observed state: `crates/diana-decomp/` is a source fork of `asLody/dexdec` at the
 pinned revision above and retains its Apache-2.0 `LICENSE`. Local changes remove
-the whole-image frontend and orchestration and add the P0/P1 fact adapter. The
-archived staged P2–P9 implementation is under `ref-old-impl/v2/` and is not a
-workspace member. The GUI's adapted theme data is recorded in §6.2. RG remains
+the whole-image frontend and orchestration and add the P0/P1 fact adapter. The GUI's adapted theme data is recorded in §6.2. RG remains
 unreviewable for copying, so it stays reading-only.
 
 Production dependencies remain the reviewed set in each package manifest. The

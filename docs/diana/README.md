@@ -22,16 +22,6 @@ READMEs for current interfaces and behavior.
 | [EVOLUTION.md](EVOLUTION.md) | Primary fixture-driven repair/complexity-challenge/review loop and supplementary test-side behavioral acceptance. |
 | [WRITING.md](WRITING.md) | Documentation conventions. |
 
-## Historical pipeline material
-
-`PIPELINE_DESIGN.md`, `UNIFIED_RECOVERY_IR_DESIGN.md` and `phases.md`
-describe the retired numbered-stage pipeline. They are retained for historical
-reference and do not define current architecture, interfaces, migration authority
-or acceptance requirements. Their commands and implementation-status claims may
-refer to archived code. The old `spec/` chapters have been removed; their content
-remains available in Git history. The archived implementations in `ref-old-impl/v1/` and
-`ref-old-impl/v2/` are outside the active build.
-
 Engine checks use the crate tests and ordinary CLI requests. Build/lint success,
 byte roundtrip and finite corpus checks have different evidence scopes; none alone
 proves complete decompilation correctness. Production safety and module-owned
@@ -52,10 +42,8 @@ LLM path-by-path semantic review, and preservation of original/prior effects.
 A repair of the discovery case alone does not complete the iteration.
 [FIXTURES](FIXTURES.md) uses paired Java explanations and Smali inputs without
 requiring a fixed Java/D8/R8 toolchain or exact assembler version. The crate tests and ordinary CLI requests supply the available products for
-review. The old staged inspection shell is archived with the staged pipeline.
+review.
 
 Run applicable implemented checks through `cargo nextest run`; report their actual
-scope and results. The supplementary final-plan executor design in EVOLUTION
-refers to archived pipeline products and does not supply a current acceptance
-command. Written semantic judgments remain separate from executed behavioral
+scope and results. Written semantic judgments remain separate from executed behavioral
 checks.
