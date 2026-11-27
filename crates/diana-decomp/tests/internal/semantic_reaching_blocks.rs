@@ -467,7 +467,7 @@ fn completeness_is_available_before_clones_share_the_frozen_adjacency() {
 
     let builds = Arc::new(AtomicUsize::new(0));
     let count = Arc::clone(&builds);
-    let graph = super::super::SemanticFlowGraph::with_index(false, move || {
+    let graph = super::super::SemanticFlowGraph::with_index(false, 2, move || {
         count.fetch_add(1, Ordering::Relaxed);
         super::super::GraphIndex::new(
             &[(point(0), point(1), SemanticFlowEdgeKind::Normal)],

@@ -383,3 +383,35 @@ fn virtual_root_has_stable_orders_and_checks_boundary_propagation() {
         DominanceError::MissingTopology(BlockId(1))
     );
 }
+
+#[test]
+fn one_physical_block_keeps_forward_and_exit_topologies_distinct() {
+    use crate::ir::analysis::ControlFlowFacts;
+    let entry = BlockId::new(37);
+    for (edge, exits) in [
+        (None, true),
+        (Some((entry, EdgeKind::Normal)), false),
+        (Some((entry, EdgeKind::Exception)), true),
+        (Some((BlockId::new(99), EdgeKind::Normal)), false),
+    ] {
+        let mut cfg = CFG::new("one_physical_block");
+        cfg.entry = entry;
+        cfg.add_block(Block::new(entry));
+        if let Some((target, kind)) = edge {
+            cfg.add_edge(entry, target, kind);
+        }
+        let forward = DominatorTree::compute(&cfg).unwrap();
+        assert_eq!(forward.preorder(), [entry]);
+        assert_eq!(forward.idom(entry), None);
+        let facts = ControlFlowFacts::analyze_with_dominators(&cfg, Some(forward), None).unwrap();
+        assert_eq!(facts.dominators().idom(entry), Some(BlockId::INVALID));
+        assert_eq!(facts.postdominators().postdominates(entry, entry), exits);
+    }
+
+    let mut cfg = CFG::new("missing_physical_entry");
+    cfg.add_block(Block::new(entry));
+    assert_eq!(
+        DominatorTree::compute(&cfg).unwrap_err(),
+        DominanceError::MissingEntry(cfg.entry)
+    );
+}

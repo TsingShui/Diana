@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::language::java::{
-    JavaAnonymousClassBody, JavaAstRewriter, JavaClassName, JavaClassType, JavaClassTypeSegment,
-    JavaExpr, JavaIdentifier, JavaMethodDeclarationKind, JavaModifier, JavaStmt, JavaType,
-    JavaTypeDeclaration,
+    JavaAnonymousClassBody, JavaAstMutator, JavaAstRewriter, JavaClassName, JavaClassType,
+    JavaClassTypeSegment, JavaExpr, JavaIdentifier, JavaMethodDeclarationKind, JavaModifier,
+    JavaStmt, JavaType, JavaTypeDeclaration,
 };
 
 /// Makes references to enclosing declarations immune to inherited member-type
@@ -131,63 +131,64 @@ impl LexicalAliasAnalysis {
         declaration: &mut JavaTypeDeclaration,
         owner: &JavaType,
     ) -> BTreeMap<LexicalField, JavaType> {
-        let candidates = declaration
+        let mut candidates = declaration
             .fields
             .iter()
             .filter(|field| {
                 field.initializer.is_none() && field.modifiers.contains(&JavaModifier::Final)
             })
-            .map(|field| (field.name.clone(), field.ty.clone().into_raw()))
+            .map(|field| (field.name.clone(), (field.ty.clone().into_raw(), None)))
             .collect::<BTreeMap<_, _>>();
-        if candidates.is_empty() {
-            return BTreeMap::new();
-        }
-
-        let mut constructor_count = 0usize;
-        let mut assignments = candidates
-            .keys()
-            .cloned()
-            .map(|name| (name, Vec::new()))
-            .collect::<BTreeMap<_, Vec<Option<JavaType>>>>();
-        let mut invalid = BTreeSet::new();
-        for method in &mut declaration.methods {
+        let mut saw_constructor = false;
+        for method in declaration
+            .methods
+            .iter_mut()
+            .filter(|method| method.kind == JavaMethodDeclarationKind::Constructor)
+        {
+            if candidates.is_empty() {
+                return BTreeMap::new();
+            }
+            saw_constructor = true;
             let mut writes = AliasWriteCollector::default();
             if let Some(body) = &mut method.body {
                 writes.rewrite_body(body);
             }
-            let constructor = method.kind == JavaMethodDeclarationKind::Constructor;
-            constructor_count += usize::from(constructor);
-            for name in candidates.keys() {
-                let field_writes = writes.fields.remove(name).unwrap_or_default();
-                if constructor && field_writes.len() == 1 {
-                    assignments
-                        .get_mut(name)
-                        .expect("candidate assignment inventory")
-                        .push(field_writes[0].clone());
-                } else if (constructor && field_writes.len() != 1)
-                    || (!constructor && !field_writes.is_empty())
-                {
-                    invalid.insert(name.clone());
+            candidates.retain(|name, (field_type, first_outer)| {
+                let Some(values) = writes.fields.get_mut(name) else {
+                    return false;
+                };
+                let [Some(outer)] = values.as_slice() else {
+                    return false;
+                };
+                if outer != field_type || first_outer.as_ref().is_some_and(|first| first != outer) {
+                    return false;
                 }
-            }
+                if first_outer.is_none() {
+                    *first_outer = values.pop().flatten();
+                }
+                true
+            });
         }
-        if constructor_count == 0 {
+        if !saw_constructor {
             return BTreeMap::new();
         }
-
+        for method in declaration
+            .methods
+            .iter_mut()
+            .filter(|method| method.kind != JavaMethodDeclarationKind::Constructor)
+        {
+            if candidates.is_empty() {
+                break;
+            }
+            let mut writes = AliasWriteCollector::default();
+            if let Some(body) = &mut method.body {
+                writes.rewrite_body(body);
+            }
+            candidates.retain(|name, _| !writes.fields.contains_key(name));
+        }
         candidates
             .into_iter()
-            .filter_map(|(name, field_type)| {
-                if invalid.contains(&name) {
-                    return None;
-                }
-                let values = assignments.remove(&name)?;
-                let outer = values.first()?.clone()?;
-                (values.len() == constructor_count
-                    && values.iter().all(|value| value.as_ref() == Some(&outer))
-                    && field_type == outer.clone().into_raw())
-                .then(|| (LexicalField::new(owner, name), outer))
-            })
+            .filter_map(|(name, (_, outer))| Some((LexicalField::new(owner, name), outer?)))
             .collect()
     }
 }
@@ -213,22 +214,20 @@ impl AliasWriteCollector {
     }
 }
 
-impl JavaAstRewriter for AliasWriteCollector {
-    fn finish_statement(&mut self, statement: JavaStmt) -> JavaStmt {
-        if let JavaStmt::Assign { target, value, .. } = &statement {
+impl JavaAstMutator for AliasWriteCollector {
+    fn after_statement(&mut self, statement: &mut JavaStmt) {
+        if let JavaStmt::Assign { target, value, .. } = statement {
             self.record(target, value);
         }
-        statement
     }
 
-    fn finish_expression(&mut self, expression: JavaExpr) -> JavaExpr {
-        if let JavaExpr::Assignment { target, value, .. } = &expression {
+    fn after_expression(&mut self, expression: &mut JavaExpr) {
+        if let JavaExpr::Assignment { target, value, .. } = expression {
             self.record(target, value);
         }
-        expression
     }
 
-    fn rewrite_anonymous_body(&mut self, _body: &mut JavaAnonymousClassBody) {}
+    fn visit_anonymous(&mut self, _body: &mut JavaAnonymousClassBody) {}
 }
 
 struct AliasStoreRemoval<'a> {
@@ -299,18 +298,18 @@ struct EnclosingOwnerQualifier<'a> {
 }
 
 impl EnclosingOwnerQualifier<'_> {
-    fn owner(&self, owner: JavaType) -> JavaType {
+    fn qualify(&self, owner: &mut JavaType) {
         let JavaType::Class(class) = owner else {
-            return owner;
+            return;
         };
         let [segment] = class.segments.as_ref() else {
-            return JavaType::Class(class);
+            return;
         };
         let Some(index) = self.path.iter().rposition(|name| name == &segment.name) else {
-            return JavaType::Class(class);
+            return;
         };
         let arguments = segment.arguments.clone();
-        JavaType::Class(JavaClassType {
+        *owner = JavaType::Class(JavaClassType {
             segments: self
                 .path
                 .iter()
@@ -325,31 +324,22 @@ impl EnclosingOwnerQualifier<'_> {
                     },
                 })
                 .collect(),
-        })
+        });
     }
 }
 
-impl JavaAstRewriter for EnclosingOwnerQualifier<'_> {
-    fn finish_expression(&mut self, expression: JavaExpr) -> JavaExpr {
-        match expression {
-            JavaExpr::Call {
-                receiver,
-                owner: Some(owner),
-                type_arguments,
-                method,
-                args,
-            } => JavaExpr::Call {
-                receiver,
-                owner: Some(self.owner(owner)),
-                type_arguments,
-                method,
-                args,
-            },
-            JavaExpr::StaticField { owner, name } => JavaExpr::StaticField {
-                owner: self.owner(owner),
-                name,
-            },
-            expression => expression,
+impl JavaAstMutator for EnclosingOwnerQualifier<'_> {
+    fn after_expression(&mut self, expression: &mut JavaExpr) {
+        if let JavaExpr::Call {
+            owner: Some(owner), ..
+        }
+        | JavaExpr::StaticField { owner, .. } = expression
+        {
+            self.qualify(owner);
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/java_lexical_alias_candidates.rs"]
+mod candidate_tests;

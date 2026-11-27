@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::language::java::{
-    JavaAnonymousClassBody, JavaAstRewriter, JavaClassName, JavaClassType, JavaExpr,
-    JavaIdentifier, JavaMethodDeclaration, JavaMethodDeclarationKind, JavaModifier, JavaStmt,
-    JavaType, JavaTypeDeclaration,
+    JavaAnonymousClassBody, JavaAstMutator, JavaAstRewriter, JavaClassName, JavaClassType,
+    JavaExpr, JavaIdentifier, JavaMethodDeclaration, JavaMethodDeclarationKind, JavaModifier,
+    JavaStmt, JavaType, JavaTypeDeclaration,
 };
 
 use super::anonymous_lowering::{FunctionExpression, RecoveredFunction};
@@ -458,12 +458,12 @@ impl SyntheticFunctionRecovery {
     }
 }
 
-impl JavaAstRewriter for SyntheticFunctionRecovery {
-    fn finish_anonymous_body(&mut self, body: &mut JavaAnonymousClassBody) {
+impl JavaAstMutator for SyntheticFunctionRecovery {
+    fn after_anonymous_body(&mut self, body: &mut JavaAnonymousClassBody) {
         Self::recover(body);
     }
 
-    fn finish_type_declaration(&mut self, declaration: &mut JavaTypeDeclaration) {
+    fn after_type_declaration(&mut self, declaration: &mut JavaTypeDeclaration) {
         Self::recover_type(declaration);
     }
 }

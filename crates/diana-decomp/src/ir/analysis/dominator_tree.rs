@@ -84,6 +84,11 @@ impl DominatorNode {
 impl DominatorTree {
     /// Compute exact dominance over every CFG edge using Lengauer-Tarjan.
     pub fn compute(cfg: &CFG) -> Result<Self, DominanceError> {
+        // Physical dominance projects edges onto the physical block keys. A
+        // self-edge or an edge to an absent target cannot change this root.
+        if cfg.blocks.len() == 1 && cfg.blocks.contains_key(&cfg.entry) {
+            return Ok(Self::singleton(cfg.entry));
+        }
         Self::solve(cfg.entry, Topology::from_cfg::<false>(cfg)?, true)
     }
 
@@ -226,17 +231,7 @@ impl DominatorTree {
         let start = Topology::position(&topology.nodes, entry)
             .ok_or(DominanceError::MissingEntry(entry))?;
         if topology.nodes.len() == 1 {
-            return Ok(Self {
-                entry,
-                virtual_child: None,
-                nodes: Arc::new(vec![DominatorNode {
-                    block: entry,
-                    parent: None,
-                    children: Default::default(),
-                    preorder: 0,
-                    postorder: 0,
-                }]),
-            });
+            return Ok(Self::singleton(entry));
         }
         if let Some(parents) = topology.ordered_dag(start)? {
             return Self::from_parents(entry, parents);
@@ -257,6 +252,14 @@ impl DominatorTree {
 
         let mut algorithm = LengauerTarjan::new(traversal, topology);
         Self::from_parents(entry, algorithm.compute()?)
+    }
+
+    fn singleton(entry: BlockId) -> Self {
+        Self {
+            entry,
+            virtual_child: None,
+            nodes: Arc::new(vec![DominatorNode::new(entry, None)]),
+        }
     }
 
     fn from_parents(entry: BlockId, mut nodes: Vec<DominatorNode>) -> Result<Self, DominanceError> {

@@ -98,6 +98,9 @@ impl RegionEntryPorts {
             .regions()
             .map(|region| (region.id, region.entry.into_iter().collect::<BTreeSet<_>>()))
             .collect::<BTreeMap<_, _>>();
+        if Self::confined_to_method(cfg, graph) {
+            return Ok(Self { entries });
+        }
         let ancestors = graph
             .tree()
             .regions()
@@ -233,6 +236,36 @@ impl RegionEntryPorts {
             });
         }
         Ok(Self { entries })
+    }
+
+    /// With one lexical owner, an ordinary transfer within that owner cannot
+    /// expose a new port. The CFG can be supplied separately from the region
+    /// graph, so retain the ordinary traversal for any unmatched block or edge.
+    fn confined_to_method(cfg: &CFG, graph: &RegionGraph) -> bool {
+        let mut regions = graph.tree().regions();
+        let Some(root) = regions.next() else {
+            return false;
+        };
+        if regions.next().is_some()
+            || !matches!(root.kind, crate::ir::RegionKind::Method)
+            || root.id != graph.tree().root()
+            || root.parent.is_some()
+            || !graph.handler_adapters().is_empty()
+            || !graph.cleanup_representatives().is_empty()
+            || graph.is_exception_handler(root.id)
+        {
+            return false;
+        }
+        // The closure over ordinary edges stays within physical blocks owned
+        // by the sole region, including a possibly detached entry.
+        root.entry
+            .is_none_or(|entry| cfg.blocks.contains_key(&entry))
+            && cfg.blocks.keys().all(|&source| {
+                graph.owner_of(source) == Some(root.id)
+                    && cfg
+                        .normal_successors(source)
+                        .all(|target| cfg.blocks.contains_key(&target))
+            })
     }
 
     fn record_owned_entries(
@@ -1542,3 +1575,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "../../../../tests/internal/method_entry_ports.rs"]
+mod method_entry_ports;

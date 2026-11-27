@@ -1,6 +1,6 @@
 use super::{
-    JavaAnnotation, JavaAnnotationValue, JavaAnonymousClassBody, JavaCatch, JavaExpr,
-    JavaMethodBody, JavaStmt, JavaTypeDeclaration,
+    JavaAnnotation, JavaAnnotationValue, JavaAnonymousClassBody, JavaExpr, JavaMethodBody,
+    JavaStmt, JavaTypeDeclaration,
 };
 
 /// Structural Java AST rewriting with one post-order expression hook.
@@ -25,236 +25,13 @@ pub trait JavaAstRewriter {
 
     fn finish_type_declaration(&mut self, _declaration: &mut JavaTypeDeclaration) {}
 
-    fn rewrite_expression(&mut self, expression: JavaExpr) -> JavaExpr {
-        let expression = match expression {
-            JavaExpr::DirectInit {
-                receiver,
-                target,
-                args,
-            } => JavaExpr::DirectInit {
-                receiver: rewrite_boxed_expression(self, receiver),
-                target,
-                args: self.rewrite_expressions(args),
-            },
-            JavaExpr::Field { owner, name } => JavaExpr::Field {
-                owner: rewrite_boxed_expression(self, owner),
-                name,
-            },
-            JavaExpr::ArrayAccess { array, index } => JavaExpr::ArrayAccess {
-                array: rewrite_boxed_expression(self, array),
-                index: rewrite_boxed_expression(self, index),
-            },
-            JavaExpr::Call {
-                receiver,
-                owner,
-                type_arguments,
-                method,
-                args,
-            } => JavaExpr::Call {
-                receiver: receiver.map(|value| rewrite_boxed_expression(self, value)),
-                owner,
-                type_arguments,
-                method,
-                args: self.rewrite_expressions(args),
-            },
-            JavaExpr::MethodReference { receiver, method } => JavaExpr::MethodReference {
-                receiver: rewrite_boxed_expression(self, receiver),
-                method,
-            },
-            JavaExpr::Lambda { parameters, body } if self.rewrite_nested_functions() => {
-                JavaExpr::Lambda {
-                    parameters,
-                    body: rewrite_boxed_expression(self, body),
-                }
-            }
-            JavaExpr::BlockLambda { parameters, body } if self.rewrite_nested_functions() => {
-                JavaExpr::BlockLambda {
-                    parameters,
-                    body: rewrite_boxed_statement(self, body),
-                }
-            }
-            JavaExpr::New {
-                enclosing,
-                ty,
-                target_type,
-                args,
-                anonymous_body,
-            } => JavaExpr::New {
-                enclosing: enclosing.map(|value| rewrite_boxed_expression(self, value)),
-                ty,
-                target_type,
-                args: self.rewrite_expressions(args),
-                anonymous_body: anonymous_body.map(|mut body| {
-                    self.rewrite_anonymous_body(&mut body);
-                    body
-                }),
-            },
-            JavaExpr::NewArray {
-                element_type,
-                dimensions,
-                initializer,
-            } => JavaExpr::NewArray {
-                element_type,
-                dimensions: self.rewrite_expressions(dimensions),
-                initializer: self.rewrite_expressions(initializer),
-            },
-            JavaExpr::Unary { op, operand } => JavaExpr::Unary {
-                op,
-                operand: rewrite_boxed_expression(self, operand),
-            },
-            JavaExpr::Update { op, target, prefix } => JavaExpr::Update {
-                op,
-                target: rewrite_boxed_expression(self, target),
-                prefix,
-            },
-            JavaExpr::Binary { left, op, right } => JavaExpr::Binary {
-                left: rewrite_boxed_expression(self, left),
-                op,
-                right: rewrite_boxed_expression(self, right),
-            },
-            JavaExpr::Cast { ty, value } => JavaExpr::Cast {
-                ty,
-                value: rewrite_boxed_expression(self, value),
-            },
-            JavaExpr::InstanceOf { value, ty } => JavaExpr::InstanceOf {
-                value: rewrite_boxed_expression(self, value),
-                ty,
-            },
-            JavaExpr::Conditional {
-                condition,
-                when_true,
-                when_false,
-            } => JavaExpr::Conditional {
-                condition: rewrite_boxed_expression(self, condition),
-                when_true: rewrite_boxed_expression(self, when_true),
-                when_false: rewrite_boxed_expression(self, when_false),
-            },
-            JavaExpr::Assignment { target, op, value } => JavaExpr::Assignment {
-                target: rewrite_boxed_expression(self, target),
-                op,
-                value: rewrite_boxed_expression(self, value),
-            },
-            leaf => leaf,
-        };
+    fn rewrite_expression(&mut self, mut expression: JavaExpr) -> JavaExpr {
+        walk_expression(&mut OwnedChildren(self), &mut expression);
         self.finish_expression(expression)
     }
 
-    fn rewrite_statement(&mut self, statement: JavaStmt) -> JavaStmt {
-        let statement = match statement {
-            JavaStmt::Block(statements) => JavaStmt::Block(self.rewrite_statements(statements)),
-            JavaStmt::Labeled { label, body } => JavaStmt::Labeled {
-                label,
-                body: rewrite_boxed_statement(self, body),
-            },
-            JavaStmt::Variable { ty, name, value } => JavaStmt::Variable {
-                ty,
-                name,
-                value: value.map(|value| self.rewrite_expression(value)),
-            },
-            JavaStmt::Expression(expression) => {
-                JavaStmt::Expression(self.rewrite_expression(expression))
-            }
-            JavaStmt::ConstructorInvocation { target, args } => JavaStmt::ConstructorInvocation {
-                target,
-                args: self.rewrite_expressions(args),
-            },
-            JavaStmt::Assign { target, op, value } => JavaStmt::Assign {
-                target: self.rewrite_expression(target),
-                op,
-                value: self.rewrite_expression(value),
-            },
-            JavaStmt::If {
-                condition,
-                then_stmt,
-                else_stmt,
-            } => JavaStmt::If {
-                condition: self.rewrite_expression(condition),
-                then_stmt: rewrite_boxed_statement(self, then_stmt),
-                else_stmt: else_stmt.map(|statement| rewrite_boxed_statement(self, statement)),
-            },
-            JavaStmt::While {
-                label,
-                condition,
-                body,
-            } => JavaStmt::While {
-                label,
-                condition: self.rewrite_expression(condition),
-                body: rewrite_boxed_statement(self, body),
-            },
-            JavaStmt::DoWhile {
-                label,
-                body,
-                condition,
-            } => JavaStmt::DoWhile {
-                label,
-                body: rewrite_boxed_statement(self, body),
-                condition: self.rewrite_expression(condition),
-            },
-            JavaStmt::For {
-                label,
-                init,
-                condition,
-                update,
-                body,
-            } => JavaStmt::For {
-                label,
-                init: self.rewrite_statements(init),
-                condition: condition.map(|value| self.rewrite_expression(value)),
-                update: self.rewrite_expressions(update),
-                body: rewrite_boxed_statement(self, body),
-            },
-            JavaStmt::ForEach {
-                label,
-                ty,
-                variable,
-                iterable,
-                body,
-            } => JavaStmt::ForEach {
-                label,
-                ty,
-                variable,
-                iterable: self.rewrite_expression(iterable),
-                body: rewrite_boxed_statement(self, body),
-            },
-            JavaStmt::Switch {
-                label,
-                selector,
-                mut cases,
-            } => {
-                for case in &mut cases {
-                    case.labels = self.rewrite_expressions(std::mem::take(&mut case.labels));
-                    case.body = self.rewrite_statements(std::mem::take(&mut case.body));
-                }
-                JavaStmt::Switch {
-                    label,
-                    selector: self.rewrite_expression(selector),
-                    cases,
-                }
-            }
-            JavaStmt::Try {
-                body,
-                mut catches,
-                finally,
-            } => {
-                for JavaCatch { body, .. } in &mut catches {
-                    *body = self.rewrite_statement(std::mem::replace(body, JavaStmt::Empty));
-                }
-                JavaStmt::Try {
-                    body: rewrite_boxed_statement(self, body),
-                    catches,
-                    finally: finally.map(|body| rewrite_boxed_statement(self, body)),
-                }
-            }
-            JavaStmt::Synchronized { lock, body } => JavaStmt::Synchronized {
-                lock: self.rewrite_expression(lock),
-                body: rewrite_boxed_statement(self, body),
-            },
-            JavaStmt::Return(value) => {
-                JavaStmt::Return(value.map(|value| self.rewrite_expression(value)))
-            }
-            JavaStmt::Throw(value) => JavaStmt::Throw(self.rewrite_expression(value)),
-            leaf => leaf,
-        };
+    fn rewrite_statement(&mut self, mut statement: JavaStmt) -> JavaStmt {
+        walk_statement(&mut OwnedChildren(self), &mut statement);
         self.finish_statement(statement)
     }
 
@@ -365,18 +142,283 @@ pub trait JavaAstRewriter {
     }
 }
 
-fn rewrite_boxed_expression<R: JavaAstRewriter + ?Sized>(
-    rewriter: &mut R,
-    mut child: Box<JavaExpr>,
-) -> Box<JavaExpr> {
-    *child = rewriter.rewrite_expression(std::mem::replace(&mut *child, JavaExpr::This));
-    child
+/// Rewriters that inspect or edit nodes by reference avoid moving every
+/// unchanged expression and statement through an owning callback.
+pub(crate) trait JavaAstMutator {
+    fn after_expression(&mut self, _expression: &mut JavaExpr) {}
+    fn after_statement(&mut self, _statement: &mut JavaStmt) {}
+    fn after_statements(&mut self, _statements: &mut Vec<JavaStmt>) {}
+    fn after_anonymous_body(&mut self, _body: &mut JavaAnonymousClassBody) {}
+    fn after_type_declaration(&mut self, _declaration: &mut JavaTypeDeclaration) {}
+
+    fn visit_anonymous(&mut self, body: &mut JavaAnonymousClassBody)
+    where
+        Self: Sized,
+    {
+        JavaAstRewriter::rewrite_anonymous_body(self, body);
+    }
 }
 
-fn rewrite_boxed_statement<R: JavaAstRewriter + ?Sized>(
-    rewriter: &mut R,
-    mut child: Box<JavaStmt>,
-) -> Box<JavaStmt> {
-    *child = rewriter.rewrite_statement(std::mem::replace(&mut *child, JavaStmt::Empty));
-    child
+impl<R: JavaAstMutator> JavaAstRewriter for R {
+    fn rewrite_expression(&mut self, mut expression: JavaExpr) -> JavaExpr {
+        self.expression(&mut expression);
+        expression
+    }
+    fn rewrite_statement(&mut self, mut statement: JavaStmt) -> JavaStmt {
+        self.statement(&mut statement);
+        statement
+    }
+    fn rewrite_body(&mut self, body: &mut JavaMethodBody) {
+        self.statement(&mut body.root);
+    }
+    fn rewrite_statements(&mut self, mut values: Vec<JavaStmt>) -> Vec<JavaStmt> {
+        self.statements(&mut values);
+        values
+    }
+    fn finish_anonymous_body(&mut self, body: &mut JavaAnonymousClassBody) {
+        self.after_anonymous_body(body);
+    }
+    fn finish_type_declaration(&mut self, declaration: &mut JavaTypeDeclaration) {
+        self.after_type_declaration(declaration);
+    }
 }
+
+trait Children {
+    fn expression(&mut self, expression: &mut JavaExpr);
+    fn statement(&mut self, statement: &mut JavaStmt);
+    fn expressions(&mut self, expressions: &mut Vec<JavaExpr>);
+    fn statements(&mut self, statements: &mut Vec<JavaStmt>);
+    fn anonymous(&mut self, body: &mut JavaAnonymousClassBody);
+    fn nested_functions(&self) -> bool;
+}
+
+impl<R: JavaAstMutator> Children for R {
+    fn expression(&mut self, expression: &mut JavaExpr) {
+        walk_expression(self, expression);
+        self.after_expression(expression);
+    }
+    fn statement(&mut self, statement: &mut JavaStmt) {
+        walk_statement(self, statement);
+        self.after_statement(statement);
+    }
+    fn expressions(&mut self, expressions: &mut Vec<JavaExpr>) {
+        for value in expressions {
+            self.expression(value);
+        }
+    }
+    fn statements(&mut self, statements: &mut Vec<JavaStmt>) {
+        for statement in &mut *statements {
+            self.statement(statement);
+        }
+        self.after_statements(statements);
+    }
+    fn anonymous(&mut self, body: &mut JavaAnonymousClassBody) {
+        self.visit_anonymous(body);
+    }
+    fn nested_functions(&self) -> bool {
+        true
+    }
+}
+
+/// Keep dispatching through the public owning entry points. Implementations
+/// can override individual child, list, and nested-function behavior.
+struct OwnedChildren<'a, R: ?Sized>(&'a mut R);
+
+impl<R: JavaAstRewriter + ?Sized> Children for OwnedChildren<'_, R> {
+    fn expression(&mut self, expression: &mut JavaExpr) {
+        *expression = self
+            .0
+            .rewrite_expression(std::mem::replace(expression, JavaExpr::This));
+    }
+    fn statement(&mut self, statement: &mut JavaStmt) {
+        *statement = self
+            .0
+            .rewrite_statement(std::mem::replace(statement, JavaStmt::Empty));
+    }
+    fn expressions(&mut self, expressions: &mut Vec<JavaExpr>) {
+        *expressions = self.0.rewrite_expressions(std::mem::take(expressions));
+    }
+    fn statements(&mut self, statements: &mut Vec<JavaStmt>) {
+        *statements = self.0.rewrite_statements(std::mem::take(statements));
+    }
+    fn anonymous(&mut self, body: &mut JavaAnonymousClassBody) {
+        self.0.rewrite_anonymous_body(body);
+    }
+    fn nested_functions(&self) -> bool {
+        self.0.rewrite_nested_functions()
+    }
+}
+
+fn walk_expression(visitor: &mut impl Children, expression: &mut JavaExpr) {
+    match expression {
+        JavaExpr::DirectInit { receiver, args, .. } => {
+            visitor.expression(receiver);
+            visitor.expressions(args);
+        }
+        JavaExpr::Field { owner, .. }
+        | JavaExpr::MethodReference {
+            receiver: owner, ..
+        } => visitor.expression(owner),
+        JavaExpr::ArrayAccess { array, index } => {
+            visitor.expression(array);
+            visitor.expression(index);
+        }
+        JavaExpr::Call { receiver, args, .. } => {
+            if let Some(receiver) = receiver {
+                visitor.expression(receiver);
+            }
+            visitor.expressions(args);
+        }
+        JavaExpr::Lambda { body, .. } if visitor.nested_functions() => visitor.expression(body),
+        JavaExpr::BlockLambda { body, .. } if visitor.nested_functions() => visitor.statement(body),
+        JavaExpr::New {
+            enclosing,
+            args,
+            anonymous_body,
+            ..
+        } => {
+            if let Some(enclosing) = enclosing {
+                visitor.expression(enclosing);
+            }
+            visitor.expressions(args);
+            if let Some(body) = anonymous_body {
+                visitor.anonymous(body);
+            }
+        }
+        JavaExpr::NewArray {
+            dimensions,
+            initializer,
+            ..
+        } => {
+            visitor.expressions(dimensions);
+            visitor.expressions(initializer);
+        }
+        JavaExpr::Unary { operand, .. }
+        | JavaExpr::Update {
+            target: operand, ..
+        }
+        | JavaExpr::Cast { value: operand, .. }
+        | JavaExpr::InstanceOf { value: operand, .. } => visitor.expression(operand),
+        JavaExpr::Binary { left, right, .. }
+        | JavaExpr::Assignment {
+            target: left,
+            value: right,
+            ..
+        } => {
+            visitor.expression(left);
+            visitor.expression(right);
+        }
+        JavaExpr::Conditional {
+            condition,
+            when_true,
+            when_false,
+        } => {
+            visitor.expression(condition);
+            visitor.expression(when_true);
+            visitor.expression(when_false);
+        }
+        JavaExpr::This
+        | JavaExpr::QualifiedThis(_)
+        | JavaExpr::Super
+        | JavaExpr::Name(_)
+        | JavaExpr::Literal(_)
+        | JavaExpr::ClassLiteral(_)
+        | JavaExpr::Allocate(_)
+        | JavaExpr::StaticField { .. }
+        | JavaExpr::Lambda { .. }
+        | JavaExpr::BlockLambda { .. } => {}
+    }
+}
+
+fn walk_statement(visitor: &mut impl Children, statement: &mut JavaStmt) {
+    match statement {
+        JavaStmt::Block(statements) => visitor.statements(statements),
+        JavaStmt::Labeled { body, .. } => visitor.statement(body),
+        JavaStmt::Variable { value, .. } | JavaStmt::Return(value) => {
+            if let Some(value) = value {
+                visitor.expression(value);
+            }
+        }
+        JavaStmt::Expression(value) | JavaStmt::Throw(value) => visitor.expression(value),
+        JavaStmt::ConstructorInvocation { args, .. } => visitor.expressions(args),
+        JavaStmt::Assign { target, value, .. } => {
+            visitor.expression(target);
+            visitor.expression(value);
+        }
+        JavaStmt::If {
+            condition,
+            then_stmt,
+            else_stmt,
+        } => {
+            visitor.expression(condition);
+            visitor.statement(then_stmt);
+            if let Some(other) = else_stmt {
+                visitor.statement(other);
+            }
+        }
+        JavaStmt::While {
+            condition, body, ..
+        } => {
+            visitor.expression(condition);
+            visitor.statement(body);
+        }
+        JavaStmt::DoWhile {
+            condition, body, ..
+        } => {
+            visitor.statement(body);
+            visitor.expression(condition);
+        }
+        JavaStmt::For {
+            init,
+            condition,
+            update,
+            body,
+            ..
+        } => {
+            visitor.statements(init);
+            if let Some(condition) = condition {
+                visitor.expression(condition);
+            }
+            visitor.expressions(update);
+            visitor.statement(body);
+        }
+        JavaStmt::ForEach { iterable, body, .. } => {
+            visitor.expression(iterable);
+            visitor.statement(body);
+        }
+        JavaStmt::Switch {
+            selector, cases, ..
+        } => {
+            for case in cases {
+                visitor.expressions(&mut case.labels);
+                visitor.statements(&mut case.body);
+            }
+            visitor.expression(selector);
+        }
+        JavaStmt::Try {
+            body,
+            catches,
+            finally,
+        } => {
+            for catch in catches {
+                visitor.statement(&mut catch.body);
+            }
+            visitor.statement(body);
+            if let Some(finally) = finally {
+                visitor.statement(finally);
+            }
+        }
+        JavaStmt::Synchronized { lock, body, .. } => {
+            visitor.expression(lock);
+            visitor.statement(body);
+        }
+        JavaStmt::Empty
+        | JavaStmt::RecoveryFailure(_)
+        | JavaStmt::Break(_)
+        | JavaStmt::Continue(_) => {}
+    }
+}
+
+#[cfg(test)]
+#[path = "../../../tests/internal/java_rewriter_callbacks.rs"]
+mod callback_tests;

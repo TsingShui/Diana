@@ -93,8 +93,18 @@ impl From<BddError> for DomainError {
 #[derive(Clone, Copy, Debug)]
 struct TermSpan {
     page: usize,
-    start: usize,
-    len: usize,
+    // Shared writes start below SHARED_PAGE_TERMS. A dedicated page starts
+    // at zero. A set has at most one term per nonterminal u32 domain ID.
+    start: u16,
+    len: u32,
+    fingerprint: u64,
+}
+
+impl TermSpan {
+    fn range(self) -> std::ops::Range<usize> {
+        let start = usize::from(self.start);
+        start..start + self.len as usize
+    }
 }
 
 #[derive(Default)]
@@ -104,39 +114,46 @@ struct TermArena {
 }
 
 impl TermArena {
+    const SHARED_PAGE_TERMS: usize = 16_384;
+
     fn terms(&self, span: TermSpan) -> &[ControlDomain] {
-        &self.pages[span.page][span.start..span.start + span.len]
+        &self.pages[span.page][span.range()]
     }
 
-    fn store(&mut self, terms: &[ControlDomain], operand: Option<TermSpan>) -> TermSpan {
-        let mut separate = false;
+    fn dedicated(&mut self, terms: Vec<ControlDomain>, fingerprint: u64) -> TermSpan {
+        let len = terms.len() as u32;
+        let page = self.pages.len();
+        self.pages.push(terms);
+        TermSpan {
+            page,
+            start: 0,
+            len,
+            fingerprint,
+        }
+    }
+
+    fn store(
+        &mut self,
+        terms: &[ControlDomain],
+        operand: Option<TermSpan>,
+        fingerprint: u64,
+    ) -> TermSpan {
         if let Some(span) = operand {
-            let data = &mut self.pages[span.page];
-            let prefix_end = span.start + span.len;
-            if data[prefix_end - 1] == terms[span.len - 1] {
-                let end = span.start + terms.len();
-                let shared_end = end.min(data.len());
-                let shared_len = shared_end - span.start;
-                if data[prefix_end..shared_end] == terms[span.len..shared_len] {
-                    data.extend_from_slice(&terms[shared_len..]);
-                    return TermSpan {
-                        len: terms.len(),
-                        ..span
-                    };
-                }
-                // A long condition continues a different branch. Give it an
-                // independently growable prefix for its later descendants.
-                separate = terms.len() >= 16;
+            let size = span.len as usize;
+            // The union contains every operand term in sorted order. An
+            // unchanged last position therefore establishes the whole prefix.
+            if self.terms(span).last() == terms.get(size - 1) {
+                return self.extend(span, &terms[size..], fingerprint);
             }
         }
-        let page = if separate {
-            self.pages.push(terms.to_vec());
-            return TermSpan {
-                page: self.pages.len() - 1,
-                start: 0,
-                len: terms.len(),
-            };
-        } else if let Some(page) = self.shared.filter(|&page| self.pages[page].len() < 16384) {
+        self.store_shared(terms, fingerprint)
+    }
+
+    fn store_shared(&mut self, terms: &[ControlDomain], fingerprint: u64) -> TermSpan {
+        let page = if let Some(page) = self
+            .shared
+            .filter(|&page| self.pages[page].len() < Self::SHARED_PAGE_TERMS)
+        {
             page
         } else {
             let page = self.pages.len();
@@ -144,12 +161,38 @@ impl TermArena {
             self.shared = Some(page);
             page
         };
-        let start = self.pages[page].len();
+        let start = self.pages[page].len() as u16;
         self.pages[page].extend_from_slice(terms);
         TermSpan {
             page,
             start,
-            len: terms.len(),
+            len: terms.len() as u32,
+            fingerprint,
+        }
+    }
+
+    fn extend(&mut self, span: TermSpan, suffix: &[ControlDomain], fingerprint: u64) -> TermSpan {
+        let prefix = span.range();
+        let page = &mut self.pages[span.page];
+        let overlap = suffix.len().min(page.len() - prefix.end);
+        let len = prefix.len() + suffix.len();
+        if page[prefix.end..prefix.end + overlap] == suffix[..overlap] {
+            page.extend_from_slice(&suffix[overlap..]);
+            return TermSpan {
+                len: len as u32,
+                fingerprint,
+                ..span
+            };
+        }
+
+        let mut branch = Vec::with_capacity(len);
+        branch.extend_from_slice(&page[prefix]);
+        branch.extend_from_slice(suffix);
+        if len >= 16 {
+            // Diverging long branches can continue growing independently.
+            self.dedicated(branch, fingerprint)
+        } else {
+            self.store_shared(&branch, fingerprint)
         }
     }
 
@@ -172,6 +215,13 @@ enum DomainNode {
 }
 
 impl DomainNode {
+    fn span(&self, conjunction: bool) -> Option<TermSpan> {
+        match (self, conjunction) {
+            (Self::And(span), true) | (Self::Or(span), false) => Some(*span),
+            _ => None,
+        }
+    }
+
     fn terms<'a>(&'a self, conjunction: bool, arena: &'a TermArena) -> Option<&'a [ControlDomain]> {
         match (self, conjunction) {
             (Self::AndPair(terms), true) | (Self::OrPair(terms), false) => Some(terms),
@@ -232,7 +282,9 @@ pub(super) struct DomainLogic {
     term_arena: TermArena,
     term_work: Vec<ControlDomain>,
     junction_index: hashbrown::HashTable<(u64, ControlDomain)>,
-    term_hasher: foldhash::fast::RandomState,
+    // Each term is hashed separately before the fingerprints are added.
+    // Avalanche adjacent ordinals before combining fixed-sum sets.
+    term_hasher: foldhash::quality::RandomState,
     saturated: Cell<bool>,
 }
 
@@ -801,25 +853,74 @@ impl DomainLogic {
             };
             self.push_node(node, proof, None)?
         } else {
-            let mut terms = std::mem::take(&mut self.term_work);
-            Self::union_terms(
-                &mut terms,
-                self.junction_terms(&left, conjunction)?,
-                self.junction_terms(&right, conjunction)?,
-            );
-            let hash = self.term_hasher.hash_one((conjunction, terms.as_slice()));
-            if let Some(&(_, existing)) = self.junction_index.find(hash, |&(_, domain)| {
-                self.nodes[(domain.0 - 2) as usize]
-                    .node
-                    .terms(conjunction, &self.term_arena)
-                    == Some(terms.as_slice())
-            }) {
+            let prefix = self.node(longer_domain)?.span(conjunction);
+            // A commutative fingerprint makes a single added term independent
+            // of its sorted position. Candidates still require exact ordered
+            // equality, including on a collision.
+            let single_hash = match shorter {
+                [term] => Some(
+                    prefix
+                        .map_or_else(
+                            || self.fingerprint(longer, conjunction),
+                            |span| span.fingerprint,
+                        )
+                        .wrapping_add(self.term_hasher.hash_one(term)),
+                ),
+                _ => None,
+            };
+            let appended = match (prefix, shorter, single_hash) {
+                (Some(span), [term], Some(hash)) if longer.last() < Some(term) => {
+                    Some((span, *term, hash))
+                }
+                _ => None,
+            };
+            let (range, proof, hash) = if let Some((span, term, hash)) = appended {
+                if let Some(&(_, existing)) = self.junction_index.find(hash, |&(_, domain)| {
+                    self.nodes[(domain.0 - 2) as usize]
+                        .node
+                        .terms(conjunction, &self.term_arena)
+                        .and_then(|terms| terms.split_last())
+                        == Some((&term, longer))
+                }) {
+                    return Ok(existing);
+                }
+                let operands = [left, right];
+                let proof = if self.defer_junction(conjunction, operands)? || self.saturated.get() {
+                    None
+                } else {
+                    match (self.exact(longer_domain), self.exact(term)) {
+                        (Some(prefix), Some(term)) => self.apply_term(prefix, term, conjunction)?,
+                        _ => None,
+                    }
+                };
+                (
+                    self.term_arena
+                        .extend(span, std::slice::from_ref(&term), hash),
+                    proof,
+                    hash,
+                )
+            } else {
+                let mut terms = std::mem::take(&mut self.term_work);
+                Self::union_terms(
+                    &mut terms,
+                    self.junction_terms(&left, conjunction)?,
+                    self.junction_terms(&right, conjunction)?,
+                );
+                let hash = single_hash.unwrap_or_else(|| self.fingerprint(&terms, conjunction));
+                if let Some(&(_, existing)) = self.junction_index.find(hash, |&(_, domain)| {
+                    self.nodes[(domain.0 - 2) as usize]
+                        .node
+                        .terms(conjunction, &self.term_arena)
+                        == Some(terms.as_slice())
+                }) {
+                    self.term_work = terms;
+                    return Ok(existing);
+                }
+                let proof = self.new_junction_proof(&terms, conjunction, [left, right])?;
+                let range = self.term_arena.store(&terms, prefix, hash);
                 self.term_work = terms;
-                return Ok(existing);
-            }
-            let proof = self.new_junction_proof(&terms, conjunction, [left, right])?;
-            let range = self.store_union_terms(&terms, longer_domain, conjunction)?;
-            self.term_work = terms;
+                (range, proof, hash)
+            };
             let node = if conjunction {
                 DomainNode::And(range)
             } else {
@@ -834,17 +935,10 @@ impl DomainLogic {
         Ok(domain)
     }
 
-    fn store_union_terms(
-        &mut self,
-        terms: &[ControlDomain],
-        operand: ControlDomain,
-        conjunction: bool,
-    ) -> Result<TermSpan, DomainError> {
-        let prefix = match (self.node(operand)?, conjunction) {
-            (DomainNode::And(span), true) | (DomainNode::Or(span), false) => Some(*span),
-            _ => None,
-        };
-        Ok(self.term_arena.store(terms, prefix))
+    fn fingerprint(&self, terms: &[ControlDomain], conjunction: bool) -> u64 {
+        terms.iter().fold(u64::from(conjunction), |hash, term| {
+            hash.wrapping_add(self.term_hasher.hash_one(term))
+        })
     }
 
     fn junction_terms<'a>(
@@ -908,17 +1002,38 @@ impl DomainLogic {
         conjunction: bool,
         operands: [ControlDomain; 2],
     ) -> Result<Option<Bdd>, DomainError> {
-        if self.collection.is_some() {
-            let step = if conjunction {
-                ProofStep::And(operands)
-            } else {
-                ProofStep::Or(operands)
-            };
-            if self.record(step)? {
-                return Ok(None);
-            }
+        if self.defer_junction(conjunction, operands)? {
+            return Ok(None);
         }
         self.junction_proof(terms, conjunction, operands)
+    }
+
+    fn defer_junction(
+        &mut self,
+        conjunction: bool,
+        operands: [ControlDomain; 2],
+    ) -> Result<bool, DomainError> {
+        if self.collection.is_none() {
+            return Ok(false);
+        }
+        self.record(if conjunction {
+            ProofStep::And(operands)
+        } else {
+            ProofStep::Or(operands)
+        })
+    }
+
+    fn apply_term(
+        &self,
+        prefix: Bdd,
+        term: Bdd,
+        conjunction: bool,
+    ) -> Result<Option<Bdd>, DomainError> {
+        self.proof(if conjunction {
+            self.bdd().and(prefix, term)
+        } else {
+            self.bdd().or(prefix, term)
+        })
     }
 
     fn junction_proof(
@@ -953,12 +1068,7 @@ impl DomainLogic {
             let Some(operand) = self.exact(*term) else {
                 return Ok(None);
             };
-            let result = if conjunction {
-                self.bdd().and(value, operand)
-            } else {
-                self.bdd().or(value, operand)
-            };
-            let Some(exact) = self.proof(result)? else {
+            let Some(exact) = self.apply_term(value, operand, conjunction)? else {
                 return Ok(None);
             };
             value = exact;

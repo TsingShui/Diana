@@ -60,7 +60,7 @@ impl ControlFlowFacts {
                 semantic_predecessors.as_ref().unwrap_or(&predecessors),
             )?,
         };
-        let postdominators = PostDominatorTree::compute(cfg)?;
+        let postdominators = PostDominatorTree::from_normal_dominance(cfg, &dominators)?;
         let boundaries = ControlContinuations::phi_boundaries(cfg);
         let phi_continuations =
             (!boundaries.is_empty()).then(|| ControlContinuations::preserving(cfg, &boundaries));

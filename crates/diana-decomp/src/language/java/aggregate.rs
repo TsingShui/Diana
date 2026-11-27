@@ -1,6 +1,6 @@
 use super::{
-    JavaAssignOp, JavaAstRewriter, JavaAstTransform, JavaExpr, JavaLiteral, JavaMethodBody,
-    JavaStmt,
+    JavaAssignOp, JavaAstMutator, JavaAstRewriter, JavaAstTransform, JavaExpr, JavaLiteral,
+    JavaMethodBody, JavaStmt,
 };
 
 #[derive(Debug, Default)]
@@ -136,13 +136,9 @@ impl JavaAstRewriter for ExpressionNameUse<'_> {
     }
 }
 
-impl JavaAstRewriter for AggregateInitializer {
-    fn rewrite_statements(&mut self, statements: Vec<JavaStmt>) -> Vec<JavaStmt> {
-        let statements = statements
-            .into_iter()
-            .map(|statement| self.rewrite_statement(statement))
-            .collect();
-        self.combine(statements)
+impl JavaAstMutator for AggregateInitializer {
+    fn after_statements(&mut self, statements: &mut Vec<JavaStmt>) {
+        *statements = self.combine(std::mem::take(statements));
     }
 }
 

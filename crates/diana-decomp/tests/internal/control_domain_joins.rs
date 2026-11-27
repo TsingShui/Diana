@@ -276,3 +276,68 @@ fn interleaved_long_branches_extend_independent_term_pages() {
         assert!(logic.term_arena.len() <= 2 * atoms.len());
     }
 }
+
+#[test]
+fn ordered_extensions_share_canonical_domains_across_splits_and_fingerprint_collisions() {
+    let names = (0..10).map(BoolVariable::Atom).collect::<BTreeSet<_>>();
+    for conjunction in [true, false] {
+        let mut logic = DomainLogic::new(&names);
+        let atoms = names
+            .iter()
+            .map(|name| logic.symbol(name.clone()).unwrap())
+            .collect::<Vec<_>>();
+        let join = |logic: &mut DomainLogic, positions: &[usize]| {
+            let (&first, rest) = positions.split_first().unwrap();
+            rest.iter().fold(atoms[first], |value, &next| {
+                logic.junction(value, atoms[next], conjunction).unwrap()
+            })
+        };
+        let base = join(&mut logic, &[0, 2, 4, 6]);
+        let decoy = join(&mut logic, &[0, 1, 4, 6, 8]);
+        let expected = [atoms[0], atoms[2], atoms[4], atoms[6], atoms[8]];
+        let fingerprint = logic.fingerprint(&expected, conjunction);
+        logic
+            .junction_index
+            .insert_unique(fingerprint, (fingerprint, decoy), |entry| entry.0);
+
+        let complete = logic.junction(atoms[8], base, conjunction).unwrap();
+        assert_ne!(complete, decoy);
+        assert_eq!(
+            logic.junction_terms(&complete, conjunction).unwrap(),
+            &expected
+        );
+        assert_eq!(
+            logic.junction_terms(&base, conjunction).unwrap(),
+            &expected[..4]
+        );
+        let middle = join(&mut logic, &[0, 2, 6, 8]);
+        assert_eq!(
+            logic.junction(middle, atoms[4], conjunction).unwrap(),
+            complete
+        );
+        let alternate = join(&mut logic, &[2, 4, 8]);
+        let remaining = join(&mut logic, &[0, 6]);
+        assert_eq!(
+            logic.junction(alternate, remaining, conjunction).unwrap(),
+            complete
+        );
+
+        for assignment in 0..32 {
+            let mut valuation = logic.truth();
+            for (index, &atom) in expected.iter().enumerate() {
+                let literal = if assignment & (1 << index) == 0 {
+                    logic.not(atom).unwrap()
+                } else {
+                    atom
+                };
+                valuation = logic.and(valuation, literal).unwrap();
+            }
+            let holds = if conjunction {
+                assignment == 31
+            } else {
+                assignment != 0
+            };
+            assert_eq!(logic.implies(valuation, complete).unwrap(), holds);
+        }
+    }
+}

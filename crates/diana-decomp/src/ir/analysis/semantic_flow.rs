@@ -53,6 +53,7 @@ type LazyGraphIndex = LazyLock<GraphIndex, Box<dyn FnOnce() -> GraphIndex + Send
 pub struct SemanticFlowGraph {
     index: Arc<LazyGraphIndex>,
     complete: bool,
+    before_site_limit: u64,
     reachability: OnceLock<SemanticReachability>,
     linear_order: OnceLock<Option<LinearOrder>>,
     last_reaching: OnceLock<Arc<Mutex<Option<ReachingQuery>>>>,
@@ -647,18 +648,20 @@ impl SparseReachability {
 
 impl Default for SemanticFlowGraph {
     fn default() -> Self {
-        Self::with_index(false, GraphIndex::default)
+        Self::with_index(false, 0, GraphIndex::default)
     }
 }
 
 impl SemanticFlowGraph {
     fn with_index(
         complete: bool,
+        before_site_limit: u64,
         build: impl FnOnce() -> GraphIndex + Send + Sync + 'static,
     ) -> Self {
         Self {
             index: Arc::new(LazyLock::new(Box::new(build))),
             complete,
+            before_site_limit,
             reachability: OnceLock::new(),
             linear_order: OnceLock::new(),
             last_reaching: OnceLock::new(),
@@ -675,6 +678,26 @@ impl SemanticFlowGraph {
 
     pub fn is_complete(&self) -> bool {
         self.complete
+    }
+
+    /// Check whether every Before endpoint (including isolated entries) has a
+    /// recorded site. Numbering normally supplies the whole dense prefix.
+    pub(super) fn before_sites_known(&self, known: &[SemanticSiteId]) -> bool {
+        if usize::try_from(self.before_site_limit)
+            .ok()
+            .and_then(|limit| known.get(..limit))
+            .is_some_and(|prefix| prefix.iter().enumerate().all(|(i, id)| id.0 == i as u64))
+        {
+            return true;
+        }
+        let mut known = known.iter().copied().peekable();
+        self.ordered_points().all(|point| {
+            let SemanticFlowPoint::Before(site) = point else {
+                return true;
+            };
+            while known.next_if(|value| *value < site).is_some() {}
+            known.next() == Some(site)
+        })
     }
 
     pub fn points(&self) -> BTreeSet<SemanticFlowPoint> {
@@ -1278,6 +1301,7 @@ impl BuildFrame<'_> {
 
 struct SemanticFlowBuilder {
     edges: Vec<FlowEdge>,
+    before_site_limit: u64,
     complete: bool,
     next_synthetic: u64,
     next_continuation: u64,
@@ -1288,6 +1312,7 @@ impl SemanticFlowBuilder {
     fn new() -> Self {
         Self {
             edges: Vec::new(),
+            before_site_limit: 0,
             complete: true,
             next_synthetic: 0,
             next_continuation: 0,
@@ -1320,12 +1345,15 @@ impl SemanticFlowBuilder {
         self.finish(results.pop().and_then(|fragment| fragment.entry).as_slice())
     }
 
-    fn finish(self, entries: &[SemanticFlowPoint]) -> SemanticFlowGraph {
+    fn finish(mut self, entries: &[SemanticFlowPoint]) -> SemanticFlowGraph {
         // SSA can establish operand stability from a complete semantic flow
         // without querying any adjacency. Retain the original edges until a
         // graph query needs point numbering or either direction of the index.
+        for &point in entries {
+            self.observe_before(point);
+        }
         let entries = smallvec::SmallVec::<[_; 1]>::from_slice(entries);
-        SemanticFlowGraph::with_index(self.complete, move || {
+        SemanticFlowGraph::with_index(self.complete, self.before_site_limit, move || {
             GraphIndex::new(&self.edges, &entries)
         })
     }
@@ -2027,12 +2055,20 @@ impl SemanticFlowBuilder {
         }
     }
 
+    fn observe_before(&mut self, point: SemanticFlowPoint) {
+        if let SemanticFlowPoint::Before(site) = point {
+            self.before_site_limit = self.before_site_limit.max(site.0.saturating_add(1));
+        }
+    }
+
     fn add_edge(
         &mut self,
         source: SemanticFlowPoint,
         target: SemanticFlowPoint,
         kind: SemanticFlowEdgeKind,
     ) {
+        self.observe_before(source);
+        self.observe_before(target);
         self.edges.push((source, target, kind));
     }
 }
@@ -2168,3 +2204,7 @@ mod tests {
         assert_eq!(reaching.at(0, points[3]), Some(vec![0, 1]));
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/flow_point_membership.rs"]
+mod flow_point_membership;

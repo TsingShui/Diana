@@ -18,6 +18,27 @@ impl PostDominatorTree {
         })
     }
 
+    pub(super) fn from_normal_dominance(
+        cfg: &CFG,
+        normal: &DominatorTree,
+    ) -> Result<Self, DominanceError> {
+        // A single physical terminal is the sole child of the virtual root
+        // in both the ordinary dominance forest and reverse exit topology.
+        if cfg.blocks.len() == 1
+            && cfg.entry != BlockId::INVALID
+            && cfg.blocks.contains_key(&cfg.entry)
+            && cfg.normal_successors(cfg.entry).next().is_none()
+            && normal.entry() == BlockId::INVALID
+            && normal.len() == 2
+            && normal.idom(cfg.entry) == Some(BlockId::INVALID)
+        {
+            return Ok(Self {
+                tree: normal.clone(),
+            });
+        }
+        Self::compute(cfg)
+    }
+
     pub fn nearest_common(&self, entries: &[BlockId]) -> Option<BlockId> {
         let mut candidate = *entries.first()?;
         loop {

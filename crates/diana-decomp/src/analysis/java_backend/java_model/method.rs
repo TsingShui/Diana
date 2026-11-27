@@ -291,20 +291,28 @@ impl JavaMethodBody {
                 .map_err(crate::language::java::JavaLoweringError::from)
         }?;
         let mut normalizer = JavaAstNormalizer;
-        let mut changed = normalizer
-            .apply(&mut ast)
+        let normalized = normalizer
+            .normalize_method(&mut ast)
             .map_err(crate::language::java::JavaLoweringError::from)?;
+        let mut changed = normalized.changed;
         if class_initializer {
             changed |= JavaInitializerExitLowering
                 .apply(&mut ast)
                 .map_err(crate::language::java::JavaLoweringError::from)?;
         }
-        changed |= AggregateInitializer::default()
-            .apply(&mut ast)
-            .map_err(crate::language::java::JavaLoweringError::from)?;
-        changed |= DefiniteAssignment
-            .apply(&mut ast)
-            .map_err(crate::language::java::JavaLoweringError::from)?;
+        // Initializer exit lowering only moves existing statements. Array
+        // aggregation can remove initialized variables but never introduces
+        // an uninitialized one.
+        if normalized.has_array_initializers {
+            changed |= AggregateInitializer::default()
+                .apply(&mut ast)
+                .map_err(crate::language::java::JavaLoweringError::from)?;
+        }
+        if normalized.has_uninitialized_variables {
+            changed |= DefiniteAssignment
+                .apply(&mut ast)
+                .map_err(crate::language::java::JavaLoweringError::from)?;
+        }
         if changed {
             normalizer
                 .apply(&mut ast)

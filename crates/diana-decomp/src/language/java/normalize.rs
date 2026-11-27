@@ -1,6 +1,7 @@
 use super::{
-    JavaAssignOp, JavaAstRewriter, JavaBinaryOp, JavaCatch, JavaExpr, JavaIdentifier, JavaLiteral,
-    JavaMethodBody, JavaPrimitiveType, JavaStmt, JavaSwitchCase, JavaType, JavaUnaryOp,
+    JavaAssignOp, JavaAstMutator, JavaAstRewriter, JavaBinaryOp, JavaCatch, JavaExpr,
+    JavaIdentifier, JavaLiteral, JavaMethodBody, JavaPrimitiveType, JavaStmt, JavaSwitchCase,
+    JavaType, JavaUnaryOp,
 };
 
 pub trait JavaAstTransform {
@@ -178,9 +179,7 @@ impl JavaAstNormalizer {
             match task {
                 SyntaxTask::Visit(statement) => match statement {
                     JavaStmt::Block(children) => {
-                        let count = children.len();
-                        pending.push(SyntaxTask::Rebuild(SyntaxFrame::Block(count)));
-                        pending.extend(children.into_iter().rev().map(SyntaxTask::Visit));
+                        Self::schedule_block(children, 0, &mut pending, &mut results, &mut changed);
                     }
                     JavaStmt::Labeled { label, body } => {
                         pending.push(SyntaxTask::Rebuild(SyntaxFrame::Labeled(label)));
@@ -294,6 +293,21 @@ impl JavaAstNormalizer {
                     }
                     leaf => results.push(leaf),
                 },
+                SyntaxTask::Block {
+                    mut children,
+                    index,
+                } => {
+                    children[index] = results
+                        .pop()
+                        .ok_or(super::JavaStructuralError::MalformedWorkStack)?;
+                    Self::schedule_block(
+                        children,
+                        index + 1,
+                        &mut pending,
+                        &mut results,
+                        &mut changed,
+                    );
+                }
                 SyntaxTask::Rebuild(frame) => {
                     let count = frame.child_count();
                     let start = results
@@ -315,35 +329,90 @@ impl JavaAstNormalizer {
         Ok((root, changed))
     }
 
-    fn flatten(children: impl ExactSizeIterator<Item = JavaStmt>) -> (Vec<JavaStmt>, bool) {
-        let mut flattened = Vec::with_capacity(children.len());
-        let mut changed = false;
-        for child in children {
+    fn schedule_block(
+        mut children: Vec<JavaStmt>,
+        start: usize,
+        pending: &mut Vec<SyntaxTask>,
+        results: &mut Vec<JavaStmt>,
+        changed: &mut bool,
+    ) {
+        for index in start..children.len() {
+            let child = &mut children[index];
             match child {
-                JavaStmt::Block(children) => {
-                    flattened.extend(children);
-                    changed = true;
+                JavaStmt::Empty
+                | JavaStmt::RecoveryFailure(_)
+                | JavaStmt::Return(_)
+                | JavaStmt::Variable { .. }
+                | JavaStmt::ConstructorInvocation { .. }
+                | JavaStmt::Expression(_)
+                | JavaStmt::Assign { .. }
+                | JavaStmt::Throw(_)
+                | JavaStmt::Break(_)
+                | JavaStmt::Continue(_) => continue,
+                _ => {
+                    let child = std::mem::replace(child, JavaStmt::Empty);
+                    pending.push(SyntaxTask::Block { children, index });
+                    pending.push(SyntaxTask::Visit(child));
+                    return;
                 }
-                JavaStmt::Empty => changed = true,
-                child => flattened.push(child),
             }
         }
+        let (children, local_change) = Self::flatten(children);
+        *changed |= local_change;
+        results.push(JavaStmt::Block(children));
+    }
+
+    fn flatten(mut flattened: Vec<JavaStmt>) -> (Vec<JavaStmt>, bool) {
+        let nested = flattened
+            .iter()
+            .any(|statement| matches!(statement, JavaStmt::Block(_)));
+        let mut changed = nested;
+        if nested {
+            let mut statements = Vec::with_capacity(flattened.len());
+            for child in flattened {
+                match child {
+                    JavaStmt::Block(children) => statements.extend(children),
+                    JavaStmt::Empty => {}
+                    child => statements.push(child),
+                }
+            }
+            flattened = statements;
+        }
         let before = flattened.len();
-        flattened.retain(|statement| {
-            !matches!(
-                statement,
-                JavaStmt::If {
-                    condition,
-                    then_stmt,
-                    else_stmt: None,
-                } if Self::is_empty(then_stmt) && Self::pure_condition(condition)
-            )
+        let mut has_if = false;
+        let mut has_switch = false;
+        flattened.retain(|statement| match statement {
+            JavaStmt::Empty => nested,
+            JavaStmt::If {
+                condition,
+                then_stmt,
+                else_stmt,
+            } => {
+                let keep = else_stmt.is_some()
+                    || !Self::is_empty(then_stmt)
+                    || !Self::pure_condition(condition);
+                has_if |= keep;
+                keep
+            }
+            JavaStmt::Switch { .. } => {
+                has_switch = true;
+                true
+            }
+            _ => true,
         });
         changed |= flattened.len() != before;
-        changed |= StringSwitchRecovery::apply(&mut flattened);
-        changed |= ConditionalResultJoin::apply(&mut flattened);
-        changed |= SwitchResultReturn::apply(&mut flattened);
-        changed |= TerminalBranchLinearizer::apply(&mut flattened);
+        if has_switch {
+            changed |= StringSwitchRecovery::apply(&mut flattened);
+        }
+        if has_if {
+            changed |= ConditionalResultJoin::apply(&mut flattened);
+        }
+        if has_switch {
+            changed |= SwitchResultReturn::apply(&mut flattened);
+        }
+        if has_if {
+            changed |= TerminalBranchLinearizer::apply(&mut flattened);
+        }
         (flattened, changed)
     }
 
@@ -1284,33 +1353,52 @@ impl TerminalBranchLinearizer {
     const NESTING_PENALTY: usize = 12;
 
     fn apply(statements: &mut Vec<JavaStmt>) -> bool {
+        Self::linearize_candidates(statements, Self::next_candidate)
+    }
+
+    fn apply_required_void_exit(statements: &mut Vec<JavaStmt>) -> bool {
+        Self::linearize_candidates(statements, Self::next_required_void_exit)
+    }
+
+    fn linearize_candidates(
+        statements: &mut Vec<JavaStmt>,
+        next: impl Fn(&[JavaStmt], usize) -> Option<(usize, TerminalBranchCandidate)>,
+    ) -> bool {
         let mut changed = false;
-        let mut index = 0usize;
-        while index + 1 < statements.len() {
-            let Some(candidate) = Self::candidate(statements, index) else {
-                index += 1;
-                continue;
-            };
+        let mut start = 0;
+        while let Some((index, candidate)) = next(statements, start) {
             Self::linearize(statements, index, candidate);
+            start = index + 1;
             changed = true;
-            index += 1;
         }
         changed
     }
 
-    fn apply_required_void_exit(statements: &mut Vec<JavaStmt>) -> bool {
-        let mut changed = false;
-        let mut index = 0usize;
-        while index + 1 < statements.len() {
-            let Some(candidate) = Self::required_void_exit_candidate(statements, index) else {
-                index += 1;
-                continue;
-            };
-            Self::linearize(statements, index, candidate);
-            changed = true;
-            index += 1;
-        }
-        changed
+    fn guards(
+        statements: &[JavaStmt],
+        start: usize,
+    ) -> impl Iterator<Item = (usize, &JavaExpr, &JavaStmt)> {
+        statements
+            .iter()
+            .enumerate()
+            .take(statements.len().saturating_sub(1))
+            .skip(start)
+            .filter_map(|(index, stmt)| match stmt {
+                JavaStmt::If {
+                    condition,
+                    then_stmt,
+                    else_stmt: None,
+                } => Some((index, condition, then_stmt.as_ref())),
+                _ => None,
+            })
+    }
+
+    fn last_exit_after(statements: &[JavaStmt], index: usize) -> Option<usize> {
+        let start = index + 1;
+        statements[start..]
+            .iter()
+            .rposition(|statement| !Self::can_complete_normally(statement))
+            .map(|offset| start + offset)
     }
 
     fn linearize(statements: &mut Vec<JavaStmt>, index: usize, candidate: TerminalBranchCandidate) {
@@ -1339,63 +1427,82 @@ impl TerminalBranchLinearizer {
         }
     }
 
-    fn candidate(statements: &[JavaStmt], index: usize) -> Option<TerminalBranchCandidate> {
-        let JavaStmt::If {
-            condition,
-            then_stmt,
-            else_stmt: None,
-        } = statements.get(index)?
-        else {
-            return None;
-        };
-        let tail = &statements[index + 1..];
-        if Self::sequence_can_complete_normally(tail) {
-            return None;
-        }
-        let then_depth = Self::nesting_depth(then_stmt);
-        let tail_depth = tail
-            .iter()
-            .map(Self::nesting_depth)
-            .max()
-            .unwrap_or_default();
-        let original_depth = (then_depth + 1).max(tail_depth);
-        let linearized_depth = then_depth.max(tail_depth + 1);
-        let lowers_nesting = linearized_depth < original_depth;
-        let lowers_condition_cost =
-            linearized_depth == original_depth && condition.negation_reduces_cost();
-        if !lowers_nesting && !lowers_condition_cost {
-            return None;
-        }
-        let duplicates_tail = Self::can_complete_normally(then_stmt);
-        if duplicates_tail {
-            let depth_reduction = original_depth.saturating_sub(linearized_depth);
-            let duplication_budget = depth_reduction.saturating_mul(Self::NESTING_PENALTY);
-            if Self::sequence_cost(tail) > duplication_budget {
-                return None;
+    fn next_candidate(
+        statements: &[JavaStmt],
+        start: usize,
+    ) -> Option<(usize, TerminalBranchCandidate)> {
+        let mut guards = Self::guards(statements, start);
+        let first = guards.next()?;
+        // A suffix can stop normal execution exactly when it includes a
+        // non-completing statement. A later guard cannot reintroduce that exit.
+        let last_exit = Self::last_exit_after(statements, first.0)?;
+
+        // Store only increases in the maximum depth as the suffix grows.
+        // These records monotonically expire while testing guards left to right.
+        let mut depths = smallvec::SmallVec::<[(usize, usize); 4]>::new();
+        let mut maximum = 0;
+        for (index, statement) in statements.iter().enumerate().skip(first.0 + 1).rev() {
+            let depth = Self::nesting_depth(statement);
+            if depth > maximum {
+                maximum = depth;
+                depths.push((index, depth));
             }
         }
-        Some(TerminalBranchCandidate { duplicates_tail })
+
+        for (index, condition, branch) in std::iter::once(first).chain(guards) {
+            if index >= last_exit {
+                break;
+            }
+            while depths
+                .last()
+                .is_some_and(|(position, _)| *position <= index)
+            {
+                depths.pop();
+            }
+            let tail_depth = depths.last().map_or(0, |(_, depth)| *depth);
+            let branch_depth = Self::nesting_depth(branch);
+            // Before the edit the guard adds one level to the branch. After
+            // it the guard adds that level to the tail instead.
+            if branch_depth < tail_depth
+                || (branch_depth == tail_depth && !condition.negation_reduces_cost())
+            {
+                continue;
+            }
+            let duplicates_tail = Self::can_complete_normally(branch);
+            if duplicates_tail {
+                let budget = if branch_depth > tail_depth {
+                    Self::NESTING_PENALTY
+                } else {
+                    0
+                };
+                if statements[index + 1..]
+                    .iter()
+                    .try_fold(budget, |left, statement| {
+                        left.checked_sub(Self::statement_cost(statement))
+                    })
+                    .is_none()
+                {
+                    continue;
+                }
+            }
+            return Some((index, TerminalBranchCandidate { duplicates_tail }));
+        }
+        None
     }
 
-    fn required_void_exit_candidate(
+    fn next_required_void_exit(
         statements: &[JavaStmt],
-        index: usize,
-    ) -> Option<TerminalBranchCandidate> {
-        let JavaStmt::If {
-            then_stmt,
-            else_stmt: None,
-            ..
-        } = statements.get(index)?
-        else {
-            return None;
-        };
-        let tail = &statements[index + 1..];
-        (!tail.is_empty()
-            && !Self::sequence_can_complete_normally(tail)
-            && Self::terminates_with_void_return(then_stmt))
-        .then(|| TerminalBranchCandidate {
-            duplicates_tail: Self::can_complete_normally(then_stmt),
-        })
+        start: usize,
+    ) -> Option<(usize, TerminalBranchCandidate)> {
+        let (index, _, branch) = Self::guards(statements, start)
+            .find(|(_, _, branch)| Self::terminates_with_void_return(branch))?;
+        Self::last_exit_after(statements, index)?;
+        Some((
+            index,
+            TerminalBranchCandidate {
+                duplicates_tail: Self::can_complete_normally(branch),
+            },
+        ))
     }
 
     fn terminates_with_void_return(statement: &JavaStmt) -> bool {
@@ -1719,10 +1826,17 @@ struct TerminalBranchCandidate {
     duplicates_tail: bool,
 }
 
-impl JavaAstTransform for JavaAstNormalizer {
-    type Error = super::JavaStructuralError;
+pub(crate) struct MethodNormalization {
+    pub changed: bool,
+    pub has_array_initializers: bool,
+    pub has_uninitialized_variables: bool,
+}
 
-    fn apply(&mut self, body: &mut JavaMethodBody) -> Result<bool, Self::Error> {
+impl JavaAstNormalizer {
+    pub(crate) fn normalize_method(
+        &mut self,
+        body: &mut JavaMethodBody,
+    ) -> Result<MethodNormalization, super::JavaStructuralError> {
         let (root, mut changed) =
             Self::normalize(std::mem::replace(&mut body.root, JavaStmt::Empty))?;
         let mut conditional_simplifier = ConditionalExpressionSimplifier::default();
@@ -1738,63 +1852,79 @@ impl JavaAstTransform for JavaAstNormalizer {
             }
         }
         body.root = root;
-        Ok(changed)
+        Ok(MethodNormalization {
+            changed,
+            has_array_initializers: conditional_simplifier.has_array_initializers,
+            has_uninitialized_variables: conditional_simplifier.has_uninitialized_variables,
+        })
+    }
+}
+
+impl JavaAstTransform for JavaAstNormalizer {
+    type Error = super::JavaStructuralError;
+
+    fn apply(&mut self, body: &mut JavaMethodBody) -> Result<bool, Self::Error> {
+        Ok(self.normalize_method(body)?.changed)
     }
 }
 
 #[derive(Debug, Default)]
 struct ConditionalExpressionSimplifier {
     changed: bool,
+    has_array_initializers: bool,
+    has_uninitialized_variables: bool,
 }
 
-impl JavaAstRewriter for ConditionalExpressionSimplifier {
-    fn finish_expression(&mut self, expression: JavaExpr) -> JavaExpr {
+impl JavaAstMutator for ConditionalExpressionSimplifier {
+    fn after_statement(&mut self, statement: &mut JavaStmt) {
+        if let JavaStmt::Variable { value, .. } = statement {
+            match value {
+                None => self.has_uninitialized_variables = true,
+                Some(JavaExpr::NewArray { .. } | JavaExpr::Cast { .. }) => {
+                    self.has_array_initializers = true
+                }
+                Some(_) => {}
+            }
+        }
+    }
+
+    fn after_expression(&mut self, expression: &mut JavaExpr) {
         let JavaExpr::Conditional {
             condition,
             when_true,
             when_false,
         } = expression
         else {
-            return expression;
+            return;
         };
         let JavaExpr::Conditional {
             condition: nested_condition,
             when_true: nested_true,
             when_false: nested_false,
-        } = when_false.as_ref()
+        } = when_false.as_mut()
         else {
-            return JavaExpr::Conditional {
-                condition,
-                when_true,
-                when_false,
-            };
+            return;
         };
-        if condition.as_ref() != nested_condition.as_ref()
-            || when_true.as_ref() != nested_true.as_ref()
-            || !ConditionalResultJoin::stable(condition.as_ref())
+        if condition.as_ref() == nested_condition.as_ref()
+            && when_true.as_ref() == nested_true.as_ref()
+            && ConditionalResultJoin::stable(condition.as_ref())
         {
-            return JavaExpr::Conditional {
-                condition,
-                when_true,
-                when_false,
-            };
-        }
-        self.changed = true;
-        JavaExpr::Conditional {
-            condition,
-            when_true,
-            when_false: nested_false.clone(),
+            **when_false = std::mem::replace(nested_false.as_mut(), JavaExpr::This);
+            self.changed = true;
         }
     }
 }
 
 enum SyntaxTask {
     Visit(JavaStmt),
+    Block {
+        children: Vec<JavaStmt>,
+        index: usize,
+    },
     Rebuild(SyntaxFrame),
 }
 
 enum SyntaxFrame {
-    Block(usize),
     Labeled(JavaIdentifier),
     If {
         condition: JavaExpr,
@@ -1835,7 +1965,6 @@ enum SyntaxFrame {
 impl SyntaxFrame {
     fn child_count(&self) -> usize {
         match self {
-            Self::Block(count) => *count,
             Self::Labeled(_) => 1,
             Self::If { has_else, .. } => 1 + usize::from(*has_else),
             Self::While { .. }
@@ -1863,10 +1992,6 @@ impl SyntaxFrame {
             });
         }
         let statement = match self {
-            Self::Block(_) => {
-                let (children, changed) = JavaAstNormalizer::flatten(children);
-                return Ok((JavaStmt::Block(children), changed));
-            }
             Self::Labeled(label) => JavaStmt::Labeled {
                 label,
                 body: Box::new(Self::child(&mut children)?),
@@ -2663,3 +2788,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/java_terminal_guard_tails.rs"]
+mod tail_tests;

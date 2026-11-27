@@ -510,15 +510,8 @@ impl SemanticLiveness {
             SiteRecords::Facts(facts) => facts,
             SiteRecords::Identities(mut ids) => {
                 ids.sort_unstable();
-                let mut known = ids.into_iter().peekable();
-                for point in flow.ordered_points() {
-                    let SemanticFlowPoint::Before(site) = point else {
-                        continue;
-                    };
-                    while known.next_if(|value| *value < site).is_some() {}
-                    if known.next() != Some(site) {
-                        return Err(SourceVariableError::MissingSemanticSite("flow point"));
-                    }
+                if !flow.before_sites_known(&ids) {
+                    return Err(SourceVariableError::MissingSemanticSite("flow point"));
                 }
                 return Ok(Self {
                     sites: BTreeMap::new(),

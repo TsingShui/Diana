@@ -35,6 +35,7 @@ pub use normalize::{
     JavaAstNormalizer, JavaAstTransform, JavaInitializerExitLowering, JavaMethodCompletion,
     JavaVoidTailLinearizer,
 };
+pub(crate) use rewrite::JavaAstMutator;
 pub use rewrite::JavaAstRewriter;
 pub(crate) use source_types::{GenericTypeProjection, SourceObjectTypes};
 pub use syntax::{JavaValueSyntax, SourceSyntaxRecovery};
