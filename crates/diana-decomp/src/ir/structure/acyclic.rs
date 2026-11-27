@@ -731,7 +731,7 @@ impl BranchVariables {
             let (domain, negated) = match variable.pair {
                 Some(pair) => pair,
                 None => {
-                    let domain = facts.compile(&BoolExpr::block(condition))?;
+                    let domain = facts.branch_literal(index)?;
                     let negated = facts.not(domain)?;
                     variable.pair = Some((domain, negated));
                     (domain, negated)

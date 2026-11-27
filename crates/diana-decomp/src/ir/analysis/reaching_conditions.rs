@@ -4,7 +4,8 @@
 //! is reached from the graph entry. ROBDD variables follow topological
 //! evaluation order and provide canonical equivalence and implication.
 
-use std::collections::BTreeSet;
+use std::cmp::Reverse;
+use std::collections::{BTreeSet, BinaryHeap};
 use std::fmt;
 
 use foldhash::HashMap;
@@ -57,16 +58,26 @@ impl ReachingConditions {
     ) -> Result<Self, ReachingConditionError> {
         let topology = AcyclicTopology { cfg };
         let (order, ranks) = topology.sort(entry, nodes)?;
-        let branch_variables = order
+        // Keep each source's validated role next to its topological rank.
+        // Incoming edges reuse the role and the literal's ordinal.
+        let mut branch_variables = Vec::new();
+        let controls = order
             .iter()
-            .copied()
-            .filter(|block| {
-                cfg.block(*block).is_some_and(|body| {
-                    body.terminator()
-                        .is_some_and(|terminator| terminator.insn_type == InsnType::If)
-                })
+            .map(|&block| {
+                let Some(body) = cfg.block(block) else {
+                    return EdgeSource::Missing;
+                };
+                match body.terminator().map(|terminator| terminator.insn_type) {
+                    Some(InsnType::If) => {
+                        let ordinal = branch_variables.len();
+                        branch_variables.push(block);
+                        EdgeSource::Branch(ordinal)
+                    }
+                    Some(InsnType::Switch) => EdgeSource::Switch,
+                    _ => EdgeSource::Ordinary,
+                }
             })
-            .collect::<Vec<_>>();
+            .collect::<SmallVec<[_; 8]>>();
         let boolean_domain =
             BddContext::ordered(branch_variables.iter().copied().map(BoolVariable::Block));
         let mut conditions = Vec::<ReachingCondition>::with_capacity(order.len());
@@ -76,16 +87,14 @@ impl ReachingConditions {
             } else {
                 let terms = topology
                     .incoming(*block, &ranks)
-                    .map(|(source, edge)| {
-                        let predecessor = ranks
-                            .get(&source)
-                            .and_then(|&rank| conditions.get(rank))
-                            .ok_or(ReachingConditionError::MissingPredecessorCondition {
+                    .map(|(source, rank, edge)| {
+                        let predecessor = conditions.get(rank).ok_or(
+                            ReachingConditionError::MissingPredecessorCondition {
                                 block: *block,
                                 predecessor: source,
-                            })?;
-                        let edge =
-                            EdgePredicate::compile(&boolean_domain, cfg, source, *block, edge)?;
+                            },
+                        )?;
+                        let edge = controls[rank].compile(&boolean_domain, source, *block, edge)?;
                         Ok(boolean_domain.and(predecessor.domain, edge)?)
                     })
                     .collect::<Result<SmallVec<[_; 2]>, ReachingConditionError>>()?;
@@ -117,7 +126,15 @@ impl ReachingConditions {
         target: BlockId,
         edge: EdgeKind,
     ) -> Result<Bdd, ReachingConditionError> {
-        EdgePredicate::compile(&self.boolean_domain, cfg, source, target, edge)
+        let control = match cfg.block(source) {
+            None => EdgeSource::Missing,
+            Some(block) => match block.terminator().map(|term| term.insn_type) {
+                Some(InsnType::If) => EdgeSource::NamedBranch,
+                Some(InsnType::Switch) => EdgeSource::Switch,
+                _ => EdgeSource::Ordinary,
+            },
+        };
+        control.compile(&self.boolean_domain, source, target, edge)
     }
 
     pub fn order(&self) -> &[BlockId] {
@@ -146,6 +163,13 @@ impl ReachingConditions {
 
     pub fn truth(&self) -> Bdd {
         self.boolean_domain.truth()
+    }
+
+    pub(in crate::ir) fn branch_literal(
+        &self,
+        index: usize,
+    ) -> Result<Bdd, ReachingConditionError> {
+        Ok(self.boolean_domain.compile_index(index, true)?)
     }
 
     pub fn compile(&self, expression: &BoolExpr) -> Result<Bdd, ReachingConditionError> {
@@ -214,12 +238,13 @@ impl AcyclicTopology<'_> {
         &'a self,
         block: BlockId,
         indices: &'a HashMap<BlockId, usize>,
-    ) -> impl Iterator<Item = (BlockId, EdgeKind)> + 'a {
+    ) -> impl Iterator<Item = (BlockId, usize, EdgeKind)> + 'a {
         self.cfg
             .predecessors_with_kind(block)
             .iter()
             .copied()
-            .filter(|(source, kind)| !kind.is_exception() && indices.contains_key(source))
+            .filter(|(_, kind)| !kind.is_exception())
+            .filter_map(|(source, kind)| indices.get(&source).map(|&index| (source, index, kind)))
     }
 
     fn sort(
@@ -232,22 +257,22 @@ impl AcyclicTopology<'_> {
         if !indegree.contains_key(&entry) {
             return Err(ReachingConditionError::MissingEntry(entry));
         }
-        let mut ready = BTreeSet::new();
+        let mut ready = BinaryHeap::new();
         for block in nodes {
             let degree = self.incoming(block, &indegree).count();
             indegree.insert(block, degree);
             if degree == 0 {
-                ready.insert(block);
+                ready.push(Reverse(block));
             }
         }
-        if ready.len() != 1 || ready.first() != Some(&entry) {
+        if ready.len() != 1 || ready.peek() != Some(&Reverse(entry)) {
             return Err(ReachingConditionError::MultipleEntries {
                 expected: entry,
-                actual: ready.first().copied(),
+                actual: ready.peek().map(|&Reverse(block)| block),
             });
         }
         let mut order = Vec::with_capacity(indegree.len());
-        while let Some(block) = ready.pop_first() {
+        while let Some(Reverse(block)) = ready.pop() {
             order.push(block);
             for target in self.cfg.normal_successors(block) {
                 let Some(degree) = indegree.get_mut(&target) else {
@@ -257,7 +282,7 @@ impl AcyclicTopology<'_> {
                     .checked_sub(1)
                     .ok_or(ReachingConditionError::MalformedTopology(target))?;
                 if *degree == 0 {
-                    ready.insert(target);
+                    ready.push(Reverse(target));
                 }
             }
         }
@@ -372,47 +397,46 @@ impl ReachabilityMatrix {
     }
 }
 
-struct EdgePredicate;
+#[derive(Clone, Copy)]
+enum EdgeSource {
+    Missing,
+    Ordinary,
+    Branch(usize),
+    NamedBranch,
+    Switch,
+}
 
-impl EdgePredicate {
+impl EdgeSource {
     fn compile(
+        self,
         domain: &BddContext,
-        cfg: &CFG,
         source: BlockId,
         target: BlockId,
         edge: EdgeKind,
     ) -> Result<Bdd, ReachingConditionError> {
-        let block = cfg
-            .block(source)
-            .ok_or(ReachingConditionError::MissingBlock(source))?;
-        let terminator = block.terminator().map(|instruction| instruction.insn_type);
-        let expression = match (terminator, edge) {
-            (Some(InsnType::If), EdgeKind::True) => {
-                domain.compile_literal(&BoolVariable::Block(source), true)?
+        match (self, edge) {
+            (Self::Branch(index), EdgeKind::True | EdgeKind::False) => {
+                Ok(domain.compile_index(index, edge == EdgeKind::True)?)
             }
-            (Some(InsnType::If), EdgeKind::False) => {
-                domain.compile_literal(&BoolVariable::Block(source), false)?
+            (Self::NamedBranch, EdgeKind::True | EdgeKind::False) => {
+                Ok(domain.compile_literal(&BoolVariable::Block(source), edge == EdgeKind::True)?)
             }
-            (Some(InsnType::If), _) => {
-                return Err(ReachingConditionError::MalformedBranchEdge {
+            (Self::Branch(_) | Self::NamedBranch, _) => {
+                Err(ReachingConditionError::MalformedBranchEdge {
                     source,
                     target,
                     edge,
-                });
+                })
             }
-            (Some(InsnType::Switch), _) => {
-                return Err(ReachingConditionError::UnownedSwitch(source));
-            }
-            (_, EdgeKind::Normal) => domain.truth(),
-            (_, _) => {
-                return Err(ReachingConditionError::UnexpectedEdge {
-                    source,
-                    target,
-                    edge,
-                });
-            }
-        };
-        Ok(expression)
+            (Self::Switch, _) => Err(ReachingConditionError::UnownedSwitch(source)),
+            (Self::Ordinary, EdgeKind::Normal) => Ok(domain.truth()),
+            (Self::Ordinary, _) => Err(ReachingConditionError::UnexpectedEdge {
+                source,
+                target,
+                edge,
+            }),
+            (Self::Missing, _) => Err(ReachingConditionError::MissingBlock(source)),
+        }
     }
 }
 
