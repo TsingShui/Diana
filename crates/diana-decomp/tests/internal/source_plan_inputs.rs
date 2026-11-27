@@ -380,7 +380,7 @@ fn sequence_child_fallthrough_controls_nested_and_following_blocks() {
         .into_iter()
         .enumerate()
     {
-        let observed = graph.block_domains[&BlockId::new(id as u32)];
+        let observed = graph.block_domains.get(BlockId::new(id as u32)).unwrap();
         assert!(
             graph.logic.equivalent(observed, expected).unwrap(),
             "block {id}"

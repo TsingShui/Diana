@@ -861,7 +861,7 @@ impl<'a> GatedPhiAnalysis<'a> {
                 Ok(specialization) => return Ok(PhiDecision::Specialized(specialization)),
                 Err(reason) => reason,
             };
-        if !self.graph.block_domains.contains_key(&phi.block) {
+        if self.graph.block_domains.get(phi.block).is_none() {
             return Ok(PhiDecision::Rejected(specialization_rejection));
         }
         let mut variables = selection.care.symbols();

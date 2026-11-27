@@ -477,7 +477,7 @@ pub(super) struct ValueFlowGraph<'ir> {
     retained_phi_inputs: BTreeSet<SsaVar>,
     retained_values: BTreeSet<SsaVar>,
     effects: Vec<EffectFact>,
-    block_domains: foldhash::HashMap<crate::ir::BlockId, ControlDomain>,
+    block_domains: collector::BlockDomains,
     predicate_tests: PredicateTests,
     predicate_uses: BTreeMap<crate::ir::InstructionId, BTreeSet<PredicateUseFact>>,
     canonical: Option<&'ir BTreeMap<SsaVar, InsnArg>>,

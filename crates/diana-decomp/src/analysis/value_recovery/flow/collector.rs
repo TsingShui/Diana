@@ -11,11 +11,93 @@ use super::{
     effects::EffectSummary, DefinitionFact, EffectFact, PredicateUseFact, ScopeId, UseContext,
     UseFact, UseLocation, UseSite, ValueFlowGraph,
 };
-use crate::analysis::value_recovery::{domain::ControlDomain, ValueRecoveryError};
+use crate::analysis::value_recovery::{
+    domain::{ControlDomain, DomainLogic},
+    ValueRecoveryError,
+};
 
 mod scheduler;
 
 use scheduler::NodeScheduler;
+
+/// Semantic blocks typically keep dense CFG ordinals even when structured
+/// branches visit them out of order. Unusually sparse labels stay in a map.
+pub(super) enum BlockDomains {
+    Dense {
+        slots: smallvec::SmallVec<[Option<ControlDomain>; 8]>,
+        populated: usize,
+    },
+    Sparse(foldhash::HashMap<crate::ir::BlockId, ControlDomain>),
+}
+
+impl Default for BlockDomains {
+    fn default() -> Self {
+        Self::Dense {
+            slots: smallvec::SmallVec::new(),
+            populated: 0,
+        }
+    }
+}
+
+impl BlockDomains {
+    pub(super) fn get(&self, block: crate::ir::BlockId) -> Option<ControlDomain> {
+        match self {
+            Self::Dense { slots, .. } => slots.get(block.raw() as usize).copied().flatten(),
+            Self::Sparse(domains) => domains.get(&block).copied(),
+        }
+    }
+
+    fn record(
+        &mut self,
+        block: crate::ir::BlockId,
+        domain: ControlDomain,
+        logic: &mut DomainLogic,
+    ) -> Result<(), ValueRecoveryError> {
+        if let Self::Dense { slots, populated } = self {
+            let id = block.raw() as usize;
+            // Limit holes by the number of distinct blocks already observed.
+            // A large ID can select sparse storage but cannot size an allocation.
+            if id < slots.len()
+                || id < usize::MAX && id <= populated.saturating_mul(4).saturating_add(16)
+            {
+                if id >= slots.len() {
+                    slots.resize(id + 1, None);
+                }
+                let entry = &mut slots[id];
+                if let Some(previous) = entry {
+                    if *previous != domain {
+                        *previous = logic.or(*previous, domain)?;
+                    }
+                } else {
+                    *entry = Some(domain);
+                    *populated += 1;
+                }
+                return Ok(());
+            }
+            *self = Self::Sparse(
+                slots
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(id, &value)| Some((crate::ir::BlockId::new(id as u32), value?)))
+                    .collect(),
+            );
+        }
+        let Self::Sparse(domains) = self else {
+            unreachable!()
+        };
+        match domains.entry(block) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                if *entry.get() != domain {
+                    *entry.get_mut() = logic.or(*entry.get(), domain)?;
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(domain);
+            }
+        }
+        Ok(())
+    }
+}
 
 pub(super) struct FlowCollector<'ir> {
     graph: ValueFlowGraph<'ir>,
@@ -296,15 +378,9 @@ impl<'ir> FlowCollector<'ir> {
         block: crate::ir::BlockId,
         domain: ControlDomain,
     ) -> Result<(), ValueRecoveryError> {
-        match self.graph.block_domains.entry(block) {
-            std::collections::hash_map::Entry::Occupied(mut entry) => {
-                *entry.get_mut() = self.graph.logic.or(*entry.get(), domain)?;
-            }
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(domain);
-            }
-        }
-        Ok(())
+        self.graph
+            .block_domains
+            .record(block, domain, &mut self.graph.logic)
     }
 
     fn visit_predicate_uses(
@@ -683,7 +759,7 @@ impl SequenceFallthrough {
     fn branch_condition(
         &self,
         predicate: &SemanticPredicate,
-        logic: &mut crate::analysis::value_recovery::domain::DomainLogic,
+        logic: &mut DomainLogic,
     ) -> Result<ControlDomain, ValueRecoveryError> {
         if !self.branch_conditions.is_empty() {
             if let Some(&domain) = self
@@ -858,3 +934,7 @@ enum FlowTask<'a> {
 #[cfg(test)]
 #[path = "../../../../tests/internal/statement_effects.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../../../tests/internal/block_domains.rs"]
+mod block_domain_tests;
