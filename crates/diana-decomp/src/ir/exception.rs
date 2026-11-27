@@ -2569,16 +2569,39 @@ impl<'cfg> ExceptionScopeCoalescing<'cfg> {
         for group in groups.values_mut() {
             group.sort_unstable_by_key(|&i| (regions[i].start_offset, regions[i].id, i));
         }
-        let mut endpoints = std::iter::repeat_with(|| None)
-            .take(regions.len())
-            .collect::<Vec<Option<BridgeEndpoint>>>();
+        // The first component of the candidate order is the left start. Build
+        // streams for tied starts together, and defer later starts until every
+        // candidate with this start has failed.
+        let mut lefts = groups
+            .values()
+            .filter(|group| group.len() > 1)
+            .flat_map(|group| group.iter().map(move |&left| (left, group)))
+            .collect::<Vec<_>>();
+        lefts.sort_unstable_by_key(|&(left, _)| regions[left].start_offset);
         for same_parent in [true, false] {
-            let mut streams = Vec::new();
-            let mut candidates = std::collections::BinaryHeap::new();
-            for group in groups.values().filter(|group| group.len() > 1) {
-                for &left_index in group {
+            for tied in lefts
+                .chunk_by(|&(a, _), &(b, _)| regions[a].start_offset == regions[b].start_offset)
+            {
+                let mut streams = Vec::new();
+                let mut candidates = std::collections::BinaryHeap::new();
+                for &(left_index, group) in tied {
                     let left = &regions[left_index];
-                    let mut partners = group.iter().filter_map(move |&right_index| {
+                    // An earlier right endpoint is eligible only if it directly
+                    // owns one of the left fragment's protected blocks.
+                    let earliest = left
+                        .blocks
+                        .iter()
+                        .filter_map(|block| index.block_owners.get(block))
+                        .flatten()
+                        .filter(|&&owner| owner != left.id)
+                        .filter_map(|&owner| index.region(owner))
+                        .map(|owner| owner.start_offset)
+                        .min()
+                        .unwrap_or(left.start_offset)
+                        .min(left.start_offset);
+                    let first = group
+                        .partition_point(|&position| regions[position].start_offset < earliest);
+                    let mut partners = group[first..].iter().filter_map(move |&right_index| {
                         let right = &regions[right_index];
                         if left_index == right_index || (left.parent == right.parent) != same_parent
                         {
@@ -2590,7 +2613,6 @@ impl<'cfg> ExceptionScopeCoalescing<'cfg> {
                             return None;
                         }
                         Some((
-                            left.start_offset,
                             right.start_offset,
                             left.id,
                             right.id,
@@ -2603,31 +2625,30 @@ impl<'cfg> ExceptionScopeCoalescing<'cfg> {
                         streams.push(partners);
                     }
                 }
-            }
-            let mut cached_left = None;
-            let mut exceptional_targets = None;
-            while let Some(std::cmp::Reverse((
-                (_, _, left, right, left_index, right_index),
-                stream,
-            ))) = candidates.pop()
-            {
-                if cached_left != Some(left_index) {
-                    cached_left = Some(left_index);
-                    exceptional_targets = None;
-                }
-                let endpoint = endpoints[left_index]
-                    .get_or_insert_with(|| self.bridge_endpoint(&regions[left_index], index));
-                if self.has_transparent_bridge(
-                    endpoint,
-                    &regions[left_index],
-                    &regions[right_index],
-                    index,
-                    &mut exceptional_targets,
-                ) {
-                    return Some((left, right));
-                }
-                if let Some(pair) = streams[stream].next() {
-                    candidates.push(std::cmp::Reverse((pair, stream)));
+                let mut cached_left = None;
+                let mut exceptional_targets = None;
+                while let Some(std::cmp::Reverse((
+                    (_, left, right, left_index, right_index),
+                    stream,
+                ))) = candidates.pop()
+                {
+                    if cached_left != Some(left_index) {
+                        cached_left = Some(left_index);
+                        exceptional_targets = None;
+                    }
+                    let endpoint = self.bridge_endpoint(&regions[left_index], index);
+                    if self.has_transparent_bridge(
+                        &endpoint,
+                        &regions[left_index],
+                        &regions[right_index],
+                        index,
+                        &mut exceptional_targets,
+                    ) {
+                        return Some((left, right));
+                    }
+                    if let Some(pair) = streams[stream].next() {
+                        candidates.push(std::cmp::Reverse((pair, stream)));
+                    }
                 }
             }
         }
@@ -5263,6 +5284,8 @@ mod tests {
         assert!(root.blocks.contains(&cfg.entry));
         assert_eq!(root.blocks.len(), cfg.blocks.len());
     }
+
+    include!("../../tests/internal/fragment_partner_order.rs");
 
     fn exception_hierarchy() -> ClassHierarchyIndex {
         let mut hierarchy = ClassHierarchyIndex::default();
