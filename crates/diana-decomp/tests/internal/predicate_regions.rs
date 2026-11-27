@@ -597,3 +597,64 @@ fn source_predicate_identity_compares_nested_compound_assignment_targets() {
     assert!(!AtomIdentity::Source.equivalent(&original, &predicate(Some(5))));
     assert!(!AtomIdentity::Source.equivalent(&original, &predicate(None)));
 }
+
+#[test]
+fn literal_join_counterexamples_agree_with_every_three_atom_assignment() {
+    fn formula(shape: usize, disjunction: bool, id_base: usize) -> (SemanticPredicate, [bool; 8]) {
+        let mut terms = Vec::new();
+        let mut table = [!disjunction; 8];
+        for atom in 0..3 {
+            for negated in [false, true] {
+                let ordinal = 2 * atom + usize::from(negated);
+                if shape & (1 << ordinal) == 0 {
+                    continue;
+                }
+                let mut insn = InsnNode::new(InsnType::If, 1);
+                insn.id = InstructionId::new(id_base + ordinal);
+                insn.args
+                    .push(crate::ir::InsnArg::lit(atom as i64, ArgType::INT));
+                let test = SemanticPredicate::Test(
+                    crate::ir::SemanticOperation::from_instruction(insn).unwrap(),
+                );
+                let test = if negated { test.negate() } else { test };
+                terms.push(test.clone());
+                terms.push(test);
+                for (assignment, value) in table.iter_mut().enumerate() {
+                    let selected = (assignment & (1 << atom) != 0) ^ negated;
+                    if disjunction {
+                        *value |= selected;
+                    } else {
+                        *value &= selected;
+                    }
+                }
+            }
+        }
+        if id_base != 0 {
+            terms.reverse();
+        }
+        let predicate = if disjunction {
+            SemanticPredicate::Or(terms)
+        } else {
+            SemanticPredicate::And(terms)
+        };
+        (predicate, table)
+    }
+
+    for disjunction in [false, true] {
+        let make = |id_base| {
+            (0..64)
+                .map(|shape| formula(shape, disjunction, id_base))
+                .collect::<Vec<_>>()
+        };
+        let left = make(0);
+        let right = make(1000);
+        let mut queries = PredicateQueries::default();
+        for (a, first) in &left {
+            for (b, second) in &right {
+                let classes = PredicateEquivalence::new(a, b);
+                assert_eq!(classes.literal_joins_differ(a, b), first != second);
+                assert_eq!(queries.equivalent(a, b).unwrap(), first == second);
+            }
+        }
+    }
+}

@@ -302,6 +302,9 @@ impl PredicateQueries {
             }
         }
         let classes = PredicateEquivalence::new(left, right);
+        if classes.literal_joins_differ(left, right) {
+            return Ok(false);
+        }
         let key = classes.query_key(left, right);
         if let Some(result) = key.as_ref().and_then(|key| self.answers.get(key)) {
             return Ok(*result);
@@ -370,6 +373,40 @@ impl PredicateEquivalence {
             }
         }
         Self { symbols, numeric }
+    }
+
+    // A consistent conjunction of literals is characterized by the assignment
+    // it requires. Disjunction has the dual property. Distinct consistent
+    // sets, or just one contradictory set, give an exact counterexample. An
+    // equal pair still needs the ordinary proof under its local BDD limits.
+    fn literal_joins_differ(&self, left: &SemanticPredicate, right: &SemanticPredicate) -> bool {
+        let (left, right) = match (left, right) {
+            (SemanticPredicate::And(left), SemanticPredicate::And(right))
+            | (SemanticPredicate::Or(left), SemanticPredicate::Or(right)) => (left, right),
+            _ => return false,
+        };
+        let mut signs = smallvec::SmallVec::<[u8; 16]>::from_elem(0, self.symbols.len());
+        let mut contradictory = [false; 2];
+        for (side, terms) in [left, right].into_iter().enumerate() {
+            for term in terms {
+                let (atom, negated) = term.without_negations();
+                let SemanticPredicate::Test(operation) = atom else {
+                    return false;
+                };
+                let Some(signs) = self
+                    .symbols
+                    .get(&operation.id)
+                    .and_then(|id| signs.get_mut(*id))
+                else {
+                    return false;
+                };
+                let shift = 2 * side;
+                *signs |= (1 << usize::from(negated)) << shift;
+                contradictory[side] |= (*signs >> shift) & 3 == 3;
+            }
+        }
+        contradictory[0] != contradictory[1]
+            || (!contradictory[0] && signs.iter().any(|&row| row & 3 != row >> 2))
     }
 
     /// The existing local BDD namespace sorts numeric suffixes as strings:
