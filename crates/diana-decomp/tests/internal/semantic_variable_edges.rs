@@ -38,3 +38,35 @@ fn duplicate_edges_keep_each_variables_first_discovery_order_in_large_groups() {
     }
     assert_eq!(graph.edges_for(99).count(), 0);
 }
+
+#[test]
+fn deferred_operand_facts_preserve_the_first_operations_types_and_values() {
+    use crate::ir::{InsnArg, InsnNode};
+    use std::sync::Arc;
+
+    let mut register = RegisterArg::new(2, ArgType::LONG);
+    register.code_var = Some(3);
+    let mut instruction = InsnNode::new(InsnType::Arith, 2);
+    instruction.id = InstructionId::new(12);
+    instruction.args = vec![InsnArg::Reg(register), InsnArg::Lit(LiteralArg::int(7))];
+    let mut repeated = instruction.clone();
+    repeated.args[1] = InsnArg::Lit(LiteralArg::int(19));
+    let first = SemanticStatement::instruction(instruction).unwrap();
+    let second = SemanticStatement::instruction(repeated).unwrap();
+    let root = SemanticNode::BasicBlock(SemanticBlock {
+        id: BlockId::new(0),
+        statements: vec![first, second],
+    });
+    let types = Arc::new(SourceTypeEnvironment::default());
+    let eager = VariableSemanticGraph::analyze(&root, &types);
+    let graph = VariableSemanticGraph::analyze_shared(&root, &types);
+    drop(root);
+    drop(types);
+    let id = InstructionId::new(12);
+    let row = graph.operation(id).unwrap();
+    let operands = row.operands();
+    assert_eq!(operands[0].ty(), Some(&ArgType::LONG));
+    assert_eq!(operands[1].literal(), Some(7));
+    assert!(std::ptr::eq(operands, row.operands()));
+    assert_eq!(format!("{graph:?}"), format!("{eager:?}"));
+}

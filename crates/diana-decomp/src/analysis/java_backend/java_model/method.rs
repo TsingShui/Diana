@@ -139,13 +139,17 @@ impl JavaMethodBody {
         }
     }
 
-    pub(in crate::analysis::java_backend) fn collect_member_references(
-        &self,
-        references: &mut MemberReferences,
+    pub(in crate::analysis::java_backend) fn collect_member_references<'a>(
+        &'a self,
+        references: &mut MemberReferences<'a>,
     ) {
         for reference in &self.source_inputs.type_uses.references {
             references.insert(reference);
         }
+    }
+
+    pub(in crate::analysis::java_backend) fn unresolved_member_types(&self) -> &[ArgType] {
+        &self.source_inputs.type_uses.unresolved_members
     }
 
     pub(in crate::analysis::java_backend) fn static_owner_types(&self) -> &[ArgType] {
@@ -217,10 +221,10 @@ impl JavaMethodBody {
                 .chain(std::iter::once(&object))
                 .chain(generic_uses)
             {
-                if !used_types.contains(ty) {
-                    used_types.insert(ty.clone());
-                }
+                used_types.push(ty.clone());
             }
+            used_types.sort_unstable();
+            used_types.dedup();
             let source_types = used_types
                 .into_iter()
                 .map(|ty| {
@@ -230,10 +234,11 @@ impl JavaMethodBody {
                 .collect::<Result<std::collections::BTreeMap<_, _>, JavaDecompilerError>>()?;
             Ok::<_, JavaDecompilerError>((source_field_types, source_types))
         }?;
+        let types = std::sync::Arc::new(self.types);
         let semantic_names = {
             super::super::semantic_naming::SemanticNameRecovery::new(type_names).recover(
                 &self.body,
-                &self.types,
+                &types,
                 self.source_inputs.local_names,
                 &source_types,
                 parameter_names,
@@ -247,7 +252,7 @@ impl JavaMethodBody {
                 self.this_code_var,
                 &self.parameter_code_vars,
                 parameter_names,
-                std::borrow::Cow::Owned(self.types),
+                std::borrow::Cow::Owned(std::sync::Arc::unwrap_or_clone(types)),
                 source_types,
                 member_names,
             )
@@ -355,23 +360,32 @@ impl JavaMethodBody {
 }
 
 #[derive(Default)]
-pub(in crate::analysis::java_backend) struct MemberReferences {
-    pub(in crate::analysis::java_backend) methods:
-        std::collections::BTreeSet<crate::ir::MethodReference>,
-    pub(in crate::analysis::java_backend) fields:
-        std::collections::BTreeSet<crate::ir::FieldReference>,
+pub(in crate::analysis::java_backend) struct MemberReferences<'a> {
+    methods: std::collections::BTreeSet<&'a crate::ir::MethodReference>,
+    fields: std::collections::BTreeSet<&'a crate::ir::FieldReference>,
 }
 
-impl MemberReferences {
-    fn insert(&mut self, reference: &crate::ir::MemberReference) {
+impl<'a> MemberReferences<'a> {
+    pub(in crate::analysis::java_backend) fn methods(
+        &self,
+    ) -> impl Iterator<Item = &'a crate::ir::MethodReference> + '_ {
+        self.methods.iter().copied()
+    }
+
+    pub(in crate::analysis::java_backend) fn fields(
+        &self,
+    ) -> impl Iterator<Item = &'a crate::ir::FieldReference> + '_ {
+        self.fields.iter().copied()
+    }
+
+    fn insert(&mut self, reference: &'a crate::ir::MemberReference) {
         match reference {
-            crate::ir::MemberReference::Method(method) if !self.methods.contains(method) => {
-                self.methods.insert(method.clone());
+            crate::ir::MemberReference::Method(method) => {
+                self.methods.insert(method);
             }
-            crate::ir::MemberReference::Field(field) if !self.fields.contains(field) => {
-                self.fields.insert(field.clone());
+            crate::ir::MemberReference::Field(field) => {
+                self.fields.insert(field);
             }
-            _ => {}
         }
     }
 }

@@ -120,7 +120,7 @@ impl JavaClassModel {
         self
     }
 
-    pub(in crate::analysis::java_backend) fn member_references(&self) -> MemberReferences {
+    pub(in crate::analysis::java_backend) fn member_references(&self) -> MemberReferences<'_> {
         let mut references = MemberReferences::default();
         let mut pending = vec![self];
         while let Some(class) = pending.pop() {

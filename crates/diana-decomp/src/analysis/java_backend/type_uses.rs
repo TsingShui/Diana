@@ -12,6 +12,9 @@ use super::type_names::{JavaTypeImportCollector, JavaTypeNameError};
 #[derive(Default)]
 pub(super) struct DeclaredTypeUses {
     types: BTreeSet<ArgType>,
+    // Class identities and unresolved member descriptors affect ABI queries
+    // without participating in import resolution or its diagnostic order.
+    abi_only: smallvec::SmallVec<[ArgType; 1]>,
     imports: JavaTypeImportCollector,
     error: Option<JavaTypeNameError>,
 }
@@ -40,11 +43,16 @@ impl DeclaredTypeUses {
     }
 
     pub(super) fn finish(
-        self,
+        mut self,
     ) -> Result<(BTreeSet<ArgType>, JavaTypeImportCollector), JavaTypeNameError> {
         match self.error {
             Some(error) => Err(error),
-            None => Ok((self.types, self.imports)),
+            None => {
+                for ty in &self.abi_only {
+                    include_abi_type(&mut self.types, ty);
+                }
+                Ok((self.types, self.imports))
+            }
         }
     }
 }
@@ -77,6 +85,9 @@ impl ClassTypeUses {
     }
 
     fn collect_class(class: &JavaClassModel, types: &mut DeclaredTypeUses) {
+        if let Some(current) = class.declaration.current_type() {
+            types.abi_only.push(current);
+        }
         if let Some(extends) = &class.declaration.extends {
             types.insert(extends);
         }
@@ -147,6 +158,9 @@ impl JavaMethodTypeUses {
         if let Some(body) = &method.body {
             types.extend(body.lambda_reference_types());
             types.extend(body.type_uses());
+            types
+                .abi_only
+                .extend(body.unresolved_member_types().iter().cloned());
         }
     }
 }
@@ -314,3 +328,7 @@ impl DexValueTypeUses {
 #[cfg(test)]
 #[path = "../../../tests/internal/declared_type_uses.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../../tests/internal/java_abi_only_types.rs"]
+mod abi_only_tests;

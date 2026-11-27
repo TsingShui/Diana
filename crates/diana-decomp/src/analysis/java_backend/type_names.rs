@@ -43,7 +43,7 @@ pub(super) struct JavaTypeNameResolver {
     declarations: DeclaredTypes,
     lexical_scope: JavaLexicalTypeScope,
     reverse_names: ReverseTypeNames,
-    resolved_objects: std::cell::RefCell<BTreeMap<String, JavaClassType>>,
+    resolved_objects: std::cell::RefCell<HashMap<String, JavaClassType>>,
 }
 
 impl JavaTypeNameResolver {
@@ -73,12 +73,10 @@ impl JavaTypeNameResolver {
         collector: JavaTypeImportCollector,
     ) -> Self {
         let declarations = class.map(DeclaredTypes::collect).unwrap_or_default();
-        let current_package = current_package
-            .filter(|package| !package.is_empty())
-            .map(ToOwned::to_owned);
+        let current_package = current_package.filter(|package| !package.is_empty());
         let lexical_scope =
             JavaLexicalTypeScope::new(current_type.and_then(Self::type_binary_name));
-        let simple_counts = collector.simple_counts();
+        let simple_counts = collector.simple_counts;
         let mut imports = BTreeSet::new();
         let mut simple_names = BTreeMap::new();
         for (binary_name, name) in collector.binary_names {
@@ -99,7 +97,9 @@ impl JavaTypeNameResolver {
                 simple_names.insert(binary_name, name.qualified_source_name());
                 continue;
             }
-            if name.package.as_deref() == Some("java.lang") || name.package == current_package {
+            if name.package.as_deref() == Some("java.lang")
+                || name.package.as_deref() == current_package
+            {
                 simple_names.insert(binary_name, name.source_name());
                 continue;
             }
@@ -283,7 +283,7 @@ impl JavaTypeNameResolver {
         };
         let raw_name = match &name.package {
             Some(package) => format!("{}/{}", package.replace('.', "/"), name.top_level),
-            None => name.top_level.clone(),
+            None => name.top_level.to_string(),
         };
         let inner_segments = name
             .nested
@@ -294,7 +294,7 @@ impl JavaTypeNameResolver {
                     .map(|source| source.arguments.as_slice())
                     .unwrap_or_default();
                 Some(InnerClassTypeSignature {
-                    simple_name: simple_name.clone(),
+                    simple_name: simple_name.to_string(),
                     type_arguments: arguments
                         .iter()
                         .map(|argument| self.source_type_argument(argument))
@@ -608,7 +608,8 @@ impl JavaLexicalTypeScope {
 
 #[derive(Default)]
 pub(super) struct JavaTypeImportCollector {
-    binary_names: BTreeMap<String, Option<JavaTypeName>>,
+    binary_names: HashMap<String, Option<JavaTypeName>>,
+    simple_counts: HashMap<smol_str::SmolStr, usize>,
 }
 
 impl JavaTypeImportCollector {
@@ -618,9 +619,19 @@ impl JavaTypeImportCollector {
             match ty {
                 ArgType::Array(element) => ty = element,
                 ArgType::Object(name) => {
-                    self.binary_names
+                    if let std::collections::hash_map::Entry::Vacant(entry) = self
+                        .binary_names
                         .entry(JavaTypeName::internal_to_binary_name(name))
-                        .or_insert_with_key(|binary| JavaTypeName::from_binary_name(binary));
+                    {
+                        let parsed = JavaTypeName::from_binary_name(entry.key());
+                        if let Some(parsed) = &parsed {
+                            *self
+                                .simple_counts
+                                .entry(smol_str::SmolStr::new(parsed.simple()))
+                                .or_default() += 1;
+                        }
+                        entry.insert(parsed);
+                    }
                     return Ok(());
                 }
                 ArgType::Primitive(_) => return Ok(()),
@@ -630,21 +641,13 @@ impl JavaTypeImportCollector {
             }
         }
     }
-
-    fn simple_counts(&self) -> BTreeMap<String, usize> {
-        let mut counts = BTreeMap::new();
-        for name in self.binary_names.values().flatten() {
-            *counts.entry(name.simple().to_owned()).or_default() += 1;
-        }
-        counts
-    }
 }
 
 #[derive(Debug, Clone)]
 struct JavaTypeName {
-    package: Option<String>,
-    top_level: String,
-    nested: Vec<String>,
+    package: Option<smol_str::SmolStr>,
+    top_level: smol_str::SmolStr,
+    nested: smallvec::SmallVec<[smol_str::SmolStr; 1]>,
 }
 
 impl JavaTypeName {
@@ -656,7 +659,7 @@ impl JavaTypeName {
         if name.is_empty() {
             return None;
         }
-        let (mut top_level, mut nested) = (name, Vec::new());
+        let (mut top_level, mut nested) = (name, smallvec::SmallVec::new());
         if let Some((outer, inner)) = name.split_once('$') {
             if outer.is_empty() || inner.split('$').any(str::is_empty) {
                 return None;
@@ -665,12 +668,12 @@ impl JavaTypeName {
                 part.bytes().all(|byte| byte.is_ascii_digit()) || is_source_nested_identifier(part)
             }) {
                 top_level = outer;
-                nested.extend(inner.split('$').map(str::to_owned));
+                nested.extend(inner.split('$').map(smol_str::SmolStr::new));
             }
         }
         Some(Self {
-            package: package.map(str::to_owned),
-            top_level: top_level.to_owned(),
+            package: package.map(smol_str::SmolStr::new),
+            top_level: smol_str::SmolStr::new(top_level),
             nested,
         })
     }
@@ -693,7 +696,7 @@ impl JavaTypeName {
     fn import_name(&self) -> String {
         match &self.package {
             Some(package) => format!("{}.{}", package, self.top_level),
-            None => self.top_level.clone(),
+            None => self.top_level.to_string(),
         }
     }
 
@@ -705,7 +708,7 @@ impl JavaTypeName {
         if idx == 0 {
             return Some(self.top_level.as_str());
         }
-        self.nested.get(idx - 1).map(String::as_str)
+        self.nested.get(idx - 1).map(smol_str::SmolStr::as_str)
     }
 
     fn source_name_from_segment(&self, start_segment: usize) -> String {

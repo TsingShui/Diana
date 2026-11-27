@@ -306,7 +306,8 @@ fn method_stats_enabled() -> bool {
 #[derive(Debug, Clone)]
 pub(super) struct BodyTypeUses {
     pub references: Box<[std::sync::Arc<MemberReference>]>,
-    pub uses: std::collections::BTreeSet<ArgType>,
+    pub uses: Vec<ArgType>,
+    pub unresolved_members: Box<[ArgType]>,
     pub static_owners: Box<[ArgType]>,
     pub lambda_types: Box<[ArgType]>,
 }
@@ -342,7 +343,7 @@ struct MethodSourceInputCollector<'a> {
     local_names: super::semantic_naming::LocalNameEvidence,
     types: &'a crate::ir::analysis::SourceTypeEnvironment,
     references: Vec<std::sync::Arc<MemberReference>>,
-    uses: std::collections::BTreeSet<ArgType>,
+    uses: foldhash::HashSet<ArgType>,
     static_owners: std::collections::BTreeSet<ArgType>,
     lambda_types: std::collections::BTreeSet<ArgType>,
     error: Option<crate::ir::analysis::TypeConstraintError>,
@@ -354,38 +355,81 @@ impl<'a> MethodSourceInputCollector<'a> {
         parameters: &'a [Option<u32>],
         receiver: Option<u32>,
     ) -> Result<MethodSourceInputs, JavaDecompilerError> {
-        let mut uses = std::collections::BTreeSet::new();
-        for ty in method.state().types().known_types() {
+        let mut collector = Self::new(method.state().types(), parameters, receiver);
+        collector.visit_node(method.body());
+        collector.finish()
+    }
+
+    fn new(
+        types: &'a crate::ir::analysis::SourceTypeEnvironment,
+        parameters: &'a [Option<u32>],
+        receiver: Option<u32>,
+    ) -> Self {
+        let mut uses = foldhash::HashSet::default();
+        for ty in types.known_types() {
             if !uses.contains(ty) {
                 uses.insert(ty.clone());
             }
         }
-        let mut collector = Self {
+        Self {
             parameters,
             receiver,
             local_names: Default::default(),
             bindings: JavaInputBindings::default(),
-            types: method.state().types(),
+            types,
             references: Vec::new(),
             uses,
             static_owners: Default::default(),
             lambda_types: Default::default(),
             error: None,
-        };
-        collector.visit_node(method.body());
-        match collector.error {
-            Some(error) => Err(error.into()),
-            None => Ok(MethodSourceInputs {
-                type_uses: BodyTypeUses {
-                    references: collector.references.into_boxed_slice(),
-                    uses: collector.uses,
-                    static_owners: collector.static_owners.into_iter().collect(),
-                    lambda_types: collector.lambda_types.into_iter().collect(),
-                },
-                local_names: collector.local_names,
-                bindings: collector.bindings,
-            }),
         }
+    }
+
+    fn finish(mut self) -> Result<MethodSourceInputs, JavaDecompilerError> {
+        if let Some(error) = self.error.take() {
+            return Err(error.into());
+        }
+        // Shared references retain their exact payload identity through source
+        // analysis. Each distinct payload contributes its declaration types once.
+        let mut references = std::mem::take(&mut self.references);
+        references.sort_unstable_by_key(std::sync::Arc::as_ptr);
+        references.dedup_by(|left, right| std::sync::Arc::ptr_eq(left, right));
+        let mut unresolved_members = std::collections::BTreeSet::new();
+        let mut member_type = |ty: &ArgType| {
+            if ty.is_known() {
+                self.insert(ty);
+            } else {
+                unresolved_members.insert(ty.clone());
+            }
+        };
+        for reference in &references {
+            match reference.as_ref() {
+                MemberReference::Field(field) => {
+                    member_type(&field.owner);
+                    member_type(&field.field_type);
+                }
+                MemberReference::Method(method) => {
+                    member_type(&method.owner);
+                    for ty in &method.descriptor.parameters {
+                        member_type(ty);
+                    }
+                    member_type(&method.descriptor.return_type);
+                }
+            }
+        }
+        let mut uses = self.uses.into_iter().collect::<Vec<_>>();
+        uses.sort_unstable();
+        Ok(MethodSourceInputs {
+            type_uses: BodyTypeUses {
+                references: references.into_boxed_slice(),
+                uses,
+                unresolved_members: unresolved_members.into_iter().collect(),
+                static_owners: self.static_owners.into_iter().collect(),
+                lambda_types: self.lambda_types.into_iter().collect(),
+            },
+            local_names: self.local_names,
+            bindings: self.bindings,
+        })
     }
 
     fn insert(&mut self, ty: &ArgType) {
@@ -452,8 +496,6 @@ impl SemanticVisitor for MethodSourceInputCollector<'_> {
                 {
                     self.static_owners.insert(field.owner.clone());
                 }
-                self.insert(&field.owner);
-                self.insert(&field.field_type);
             }
             MemberReference::Method(method) => {
                 if operation.payload.invoke_type == Some(crate::ir::InvokeType::Static)
@@ -461,11 +503,6 @@ impl SemanticVisitor for MethodSourceInputCollector<'_> {
                 {
                     self.static_owners.insert(method.owner.clone());
                 }
-                self.insert(&method.owner);
-                for ty in &method.descriptor.parameters {
-                    self.insert(ty);
-                }
-                self.insert(&method.descriptor.return_type);
             }
         }
     }
@@ -503,3 +540,7 @@ impl MethodSourceInputCollector<'_> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/java_member_type_inputs.rs"]
+mod member_type_input_tests;

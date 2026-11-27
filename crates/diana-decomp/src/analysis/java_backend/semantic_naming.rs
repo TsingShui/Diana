@@ -475,7 +475,7 @@ impl<'a> SemanticNameRecovery<'a> {
     pub(super) fn recover(
         &self,
         root: &SemanticNode,
-        source_types: &crate::ir::analysis::SourceTypeEnvironment,
+        source_types: &std::sync::Arc<crate::ir::analysis::SourceTypeEnvironment>,
         evidence: LocalNameEvidence,
         resolved_types: &BTreeMap<ArgType, JavaType>,
         parameter_names: &[JavaIdentifier],
@@ -496,7 +496,7 @@ impl<'a> SemanticNameRecovery<'a> {
             .chain(this_variable)
             .collect::<BTreeSet<_>>();
         excluded.extend(intrinsic_names.keys().copied());
-        let graph = VariableSemanticGraph::analyze(root, source_types);
+        let graph = VariableSemanticGraph::analyze_shared(root, source_types);
         if !graph.variables().any(|variable| {
             variable.is_source_binding() && !excluded.contains(&variable.identity())
         }) {

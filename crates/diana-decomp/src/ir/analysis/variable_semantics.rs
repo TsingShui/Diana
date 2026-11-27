@@ -34,7 +34,24 @@ impl std::fmt::Debug for VariableSemanticGraph {
 }
 impl VariableSemanticGraph {
     pub fn analyze(root: &SemanticNode, types: &SourceTypeEnvironment) -> Self {
-        let mut builder = VariableSemanticGraphBuilder::new(types);
+        Self::build(root, types, None)
+    }
+
+    /// Sharing the immutable environment lets operation rows compute their
+    /// operand facts on first access during naming.
+    pub(crate) fn analyze_shared(
+        root: &SemanticNode,
+        types: &std::sync::Arc<SourceTypeEnvironment>,
+    ) -> Self {
+        Self::build(root, types, Some(types))
+    }
+
+    fn build(
+        root: &SemanticNode,
+        types: &SourceTypeEnvironment,
+        shared: Option<&std::sync::Arc<SourceTypeEnvironment>>,
+    ) -> Self {
+        let mut builder = VariableSemanticGraphBuilder::new(types, shared);
         builder.visit_node(root);
         builder.finish()
     }
@@ -127,8 +144,17 @@ impl VariableNode {
 #[derive(Clone)]
 pub struct OperationNode {
     operation: SemanticOperation,
-    operands: Vec<OperationOperand>,
+    operands: OperationOperands,
     loop_depth: usize,
+}
+
+#[derive(Clone)]
+enum OperationOperands {
+    Recorded(Vec<OperationOperand>),
+    Shared {
+        types: std::sync::Arc<SourceTypeEnvironment>,
+        operands: std::sync::OnceLock<Vec<OperationOperand>>,
+    },
 }
 
 impl std::fmt::Debug for OperationNode {
@@ -138,7 +164,7 @@ impl std::fmt::Debug for OperationNode {
             .field("identity", &self.identity())
             .field("kind", &self.kind())
             .field("reference", &self.reference())
-            .field("operands", &self.operands)
+            .field("operands", &self.operands())
             .field("loop_depth", &self.loop_depth)
             .finish()
     }
@@ -158,7 +184,12 @@ impl OperationNode {
     }
 
     pub fn operands(&self) -> &[OperationOperand] {
-        &self.operands
+        match &self.operands {
+            OperationOperands::Recorded(operands) => operands,
+            OperationOperands::Shared { types, operands } => operands.get_or_init(|| {
+                VariableSemanticGraphBuilder::operation_operands(types, &self.operation)
+            }),
+        }
     }
 
     pub fn loop_depth(&self) -> usize {
@@ -408,15 +439,20 @@ impl VariableRoleAnalysis for StructuralVariableRoleAnalysis {
 
 struct VariableSemanticGraphBuilder<'a> {
     types: &'a SourceTypeEnvironment,
+    shared: Option<&'a std::sync::Arc<SourceTypeEnvironment>>,
     graph: VariableSemanticGraph,
     seen_edges: foldhash::HashSet<VariableEdge>,
     loop_depth: usize,
 }
 
 impl<'a> VariableSemanticGraphBuilder<'a> {
-    fn new(types: &'a SourceTypeEnvironment) -> Self {
+    fn new(
+        types: &'a SourceTypeEnvironment,
+        shared: Option<&'a std::sync::Arc<SourceTypeEnvironment>>,
+    ) -> Self {
         Self {
             types,
+            shared,
             graph: VariableSemanticGraph {
                 variables: BTreeMap::new(),
                 operations: Default::default(),
@@ -741,7 +777,15 @@ impl SemanticVisitor for VariableSemanticGraphBuilder<'_> {
             .entry(operation.id)
             .or_insert_with(|| OperationNode {
                 operation: operation.clone(),
-                operands: Self::operation_operands(self.types, operation),
+                operands: match self.shared {
+                    Some(types) if !operation.operands().is_empty() => OperationOperands::Shared {
+                        types: std::sync::Arc::clone(types),
+                        operands: std::sync::OnceLock::new(),
+                    },
+                    _ => {
+                        OperationOperands::Recorded(Self::operation_operands(self.types, operation))
+                    }
+                },
                 loop_depth: self.loop_depth,
             });
         if let Some(result) = &operation.result {

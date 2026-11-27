@@ -64,10 +64,10 @@ impl JavaCompilationUnitLowering {
         let references = class.member_references();
         let (generic_fields, generic_methods, referenced_overloads, referenced_constructors) = {
             (
-                source_abi.generic_fields(references.fields.iter()),
-                source_abi.generic_methods(references.methods.iter()),
-                source_abi.referenced_overloads(references.methods.iter()),
-                source_abi.referenced_constructors(references.methods.iter()),
+                source_abi.generic_fields(references.fields()),
+                source_abi.generic_methods(references.methods()),
+                source_abi.referenced_overloads(references.methods()),
+                source_abi.referenced_constructors(references.methods()),
             )
         };
         let generic_uses = GenericTypeUses::contracts(
@@ -79,9 +79,6 @@ impl JavaCompilationUnitLowering {
         let (declared_types, imports) = type_uses.finish()?;
         let local_function_object_types = FunctionObjectTypeCatalog::collect(&class);
         let cu_types = CompilationUnitAbiTypes::collect(
-            Some(&class),
-            &references.fields,
-            &references.methods,
             declared_types,
             current_type.as_ref(),
             &local_function_object_types,
@@ -100,8 +97,7 @@ impl JavaCompilationUnitLowering {
             )
         };
         let constructor_method_return_types = references
-            .methods
-            .iter()
+            .methods()
             .filter(|reference| {
                 reference.name != "<init>"
                     && reference.descriptor.return_type != ArgType::VOID
@@ -217,10 +213,10 @@ impl JavaSingleMethodLowering {
         if let Some(body) = &method.body {
             body.collect_member_references(&mut references);
         }
-        let generic_fields = source_abi.generic_fields(references.fields.iter());
-        let generic_methods = source_abi.generic_methods(references.methods.iter());
-        let referenced_overloads = source_abi.referenced_overloads(references.methods.iter());
-        let referenced_constructors = source_abi.referenced_constructors(references.methods.iter());
+        let generic_fields = source_abi.generic_fields(references.fields());
+        let generic_methods = source_abi.generic_methods(references.methods());
+        let referenced_overloads = source_abi.referenced_overloads(references.methods());
+        let referenced_constructors = source_abi.referenced_constructors(references.methods());
         let mut type_uses = JavaMethodTypeUses::collect(&method);
         let generic_uses = GenericTypeUses::contracts(
             generic_fields.values(),
@@ -231,9 +227,6 @@ impl JavaSingleMethodLowering {
         let current_type = Some(owner);
         let local_function_object_types = method_local_function_objects(&method, current_type);
         let mut cu_types = CompilationUnitAbiTypes::collect(
-            None,
-            &references.fields,
-            &references.methods,
             declared_types,
             current_type,
             &local_function_object_types,
@@ -342,9 +335,6 @@ struct CompilationUnitAbiTypes;
 
 impl CompilationUnitAbiTypes {
     fn collect(
-        class: Option<&JavaClassModel>,
-        field_references: &std::collections::BTreeSet<crate::ir::FieldReference>,
-        method_references: &std::collections::BTreeSet<crate::ir::MethodReference>,
         mut types: std::collections::BTreeSet<ArgType>,
         current_type: Option<&ArgType>,
         local_function_objects: &std::collections::BTreeMap<
@@ -355,35 +345,9 @@ impl CompilationUnitAbiTypes {
         if let Some(current_type) = current_type {
             include_abi_type(&mut types, current_type);
         }
-        for field in field_references {
-            include_abi_type(&mut types, &field.owner);
-            include_abi_type(&mut types, &field.field_type);
-        }
-        for method in method_references {
-            include_abi_type(&mut types, &method.owner);
-            for parameter in &method.descriptor.parameters {
-                include_abi_type(&mut types, parameter);
-            }
-            include_abi_type(&mut types, &method.descriptor.return_type);
-        }
         for (identity, interface) in local_function_objects {
             include_abi_type(&mut types, identity);
             include_abi_type(&mut types, &interface.erased());
-        }
-        if let Some(class) = class {
-            let mut pending = vec![class];
-            while let Some(class) = pending.pop() {
-                pending.extend(class.nested.iter());
-                if let Some(current) = class.declaration.current_type() {
-                    include_abi_type(&mut types, &current);
-                }
-                if let Some(extends) = &class.declaration.extends {
-                    include_abi_type(&mut types, extends);
-                }
-                for interface in &class.declaration.implements {
-                    include_abi_type(&mut types, interface);
-                }
-            }
         }
         types
     }
@@ -1873,7 +1837,6 @@ mod tests {
     use super::super::java_model::JavaClassDeclaration;
     use super::*;
     use crate::ir::generic_types::{ClassTypeSignature, GenericSignatures, JvmTypeSignature};
-    use crate::ir::{FieldReference, MethodDescriptor, MethodReference};
     use crate::language::java::GenericTypeProjection;
 
     #[test]
@@ -2071,19 +2034,6 @@ mod tests {
         let alloc = ArgType::object("example/Alloc");
         let field_owner = ArgType::object("example/Outer$Inner");
         let captured = ArgType::object("example/Captured");
-        let method_references = std::collections::BTreeSet::from([MethodReference {
-            owner: ctor_owner.clone(),
-            name: "<init>".to_string(),
-            descriptor: MethodDescriptor {
-                parameters: vec![ArgType::object("example/Arg")],
-                return_type: ArgType::VOID,
-            },
-        }]);
-        let field_references = std::collections::BTreeSet::from([FieldReference {
-            owner: field_owner.clone(),
-            name: "this$0".to_string(),
-            field_type: ArgType::array(captured.clone()),
-        }]);
         let local_fo = std::collections::BTreeMap::from([(
             ArgType::object("example/LocalFn"),
             JvmTypeSignature::ClassType(ClassTypeSignature {
@@ -2105,18 +2055,16 @@ mod tests {
             )],
         );
 
-        let types = CompilationUnitAbiTypes::collect(
-            Some(&class),
-            &field_references,
-            &method_references,
-            {
-                let mut uses = super::super::type_uses::DeclaredTypeUses::default();
-                uses.extend([&ArgType::array(alloc.clone())]);
-                uses.finish().unwrap().0
-            },
-            Some(&current),
-            &local_fo,
-        );
+        let mut uses = ClassTypeUses::collect(&class);
+        uses.extend([
+            &ctor_owner,
+            &ArgType::object("example/Arg"),
+            &field_owner,
+            &ArgType::array(captured.clone()),
+            &ArgType::array(alloc.clone()),
+        ]);
+        let (declared_types, _) = uses.finish().unwrap();
+        let types = CompilationUnitAbiTypes::collect(declared_types, Some(&current), &local_fo);
 
         assert!(
             types.contains(&ctor_owner),
@@ -2152,19 +2100,11 @@ mod tests {
     fn method_local_abi_types_include_current_type_and_constructor_owner() {
         let current = ArgType::object("example/Host");
         let ctor_owner = ArgType::object("example/Fn");
-        let method_references = std::collections::BTreeSet::from([MethodReference {
-            owner: ctor_owner.clone(),
-            name: "<init>".to_string(),
-            descriptor: MethodDescriptor {
-                parameters: Vec::new(),
-                return_type: ArgType::VOID,
-            },
-        }]);
+        let mut uses = super::super::type_uses::DeclaredTypeUses::default();
+        uses.extend([&ctor_owner]);
+        let (declared_types, _) = uses.finish().unwrap();
         let types = CompilationUnitAbiTypes::collect(
-            None,
-            &std::collections::BTreeSet::new(),
-            &method_references,
-            Default::default(),
+            declared_types,
             Some(&current),
             &std::collections::BTreeMap::new(),
         );
