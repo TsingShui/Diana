@@ -1,12 +1,12 @@
+use super::atoms::{AtomClasses, AtomIdentity};
 use crate::ir::semantic::ControlCompletion;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ir::{
-    analysis::SsaVar,
     bdd::{Bdd, BddContext, BddError},
     semantic::SemanticCompletion,
     BoolVariable, InstructionId, SemanticFoldError, SemanticNode, SemanticOperand,
-    SemanticOperation, SemanticPredicate,
+    SemanticPredicate,
 };
 
 pub(super) struct GuardDistribution;
@@ -140,7 +140,7 @@ impl PredicateDomain {
         root: &'a SemanticNode,
         guard: &'a SemanticPredicate,
     ) -> Result<Self, SemanticFoldError> {
-        let mut atoms = Vec::<&SemanticOperation>::new();
+        let mut atoms = AtomClasses::new(AtomIdentity::Distribution);
         let mut symbols = BTreeMap::new();
         Self::collect_predicate(guard, &mut atoms, &mut symbols)?;
         let mut pending = vec![root];
@@ -165,20 +165,14 @@ impl PredicateDomain {
 
     fn collect_predicate<'a>(
         predicate: &'a SemanticPredicate,
-        atoms: &mut Vec<&'a SemanticOperation>,
+        atoms: &mut AtomClasses<'a>,
         symbols: &mut BTreeMap<InstructionId, BoolVariable>,
     ) -> Result<(), SemanticFoldError> {
         let mut pending = vec![predicate];
         while let Some(predicate) = pending.pop() {
             match predicate {
                 SemanticPredicate::Test(instruction) => {
-                    let index = atoms
-                        .iter()
-                        .position(|atom| Self::same_operation(atom, instruction))
-                        .unwrap_or_else(|| {
-                            atoms.push(instruction);
-                            atoms.len() - 1
-                        });
+                    let index = atoms.intern(instruction);
                     let index =
                         u32::try_from(index).map_err(|_| SemanticFoldError::MalformedWorkStack)?;
                     symbols.insert(instruction.id, BoolVariable::Atom(index));
@@ -191,62 +185,6 @@ impl PredicateDomain {
             }
         }
         Ok(())
-    }
-
-    fn same_operation(left: &SemanticOperation, right: &SemanticOperation) -> bool {
-        if left.id == right.id {
-            return true;
-        }
-        if !left.operation_equivalent(right)
-            || left.operands().len() != right.operands().len()
-            || left.compound_target().is_some() != right.compound_target().is_some()
-        {
-            return false;
-        }
-        let mut pending = left
-            .operands()
-            .iter()
-            .zip(right.operands())
-            .collect::<Vec<_>>();
-        if let (Some(left), Some(right)) = (left.compound_target(), right.compound_target()) {
-            pending.push((left, right));
-        }
-        while let Some((left, right)) = pending.pop() {
-            match (left, right) {
-                (
-                    crate::ir::SemanticExpression::Register(left),
-                    crate::ir::SemanticExpression::Register(right),
-                ) => {
-                    let same = match (SsaVar::from_reg(left), SsaVar::from_reg(right)) {
-                        (Some(left), Some(right)) => left == right,
-                        (None, None) => {
-                            left.reg_num == right.reg_num && left.code_var == right.code_var
-                        }
-                        _ => false,
-                    };
-                    if !same {
-                        return false;
-                    }
-                }
-                (
-                    crate::ir::SemanticExpression::Literal(left),
-                    crate::ir::SemanticExpression::Literal(right),
-                ) if left == right => {}
-                (
-                    crate::ir::SemanticExpression::Operation(left),
-                    crate::ir::SemanticExpression::Operation(right),
-                ) => {
-                    if !left.operation_equivalent(right)
-                        || left.operands().len() != right.operands().len()
-                    {
-                        return false;
-                    }
-                    pending.extend(left.operands().iter().zip(right.operands()));
-                }
-                _ => return false,
-            }
-        }
-        true
     }
 
     fn compile(&self, predicate: &SemanticPredicate) -> Result<Bdd, BddError> {
@@ -402,7 +340,7 @@ mod tests {
     use super::*;
     use crate::ir::{
         BlockId, InsnNode, InsnType, InstructionId, RegionId, SemanticBlock, SemanticLeave,
-        SemanticLeaveKind, SemanticOperand, SemanticStatement,
+        SemanticLeaveKind, SemanticOperand, SemanticOperation, SemanticStatement,
     };
 
     fn predicate(id: usize) -> SemanticPredicate {

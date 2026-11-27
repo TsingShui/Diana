@@ -29,6 +29,7 @@ mod tests;
 #[derive(Debug, Default)]
 pub(super) struct SourceFlowCache {
     pub(super) proofs: super::domain::DomainProofCache,
+    predicates: super::predicate_regions::PredicateQueries,
     entry: Mutex<Option<StoredFlow>>,
 }
 
@@ -198,7 +199,10 @@ impl SourceValueRecovery {
                 }
                 method.normalize_source()?;
             }
-            let predicates = PredicateRegionFormation::apply(method.body_mut())?;
+            let predicates = PredicateRegionFormation::apply_with_queries(
+                method.body_mut(),
+                &mut cache.predicates,
+            )?;
             changed |= predicates;
             if !predicates {
                 break;

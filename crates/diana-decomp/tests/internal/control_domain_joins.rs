@@ -40,7 +40,12 @@ fn growing_and_replayed_joins_keep_one_derivation_each_across_saturation() {
                     .unwrap(),
             );
         }
-        assert_eq!(logic.joins.len(), atoms.len() - 1);
+        assert_eq!(
+            logic.joins.len(),
+            1 + atoms
+                .len()
+                .saturating_sub(DomainLogic::LONG_JUNCTION_OPERAND)
+        );
         assert_eq!(logic.junction_index.len(), atoms.len() - 2);
         assert_eq!(logic.term_arena.len(), atoms.len());
         for (i, &prefix) in prefixes.iter().enumerate().skip(2) {
@@ -338,6 +343,69 @@ fn ordered_extensions_share_canonical_domains_across_splits_and_fingerprint_coll
                 assignment != 0
             };
             assert_eq!(logic.implies(valuation, complete).unwrap(), holds);
+        }
+    }
+}
+
+#[test]
+fn overlapping_joins_keep_precise_handles_and_input_errors_after_collection() {
+    let width = DomainLogic::LONG_JUNCTION_OPERAND;
+    let names = (0..width as u32 + 2)
+        .map(BoolVariable::Atom)
+        .collect::<BTreeSet<_>>();
+    for conjunction in [false, true] {
+        let mut logic = DomainLogic::new(&names);
+        let cache = DomainProofCache::default();
+        logic.begin_collection(Some(&cache));
+        let atoms: Vec<_> = names
+            .iter()
+            .map(|name| logic.symbol(name.clone()).unwrap())
+            .collect();
+        let (left, right) = atoms.split_at(width / 2);
+        let mut combine = |terms: &[ControlDomain]| {
+            terms
+                .iter()
+                .copied()
+                .reduce(|a, b| logic.junction(a, b, conjunction).unwrap())
+                .unwrap()
+        };
+        let prefix = combine(left);
+        let suffix = combine(&right[..width / 2]);
+        let full = logic.junction(prefix, suffix, conjunction).unwrap();
+        let extending = logic.junction(full, right[width / 2], conjunction).unwrap();
+        let upper = logic
+            .junction(suffix, right[width / 2], conjunction)
+            .unwrap();
+        let opposite = logic.not(left[0]).unwrap();
+        logic.finish_collection(Some(&cache)).unwrap();
+        let count = logic.nodes.len();
+        for _ in 0..3 {
+            assert_eq!(logic.junction(suffix, prefix, conjunction).unwrap(), full);
+            assert_eq!(
+                logic.junction(right[width / 2], full, conjunction).unwrap(),
+                extending
+            );
+            assert_eq!(
+                logic.junction(upper, prefix, conjunction).unwrap(),
+                extending
+            );
+            assert_eq!(
+                logic.junction(extending, opposite, conjunction).unwrap(),
+                if conjunction {
+                    logic.falsity()
+                } else {
+                    logic.truth()
+                }
+            );
+        }
+        assert_eq!(logic.nodes.len(), count);
+        let bad = ControlDomain(u32::MAX);
+        let other = ControlDomain(u32::MAX - 1);
+        for (a, b, expected) in [(bad, other, bad), (other, bad, other), (full, bad, bad)] {
+            assert!(matches!(
+                logic.junction(a, b, conjunction),
+                Err(DomainError { kind: DomainFailure::Invalid(invalid) }) if invalid == expected
+            ));
         }
     }
 }

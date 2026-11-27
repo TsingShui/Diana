@@ -290,6 +290,7 @@ pub(super) struct DomainLogic {
 
 impl DomainLogic {
     const MAX_COLLECTION_STEPS: usize = 65_536;
+    const LONG_JUNCTION_OPERAND: usize = 64;
     const TRUE: ControlDomain = ControlDomain(0);
     const FALSE: ControlDomain = ControlDomain(1);
 
@@ -813,14 +814,19 @@ impl DomainLogic {
             return Ok(left);
         }
 
-        let input_pair = (left.min(right), left.max(right), conjunction);
-        // Only the pair that created a domain is remembered. Replaying it
-        // cannot change its interned result or consume another BDD operation.
-        if let Some(&domain) = self.joins.get(&input_pair) {
-            return Ok(domain);
-        }
         let a = self.junction_terms(&left, conjunction)?;
         let b = self.junction_terms(&right, conjunction)?;
+        let input_pair = (left.min(right), left.max(right), conjunction);
+        // Two-term junctions are interned by their only producing pair.
+        // Wider sets have their own exact term index. Keep a second key
+        // only when recovering that set would scan a long operand.
+        let remember_pair =
+            (a.len() == 1 && b.len() == 1) || a.len().max(b.len()) >= Self::LONG_JUNCTION_OPERAND;
+        if remember_pair {
+            if let Some(&domain) = self.joins.get(&input_pair) {
+                return Ok(domain);
+            }
+        }
         let (shorter, longer, longer_domain) = if a.len() <= b.len() {
             (a, b, right)
         } else {
@@ -931,7 +937,9 @@ impl DomainLogic {
                 .insert_unique(hash, (hash, domain), |entry| entry.0);
             domain
         };
-        self.joins.insert(input_pair, domain);
+        if remember_pair {
+            self.joins.insert(input_pair, domain);
+        }
         Ok(domain)
     }
 

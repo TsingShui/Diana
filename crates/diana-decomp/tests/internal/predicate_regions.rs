@@ -195,7 +195,11 @@ fn merging_guards_moves_the_original_site_and_both_children() {
             statements: Vec::new(),
         })
     };
-    let mut formation = PredicateRegionFormation { changed: false };
+    let mut queries = PredicateQueries::default();
+    let mut formation = PredicateRegionFormation {
+        changed: false,
+        queries: &mut queries,
+    };
     let merged = formation
         .form_sequence(vec![
             SemanticNode::If {
@@ -352,8 +356,139 @@ fn named_predicate_domains_preserve_short_circuit_constants_and_atom_aliases() {
         (equivalent.negate(), other.negate(), true),
     ] {
         assert_eq!(
-            PredicateRegionFormation::equivalent(&left, &right).unwrap(),
+            PredicateQueries::default()
+                .equivalent(&left, &right)
+                .unwrap(),
             expected
         );
     }
+}
+
+#[test]
+fn indexed_atom_classes_preserve_first_match_across_register_and_instruction_aliases() {
+    use crate::ir::{InsnArg, RegisterArg, SemanticOperation};
+
+    fn operation(id: usize, register: u32, version: u32, variable: u32) -> SemanticOperation {
+        let mut node = InsnNode::new(InsnType::If, 1);
+        node.id = InstructionId::new(id);
+        let mut input = RegisterArg::new_ssa(register, version, ArgType::INT);
+        input.code_var = Some(variable);
+        node.args.push(InsnArg::Reg(input));
+        SemanticOperation::from_instruction(node).unwrap()
+    }
+
+    let mut calls: Vec<_> = (0..16)
+        .map(|n| operation(n, n as u32, 1, n as u32))
+        .collect();
+    calls.push(operation(12, 5, 1, 11));
+    calls.push(operation(3, 14, 1, 18));
+    calls.push(operation(33, 14, 1, 18));
+    let mut source = AtomClasses::new(AtomIdentity::Source);
+    let mut distribution = AtomClasses::new(AtomIdentity::Distribution);
+    for (index, call) in calls[..16].iter().enumerate() {
+        assert_eq!(source.intern(call), index);
+        assert_eq!(distribution.intern(call), index);
+    }
+    // The older structural representative precedes the operation's ID.
+    assert_eq!(source.intern(&calls[16]), 11);
+    assert_eq!(distribution.intern(&calls[16]), 5);
+    // Here the same ID precedes the matching SSA representative. Only
+    // distribution accepts that ID, so the numeric namespaces diverge.
+    assert_eq!(source.intern(&calls[17]), 16);
+    assert_eq!(distribution.intern(&calls[17]), 3);
+    assert_eq!(source.intern(&calls[18]), 16);
+    assert_eq!(distribution.intern(&calls[18]), 14);
+}
+
+#[test]
+fn numeric_predicate_order_matches_decimal_names_at_each_prefix_boundary() {
+    for count in [0, 1, 9, 10, 11, 20, 99, 100, 101, 109, 110, 201, 1001] {
+        let ranks = PredicateEquivalence::decimal_ranks(count);
+        let mut names: Vec<_> = (0..count).collect();
+        names.sort_by_cached_key(usize::to_string);
+        for (rank, name) in names.into_iter().enumerate() {
+            assert_eq!(ranks[name], rank, "domain of {count} atoms");
+        }
+    }
+}
+
+#[test]
+fn predicate_proofs_reuse_the_boolean_relation_after_operands_change() {
+    fn atom(id: usize, literal: i64) -> SemanticPredicate {
+        let mut node = InsnNode::new(InsnType::If, 1);
+        node.id = InstructionId::new(id);
+        node.args
+            .push(crate::ir::InsnArg::lit(literal, ArgType::INT));
+        SemanticPredicate::Test(crate::ir::SemanticOperation::from_instruction(node).unwrap())
+    }
+
+    let mut queries = PredicateQueries::default();
+    let pair = |ids: [usize; 3], literals: [i64; 3]| {
+        let a = atom(ids[0], literals[0]);
+        let b = atom(ids[1], literals[1]);
+        let c = atom(ids[2], literals[2]);
+        (
+            SemanticPredicate::And(vec![a.clone(), SemanticPredicate::Or(vec![b, c])]),
+            a,
+        )
+    };
+    for (ids, literals, answer) in [
+        ([10, 11, 12], [1, 1, 2], true),
+        ([10, 11, 12], [1, 3, 2], false),
+        ([50, 51, 52], [9, 9, 6], true),
+    ] {
+        let (left, right) = pair(ids, literals);
+        assert_eq!(queries.equivalent(&left, &right).unwrap(), answer);
+    }
+    assert_eq!(queries.answers.len(), 2);
+}
+
+#[test]
+fn equivalent_large_guards_share_the_same_bounded_proof_refusal() {
+    fn equality(bits: usize) -> SemanticPredicate {
+        let variables: Vec<_> = (0..2 * bits)
+            .map(|n| {
+                let mut instruction = InsnNode::new(InsnType::If, 1);
+                instruction.id = InstructionId::new(n);
+                instruction
+                    .args
+                    .push(crate::ir::InsnArg::lit(n as i64, ArgType::INT));
+                SemanticPredicate::Test(
+                    crate::ir::SemanticOperation::from_instruction(instruction).unwrap(),
+                )
+            })
+            .collect();
+        // Establish an order that puts all left bits before all right bits.
+        // The constant disjunction is neutral to the actual equality test.
+        let mut indexes: Vec<_> = (0..variables.len()).collect();
+        indexes.sort_by_cached_key(usize::to_string);
+        let mut seeds = vec![SemanticPredicate::False; variables.len()];
+        for (rank, discovery) in indexes.into_iter().enumerate() {
+            seeds[variables.len() - 1 - discovery] = variables[rank].clone();
+        }
+        seeds.push(SemanticPredicate::True);
+        let mut pairs = (0..bits)
+            .map(|n| {
+                let x = variables[n].clone();
+                let y = variables[bits + n].clone();
+                SemanticPredicate::Or(vec![
+                    SemanticPredicate::And(vec![x.clone(), y.clone()]),
+                    SemanticPredicate::And(vec![x.negate(), y.negate()]),
+                ])
+            })
+            .collect::<Vec<_>>();
+        pairs.push(SemanticPredicate::Or(seeds));
+        SemanticPredicate::And(pairs)
+    }
+    let small = equality(3);
+    let large = equality(19);
+    let fresh = PredicateEquivalence::new(&large, &large);
+    let error = fresh.equivalent(&large, &large).unwrap().unwrap_err();
+    assert!(error.is_resource_limit());
+    let mut queries = PredicateQueries::default();
+    for _ in 0..2 {
+        assert!(queries.equivalent(&small, &small).unwrap());
+        assert!(!queries.equivalent(&large, &large).unwrap());
+    }
+    assert_eq!(queries.answers.len(), 2);
 }

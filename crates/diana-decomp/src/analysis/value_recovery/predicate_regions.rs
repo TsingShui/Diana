@@ -1,32 +1,46 @@
 //! Structured region formation from predicated semantic fragments.
 
 use crate::ir::{
-    analysis::SsaVar, semantic::SemanticCompletion, BlockId, BoolVariable, InstructionId,
-    SemanticBlock, SemanticExpressionFacts, SemanticFoldError, SemanticFolder, SemanticNode,
-    SemanticPredicate, SemanticStatement, SemanticVisitor,
+    semantic::SemanticCompletion, BlockId, BoolVariable, InstructionId, SemanticBlock,
+    SemanticExpressionFacts, SemanticFoldError, SemanticFolder, SemanticNode, SemanticPredicate,
+    SemanticStatement, SemanticVisitor,
 };
 
 use super::ValueRecoveryError;
 
+mod atoms;
 mod distribution;
 mod guarded_assignment;
 
+use atoms::{AtomClasses, AtomIdentity};
 use distribution::GuardDistribution;
 use guarded_assignment::GuardedAssignment;
 
-pub(super) struct PredicateRegionFormation {
+pub(super) struct PredicateRegionFormation<'a> {
+    queries: &'a mut PredicateQueries,
     changed: bool,
 }
 
-impl PredicateRegionFormation {
+impl PredicateRegionFormation<'_> {
+    #[cfg(test)]
     pub(super) fn apply(root: &mut SemanticNode) -> Result<bool, ValueRecoveryError> {
+        Self::apply_with_queries(root, &mut PredicateQueries::default())
+    }
+
+    pub(super) fn apply_with_queries(
+        root: &mut SemanticNode,
+        queries: &mut PredicateQueries,
+    ) -> Result<bool, ValueRecoveryError> {
         if crate::ir::trivial_early_returns() && !needs_predicate_regions(root) {
             return Ok(false);
         }
         let before = SemanticCompletion::analyze(root);
         let mut changed = false;
         loop {
-            let mut formation = Self { changed: false };
+            let mut formation = PredicateRegionFormation {
+                changed: false,
+                queries,
+            };
             let body = std::mem::replace(root, SemanticNode::Empty);
             *root = formation.fold_node(body)?;
             if !formation.changed {
@@ -70,7 +84,7 @@ impl PredicateRegionFormation {
                 },
             ) = (formed.last_mut(), &mut node)
             {
-                if Self::can_extend(condition, then_node, next_condition)? {
+                if self.can_extend(condition, then_node, next_condition)? {
                     let first = SemanticCompletion::analyze(then_node);
                     let second = SemanticCompletion::analyze(next_then);
                     let original = SemanticCompletion::sequence([
@@ -153,11 +167,14 @@ impl PredicateRegionFormation {
     }
 
     fn can_extend(
+        &mut self,
         condition: &SemanticPredicate,
         body: &SemanticNode,
         next_condition: &SemanticPredicate,
     ) -> Result<bool, ValueRecoveryError> {
-        if !Self::predicate_is_pure(condition) || !Self::equivalent(condition, next_condition)? {
+        if !Self::predicate_is_pure(condition)
+            || !self.queries.equivalent(condition, next_condition)?
+        {
             return Ok(false);
         }
         let predicate = SemanticExpressionFacts::of_predicate(condition);
@@ -168,31 +185,6 @@ impl PredicateRegionFormation {
             && predicate
                 .used_ssa_variables()
                 .all(|variable| body.ssa_definition_count(variable) == 0))
-    }
-
-    fn equivalent(
-        left: &SemanticPredicate,
-        right: &SemanticPredicate,
-    ) -> Result<bool, ValueRecoveryError> {
-        let (left_atom, left_negated) = left.without_negations();
-        let (right_atom, right_negated) = right.without_negations();
-        if let (SemanticPredicate::Test(first), SemanticPredicate::Test(second)) =
-            (left_atom, right_atom)
-        {
-            // A pair of distinct instructions has at most two symbols. Their
-            // equivalence is exactly the interner's operand comparison.
-            if PredicateEquivalence::instruction(first, second) {
-                return Ok(left_negated == right_negated);
-            }
-            if first.id != second.id {
-                return Ok(false);
-            }
-        }
-        match PredicateEquivalence::new(left, right).equivalent(left, right)? {
-            Ok(equivalent) => Ok(equivalent),
-            Err(error) if error.is_resource_limit() => Ok(false),
-            Err(error) => Err(SemanticFoldError::from(error).into()),
-        }
     }
 
     fn predicate_is_pure(predicate: &SemanticPredicate) -> bool {
@@ -283,30 +275,83 @@ fn needs_predicate_regions(root: &SemanticNode) -> bool {
     sites.needs_fold
 }
 
+#[derive(Default, Debug)]
+pub(super) struct PredicateQueries {
+    answers: foldhash::HashMap<PredicatePair, bool>,
+    tokens: usize,
+}
+
+impl PredicateQueries {
+    fn equivalent(
+        &mut self,
+        left: &SemanticPredicate,
+        right: &SemanticPredicate,
+    ) -> Result<bool, ValueRecoveryError> {
+        let (left_atom, left_negated) = left.without_negations();
+        let (right_atom, right_negated) = right.without_negations();
+        if let (SemanticPredicate::Test(first), SemanticPredicate::Test(second)) =
+            (left_atom, right_atom)
+        {
+            // A pair of distinct instructions has at most two symbols. Their
+            // equivalence is exactly the interner's operand comparison.
+            if AtomIdentity::Source.equivalent(first, second) {
+                return Ok(left_negated == right_negated);
+            }
+            if first.id != second.id {
+                return Ok(false);
+            }
+        }
+        let classes = PredicateEquivalence::new(left, right);
+        let key = classes.query_key(left, right);
+        if let Some(result) = key.as_ref().and_then(|key| self.answers.get(key)) {
+            return Ok(*result);
+        }
+        let result = match classes.equivalent(left, right)? {
+            Ok(equivalent) => equivalent,
+            Err(error) if error.is_resource_limit() => false,
+            Err(error) => return Err(SemanticFoldError::from(error).into()),
+        };
+        if let Some(key) = key {
+            // The table belongs to this method. Eviction only requests a fresh
+            // proof under the same local BDD limits.
+            if self.tokens + key.len() > 8_192 {
+                self.answers.clear();
+                self.tokens = 0;
+            }
+            self.tokens += key.len();
+            self.answers.insert(key, result);
+        }
+        Ok(result)
+    }
+}
+
+type PredicatePair = smallvec::SmallVec<[PredicateToken; 12]>;
+
+#[derive(Debug, Hash, PartialEq, Eq)]
+enum PredicateToken {
+    True,
+    False,
+    Atom(u32),
+    Not,
+    And(u16),
+    Or(u16),
+}
+
 struct PredicateEquivalence {
-    symbols: std::collections::BTreeMap<InstructionId, BoolVariable>,
+    symbols: std::collections::BTreeMap<InstructionId, usize>,
+    numeric: bool,
 }
 
 impl PredicateEquivalence {
     fn new(left: &SemanticPredicate, right: &SemanticPredicate) -> Self {
-        let mut atoms = Vec::<&crate::ir::SemanticOperation>::new();
+        let mut atoms = AtomClasses::new(AtomIdentity::Source);
         let mut symbols = std::collections::BTreeMap::new();
         for predicate in [left, right] {
             let mut pending = vec![predicate];
             while let Some(predicate) = pending.pop() {
                 match predicate {
                     SemanticPredicate::Test(instruction) => {
-                        let identity = atoms
-                            .iter()
-                            .position(|atom| Self::instruction(atom, instruction))
-                            .unwrap_or_else(|| {
-                                atoms.push(instruction);
-                                atoms.len() - 1
-                            });
-                        symbols.insert(
-                            instruction.id,
-                            BoolVariable::Named(format!("predicate-value:{identity}")),
-                        );
+                        symbols.insert(instruction.id, atoms.intern(instruction));
                     }
                     SemanticPredicate::Not(inner) => pending.push(inner),
                     SemanticPredicate::And(terms) | SemanticPredicate::Or(terms) => {
@@ -316,7 +361,81 @@ impl PredicateEquivalence {
                 }
             }
         }
-        Self { symbols }
+        let count = atoms.len();
+        let numeric = u32::try_from(count.saturating_sub(1)).is_ok();
+        if numeric && count > 10 {
+            let ranks = Self::decimal_ranks(count);
+            for identity in symbols.values_mut() {
+                *identity = ranks[*identity];
+            }
+        }
+        Self { symbols, numeric }
+    }
+
+    /// The existing local BDD namespace sorts numeric suffixes as strings:
+    /// 1, 10, 11, ..., 2. Enumerate that decimal trie once so integer symbols
+    /// have identical relative order and encounter the same proof budgets.
+    fn decimal_ranks(count: usize) -> Vec<usize> {
+        let mut ranks = vec![0; count];
+        let mut number = 1;
+        for rank in 1..count {
+            ranks[number] = rank;
+            if number <= (count - 1) / 10 {
+                number *= 10;
+            } else {
+                while number % 10 == 9 || number == count - 1 {
+                    number /= 10;
+                }
+                number += 1;
+            }
+        }
+        ranks
+    }
+
+    /// A fresh proof consumes only these two formulas and their atom order.
+    /// Prefix syntax and child counts uniquely encode both roots. Source
+    /// operations, register facts, and instruction IDs stay out of the cache.
+    fn query_key(
+        &self,
+        left: &SemanticPredicate,
+        right: &SemanticPredicate,
+    ) -> Option<PredicatePair> {
+        if !self.numeric {
+            return None;
+        }
+        const MAX_TOKENS: usize = 1_024;
+        let mut pending: smallvec::SmallVec<[&SemanticPredicate; 8]> =
+            smallvec::smallvec![right, left];
+        let mut key = PredicatePair::new();
+        while let Some(predicate) = pending.pop() {
+            if key.len() == MAX_TOKENS {
+                return None;
+            }
+            key.push(match predicate {
+                SemanticPredicate::True => PredicateToken::True,
+                SemanticPredicate::False => PredicateToken::False,
+                SemanticPredicate::Test(operation) => {
+                    PredicateToken::Atom(*self.symbols.get(&operation.id)? as u32)
+                }
+                SemanticPredicate::Not(child) => {
+                    pending.push(child);
+                    PredicateToken::Not
+                }
+                SemanticPredicate::And(children) | SemanticPredicate::Or(children) => {
+                    if children.len() > MAX_TOKENS.saturating_sub(key.len() + pending.len() + 1) {
+                        return None;
+                    }
+                    pending.extend(children.iter().rev());
+                    let arity = children.len() as u16;
+                    if matches!(predicate, SemanticPredicate::And(_)) {
+                        PredicateToken::And(arity)
+                    } else {
+                        PredicateToken::Or(arity)
+                    }
+                }
+            });
+        }
+        Some(key)
     }
 
     fn equivalent(
@@ -324,72 +443,22 @@ impl PredicateEquivalence {
         left: &SemanticPredicate,
         right: &SemanticPredicate,
     ) -> Result<Result<bool, crate::ir::bdd::BddError>, SemanticFoldError> {
-        let symbol = |id| self.symbols.get(&id).cloned();
+        let symbol = |id| {
+            self.symbols.get(&id).map(|&identity| {
+                if self.numeric {
+                    BoolVariable::Atom(identity as u32)
+                } else {
+                    BoolVariable::Named(format!("predicate-value:{identity}"))
+                }
+            })
+        };
         let left = left.domain_with(symbol)?;
         let right = right.domain_with(symbol)?;
         Ok(left.equivalent(&right))
     }
-
-    fn instruction(
-        left: &crate::ir::SemanticOperation,
-        right: &crate::ir::SemanticOperation,
-    ) -> bool {
-        if !left.operation_equivalent(right)
-            || left.operands().len() != right.operands().len()
-            || left.compound_target().is_some() != right.compound_target().is_some()
-        {
-            return false;
-        }
-        let mut pending = left
-            .operands()
-            .iter()
-            .zip(right.operands())
-            .collect::<Vec<_>>();
-        if let (Some(left), Some(right)) = (left.compound_target(), right.compound_target()) {
-            pending.push((left, right));
-        }
-        while let Some((left, right)) = pending.pop() {
-            match (left, right) {
-                (
-                    crate::ir::SemanticExpression::Register(left),
-                    crate::ir::SemanticExpression::Register(right),
-                ) => {
-                    let equivalent = match (left.code_var, right.code_var) {
-                        (Some(left), Some(right)) => left == right,
-                        (None, None) => match (SsaVar::from_reg(left), SsaVar::from_reg(right)) {
-                            (Some(left), Some(right)) => left == right,
-                            (None, None) => left.reg_num == right.reg_num,
-                            _ => false,
-                        },
-                        _ => false,
-                    };
-                    if !equivalent {
-                        return false;
-                    }
-                }
-                (
-                    crate::ir::SemanticExpression::Literal(left),
-                    crate::ir::SemanticExpression::Literal(right),
-                ) if left == right => {}
-                (
-                    crate::ir::SemanticExpression::Operation(left),
-                    crate::ir::SemanticExpression::Operation(right),
-                ) => {
-                    if !left.operation_equivalent(right)
-                        || left.operands().len() != right.operands().len()
-                    {
-                        return false;
-                    }
-                    pending.extend(left.operands().iter().zip(right.operands()));
-                }
-                _ => return false,
-            }
-        }
-        true
-    }
 }
 
-impl SemanticFolder for PredicateRegionFormation {
+impl SemanticFolder for PredicateRegionFormation<'_> {
     type Error = ValueRecoveryError;
 
     fn finish_node(&mut self, node: SemanticNode) -> Result<SemanticNode, Self::Error> {
