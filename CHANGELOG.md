@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0 - 2026-11-27
+
+### DEX comparison
+
+- Added `diana diff OLD NEW` for comparing root DEX methods across APKs or
+  standalone DEX files. Text and JSON include original method locators,
+  normalized instruction changes, pairing evidence and unresolved matches.
+
+### Export and decompilation
+
+- Reduced CPU time and peak memory during bulk export by reusing control-flow,
+  reaching-definition, predicate and Java type facts across analysis stages.
+- Improved branch and exception recovery by preserving the inputs of
+  predicates reevaluated after a guarded body and the order of cleanup effects.
+
 ## 0.3.0 - 2026-11-25
 
 ### Export
