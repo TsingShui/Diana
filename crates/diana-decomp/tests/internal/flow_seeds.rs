@@ -241,3 +241,109 @@ fn continuation_ownership_counts_reachable_sources_once_per_target() {
     assert_eq!(counts[&outside], 1);
     assert!(!graph.is_internal_target(outside));
 }
+
+#[test]
+fn branch_candidates_keep_independent_members_after_rejected_shared_entries() {
+    // The cuts are checked independently from the search using forward
+    // reachability and every incoming edge of the induced arm. Sparse block
+    // identifiers deliberately have a different order from execution.
+    let ids = [51, 307, 11, 810, 29, 17, 1043].map(BlockId::new);
+    for shape in 0..64 {
+        let mut edges = [
+            vec![1, 2],
+            vec![3],
+            vec![4],
+            vec![5],
+            vec![5],
+            vec![6],
+            vec![],
+        ];
+        for (bit, (from, to)) in [(1, 2), (1, 4), (2, 3), (2, 5), (3, 4), (4, 6)]
+            .into_iter()
+            .enumerate()
+        {
+            if shape & (1 << bit) != 0 {
+                edges[from].push(to);
+            }
+        }
+        let region = RegionId::new(1);
+        let graph = SemanticFlowGraph {
+            region,
+            entry: ids[0],
+            next_id: 1044,
+            exits: BTreeSet::new(),
+            continues: BTreeMap::new(),
+            nodes: edges
+                .iter()
+                .enumerate()
+                .map(|(from, targets)| {
+                    let transfer = match targets.as_slice() {
+                        [] => FlowTransfer::Stop,
+                        [one] => FlowTransfer::Jump(ids[*one]),
+                        many => FlowTransfer::Fragment {
+                            normal: None,
+                            open: many.iter().map(|&n| ids[n]).collect(),
+                        },
+                    };
+                    (
+                        ids[from],
+                        FlowNode {
+                            body: SemanticNode::Empty,
+                            transfer,
+                            facts: Default::default(),
+                        },
+                    )
+                })
+                .collect(),
+        };
+        let topology = FlowTopology::new(&graph);
+        let order = graph.topological_order(&topology).unwrap();
+        let ranks = order
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, block)| (block, index))
+            .collect();
+        let mut search = BranchArmSearch::new(&graph, &topology, &order, &ranks);
+        for join in [5, 2, 3, 6, 1, 4, 2, 5] {
+            let expected_arm = |entry: usize| {
+                let mut members = BTreeSet::new();
+                let mut reached_join = false;
+                let mut reachable = vec![false; ids.len()];
+                reachable[entry] = true;
+                for (from, targets) in edges.iter().enumerate() {
+                    if reachable[from] {
+                        if from == join {
+                            reached_join = true;
+                        } else {
+                            members.insert(ids[from]);
+                            for &target in targets {
+                                reachable[target] = true;
+                            }
+                        }
+                    }
+                }
+                let single_entry = edges.iter().enumerate().all(|(from, targets)| {
+                    targets.iter().all(|&to| {
+                        !members.contains(&ids[to])
+                            || members.contains(&ids[from])
+                            || (to == entry && from == 0)
+                    })
+                });
+                (reached_join && single_entry).then_some(members)
+            };
+            let expected = expected_arm(1)
+                .zip(expected_arm(2))
+                .filter(|(left, right)| {
+                    left.is_disjoint(right) && !(left.is_empty() && right.is_empty())
+                });
+            let actual = search
+                .pair(ids[0], ids[1], ids[2], ids[join])
+                .map(|(left, right)| {
+                    assert!(left.continuation.is_none() && right.continuation.is_none());
+                    (left.nodes, right.nodes)
+                });
+            assert_eq!(actual, expected, "shape {shape}, join {join}");
+        }
+    }
+}

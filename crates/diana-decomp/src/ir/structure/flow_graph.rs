@@ -6,7 +6,10 @@
 //! irreducible entries are split by semantics-preserving node duplication; and
 //! the remaining DAG is translated with the NoMoreGotos nested-label scheme.
 
+mod branch_arms;
+
 use crate::ir::semantic::ControlCompletion;
+use branch_arms::BranchArmSearch;
 use smallvec::{smallvec, SmallVec};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -2422,9 +2425,14 @@ impl BranchRegion {
             order,
             postdominators,
         } = facts;
-        let predecessors = &topology.predecessors;
-        let mut tails = BTreeMap::new();
-        let mut joins = BranchJoins::new(order);
+        let ranks = order
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(rank, block)| (block, rank))
+            .collect();
+        let mut search = BranchArmSearch::new(graph, topology, order, &ranks);
+        let mut joins = BranchJoins::new(&ranks);
         for (rank, source) in order.iter().copied().enumerate().rev() {
             let Some(FlowNode {
                 transfer:
@@ -2446,23 +2454,11 @@ impl BranchRegion {
                 *when_true,
                 *when_false,
             ) {
-                let Some(true_arm) =
-                    BranchArm::analyze(graph, topology, &mut tails, *when_true, join)
+                let Some((true_arm, false_arm)) =
+                    search.pair(source, *when_true, *when_false, join)
                 else {
                     continue;
                 };
-                let Some(false_arm) =
-                    BranchArm::analyze(graph, topology, &mut tails, *when_false, join)
-                else {
-                    continue;
-                };
-                if true_arm.is_empty() && false_arm.is_empty()
-                    || !true_arm.nodes.is_disjoint(&false_arm.nodes)
-                    || !Self::single_entry(predecessors, source, *when_true, &true_arm.nodes)
-                    || !Self::single_entry(predecessors, source, *when_false, &false_arm.nodes)
-                {
-                    continue;
-                }
                 return Some(Self {
                     source,
                     when_true: *when_true,
@@ -2475,26 +2471,6 @@ impl BranchRegion {
         }
         None
     }
-
-    fn single_entry(
-        predecessors: &FlowPredecessors,
-        source: BlockId,
-        entry: BlockId,
-        arm: &BTreeSet<BlockId>,
-    ) -> bool {
-        if entry == source || arm.is_empty() {
-            return true;
-        }
-        arm.iter().copied().all(|block| {
-            predecessors
-                .get(&block)
-                .into_iter()
-                .flatten()
-                .all(|predecessor| {
-                    arm.contains(predecessor) || (block == entry && *predecessor == source)
-                })
-        })
-    }
 }
 
 struct BranchArm {
@@ -2503,99 +2479,6 @@ struct BranchArm {
 }
 
 impl BranchArm {
-    fn analyze(
-        graph: &SemanticFlowGraph,
-        topology: &FlowTopology,
-        tails: &mut BTreeMap<BlockId, Option<ContinuationTail>>,
-        entry: BlockId,
-        join: BlockId,
-    ) -> Option<Self> {
-        if entry == join {
-            return Some(Self {
-                nodes: BTreeSet::new(),
-                continuation: None,
-            });
-        }
-        let mut nodes = BTreeSet::new();
-        let mut pending = vec![entry];
-        let mut continuation = None::<ContinuationTail>;
-        let mut reaches_join = false;
-        let mut has_open_boundary = false;
-        while let Some(block) = pending.pop() {
-            if block == join {
-                if continuation.is_some() {
-                    return None;
-                }
-                reaches_join = true;
-                continue;
-            }
-            // The linear epilogue belongs to its entry in this graph snapshot.
-            // A join inside that epilogue cuts it short for just this candidate.
-            let tail = tails
-                .entry(block)
-                .or_insert_with(|| ContinuationTail::analyze(graph, &topology.predecessors, block));
-            if let Some(tail) = tail.as_ref().filter(|tail| !tail.blocks.contains(&join)) {
-                if reaches_join
-                    || continuation
-                        .as_ref()
-                        .is_some_and(|current| current.entry != tail.entry)
-                {
-                    return None;
-                }
-                continuation = Some(tail.clone());
-                continue;
-            }
-            if !nodes.insert(block) {
-                continue;
-            }
-            if !graph.nodes.contains_key(&block) || graph.continues.contains_key(&block) {
-                return None;
-            }
-            for &target in topology.targets(block) {
-                if target == join {
-                    if continuation.is_some() {
-                        return None;
-                    }
-                    reaches_join = true;
-                } else if graph.continues.contains_key(&target) {
-                    has_open_boundary = true;
-                } else if graph.exits.contains(&target) {
-                    return None;
-                } else if graph.nodes.contains_key(&target) {
-                    pending.push(target);
-                } else {
-                    return None;
-                }
-            }
-        }
-        if !reaches_join
-            && continuation.is_none()
-            && !has_open_boundary
-            && !Self::is_closed(graph, topology, &nodes)
-        {
-            return None;
-        }
-        Some(Self {
-            nodes,
-            continuation,
-        })
-    }
-
-    fn is_closed(
-        graph: &SemanticFlowGraph,
-        topology: &FlowTopology,
-        nodes: &BTreeSet<BlockId>,
-    ) -> bool {
-        let mut terminals = nodes
-            .iter()
-            .filter_map(|block| {
-                let node = graph.nodes.get(block)?;
-                topology.targets(*block).is_empty().then_some(node)
-            })
-            .peekable();
-        terminals.peek().is_some() && terminals.all(|node| !node.completion(graph.region).normal)
-    }
-
     fn is_empty(&self) -> bool {
         self.nodes.is_empty() && self.continuation.is_none()
     }
@@ -2667,23 +2550,18 @@ impl ContinuationTail {
     }
 }
 
-struct BranchJoins {
-    ranks: foldhash::HashMap<BlockId, usize>,
+struct BranchJoins<'a> {
+    ranks: &'a foldhash::HashMap<BlockId, usize>,
     visited_from: Vec<usize>,
     pending: Vec<BlockId>,
     candidates: Vec<BlockId>,
 }
 
-impl BranchJoins {
-    fn new(order: &[BlockId]) -> Self {
+impl<'a> BranchJoins<'a> {
+    fn new(ranks: &'a foldhash::HashMap<BlockId, usize>) -> Self {
         Self {
-            ranks: order
-                .iter()
-                .copied()
-                .enumerate()
-                .map(|(rank, block)| (block, rank))
-                .collect(),
-            visited_from: vec![usize::MAX; order.len()],
+            ranks,
+            visited_from: vec![usize::MAX; ranks.len()],
             pending: Vec::new(),
             candidates: Vec::new(),
         }
@@ -2698,7 +2576,7 @@ impl BranchJoins {
         when_true: BlockId,
         when_false: BlockId,
     ) -> &[BlockId] {
-        let ranks = &self.ranks;
+        let ranks = self.ranks;
         let blocks = &mut self.candidates;
         blocks.clear();
         if let Some(join) = postdominators.immediate(source) {
