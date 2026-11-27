@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use smallvec::SmallVec;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ir::{
     ArgType, ArithOp, InsnType, InstructionId, MemberReference, PrimitiveType, RegisterArg,
@@ -8,13 +9,29 @@ use crate::ir::{
 
 use super::SourceTypeEnvironment;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct VariableSemanticGraph {
     variables: BTreeMap<u32, VariableNode>,
-    operations: BTreeMap<InstructionId, OperationNode>,
-    edges: Vec<VariableEdge>,
+    operations: foldhash::HashMap<InstructionId, OperationNode>,
+    edges: foldhash::HashMap<u32, SmallVec<[VariableEdge; 2]>>,
 }
 
+impl std::fmt::Debug for VariableSemanticGraph {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let operations = self.operations.iter().collect::<BTreeMap<_, _>>();
+        let groups = self.edges.iter().collect::<BTreeMap<_, _>>();
+        let edges = groups
+            .into_values()
+            .flat_map(|edges| edges.iter())
+            .collect::<Vec<_>>();
+        formatter
+            .debug_struct("VariableSemanticGraph")
+            .field("variables", &self.variables)
+            .field("operations", &operations)
+            .field("edges", &edges)
+            .finish()
+    }
+}
 impl VariableSemanticGraph {
     pub fn analyze(root: &SemanticNode, types: &SourceTypeEnvironment) -> Self {
         let mut builder = VariableSemanticGraphBuilder::new(types);
@@ -35,10 +52,7 @@ impl VariableSemanticGraph {
     }
 
     pub fn edges_for(&self, variable: u32) -> impl Iterator<Item = &VariableEdge> {
-        let start = self.edges.partition_point(|edge| edge.variable < variable);
-        self.edges[start..]
-            .iter()
-            .take_while(move |edge| edge.variable == variable)
+        self.edges.get(&variable).into_iter().flatten()
     }
 }
 
@@ -285,7 +299,8 @@ impl VariableRoleAnalysis for StructuralVariableRoleAnalysis {
         let mut scores = VariableRoleScores::default();
         let return_variables = graph
             .edges
-            .iter()
+            .values()
+            .flatten()
             .filter_map(|edge| {
                 matches!(edge.kind(), VariableEdgeKind::Return).then_some(edge.variable())
             })
@@ -394,7 +409,7 @@ impl VariableRoleAnalysis for StructuralVariableRoleAnalysis {
 struct VariableSemanticGraphBuilder<'a> {
     types: &'a SourceTypeEnvironment,
     graph: VariableSemanticGraph,
-    seen_edges: Option<HashSet<VariableEdge>>,
+    seen_edges: foldhash::HashSet<VariableEdge>,
     loop_depth: usize,
 }
 
@@ -404,19 +419,15 @@ impl<'a> VariableSemanticGraphBuilder<'a> {
             types,
             graph: VariableSemanticGraph {
                 variables: BTreeMap::new(),
-                operations: BTreeMap::new(),
-                edges: Vec::new(),
+                operations: Default::default(),
+                edges: Default::default(),
             },
-            seen_edges: None,
+            seen_edges: Default::default(),
             loop_depth: 0,
         }
     }
 
-    fn finish(mut self) -> VariableSemanticGraph {
-        // The graph exposes each variable's edges in discovery order. Stable
-        // grouping gives consumers a contiguous slice for that identity.
-        drop(self.seen_edges.take());
-        self.graph.edges.sort_by_key(|edge| edge.variable);
+    fn finish(self) -> VariableSemanticGraph {
         self.graph
     }
 
@@ -521,17 +532,16 @@ impl<'a> VariableSemanticGraphBuilder<'a> {
             operation,
             kind,
         };
-        // Keep short lists in their original allocation. Beyond that size,
-        // repeated membership checks must not scan every edge of the method.
-        let is_new = if self.graph.edges.len() < 24 {
-            !self.graph.edges.contains(&edge)
-        } else {
-            self.seen_edges
-                .get_or_insert_with(|| self.graph.edges.iter().copied().collect())
-                .insert(edge)
-        };
-        if is_new {
-            self.graph.edges.push(edge);
+        let edges = self.graph.edges.entry(variable).or_default();
+        if edges.len() < 12 {
+            if !edges.contains(&edge) {
+                edges.push(edge);
+                if edges.len() == 12 {
+                    self.seen_edges.extend(edges.iter().copied());
+                }
+            }
+        } else if self.seen_edges.insert(edge) {
+            edges.push(edge);
         }
     }
 
@@ -875,12 +885,17 @@ mod tests {
                     source_binding: true,
                 },
             )]),
-            operations: BTreeMap::new(),
-            edges: vec![VariableEdge {
-                variable: 1,
-                operation: None,
-                kind,
-            }],
+            operations: Default::default(),
+            edges: [(
+                1,
+                smallvec::smallvec![VariableEdge {
+                    variable: 1,
+                    operation: None,
+                    kind,
+                }],
+            )]
+            .into_iter()
+            .collect(),
         }
     }
 
@@ -913,3 +928,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/semantic_variable_edges.rs"]
+mod edge_tests;

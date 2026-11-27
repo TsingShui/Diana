@@ -5,12 +5,9 @@
 //! Kotlin `Intrinsics` check string when one exists, otherwise from the value's
 //! type or defining call.
 
-use std::collections::{BTreeMap, BTreeSet};
-
 use crate::ir::{
-    ArgType, InsnType, LiteralArg, MemberReference, PrimitiveType, RegisterArg,
-    SemanticBindingKind, SemanticExpression, SemanticNode, SemanticOperation, SemanticStatement,
-    SemanticVisitor,
+    ArgType, InsnType, LiteralArg, MemberReference, PrimitiveType, SemanticExpression,
+    SemanticOperation,
 };
 
 const OBJECT_ALIASES: &[(&str, &str)] = &[
@@ -123,55 +120,7 @@ pub(crate) fn invoke_local_name(method: &str) -> Option<String> {
     None
 }
 
-pub(crate) fn intrinsic_local_names(
-    root: &SemanticNode,
-    parameter_bindings: &BTreeSet<u32>,
-) -> (BTreeMap<u32, String>, bool) {
-    let mut collector = IntrinsicNameCollector {
-        names: BTreeMap::new(),
-        parameter_bindings,
-        has_local_binding: false,
-    };
-    collector.visit_node(root);
-    (collector.names, collector.has_local_binding)
-}
-
-struct IntrinsicNameCollector<'a> {
-    names: BTreeMap<u32, String>,
-    parameter_bindings: &'a BTreeSet<u32>,
-    has_local_binding: bool,
-}
-
-impl IntrinsicNameCollector<'_> {
-    fn record_binding(&mut self, register: &RegisterArg) {
-        if !self.has_local_binding {
-            self.has_local_binding = register
-                .code_var
-                .is_some_and(|variable| !self.parameter_bindings.contains(&variable));
-        }
-    }
-}
-
-impl SemanticVisitor for IntrinsicNameCollector<'_> {
-    fn visit_statement(&mut self, statement: &SemanticStatement) {
-        if let Some(result) = statement.result() {
-            self.record_binding(result);
-        }
-        crate::ir::semantic::walk_statement(self, statement);
-    }
-
-    fn visit_binding(&mut self, _kind: SemanticBindingKind, register: &RegisterArg) {
-        self.record_binding(register);
-    }
-
-    fn enter_operation(&mut self, operation: &SemanticOperation) {
-        if let Some((variable, name)) = intrinsic_binding(operation) {
-            self.names.entry(variable).or_insert(name);
-        }
-    }
-}
-
-fn intrinsic_binding(operation: &SemanticOperation) -> Option<(u32, String)> {
+pub(super) fn intrinsic_binding(operation: &SemanticOperation) -> Option<(u32, String)> {
     if operation.insn_type != InsnType::Invoke {
         return None;
     }

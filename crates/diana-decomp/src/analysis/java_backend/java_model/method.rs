@@ -2,11 +2,11 @@ use crate::frontend::{AccessInfo, AnnotationNode, ClassNode, MethodNode};
 use crate::ir::{ty::ArgType, CFG};
 use crate::language::java::{
     AggregateInitializer, DefiniteAssignment, JavaAstNormalizer, JavaAstTransform, JavaIdentifier,
-    JavaInitializerExitLowering, JavaLowerer, JavaMethodCompletion, JavaModifier, JavaType,
+    JavaInitializerExitLowering, JavaMethodCompletion, JavaModifier, JavaType,
     JavaVoidTailLinearizer, LexicalDeclarationPlacement,
 };
 
-use super::super::method_pipeline::{BodyTypeUses, MethodBodyAnalysis};
+use super::super::method_pipeline::{BodyTypeUses, MethodBodyAnalysis, MethodSourceInputs};
 use super::super::type_names::JavaTypeNameResolver;
 use super::super::JavaDecompilerError;
 use super::class::declaration_name;
@@ -38,7 +38,7 @@ pub(in crate::analysis::java_backend) struct JavaMethodBody {
     is_static: bool,
     this_code_var: Option<u32>,
     parameter_code_vars: Vec<Option<u32>>,
-    type_uses: BodyTypeUses,
+    source_inputs: MethodSourceInputs,
     current_type: Option<ArgType>,
     return_type: Option<ArgType>,
     outer_instance: Option<crate::language::java::OuterInstanceBinding>,
@@ -132,7 +132,7 @@ impl JavaMethodBody {
             is_static: analysis.is_static,
             this_code_var: analysis.this_code_var,
             parameter_code_vars: analysis.parameter_code_vars,
-            type_uses: analysis.type_uses,
+            source_inputs: analysis.source_inputs,
             current_type: options.current_type,
             return_type: options.return_type,
             outer_instance,
@@ -143,17 +143,17 @@ impl JavaMethodBody {
         &self,
         references: &mut MemberReferences,
     ) {
-        for reference in &self.type_uses.references {
+        for reference in &self.source_inputs.type_uses.references {
             references.insert(reference);
         }
     }
 
     pub(in crate::analysis::java_backend) fn static_owner_types(&self) -> &[ArgType] {
-        &self.type_uses.static_owners
+        &self.source_inputs.type_uses.static_owners
     }
 
     pub(in crate::analysis::java_backend) fn lambda_reference_types(&self) -> &[ArgType] {
-        &self.type_uses.lambda_types
+        &self.source_inputs.type_uses.lambda_types
     }
 
     pub(in crate::analysis::java_backend) fn outer_instance_field(
@@ -214,7 +214,7 @@ impl JavaMethodBody {
                 std::sync::Arc::new(fields)
             };
             let object = ArgType::object("java/lang/Object");
-            let mut used_types = self.type_uses.uses;
+            let mut used_types = self.source_inputs.type_uses.uses;
             for ty in BodyTypeUses::required_types()
                 .iter()
                 .chain(self.current_type.iter())
@@ -239,6 +239,8 @@ impl JavaMethodBody {
             super::super::semantic_naming::SemanticNameRecovery::new(type_names).recover(
                 &self.body,
                 &self.types,
+                self.source_inputs.local_names,
+                &source_types,
                 parameter_names,
                 &self.parameter_code_vars,
                 self.this_code_var,
@@ -278,8 +280,8 @@ impl JavaMethodBody {
             })
         }?;
         let mut ast = {
-            JavaLowerer::new(dialect)
-                .lower(&self.body)
+            dialect
+                .lower_with_bindings(&self.body, self.source_inputs.bindings)
                 .map_err(JavaDecompilerError::Java)
         }?;
         let mut declarations = LexicalDeclarationPlacement;
@@ -328,7 +330,7 @@ impl JavaMethodBody {
     }
 
     pub fn type_uses(&self) -> impl Iterator<Item = &ArgType> {
-        self.type_uses.iter()
+        self.source_inputs.type_uses.iter()
     }
 
     pub fn is_empty(body: &crate::language::java::JavaMethodBody) -> bool {

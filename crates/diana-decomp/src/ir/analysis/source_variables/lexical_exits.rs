@@ -25,7 +25,8 @@ impl LexicalExitLowering {
         next_variable: u32,
         types: &mut SourceTypeEnvironment,
     ) -> Result<(), SourceVariableError> {
-        let identities = MethodIdentities::scan(root)?;
+        let facts = ExitFacts::analyze(root);
+        let next_block = facts.next_block()?;
         // Without a lexical owner a leave keeps its original transfer. A
         // canonical flat sequence also needs no flattening during rebuilding.
         match root {
@@ -42,11 +43,17 @@ impl LexicalExitLowering {
             }
             _ => {}
         }
-        let selection = ExitFacts::analyze(root).select();
+        let selection = facts.select();
+        // Only a selected exit can introduce flag assignments or predicates.
+        let next_instruction = if selection.targets.is_empty() {
+            0
+        } else {
+            InstructionIdentities::next(root)
+        };
         let mut rewriter = LexicalExitRewriter {
             next_variable,
-            next_block: identities.next_block,
-            next_instruction: identities.next_instruction,
+            next_block,
+            next_instruction,
             types,
         };
         let catalog = rewriter.catalog(selection)?;
@@ -700,6 +707,7 @@ impl ControlScope {
 
 #[derive(Default)]
 struct ExitFacts {
+    max_block: Option<u32>,
     targets: BTreeMap<ExitKey, TargetFact>,
     owners: Vec<ExitOwner>,
     active: Vec<BoundScope>,
@@ -712,11 +720,16 @@ impl ExitFacts {
         facts
     }
 
+    fn next_block(&self) -> Result<u32, SourceVariableError> {
+        self.max_block.map_or(Ok(0), |id| {
+            id.checked_add(1)
+                .ok_or(SourceVariableError::SyntheticIdentityExhausted)
+        })
+    }
+
     fn select(self) -> ExitSelection {
         let Self {
-            targets,
-            owners,
-            active: _,
+            targets, owners, ..
         } = self;
         let retained_owners = targets
             .iter()
@@ -810,6 +823,15 @@ impl SemanticVisitor for ExitFacts {
     }
 
     fn enter_node(&mut self, node: &SemanticNode) {
+        let block = match node {
+            SemanticNode::BasicBlock(block) => Some(block.id.raw()),
+            SemanticNode::Label { label, .. } => Some(label.block.raw()),
+            SemanticNode::Loop { header, .. } => header.map(BlockId::raw),
+            _ => None,
+        };
+        if let Some(block) = block {
+            self.max_block = Some(self.max_block.map_or(block, |current| current.max(block)));
+        }
         if let SemanticNode::Leave(leave) = node {
             self.record_leave(leave);
         }
@@ -1465,51 +1487,28 @@ impl RewriteFrame {
     }
 }
 
-struct MethodIdentities {
-    next_block: u32,
-    next_instruction: usize,
-}
-
-impl MethodIdentities {
-    fn scan(root: &SemanticNode) -> Result<Self, SourceVariableError> {
-        let mut scan = IdentityScan::default();
-        scan.visit_node(root);
-        Ok(Self {
-            next_block: scan.max_block.map_or(Ok(0), |id| {
-                id.checked_add(1)
-                    .ok_or(SourceVariableError::SyntheticIdentityExhausted)
-            })?,
-            next_instruction: scan.max_instruction.map_or(Ok(0), |id| {
-                id.checked_add(1)
-                    .ok_or(SourceVariableError::SyntheticIdentityExhausted)
-            })?,
-        })
-    }
-}
-
 #[derive(Default)]
-struct IdentityScan {
-    max_block: Option<u32>,
-    max_instruction: Option<usize>,
+struct InstructionIdentities {
+    next: usize,
 }
 
-impl SemanticVisitor for IdentityScan {
-    fn enter_node(&mut self, node: &SemanticNode) {
-        let block = match node {
-            SemanticNode::BasicBlock(block) => Some(block.id.raw()),
-            SemanticNode::Label { label, .. } => Some(label.block.raw()),
-            SemanticNode::Loop { header, .. } => header.map(BlockId::raw),
-            _ => None,
-        };
-        if let Some(block) = block {
-            self.max_block = Some(self.max_block.map_or(block, |current| current.max(block)));
-        }
+impl InstructionIdentities {
+    fn next(root: &SemanticNode) -> usize {
+        let mut scan = Self::default();
+        scan.visit_node(root);
+        scan.next
     }
+}
 
-    fn enter_operation(&mut self, instruction: &crate::ir::SemanticOperation) {
-        if instruction.id.is_valid() {
-            let id = instruction.id.raw();
-            self.max_instruction = Some(self.max_instruction.map_or(id, |current| current.max(id)));
+impl SemanticVisitor for InstructionIdentities {
+    fn enter_operation(&mut self, operation: &crate::ir::SemanticOperation) {
+        // usize::MAX is reserved for the invalid instruction identity.
+        if operation.id.is_valid() {
+            self.next = self.next.max(operation.id.raw() + 1);
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../../../tests/internal/lexical_exit_identities.rs"]
+mod lexical_exit_identities;

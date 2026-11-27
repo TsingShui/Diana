@@ -33,7 +33,7 @@ use super::source_types::{
     GenericTypeEvidence, GenericTypeProjection, GenericTypeRelation, GenericTypeSolver,
     JavaTypeErasureIndex, JavaTypeRelations, SourceObjectTypes, SourceTypeFlow, SourceTypeStates,
 };
-use input::JavaInputBindings;
+pub(crate) use input::JavaInputBindings;
 
 #[derive(Clone, Copy)]
 struct ComparisonTest {
@@ -5091,7 +5091,28 @@ impl JavaDialect for DexJavaDialect {
     }
 
     fn prepare(&mut self, root: &crate::ir::SemanticNode) -> Result<(), Self::Error> {
-        let bindings = JavaInputBindings::collect(root)?;
+        self.prepare_with_bindings(root, JavaInputBindings::collect(root))
+    }
+}
+
+impl DexJavaDialect {
+    pub(crate) fn lower_with_bindings(
+        mut self,
+        root: &crate::ir::SemanticNode,
+        input: JavaInputBindings,
+    ) -> Result<super::JavaMethodBody, JavaLoweringError> {
+        self.prepare_with_bindings(root, input)?;
+        super::JavaLowerer::new(self).lower_prepared(root)
+    }
+
+    fn prepare_with_bindings(
+        &mut self,
+        root: &crate::ir::SemanticNode,
+        input: JavaInputBindings,
+    ) -> Result<(), JavaLoweringError> {
+        // Keep input errors at the start of dialect preparation, after type and
+        // parameter construction and before the source-type diagnostics.
+        let bindings = input.finish()?;
         let diagnostics_enabled = self
             .observer
             .is_enabled(crate::ir::AnalysisEventKind::SourceTypes);

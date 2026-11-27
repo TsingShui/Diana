@@ -8,7 +8,7 @@ use crate::ir::{
     ArgType, ExceptionAnalyzer, MemberReference, RegionGraphBuilder, SemanticMethod, SemanticNode,
     SemanticVisitor, SourceSyntaxSemantics, StringBuildingRecovery,
 };
-use crate::language::java::{JavaValueSyntax, SourceSyntaxRecovery};
+use crate::language::java::{JavaInputBindings, JavaValueSyntax, SourceSyntaxRecovery};
 
 use super::JavaDecompilerError;
 
@@ -18,7 +18,7 @@ pub(super) struct MethodBodyAnalysis {
     pub is_static: bool,
     pub this_code_var: Option<u32>,
     pub parameter_code_vars: Vec<Option<u32>>,
-    pub type_uses: BodyTypeUses,
+    pub source_inputs: MethodSourceInputs,
 }
 
 pub(super) struct MethodBodyPipeline<'a> {
@@ -237,7 +237,11 @@ impl<'a> MethodBodyPipeline<'a> {
                     stage: crate::ir::SemanticStage::Normalized,
                 });
         }
-        let type_uses = MethodTypeUses::collect(&semantic)?;
+        let source_inputs = MethodSourceInputCollector::collect(
+            &semantic,
+            cfg.parameter_code_variables(),
+            cfg.this_code_variable(),
+        )?;
         self.observe_stage(cfg, "type_uses:done")?;
 
         let (body, state) = semantic.into_parts();
@@ -247,7 +251,7 @@ impl<'a> MethodBodyPipeline<'a> {
             is_static: cfg.method().is_static(),
             this_code_var: cfg.this_code_variable(),
             parameter_code_vars: cfg.parameter_code_variables().to_vec(),
-            type_uses,
+            source_inputs,
         })
     }
 
@@ -331,7 +335,18 @@ impl BodyTypeUses {
     }
 }
 
-struct MethodTypeUses<'a> {
+#[derive(Debug, Clone)]
+pub(super) struct MethodSourceInputs {
+    pub type_uses: BodyTypeUses,
+    pub local_names: super::semantic_naming::LocalNameEvidence,
+    pub bindings: JavaInputBindings,
+}
+
+struct MethodSourceInputCollector<'a> {
+    bindings: JavaInputBindings,
+    parameters: &'a [Option<u32>],
+    receiver: Option<u32>,
+    local_names: super::semantic_naming::LocalNameEvidence,
     types: &'a crate::ir::analysis::SourceTypeEnvironment,
     references: Vec<std::sync::Arc<MemberReference>>,
     uses: std::collections::BTreeSet<ArgType>,
@@ -340,10 +355,12 @@ struct MethodTypeUses<'a> {
     error: Option<crate::ir::analysis::TypeConstraintError>,
 }
 
-impl<'a> MethodTypeUses<'a> {
+impl<'a> MethodSourceInputCollector<'a> {
     fn collect(
         method: &'a SemanticMethod<SourceSyntaxSemantics>,
-    ) -> Result<BodyTypeUses, JavaDecompilerError> {
+        parameters: &'a [Option<u32>],
+        receiver: Option<u32>,
+    ) -> Result<MethodSourceInputs, JavaDecompilerError> {
         let mut uses = std::collections::BTreeSet::new();
         for ty in method.state().types().known_types() {
             if !uses.contains(ty) {
@@ -351,6 +368,10 @@ impl<'a> MethodTypeUses<'a> {
             }
         }
         let mut collector = Self {
+            parameters,
+            receiver,
+            local_names: Default::default(),
+            bindings: JavaInputBindings::default(),
             types: method.state().types(),
             references: Vec::new(),
             uses,
@@ -361,11 +382,15 @@ impl<'a> MethodTypeUses<'a> {
         collector.visit_node(method.body());
         match collector.error {
             Some(error) => Err(error.into()),
-            None => Ok(BodyTypeUses {
-                references: collector.references.into_boxed_slice(),
-                uses: collector.uses,
-                static_owners: collector.static_owners.into_iter().collect(),
-                lambda_types: collector.lambda_types.into_iter().collect(),
+            None => Ok(MethodSourceInputs {
+                type_uses: BodyTypeUses {
+                    references: collector.references.into_boxed_slice(),
+                    uses: collector.uses,
+                    static_owners: collector.static_owners.into_iter().collect(),
+                    lambda_types: collector.lambda_types.into_iter().collect(),
+                },
+                local_names: collector.local_names,
+                bindings: collector.bindings,
             }),
         }
     }
@@ -384,7 +409,15 @@ impl<'a> MethodTypeUses<'a> {
     }
 }
 
-impl SemanticVisitor for MethodTypeUses<'_> {
+impl SemanticVisitor for MethodSourceInputCollector<'_> {
+    fn visit_statement(&mut self, statement: &crate::ir::SemanticStatement) {
+        if let Some(result) = statement.result() {
+            self.local_names
+                .observe_binding(result, self.parameters, self.receiver);
+        }
+        crate::ir::semantic::walk_statement(self, statement);
+    }
+
     fn enter_node(&mut self, node: &SemanticNode) {
         let catches = match node {
             SemanticNode::Try { catches, .. } => Some(catches.as_slice()),
@@ -401,6 +434,8 @@ impl SemanticVisitor for MethodTypeUses<'_> {
     }
 
     fn enter_operation(&mut self, operation: &crate::ir::SemanticOperation) {
+        self.bindings.enter_operation(operation);
+        self.local_names.observe_operation(operation);
         if let Some(result) = &operation.result {
             self.visit_register(result);
         }
@@ -457,15 +492,18 @@ impl SemanticVisitor for MethodTypeUses<'_> {
 
     fn visit_binding(
         &mut self,
-        _kind: crate::ir::SemanticBindingKind,
+        kind: crate::ir::SemanticBindingKind,
         register: &crate::ir::RegisterArg,
     ) {
+        self.bindings.visit_binding(kind, register);
+        self.local_names
+            .observe_binding(register, self.parameters, self.receiver);
         self.insert(&register.ty);
         self.visit_register(register);
     }
 }
 
-impl MethodTypeUses<'_> {
+impl MethodSourceInputCollector<'_> {
     fn insert_option(&mut self, ty: Option<&ArgType>) {
         if let Some(ty) = ty {
             self.insert(ty);

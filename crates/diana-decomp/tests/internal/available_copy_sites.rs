@@ -1,10 +1,10 @@
 use super::*;
-use crate::ir::{analysis::SsaClasses, Block, EdgeKind, RegionEdge};
+use crate::ir::{Block, EdgeKind, RegionEdge};
 
 #[test]
 fn available_copies_distinguish_merge_backedge_throw_and_exit_sites() {
     let variable = SsaVar::new(2, 1);
-    let variables = CodeVariables::from_classes(SsaClasses::new([variable]));
+    let variables = CodeVariables::from_singletons(&SsaValueGraph::default(), &[variable]);
     let id = variables.variable_of(variable).unwrap();
     let block = BlockId::new;
     let edge = |a, b, kind| RegionEdge {
@@ -85,7 +85,7 @@ fn an_unused_copy_query_preserves_materialized_register_errors() {
     let id = SsaVar::new(2, 1);
     let outcome = AvailableCopyAnalysis::analyze(
         &cfg,
-        &CodeVariables::from_classes(SsaClasses::default()),
+        &CodeVariables::from_singletons(&SsaValueGraph::default(), &[]),
         &BTreeMap::new(),
         &BTreeMap::new(),
         &BTreeSet::from([id]),

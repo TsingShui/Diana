@@ -191,10 +191,17 @@ where
 
     pub fn lower(mut self, root: &SemanticNode) -> Result<JavaMethodBody, R::Error> {
         self.dialect.prepare(root)?;
+        self.lower_prepared(root)
+    }
+
+    pub(super) fn lower_prepared(
+        mut self,
+        root: &SemanticNode,
+    ) -> Result<JavaMethodBody, R::Error> {
         self.controls = ControlLayout::analyze(root)?;
         let body = self.node(root)?;
         let mut statements = self.dialect.take_declarations();
-        statements.extend(Self::block_statements(body));
+        Self::append_statements(&mut statements, body);
         Ok(JavaMethodBody {
             root: JavaStmt::Block(statements),
         })
@@ -212,8 +219,8 @@ where
                         .len()
                         .checked_sub(count)
                         .ok_or(JavaStructuralError::MalformedWorkStack)?;
-                    let children = results.drain(start..).collect();
-                    results.push(self.rebuild(frame, children)?);
+                    let statement = self.rebuild(frame, results.drain(start..))?;
+                    results.push(statement);
                 }
             }
         }
@@ -388,7 +395,7 @@ where
     fn rebuild(
         &mut self,
         frame: LowerFrame<'_>,
-        children: Vec<JavaStmt>,
+        mut children: impl ExactSizeIterator<Item = JavaStmt>,
     ) -> Result<JavaStmt, R::Error> {
         let expected = frame.child_count();
         if children.len() != expected {
@@ -398,10 +405,13 @@ where
             }
             .into());
         }
-        let mut children = children.into_iter();
         Ok(match frame {
             LowerFrame::Sequence(_) => {
-                JavaStmt::Block(children.flat_map(Self::block_statements).collect())
+                let mut statements = Vec::new();
+                for child in children {
+                    Self::append_statements(&mut statements, child);
+                }
+                JavaStmt::Block(statements)
             }
             LowerFrame::If {
                 condition,
@@ -459,7 +469,7 @@ where
                                     then_stmt: Box::new(JavaStmt::Break(None)),
                                     else_stmt: None,
                                 });
-                                setup.extend(Self::block_statements(body));
+                                Self::append_statements(&mut setup, body);
                                 JavaStmt::While {
                                     label,
                                     condition: JavaExpr::Literal(JavaLiteral::Boolean(true)),
@@ -478,16 +488,15 @@ where
                             condition,
                         }
                     }
-                    SemanticLoopKind::Endless => JavaStmt::While {
-                        label,
-                        condition: JavaExpr::Literal(JavaLiteral::Boolean(true)),
-                        body: Box::new(JavaStmt::Block(
-                            setup
-                                .into_iter()
-                                .chain(Self::block_statements(body))
-                                .collect(),
-                        )),
-                    },
+                    SemanticLoopKind::Endless => {
+                        let mut statements = setup;
+                        Self::append_statements(&mut statements, body);
+                        JavaStmt::While {
+                            label,
+                            condition: JavaExpr::Literal(JavaLiteral::Boolean(true)),
+                            body: Box::new(JavaStmt::Block(statements)),
+                        }
+                    }
                 }
             }
             LowerFrame::For {
@@ -603,6 +612,15 @@ where
                 value: Box::new(value),
             }),
             _ => Err(JavaStructuralError::InvalidForUpdate),
+        }
+    }
+
+    fn append_statements(statements: &mut Vec<JavaStmt>, child: JavaStmt) {
+        match child {
+            JavaStmt::Empty => {}
+            JavaStmt::Block(block) if statements.is_empty() => *statements = block,
+            JavaStmt::Block(block) => statements.extend(block),
+            other => statements.push(other),
         }
     }
 

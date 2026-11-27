@@ -181,7 +181,7 @@ impl SourceVariableAllocation {
             for (left, right, policy) in candidates.0 {
                 coalescer.coalesce(left, right, policy);
             }
-            CodeVariables::from_classes(coalescer.finish())
+            CodeVariables::from_classes(values, &inputs, coalescer.finish())
         } else {
             CodeVariables::from_singletons(values, &inputs)
         };
@@ -670,12 +670,7 @@ impl<'a> SourceClassCoalescer<'a> {
         phi_types: &'a BTreeMap<SsaVar, crate::ir::ArgType>,
         hierarchy: &'a dyn super::TypeHierarchy,
     ) -> Self {
-        let mut classes = SsaClasses::new(
-            values
-                .values()
-                .map(|value| value.variable)
-                .chain(inputs.iter().copied()),
-        );
+        let mut classes = SsaClasses::default();
         let interference = ClassInterference::from_singletons(interference, &mut classes);
         Self {
             classes,

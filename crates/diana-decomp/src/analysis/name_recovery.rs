@@ -172,6 +172,9 @@ impl TypedConstantNameInference {
             .filter_map(|operand| operand.literal())
             .filter(|value| *value != 0)
             .collect::<BTreeSet<_>>();
+        if values.is_empty() {
+            return Vec::new();
+        }
         let owners = operation
             .operands()
             .iter()

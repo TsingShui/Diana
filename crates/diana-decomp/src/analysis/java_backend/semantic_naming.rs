@@ -1,3 +1,4 @@
+use smallvec::SmallVec;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::analysis::jadx_local_names;
@@ -106,7 +107,6 @@ impl MethodResultSemantics for JavaMethodResultSemantics {
         {
             return None;
         }
-        let identifier = JavaIdentifier::from_hint(name);
         if let Some(name) = jadx_local_names::invoke_local_name(name) {
             return Some(NameCandidate {
                 name: JavaIdentifier::from_hint(&name),
@@ -114,7 +114,9 @@ impl MethodResultSemantics for JavaMethodResultSemantics {
             });
         }
         Some(NameCandidate {
-            name: self.morphology.lower_camel(&identifier),
+            name: self
+                .morphology
+                .lower_camel(&JavaIdentifier::from_hint(name)),
             score: 55,
         })
     }
@@ -126,10 +128,12 @@ trait VariableNameModel {
         variable: &VariableNode,
         graph: &VariableSemanticGraph,
         roles: &VariableRoleScores,
-    ) -> Vec<NameCandidate>;
+        conflict_penalty: u16,
+    ) -> SmallVec<[NameCandidate; 3]>;
 }
 
 struct StructuralNameModel<'a> {
+    resolved_types: Option<&'a BTreeMap<ArgType, JavaType>>,
     types: &'a JavaTypeNameResolver,
     morphology: JavaIdentifierMorphology,
     methods: JavaMethodResultSemantics,
@@ -141,6 +145,7 @@ impl<'a> StructuralNameModel<'a> {
     fn new(types: &'a JavaTypeNameResolver) -> Self {
         Self {
             types,
+            resolved_types: None,
             morphology: JavaIdentifierMorphology,
             methods: JavaMethodResultSemantics::default(),
             constants: None,
@@ -148,8 +153,13 @@ impl<'a> StructuralNameModel<'a> {
         }
     }
 
-    fn for_graph(types: &'a JavaTypeNameResolver, graph: &VariableSemanticGraph) -> Self {
+    fn for_graph(
+        types: &'a JavaTypeNameResolver,
+        resolved_types: &'a BTreeMap<ArgType, JavaType>,
+        graph: &VariableSemanticGraph,
+    ) -> Self {
         let mut model = Self::new(types);
+        model.resolved_types = Some(resolved_types);
         model.constants = crate::platform_symbols::default_platform_symbols()
             .ok()
             .map(|symbols| crate::analysis::TypedConstantNameInference::analyze(graph, &symbols));
@@ -178,6 +188,9 @@ impl<'a> StructuralNameModel<'a> {
     }
 
     fn type_name(&self, ty: &ArgType) -> Option<JavaIdentifier> {
+        if let Some(resolved) = self.resolved_types.and_then(|types| types.get(ty)) {
+            return self.java_type_name(resolved);
+        }
         let resolved = self.types.resolve_type(ty).ok()?;
         self.java_type_name(&resolved)
     }
@@ -204,152 +217,42 @@ impl<'a> StructuralNameModel<'a> {
         JavaIdentifier::from_hint(&lowered)
     }
 
-    fn field_candidates(
+    fn edge_candidate(
         &self,
-        variable: &VariableNode,
+        edge: &crate::ir::analysis::VariableEdge,
         graph: &VariableSemanticGraph,
-    ) -> Vec<NameCandidate> {
-        graph
-            .edges_for(variable.identity())
-            .filter_map(|edge| {
-                let score = match edge.kind() {
-                    crate::ir::analysis::VariableEdgeKind::Definition => 110,
-                    crate::ir::analysis::VariableEdgeKind::FieldValue => 85,
-                    _ => return None,
-                };
-                let operation = edge.operation().and_then(|id| graph.operation(id))?;
-                if !matches!(
-                    (edge.kind(), operation.kind()),
-                    (
-                        crate::ir::analysis::VariableEdgeKind::Definition,
-                        InsnType::Iget | InsnType::Sget
-                    ) | (
-                        crate::ir::analysis::VariableEdgeKind::FieldValue,
-                        InsnType::Iput | InsnType::Sput
-                    )
-                ) {
-                    return None;
-                }
-                let MemberReference::Field(field) = operation.reference()? else {
-                    return None;
-                };
+    ) -> Option<NameCandidate> {
+        use crate::ir::analysis::VariableEdgeKind::{Definition, FieldValue, LoopValue};
+        let kind = edge.kind();
+        if !matches!(kind, Definition | FieldValue | LoopValue) {
+            return None;
+        }
+        let operation = graph.operation(edge.operation()?)?;
+        match (kind, operation.kind(), operation.reference()?) {
+            (Definition, InsnType::Iget | InsnType::Sget, MemberReference::Field(field))
+            | (FieldValue, InsnType::Iput | InsnType::Sput, MemberReference::Field(field)) => {
                 Some(NameCandidate {
                     name: self
                         .morphology
                         .lower_camel(&JavaIdentifier::from_hint(&field.name)),
-                    score,
+                    score: if *kind == Definition { 110 } else { 85 },
                 })
-            })
-            .collect()
-    }
-
-    fn loop_value_candidates(
-        &self,
-        variable: &VariableNode,
-        graph: &VariableSemanticGraph,
-    ) -> Vec<NameCandidate> {
-        graph
-            .edges_for(variable.identity())
-            .filter_map(|edge| {
-                if !matches!(
-                    edge.kind(),
-                    crate::ir::analysis::VariableEdgeKind::LoopValue
-                ) {
-                    return None;
-                }
-                let operation = edge.operation().and_then(|id| graph.operation(id))?;
-                if operation.kind() != InsnType::Invoke {
-                    return None;
-                }
-                let MemberReference::Method(method) = operation.reference()? else {
-                    return None;
-                };
-                (!method.name.starts_with('<')).then(|| NameCandidate {
+            }
+            (Definition, InsnType::Invoke, MemberReference::Method(method)) => {
+                self.methods.candidate(&method.name)
+            }
+            (LoopValue, InsnType::Invoke, MemberReference::Method(method))
+                if !method.name.starts_with('<') =>
+            {
+                Some(NameCandidate {
                     name: self
                         .morphology
                         .lower_camel(&JavaIdentifier::from_hint(&method.name)),
                     score: 90,
                 })
-            })
-            .collect()
-    }
-
-    fn method_result_candidates(
-        &self,
-        variable: &VariableNode,
-        graph: &VariableSemanticGraph,
-    ) -> Vec<NameCandidate> {
-        graph
-            .edges_for(variable.identity())
-            .filter_map(|edge| {
-                if !matches!(
-                    edge.kind(),
-                    crate::ir::analysis::VariableEdgeKind::Definition
-                ) {
-                    return None;
-                }
-                let operation = edge.operation().and_then(|id| graph.operation(id))?;
-                if operation.kind() != InsnType::Invoke {
-                    return None;
-                }
-                let MemberReference::Method(method) = operation.reference()? else {
-                    return None;
-                };
-                self.methods.candidate(&method.name)
-            })
-            .collect()
-    }
-
-    fn constant_candidates(
-        &self,
-        variable: &VariableNode,
-        _graph: &VariableSemanticGraph,
-    ) -> Vec<NameCandidate> {
-        self.constants
-            .as_ref()
-            .and_then(|constants| constants.name(variable.identity()))
-            .map(|field| field.strip_prefix("FLAG_").unwrap_or(field))
-            .map(|semantic| NameCandidate {
-                name: self
-                    .morphology
-                    .lower_camel(&JavaIdentifier::from_hint(semantic)),
-                score: 125,
-            })
-            .into_iter()
-            .collect()
-    }
-
-    fn relation_candidates(&self, variable: &VariableNode) -> Vec<NameCandidate> {
-        self.relations
-            .as_ref()
-            .and_then(|relations| relations.name(variable.identity()))
-            .map(|name| NameCandidate {
-                name: JavaIdentifier::from_hint(name),
-                score: 115,
-            })
-            .into_iter()
-            .collect()
-    }
-
-    fn merge(candidates: impl IntoIterator<Item = NameCandidate>) -> Vec<NameCandidate> {
-        let mut scores = BTreeMap::<JavaIdentifier, u16>::new();
-        for candidate in candidates {
-            scores
-                .entry(candidate.name)
-                .and_modify(|score| *score = (*score).max(candidate.score))
-                .or_insert(candidate.score);
+            }
+            _ => None,
         }
-        let mut candidates = scores
-            .into_iter()
-            .map(|(name, score)| NameCandidate { name, score })
-            .collect::<Vec<_>>();
-        candidates.sort_by(|left, right| {
-            right
-                .score
-                .cmp(&left.score)
-                .then_with(|| left.name.cmp(&right.name))
-        });
-        candidates
     }
 }
 
@@ -359,40 +262,63 @@ impl VariableNameModel for StructuralNameModel<'_> {
         variable: &VariableNode,
         graph: &VariableSemanticGraph,
         roles: &VariableRoleScores,
-    ) -> Vec<NameCandidate> {
-        let role_candidates = roles
-            .roles(variable.identity())
-            .map(|(role, score)| NameCandidate {
+        conflict_penalty: u16,
+    ) -> SmallVec<[NameCandidate; 3]> {
+        let identity = variable.identity();
+        let mut candidates = SmallVec::<[NameCandidate; 3]>::new();
+        let mut type_score = 40;
+        for (role, score) in roles.roles(identity) {
+            candidates.push(NameCandidate {
                 name: JavaIdentifier::from_hint(Self::role_name(role)),
                 score,
             });
-        let element_score = roles.score(variable.identity(), VariableRole::Element);
-        let typed_role_candidate = (element_score != 0)
-            .then(|| {
-                self.type_name(variable.ty()).map(|name| NameCandidate {
+            if role == VariableRole::Element && score != 0 {
+                type_score = type_score.max(score.saturating_add(25));
+            }
+        }
+        candidates.extend(
+            graph
+                .edges_for(identity)
+                .filter_map(|edge| self.edge_candidate(edge, graph)),
+        );
+        if let Some(field) = self
+            .constants
+            .as_ref()
+            .and_then(|constants| constants.name(identity))
+        {
+            candidates.push(NameCandidate {
+                name: self.morphology.lower_camel(&JavaIdentifier::from_hint(
+                    field.strip_prefix("FLAG_").unwrap_or(field),
+                )),
+                score: 125,
+            });
+        }
+        if let Some(name) = self
+            .relations
+            .as_ref()
+            .and_then(|relations| relations.name(identity))
+        {
+            candidates.push(NameCandidate {
+                name: JavaIdentifier::from_hint(name),
+                score: 115,
+            });
+        }
+        // Even a reserved name loses only the conflict penalty. Keep ties so
+        // the solver can still choose the lexicographically first candidate.
+        let best_score = candidates
+            .iter()
+            .map(|candidate| candidate.score)
+            .max()
+            .unwrap_or(0);
+        if type_score >= best_score.saturating_sub(conflict_penalty) {
+            if let Some(name) = self.type_name(variable.ty()) {
+                candidates.push(NameCandidate {
                     name,
-                    score: element_score.saturating_add(25),
-                })
-            })
-            .flatten();
-        let field_candidates = self.field_candidates(variable, graph);
-        let loop_value_candidates = self.loop_value_candidates(variable, graph);
-        let method_result_candidates = self.method_result_candidates(variable, graph);
-        let constant_candidates = self.constant_candidates(variable, graph);
-        let relation_candidates = self.relation_candidates(variable);
-        let type_candidate = self
-            .type_name(variable.ty())
-            .map(|name| NameCandidate { name, score: 40 });
-        Self::merge(
-            role_candidates
-                .chain(typed_role_candidate)
-                .chain(field_candidates)
-                .chain(loop_value_candidates)
-                .chain(method_result_candidates)
-                .chain(constant_candidates)
-                .chain(relation_candidates)
-                .chain(type_candidate),
-        )
+                    score: type_score,
+                });
+            }
+        }
+        candidates
     }
 }
 
@@ -419,7 +345,7 @@ trait VariableNameSolver {
         roles: &VariableRoleScores,
         reserved: &[JavaIdentifier],
         excluded: &BTreeSet<u32>,
-    ) -> BTreeMap<u32, JavaIdentifier>;
+    ) -> (BTreeMap<u32, JavaIdentifier>, bool);
 }
 
 struct ConstrainedNameSolver<'a, Model> {
@@ -445,16 +371,31 @@ impl<Model: VariableNameModel> VariableNameSolver for ConstrainedNameSolver<'_, 
         roles: &VariableRoleScores,
         reserved: &[JavaIdentifier],
         excluded: &BTreeSet<u32>,
-    ) -> BTreeMap<u32, JavaIdentifier> {
+    ) -> (BTreeMap<u32, JavaIdentifier>, bool) {
+        let mut needs_fallback = false;
         let mut proposals = graph
             .variables()
             .filter(|variable| {
                 variable.is_source_binding() && !excluded.contains(&variable.identity())
             })
             .filter_map(|variable| {
-                let candidates = self.model.candidates(variable, graph, roles);
-                let score = candidates.first()?.score;
-                (score >= self.minimum_score).then_some((variable.identity(), score, candidates))
+                let mut candidates =
+                    self.model
+                        .candidates(variable, graph, roles, self.conflict_penalty);
+                let Some(score) = candidates
+                    .iter()
+                    .map(|candidate| candidate.score)
+                    .max()
+                    .filter(|score| *score >= self.minimum_score)
+                else {
+                    needs_fallback = true;
+                    return None;
+                };
+                let floor = self
+                    .minimum_score
+                    .max(score.saturating_sub(self.conflict_penalty));
+                candidates.retain(|candidate| candidate.score >= floor);
+                Some((variable.identity(), score, candidates))
             })
             .collect::<Vec<_>>();
         proposals.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
@@ -468,7 +409,6 @@ impl<Model: VariableNameModel> VariableNameSolver for ConstrainedNameSolver<'_, 
         for (variable, _, candidates) in proposals {
             let selected = candidates
                 .iter()
-                .filter(|candidate| candidate.score >= self.minimum_score)
                 .map(|candidate| {
                     let conflicts = used.contains(&candidate.name);
                     let utility = candidate
@@ -490,7 +430,36 @@ impl<Model: VariableNameModel> VariableNameSolver for ConstrainedNameSolver<'_, 
                 .unwrap_or_else(|| used.claim_hint_variant(&candidates[0].name));
             solution.insert(variable, selected);
         }
-        solution
+        (solution, needs_fallback)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct LocalNameEvidence {
+    intrinsic_names: BTreeMap<u32, JavaIdentifier>,
+    has_local_binding: bool,
+}
+
+impl LocalNameEvidence {
+    pub(super) fn observe_binding(
+        &mut self,
+        register: &crate::ir::RegisterArg,
+        parameters: &[Option<u32>],
+        receiver: Option<u32>,
+    ) {
+        if !self.has_local_binding {
+            self.has_local_binding = register.code_var.is_some_and(|variable| {
+                Some(variable) != receiver && !parameters.contains(&Some(variable))
+            });
+        }
+    }
+
+    pub(super) fn observe_operation(&mut self, operation: &crate::ir::SemanticOperation) {
+        if let Some((variable, name)) = jadx_local_names::intrinsic_binding(operation) {
+            self.intrinsic_names
+                .entry(variable)
+                .or_insert_with(|| JavaIdentifier::from_hint(&name));
+        }
     }
 }
 
@@ -507,53 +476,53 @@ impl<'a> SemanticNameRecovery<'a> {
         &self,
         root: &SemanticNode,
         source_types: &crate::ir::analysis::SourceTypeEnvironment,
+        evidence: LocalNameEvidence,
+        resolved_types: &BTreeMap<ArgType, JavaType>,
         parameter_names: &[JavaIdentifier],
         parameter_variables: &[Option<u32>],
         this_variable: Option<u32>,
     ) -> BTreeMap<u32, JavaIdentifier> {
+        let LocalNameEvidence {
+            intrinsic_names,
+            has_local_binding,
+        } = evidence;
+        if !has_local_binding {
+            return intrinsic_names;
+        }
         let mut excluded = parameter_variables
             .iter()
             .copied()
             .flatten()
             .chain(this_variable)
             .collect::<BTreeSet<_>>();
-        let (intrinsic_names, has_local_binding) =
-            jadx_local_names::intrinsic_local_names(root, &excluded);
         excluded.extend(intrinsic_names.keys().copied());
-        // Only statement results and lexical bindings can become source
-        // locals. The intrinsic-name walk already visited each such site.
-        let graph = has_local_binding.then(|| VariableSemanticGraph::analyze(root, source_types));
-        let Some(graph) = graph.filter(|graph| {
-            graph.variables().any(|variable| {
-                variable.is_source_binding() && !excluded.contains(&variable.identity())
-            })
-        }) else {
-            return intrinsic_names
-                .into_iter()
-                .map(|(identity, name)| (identity, JavaIdentifier::from_hint(&name)))
-                .collect();
-        };
+        let graph = VariableSemanticGraph::analyze(root, source_types);
+        if !graph.variables().any(|variable| {
+            variable.is_source_binding() && !excluded.contains(&variable.identity())
+        }) {
+            return intrinsic_names;
+        }
         let roles = StructuralVariableRoleAnalysis.analyze(&graph);
-        let model = StructuralNameModel::for_graph(self.types, &graph);
-        let mut names = ConstrainedNameSolver::new(&model, 35).solve(
+        let model = StructuralNameModel::for_graph(self.types, resolved_types, &graph);
+        let (mut names, needs_fallback) = ConstrainedNameSolver::new(&model, 35).solve(
             &graph,
             &roles,
             parameter_names,
             &excluded,
         );
         for (identity, name) in intrinsic_names {
-            names
-                .entry(identity)
-                .or_insert_with(|| JavaIdentifier::from_hint(&name));
+            names.entry(identity).or_insert(name);
         }
-        fill_remaining_source_names(
-            &graph,
-            &roles,
-            &model,
-            parameter_names,
-            &excluded,
-            &mut names,
-        );
+        if needs_fallback {
+            fill_remaining_source_names(
+                &graph,
+                &roles,
+                &model,
+                parameter_names,
+                &excluded,
+                &mut names,
+            );
+        }
         names
     }
 }
@@ -626,3 +595,7 @@ fn fill_remaining_source_names(
         names.insert(variable.identity(), name);
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/semantic_name_candidates.rs"]
+mod candidate_tests;

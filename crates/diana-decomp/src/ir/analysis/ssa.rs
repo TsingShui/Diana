@@ -573,38 +573,70 @@ pub struct CodeVariables {
 }
 
 impl CodeVariables {
-    pub(super) fn from_singletons(values: &SsaValueGraph, inputs: &[SsaVar]) -> Self {
-        // SSA values and declared inputs each arrive in register/version order.
+    fn declared_values<'a>(
+        values: &'a SsaValueGraph,
+        inputs: &'a [SsaVar],
+    ) -> impl Iterator<Item = SsaVar> + 'a {
+        // Both producers enumerate unique names in register/version order.
         let mut values = values.values.iter().map(|value| value.variable).peekable();
         let mut inputs = inputs.iter().copied().peekable();
-        let mut assignments = Vec::with_capacity(values.len());
-        loop {
-            let variable = match (values.peek(), inputs.peek()) {
-                (Some(left), Some(right)) if left == right => {
-                    inputs.next();
-                    values.next()
-                }
-                (Some(left), Some(right)) if right < left => inputs.next(),
-                (Some(_), _) => values.next(),
-                (None, _) => inputs.next(),
-            };
-            let Some(variable) = variable else { break };
-            assignments.push((variable, assignments.len() as u32));
-        }
+        std::iter::from_fn(move || match (values.peek(), inputs.peek()) {
+            (Some(left), Some(right)) if left == right => {
+                inputs.next();
+                values.next()
+            }
+            (Some(left), Some(right)) if right < left => inputs.next(),
+            (Some(_), _) => values.next(),
+            (None, _) => inputs.next(),
+        })
+    }
+
+    pub(super) fn from_singletons(values: &SsaValueGraph, inputs: &[SsaVar]) -> Self {
+        let mut assignments = Vec::with_capacity(values.values.len());
+        assignments.extend(
+            Self::declared_values(values, inputs)
+                .enumerate()
+                .map(|(id, value)| (value, id as u32)),
+        );
         Self::from_assignments(assignments.len() as u32, assignments)
     }
 
-    pub(super) fn from_classes(mut classes: SsaClasses) -> Self {
-        let variables = classes.values();
+    pub(super) fn from_classes(
+        values: &SsaValueGraph,
+        inputs: &[SsaVar],
+        mut classes: SsaClasses,
+    ) -> Self {
+        // A name outside the coalescer is a singleton. Include names introduced
+        // only by the structured body in the same order as declared SSA names.
+        let mut touched = classes.values().into_iter().peekable();
         let mut roots = foldhash::HashMap::default();
-        let mut assignments = Vec::with_capacity(variables.len());
-        for variable in variables {
-            let root = classes.root(variable);
-            let next = roots.len() as u32;
-            let id = *roots.entry(root).or_insert(next);
-            assignments.push((variable, id));
+        let mut assignments = Vec::with_capacity(values.values.len().max(touched.len()));
+        let mut count = 0usize;
+        let mut next_id = || {
+            let id = count as u32;
+            count += 1;
+            id
+        };
+        let mut assign = |value, touched: bool| {
+            let id = if touched {
+                *roots
+                    .entry(classes.root(value))
+                    .or_insert_with(&mut next_id)
+            } else {
+                next_id()
+            };
+            assignments.push((value, id));
+        };
+        for value in Self::declared_values(values, inputs) {
+            while let Some(earlier) = touched.next_if(|&other| other < value) {
+                assign(earlier, true);
+            }
+            assign(value, touched.next_if_eq(&value).is_some());
         }
-        Self::from_assignments(roots.len() as u32, assignments)
+        for remaining in touched {
+            assign(remaining, true);
+        }
+        Self::from_assignments(count as u32, assignments)
     }
 
     fn from_assignments(count: u32, assignments: Vec<(SsaVar, u32)>) -> Self {

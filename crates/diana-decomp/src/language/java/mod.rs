@@ -26,6 +26,7 @@ pub use ast::{
     JavaTypeParameter, JavaUnaryOp, JavaUpdateOp,
 };
 pub use declaration_placement::LexicalDeclarationPlacement;
+pub(crate) use dex::JavaInputBindings;
 pub use dex::{DexJavaDialect, JavaLoweringError, JavaSourceErasure, OuterInstanceBinding};
 pub use emit::{JavaPrintError, JavaPrinter};
 pub use lower::{JavaDialect, JavaLowerer, JavaStructuralError};

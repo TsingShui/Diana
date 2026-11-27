@@ -2,26 +2,31 @@ use crate::ir::{InsnType, RegisterArg, SemanticBindingKind, SemanticNode, Semant
 
 use super::JavaLoweringError;
 
-pub(super) struct JavaInputBindings {
+#[derive(Debug, Clone, Default)]
+pub(crate) struct JavaInputBindings {
     bindings: Vec<(SemanticBindingKind, RegisterArg)>,
-    invalid: Option<JavaLoweringError>,
+    invalid: Option<Box<JavaLoweringError>>,
 }
 
 impl JavaInputBindings {
-    pub(super) fn collect(
-        root: &SemanticNode,
-    ) -> Result<Vec<(SemanticBindingKind, RegisterArg)>, JavaLoweringError> {
-        let mut input = Self {
-            bindings: Vec::new(),
-            invalid: None,
-        };
+    pub(super) fn collect(root: &SemanticNode) -> Self {
+        let mut input = Self::default();
         input.visit_node(root);
-        input.invalid.map_or(Ok(input.bindings), Err)
+        input
+    }
+
+    pub(super) fn finish(
+        self,
+    ) -> Result<Vec<(SemanticBindingKind, RegisterArg)>, JavaLoweringError> {
+        match self.invalid {
+            Some(error) => Err(*error),
+            None => Ok(self.bindings),
+        }
     }
 
     fn reject(&mut self, error: JavaLoweringError) {
         if self.invalid.is_none() {
-            self.invalid = Some(error);
+            self.invalid = Some(Box::new(error));
         }
     }
 }
@@ -44,3 +49,7 @@ impl SemanticVisitor for JavaInputBindings {
         self.reject(error);
     }
 }
+
+#[cfg(test)]
+#[path = "../../../../tests/internal/java_input_bindings.rs"]
+mod input_tests;
