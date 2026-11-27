@@ -415,3 +415,35 @@ fn one_physical_block_keeps_forward_and_exit_topologies_distinct() {
         DominanceError::MissingEntry(cfg.entry)
     );
 }
+
+#[test]
+fn completed_subtrees_are_grouped_in_child_order_with_sparse_block_ids() {
+    let id = BlockId::new;
+    let mut cfg = CFG::new("sparse_diamond");
+    cfg.entry = id(90);
+    for n in [90, 60, 20, 65, 25, 10] {
+        cfg.add_block(Block::new(id(n)));
+    }
+    for (source, target) in [(90, 60), (90, 20), (60, 65), (20, 25), (65, 10), (25, 10)] {
+        cfg.add_edge(id(source), id(target), EdgeKind::Normal);
+    }
+    // The shared exit is an immediate child of the entry. Its ID precedes
+    // both arm roots, whose descendants were interleaved in physical order.
+    let tree = DominatorTree::compute(&cfg).unwrap();
+    let mut expected = vec![
+        (id(10), 0),
+        (id(25), 0),
+        (id(20), 1),
+        (id(65), 0),
+        (id(60), 1),
+        (id(90), 3),
+    ];
+    assert_eq!(tree.postorder_with_child_counts(), expected);
+    expected.push((BlockId::INVALID, 1));
+    assert_eq!(
+        tree.with_virtual_root()
+            .unwrap()
+            .postorder_with_child_counts(),
+        expected
+    );
+}

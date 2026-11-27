@@ -129,8 +129,15 @@ impl ReachingConditions {
     }
 
     pub fn condition(&self, block: BlockId) -> Option<&ReachingCondition> {
-        self.rank(block)
-            .and_then(|index| self.conditions.get(index))
+        self.ranked_condition(block).map(|(_, condition)| condition)
+    }
+
+    pub(in crate::ir) fn ranked_condition(
+        &self,
+        block: BlockId,
+    ) -> Option<(usize, &ReachingCondition)> {
+        let rank = self.rank(block)?;
+        Some((rank, self.conditions.get(rank)?))
     }
 
     pub fn branch_variables(&self) -> &[BlockId] {

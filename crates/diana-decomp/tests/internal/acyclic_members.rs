@@ -149,7 +149,7 @@ fn suspended_branch_queries_preserve_eligibility_order_and_bdd_capacity() {
         let facts = ReachingConditions::analyze(cfg).unwrap();
         let first = facts.compile(&BoolExpr::block(BlockId::new(0))).unwrap();
         let assumptions = [facts.truth(), first, facts.not(first).unwrap()];
-        let mut queries = BranchQueries::default();
+        let mut queries = BranchQueries::new(&facts);
         for (scope, rank, wanted) in [
             (0, 0, 0),
             (1, 0, 1),

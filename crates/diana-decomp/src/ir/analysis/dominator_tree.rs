@@ -387,6 +387,16 @@ impl DominatorTree {
         result
     }
 
+    /// Each set of immediate children finishes consecutively on a bottom-up
+    /// fold's value stack, in the same order as `children`.
+    pub(in crate::ir) fn postorder_with_child_counts(&self) -> Vec<(BlockId, usize)> {
+        let mut result = vec![(self.entry, usize::from(self.virtual_child.is_some())); self.len()];
+        for node in self.nodes.iter() {
+            result[node.postorder as usize] = (node.block, node.children.len());
+        }
+        result
+    }
+
     /// Get all nodes in dominator tree postorder
     pub fn postorder(&self) -> Vec<BlockId> {
         let mut result = vec![self.entry; self.len()];

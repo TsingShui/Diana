@@ -261,10 +261,10 @@ impl JavaTypeErasureIndex {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 // Each entry retains its two immutable class shapes. Mutating generic
 // arguments detaches the shared segments and requires a fresh relation query.
-struct AssignabilityCache {
+pub(super) struct AssignabilityCache {
     entries: SmallVec<[(JavaClassType, JavaClassType, bool); 2]>,
     next: usize,
 }
@@ -313,6 +313,11 @@ impl<'a> JavaTypeRelations<'a> {
             variable_bounds: None,
             hierarchy,
         }
+    }
+
+    pub(super) fn with_assignability(mut self, cache: &'a RefCell<AssignabilityCache>) -> Self {
+        self.assignability = Some(cache);
+        self
     }
 
     pub(super) fn with_erasure_index(mut self, index: Option<&'a JavaTypeErasureIndex>) -> Self {
@@ -3075,14 +3080,13 @@ pub(super) struct SourceTypeFlow<'a> {
 
 impl<'a> SourceTypeFlow<'a> {
     fn relations(&self) -> JavaTypeRelations<'_> {
-        let mut relations = JavaTypeRelations::new(
+        JavaTypeRelations::new(
             self.source_types,
             self.type_variable_erasures,
             self.generic_projection,
         )
-        .with_erasure_index(Some(self.source_erasures.as_ref()));
-        relations.assignability = Some(&self.assignability);
-        relations
+        .with_erasure_index(Some(self.source_erasures.as_ref()))
+        .with_assignability(&self.assignability)
     }
     pub(super) fn solve(
         root: &crate::ir::SemanticNode,

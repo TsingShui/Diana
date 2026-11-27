@@ -187,24 +187,21 @@ impl<'a> AcyclicStructureAnalysis<'a> {
 
     fn analyze(&self) -> Result<Option<AcyclicStructureFact>, AcyclicStructureError> {
         let dominators = DominatorTree::for_reaching_conditions(self.cfg, self.facts)?;
-        let mut subtrees = BTreeMap::<BlockId, StructureItem>::new();
-        let mut queries = BranchQueries::default();
-        for block in dominators.postorder() {
+        let mut subtrees = Vec::<StructureItem>::new();
+        let mut queries = BranchQueries::new(self.facts);
+        for (block, child_count) in dominators.postorder_with_child_counts() {
+            let (rank, condition) = self
+                .facts
+                .ranked_condition(block)
+                .ok_or(AcyclicStructureError::MissingCondition(block))?;
             let assumption = ConditionDomain {
-                domain: self
-                    .facts
-                    .condition(block)
-                    .ok_or(AcyclicStructureError::MissingCondition(block))?
-                    .domain(),
+                domain: condition.domain(),
             };
-            let mut children = dominators
-                .children(block)
-                .map(|child| {
-                    subtrees
-                        .remove(&child)
-                        .ok_or(AcyclicStructureError::MissingDominatorSubtree(child))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+            let start = subtrees
+                .len()
+                .checked_sub(child_count)
+                .ok_or(AcyclicStructureError::MalformedDominatorTree)?;
+            let mut children = subtrees.split_off(start);
             children.sort_by_key(|child| child.lexical_rank);
             let (descendants, mut terminals) = if children.is_empty() {
                 (AcyclicStructureFact::Empty, BTreeSet::new())
@@ -219,24 +216,19 @@ impl<'a> AcyclicStructureAnalysis<'a> {
                 terminals.insert(block);
             }
             let block_structure = self.block_structure(block)?;
-            let rank = self
-                .facts
-                .rank(block)
-                .ok_or(AcyclicStructureError::MissingRank(block))?;
-            subtrees.insert(
-                block,
-                StructureItem {
-                    condition: assumption,
-                    roots: smallvec![rank],
-                    terminals,
-                    lexical_rank: rank,
-                    structure: AcyclicStructureFact::sequence(vec![block_structure, descendants]),
-                },
-            );
+            subtrees.push(StructureItem {
+                condition: assumption,
+                roots: smallvec![rank],
+                terminals,
+                lexical_rank: rank,
+                structure: descendants.prepend_block(block_structure),
+            });
         }
-        let root = subtrees.remove(&self.cfg.entry).ok_or(
-            AcyclicStructureError::MissingDominatorSubtree(self.cfg.entry),
-        )?;
+        let root = subtrees
+            .pop()
+            .ok_or(AcyclicStructureError::MissingDominatorSubtree(
+                self.cfg.entry,
+            ))?;
         if !subtrees.is_empty() {
             return Err(AcyclicStructureError::MalformedDominatorTree);
         }
@@ -249,13 +241,14 @@ impl<'a> AcyclicStructureAnalysis<'a> {
         assumption: ConditionDomain,
         queries: &mut BranchQueries,
     ) -> Result<Option<Refined>, AcyclicStructureError> {
-        let mut tasks = vec![RefineTask::Refine {
+        let mut tasks = Vec::new();
+        let mut first = Some(RefineTask::Refine {
             items,
             assumption,
             first_variable: 0,
-        }];
+        });
         let mut results = Vec::new();
-        while let Some(task) = tasks.pop() {
+        while let Some(task) = first.take().or_else(|| tasks.pop()) {
             match task {
                 RefineTask::Refine {
                     items,
@@ -278,6 +271,9 @@ impl<'a> AcyclicStructureAnalysis<'a> {
                         let Some(structure) = self.finish(items, &assumption)? else {
                             return Ok(None);
                         };
+                        if tasks.is_empty() && results.is_empty() {
+                            return Ok(Some(structure));
+                        }
                         results.push(structure);
                         continue;
                     };
@@ -400,7 +396,7 @@ impl<'a> AcyclicStructureAnalysis<'a> {
         assumption: &ConditionDomain,
         first_variable: usize,
         variables: &mut BranchVariables,
-        literals: &mut Vec<Option<(Bdd, Bdd)>>,
+        literals: &mut BranchLiterals,
     ) -> Result<Option<ConditionCluster>, AcyclicStructureError> {
         // A singleton cannot partition. Its first complete search still issues
         // all BDD queries in order, including those that charge cache entries.
@@ -634,12 +630,58 @@ struct ConditionDomain {
     domain: Bdd,
 }
 
-/// Reaching conditions and their ordered variables belong to one BDD arena.
-#[derive(Default)]
+/// Ordered variables, their reachability domains and their literals belong to
+/// this region's BDD arena. Many dispatches have the same reachability domain.
 struct BranchQueries {
     root: BranchVariables,
     assumed: HashMap<Bdd, BranchVariables>,
-    literals: Vec<Option<(Bdd, Bdd)>>,
+    literals: BranchLiterals,
+}
+
+impl BranchQueries {
+    fn new(facts: &ReachingConditions) -> Self {
+        Self {
+            root: BranchVariables::default(),
+            assumed: HashMap::default(),
+            literals: BranchLiterals::new(facts),
+        }
+    }
+}
+
+struct BranchLiteral {
+    owner: usize,
+    pair: Option<(Bdd, Bdd)>,
+}
+
+struct BranchOwner {
+    domain: Option<Bdd>,
+    last: Option<(Bdd, bool)>,
+}
+
+struct BranchLiterals {
+    variables: Vec<BranchLiteral>,
+    owners: Vec<BranchOwner>,
+}
+
+impl BranchLiterals {
+    fn new(facts: &ReachingConditions) -> Self {
+        let mut indices = HashMap::default();
+        let mut owners = Vec::new();
+        let variables = facts
+            .branch_variables()
+            .iter()
+            .map(|&block| {
+                let domain = facts.condition(block).map(|condition| condition.domain());
+                let owner = *indices.entry(domain).or_insert_with(|| {
+                    let index = owners.len();
+                    owners.push(BranchOwner { domain, last: None });
+                    index
+                });
+                BranchLiteral { owner, pair: None }
+            })
+            .collect();
+        Self { variables, owners }
+    }
 }
 
 /// Each assumption keeps the eligible prefix that has already been examined.
@@ -659,31 +701,39 @@ impl BranchVariables {
         rank: usize,
         assumption: Bdd,
         facts: &ReachingConditions,
-        literals: &mut Vec<Option<(Bdd, Bdd)>>,
+        literals: &mut BranchLiterals,
     ) -> Result<Option<(BlockId, Bdd, Bdd)>, AcyclicStructureError> {
         let variables = facts.branch_variables();
         if let Some(&index) = self.available.get(rank) {
-            let (domain, negated) =
-                literals[index].ok_or(AcyclicStructureError::MissingCondition(variables[index]))?;
+            let (domain, negated) = literals.variables[index]
+                .pair
+                .ok_or(AcyclicStructureError::MissingCondition(variables[index]))?;
             return Ok(Some((variables[index], domain, negated)));
         }
         for (index, &condition) in variables.iter().enumerate().skip(self.tested) {
             self.tested += 1;
-            let owner = facts
-                .condition(condition)
-                .ok_or(AcyclicStructureError::MissingCondition(condition))?;
-            if !facts.implies(assumption, owner.domain())? {
+            let variable = &mut literals.variables[index];
+            let owner = &mut literals.owners[variable.owner];
+            let reachable = match owner.last {
+                Some((previous, answer)) if previous == assumption => answer,
+                _ => {
+                    let domain = owner
+                        .domain
+                        .ok_or(AcyclicStructureError::MissingCondition(condition))?;
+                    let answer = facts.implies(assumption, domain)?;
+                    owner.last = Some((assumption, answer));
+                    answer
+                }
+            };
+            if !reachable {
                 continue;
             }
-            if index >= literals.len() {
-                literals.resize(index + 1, None);
-            }
-            let (domain, negated) = match literals[index] {
-                Some(literals) => literals,
+            let (domain, negated) = match variable.pair {
+                Some(pair) => pair,
                 None => {
                     let domain = facts.compile(&BoolExpr::block(condition))?;
                     let negated = facts.not(domain)?;
-                    literals[index] = Some((domain, negated));
+                    variable.pair = Some((domain, negated));
                     (domain, negated)
                 }
             };
@@ -743,7 +793,26 @@ enum AcyclicStructureFact {
 }
 
 impl AcyclicStructureFact {
-    fn sequence(structures: Vec<Self>) -> Self {
+    fn prepend_block(self, block: Self) -> Self {
+        match self {
+            Self::Empty => block,
+            Self::Sequence(mut items) => {
+                items.push_front(block);
+                Self::Sequence(items)
+            }
+            item => Self::Sequence(VecDeque::from([block, item])),
+        }
+    }
+
+    fn sequence(mut structures: Vec<Self>) -> Self {
+        if structures.len() <= 1 {
+            return match structures.pop() {
+                Some(Self::Sequence(mut items)) if items.len() <= 1 => {
+                    items.pop_front().unwrap_or(Self::Empty)
+                }
+                item => item.unwrap_or(Self::Empty),
+            };
+        }
         let mut flattened = VecDeque::new();
         // Dominator lowering most often prepends one block to a long child
         // sequence. Keep the larger buffer when joining two sequences.

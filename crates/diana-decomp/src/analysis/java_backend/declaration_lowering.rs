@@ -425,18 +425,27 @@ struct SourceGenericTypeProjection {
     cache: GenericProjectionCache,
 }
 
+// Projection lookup borrows both type operands. Only cache misses retain a
+// pair beyond this call, including negative results.
+#[derive(Hash)]
+struct ProjectionOperands<'a, L, R>(&'a L, &'a R);
+
+impl<L: Eq, R: Eq> hashbrown::Equivalent<(L, R)> for ProjectionOperands<'_, L, R> {
+    fn equivalent(&self, key: &(L, R)) -> bool {
+        self.0 == &key.0 && self.1 == &key.1
+    }
+}
+
+type ProjectionPairs<L, R, V> =
+    std::cell::RefCell<hashbrown::HashMap<(L, R), V, foldhash::fast::RandomState>>;
+
 #[derive(Debug, Default)]
 struct GenericProjectionCache {
-    specialized:
-        std::cell::RefCell<std::collections::BTreeMap<(ArgType, JavaType), Option<JavaType>>>,
-    inferred: std::cell::RefCell<std::collections::BTreeMap<(ArgType, JavaType), Option<JavaType>>>,
-    projected:
-        std::cell::RefCell<std::collections::BTreeMap<(JavaType, ArgType), Option<JavaType>>>,
-    subtype_relations: std::cell::RefCell<
-        std::collections::BTreeMap<(ArgType, ArgType), crate::ir::analysis::SubtypeRelation>,
-    >,
-    common_types:
-        std::cell::RefCell<std::collections::BTreeMap<(ArgType, ArgType), Option<ArgType>>>,
+    specialized: ProjectionPairs<ArgType, JavaType, Option<JavaType>>,
+    inferred: ProjectionPairs<ArgType, JavaType, Option<JavaType>>,
+    projected: ProjectionPairs<JavaType, ArgType, Option<JavaType>>,
+    subtype_relations: ProjectionPairs<ArgType, ArgType, crate::ir::analysis::SubtypeRelation>,
+    common_types: ProjectionPairs<ArgType, ArgType, Option<ArgType>>,
     resolved: std::cell::RefCell<std::collections::BTreeMap<ArgType, JavaType>>,
     declared_parameters: std::cell::RefCell<
         std::collections::BTreeMap<
@@ -475,7 +484,7 @@ impl crate::language::java::GenericTypeProjection for SourceGenericTypeProjectio
         subtype: &ArgType,
         expected_supertype: &JavaType,
     ) -> Option<JavaType> {
-        let key = (subtype.clone(), expected_supertype.clone());
+        let key = ProjectionOperands(subtype, expected_supertype);
         if let Some(result) = self.cache.specialized.borrow().get(&key).cloned() {
             return result;
         }
@@ -487,12 +496,12 @@ impl crate::language::java::GenericTypeProjection for SourceGenericTypeProjectio
         self.cache
             .specialized
             .borrow_mut()
-            .insert(key, result.clone());
+            .insert((key.0.clone(), key.1.clone()), result.clone());
         result
     }
 
     fn infer_subtype(&self, subtype: &ArgType, expected_supertype: &JavaType) -> Option<JavaType> {
-        let key = (subtype.clone(), expected_supertype.clone());
+        let key = ProjectionOperands(subtype, expected_supertype);
         if let Some(result) = self.cache.inferred.borrow().get(&key).cloned() {
             return result;
         }
@@ -501,7 +510,10 @@ impl crate::language::java::GenericTypeProjection for SourceGenericTypeProjectio
             .source_signature(expected_supertype)
             .and_then(|expected| self.source_abi.infer_subtype(subtype, &expected))
             .and_then(|inferred| self.names.resolve_generic_type(&inferred).ok());
-        self.cache.inferred.borrow_mut().insert(key, result.clone());
+        self.cache
+            .inferred
+            .borrow_mut()
+            .insert((key.0.clone(), key.1.clone()), result.clone());
         result
     }
 
@@ -510,7 +522,7 @@ impl crate::language::java::GenericTypeProjection for SourceGenericTypeProjectio
         subtype: &JavaType,
         expected_supertype: &ArgType,
     ) -> Option<JavaType> {
-        let key = (subtype.clone(), expected_supertype.clone());
+        let key = ProjectionOperands(subtype, expected_supertype);
         if let Some(result) = self.cache.projected.borrow().get(&key).cloned() {
             return result;
         }
@@ -525,7 +537,7 @@ impl crate::language::java::GenericTypeProjection for SourceGenericTypeProjectio
         self.cache
             .projected
             .borrow_mut()
-            .insert(key, result.clone());
+            .insert((key.0.clone(), key.1.clone()), result.clone());
         result
     }
 
@@ -538,7 +550,7 @@ impl crate::language::java::GenericTypeProjection for SourceGenericTypeProjectio
         if subtype == supertype {
             return SubtypeRelation::Yes;
         }
-        let key = (subtype.clone(), supertype.clone());
+        let key = ProjectionOperands(subtype, supertype);
         if let Some(result) = self.cache.subtype_relations.borrow().get(&key).copied() {
             return result;
         }
@@ -564,16 +576,16 @@ impl crate::language::java::GenericTypeProjection for SourceGenericTypeProjectio
         self.cache
             .subtype_relations
             .borrow_mut()
-            .insert(key, result);
+            .insert((key.0.clone(), key.1.clone()), result);
         result
     }
 
     fn least_common_supertype(&self, left: &ArgType, right: &ArgType) -> Option<ArgType> {
         use crate::ir::analysis::TypeHierarchy;
         let key = if left <= right {
-            (left.clone(), right.clone())
+            ProjectionOperands(left, right)
         } else {
-            (right.clone(), left.clone())
+            ProjectionOperands(right, left)
         };
         if let Some(result) = self.cache.common_types.borrow().get(&key).cloned() {
             return result;
@@ -588,7 +600,7 @@ impl crate::language::java::GenericTypeProjection for SourceGenericTypeProjectio
         self.cache
             .common_types
             .borrow_mut()
-            .insert(key, result.clone());
+            .insert((key.0.clone(), key.1.clone()), result.clone());
         result
     }
 

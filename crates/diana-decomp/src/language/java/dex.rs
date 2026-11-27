@@ -195,6 +195,7 @@ pub struct DexJavaDialect {
     source_variable_requirements: BTreeMap<u32, JavaType>,
     source_value_requirements: BTreeMap<crate::ir::analysis::SsaVar, JavaType>,
     primitive_expression_types: RefCell<BTreeMap<InstructionId, Option<PrimitiveType>>>,
+    class_assignability: RefCell<super::source_types::AssignabilityCache>,
     source_field_types: Arc<BTreeMap<FieldReference, JavaType>>,
     generic_fields: Arc<BTreeMap<FieldReference, GenericFieldContract>>,
     source_object_types: Arc<SourceObjectTypes>,
@@ -370,6 +371,7 @@ impl DexJavaDialect {
             source_variable_requirements: BTreeMap::new(),
             source_value_requirements: BTreeMap::new(),
             primitive_expression_types: RefCell::new(BTreeMap::new()),
+            class_assignability: RefCell::default(),
             source_field_types: Arc::new(BTreeMap::new()),
             generic_fields: Arc::new(BTreeMap::new()),
             source_object_types: Arc::new(SourceObjectTypes::default()),
@@ -462,6 +464,7 @@ impl DexJavaDialect {
 
     pub(crate) fn with_source_object_types(mut self, types: Arc<SourceObjectTypes>) -> Self {
         self.source_object_types = types;
+        self.class_assignability = RefCell::default();
         self
     }
 
@@ -470,6 +473,7 @@ impl DexJavaDialect {
         projection: Rc<dyn GenericTypeProjection>,
     ) -> Self {
         self.generic_type_projection = Some(projection);
+        self.class_assignability = RefCell::default();
         self
     }
 
@@ -508,11 +512,13 @@ impl DexJavaDialect {
         erasures: BTreeMap<JavaIdentifier, ArgType>,
     ) -> Self {
         self.source_type_erasures = erasures;
+        self.class_assignability = RefCell::default();
         self
     }
 
     pub fn with_source_type_bounds(mut self, bounds: BTreeMap<JavaIdentifier, JavaType>) -> Self {
         self.source_type_bounds = bounds;
+        self.class_assignability = RefCell::default();
         self
     }
 
@@ -684,7 +690,6 @@ impl DexJavaDialect {
         arg: &SemanticExpression,
         expected: &ArgType,
     ) -> Result<JavaExpr, JavaLoweringError> {
-        let actual = self.source_primitive_type(arg);
         if expected == &ArgType::BOOLEAN && matches!(arg, SemanticExpression::Select { .. }) {
             return self.boolean_value(arg);
         }
@@ -724,6 +729,7 @@ impl DexJavaDialect {
                 return self.arg_as_source_target(arg, expected, &source);
             }
         }
+        let actual = self.coercion_operand_type(arg, expected);
         let expression = self.arg(arg)?;
         Ok(self.coerce_typed(expression, actual, expected))
     }
@@ -749,11 +755,11 @@ impl DexJavaDialect {
         erased: &ArgType,
         source: &JavaType,
     ) -> Result<JavaExpr, JavaLoweringError> {
+        if matches!(source, JavaType::Primitive(_)) {
+            return self.arg_as_with_source_type(value, erased, source);
+        }
         let actual = self.cast_source_type(value);
         let expression = self.arg_as_with_source_type(value, erased, source)?;
-        if matches!(source, JavaType::Primitive(_)) {
-            return Ok(expression);
-        }
         let erased_type = self.source_type(erased)?.into_raw();
         let emitted_type = self.emitted_expression_type(&expression);
         let emitted_requires_parameterized_binding = GenericCast::is_parameterized(source)
@@ -764,11 +770,12 @@ impl DexJavaDialect {
         // DEX-level source information is erased and is only a fallback when the
         // emitted expression cannot establish a type of its own.
         let conversion_type = emitted_type.as_ref().or(actual.as_ref());
+        let assignable = conversion_type.map(|actual| self.source_assignable_to(actual, source));
         let accepts_target = !emitted_requires_parameterized_binding
-            && (conversion_type.is_some_and(|actual| self.source_assignable_to(actual, source))
+            && (assignable == Some(true)
                 || (emitted_type.is_none() && self.accepts_target_type(value, source)));
-        let actual_is_incompatible = emitted_requires_parameterized_binding
-            || conversion_type.is_some_and(|actual| !self.source_assignable_to(actual, source));
+        let actual_is_incompatible =
+            emitted_requires_parameterized_binding || assignable == Some(false);
         if (!Self::source_return_requires_cast(source, &erased_type) && !actual_is_incompatible)
             || matches!(expression, JavaExpr::Literal(JavaLiteral::Null))
             || matches!(&expression, JavaExpr::Cast { ty, .. } if ty == source)
@@ -971,6 +978,26 @@ impl DexJavaDialect {
                 when_false: Box::new(self.coerce(*when_false, expected)),
             },
             (_, expression) => expression,
+        }
+    }
+
+    fn coercion_operand_type(
+        &self,
+        value: &SemanticExpression,
+        expected: &ArgType,
+    ) -> Option<PrimitiveType> {
+        // Reference, floating-point, and unknown targets use only the literal
+        // and conditional conversion in coerce(), regardless of operand type.
+        match expected {
+            ArgType::Primitive(
+                PrimitiveType::Boolean
+                | PrimitiveType::Byte
+                | PrimitiveType::Short
+                | PrimitiveType::Char
+                | PrimitiveType::Int
+                | PrimitiveType::Long,
+            ) => self.source_primitive_type(value),
+            _ => None,
         }
     }
 
@@ -2343,10 +2370,14 @@ impl DexJavaDialect {
         } else {
             inferred_receiver_source_type.or_else(|| raw_receiver_type.clone())
         };
-        let receiver_requires_source_conversion = receiver_actual_type
-            .as_ref()
-            .zip(receiver_source_type.as_ref())
-            .is_some_and(|(actual, expected)| !self.source_assignable_to(actual, expected));
+        let cast_receiver = receiver_requires_capture_conversion
+            || (!receiver_is_source_compatible
+                && receiver_actual_type
+                    .as_ref()
+                    .zip(receiver_source_type.as_ref())
+                    .is_some_and(|(actual, expected)| {
+                        !self.source_assignable_to(actual, expected)
+                    }));
         let invocation_arguments = insn
             .operands()
             .get(usize::from(!is_static)..)
@@ -2479,25 +2510,21 @@ impl DexJavaDialect {
                     self.specialize_standalone_invocation(receiver, expected, &mut expression);
                 }
                 let expression = self.preserve_standalone_check_cast(receiver, expression);
-                Some(Box::new(
-                    if receiver_requires_capture_conversion
-                        || (!receiver_is_source_compatible && receiver_requires_source_conversion)
-                    {
-                        let expected = receiver_source_type
-                            .as_ref()
-                            .ok_or(JavaLoweringError::MissingArgument(insn.insn_type))?;
-                        let erased = self.source_type(&method.owner)?.into_raw();
-                        self.source_cast(
-                            expression,
-                            receiver,
-                            receiver_actual_type.as_ref(),
-                            expected,
-                            &erased,
-                        )
-                    } else {
-                        expression
-                    },
-                ))
+                Some(Box::new(if cast_receiver {
+                    let expected = receiver_source_type
+                        .as_ref()
+                        .ok_or(JavaLoweringError::MissingArgument(insn.insn_type))?;
+                    let erased = self.source_type(&method.owner)?.into_raw();
+                    self.source_cast(
+                        expression,
+                        receiver,
+                        receiver_actual_type.as_ref(),
+                        expected,
+                        &erased,
+                    )
+                } else {
+                    expression
+                }))
             }
         };
         let overload_casts = self.overload_argument_casts(method, invocation_arguments);
@@ -2510,28 +2537,14 @@ impl DexJavaDialect {
                 let Some(expected) = method.descriptor.parameters.get(index) else {
                     return self.arg(arg);
                 };
-                let inferred_target = argument_source_types.get(index).cloned().flatten();
-                let proven_erasure_conversion = inferred_target.as_ref().is_some_and(|target| {
-                    let actual = self.source_expression_type(arg);
-                    actual.as_ref().is_some_and(|actual| {
-                        self.source_erasure(actual)
-                            .as_ref()
-                            .zip(self.source_erasure(target).as_ref())
-                            .is_some_and(|(actual, target)| {
-                                actual == target
-                                    || self
-                                        .generic_type_projection
-                                        .as_deref()
-                                        .is_some_and(|projection| {
-                                            projection.is_subtype(actual, target)
-                                        })
-                            })
+                let mut target_type = argument_source_types
+                    .get(index)
+                    .and_then(Option::as_ref)
+                    .filter(|target| {
+                        !unchecked_arguments.contains(&index)
+                            || self.proves_erasure_conversion(arg, target)
                     })
-                });
-                let mut target_type = (!unchecked_arguments.contains(&index)
-                    || proven_erasure_conversion)
-                    .then_some(inferred_target)
-                    .flatten();
+                    .cloned();
                 if let Some(requirement) = self
                     .source_requirement_type(arg)
                     .filter(|requirement| self.has_generic_argument_evidence(requirement))
@@ -2632,6 +2645,21 @@ impl DexJavaDialect {
         })
     }
 
+    fn proves_erasure_conversion(&self, argument: &SemanticExpression, target: &JavaType) -> bool {
+        let Some(actual) = self.source_expression_type(argument) else {
+            return false;
+        };
+        self.source_erasure(&actual)
+            .zip(self.source_erasure(target))
+            .is_some_and(|(actual, target)| {
+                actual == target
+                    || self
+                        .generic_type_projection
+                        .as_deref()
+                        .is_some_and(|projection| projection.is_subtype(&actual, &target))
+            })
+    }
+
     fn overload_cast_type(
         &self,
         erased: &ArgType,
@@ -2666,23 +2694,32 @@ impl DexJavaDialect {
         if alternatives.peek().is_none() {
             return BTreeSet::new();
         }
+        // Applicability observes the same operand expression at one call site
+        // for every competing declaration. Compute its source type on demand.
+        let actuals = arguments
+            .iter()
+            .map(|_| std::cell::OnceCell::<Option<JavaType>>::new())
+            .collect::<smallvec::SmallVec<[_; 4]>>();
+        let actual_type = |index: usize| {
+            actuals[index]
+                .get_or_init(|| self.source_expression_type(&arguments[index]))
+                .as_ref()
+        };
         let target_types = method
             .descriptor
             .parameters
             .iter()
             .map(|ty| self.source_type(ty).ok())
-            .collect::<Vec<_>>();
+            .collect::<smallvec::SmallVec<[_; 4]>>();
         let mut casts = BTreeSet::new();
         for candidate in alternatives {
             let candidate_types = candidate
                 .parameters
                 .iter()
                 .map(|ty| self.source_type(ty).ok())
-                .collect::<Vec<_>>();
-            let applicable = arguments
-                .iter()
-                .zip(&candidate_types)
-                .all(|(argument, target)| {
+                .collect::<smallvec::SmallVec<[_; 4]>>();
+            let applicable = arguments.iter().zip(&candidate_types).enumerate().all(
+                |(index, (argument, target))| {
                     let Some(target) = target else {
                         return false;
                     };
@@ -2691,9 +2728,10 @@ impl DexJavaDialect {
                     {
                         return true;
                     }
-                    self.source_expression_type(argument)
-                        .is_some_and(|actual| self.source_assignable_to(&actual, target))
-                });
+                    actual_type(index)
+                        .is_some_and(|actual| self.source_assignable_to(actual, target))
+                },
+            );
             if !applicable {
                 continue;
             }
@@ -2723,9 +2761,8 @@ impl DexJavaDialect {
             if let Some(index) = candidate_types
                 .iter()
                 .zip(&target_types)
-                .zip(arguments)
                 .enumerate()
-                .find_map(|(index, ((candidate, target), argument))| {
+                .find_map(|(index, (candidate, target))| {
                     let (Some(candidate), Some(target)) = (candidate, target) else {
                         return None;
                     };
@@ -2735,10 +2772,10 @@ impl DexJavaDialect {
                     {
                         return None;
                     }
-                    self.source_expression_type(argument)
+                    actual_type(index)
                         .is_some_and(|actual| {
-                            self.source_assignable_to(&actual, candidate)
-                                && self.source_assignable_to(&actual, target)
+                            self.source_assignable_to(actual, candidate)
+                                && self.source_assignable_to(actual, target)
                         })
                         .then_some(index)
                 })
@@ -2847,6 +2884,16 @@ impl DexJavaDialect {
         {
             return;
         }
+        // Only an emitted call can carry explicit type arguments. A method
+        // without type parameters has no explicit specialization to emit.
+        if !matches!(expression, JavaExpr::Call { .. })
+            || Self::method(operation.payload.reference.as_deref())
+                .ok()
+                .and_then(|method| self.generic_methods.get(method))
+                .is_none_or(|contract| contract.signature.type_parameters.is_empty())
+        {
+            return;
+        }
         if self
             .declared_operation_source_type(operation)
             .is_some_and(|actual| self.source_assignable_to(&actual, expected))
@@ -2856,9 +2903,6 @@ impl DexJavaDialect {
         let Some((mut solver, arguments, contract)) = self.invocation_solver(operation) else {
             return;
         };
-        if contract.signature.type_parameters.is_empty() {
-            return;
-        }
         solver.constrain_context(&contract.signature.return_type, expected);
         solver.complete_with_bounds(&contract.signature.type_parameters);
         let Some((specialized, type_arguments)) =
@@ -2985,7 +3029,7 @@ impl DexJavaDialect {
         if erased == &ArgType::BOOLEAN {
             return self.boolean_value(value);
         }
-        let actual = self.source_primitive_type(value);
+        let actual = self.coercion_operand_type(value, erased);
         let expression = match value {
             SemanticExpression::Select {
                 condition,
@@ -3645,6 +3689,7 @@ impl DexJavaDialect {
         .with_erasure_index(Some(self.source_erasures.as_ref()))
         .with_direct_supertypes(Some(self.source_object_types.as_ref()))
         .with_variable_bounds(Some(&self.source_type_bounds))
+        .with_assignability(&self.class_assignability)
     }
 
     fn solver<'a>(
@@ -3925,17 +3970,13 @@ impl DexJavaDialect {
         match (variable_type, value_type) {
             (Some(variable), Some(value))
                 if Self::same_erasure(variable, value)
-                    && !self.source_assignable_to(value, variable)
-                    && self.source_assignable_to(variable, value) =>
+                    && !self.source_assignable_to(value, variable) =>
             {
-                Some(value.clone())
-            }
-            (Some(variable), Some(value))
-                if Self::same_erasure(variable, value)
-                    && !self.source_assignable_to(value, variable)
-                    && !self.source_assignable_to(variable, value) =>
-            {
-                Some(variable.clone().into_raw())
+                if self.source_assignable_to(variable, value) {
+                    Some(value.clone())
+                } else {
+                    Some(variable.clone().into_raw())
+                }
             }
             (Some(variable), _) => Some(variable.clone()),
             (None, Some(value)) => Some(value.clone()),
@@ -5168,6 +5209,10 @@ impl DexJavaDialect {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/dialect_type_queries.rs"]
+mod dialect_type_queries;
 
 #[cfg(test)]
 mod tests {
