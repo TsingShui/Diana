@@ -84,6 +84,10 @@ impl ControlFlowFacts {
         (&self.predecessors, self.dominators.clone())
     }
 
+    pub(crate) fn has_exception_edges(&self) -> bool {
+        self.semantic_predecessors.is_some()
+    }
+
     pub fn semantic_predecessors(&self, block: BlockId) -> Option<&[BlockId]> {
         self.semantic_predecessors
             .as_ref()

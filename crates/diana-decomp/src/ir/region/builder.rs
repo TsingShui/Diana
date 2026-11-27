@@ -78,25 +78,46 @@ impl<'a> RegionGraphBuilder<'a> {
         let control_regions = ControlRegionAnalysis::new(envelope_cfg, envelope_flow);
         let mut control_tree = RegionTree::new(Some(cfg.entry));
         control_tree.cover_method(cfg)?;
-        let prepared_control = control_regions.apply(&mut control_tree)?;
+        let has_monitor = cfg
+            .blocks_iter()
+            .flat_map(|block| &block.insns)
+            .any(|insn| insn.insn_type == crate::ir::InsnType::MonitorEnter);
+        // With matching physical and graph nodes, ordinary loop discovery checks
+        // every normal target that the lexical ownership closure would inspect.
+        // Bound the reserved IDs, allowing a loop and a switch at every block
+        // in both placements.
+        let method_only = cfg.blocks.len() <= (u32::MAX / 4) as usize
+            && analysis.regions.is_empty()
+            && !has_monitor
+            && projected.is_none()
+            && cfg.graph_nodes().eq(cfg.blocks.keys().copied());
+        let prepared_control = control_regions.apply(&mut control_tree, method_only)?;
         control_tree.canonicalize_nesting()?;
         let mut elisions =
             super::InstructionElisions::from_candidates(analysis.elided_instructions.clone());
-        let (mut tree, exception_region_map, exception_handlers) = self.protected_scopes(
-            control_tree,
-            &control_flow,
-            envelope_cfg,
-            envelope_flow,
-            &cleanup_representatives,
-            &mut elisions,
-        )?;
-        tree.remove_control_regions()?;
-        LexicalOwnershipClosure::apply(cfg, &control_flow, &exception_handlers, &mut tree)?;
-        tree.canonicalize_nesting()?;
-        control_regions.apply_with_handlers(&mut tree, &exception_handlers, prepared_control)?;
-        tree.canonicalize_nesting()?;
-        tree.cover_method(cfg)?;
-        tree.close_ancestor_ownership()?;
+        let (tree, exception_region_map, exception_handlers) =
+            if let Some(prepared) = prepared_control {
+                let (mut tree, exception_region_map, exception_handlers) = self.protected_scopes(
+                    control_tree,
+                    &control_flow,
+                    envelope_cfg,
+                    envelope_flow,
+                    &cleanup_representatives,
+                    has_monitor,
+                    &mut elisions,
+                )?;
+                tree.remove_control_regions()?;
+                LexicalOwnershipClosure::apply(cfg, &control_flow, &exception_handlers, &mut tree)?;
+                tree.canonicalize_nesting()?;
+                control_regions.apply_with_handlers(&mut tree, &exception_handlers, prepared)?;
+                tree.canonicalize_nesting()?;
+                tree.cover_method(cfg)?;
+                tree.close_ancestor_ownership()?;
+                (tree, exception_region_map, exception_handlers)
+            } else {
+                control_tree.finish_method_controls();
+                (control_tree, BTreeMap::new(), BTreeMap::new())
+            };
         let block_owners = tree.verified_owners(cfg)?;
         let implicit_cleanup_completions = ImplicitCleanupCompletions::analyze(&tree, analysis);
         let handler_adapters = analysis.handler_adapters.clone();
@@ -148,6 +169,7 @@ impl<'a> RegionGraphBuilder<'a> {
         envelope_cfg: &CFG,
         envelope_flow: &ControlFlowFacts,
         cleanup_representatives: &BTreeMap<crate::ir::BlockId, crate::ir::BlockId>,
+        has_monitor: bool,
         elisions: &mut super::InstructionElisions,
     ) -> Result<
         (
@@ -159,10 +181,6 @@ impl<'a> RegionGraphBuilder<'a> {
     > {
         let cfg = self.cfg;
         let analysis = self.exceptions;
-        let has_monitor = cfg
-            .blocks_iter()
-            .flat_map(|block| &block.insns)
-            .any(|insn| insn.insn_type == crate::ir::InsnType::MonitorEnter);
         // Only a protected range or an explicit monitor can add lexical scopes
         // to the canonical control tree. A standalone monitor needs no handler.
         if analysis.regions.is_empty() && !has_monitor {
@@ -769,3 +787,7 @@ mod tests {
         assert_eq!(handlers, vec![typed, broader_typed, catch_all]);
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/region_control_finalization.rs"]
+mod region_control_finalization;

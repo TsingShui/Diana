@@ -30,16 +30,23 @@ impl ControlCandidate {
             mut blocks,
         } = self;
         let owner = Self::lexical_owner(tree, entry, &core)?;
-        let domain = tree
+        let original_len = blocks.len();
+        let domain = &tree
             .region(owner)
             .ok_or(RegionInvariantError::UnknownRegion(owner))?
-            .blocks
-            .clone();
+            .blocks;
         core.retain(|block| domain.contains(block));
         blocks.retain(|block| domain.contains(block));
-        let closure = ControlRegionClosure::new(cfg, facts, tree, handlers, entry, &domain);
-        let blocks = closure.close(&blocks, matches!(&kind, RegionKind::Loop(_)))?;
-        Self::refresh_loop_follow(cfg, facts, &mut kind, &blocks);
+        let clipped_len = blocks.len();
+        // In a wholly ordinary flow, every dominated normal path returning to
+        // the header already belongs to its natural-loop core. Clipping this
+        // core to the lexical domain keeps every returning block in that domain.
+        let recurrent = matches!(&kind, RegionKind::Loop(_)) && facts.has_exception_edges();
+        let closure = ControlRegionClosure::new(cfg, facts, tree, handlers, entry, domain);
+        let blocks = closure.close(&blocks, recurrent)?;
+        if original_len != clipped_len || clipped_len != blocks.len() {
+            Self::refresh_loop_follow(cfg, facts, &mut kind, &blocks);
+        }
         // Domain clipping can drop the header when it sits outside the lexical
         // owner of the body (e.g. loop header above a nested try). Inserting
         // that truncated region would leave `entry` outside `blocks`.
@@ -49,8 +56,7 @@ impl ControlCandidate {
         if Self::already_inserted(tree, &kind, entry, &blocks) {
             return Ok(());
         }
-        let foreign_entries = Self::foreign_entries(facts, entry, &blocks);
-        let placement = if foreign_entries.is_empty() {
+        let placement = if !Self::has_foreign_entry(facts, entry, &blocks) {
             tree.insert_laminar_region(kind.clone(), entry, blocks.clone())?
         } else {
             super::RegionPlacement::Residual
@@ -58,13 +64,17 @@ impl ControlCandidate {
         match placement {
             super::RegionPlacement::Inserted(_) => Ok(()),
             super::RegionPlacement::Residual if core != blocks => {
-                let closure = ControlRegionClosure::new(cfg, facts, tree, handlers, entry, &domain);
-                let core = closure.close(&core, matches!(&kind, RegionKind::Loop(_)))?;
+                let domain = &tree
+                    .region(owner)
+                    .ok_or(RegionInvariantError::UnknownRegion(owner))?
+                    .blocks;
+                let closure = ControlRegionClosure::new(cfg, facts, tree, handlers, entry, domain);
+                let core = closure.close(&core, recurrent)?;
                 Self::refresh_loop_follow(cfg, facts, &mut kind, &core);
                 if !core.contains(&entry) {
                     return Ok(());
                 }
-                let placement = if Self::foreign_entries(facts, entry, &core).is_empty() {
+                let placement = if !Self::has_foreign_entry(facts, entry, &core) {
                     tree.insert_laminar_region(kind, entry, core)?
                 } else {
                     super::RegionPlacement::Residual
@@ -123,25 +133,19 @@ impl ControlCandidate {
         })
     }
 
-    fn foreign_entries(
+    fn has_foreign_entry(
         facts: &ControlFlowFacts,
         entry: BlockId,
         blocks: &BTreeSet<BlockId>,
-    ) -> Vec<(BlockId, BlockId)> {
-        blocks
-            .iter()
-            .copied()
-            .filter(|block| *block != entry)
-            .flat_map(|block| {
-                facts
-                    .predecessors(block)
+    ) -> bool {
+        blocks.iter().any(|block| {
+            *block != entry
+                && facts
+                    .predecessors(*block)
                     .into_iter()
                     .flatten()
-                    .copied()
-                    .filter(move |predecessor| !blocks.contains(predecessor))
-                    .map(move |predecessor| (predecessor, block))
-            })
-            .collect()
+                    .any(|predecessor| !blocks.contains(predecessor))
+        })
     }
 }
 
@@ -267,11 +271,6 @@ impl<'a> ControlRegionClosure<'a> {
         }
 
         loop {
-            let scope = blocks
-                .iter()
-                .chain(candidates.iter())
-                .copied()
-                .collect::<BTreeSet<_>>();
             let foreign = candidates
                 .iter()
                 .copied()
@@ -280,7 +279,9 @@ impl<'a> ControlRegionClosure<'a> {
                         .predecessors(*block)
                         .into_iter()
                         .flatten()
-                        .any(|predecessor| !scope.contains(predecessor))
+                        .any(|predecessor| {
+                            !blocks.contains(predecessor) && !candidates.contains(predecessor)
+                        })
                 })
                 .collect::<Vec<_>>();
             if foreign.is_empty() {
@@ -332,6 +333,7 @@ pub(super) struct PreparedControlRegions {
     loops: Vec<ControlCandidate>,
     switches: Vec<ControlCandidate>,
     exceptional_latches: BTreeMap<BlockId, BTreeSet<BlockId>>,
+    complete_normal_targets: bool,
 }
 
 impl<'a> ControlRegionAnalysis<'a> {
@@ -342,24 +344,24 @@ impl<'a> ControlRegionAnalysis<'a> {
     pub(super) fn apply(
         &self,
         tree: &mut RegionTree,
-    ) -> Result<PreparedControlRegions, RegionInvariantError> {
+        method_only: bool,
+    ) -> Result<Option<PreparedControlRegions>, RegionInvariantError> {
         let mut prepared = self.normal_loops()?;
-        Self::insert_candidates(
-            self.cfg,
-            tree,
-            prepared.loops.clone(),
-            &BTreeMap::new(),
-            self.facts,
-        )?;
-        prepared.switches = self.switch_candidates()?;
-        Self::insert_candidates(
-            self.cfg,
-            tree,
-            prepared.switches.clone(),
-            &BTreeMap::new(),
-            self.facts,
-        )?;
-        Ok(prepared)
+        let final_controls = method_only
+            && prepared.complete_normal_targets
+            && prepared.exceptional_latches.is_empty();
+        let loops = if final_controls {
+            std::mem::take(&mut prepared.loops)
+        } else {
+            prepared.loops.clone()
+        };
+        Self::insert_candidates(self.cfg, tree, loops, &BTreeMap::new(), self.facts)?;
+        let switches = self.switch_candidates()?;
+        if !final_controls {
+            prepared.switches = switches.clone();
+        }
+        Self::insert_candidates(self.cfg, tree, switches, &BTreeMap::new(), self.facts)?;
+        Ok((!final_controls).then_some(prepared))
     }
 
     pub(super) fn apply_with_handlers(
@@ -378,7 +380,7 @@ impl<'a> ControlRegionAnalysis<'a> {
                 prepared.loops.push(self.loop_candidate(
                     entry,
                     latches,
-                    &reachable,
+                    Some(&reachable),
                     LoopConnectivity::ExceptionAware,
                 )?);
             }
@@ -409,12 +411,15 @@ impl<'a> ControlRegionAnalysis<'a> {
     }
 
     fn normal_loops(&self) -> Result<PreparedControlRegions, RegionInvariantError> {
+        let mut complete_normal_targets = true;
         let mut back_edges = BTreeMap::<BlockId, BTreeSet<BlockId>>::new();
         for source in self.cfg.blocks.keys().copied() {
             for target in self.cfg.normal_successors(source) {
-                if self.cfg.block(target).is_some()
-                    && self.facts.semantic_dominators().dominates(target, source)
-                {
+                if self.cfg.block(target).is_none() {
+                    complete_normal_targets = false;
+                    continue;
+                }
+                if self.facts.semantic_dominators().dominates(target, source) {
                     back_edges.entry(target).or_default().insert(source);
                 }
             }
@@ -422,6 +427,12 @@ impl<'a> ControlRegionAnalysis<'a> {
         let mut loops = Vec::new();
         let mut exceptional_latches = BTreeMap::new();
         for (entry, latches) in back_edges {
+            // Semantic dominance already proves reachability from the
+            // header. Only exception edges can make that path non-ordinary.
+            if !self.facts.has_exception_edges() {
+                loops.push(self.loop_candidate(entry, latches, None, LoopConnectivity::Normal)?);
+                continue;
+            }
             let reachable = self.reachable(entry, LoopConnectivity::Normal);
             let normal_latches = latches
                 .intersection(&reachable)
@@ -433,7 +444,7 @@ impl<'a> ControlRegionAnalysis<'a> {
                 loops.push(self.loop_candidate(
                     entry,
                     normal_latches,
-                    &reachable,
+                    Some(&reachable),
                     LoopConnectivity::Normal,
                 )?);
             }
@@ -442,6 +453,7 @@ impl<'a> ControlRegionAnalysis<'a> {
             loops,
             exceptional_latches,
             switches: Vec::new(),
+            complete_normal_targets,
         })
     }
 
@@ -449,7 +461,7 @@ impl<'a> ControlRegionAnalysis<'a> {
         &self,
         entry: BlockId,
         latches: BTreeSet<BlockId>,
-        reachable: &BTreeSet<BlockId>,
+        reachable: Option<&BTreeSet<BlockId>>,
         connectivity: LoopConnectivity,
     ) -> Result<ControlCandidate, RegionInvariantError> {
         let core = self.natural_loop_nodes(reachable, connectivity, entry, &latches)?;
@@ -457,7 +469,9 @@ impl<'a> ControlRegionAnalysis<'a> {
         let follow = LoopFollow::new(self.cfg, self.facts, &core, &successors, &latches).analyze();
         let blocks = LoopBody::new(self.cfg, self.facts, entry, follow).analyze(&core);
         let mut kind = RegionKind::Loop(LoopRegion { follow, latches });
-        ControlCandidate::refresh_loop_follow(self.cfg, self.facts, &mut kind, &blocks);
+        if blocks.len() != core.len() {
+            ControlCandidate::refresh_loop_follow(self.cfg, self.facts, &mut kind, &blocks);
+        }
         Ok(ControlCandidate {
             kind,
             entry,
@@ -468,7 +482,7 @@ impl<'a> ControlRegionAnalysis<'a> {
 
     fn natural_loop_nodes(
         &self,
-        reachable: &BTreeSet<BlockId>,
+        reachable: Option<&BTreeSet<BlockId>>,
         connectivity: LoopConnectivity,
         header: BlockId,
         latches: &BTreeSet<BlockId>,
@@ -476,7 +490,7 @@ impl<'a> ControlRegionAnalysis<'a> {
         let mut blocks = BTreeSet::from([header]);
         let mut pending = latches.iter().copied().collect::<Vec<_>>();
         while let Some(block) = pending.pop() {
-            if !reachable.contains(&block)
+            if reachable.is_some_and(|blocks| !blocks.contains(&block))
                 || !self.facts.semantic_dominators().dominates(header, block)
                 || !blocks.insert(block)
             {
@@ -1280,7 +1294,7 @@ mod tests {
         let analysis = ControlRegionAnalysis::new(&cfg, &facts);
         let mut tree = RegionTree::new(Some(BlockId::new(0)));
         tree.cover_method(&cfg).unwrap();
-        analysis.apply(&mut tree).unwrap();
+        analysis.apply(&mut tree, false).unwrap();
 
         let loop_region = tree
             .regions()

@@ -399,6 +399,39 @@ impl RegionTree {
         }
     }
 
+    /// The first control placement reserves the provisional identities. An
+    /// unchanged second placement assigns these same nodes, in the same order,
+    /// starting at the next identity. Carry its numbering without rebuilding
+    /// immutable loop and switch domains.
+    pub(super) fn finish_method_controls(&mut self) {
+        // This tree contains only the method root and provisional controls.
+        // Loop and switch payloads refer to blocks, so all region references
+        // are the identities, parent links and child lists below.
+        let count = self.next_id - 1;
+        if count == 0 {
+            return;
+        }
+        let final_id = |id: RegionId| {
+            if id == self.root {
+                id
+            } else {
+                RegionId::new(id.raw() + count)
+            }
+        };
+        self.regions = std::mem::take(&mut self.regions)
+            .into_values()
+            .map(|mut region| {
+                region.id = final_id(region.id);
+                region.parent = region.parent.map(final_id);
+                for child in &mut region.children {
+                    *child = final_id(*child);
+                }
+                (region.id, region)
+            })
+            .collect();
+        self.next_id += count;
+    }
+
     pub(super) fn remove_control_regions(&mut self) -> Result<(), RegionInvariantError> {
         let mut controls = self
             .regions
