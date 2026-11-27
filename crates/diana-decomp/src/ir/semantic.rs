@@ -1332,6 +1332,7 @@ impl<State> SemanticMethod<State> {
     }
 }
 
+#[cfg(test)]
 impl<State: SemanticContext> SemanticMethod<State> {
     pub fn verify(&self) -> Result<(), SemanticInvariantError> {
         verify::SemanticVerifier::verify(&self.body, self.state.regions())

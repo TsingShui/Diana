@@ -22,11 +22,13 @@ mod ownership;
 mod synchronization;
 #[path = "region/tree.rs"]
 mod tree;
+#[cfg(test)]
 #[path = "region/verify.rs"]
 mod verify;
 
 use exits::CleanupChainAnalysis;
 use ownership::{BlockOwners, LexicalOwnershipClosure};
+#[cfg(test)]
 use verify::RegionGraphVerifier;
 
 pub use builder::RegionGraphBuilder;
@@ -576,6 +578,7 @@ impl RegionGraph {
         CleanupChainAnalysis::new(&self.tree, &self.exception_handlers).between(source, target)
     }
 
+    #[cfg(test)]
     pub fn verify(&self, cfg: &CFG) -> Result<(), RegionInvariantError> {
         RegionGraphVerifier::new(self, cfg).verify()
     }

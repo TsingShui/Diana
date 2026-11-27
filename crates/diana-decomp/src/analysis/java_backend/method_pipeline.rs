@@ -95,9 +95,8 @@ impl<'a> MethodBodyPipeline<'a> {
         self.observe_stage(cfg, "structure:done")?;
         self.observe_semantics(cfg, crate::ir::SemanticStage::Structured, &body);
         let semantic = SemanticMethod::from_ssa(body, region_graph, ssa_values);
-        let t = stats.then(std::time::Instant::now);
+        #[cfg(test)]
         semantic.verify()?;
-        mark(&mut stages, "verify1", t);
         let mut value_recovery = ValueRecovery::from_structured(cfg, &semantic);
         let t = stats.then(std::time::Instant::now);
         let semantic = { value_recovery.transform(semantic) }?;
@@ -108,9 +107,8 @@ impl<'a> MethodBodyPipeline<'a> {
                 diagnostics: value_recovery.diagnostics(),
             });
         self.observe_stage(cfg, "values:done")?;
-        let t = stats.then(std::time::Instant::now);
+        #[cfg(test)]
         semantic.verify()?;
-        mark(&mut stages, "verify2", t);
         self.observe_semantics(
             cfg,
             crate::ir::SemanticStage::ValuesRecovered,
@@ -147,9 +145,8 @@ impl<'a> MethodBodyPipeline<'a> {
         mark(&mut stages, "source_apply", t);
         value_recovery.bind_source_inputs(cfg);
         self.observe_stage(cfg, "source_apply:done")?;
-        let t = stats.then(std::time::Instant::now);
+        #[cfg(test)]
         semantic.verify()?;
-        mark(&mut stages, "verify3", t);
         self.observe_semantics(
             cfg,
             crate::ir::SemanticStage::SourceAllocated,
@@ -162,9 +159,8 @@ impl<'a> MethodBodyPipeline<'a> {
         }
         mark(&mut stages, "source_prepare", t);
         self.observe_stage(cfg, "source_prepare:done")?;
-        let t = stats.then(std::time::Instant::now);
+        #[cfg(test)]
         semantic.verify()?;
-        mark(&mut stages, "verify4", t);
         self.observe_semantics(
             cfg,
             crate::ir::SemanticStage::SourceVariables,
@@ -174,9 +170,8 @@ impl<'a> MethodBodyPipeline<'a> {
         let mut semantic = { SourceSyntaxRecovery::new(self.hierarchy).transform(semantic) }?;
         mark(&mut stages, "java_syntax", t);
         self.observe_stage(cfg, "java_syntax:done")?;
-        let t = stats.then(std::time::Instant::now);
+        #[cfg(test)]
         semantic.verify()?;
-        mark(&mut stages, "verify5", t);
         self.observe_semantics(cfg, crate::ir::SemanticStage::SourceSyntax, semantic.body());
         let t = stats.then(std::time::Instant::now);
         let fp_iters =
@@ -187,14 +182,12 @@ impl<'a> MethodBodyPipeline<'a> {
             stages.push(("fp_iters", u128::from(fp_iters)));
         }
         self.observe_stage(cfg, "java_values:done")?;
-        let t = stats.then(std::time::Instant::now);
+        #[cfg(test)]
         semantic.verify()?;
-        mark(&mut stages, "verify6", t);
         semantic.compact()?;
         self.observe_stage(cfg, "compact:done")?;
-        let t = stats.then(std::time::Instant::now);
+        #[cfg(test)]
         semantic.verify()?;
-        mark(&mut stages, "verify7", t);
         self.observe_semantics(cfg, crate::ir::SemanticStage::Normalized, semantic.body());
         if stats {
             let total: u128 = stages

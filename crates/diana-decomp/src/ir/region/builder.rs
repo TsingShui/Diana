@@ -137,8 +137,8 @@ impl<'a> RegionGraphBuilder<'a> {
             edge_leaves,
             elisions,
         };
-        super::RegionGraphVerifier::new(&graph, cfg)
-            .verify_exits_and_ownership(&graph.block_owners)?;
+        #[cfg(test)]
+        graph.verify(cfg)?;
         Ok(graph)
     }
     fn protected_scopes(

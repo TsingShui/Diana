@@ -2,9 +2,10 @@
 
 use std::fmt;
 
+use crate::ir::{BlockId, RegionId, SemanticLabel};
+#[cfg(test)]
 use crate::ir::{
-    BlockId, RegionGraph, RegionId, RegionKind, SemanticLabel, SemanticLabelKind,
-    SemanticLeaveKind, SemanticNode, SemanticVisitor,
+    RegionGraph, RegionKind, SemanticLabelKind, SemanticLeaveKind, SemanticNode, SemanticVisitor,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,18 +116,21 @@ impl fmt::Display for SemanticInvariantError {
 
 impl std::error::Error for SemanticInvariantError {}
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ControlScope {
     region: RegionId,
     accepts_continue: bool,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LabelScope {
     label: SemanticLabel,
     accepts_continue: bool,
 }
 
+#[cfg(test)]
 pub(super) struct SemanticVerifier<'a> {
     regions: &'a RegionGraph,
     controls: Vec<ControlScope>,
@@ -135,6 +139,7 @@ pub(super) struct SemanticVerifier<'a> {
     error: Option<SemanticInvariantError>,
 }
 
+#[cfg(test)]
 impl<'a> SemanticVerifier<'a> {
     pub(super) fn verify(
         root: &SemanticNode,
@@ -367,6 +372,7 @@ impl<'a> SemanticVerifier<'a> {
     }
 }
 
+#[cfg(test)]
 impl SemanticVisitor for SemanticVerifier<'_> {
     fn visit_operation(&mut self, operation: &crate::ir::SemanticOperation) {
         if operation.contains_select() {
