@@ -417,7 +417,7 @@ fn source_constraints_use_the_first_seen_erasure_without_publishing_later_defini
         None,
         None,
         None,
-        &BTreeMap::new(),
+        &Default::default(),
         true,
     )
     .diagnostics();
@@ -534,4 +534,46 @@ fn contracts_with_the_same_name_remain_distinct_by_owner_and_descriptor() {
     ] {
         assert!(index.contract(&missing.parse().unwrap()).is_none());
     }
+}
+
+#[test]
+fn source_type_diagnostics_order_variable_and_value_states_by_original_identity() {
+    let first = SsaVar::new(2, 6);
+    let second = SsaVar::new(3, 1);
+    let mut facts = SourceTypeFacts {
+        object_types: Vec::new(),
+        variables: SourceTypeStates::default(),
+        values: SourceTypeStates::default(),
+        requirements: BTreeMap::new(),
+        value_requirements: BTreeMap::new(),
+        equations: Vec::new(),
+        requirement_candidates: BTreeMap::new(),
+        invocations: Vec::new(),
+    };
+    facts.variables.insert(21, JavaType::int());
+    facts.variables.insert(3, JavaType::boolean());
+    facts.values.insert(second, JavaType::int());
+    facts.values.insert(first, JavaType::boolean());
+    facts.variables.seal_definitions();
+    facts.values.seal_definitions();
+    facts.variables.insert(21, JavaType::boolean());
+    facts.values.insert(second, JavaType::boolean());
+
+    let diagnostics = facts.diagnostics();
+    assert_eq!(
+        diagnostics.variables,
+        [(3, "boolean".to_owned()), (21, "boolean".to_owned())]
+    );
+    assert_eq!(
+        diagnostics.definition_variables,
+        [(3, "boolean".to_owned()), (21, "int".to_owned())]
+    );
+    assert_eq!(
+        diagnostics.values,
+        [(2, 6, "boolean".to_owned()), (3, 1, "boolean".to_owned())]
+    );
+    assert_eq!(
+        diagnostics.definition_values,
+        [(2, 6, "boolean".to_owned()), (3, 1, "int".to_owned())]
+    );
 }

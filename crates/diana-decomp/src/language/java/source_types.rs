@@ -2456,24 +2456,32 @@ impl TypeState {
 /// changes that identity. The first overwrite moves its old value into the log.
 #[derive(Debug, Clone)]
 pub(super) struct SourceTypeStates<K, T> {
-    current: BTreeMap<K, T>,
-    before_change: BTreeMap<K, Option<T>>,
+    current: foldhash::HashMap<K, T>,
+    before_change: foldhash::HashMap<K, Option<T>>,
     definitions_sealed: bool,
 }
 
 impl<K, T> Default for SourceTypeStates<K, T> {
     fn default() -> Self {
         Self {
-            current: BTreeMap::new(),
-            before_change: BTreeMap::new(),
+            current: foldhash::HashMap::default(),
+            before_change: foldhash::HashMap::default(),
             definitions_sealed: false,
         }
     }
 }
 
-impl<K: Ord + Copy, T> SourceTypeStates<K, T> {
-    pub(super) fn current(&self) -> &BTreeMap<K, T> {
+impl<K: Eq + std::hash::Hash + Copy, T> SourceTypeStates<K, T> {
+    pub(super) fn current(&self) -> &foldhash::HashMap<K, T> {
         &self.current
+    }
+
+    /// Diagnostics retain identity order regardless of which state was updated first.
+    fn ordered_current(&self) -> BTreeMap<K, &T>
+    where
+        K: Ord,
+    {
+        self.current.iter().map(|(&key, ty)| (key, ty)).collect()
     }
 
     pub(super) fn get(&self, key: &K) -> Option<&T> {
@@ -2510,12 +2518,14 @@ impl<K: Ord + Copy, T> SourceTypeStates<K, T> {
     }
 
     /// Build an ordered view only when a source-type diagnostic was requested.
-    fn definitions(&self) -> BTreeMap<K, &T> {
+    fn definitions(&self) -> BTreeMap<K, &T>
+    where
+        K: Ord,
+    {
         if !self.definitions_sealed {
             return BTreeMap::new();
         }
-        let mut definitions: BTreeMap<_, _> =
-            self.current.iter().map(|(&key, ty)| (key, ty)).collect();
+        let mut definitions = self.ordered_current();
         for (&key, original) in &self.before_change {
             match original {
                 Some(ty) => {
@@ -2530,7 +2540,7 @@ impl<K: Ord + Copy, T> SourceTypeStates<K, T> {
     }
 }
 
-impl<K: Ord + Copy> SourceTypeStates<K, TypeState> {
+impl<K: Eq + std::hash::Hash + Copy> SourceTypeStates<K, TypeState> {
     fn requirement_types(&self, key: &K) -> (Option<&JavaType>, Option<&JavaType>) {
         let current = self.get(key);
         let definition = self.original_or_current(key, || current);
@@ -3015,14 +3025,14 @@ impl SourceTypeFacts {
                 .collect(),
             variables: self
                 .variables
-                .current()
-                .iter()
-                .map(|(variable, ty)| (*variable, ty.to_string()))
+                .ordered_current()
+                .into_iter()
+                .map(|(variable, ty)| (variable, ty.to_string()))
                 .collect(),
             values: self
                 .values
-                .current()
-                .iter()
+                .ordered_current()
+                .into_iter()
                 .map(|(value, ty)| (value.reg_num, value.version, ty.to_string()))
                 .collect(),
             requirements: self
@@ -3152,7 +3162,7 @@ impl<'a> SourceTypeFlow<'a> {
         current_type: Option<&'a ArgType>,
         source_current_type: Option<&'a JavaType>,
         this_variable: Option<u32>,
-        seeds: &BTreeMap<u32, JavaType>,
+        seeds: &foldhash::HashMap<u32, JavaType>,
         collect_diagnostics: bool,
     ) -> SourceTypeFacts {
         let mut flow = Self {
@@ -4565,7 +4575,7 @@ impl<'a> SourceTypeFlow<'a> {
         result
     }
 
-    fn merge_state<K: Ord + Copy>(
+    fn merge_state<K: Eq + std::hash::Hash + Copy>(
         source_types: &BTreeMap<ArgType, JavaType>,
         source_erasures: Option<&JavaTypeErasureIndex>,
         type_variable_erasures: &BTreeMap<JavaIdentifier, ArgType>,
@@ -4591,7 +4601,7 @@ impl<'a> SourceTypeFlow<'a> {
                 )
                 .map(TypeState::Exact)
                 .unwrap_or(TypeState::Conflict);
-                if states.get(&identity) == Some(&next) {
+                if next.exact() == Some(current) {
                     false
                 } else {
                     states.insert(identity, next);
@@ -4736,7 +4746,7 @@ impl<'a> SourceTypeFlow<'a> {
             .eq(right.segments.iter().flat_map(|segment| &segment.arguments))
     }
 
-    fn merge_constraint<K: Ord + Copy>(
+    fn merge_constraint<K: Eq + std::hash::Hash + Copy>(
         source_types: &BTreeMap<ArgType, JavaType>,
         source_erasures: Option<&JavaTypeErasureIndex>,
         type_variable_erasures: &BTreeMap<JavaIdentifier, ArgType>,
