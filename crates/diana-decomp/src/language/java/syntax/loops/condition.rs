@@ -111,46 +111,23 @@ pub(super) struct LoopConditionInlining;
 
 impl LoopConditionInlining {
     pub(super) fn apply(
-        node: SemanticNode,
+        mut node: SemanticNode,
         method: &SemanticExpressionFacts,
     ) -> Result<SemanticNode, SemanticFoldError> {
-        let local = SemanticExpressionFacts::of_node(&node);
-        let SemanticNode::Loop {
-            control,
-            header,
-            kind: SemanticLoopKind::PreTested,
-            mut test,
-            body,
-        } = node
-        else {
+        let Some(fact) = LoopConditionFact::prove(&node, method) else {
             return Ok(node);
         };
-        let Some(fact) =
-            LoopConditionFact::prove(&test.setup, &test.condition, &body, method, &local)
-        else {
-            return Ok(SemanticNode::Loop {
-                control,
-                header,
-                kind: SemanticLoopKind::PreTested,
-                test,
-                body,
-            });
-        };
-        SemanticInstructions::transform_predicate(
-            &mut test.condition,
-            &mut ConditionValueInlining {
-                value: fact.value,
-                expression: Some(fact.expression),
-            },
-        )?;
-        test.setup = Box::new(SemanticNode::Empty);
-        Ok(SemanticNode::Loop {
-            control,
-            header,
-            kind: SemanticLoopKind::PreTested,
-            test,
-            body,
-        })
+        if let SemanticNode::Loop { test, .. } = &mut node {
+            SemanticInstructions::transform_predicate(
+                &mut test.condition,
+                &mut ConditionValueInlining {
+                    value: fact.value,
+                    expression: Some(fact.expression),
+                },
+            )?;
+            *test.setup = SemanticNode::Empty;
+        }
+        Ok(node)
     }
 }
 
@@ -203,23 +180,26 @@ struct LoopConditionFact {
 }
 
 impl LoopConditionFact {
-    fn prove(
-        setup: &SemanticNode,
-        condition: &crate::ir::SemanticPredicate,
-        body: &SemanticNode,
-        method: &SemanticExpressionFacts,
-        local: &SemanticExpressionFacts,
-    ) -> Option<Self> {
-        let statement = SingleStatement::of(setup)?;
+    fn prove(node: &SemanticNode, method: &SemanticExpressionFacts) -> Option<Self> {
+        let SemanticNode::Loop {
+            kind: SemanticLoopKind::PreTested,
+            test,
+            body,
+            ..
+        } = node
+        else {
+            return None;
+        };
+        let statement = SingleStatement::of(&test.setup)?;
         let instruction = statement.instruction_ref()?;
         let result = instruction.result.as_ref()?;
         (result.ty == ArgType::BOOLEAN).then_some(())?;
         let value = SsaVar::from_reg(result)?;
-        (SemanticExpressionFacts::of_node(setup).ssa_definition_count(value) == 1
-            && SemanticExpressionFacts::of_predicate(condition).ssa_use_count(value) == 1
+        (SemanticExpressionFacts::of_node(&test.setup).ssa_definition_count(value) == 1
+            && SemanticExpressionFacts::of_predicate(&test.condition).ssa_use_count(value) == 1
             && SemanticExpressionFacts::of_node(body).ssa_use_count(value) == 0
-            && !method.ssa_escapes(local, value))
-        .then_some(Self {
+            && !method.ssa_escapes(&SemanticExpressionFacts::of_node(node), value))
+        .then(|| Self {
             value,
             expression: instruction.clone(),
         })

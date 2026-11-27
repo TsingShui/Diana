@@ -168,3 +168,135 @@ fn fixed_invocations_revisit_changed_requirements_and_dynamic_invocations_revisi
     assert!(!graph.mark_requirement(shared, RequirementChange::Unchanged));
     assert!(ready(&mut graph).is_empty());
 }
+
+#[test]
+fn equation_inputs_track_array_storage_and_polymorphic_results() {
+    use crate::ir::{InsnNode, InvokeType};
+
+    let register = |number| {
+        let mut value = RegisterArg::with_ssa(number, ArgType::object("fixture/Value"), 1);
+        value.code_var = Some(number);
+        value
+    };
+    let operation = |kind, result, operands| {
+        let mut raw = InsnNode::new(kind, 0);
+        raw.result = Some(register(result));
+        SemanticExpression::Operation(SemanticOperation::from_parts(raw, operands, None))
+    };
+    let expression = |number| SemanticExpression::Register(register(number));
+    let value = operation(
+        InsnType::Aget,
+        8,
+        vec![
+            operation(InsnType::Move, 2, vec![expression(1)]),
+            operation(InsnType::Arith, 4, vec![expression(3)]),
+        ],
+    );
+    let method: MethodReference = "Lfixture/Box;->element(Ljava/lang/Object;)Ljava/lang/Object;"
+        .parse()
+        .unwrap();
+    let mut call = InsnNode::new(InsnType::Invoke, 0);
+    call.payload.invoke_type = Some(InvokeType::Static);
+    call.payload.reference = Some(Arc::new(MemberReference::Method(method.clone())));
+    call.result = Some(register(9));
+    let poly = SemanticExpression::Operation(SemanticOperation::from_parts(
+        call,
+        vec![operation(InsnType::Arith, 6, vec![expression(5)])],
+        None,
+    ));
+    let contract = GenericMethodContract {
+        signature: crate::ir::generic_types::GenericSignatures::method(
+            "<T:Ljava/lang/Object;>(TT;)TT;",
+        )
+        .unwrap(),
+        owner: ClassTypeSignature {
+            raw_name: "fixture/Box".into(),
+            type_arguments: Vec::new(),
+            inner_segments: Vec::new(),
+        },
+        owner_parameters: Vec::new(),
+    };
+    let mut graph = TypeEquationGraph::default();
+    graph.rebuild(
+        &[
+            TypeEquation {
+                result: register(8),
+                value,
+            },
+            TypeEquation {
+                result: register(9),
+                value: poly,
+            },
+        ],
+        &[],
+        &BTreeMap::new(),
+        &GenericMethodContracts::Owned(Arc::new(BTreeMap::from([(method, contract)]))),
+        &BTreeSet::new(),
+    );
+    let ready = |graph: &mut TypeEquationGraph| graph.take_dirty().indices().collect::<Vec<_>>();
+    assert_eq!(ready(&mut graph), [0, 1]);
+    for number in [2, 3, 4, 8] {
+        graph.mark_changed(SourceTypeFact::Variable(number));
+        assert!(ready(&mut graph).is_empty());
+    }
+    graph.mark_changed(SourceTypeFact::Value(SsaVar::new(1, 1)));
+    assert_eq!(ready(&mut graph), [0]);
+    graph.mark_changed(SourceTypeFact::Variable(6));
+    assert_eq!(ready(&mut graph), [1]);
+    graph.mark_requirement(SourceTypeFact::Variable(9), RequirementChange::Inserted);
+    assert_eq!(ready(&mut graph), [1]);
+}
+
+#[test]
+fn constructor_initialization_skips_only_the_implicit_receiver_for_constraints() {
+    use crate::ir::{InsnNode, InvokeType, LiteralArg};
+
+    let mut value = RegisterArg::with_ssa(5, ArgType::object("fixture/Box"), 1);
+    value.code_var = Some(5);
+    let variable = SemanticExpression::Register(value);
+    let literal = SemanticExpression::Literal(LiteralArg::int(0));
+    let make_call = |kind, invoke_type, reference: &str, operands| {
+        let mut raw = InsnNode::new(kind, 0);
+        raw.payload.invoke_type = Some(invoke_type);
+        raw.payload.reference = Some(Arc::new(MemberReference::Method(
+            reference.parse().unwrap(),
+        )));
+        SemanticOperation::from_parts(raw, operands, None)
+    };
+    let no_write = make_call(
+        InsnType::Constructor,
+        InvokeType::Direct,
+        "Lfixture/Box;-><init>(I)V",
+        vec![variable.clone(), literal],
+    );
+    let mut calls = vec![no_write; 70];
+    calls.push(make_call(
+        InsnType::Invoke,
+        InvokeType::Virtual,
+        "Lfixture/Box;->read()V",
+        vec![variable.clone()],
+    ));
+    calls.push(make_call(
+        InsnType::Constructor,
+        InvokeType::Direct,
+        "Lfixture/Box;-><init>(Ljava/lang/Object;)V",
+        vec![variable.clone(), variable],
+    ));
+    let mut graph = TypeEquationGraph::default();
+    graph.rebuild(
+        &[],
+        &calls,
+        &BTreeMap::new(),
+        &GenericMethodContracts::Owned(Arc::default()),
+        &BTreeSet::new(),
+    );
+    let ready = |graph: &mut TypeEquationGraph| {
+        graph
+            .take_dirty_invocations(&calls)
+            .indices()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ready(&mut graph), [70, 71]);
+    graph.mark_requirement(SourceTypeFact::Variable(5), RequirementChange::Updated);
+    assert_eq!(ready(&mut graph), [70, 71]);
+}

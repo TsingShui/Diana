@@ -176,33 +176,50 @@ pub(crate) trait GenericTypeProjection: std::fmt::Debug {
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct JavaTypeErasureIndex {
-    classes: HashMap<String, ArgType>,
+    source_types: BTreeMap<ArgType, JavaType>,
+    reverse: std::sync::OnceLock<ReverseJavaTypes>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ReverseJavaTypes {
+    classes: HashMap<smol_str::SmolStr, ArgType>,
     primitives: HashMap<JavaType, ArgType>,
 }
 
 impl JavaTypeErasureIndex {
-    pub(super) fn from_source_types(source_types: &BTreeMap<ArgType, JavaType>) -> Self {
-        let mut classes = HashMap::with_capacity(source_types.len());
-        let mut primitives = HashMap::new();
-        for (erased, source) in source_types {
-            match source {
-                JavaType::Class(class) => {
-                    classes
-                        .entry(Self::class_key(class).into_owned())
-                        .or_insert_with(|| erased.clone());
-                }
-                JavaType::Primitive(_) => {
-                    primitives
-                        .entry(source.clone())
-                        .or_insert_with(|| erased.clone());
-                }
-                JavaType::Array(_) | JavaType::Variable(_) => {}
-            }
-        }
+    pub(super) fn from_source_types(source_types: BTreeMap<ArgType, JavaType>) -> Self {
         Self {
-            classes,
-            primitives,
+            source_types,
+            reverse: std::sync::OnceLock::new(),
         }
+    }
+
+    pub(super) fn source_types(&self) -> &BTreeMap<ArgType, JavaType> {
+        &self.source_types
+    }
+
+    fn reverse(&self) -> &ReverseJavaTypes {
+        self.reverse.get_or_init(|| {
+            let mut index = ReverseJavaTypes::default();
+            for (erased, source) in &self.source_types {
+                match source {
+                    JavaType::Class(class) => {
+                        index
+                            .classes
+                            .entry(Self::class_key(class).as_ref().into())
+                            .or_insert_with(|| erased.clone());
+                    }
+                    JavaType::Primitive(_) => {
+                        index
+                            .primitives
+                            .entry(source.clone())
+                            .or_insert_with(|| erased.clone());
+                    }
+                    JavaType::Array(_) | JavaType::Variable(_) => {}
+                }
+            }
+            index
+        })
     }
 
     fn class_key(class: &JavaClassType) -> std::borrow::Cow<'_, str> {
@@ -220,7 +237,7 @@ impl JavaTypeErasureIndex {
     }
 
     fn class_erasure(&self, class: &JavaClassType) -> Option<&ArgType> {
-        self.classes.get(Self::class_key(class).as_ref())
+        self.reverse().classes.get(Self::class_key(class).as_ref())
     }
 
     fn erasure_of<'a>(
@@ -239,7 +256,7 @@ impl JavaTypeErasureIndex {
                     .unwrap_or_else(|| Cow::Owned(ArgType::object("java/lang/Object"))),
             ),
             JavaType::Class(class) => self.class_erasure(class).map(Cow::Borrowed),
-            JavaType::Primitive(_) => self.primitives.get(ty).map(Cow::Borrowed),
+            JavaType::Primitive(_) => self.reverse().primitives.get(ty).map(Cow::Borrowed),
         }
     }
 }
@@ -308,7 +325,7 @@ impl<'a> JavaTypeRelations<'a> {
                 .or_else(|| Some(ArgType::object("java/lang/Object"))),
             JavaType::Primitive(_) => {
                 if let Some(index) = self.source_erasures {
-                    index.primitives.get(ty).cloned()
+                    index.reverse().primitives.get(ty).cloned()
                 } else {
                     self.source_types
                         .iter()
@@ -1013,7 +1030,7 @@ impl<'a> GenericTypeSolver<'a> {
             }
             JavaType::Array(_) | JavaType::Primitive(_) => return,
         };
-        let owner_erasure = JvmTypeSignature::ClassType(owner.clone()).erased();
+        let owner_erasure = owner.erased_type();
         let actual = if self.source_erasure(&actual).as_ref() == Some(&owner_erasure) {
             actual
         } else {
@@ -1028,18 +1045,11 @@ impl<'a> GenericTypeSolver<'a> {
         let JavaType::Class(actual) = actual else {
             return;
         };
-        let formal_groups = std::iter::once(owner.type_arguments.as_slice())
-            .chain(
-                owner
-                    .inner_segments
-                    .iter()
-                    .map(|segment| segment.type_arguments.as_slice()),
-            )
-            .collect::<Vec<_>>();
-        let formal_offset = formal_groups.len().saturating_sub(actual.segments.len());
-        let actual_offset = actual.segments.len().saturating_sub(formal_groups.len());
-        for (formal, actual) in formal_groups
-            .iter()
+        let group_count = owner.inner_segments.len() + 1;
+        let formal_offset = group_count.saturating_sub(actual.segments.len());
+        let actual_offset = actual.segments.len().saturating_sub(group_count);
+        for (formal, actual) in owner
+            .argument_groups()
             .skip(formal_offset)
             .zip(actual.segments.iter().skip(actual_offset))
         {
@@ -1254,38 +1264,47 @@ impl<'a> GenericTypeSolver<'a> {
     }
 
     fn instantiate_input_class(&self, signature: &ClassTypeSignature) -> Option<JavaType> {
-        let JavaType::Class(mut resolved) =
-            self.resolve_source_type(&JvmTypeSignature::ClassType(signature.clone()).erased())?
+        self.instantiate_class(signature, |argument| {
+            Some(InstantiatedArgument {
+                argument: self.instantiate_input_argument(argument)?,
+                captured: false,
+            })
+        })
+        .map(|value| value.ty)
+    }
+
+    fn instantiate_class(
+        &self,
+        signature: &ClassTypeSignature,
+        mut instantiate: impl FnMut(&TypeArgument) -> Option<InstantiatedArgument>,
+    ) -> Option<InstantiatedType> {
+        let JavaType::Class(mut resolved) = self.resolve_source_type(&signature.erased_type())?
         else {
             return None;
         };
-        let argument_groups = std::iter::once(signature.type_arguments.as_slice())
-            .chain(
-                signature
-                    .inner_segments
-                    .iter()
-                    .map(|segment| segment.type_arguments.as_slice()),
-            )
-            .collect::<Vec<_>>();
-        let argument_offset = argument_groups
-            .len()
-            .saturating_sub(resolved.segments.len());
-        let segment_offset = resolved
-            .segments
-            .len()
-            .saturating_sub(argument_groups.len());
-        for (segment, arguments) in resolved
-            .segments_mut()
-            .iter_mut()
-            .skip(segment_offset)
-            .zip(argument_groups.into_iter().skip(argument_offset))
+        let group_count = signature.inner_segments.len() + 1;
+        let segment_count = resolved.segments.len();
+        let group_offset = group_count.saturating_sub(segment_count);
+        let segment_offset = segment_count.saturating_sub(group_count);
+        let mut captured = false;
+        for (index, arguments) in
+            (segment_offset..segment_count).zip(signature.argument_groups().skip(group_offset))
         {
-            segment.arguments = arguments
-                .iter()
-                .map(|argument| self.instantiate_input_argument(argument))
-                .collect::<Option<Vec<_>>>()?;
+            if arguments.is_empty() && resolved.segments[index].arguments.is_empty() {
+                continue;
+            }
+            let mut values = Vec::with_capacity(arguments.len());
+            for argument in arguments {
+                let value = instantiate(argument)?;
+                captured |= value.captured;
+                values.push(value.argument);
+            }
+            resolved.segments_mut()[index].arguments = values;
         }
-        Some(JavaType::Class(resolved))
+        Some(InstantiatedType {
+            ty: JavaType::Class(resolved),
+            captured,
+        })
     }
 
     fn instantiate_input_argument(&self, argument: &TypeArgument) -> Option<JavaTypeArgument> {
@@ -1338,47 +1357,7 @@ impl<'a> GenericTypeSolver<'a> {
                 captured: false,
             }),
             JvmTypeSignature::ClassType(class) => {
-                let JavaType::Class(mut resolved) =
-                    self.resolve_source_type(&signature.erased())?
-                else {
-                    return None;
-                };
-                let argument_groups = std::iter::once(class.type_arguments.as_slice())
-                    .chain(
-                        class
-                            .inner_segments
-                            .iter()
-                            .map(|segment| segment.type_arguments.as_slice()),
-                    )
-                    .collect::<Vec<_>>();
-                let argument_offset = argument_groups
-                    .len()
-                    .saturating_sub(resolved.segments.len());
-                let segment_offset = resolved
-                    .segments
-                    .len()
-                    .saturating_sub(argument_groups.len());
-                let mut captured = false;
-                for (segment, arguments) in resolved
-                    .segments_mut()
-                    .iter_mut()
-                    .skip(segment_offset)
-                    .zip(argument_groups.into_iter().skip(argument_offset))
-                {
-                    let instantiated = arguments
-                        .iter()
-                        .map(|argument| self.instantiate_argument(argument))
-                        .collect::<Option<Vec<_>>>()?;
-                    captured |= instantiated.iter().any(|argument| argument.captured);
-                    segment.arguments = instantiated
-                        .into_iter()
-                        .map(|argument| argument.argument)
-                        .collect();
-                }
-                Some(InstantiatedType {
-                    ty: JavaType::Class(resolved),
-                    captured,
-                })
+                self.instantiate_class(class, |argument| self.instantiate_argument(argument))
             }
         }
     }
@@ -1387,10 +1366,11 @@ impl<'a> GenericTypeSolver<'a> {
         Self::owner_parameters(owner).next()?;
         if Self::owner_parameters(owner).any(|parameter| self.raw_owner.contains(parameter)) {
             return self
-                .resolve_source_type(&JvmTypeSignature::ClassType(owner.clone()).erased())
+                .resolve_source_type(&owner.erased_type())
                 .map(JavaType::into_raw);
         }
-        self.instantiate(&JvmTypeSignature::ClassType(owner.clone()))
+        self.instantiate_class(owner, |argument| self.instantiate_argument(argument))
+            .map(|value| value.ty)
             .filter(|ty| self.valid_source_type(ty))
     }
 
@@ -2580,6 +2560,16 @@ impl PendingEquations {
         }
     }
 
+    fn remove(&mut self, index: usize) {
+        let word = index / 64;
+        let keep = !(1u64 << (index % 64));
+        if word == 0 {
+            self.first &= keep;
+        } else if let Some(bits) = self.remaining.get_mut(&word) {
+            *bits &= keep;
+        }
+    }
+
     fn indices(self) -> impl Iterator<Item = usize> {
         std::iter::once((0, self.first))
             .chain(self.remaining)
@@ -2639,35 +2629,30 @@ impl TypeEquationGraph {
             for output in Self::register_facts(&equation.result) {
                 self.outputs.entry(output).or_default().push(index);
             }
-            // A declaration-only expression is evaluated in the initial round.
-            // Its type cannot change when another register acquires a fact.
-            let needs_inputs = match &equation.value {
-                SemanticExpression::Literal(_) => false,
-                SemanticExpression::Register(_) | SemanticExpression::Select { .. } => true,
-                SemanticExpression::Operation(operation) => match operation.insn_type {
-                    InsnType::Move | InsnType::CheckCast | InsnType::Aget => true,
-                    InsnType::Iget | InsnType::Sget => {
-                        matches!(operation.payload.reference.as_deref(),
-                            Some(MemberReference::Field(field)) if generic_fields.contains_key(field))
-                    }
-                    InsnType::Invoke | InsnType::Constructor => {
-                        matches!(operation.payload.reference.as_deref(),
-                            Some(MemberReference::Method(method)) if generic_methods.get(method).is_some())
-                    }
-                    _ => false,
-                },
-            };
-            if needs_inputs {
-                Self::record_dependencies(
-                    &mut self.dependents,
-                    index,
-                    None,
-                    std::slice::from_ref(&equation.value),
-                );
-            }
+            Self::record_equation_inputs(
+                &mut self.dependents,
+                index,
+                &equation.value,
+                generic_fields,
+                generic_methods,
+            );
             self.candidates.push(None);
         }
         for (index, invocation) in invocations.iter().enumerate() {
+            let skip_receiver = invocation.insn_type == InsnType::Constructor
+                && invocation
+                    .payload
+                    .invoke_type
+                    .is_some_and(crate::ir::InvokeType::has_receiver);
+            if invocation
+                .operands()
+                .iter()
+                .skip(usize::from(skip_receiver))
+                .all(|actual| matches!(actual, SemanticExpression::Literal(_)))
+            {
+                self.dirty_invocations.remove(index);
+                continue;
+            }
             let Some(MemberReference::Method(method)) = invocation.payload.reference.as_deref()
             else {
                 continue;
@@ -2697,6 +2682,69 @@ impl TypeEquationGraph {
             .chain(register.code_var.map(SourceTypeFact::Variable))
     }
 
+    fn record_equation_inputs(
+        dependents: &mut foldhash::HashMap<SourceTypeFact, SmallVec<[usize; 1]>>,
+        index: usize,
+        value: &SemanticExpression,
+        generic_fields: &BTreeMap<FieldReference, GenericFieldContract>,
+        generic_methods: &GenericMethodContracts,
+    ) {
+        let mut work = SmallVec::<[&SemanticExpression; 4]>::new();
+        work.push(value);
+        while let Some(value) = work.pop() {
+            match value {
+                SemanticExpression::Register(register) => {
+                    Self::record_register_input(dependents, index, register)
+                }
+                SemanticExpression::Literal(_) => {}
+                SemanticExpression::Select {
+                    when_true,
+                    when_false,
+                    ..
+                } => {
+                    work.push(when_true);
+                    work.push(when_false);
+                }
+                SemanticExpression::Operation(operation) => match operation.insn_type {
+                    InsnType::Move | InsnType::CheckCast | InsnType::Aget => {
+                        work.extend(operation.operands().first());
+                    }
+                    InsnType::Iget | InsnType::Sget => {
+                        if matches!(operation.payload.reference.as_deref(), Some(MemberReference::Field(field)) if generic_fields.contains_key(field))
+                        {
+                            work.extend(operation.operands().first());
+                        }
+                    }
+                    InsnType::Invoke | InsnType::Constructor => {
+                        if matches!(operation.payload.reference.as_deref(), Some(MemberReference::Method(method)) if generic_methods.get(method).is_some())
+                        {
+                            Self::record_dependencies(
+                                dependents,
+                                index,
+                                operation.result.as_ref(),
+                                operation.operands(),
+                            );
+                        }
+                    }
+                    _ => {}
+                },
+            }
+        }
+    }
+
+    fn record_register_input(
+        dependents: &mut foldhash::HashMap<SourceTypeFact, SmallVec<[usize; 1]>>,
+        index: usize,
+        value: &RegisterArg,
+    ) {
+        for fact in Self::register_facts(value) {
+            let indices = dependents.entry(fact).or_default();
+            if indices.last() != Some(&index) {
+                indices.push(index);
+            }
+        }
+    }
+
     fn record_dependencies(
         dependents: &mut foldhash::HashMap<SourceTypeFact, SmallVec<[usize; 1]>>,
         index: usize,
@@ -2705,14 +2753,8 @@ impl TypeEquationGraph {
     ) {
         // Equations and invocations are indexed in ascending order. Multiple
         // occurrences of a register within the same expression share one edge.
-        let mut register = |value: &RegisterArg| {
-            for fact in Self::register_facts(value) {
-                let indices = dependents.entry(fact).or_default();
-                if indices.last() != Some(&index) {
-                    indices.push(index);
-                }
-            }
-        };
+        let mut register =
+            |value: &RegisterArg| Self::record_register_input(dependents, index, value);
         if let Some(result) = result {
             register(result);
         }
@@ -3206,7 +3248,7 @@ impl<'a> SourceTypeFlow<'a> {
         match ty {
             JavaType::Primitive(_) => return true,
             JavaType::Variable(variable) => {
-                return self.type_variable_erasures.contains_key(variable)
+                return self.type_variable_erasures.contains_key(variable);
             }
             JavaType::Array(element) => return self.source_type_is_well_formed(element),
             JavaType::Class(class)
@@ -3216,7 +3258,7 @@ impl<'a> SourceTypeFlow<'a> {
                         .iter()
                         .all(|segment| segment.arguments.is_empty()) =>
             {
-                return true
+                return true;
             }
             JavaType::Class(_) => {}
         }
@@ -3288,17 +3330,16 @@ impl<'a> SourceTypeFlow<'a> {
     fn apply_value_requirements(&mut self) -> Vec<SsaVar> {
         let replacements = self
             .value_requirements
-            .keys()
+            .iter()
             .chain(
                 self.receiver_value_requirements
-                    .keys()
-                    .filter(|value| !self.value_requirements.contains_key(*value)),
+                    .iter()
+                    .filter(|(value, _)| !self.value_requirements.contains_key(*value)),
             )
-            .copied()
-            .filter_map(|value| {
-                let requirement = self.required_value_type(value)?;
-                self.fact_differs(SourceTypeFact::Value(value), &requirement)
-                    .then_some((value, requirement))
+            .filter_map(|(&value, requirement)| {
+                let current = self.value_states.get(&value).and_then(TypeState::exact);
+                let next = self.required_value_type(value, requirement.exact()?, current)?;
+                (current != Some(&next)).then_some((value, next))
             })
             .collect::<Vec<_>>();
         replacements
@@ -3313,21 +3354,17 @@ impl<'a> SourceTypeFlow<'a> {
             .collect()
     }
 
-    fn required_value_type(&self, value: SsaVar) -> Option<JavaType> {
-        let TypeState::Exact(requirement) = self
-            .value_requirements
-            .get(&value)
-            .or_else(|| self.receiver_value_requirements.get(&value))?
-        else {
-            return None;
-        };
+    fn required_value_type(
+        &self,
+        value: SsaVar,
+        requirement: &JavaType,
+        current: Option<&JavaType>,
+    ) -> Option<JavaType> {
         let principal = self
             .value_states
             .definition(&value)
             .and_then(TypeState::exact);
-        if !self.fact_differs(SourceTypeFact::Value(value), requirement)
-            && principal.is_none_or(|ty| ty == requirement)
-        {
+        if current == Some(requirement) && principal.is_none_or(|ty| ty == requirement) {
             return None;
         }
         let relations = JavaTypeRelations::new(
@@ -3339,17 +3376,13 @@ impl<'a> SourceTypeFlow<'a> {
         if self.roles.has(value, TypeRole::DECLARATION)
             && self.value_definition_fits(value, requirement, &relations)
         {
-            return self
-                .fact_differs(SourceTypeFact::Value(value), requirement)
-                .then(|| requirement.clone());
+            return (current != Some(requirement)).then(|| requirement.clone());
         }
         if let Some(principal) = principal {
             if let Some(specialized) =
                 self.specialize_value_principal_type(value, principal, requirement, &relations)
             {
-                return self
-                    .fact_differs(SourceTypeFact::Value(value), &specialized)
-                    .then_some(specialized);
+                return (current != Some(&specialized)).then_some(specialized);
             }
             let proper_subtype = relations.is_assignable(principal, requirement)
                 && !relations.is_assignable(requirement, principal);
@@ -3358,37 +3391,28 @@ impl<'a> SourceTypeFlow<'a> {
                 || self.value_erasure_is_strict_subtype(value, requirement))
                 && self.value_definition_fits(value, principal, &relations)
             {
-                return self
-                    .fact_differs(SourceTypeFact::Value(value), principal)
-                    .then(|| principal.clone());
+                return (current != Some(principal)).then(|| principal.clone());
             }
         }
-        if self
-            .value_states
-            .get(&value)
-            .is_some_and(|state| match state {
-                TypeState::Exact(current) => {
-                    relations.is_assignable(current, requirement)
-                        && !relations.is_assignable(requirement, current)
-                        && self.value_definition_fits(value, current, &relations)
-                }
-                TypeState::Conflict => false,
-            })
-        {
+        if current.is_some_and(|current| {
+            relations.is_assignable(current, requirement)
+                && !relations.is_assignable(requirement, current)
+                && self.value_definition_fits(value, current, &relations)
+        }) {
             return None;
         }
         if !self.value_definition_fits(value, requirement, &relations) {
             return None;
         }
-        match self.value_states.get(&value) {
-            Some(TypeState::Exact(current))
+        match current {
+            Some(current)
                 if relations.is_assignable(current, requirement)
                     && (!Self::has_source_specific_type(requirement)
                         || Self::has_source_specific_type(current)) =>
             {
                 None
             }
-            Some(TypeState::Exact(_) | TypeState::Conflict) | None => Some(requirement.clone()),
+            _ => Some(requirement.clone()),
         }
     }
 
@@ -3443,7 +3467,7 @@ impl<'a> SourceTypeFlow<'a> {
             if dirty.first == 0 && dirty.remaining.is_empty() {
                 break;
             }
-            let mut affected_outputs = BTreeSet::new();
+            let mut affected_outputs = SmallVec::<[SourceTypeFact; 8]>::new();
             for index in dirty.indices() {
                 let equation = &self.equations[index];
                 let candidate = self
@@ -3457,6 +3481,8 @@ impl<'a> SourceTypeFlow<'a> {
                     affected_outputs.extend(TypeEquationGraph::register_facts(&equation.result));
                 }
             }
+            affected_outputs.sort_unstable();
+            affected_outputs.dedup();
             for output in affected_outputs {
                 if self.fact_is_fixed(output) {
                     continue;
@@ -3532,10 +3558,6 @@ impl<'a> SourceTypeFlow<'a> {
         }
     }
 
-    fn fact_differs(&self, fact: SourceTypeFact, ty: &JavaType) -> bool {
-        !matches!(self.fact_state(fact), Some(TypeState::Exact(current)) if current == ty)
-    }
-
     fn equations_for_fact(&self, fact: SourceTypeFact) -> impl Iterator<Item = &TypeEquation> {
         self.equation_graph
             .equations_for_output(fact)
@@ -3557,17 +3579,16 @@ impl<'a> SourceTypeFlow<'a> {
     fn apply_requirements(&mut self) -> Vec<u32> {
         let replacements = self
             .requirements
-            .keys()
+            .iter()
             .chain(
                 self.receiver_requirements
-                    .keys()
-                    .filter(|variable| !self.requirements.contains_key(*variable)),
+                    .iter()
+                    .filter(|(variable, _)| !self.requirements.contains_key(*variable)),
             )
-            .copied()
-            .filter_map(|variable| {
-                let requirement = self.required_type(variable)?;
-                self.fact_differs(SourceTypeFact::Variable(variable), &requirement)
-                    .then_some((variable, requirement))
+            .filter_map(|(&variable, requirement)| {
+                let current = self.states.get(&variable).and_then(TypeState::exact);
+                let next = self.required_type(variable, requirement.exact()?, current)?;
+                (current != Some(&next)).then_some((variable, next))
             })
             .collect::<Vec<_>>();
         replacements
@@ -3581,21 +3602,19 @@ impl<'a> SourceTypeFlow<'a> {
             .collect()
     }
 
-    fn required_type(&self, variable: u32) -> Option<JavaType> {
-        let TypeState::Exact(requirement) = self
-            .requirements
-            .get(&variable)
-            .or_else(|| self.receiver_requirements.get(&variable))?
-        else {
-            return None;
-        };
+    fn required_type(
+        &self,
+        variable: u32,
+        requirement: &JavaType,
+        current: Option<&JavaType>,
+    ) -> Option<JavaType> {
         if self.roles.has(variable, TypeRole::ABI) {
             return None;
         }
         let definition = self.states.definition(&variable).and_then(TypeState::exact);
         // A replacement can only come from the requirement or either principal.
         // Specialization requires a raw principal and a parameterized requirement.
-        if !self.fact_differs(SourceTypeFact::Variable(variable), requirement)
+        if current == Some(requirement)
             && definition.is_none_or(|ty| ty == requirement)
             && self.value_principals(variable).all(|ty| ty == requirement)
         {
@@ -3610,17 +3629,13 @@ impl<'a> SourceTypeFlow<'a> {
         if self.roles.has(variable, TypeRole::DECLARATION)
             && self.definitions_fit(variable, requirement, &relations)
         {
-            return self
-                .fact_differs(SourceTypeFact::Variable(variable), requirement)
-                .then(|| requirement.clone());
+            return (current != Some(requirement)).then(|| requirement.clone());
         }
         if let Some(principal) = self.value_principal_type(variable) {
             if let Some(specialized) =
                 self.specialize_principal_type(variable, &principal, requirement, &relations)
             {
-                return self
-                    .fact_differs(SourceTypeFact::Variable(variable), &specialized)
-                    .then_some(specialized);
+                return (current != Some(&specialized)).then_some(specialized);
             }
             let definition_is_stricter = definition.is_some_and(|definition| {
                 relations.is_assignable(definition, &principal)
@@ -3630,20 +3645,14 @@ impl<'a> SourceTypeFlow<'a> {
                 && relations.is_assignable(&principal, requirement)
                 && self.definitions_fit(variable, &principal, &relations)
             {
-                return self
-                    .fact_differs(SourceTypeFact::Variable(variable), &principal)
-                    .then(|| principal.into_owned());
+                return (current != Some(&principal)).then(|| principal.into_owned());
             }
         }
         if self.roles.has(variable, TypeRole::ERASED_BOUNDARY)
             && Self::has_source_specific_type(requirement)
-            && self.states.get(&variable).is_some_and(|state| match state {
-                TypeState::Exact(current) => {
-                    !self.has_generic_argument_evidence(current)
-                        && self.indexed_erased_type(current)
-                            == self.indexed_erased_type(requirement)
-                }
-                TypeState::Conflict => false,
+            && current.is_some_and(|current| {
+                !self.has_generic_argument_evidence(current)
+                    && self.indexed_erased_type(current) == self.indexed_erased_type(requirement)
             })
         {
             return None;
@@ -3652,47 +3661,36 @@ impl<'a> SourceTypeFlow<'a> {
             if let Some(specialized) =
                 self.specialize_principal_type(variable, principal, requirement, &relations)
             {
-                return self
-                    .fact_differs(SourceTypeFact::Variable(variable), &specialized)
-                    .then_some(specialized);
+                return (current != Some(&specialized)).then_some(specialized);
             }
             let proper_subtype = relations.is_assignable(principal, requirement)
                 && !relations.is_assignable(requirement, principal);
             if (proper_subtype || self.source_erasure_is_strict_subtype(principal, requirement))
                 && self.definitions_fit(variable, principal, &relations)
             {
-                return self
-                    .fact_differs(SourceTypeFact::Variable(variable), principal)
-                    .then(|| principal.clone());
+                return (current != Some(principal)).then(|| principal.clone());
             }
             if self.variable_erasures_are_strict_subtypes(variable, requirement)
                 && self.definitions_fit(variable, requirement, &relations)
             {
-                return self
-                    .fact_differs(SourceTypeFact::Variable(variable), requirement)
-                    .then(|| requirement.clone());
+                return (current != Some(requirement)).then(|| requirement.clone());
             }
         }
         if self.definitions_preserve_runtime_type(variable, requirement) {
-            return self
-                .fact_differs(SourceTypeFact::Variable(variable), requirement)
-                .then(|| requirement.clone());
+            return (current != Some(requirement)).then(|| requirement.clone());
         }
-        if self.states.get(&variable).is_some_and(|state| match state {
-            TypeState::Exact(current) => {
-                relations.is_assignable(current, requirement)
-                    && !relations.is_assignable(requirement, current)
-                    && self.definitions_fit(variable, current, &relations)
-            }
-            TypeState::Conflict => false,
+        if current.is_some_and(|current| {
+            relations.is_assignable(current, requirement)
+                && !relations.is_assignable(requirement, current)
+                && self.definitions_fit(variable, current, &relations)
         }) {
             return None;
         }
         if !self.definitions_fit(variable, requirement, &relations) {
             return None;
         }
-        match self.states.get(&variable) {
-            Some(TypeState::Exact(current))
+        match current {
+            Some(current)
                 if relations.is_assignable(current, requirement)
                     && (!Self::has_source_specific_type(requirement)
                         || Self::has_source_specific_type(current))
@@ -3700,7 +3698,7 @@ impl<'a> SourceTypeFlow<'a> {
             {
                 None
             }
-            Some(TypeState::Exact(_) | TypeState::Conflict) | None => Some(requirement.clone()),
+            _ => Some(requirement.clone()),
         }
     }
 
@@ -3852,11 +3850,13 @@ impl<'a> SourceTypeFlow<'a> {
         }
         let mut target_evidence = false;
         let fits = definitions.all(|equation| {
+            let fits = self.expression_fits(&equation.value, requirement, relations);
+            if fits && (!needs_target_evidence || target_evidence) {
+                return true;
+            }
             let accepts_target = self.expression_accepts_target(&equation.value, requirement);
             target_evidence |= accepts_target;
-            self.expression_fits(&equation.value, requirement, relations)
-                || accepts_target
-                || self.erased_reference_result_fits(equation, requirement)
+            fits || accepts_target || self.erased_reference_result_fits(equation, requirement)
         });
         fits && (!needs_target_evidence || target_evidence)
     }
@@ -4486,7 +4486,7 @@ impl<'a> SourceTypeFlow<'a> {
         };
         let next = match existing.get() {
             TypeState::Exact(current) if current == incoming.as_ref() => {
-                return RequirementChange::Unchanged
+                return RequirementChange::Unchanged;
             }
             TypeState::Exact(current) => {
                 let current_erasure = Self::erased_type(
@@ -5241,7 +5241,7 @@ impl<'a> SourceTypeFlow<'a> {
         });
         if is_current_instance {
             if self.current_type == Some(erased_owner) {
-                let declared_owner = JvmTypeSignature::ClassType(owner.clone()).erased();
+                let declared_owner = owner.erased_type();
                 if &declared_owner == erased_owner {
                     solver.constrain_current_owner(owner);
                 } else if let Some(projected) = self.source_current_type.and_then(|current| {
@@ -6424,7 +6424,7 @@ mod tests {
     fn indexed_class_assignability_matches_linear_scan() {
         let source_types = test_source_types();
         let variables = BTreeMap::new();
-        let index = JavaTypeErasureIndex::from_source_types(&source_types);
+        let index = JavaTypeErasureIndex::from_source_types(source_types.clone());
         let unindexed = JavaTypeRelations::new(&source_types, &variables, Some(&ParentProjection));
         let indexed = JavaTypeRelations::new(&source_types, &variables, Some(&ParentProjection))
             .with_erasure_index(Some(&index));

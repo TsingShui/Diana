@@ -230,7 +230,7 @@ fn sibling_root_groups_preserve_paths_between_their_full_dominator_subtrees() {
         for (index, &id) in blocks.iter().enumerate() {
             let mut block = Block::new(id);
             let limit = count.min((index / 8 + 1) * 8 + 1);
-            if index + 2 < limit && (index + seed) % 4 != 0 {
+            if index + 2 < limit && !(index + seed).is_multiple_of(4) {
                 block.push(InsnNode::new(InsnType::If, 0));
                 let target = index + 2 + (index * 11 + seed * 7) % (limit - index - 2);
                 cfg.add_edge(id, blocks[target], EdgeKind::True);

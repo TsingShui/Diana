@@ -57,6 +57,13 @@ impl<'a> JavaLoopSyntax<'a> {
 impl SemanticFolder for JavaLoopSyntax<'_> {
     type Error = crate::ir::SemanticFoldError;
 
+    fn preserves_subtree(&self, node: &SemanticNode) -> bool {
+        matches!(
+            node,
+            SemanticNode::Empty | SemanticNode::BasicBlock(_) | SemanticNode::Leave(_)
+        )
+    }
+
     fn finish_node(&mut self, node: SemanticNode) -> Result<SemanticNode, Self::Error> {
         let node = Self::reclassify(node)?;
         let node = LoopGuardCondition::apply(node);

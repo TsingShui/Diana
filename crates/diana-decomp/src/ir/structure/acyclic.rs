@@ -416,9 +416,9 @@ impl<'a> AcyclicStructureAnalysis<'a> {
         let mut next = first_variable;
         // After a partition, the remainder contains only old items and one
         // item at the enclosing assumption. An eligible variable already
-        // tested that domain in both directions. A variable that found fewer
-        // than two members can never gain another; an incompatible ordering
-        // can change as members leave.
+        // tested that domain in both directions. A variable with fewer than
+        // two members stays ineligible. An earlier incompatible ordering
+        // can become valid as members leave.
         let mut retry_from = None;
         // These items have the enclosing assumption's domain. Eligibility
         // already issued both implication queries and found neither true.
@@ -546,9 +546,9 @@ impl<'a> AcyclicStructureAnalysis<'a> {
                 lexical_rank = lexical_rank.min(item.lexical_rank);
             }
         }
-        // Opposite arms cannot reach each other: each DAG path assigns
-        // independent literals at distinct blocks, so reaching both would
-        // satisfy both the predicate and its negation.
+        // Each DAG path assigns independent literals at distinct blocks.
+        // A path between opposite arms would satisfy both the predicate and
+        // its negation.
         let mut lower = 0usize;
         let mut upper = remaining.len();
         for (index, item) in remaining.iter().enumerate() {

@@ -78,19 +78,101 @@ impl<T: fmt::Display> Serialize for DisplayValue<T> {
 }
 
 /// Exact original UTF-16. Display escapes isolated surrogates; units retain identity.
-#[derive(Clone, Debug)]
-pub struct OriginalText(Vec<u16>);
+#[derive(Clone)]
+pub struct OriginalText(TextUnits);
+
+const INLINE_UNITS: usize = 10;
+
+#[derive(Clone)]
+enum TextUnits {
+    Inline {
+        length: u8,
+        units: [u16; INLINE_UNITS],
+    },
+    Owned(Box<[u16]>),
+}
+
 impl OriginalText {
     pub fn new(units: Vec<u16>) -> Self {
-        Self(units)
+        if units.len() <= INLINE_UNITS {
+            let mut inline = [0; INLINE_UNITS];
+            inline[..units.len()].copy_from_slice(&units);
+            Self(TextUnits::Inline {
+                length: units.len() as u8,
+                units: inline,
+            })
+        } else {
+            Self(TextUnits::Owned(units.into_boxed_slice()))
+        }
     }
+
     pub fn units(&self) -> &[u16] {
-        &self.0
+        match &self.0 {
+            TextUnits::Inline { length, units } => &units[..usize::from(*length)],
+            TextUnits::Owned(units) => units,
+        }
+    }
+
+    pub(super) fn read(value: crate::input::DexString<'_>) -> Result<Self, RequestError> {
+        let bytes = value.bytes();
+        if bytes.len() <= INLINE_UNITS && bytes.is_ascii() {
+            let mut units = [0; INLINE_UNITS];
+            for (slot, &byte) in units.iter_mut().zip(bytes) {
+                *slot = u16::from(byte);
+            }
+            return Ok(Self(TextUnits::Inline {
+                length: bytes.len() as u8,
+                units,
+            }));
+        }
+        crate::substrate::owned::copy_units(value).map(Self::new)
+    }
+
+    pub(super) fn prototype(parameters: &[Self], returns: &Self) -> Result<Self, RequestError> {
+        let length = parameters
+            .iter()
+            .chain([returns])
+            .try_fold(2usize, |size, ty| {
+                size.checked_add(ty.units().len())
+                    .ok_or(RequestError::PlatformCapacity)
+            })?;
+        let open = [u16::from(b'(')];
+        let close = [u16::from(b')')];
+        let parts = std::iter::once(open.as_slice())
+            .chain(parameters.iter().map(Self::units))
+            .chain([close.as_slice(), returns.units()]);
+        if length <= INLINE_UNITS {
+            let mut units = [0; INLINE_UNITS];
+            let mut start = 0;
+            for part in parts {
+                units[start..start + part.len()].copy_from_slice(part);
+                start += part.len();
+            }
+            return Ok(Self(TextUnits::Inline {
+                length: length as u8,
+                units,
+            }));
+        }
+        let mut units = Vec::new();
+        crate::substrate::owned::reserve(&mut units, length)?;
+        for part in parts {
+            units.extend_from_slice(part);
+        }
+        Ok(Self(TextUnits::Owned(units.into_boxed_slice())))
+    }
+}
+
+impl fmt::Debug for OriginalText {
+    fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
+        output
+            .debug_tuple("OriginalText")
+            .field(&self.units())
+            .finish()
     }
 }
 impl fmt::Display for OriginalText {
     fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for scalar in char::decode_utf16(self.0.iter().copied()) {
+        for scalar in char::decode_utf16(self.units().iter().copied()) {
             match scalar {
                 Ok(character) => write!(output, "{character}")?,
                 Err(error) => write!(output, "\\u{:04X}", error.unpaired_surrogate())?,
@@ -104,7 +186,7 @@ impl Serialize for OriginalText {
         use serde::ser::SerializeStruct;
         let mut record = serializer.serialize_struct("OriginalText", 2)?;
         record.serialize_field("text", &DisplayValue(self))?;
-        record.serialize_field("units", &self.0)?;
+        record.serialize_field("units", self.units())?;
         record.end()
     }
 }
@@ -323,7 +405,10 @@ impl MethodDeclaration {
             Ok(result)
         }
         fn text(source: &OriginalText) -> Result<OriginalText, RequestError> {
-            Ok(OriginalText::new(units(source.units())?))
+            match &source.0 {
+                TextUnits::Inline { .. } => Ok(source.clone()),
+                TextUnits::Owned(text) => Ok(OriginalText::new(units(text)?)),
+            }
         }
         let mut parameter_types = Vec::new();
         crate::substrate::owned::reserve(&mut parameter_types, self.parameter_types.len())?;
@@ -695,3 +780,7 @@ impl ClassFacts {
         self.methods.iter().find(|entry| entry.method == method)
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/original_declarations.rs"]
+mod original_declarations;

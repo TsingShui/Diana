@@ -3,7 +3,7 @@ use crate::input::catalog::{ClassDataShape, ClassDataWalk, MemberEntry, MemberSe
 
 use crate::input::values::{EncodedKind, EncodedValues, ValueStep};
 use crate::input::{InputError, ProgramIndex};
-use crate::substrate::owned::{copy_units, push, reserve};
+use crate::substrate::owned::{push, reserve};
 use crate::{ClassKey, FailureKind, MethodId, RequestError};
 
 /// A declaration or metadata read that damaged only its own member entry.
@@ -26,7 +26,7 @@ fn optional_text(
     value: Result<Option<crate::input::DexString<'_>>, InputError>,
 ) -> Result<Fact<OriginalText>, RequestError> {
     match value {
-        Ok(Some(value)) => Ok(Fact::Present(OriginalText::new(copy_units(value)?))),
+        Ok(Some(value)) => Ok(Fact::Present(OriginalText::read(value)?)),
         Ok(None) => Ok(Fact::Absent),
         Err(error) => local(Err(error.into())),
     }
@@ -167,9 +167,9 @@ pub(super) fn read_preparations(
                 }
                 EncodedKind::Boolean(value) => Some(ScalarValue::Boolean(*value)),
                 EncodedKind::Null => Some(ScalarValue::Null),
-                EncodedKind::Reference(crate::raw::OperandReference::String(id)) => Some(
-                    ScalarValue::String(OriginalText::new(copy_units(index.string(*id)?)?)),
-                ),
+                EncodedKind::Reference(crate::raw::OperandReference::String(id)) => {
+                    Some(ScalarValue::String(OriginalText::read(index.string(*id)?)?))
+                }
                 _ => None,
             };
             prepared.push(FieldPreparation {
@@ -261,33 +261,17 @@ fn method_declaration(
         declaration
             .prototype
             .visit_parameter_type_ids(|id, name| -> Result<(), RequestError> {
-                let name = OriginalText::new(copy_units(name)?);
+                let name = OriginalText::read(name)?;
                 parameter_types.push(name);
                 parameter_type_ids.push(id.0);
                 Ok(())
             })?;
-        let returns = OriginalText::new(copy_units(declaration.prototype.return_type)?);
-        // Construct the full descriptor from the exact units P0 already owns.
-        let total_units =
-            parameter_types
-                .iter()
-                .chain([&returns])
-                .try_fold(2usize, |size, ty| {
-                    size.checked_add(ty.units().len())
-                        .ok_or(RequestError::PlatformCapacity)
-                })?;
-        let mut prototype = Vec::new();
-        reserve(&mut prototype, total_units)?;
-        prototype.push(u16::from(b'('));
-        for ty in &parameter_types {
-            prototype.extend_from_slice(ty.units());
-        }
-        prototype.push(u16::from(b')'));
-        prototype.extend_from_slice(returns.units());
+        let returns = OriginalText::read(declaration.prototype.return_type)?;
+        let prototype = OriginalText::prototype(&parameter_types, &returns)?;
         Ok(MethodDeclaration {
-            name: OriginalText::new(copy_units(declaration.name)?),
-            prototype: OriginalText::new(prototype),
-            shorty: OriginalText::new(copy_units(declaration.prototype.shorty)?),
+            name: OriginalText::read(declaration.name)?,
+            prototype,
+            shorty: OriginalText::read(declaration.prototype.shorty)?,
             parameter_types,
             parameter_type_ids,
             return_type: returns,
@@ -311,7 +295,7 @@ pub fn collect(index: &ProgramIndex<'_>, owner: ClassKey) -> Result<ClassFacts, 
             for word in list.as_chunks::<2>().0 {
                 let id = crate::TypeId(u32::from(u16::from_le_bytes(*word)));
                 let name = (|| -> Result<OriginalText, RequestError> {
-                    Ok(OriginalText::new(copy_units(index.type_name(id)?)?))
+                    OriginalText::read(index.type_name(id)?)
                 })();
                 match name {
                     Ok(name) => push(
@@ -345,7 +329,7 @@ pub fn collect(index: &ProgramIndex<'_>, owner: ClassKey) -> Result<ClassFacts, 
     let source_file = optional_text(index.source_file(owner.class_def))?;
     let declaration = ClassDeclaration {
         type_index: class.type_idx.0,
-        descriptor: OriginalText::new(copy_units(class.descriptor)?),
+        descriptor: OriginalText::read(class.descriptor)?,
         access_flags: OriginalFlags::new(class.access_flags, MemberKind::Class),
         superclass,
         superclass_type_index: context.superclass_type.map(|id| id.0),
@@ -371,8 +355,8 @@ pub fn collect(index: &ProgramIndex<'_>, owner: ClassKey) -> Result<ClassFacts, 
                 let declaration = match field.declaration {
                     Ok(declaration) => Ok(FieldDeclaration {
                         type_id: declaration.field_type_idx,
-                        name: OriginalText::new(copy_units(declaration.name)?),
-                        descriptor: OriginalText::new(copy_units(declaration.field_type)?),
+                        name: OriginalText::read(declaration.name)?,
+                        descriptor: OriginalText::read(declaration.field_type)?,
                     }),
                     Err(error) => Err(RequestError::from(error)),
                 };

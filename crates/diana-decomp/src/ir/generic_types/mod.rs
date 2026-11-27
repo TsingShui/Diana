@@ -344,7 +344,7 @@ impl JvmTypeSignature {
                     element = inner;
                 }
                 JvmTypeSignature::ClassType(class) => {
-                    break ArgType::object(&class.erased_name());
+                    break class.erased_type();
                 }
                 JvmTypeSignature::TypeVariable(_) => {
                     break ArgType::object("java/lang/Object");
@@ -393,6 +393,22 @@ impl ClassTypeSignature {
             name.push_str(&inner.simple_name);
         }
         name
+    }
+
+    pub(crate) fn erased_type(&self) -> ArgType {
+        if self.inner_segments.is_empty() {
+            ArgType::object(&self.raw_name)
+        } else {
+            ArgType::object(&self.erased_name())
+        }
+    }
+
+    pub(crate) fn argument_groups(&self) -> impl Iterator<Item = &[TypeArgument]> {
+        std::iter::once(self.type_arguments.as_slice()).chain(
+            self.inner_segments
+                .iter()
+                .map(|segment| segment.type_arguments.as_slice()),
+        )
     }
 
     pub fn owner_scopes(&self) -> ClassTypeScopes<'_> {
