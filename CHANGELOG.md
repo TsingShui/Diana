@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.1 - 2026-11-28
+
+- Added native analysis and Java-like source recovery for JAR archives and
+  standalone JVM class files, with bytecode, cross-reference and outline queries.
+- Added JVM archive comparison and package-organized export of JVM sources
+  and resources. This release also includes the DEX comparison and recovery
+  changes listed under 0.4.0.
+- Restored compatibility with Rust 1.93 for release builds.
+
 ## 0.4.0 - 2026-11-27
 
 ### DEX comparison
