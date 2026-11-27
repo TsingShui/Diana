@@ -516,3 +516,48 @@ fn unique_index_promotion_respects_the_node_limit_and_preserves_forked_ids() {
         }
     }
 }
+
+#[test]
+fn constrain_reuses_shared_pairs_after_exhausting_a_smaller_budget() {
+    let names = (0..4).map(BoolVariable::Atom).collect::<BTreeSet<_>>();
+    let context = BddContext::new(&names);
+    let variables = names
+        .iter()
+        .map(|v| context.compile(&BoolExpr::Symbol(v.clone())).unwrap())
+        .collect::<Vec<_>>();
+    let (x, y, z, care) = (variables[0], variables[1], variables[2], variables[3]);
+    let not_y = context.not(y).unwrap();
+    let not_z = context.not(z).unwrap();
+    let same = context
+        .or(
+            context.and(y, z).unwrap(),
+            context.and(not_y, not_z).unwrap(),
+        )
+        .unwrap();
+    let opposite = context
+        .or(
+            context.and(y, not_z).unwrap(),
+            context.and(not_y, z).unwrap(),
+        )
+        .unwrap();
+    let value = context
+        .or(
+            context.and(x, same).unwrap(),
+            context.and(context.not(x).unwrap(), opposite).unwrap(),
+        )
+        .unwrap();
+
+    // Each half visits the same two pairs at z in a different order.
+    // The first three variable levels contain only five distinct pairs.
+    context.manager.borrow_mut().limits.operations = 4;
+    assert_eq!(
+        context.constrain(value, care),
+        Err(BddError::ResourceLimit {
+            resource: BddResource::Operations,
+            limit: 4,
+        })
+    );
+    context.manager.borrow_mut().limits.operations = 5;
+    assert_eq!(context.constrain(value, care).unwrap(), value);
+    assert_eq!(context.manager.borrow().operations_used, 5);
+}

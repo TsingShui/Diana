@@ -716,67 +716,63 @@ impl Manager {
     fn constrain(&mut self, value: Bdd, care: Bdd) -> Result<Bdd, BddError> {
         self.validate(value)?;
         self.validate(care)?;
-        let mut tasks = vec![ConstrainTask::Visit(value, care)];
-        let mut results = Vec::new();
-        let mut memo = BTreeMap::<(Bdd, Bdd), Bdd>::new();
-        while let Some(task) = tasks.pop() {
-            match task {
-                ConstrainTask::Visit(value, care) => {
-                    if let Some(result) = memo.get(&(value, care)) {
-                        results.push(*result);
-                        continue;
-                    }
-                    if care.is_false() {
-                        results.push(self.handle(0));
-                        continue;
-                    }
-                    if care.is_true() || value.is_false() || value.is_true() {
-                        memo.insert((value, care), value);
-                        results.push(value);
-                        continue;
-                    }
+        let (mut value, mut care) = (value.node, care.node);
+        // Validation is complete. Each child pair comes from this arena,
+        // and only nonterminal pairs consume work and need to be memoized.
+        let mut parents = smallvec::SmallVec::<[ConstrainFrame; 8]>::new();
+        let mut memo = HashMap::<u32, u16>::default();
+        'descend: loop {
+            let mut result = if care == 0 {
+                0
+            } else if care == 1 || value <= 1 {
+                value
+            } else {
+                let key = (u32::from(value) << 16) | u32::from(care);
+                if let Some(&result) = memo.get(&key) {
+                    result
+                } else {
                     self.charge_operation()?;
-                    let variable = self.top_variable(value, care)?;
-                    let (value_low, value_high) = self.cofactors(value, variable)?;
-                    let (care_low, care_high) = self.cofactors(care, variable)?;
-                    if care_low.is_false() {
-                        tasks.push(ConstrainTask::Alias(value, care));
-                        tasks.push(ConstrainTask::Visit(value_high, care_high));
-                    } else if care_high.is_false() {
-                        tasks.push(ConstrainTask::Alias(value, care));
-                        tasks.push(ConstrainTask::Visit(value_low, care_low));
-                    } else {
-                        tasks.push(ConstrainTask::Combine {
-                            value,
-                            care,
-                            variable,
-                        });
-                        tasks.push(ConstrainTask::Visit(value_high, care_high));
-                        tasks.push(ConstrainTask::Visit(value_low, care_low));
+                    let a = self.nodes[usize::from(value)];
+                    let b = self.nodes[usize::from(care)];
+                    let variable = a.variable.min(b.variable);
+                    let (value_low, value_high) = a.cofactors(value, variable);
+                    let (care_low, care_high) = b.cofactors(care, variable);
+                    let (pair, next) = match (care_low, care_high) {
+                        (0, _) => ((value_high, care_high), ConstrainChild::Alias),
+                        (_, 0) => ((value_low, care_low), ConstrainChild::Alias),
+                        (_, _) => (
+                            (value_low, care_low),
+                            ConstrainChild::High(value_high, care_high),
+                        ),
+                    };
+                    parents.push(ConstrainFrame {
+                        key,
+                        variable,
+                        next,
+                    });
+                    (value, care) = pair;
+                    continue;
+                }
+            };
+            while let Some(frame) = parents.last_mut() {
+                match frame.next {
+                    // The other care branch is unsatisfiable. Keep the
+                    // completed result, and record the alias for this pair.
+                    ConstrainChild::Alias => {}
+                    ConstrainChild::High(a, b) => {
+                        frame.next = ConstrainChild::LowResult(result);
+                        (value, care) = (a, b);
+                        continue 'descend;
                     }
-                }
-                ConstrainTask::Alias(value, care) => {
-                    let result = results.pop().ok_or(BddError::MalformedEvaluation)?;
-                    memo.insert((value, care), result);
-                    results.push(result);
-                }
-                ConstrainTask::Combine {
-                    value,
-                    care,
-                    variable,
-                } => {
-                    let high = results.pop().ok_or(BddError::MalformedEvaluation)?;
-                    let low = results.pop().ok_or(BddError::MalformedEvaluation)?;
-                    let result = self.node(variable, low, high)?;
-                    memo.insert((value, care), result);
-                    results.push(result);
-                }
+                    ConstrainChild::LowResult(low) => {
+                        result = self.intern(frame.variable, low, result)?;
+                    }
+                };
+                memo.insert(frame.key, result);
+                parents.pop();
             }
+            return Ok(self.handle(result));
         }
-        if results.len() != 1 {
-            return Err(BddError::MalformedEvaluation);
-        }
-        results.pop().ok_or(BddError::MalformedEvaluation)
     }
 
     fn implies(&mut self, premise: Bdd, consequence: Bdd) -> Result<bool, BddError> {
@@ -869,23 +865,6 @@ impl Manager {
         }
     }
 
-    fn top_variable(&self, left: Bdd, right: Bdd) -> Result<usize, BddError> {
-        Ok(self.variable_of(left)?.min(self.variable_of(right)?))
-    }
-
-    fn variable_of(&self, value: Bdd) -> Result<usize, BddError> {
-        Ok(self.validate(value)?.variable)
-    }
-
-    fn cofactors(&self, value: Bdd, variable: usize) -> Result<(Bdd, Bdd), BddError> {
-        let node = self.validate(value)?;
-        Ok(if node.variable == variable {
-            (node.low, node.high)
-        } else {
-            (value, value)
-        })
-    }
-
     fn charge_cache_entries(&mut self, additional: usize) -> Result<(), BddError> {
         let entries = self.cache_entries.saturating_add(additional);
         if entries > self.limits.cache_entries {
@@ -969,14 +948,16 @@ enum RestrictTask {
     Combine { value: Bdd, variable: usize },
 }
 
-enum ConstrainTask {
-    Visit(Bdd, Bdd),
-    Alias(Bdd, Bdd),
-    Combine {
-        value: Bdd,
-        care: Bdd,
-        variable: usize,
-    },
+struct ConstrainFrame {
+    key: u32,
+    variable: usize,
+    next: ConstrainChild,
+}
+
+enum ConstrainChild {
+    Alias,
+    High(u16, u16),
+    LowResult(u16),
 }
 
 enum ExistsTask {
