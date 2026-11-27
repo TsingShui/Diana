@@ -128,48 +128,79 @@ impl ArenaNode {
     }
 }
 
-/// Arena keys are immutable and IDs 0 and 1 are the two terminals. Zero
-/// therefore marks an empty slot without a separate occupancy byte. The
-/// arena itself supplies a dense insertion-order sequence when growing.
+/// Above the linear scan limit, the first part holds bucket heads.
+/// The rest holds one link per
+/// nonterminal arena node, indexed by its insertion-order ID minus two.
+/// Zero ends a chain. Both terminal IDs are excluded from the table.
 #[derive(Clone)]
 struct UniqueNodes {
-    slots: smallvec::SmallVec<[u16; 8]>,
+    slots: Vec<u16>,
+    buckets: usize,
     hasher: foldhash::fast::RandomState,
 }
 
 impl UniqueNodes {
+    const NODES_PER_BUCKET: usize = 4;
+    const LINEAR_LIMIT: usize = 16;
+
     fn new() -> Self {
         Self {
-            slots: smallvec::SmallVec::from_buf([0; 8]),
+            slots: Vec::new(),
+            buckets: 0,
             hasher: foldhash::fast::RandomState::default(),
         }
     }
 
-    fn slot(&self, hash: usize, nodes: &[ArenaNode], key: (usize, u32)) -> usize {
-        let mask = self.slots.len() - 1;
-        let mut slot = hash & mask;
-        loop {
-            let id = self.slots[slot];
-            if id == 0 || nodes[usize::from(id)].key() == key {
-                return slot;
+    fn lookup(&self, nodes: &[ArenaNode], key: (usize, u32)) -> (u16, usize) {
+        let youngest_child = ((key.1 >> 16) as u16).max(key.1 as u16);
+        if self.buckets == 0 {
+            // Small arenas need no separate index. Only nodes created after
+            // both children can be parents. Most new keys use a recent child.
+            let first = usize::from(youngest_child).saturating_add(1).max(2);
+            for id in (first..nodes.len()).rev() {
+                if nodes[id].key() == key {
+                    return (id as u16, 0);
+                }
             }
-            slot = (slot + 1) & mask;
+            return (0, 0);
         }
+        let hash = self.hasher.hash_one(key) as usize;
+        let mut candidate = self.slots[hash & (self.buckets - 1)];
+        // Every parent was interned after both children. Bucket links lead
+        // to progressively older IDs, so no older entry can match either.
+        while candidate > youngest_child {
+            if nodes[usize::from(candidate)].key() == key {
+                return (candidate, hash);
+            }
+            candidate = self.slots[self.buckets + usize::from(candidate) - 2];
+        }
+        (0, hash)
     }
 
-    fn grow(&mut self, nodes: &[ArenaNode]) {
-        let len = self.slots.len() * 2;
-        let mask = len - 1;
-        let mut slots = smallvec::smallvec![0; len];
-        for (id, node) in nodes.iter().enumerate().skip(2) {
-            let mut slot = self.hasher.hash_one(node.key()) as usize & mask;
-            while slots[slot] != 0 {
-                slot = (slot + 1) & mask;
-            }
-            // The manager checked this ID before appending its node.
-            slots[slot] = id as u16;
+    fn insert(&mut self, mut hash: usize, id: u16, nodes: &[ArenaNode], key: (usize, u32)) {
+        let count = usize::from(id) - 2;
+        if count < Self::LINEAR_LIMIT {
+            return;
         }
-        self.slots = slots;
+        if self.buckets == 0 || count == self.buckets * Self::NODES_PER_BUCKET {
+            if self.buckets == 0 {
+                self.buckets = Self::LINEAR_LIMIT * 2 / Self::NODES_PER_BUCKET;
+                hash = self.hasher.hash_one(key) as usize;
+            } else {
+                self.buckets *= 2;
+            }
+            let mask = self.buckets - 1;
+            let mut slots = vec![0; self.buckets * (1 + Self::NODES_PER_BUCKET)];
+            for (id, node) in nodes.iter().enumerate().skip(2) {
+                let bucket = self.hasher.hash_one(node.key()) as usize & mask;
+                slots[self.buckets + id - 2] = slots[bucket];
+                slots[bucket] = id as u16;
+            }
+            self.slots = slots;
+        }
+        let bucket = hash & (self.buckets - 1);
+        self.slots[self.buckets + usize::from(id) - 2] = self.slots[bucket];
+        self.slots[bucket] = id;
     }
 }
 
@@ -258,7 +289,7 @@ enum MemoLookup {
 struct Manager {
     context: u64,
     nodes: Vec<ArenaNode>,
-    // Nodes already own their immutable keys. Buckets only need their arena IDs.
+    // Nodes already own their immutable keys. The index stores only arena IDs.
     unique: UniqueNodes,
     binary_cache: BinaryMemo,
     apply_work: Vec<ApplyFrame>,
@@ -340,13 +371,11 @@ impl Manager {
             return Ok(low);
         }
         let key = (variable, u32::from(low) << 16 | u32::from(high));
-        let hash = self.unique.hasher.hash_one(key) as usize;
-        let slot = self.unique.slot(hash, &self.nodes, key);
-        let existing = self.unique.slots[slot];
+        let (existing, hash) = self.unique.lookup(&self.nodes, key);
         if existing != 0 {
             return Ok(existing);
         }
-        self.insert_node(variable, low, high, hash, slot)
+        self.insert_node(variable, low, high, hash)
     }
 
     fn insert_node(
@@ -355,7 +384,6 @@ impl Manager {
         low: u16,
         high: u16,
         hash: usize,
-        mut slot: usize,
     ) -> Result<u16, BddError> {
         if self.nodes.len() >= self.limits.nodes {
             return Err(BddError::ResourceLimit {
@@ -367,13 +395,12 @@ impl Manager {
             resource: BddResource::Nodes,
             limit: self.limits.nodes,
         })?;
-        // Maintain an empty probe slot even at the arena limit. Grow only
-        // for a genuinely new ID, after checking the method's node budget.
-        if self.nodes.len() - 2 >= self.unique.slots.len() / 4 * 3 {
-            self.unique.grow(&self.nodes);
-            let key = (variable, u32::from(low) << 16 | u32::from(high));
-            slot = self.unique.slot(hash, &self.nodes, key);
-        }
+        self.unique.insert(
+            hash,
+            id,
+            &self.nodes,
+            (variable, u32::from(low) << 16 | u32::from(high)),
+        );
         self.nodes.push(ArenaNode {
             variable,
             low,
@@ -382,7 +409,6 @@ impl Manager {
             has_complement: false,
             cached_pairs: 0,
         });
-        self.unique.slots[slot] = id;
         Ok(id)
     }
 
@@ -402,15 +428,13 @@ impl Manager {
             (other, terminal)
         };
         let key = (literal.variable, u32::from(low) << 16 | u32::from(high));
-        let hash = self.unique.hasher.hash_one(key) as usize;
-        let slot = self.unique.slot(hash, &self.nodes, key);
-        let existing = self.unique.slots[slot];
+        let (existing, hash) = self.unique.lookup(&self.nodes, key);
         if existing != 0 && self.nodes[usize::from(existing)].cached_pairs & CACHED_PREFIX != 0 {
             return Ok(existing);
         }
         self.charge_operation()?;
         let result = if existing == 0 {
-            self.insert_node(literal.variable, low, high, hash, slot)?
+            self.insert_node(literal.variable, low, high, hash)?
         } else {
             existing
         };

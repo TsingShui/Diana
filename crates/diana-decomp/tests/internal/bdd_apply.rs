@@ -441,3 +441,78 @@ fn pending_memo_entries_survive_bucket_collisions_and_recursive_table_growth() {
         }
     }
 }
+
+#[test]
+fn unique_chains_find_older_parents_after_a_new_child_and_table_growth() {
+    let mut manager = Manager::new(
+        17,
+        BddLimits {
+            nodes: 160,
+            cache_entries: 1,
+            operations: 1,
+        },
+    );
+    let mut keys = Vec::new();
+    let mut salt = 0usize;
+    let mut child = 1;
+    for index in 0..150 {
+        // Keep all these nodes in the same bucket across several growths.
+        // Some reference the newest node, while others reuse an old child.
+        let children = if index % 3 == 0 {
+            (0, 1)
+        } else if index % 3 == 1 {
+            (child, 0)
+        } else {
+            (1, child)
+        };
+        let pair = u32::from(children.0) << 16 | u32::from(children.1);
+        while manager.unique.hasher.hash_one((salt, pair)) & 255 != 0 {
+            salt += 1;
+        }
+        let id = manager.intern(salt, children.0, children.1).unwrap();
+        assert_eq!(usize::from(id), index + 2);
+        keys.push((salt, children, id));
+        salt += 1;
+        child = id;
+    }
+    let mut fork = manager.clone();
+    for (variable, (low, high), id) in keys.into_iter().rev() {
+        assert_eq!(manager.intern(variable, low, high), Ok(id));
+        assert_eq!(fork.intern(variable, low, high), Ok(id));
+    }
+}
+
+#[test]
+fn unique_index_promotion_respects_the_node_limit_and_preserves_forked_ids() {
+    for count in [15usize, 16, 17, 31, 32, 33] {
+        let limit = count + 2;
+        let mut original = Manager::new(
+            1,
+            BddLimits {
+                nodes: limit,
+                cache_entries: 2,
+                operations: 1,
+            },
+        );
+        for variable in 0..count {
+            assert_eq!(original.intern(variable, 0, 1), Ok((variable + 2) as u16));
+        }
+        let mut fork = original.clone();
+        assert_eq!(
+            original.intern(count, 0, 1),
+            Err(BddError::ResourceLimit {
+                resource: BddResource::Nodes,
+                limit,
+            }),
+        );
+        assert_eq!(original.unique.slots.is_empty(), count <= 16);
+        fork.limits.nodes += 1;
+        assert_eq!(fork.intern(count, 0, 1), Ok(limit as u16));
+        assert_eq!(fork.unique.slots.is_empty(), count < 16);
+        for variable in (0..count).rev() {
+            let id = (variable + 2) as u16;
+            assert_eq!(original.intern(variable, 0, 1), Ok(id));
+            assert_eq!(fork.intern(variable, 0, 1), Ok(id));
+        }
+    }
+}
