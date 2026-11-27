@@ -63,9 +63,12 @@ impl GatedControlFlow {
             .iter()
             .copied()
             .filter(|join| {
-                cfg.incoming_edges(*join).into_iter().any(|(source, edge)| {
-                    edge != EdgeKind::Exception && dominators.dominates(*join, source)
-                })
+                cfg.predecessors_with_kind(*join)
+                    .iter()
+                    .copied()
+                    .any(|(source, edge)| {
+                        edge != EdgeKind::Exception && dominators.dominates(*join, source)
+                    })
             })
             .collect::<BTreeSet<_>>();
         let regions = phi_blocks
@@ -134,7 +137,7 @@ impl SelectionRegion {
             .ok()??
             .0;
         let mut gates = BTreeMap::new();
-        for (source, edge) in cfg.incoming_edges(join) {
+        for &(source, edge) in cfg.predecessors_with_kind(join) {
             if edge == EdgeKind::Exception || !nodes.contains(&source) {
                 continue;
             }

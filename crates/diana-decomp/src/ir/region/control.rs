@@ -410,7 +410,7 @@ impl<'a> ControlRegionAnalysis<'a> {
 
     fn normal_loops(&self) -> Result<PreparedControlRegions, RegionInvariantError> {
         let mut back_edges = BTreeMap::<BlockId, BTreeSet<BlockId>>::new();
-        for source in self.cfg.block_ids() {
+        for source in self.cfg.blocks.keys().copied() {
             for target in self.cfg.normal_successors(source) {
                 if self.cfg.block(target).is_some()
                     && self.facts.semantic_dominators().dominates(target, source)
@@ -516,11 +516,7 @@ impl<'a> ControlRegionAnalysis<'a> {
 
     fn switch_candidates(&self) -> Result<Vec<ControlCandidate>, RegionInvariantError> {
         let mut candidates = Vec::new();
-        for header in self.cfg.block_ids() {
-            let block = self
-                .cfg
-                .block(header)
-                .ok_or(RegionInvariantError::MissingBlock(header))?;
+        for (&header, block) in &self.cfg.blocks {
             if !block
                 .terminator()
                 .is_some_and(|terminator| terminator.insn_type == InsnType::Switch)
@@ -884,7 +880,7 @@ impl<'a> LoopBody<'a> {
     fn terminating(&self) -> BTreeSet<BlockId> {
         let mut terminating = BTreeSet::new();
         let mut remaining = BTreeMap::new();
-        for block in self.cfg.block_ids() {
+        for block in self.cfg.blocks.keys().copied() {
             if Some(block) == self.follow
                 || !self
                     .facts

@@ -255,7 +255,7 @@ impl<'a> RegionExitAnalysis<'a> {
 
     fn transfers(&self) -> Result<Vec<RegionTransfer>, RegionInvariantError> {
         let mut transfers = Vec::new();
-        for source_block in self.cfg.block_ids() {
+        for source_block in self.cfg.blocks.keys().copied() {
             if self.cleanup_representatives.contains_key(&source_block) {
                 continue;
             }

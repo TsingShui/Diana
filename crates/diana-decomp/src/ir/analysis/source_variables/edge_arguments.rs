@@ -98,8 +98,9 @@ impl<'a> ContractedEdgeArguments<'a> {
             .iter()
             .flat_map(|entry| {
                 self.cfg
-                    .incoming_edges(*entry)
-                    .into_iter()
+                    .predecessors_with_kind(*entry)
+                    .iter()
+                    .copied()
                     .filter(|(predecessor, _)| !component.contains(predecessor))
                     .map(|(predecessor, edge_kind)| (predecessor, *entry, edge_kind))
             })

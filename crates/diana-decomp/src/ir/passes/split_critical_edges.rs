@@ -26,16 +26,15 @@ impl Pass for SplitCriticalEdges {
     fn run(&mut self, cfg: &mut CFG) -> Result<PassResult, Self::Error> {
         cfg.capture_exception_coverage();
         let mut changed = false;
-        let block_ids = cfg.block_ids();
 
         let mut edges_to_split = BTreeMap::<(BlockId, BlockId), BTreeSet<EdgeKind>>::new();
-        for u in block_ids {
+        for &u in cfg.blocks.keys() {
             let succs = cfg.successors_with_kind(u);
-            let normal_targets = succs
-                .iter()
-                .filter_map(|(target, kind)| (!kind.is_exception()).then_some(*target))
-                .collect::<BTreeSet<_>>();
-            if normal_targets.len() <= 1 {
+            let mut normal_targets = cfg.normal_successors(u);
+            let Some(first) = normal_targets.next() else {
+                continue;
+            };
+            if !normal_targets.any(|target| target != first) {
                 continue;
             }
 
@@ -46,7 +45,7 @@ impl Pass for SplitCriticalEdges {
                 // Phi topology includes exceptional inputs, so a normal edge
                 // is critical when the target has multiple incoming edges of
                 // any kind.
-                if cfg.incoming_edges(v).len() > 1 {
+                if cfg.predecessors_with_kind(v).len() > 1 {
                     edges_to_split.entry((u, v)).or_default().insert(kind);
                 }
             }
@@ -57,7 +56,7 @@ impl Pass for SplitCriticalEdges {
         }
 
         // Find maximum block ID to generate new ones
-        let next_id = cfg.block_ids().iter().map(|id| id.0).max().unwrap_or(0) + 1;
+        let next_id = cfg.blocks.last_key_value().map(|(id, _)| id.0).unwrap_or(0) + 1;
 
         for (next_id, ((u, v), kinds)) in (next_id..).zip(edges_to_split) {
             let mid_id = BlockId::new(next_id);

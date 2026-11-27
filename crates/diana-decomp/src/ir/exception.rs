@@ -4062,8 +4062,9 @@ impl HandlerSemanticDomains {
                 continue;
             }
             let enters_from_monitor =
-                cfg.incoming_edges(*entry)
-                    .into_iter()
+                cfg.predecessors_with_kind(*entry)
+                    .iter()
+                    .copied()
                     .any(|(predecessor, kind)| {
                         kind.is_exception()
                             && cfg.block(predecessor).is_some_and(|block| {
@@ -4602,12 +4603,16 @@ impl SharedExceptionContinuation {
         let entry = handler.semantic_entry;
         handler.exception_value.is_none()
             && (ordinary.contains(&entry)
-                || cfg.incoming_edges(entry).into_iter().any(|(source, kind)| {
-                    !kind.is_exception()
-                        && (protected.contains(&source)
-                            || (!physical_handler_entries.contains(&source)
-                                && cfg.blocks.contains_key(&source)))
-                }))
+                || cfg
+                    .predecessors_with_kind(entry)
+                    .iter()
+                    .copied()
+                    .any(|(source, kind)| {
+                        !kind.is_exception()
+                            && (protected.contains(&source)
+                                || (!physical_handler_entries.contains(&source)
+                                    && cfg.blocks.contains_key(&source)))
+                    }))
     }
 }
 

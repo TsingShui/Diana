@@ -9,14 +9,16 @@ use super::{
 };
 
 impl TypeBounds {
+    fn joined(&self, kind: BoundKind, hierarchy: &dyn TypeHierarchy) -> Option<ArgType> {
+        // Evidence within one kind already has the type order used by the join.
+        self.evidence(kind)
+            .cloned()
+            .reduce(|left, right| TypeLattice::join(left, right, hierarchy))
+    }
+
     fn produced_type(&self, hierarchy: &dyn TypeHierarchy) -> Option<ArgType> {
-        let exact = self.evidence(BoundKind::Exact);
-        let evidence = if exact.clone().next().is_some() {
-            exact
-        } else {
-            self.evidence(BoundKind::Lower)
-        };
-        TypeLattice::join_all(evidence.cloned(), hierarchy)
+        self.joined(BoundKind::Exact, hierarchy)
+            .or_else(|| self.joined(BoundKind::Lower, hierarchy))
     }
 }
 
@@ -158,7 +160,7 @@ impl TypeLattice {
                 let state = states.entry(*target).or_default();
                 let mut changed = false;
                 for ty in &fallback {
-                    changed |= state.insert(TypeBound::new(BoundKind::Fallback, ty.clone()));
+                    changed |= state.insert_ref(BoundKind::Fallback, ty);
                 }
                 if changed && queued.insert(*target) {
                     pending.push_back(*target);
@@ -168,7 +170,7 @@ impl TypeLattice {
                 let state = states.entry(*source).or_default();
                 let mut changed = false;
                 for ty in &upper {
-                    changed |= state.insert(TypeBound::new(BoundKind::Upper, ty.clone()));
+                    changed |= state.insert_ref(BoundKind::Upper, ty);
                 }
                 if changed && queued.insert(*source) {
                     pending.push_back(*source);
@@ -211,7 +213,7 @@ impl TypeLattice {
                 .evidence(BoundKind::Upper)
                 .all(|upper| Self::is_assignable(ty, upper, hierarchy))
             {
-                return Some(ty.clone());
+                return strong;
             }
         }
 
@@ -224,7 +226,7 @@ impl TypeLattice {
                 .evidence(BoundKind::Lower)
                 .all(|bound| Self::producer_bound_compatible(bound, candidate, hierarchy));
             if exact_satisfies && lower_satisfies && Self::domain_accepts(state, candidate) {
-                return Some(candidate.clone());
+                return upper;
             }
         }
         if let Some(ty) = strong.as_ref().filter(|ty| Self::is_concrete(ty)) {
@@ -233,12 +235,10 @@ impl TypeLattice {
                 .all(|upper| Self::producer_bound_compatible(ty, upper, hierarchy))
                 && Self::domain_accepts(state, ty)
             {
-                return Some(ty.clone());
+                return strong;
             }
         }
-        if let Some(candidate) =
-            Self::join_all(state.evidence(BoundKind::Fallback).cloned(), hierarchy)
-        {
+        if let Some(candidate) = state.joined(BoundKind::Fallback, hierarchy) {
             if Self::is_concrete(&candidate)
                 && state
                     .evidence(BoundKind::Upper)
@@ -248,13 +248,11 @@ impl TypeLattice {
                 return Some(candidate);
             }
         }
-        let domain = state
+        let mut candidates = state
             .evidence(BoundKind::Domain)
-            .filter_map(Self::concrete_hint)
-            .collect::<BTreeSet<_>>();
-        let mut candidates = domain.into_iter();
+            .filter_map(Self::concrete_hint);
         let candidate = candidates.next()?;
-        if candidates.next().is_some() {
+        if candidates.any(|other| other != candidate) {
             return None;
         }
         state
@@ -378,21 +376,6 @@ impl TypeLattice {
             }
             _ => false,
         }
-    }
-
-    fn join_all(
-        values: impl IntoIterator<Item = ArgType>,
-        hierarchy: &dyn TypeHierarchy,
-    ) -> Option<ArgType> {
-        let mut values = values.into_iter().collect::<Vec<_>>();
-        values.sort();
-        let first = values.first()?.clone();
-        Some(
-            values
-                .into_iter()
-                .skip(1)
-                .fold(first, |left, right| Self::join(left, right, hierarchy)),
-        )
     }
 
     fn join(left: ArgType, right: ArgType, hierarchy: &dyn TypeHierarchy) -> ArgType {

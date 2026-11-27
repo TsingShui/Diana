@@ -107,8 +107,9 @@ impl<'cfg> LexicalBoundaryAnalysis<'cfg> {
             }
             pending.extend(
                 self.cfg
-                    .incoming_edges(block)
-                    .into_iter()
+                    .predecessors_with_kind(block)
+                    .iter()
+                    .copied()
                     .map(|(source, _)| source),
             );
         }

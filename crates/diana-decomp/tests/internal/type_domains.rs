@@ -38,3 +38,33 @@ fn intersection_preserves_left_order_and_multiplicity_for_borrowed_and_owned_can
         }
     }
 }
+
+#[test]
+fn type_reduction_keeps_sorted_evidence_order_and_coincident_domain_hints() {
+    use PrimitiveType::{Boolean, Float, Int};
+    let hierarchy = ClassHierarchyIndex::default();
+    let first = ArgType::Unknown([Boolean, Int, Int].into());
+    let second = ArgType::Unknown([Int, Boolean].into());
+    for order in [[first.clone(), second.clone()], [second, first.clone()]] {
+        let mut evidence = TypeBounds::default();
+        evidence.insert(TypeBound::new(BoundKind::Lower, ArgType::DOUBLE));
+        for ty in order {
+            evidence.insert(TypeBound::new(BoundKind::Exact, ty));
+        }
+        assert_eq!(evidence.produced_type(&hierarchy), Some(first.clone()));
+    }
+
+    let mut domain = TypeBounds::from([
+        TypeBound::new(BoundKind::Domain, ArgType::INT),
+        TypeBound::new(BoundKind::Domain, ArgType::Unknown([Int].into())),
+    ]);
+    assert_eq!(
+        TypeLattice::resolve_state(&domain, &hierarchy),
+        Some(ArgType::INT)
+    );
+    domain.insert(TypeBound::new(
+        BoundKind::Domain,
+        ArgType::Unknown([Float].into()),
+    ));
+    assert_eq!(TypeLattice::resolve_state(&domain, &hierarchy), None);
+}

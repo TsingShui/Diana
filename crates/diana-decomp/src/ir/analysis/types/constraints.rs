@@ -562,11 +562,7 @@ impl TypeConstraintGraph {
 
     fn observe_register_type(&mut self, register: &RegisterArg) {
         if let Some(value) = SsaVar::from_reg(register) {
-            let bounds = self.bounds.entry(value).or_default();
-            bounds.insert(TypeBound::new(BoundKind::Domain, register.ty.clone()));
-            if register.ty.is_known() {
-                bounds.insert(TypeBound::new(BoundKind::Fallback, register.ty.clone()));
-            }
+            self.bounds.entry(value).or_default().observe(&register.ty);
         }
     }
 

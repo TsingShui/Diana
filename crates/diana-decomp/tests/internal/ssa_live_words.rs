@@ -109,7 +109,9 @@ fn transfers_keep_retained_operand_groups_and_skip_empty_instructions_across_blo
     let retained = [11, 18].map(|id| SsaVar::new(id, 0));
     let live = SsaLiveness::analyze(&cfg, &retained.into()).unwrap();
     let transfers = |block| {
-        live.blocks[&block]
+        live.block(block)
+            .unwrap()
+            .unwrap()
             .transfers
             .clone()
             .map(|i| {
@@ -134,4 +136,35 @@ fn transfers_keep_retained_operand_groups_and_skip_empty_instructions_across_blo
         [(1, None, vec![11, 18]), (2, Some(18), vec![11])]
     );
     assert_eq!(transfers(exit), [(2, None, vec![18])]);
+}
+
+#[test]
+fn sparse_block_keys_keep_empty_edges_and_missing_target_precedence() {
+    use super::SourceVariableError;
+    let [low, high, missing_low, missing_high] = [11, 2_000, 39, 8_000].map(BlockId::new);
+    let mut cfg = CFG::new("sparse_liveness_blocks");
+    for id in [low, high] {
+        cfg.add_block(Block::new(id));
+    }
+    // Physical liveness is keyed by the CFG map, even for mismatched body IDs.
+    cfg.blocks.get_mut(&high).unwrap().id = low;
+    cfg.add_edge(low, high, EdgeKind::Exception);
+    let names = BTreeSet::from([SsaVar::new(1, 0)]);
+    for retained in [&BTreeSet::new(), &names] {
+        let live = SsaLiveness::analyze(&cfg, retained).unwrap();
+        assert_eq!(
+            live.edge_live(low, high, EdgeKind::Exception)
+                .unwrap()
+                .count(),
+            0
+        );
+        assert!(matches!(live.edge_live(low, missing_low, EdgeKind::Normal),
+            Err(SourceVariableError::MissingBlock(id)) if id == missing_low));
+    }
+    cfg.add_edge(low, missing_low, EdgeKind::Normal);
+    cfg.add_edge(high, missing_high, EdgeKind::Exception);
+    for retained in [&BTreeSet::new(), &names] {
+        assert!(matches!(SsaLiveness::analyze(&cfg, retained),
+            Err(SourceVariableError::MissingBlock(id)) if id == missing_high));
+    }
 }

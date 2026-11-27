@@ -395,8 +395,9 @@ impl ObjectValueSsa<'_> {
             }
             pending.extend(
                 self.cfg
-                    .incoming_edges(block)
-                    .into_iter()
+                    .predecessors_with_kind(block)
+                    .iter()
+                    .copied()
                     .map(|(predecessor, _)| predecessor),
             );
         }
@@ -444,13 +445,13 @@ impl ObjectValueSsa<'_> {
         let mut edges = BTreeMap::new();
         loop {
             let mut changed = false;
-            for block in self.cfg.block_ids() {
+            for block in self.cfg.blocks.keys().copied() {
                 let input = if let Some(value) = phis.get(&block) {
                     FlowValue::Value(*value)
                 } else if block == self.cfg.entry {
                     FlowValue::Absent
                 } else {
-                    self.cfg.incoming_edges(block).into_iter().fold(
+                    self.cfg.predecessors_with_kind(block).iter().copied().fold(
                         FlowValue::Unknown,
                         |state, (predecessor, kind)| {
                             state.merge(

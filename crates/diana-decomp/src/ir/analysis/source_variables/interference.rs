@@ -41,7 +41,8 @@ pub(super) struct SsaLiveness {
     names: Box<[SsaVar]>,
     transfers: Vec<InstructionTransfer>,
     operands: Vec<usize>,
-    blocks: BTreeMap<BlockId, BlockLiveness>,
+    block_ids: Box<[BlockId]>,
+    blocks: Vec<BlockLiveness>,
     phi_uses: BTreeMap<(BlockId, BlockId, crate::ir::EdgeKind), LiveSet>,
 }
 
@@ -55,6 +56,7 @@ impl SsaLiveness {
     }
 
     pub(super) fn from_names(cfg: &CFG, names: Box<[SsaVar]>) -> Result<Self, SourceVariableError> {
+        let block_ids: Box<[_]> = cfg.blocks.keys().copied().collect();
         if names.is_empty() {
             // Empty live ranges still distinguish existing blocks from absent
             // successors for edge queries and malformed graph diagnostics.
@@ -70,16 +72,13 @@ impl SsaLiveness {
                 transfers: Vec::new(),
                 operands: Vec::new(),
                 phi_uses: BTreeMap::new(),
-                blocks: cfg
-                    .blocks
-                    .keys()
-                    .map(|&block| (block, BlockLiveness::default()))
-                    .collect(),
+                block_ids,
+                blocks: Vec::new(),
             });
         }
         let rows = super::super::ssa::RegisterRows::new(&names, |&name| name);
         let id = |name: SsaVar| rows.position(&names, name, |&value| value);
-        let mut blocks = BTreeMap::new();
+        let mut blocks = Vec::with_capacity(block_ids.len());
         let mut phi_uses = BTreeMap::<_, LiveSet>::new();
         let mut transfers = Vec::new();
         let mut operands = Vec::new();
@@ -135,52 +134,91 @@ impl SsaLiveness {
                 }
             }
             facts.transfers = start..transfers.len();
-            blocks.insert(block, facts);
+            blocks.push(facts);
         }
 
+        let mut low_deltas = vec![0u64; blocks.len()];
         let mut pending = Vec::new();
-        for (&source, facts) in blocks.iter_mut().rev() {
-            pending.extend(facts.input.words().map(|(word, bits)| (source, word, bits)));
+        for (index, (&source, facts)) in block_ids.iter().zip(&mut blocks).enumerate().rev() {
+            for (word, bits) in facts.input.words() {
+                Self::enqueue(&mut pending, &mut low_deltas, index, word, bits);
+            }
             for &(target, kind) in cfg.successors_with_kind(source) {
-                if !cfg.blocks.contains_key(&target) {
+                if Self::position(&block_ids, target).is_none() {
                     return Err(SourceVariableError::MissingBlock(target));
                 }
                 if let Some(arguments) = phi_uses.get(&(source, target, kind)) {
                     for (word, bits) in arguments.words() {
                         let added = facts.add_live_out(word, bits);
-                        if added != 0 {
-                            pending.push((source, word, added));
-                        }
+                        Self::enqueue(&mut pending, &mut low_deltas, index, word, added);
                     }
                 }
             }
         }
-        // Propagate whole words of new entry facts. Phi operands seed their
-        // concrete edge above, while a Phi definition kills that incoming name.
         while let Some((target, word, bits)) = pending.pop() {
-            let through = bits & !blocks[&target].phi_definitions.word(word);
+            let bits = if word == 0 {
+                std::mem::take(&mut low_deltas[target])
+            } else {
+                bits
+            };
+            let through = bits & !blocks[target].phi_definitions.word(word);
             if through == 0 {
                 continue;
             }
-            for &(source, _) in cfg.predecessors_with_kind(target) {
-                if let Some(facts) = blocks.get_mut(&source) {
-                    let added = facts.add_live_out(word, through);
-                    if added != 0 {
-                        pending.push((source, word, added));
-                    }
+            for &(source, _) in cfg.predecessors_with_kind(block_ids[target]) {
+                if let Some(index) = Self::position(&block_ids, source) {
+                    let added = blocks[index].add_live_out(word, through);
+                    Self::enqueue(&mut pending, &mut low_deltas, index, word, added);
                 }
             }
         }
-        for facts in blocks.values_mut() {
+        for facts in &mut blocks {
             facts.definitions = LiveSet::default();
         }
         Ok(Self {
             names,
             transfers,
             operands,
+            block_ids,
             blocks,
             phi_uses,
         })
+    }
+
+    fn position(blocks: &[BlockId], block: BlockId) -> Option<usize> {
+        let ordinal = block.raw() as usize;
+        if blocks.get(ordinal) == Some(&block) {
+            Some(ordinal)
+        } else {
+            blocks.binary_search(&block).ok()
+        }
+    }
+
+    fn block(&self, block: BlockId) -> Result<Option<&BlockLiveness>, SourceVariableError> {
+        let ordinal = Self::position(&self.block_ids, block)
+            .ok_or(SourceVariableError::MissingBlock(block))?;
+        // An empty name projection has the same empty facts at every known block.
+        Ok(self.blocks.get(ordinal))
+    }
+
+    fn enqueue(
+        pending: &mut Vec<(usize, usize, u64)>,
+        low: &mut [u64],
+        block: usize,
+        word: usize,
+        bits: u64,
+    ) {
+        if bits == 0 {
+            return;
+        }
+        if word == 0 {
+            let queued = low[block];
+            low[block] |= bits;
+            if queued != 0 {
+                return;
+            }
+        }
+        pending.push((block, word, bits));
     }
 
     /// Borrow the live names on a given CFG successor edge. Both consumers
@@ -192,23 +230,22 @@ impl SsaLiveness {
         target: BlockId,
         kind: crate::ir::EdgeKind,
     ) -> Result<impl Iterator<Item = &SsaVar>, SourceVariableError> {
-        let facts = self
-            .blocks
-            .get(&target)
-            .ok_or(SourceVariableError::MissingBlock(target))?;
-        let operands = self
-            .phi_uses
-            .get(&(source, target, kind))
-            .into_iter()
-            .flat_map(LiveSet::ids);
-        Ok(facts
-            .input
-            .ids()
-            .filter(|&value| !facts.phi_definitions.contains(value))
-            .chain(operands.filter(|&value| {
-                !facts.input.contains(value) || facts.phi_definitions.contains(value)
-            }))
-            .map(|id| &self.names[id]))
+        let facts = self.block(target)?;
+        Ok(facts.into_iter().flat_map(move |facts| {
+            let operands = self
+                .phi_uses
+                .get(&(source, target, kind))
+                .into_iter()
+                .flat_map(LiveSet::ids);
+            facts
+                .input
+                .ids()
+                .filter(|&value| !facts.phi_definitions.contains(value))
+                .chain(operands.filter(|&value| {
+                    !facts.input.contains(value) || facts.phi_definitions.contains(value)
+                }))
+                .map(|id| &self.names[id])
+        }))
     }
 
     pub(super) fn normal_continuation_live(
@@ -277,7 +314,7 @@ impl InterferenceGraph {
         let mut graph = Self::for_groups(groups);
         let needs_interference = graph.has_candidates();
         if needs_interference {
-            if let Some(facts) = liveness.blocks.get(&cfg.entry) {
+            if let Ok(Some(facts)) = liveness.block(cfg.entry) {
                 Self::add_clique(
                     graph.groups.as_ref(),
                     &mut graph.hard_edges,
@@ -286,10 +323,9 @@ impl InterferenceGraph {
             }
         }
         for (&block, body) in &cfg.blocks {
-            let facts = liveness
-                .blocks
-                .get(&block)
-                .ok_or(SourceVariableError::MissingBlock(block))?;
+            let Some(facts) = liveness.block(block)? else {
+                continue;
+            };
             let mut live = facts.output.clone();
             for index in facts.transfers.clone().rev() {
                 let step = &liveness.transfers[index];
