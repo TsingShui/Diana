@@ -439,7 +439,10 @@ struct GenericProjectionCache {
         std::cell::RefCell<std::collections::BTreeMap<(ArgType, ArgType), Option<ArgType>>>,
     resolved: std::cell::RefCell<std::collections::BTreeMap<ArgType, JavaType>>,
     declared_parameters: std::cell::RefCell<
-        std::collections::BTreeMap<ArgType, Option<Vec<crate::ir::generic_types::TypeParameter>>>,
+        std::collections::BTreeMap<
+            ArgType,
+            Option<std::rc::Rc<[crate::ir::generic_types::TypeParameter]>>,
+        >,
     >,
 }
 
@@ -622,11 +625,14 @@ impl crate::language::java::GenericTypeProjection for SourceGenericTypeProjectio
     fn declared_type_parameters(
         &self,
         ty: &ArgType,
-    ) -> Option<Vec<crate::ir::generic_types::TypeParameter>> {
+    ) -> Option<std::rc::Rc<[crate::ir::generic_types::TypeParameter]>> {
         if let Some(parameters) = self.cache.declared_parameters.borrow().get(ty) {
             return parameters.clone();
         }
-        let result = self.source_abi.class_type_parameters(ty);
+        let result = self
+            .source_abi
+            .class_type_parameters(ty)
+            .map(std::rc::Rc::from);
         self.cache
             .declared_parameters
             .borrow_mut()

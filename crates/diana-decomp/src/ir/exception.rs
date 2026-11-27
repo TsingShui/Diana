@@ -1047,23 +1047,25 @@ impl PrecedingHandlerProtectionArtifacts {
         hierarchy: &dyn TypeHierarchy,
         values: &SsaValueGraph,
     ) {
-        let snapshots = regions.to_vec();
-        for protected in regions {
-            // A catch-all range commonly protects monitor-exit or resource
-            // cleanup emitted in an earlier handler. That ownership is
-            // intentional even when the ranges happen to be adjacent.
-            if protected
-                .handlers
-                .iter()
-                .any(|handler| handler.catch_type.is_none())
-            {
+        if regions.len() < 2 {
+            return;
+        }
+        let mut ending_at = BTreeMap::<u32, Vec<&TryRegion>>::new();
+        for region in regions.iter() {
+            ending_at.entry(region.end_offset).or_default().push(region);
+        }
+        // Decide every removal against the original forest. Only the protected
+        // block lists change, so none of the handler bodies need to be copied.
+        let mut removals = Vec::new();
+        for (position, protected) in regions.iter().enumerate() {
+            let Some(preceding) = ending_at.get(&protected.start_offset) else {
+                continue;
+            };
+            // A catch-all range commonly protects cleanup in an earlier handler.
+            if protected.handlers.iter().any(CatchHandler::is_catch_all) {
                 continue;
             }
-            let own_handlers = protected
-                .handlers
-                .iter()
-                .map(|handler| handler.canonical_entry)
-                .collect::<BTreeSet<_>>();
+            let protected_blocks: BTreeSet<_> = protected.blocks.iter().copied().collect();
             let protected_handlers = ClauseKey(
                 protected
                     .handlers
@@ -1071,44 +1073,50 @@ impl PrecedingHandlerProtectionArtifacts {
                     .map(|handler| (handler.catch_type.clone(), handler.handler_offset))
                     .collect(),
             );
-            let protected_blocks = protected.blocks.iter().copied().collect::<BTreeSet<_>>();
-            let artifacts = snapshots
+            let mut artifacts = BTreeSet::new();
+            for handler in preceding
                 .iter()
-                .filter(|owner| owner.id != protected.id)
-                .filter(|owner| owner.end_offset == protected.start_offset)
-                .flat_map(|owner| &owner.handlers)
-                .filter(|handler| !own_handlers.contains(&handler.canonical_entry))
-                .filter(|handler| Self::detached(cfg, handler, &protected_blocks))
-                .filter(|handler| {
-                    Self::terminal_throws_escape(
+                .filter(|r| r.id != protected.id)
+                .flat_map(|r| &r.handlers)
+            {
+                if protected
+                    .handlers
+                    .iter()
+                    .any(|own| own.canonical_entry == handler.canonical_entry)
+                {
+                    continue;
+                }
+                let domain: BTreeSet<_> = handler
+                    .blocks
+                    .iter()
+                    .chain(&handler.entry_blocks)
+                    .chain(&handler.adapter_blocks)
+                    .copied()
+                    .collect();
+                if Self::detached(cfg, &domain, &protected_blocks)
+                    && Self::terminal_throws_escape(
                         cfg,
-                        handler,
+                        &domain,
                         &protected_handlers,
                         hierarchy,
                         values,
                     )
-                })
-                .flat_map(|handler| {
-                    handler
-                        .blocks
-                        .iter()
-                        .chain(&handler.entry_blocks)
-                        .chain(&handler.adapter_blocks)
-                        .copied()
-                })
-                .collect::<BTreeSet<_>>();
-            protected.blocks.retain(|block| !artifacts.contains(block));
+                {
+                    artifacts.extend(domain);
+                }
+            }
+            if !artifacts.is_empty() {
+                removals.push((position, artifacts));
+            }
+        }
+        for (position, artifacts) in removals {
+            regions[position]
+                .blocks
+                .retain(|block| !artifacts.contains(block));
         }
     }
 
-    fn detached(cfg: &CFG, handler: &CatchHandler, protected: &BTreeSet<BlockId>) -> bool {
-        let domain = handler
-            .blocks
-            .iter()
-            .chain(&handler.entry_blocks)
-            .chain(&handler.adapter_blocks)
-            .copied()
-            .collect::<BTreeSet<_>>();
+    fn detached(cfg: &CFG, domain: &BTreeSet<BlockId>, protected: &BTreeSet<BlockId>) -> bool {
         !domain.is_empty()
             && domain.iter().all(|block| {
                 cfg.normal_successors(*block)
@@ -1118,20 +1126,13 @@ impl PrecedingHandlerProtectionArtifacts {
 
     fn terminal_throws_escape(
         cfg: &CFG,
-        handler: &CatchHandler,
+        domain: &BTreeSet<BlockId>,
         protected_handlers: &ClauseKey,
         hierarchy: &dyn TypeHierarchy,
         values: &SsaValueGraph,
     ) -> bool {
-        let domain = handler
-            .blocks
-            .iter()
-            .chain(&handler.entry_blocks)
-            .chain(&handler.adapter_blocks)
-            .copied()
-            .collect::<BTreeSet<_>>();
         let mut saw_terminal = false;
-        for block in &domain {
+        for block in domain {
             if cfg
                 .normal_successors(*block)
                 .any(|target| domain.contains(&target))
@@ -5035,49 +5036,65 @@ impl HandlerSemantics {
         blocks: &BTreeSet<BlockId>,
         exception: SsaVar,
     ) -> BTreeSet<SsaVar> {
-        let mut derived = BTreeSet::from([exception]);
-        loop {
-            let mut additions = BTreeSet::new();
-            for block in blocks.iter().filter_map(|block| cfg.block(*block)) {
-                for instruction in &block.insns {
-                    let Some(result) = instruction.result.as_ref().and_then(SsaVar::from_reg)
-                    else {
-                        continue;
-                    };
-                    let propagates = match instruction.insn_type {
-                        InsnType::Move => instruction
+        // Each handler-local move or nonempty normal-edge Phi is a
+        // conjunction. Index its inputs once, then satisfy each use exactly
+        // once when its source first becomes known to carry the exception.
+        let mut uses = BTreeMap::<SsaVar, smallvec::SmallVec<[usize; 2]>>::new();
+        let mut pending = Vec::new();
+        for block in blocks.iter().filter_map(|block| cfg.block(*block)) {
+            for insn in &block.insns {
+                let Some(result) = insn.result.as_ref().and_then(SsaVar::from_reg) else {
+                    continue;
+                };
+                let index = pending.len();
+                let count = match insn.insn_type {
+                    InsnType::Move => {
+                        let Some(source) = insn
                             .args
                             .first()
                             .and_then(InsnArg::as_register)
                             .and_then(SsaVar::from_reg)
-                            .is_some_and(|source| derived.contains(&source)),
-                        InsnType::Phi => {
-                            let relevant = instruction
-                                .payload
-                                .phi_edges
-                                .iter()
-                                .zip(&instruction.args)
-                                .filter(|((predecessor, kind), _)| {
-                                    *kind == EdgeKind::Normal && blocks.contains(predecessor)
-                                })
-                                .filter_map(|(_, argument)| {
-                                    argument.as_register().and_then(SsaVar::from_reg)
-                                })
-                                .collect::<Vec<_>>();
-                            !relevant.is_empty()
-                                && relevant.iter().all(|source| derived.contains(source))
-                        }
-                        _ => false,
-                    };
-                    if propagates {
-                        additions.insert(result);
+                        else {
+                            continue;
+                        };
+                        uses.entry(source).or_default().push(index);
+                        1
                     }
+                    InsnType::Phi => {
+                        let mut count = 0usize;
+                        for source in insn
+                            .payload
+                            .phi_edges
+                            .iter()
+                            .zip(&insn.args)
+                            .filter(|((predecessor, kind), _)| {
+                                *kind == EdgeKind::Normal && blocks.contains(predecessor)
+                            })
+                            .filter_map(|(_, arg)| arg.as_register().and_then(SsaVar::from_reg))
+                        {
+                            uses.entry(source).or_default().push(index);
+                            count += 1;
+                        }
+                        count
+                    }
+                    _ => continue,
+                };
+                if count > 0 {
+                    pending.push((result, count));
                 }
             }
-            let previous = derived.len();
-            derived.extend(additions);
-            if derived.len() == previous {
-                break;
+        }
+        let mut derived = BTreeSet::from([exception]);
+        let mut work: smallvec::SmallVec<[SsaVar; 4]> = smallvec::smallvec![exception];
+        while let Some(source) = work.pop() {
+            if let Some(dependencies) = uses.get(&source) {
+                for &index in dependencies {
+                    let (result, needed) = &mut pending[index];
+                    *needed -= 1;
+                    if *needed == 0 && derived.insert(*result) {
+                        work.push(*result);
+                    }
+                }
             }
         }
         derived

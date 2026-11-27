@@ -169,7 +169,7 @@ pub(crate) trait GenericTypeProjection: std::fmt::Debug {
         None
     }
 
-    fn declared_type_parameters(&self, _ty: &ArgType) -> Option<Vec<TypeParameter>> {
+    fn declared_type_parameters(&self, _ty: &ArgType) -> Option<std::rc::Rc<[TypeParameter]>> {
         None
     }
 }
@@ -182,8 +182,9 @@ pub(super) struct JavaTypeErasureIndex {
 
 #[derive(Debug, Clone, Default)]
 struct ReverseJavaTypes {
-    classes: HashMap<smol_str::SmolStr, ArgType>,
-    primitives: HashMap<JavaType, ArgType>,
+    classes: foldhash::HashMap<smol_str::SmolStr, ArgType>,
+    // Each primitive retains the first erased descriptor with that source spelling.
+    primitives: [Option<ArgType>; super::JavaPrimitiveType::Double as usize + 1],
 }
 
 impl JavaTypeErasureIndex {
@@ -209,11 +210,8 @@ impl JavaTypeErasureIndex {
                             .entry(Self::class_key(class).as_ref().into())
                             .or_insert_with(|| erased.clone());
                     }
-                    JavaType::Primitive(_) => {
-                        index
-                            .primitives
-                            .entry(source.clone())
-                            .or_insert_with(|| erased.clone());
+                    JavaType::Primitive(primitive) => {
+                        index.primitives[*primitive as usize].get_or_insert_with(|| erased.clone());
                     }
                     JavaType::Array(_) | JavaType::Variable(_) => {}
                 }
@@ -256,7 +254,9 @@ impl JavaTypeErasureIndex {
                     .unwrap_or_else(|| Cow::Owned(ArgType::object("java/lang/Object"))),
             ),
             JavaType::Class(class) => self.class_erasure(class).map(Cow::Borrowed),
-            JavaType::Primitive(_) => self.reverse().primitives.get(ty).map(Cow::Borrowed),
+            JavaType::Primitive(primitive) => self.reverse().primitives[*primitive as usize]
+                .as_ref()
+                .map(Cow::Borrowed),
         }
     }
 }
@@ -352,9 +352,9 @@ impl<'a> JavaTypeRelations<'a> {
                 .get(variable)
                 .cloned()
                 .or_else(|| Some(ArgType::object("java/lang/Object"))),
-            JavaType::Primitive(_) => {
+            JavaType::Primitive(primitive) => {
                 if let Some(index) = self.source_erasures {
-                    index.reverse().primitives.get(ty).cloned()
+                    index.reverse().primitives[*primitive as usize].clone()
                 } else {
                     self.source_types
                         .iter()
@@ -2431,12 +2431,20 @@ impl<K: Ord + Copy, T> SourceTypeStates<K, T> {
     }
 
     pub(super) fn definition(&self, key: &K) -> Option<&T> {
+        self.original_or_current(key, || self.get(key))
+    }
+
+    fn original_or_current<'a>(
+        &'a self,
+        key: &K,
+        current: impl FnOnce() -> Option<&'a T>,
+    ) -> Option<&'a T> {
         if !self.definitions_sealed {
             return None;
         }
         match self.before_change.get(key) {
             Some(original) => original.as_ref(),
-            None => self.current.get(key),
+            None => current(),
         }
     }
 
@@ -2469,6 +2477,15 @@ impl<K: Ord + Copy, T> SourceTypeStates<K, T> {
 }
 
 impl<K: Ord + Copy> SourceTypeStates<K, TypeState> {
+    fn requirement_types(&self, key: &K) -> (Option<&JavaType>, Option<&JavaType>) {
+        let current = self.get(key);
+        let definition = self.original_or_current(key, || current);
+        (
+            current.and_then(TypeState::exact),
+            definition.and_then(TypeState::exact),
+        )
+    }
+
     fn retained(self, contextual: impl Fn(K) -> bool) -> SourceTypeStates<K, JavaType> {
         let retain = |key: &K, state| match state {
             TypeState::Exact(ty) if !matches!(ty, JavaType::Primitive(_)) || contextual(*key) => {
@@ -2630,6 +2647,10 @@ enum RequirementChange {
     Updated,
 }
 
+/// The first definition of an SSA value supplies its declared register erasure.
+/// All definitions remain available in order for joins and diagnostics.
+type EquationOutputs = foldhash::HashMap<SourceTypeFact, SmallVec<[usize; 1]>>;
+
 #[derive(Default)]
 struct TypeEquationGraph {
     dependents: foldhash::HashMap<SourceTypeFact, SmallVec<[usize; 1]>>,
@@ -2637,7 +2658,7 @@ struct TypeEquationGraph {
     fixed_invocation_targets: foldhash::HashMap<SourceTypeFact, SmallVec<[usize; 1]>>,
     fixed_invocations: Vec<usize>,
     pending_fixed_targets: Vec<SourceTypeFact>,
-    outputs: foldhash::HashMap<SourceTypeFact, SmallVec<[usize; 1]>>,
+    outputs: EquationOutputs,
     candidates: Vec<Option<TypeEquationCandidate>>,
     dirty: PendingEquations,
     dirty_invocations: PendingEquations,
@@ -2646,26 +2667,24 @@ struct TypeEquationGraph {
 impl TypeEquationGraph {
     fn rebuild(
         &mut self,
+        outputs: EquationOutputs,
         equations: &[TypeEquation],
         invocations: &[SemanticOperation],
         generic_fields: &BTreeMap<FieldReference, GenericFieldContract>,
         generic_methods: &GenericMethodContracts,
-        dynamic_formals: &BTreeSet<&ArgType>,
+        dynamic_formal: impl Fn(&ArgType) -> bool,
     ) {
+        self.outputs = outputs;
         self.dependents.clear();
         self.fixed_invocation_targets.clear();
         self.fixed_invocations.clear();
         self.pending_fixed_targets.clear();
         self.invocation_dependents.clear();
-        self.outputs.clear();
         self.candidates.clear();
         self.dirty = PendingEquations::all(equations.len());
         self.dirty_invocations = PendingEquations::all(invocations.len());
 
         for (index, equation) in equations.iter().enumerate() {
-            for output in Self::register_facts(&equation.result) {
-                self.outputs.entry(output).or_default().push(index);
-            }
             Self::record_equation_inputs(
                 &mut self.dependents,
                 index,
@@ -2695,7 +2714,7 @@ impl TypeEquationGraph {
                 continue;
             };
             let may_read_state =
-                |ty: &ArgType| matches!(ty, ArgType::Array(_)) || dynamic_formals.contains(ty);
+                |ty: &ArgType| matches!(ty, ArgType::Array(_)) || dynamic_formal(ty);
             let dynamic = generic_methods.get(method).is_some()
                 || may_read_state(&method.owner)
                 || method.descriptor.parameters.iter().any(may_read_state);
@@ -2973,6 +2992,50 @@ impl SourceTypeFacts {
     }
 }
 
+/// Lookups in the exact forward table supplied for this method borrow the
+/// entries throughout solving. Absence is significant for both erasure and
+/// the classification of invocation arguments.
+struct SourceTypeLookup<'a> {
+    primitives: [Option<&'a JavaType>; PrimitiveType::Array as usize + 1],
+    other: foldhash::HashMap<&'a ArgType, &'a JavaType>,
+}
+
+impl<'a> SourceTypeLookup<'a> {
+    fn new(types: &'a BTreeMap<ArgType, JavaType>) -> Self {
+        let mut lookup = Self {
+            primitives: [None; PrimitiveType::Array as usize + 1],
+            other: Default::default(),
+        };
+        for (erased, source) in types {
+            if let ArgType::Primitive(primitive) = erased {
+                lookup.primitives[*primitive as usize] = Some(source);
+            } else {
+                lookup.other.insert(erased, source);
+            }
+        }
+        lookup
+    }
+
+    fn get(&self, erased: &ArgType) -> Option<&'a JavaType> {
+        match erased {
+            ArgType::Primitive(primitive) => self.primitives[*primitive as usize],
+            other => self.other.get(other).copied(),
+        }
+    }
+
+    // A boolean argument can read its reaching definition. A supplied alias
+    // can have the same source spelling even with a different descriptor.
+    fn is_dynamic_formal(&self, erased: &ArgType) -> bool {
+        let boolean = self.get(&ArgType::BOOLEAN);
+        match self.get(erased) {
+            Some(source @ JavaType::Primitive(_)) => Some(source) == boolean,
+            Some(JavaType::Class(_)) => matches!(boolean, Some(JavaType::Class(_))),
+            Some(JavaType::Variable(_) | JavaType::Array(_)) => true,
+            None => false,
+        }
+    }
+}
+
 /// Recovers source-level local types that survive DEX erasure through values
 /// whose declarations still carry a generic signature.
 pub(super) struct SourceTypeFlow<'a> {
@@ -2982,6 +3045,7 @@ pub(super) struct SourceTypeFlow<'a> {
     generic_methods: &'a GenericMethodContracts,
     generic_projection: Option<&'a dyn GenericTypeProjection>,
     source_types: &'a BTreeMap<ArgType, JavaType>,
+    resolved_types: SourceTypeLookup<'a>,
     source_erasures: Arc<JavaTypeErasureIndex>,
     type_variable_erasures: &'a BTreeMap<JavaIdentifier, ArgType>,
     type_variable_bounds: &'a BTreeMap<JavaIdentifier, JavaType>,
@@ -2997,7 +3061,7 @@ pub(super) struct SourceTypeFlow<'a> {
     receiver_value_requirements: BTreeMap<SsaVar, TypeState>,
     requirement_candidates: BTreeMap<u32, BTreeSet<String>>,
     value_states: SourceTypeStates<SsaVar, TypeState>,
-    value_erased_types: BTreeMap<SsaVar, ArgType>,
+    collected_outputs: EquationOutputs,
     equations: Vec<TypeEquation>,
     equation_graph: TypeEquationGraph,
     elements: Vec<ElementEquation>,
@@ -3045,6 +3109,7 @@ impl<'a> SourceTypeFlow<'a> {
             generic_methods,
             generic_projection,
             source_types,
+            resolved_types: SourceTypeLookup::new(source_types),
             source_erasures,
             type_variable_erasures,
             type_variable_bounds,
@@ -3076,7 +3141,7 @@ impl<'a> SourceTypeFlow<'a> {
             receiver_value_requirements: BTreeMap::new(),
             requirement_candidates: BTreeMap::new(),
             value_states: SourceTypeStates::default(),
-            value_erased_types: BTreeMap::new(),
+            collected_outputs: EquationOutputs::default(),
             equations: Vec::new(),
             equation_graph: TypeEquationGraph::default(),
             elements: Vec::new(),
@@ -3094,31 +3159,16 @@ impl<'a> SourceTypeFlow<'a> {
         flow.visit_node(root);
         flow.constrain_boolean_predicates();
         let invocations = std::mem::take(&mut flow.invocations);
-        // Boolean storage can read a reaching definition. Other erased
-        // formals have a fixed requirement. Account for supplied source-type
-        // aliases instead of assuming a descriptor always has its usual spelling.
-        let boolean = source_types.get(&ArgType::BOOLEAN);
-        let dynamic_formals = if invocations.is_empty() {
-            BTreeSet::new()
-        } else {
-            source_types
-                .iter()
-                .filter_map(|(erased, source)| {
-                    let dynamic = match source {
-                        JavaType::Primitive(_) => Some(source) == boolean,
-                        JavaType::Class(_) => matches!(boolean, Some(JavaType::Class(_))),
-                        JavaType::Variable(_) | JavaType::Array(_) => true,
-                    };
-                    dynamic.then_some(erased)
-                })
-                .collect()
-        };
+        // Constraints encountered while collecting the body only know definitions
+        // already seen for a register's declared erasure. Publish the full equation
+        // index after the initial predicate constraints, at the start of solving.
         flow.equation_graph.rebuild(
+            std::mem::take(&mut flow.collected_outputs),
             &flow.equations,
             &invocations,
             generic_fields,
             generic_methods,
-            &dynamic_formals,
+            |ty| flow.resolved_types.is_dynamic_formal(ty),
         );
         flow.converge(&invocations);
         let invocations = if collect_diagnostics {
@@ -3389,9 +3439,10 @@ impl<'a> SourceTypeFlow<'a> {
                     .filter(|(value, _)| !self.value_requirements.contains_key(*value)),
             )
             .filter_map(|(&value, requirement)| {
-                let current = self.value_states.get(&value).and_then(TypeState::exact);
-                let next = self.required_value_type(value, requirement.exact()?, current)?;
-                (current != Some(&next)).then_some((value, next))
+                let requirement = requirement.exact()?;
+                let (current, principal) = self.value_states.requirement_types(&value);
+                let next = self.required_value_type(value, requirement, current, principal)?;
+                Some((value, next))
             })
             .collect::<Vec<_>>();
         replacements
@@ -3411,11 +3462,8 @@ impl<'a> SourceTypeFlow<'a> {
         value: SsaVar,
         requirement: &JavaType,
         current: Option<&JavaType>,
+        principal: Option<&JavaType>,
     ) -> Option<JavaType> {
-        let principal = self
-            .value_states
-            .definition(&value)
-            .and_then(TypeState::exact);
         if current == Some(requirement) && principal.is_none_or(|ty| ty == requirement) {
             return None;
         }
@@ -3440,6 +3488,9 @@ impl<'a> SourceTypeFlow<'a> {
             {
                 return (current != Some(principal)).then(|| principal.clone());
             }
+        }
+        if current == Some(requirement) {
+            return None;
         }
         if current.is_some_and(|current| {
             relations.is_assignable(current, requirement)
@@ -3633,9 +3684,13 @@ impl<'a> SourceTypeFlow<'a> {
                     .filter(|(variable, _)| !self.requirements.contains_key(*variable)),
             )
             .filter_map(|(&variable, requirement)| {
-                let current = self.states.get(&variable).and_then(TypeState::exact);
-                let next = self.required_type(variable, requirement.exact()?, current)?;
-                (current != Some(&next)).then_some((variable, next))
+                if self.roles.has(variable, TypeRole::ABI) {
+                    return None;
+                }
+                let requirement = requirement.exact()?;
+                let (current, definition) = self.states.requirement_types(&variable);
+                let next = self.required_type(variable, requirement, current, definition)?;
+                Some((variable, next))
             })
             .collect::<Vec<_>>();
         replacements
@@ -3654,11 +3709,8 @@ impl<'a> SourceTypeFlow<'a> {
         variable: u32,
         requirement: &JavaType,
         current: Option<&JavaType>,
+        definition: Option<&JavaType>,
     ) -> Option<JavaType> {
-        if self.roles.has(variable, TypeRole::ABI) {
-            return None;
-        }
-        let definition = self.states.definition(&variable).and_then(TypeState::exact);
         // A replacement can only come from the requirement or either principal.
         // Specialization requires a raw principal and a parameterized requirement.
         if current == Some(requirement)
@@ -3712,14 +3764,18 @@ impl<'a> SourceTypeFlow<'a> {
             {
                 return (current != Some(principal)).then(|| principal.clone());
             }
-            if self.variable_erasures_are_strict_subtypes(variable, requirement)
+            if current != Some(requirement)
+                && self.variable_erasures_are_strict_subtypes(variable, requirement)
                 && self.definitions_fit(variable, requirement, &relations)
             {
-                return (current != Some(requirement)).then(|| requirement.clone());
+                return Some(requirement.clone());
             }
         }
+        if current == Some(requirement) {
+            return None;
+        }
         if self.definitions_preserve_runtime_type(variable, requirement) {
-            return (current != Some(requirement)).then(|| requirement.clone());
+            return Some(requirement.clone());
         }
         if current.is_some_and(|current| {
             relations.is_assignable(current, requirement)
@@ -5498,8 +5554,15 @@ impl<'a> SourceTypeFlow<'a> {
             return false;
         }
         let value = SsaVar::from_reg(register);
+        let outputs = if self.collected_outputs.is_empty() {
+            &self.equation_graph.outputs
+        } else {
+            &self.collected_outputs
+        };
         let definition_erasure = value
-            .and_then(|value| self.value_erased_types.get(&value))
+            .and_then(|value| outputs.get(&SourceTypeFact::Value(value)))
+            .and_then(|indices| indices.first())
+            .map(|&first| &self.equations[first].result.ty)
             .unwrap_or(&register.ty);
         let declared_erasure = if matches!(definition_erasure, ArgType::Unknown(_))
             && !matches!(register.ty, ArgType::Unknown(_))
@@ -5671,10 +5734,11 @@ impl<'a> SourceTypeFlow<'a> {
     }
 
     fn record_equation(&mut self, result: &RegisterArg, value: SemanticExpression) {
-        if let Some(identity) = SsaVar::from_reg(result) {
-            self.value_erased_types
-                .entry(identity)
-                .or_insert_with(|| result.ty.clone());
+        for output in TypeEquationGraph::register_facts(result) {
+            self.collected_outputs
+                .entry(output)
+                .or_default()
+                .push(self.equations.len());
         }
         if matches!(value, SemanticExpression::Select { .. }) {
             if let Some(variable) = result.code_var {
@@ -5984,7 +6048,7 @@ impl<'a> SourceTypeFlow<'a> {
     }
 
     fn resolved_type(&self, ty: &ArgType) -> Option<JavaType> {
-        self.source_types.get(ty).cloned().or_else(|| match ty {
+        self.resolved_types.get(ty).cloned().or_else(|| match ty {
             ArgType::Array(element) => self.resolved_type(element).map(JavaType::array),
             ArgType::Primitive(_) | ArgType::Object(_) | ArgType::Unknown(_) => None,
         })

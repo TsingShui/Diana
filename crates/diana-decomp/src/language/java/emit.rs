@@ -1,8 +1,10 @@
 use std::fmt::Write;
 
+use expression::Typing;
+
 use super::ast::{
-    JavaAssignOp, JavaBinaryOp, JavaCatch, JavaConstructorTarget, JavaExpr, JavaIdentifier,
-    JavaMethodBody, JavaStmt, JavaSwitchCase, JavaType, JavaUnaryOp,
+    JavaBinaryOp, JavaCatch, JavaConstructorTarget, JavaExpr, JavaIdentifier, JavaMethodBody,
+    JavaStmt, JavaSwitchCase, JavaType,
 };
 use super::literals::JavaLiterals;
 use super::unit::{
@@ -314,11 +316,8 @@ impl JavaPrinter {
         self.modifiers(output, &field.modifiers)?;
         write!(output, "{} {}", field.ty, field.name)?;
         if let Some(initializer) = &field.initializer {
-            write!(
-                output,
-                " = {}",
-                self.target_typed_expression_at(initializer, depth)?
-            )?;
+            output.push_str(" = ");
+            self.write_expression(output, initializer, Typing::Target, depth)?;
         }
         writeln!(output, ";")?;
         Ok(())
@@ -534,7 +533,9 @@ impl JavaPrinter {
                 }
                 PrintTask::DoWhileTail(condition, depth) => {
                     Self::continue_clause(output, "")?;
-                    writeln!(output, "while ({});", self.expression_at(condition, depth)?)?;
+                    output.push_str("while (");
+                    self.write_expression(output, condition, Typing::Standalone, depth)?;
+                    output.push_str(");\n");
                 }
                 PrintTask::Catch(catch, depth) => {
                     let types = catch
@@ -553,7 +554,9 @@ impl JavaPrinter {
                 PrintTask::SwitchCase(case, depth) => {
                     for label in &case.labels {
                         self.indent(output, depth);
-                        writeln!(output, "case {}:", self.expression_at(label, depth)?)?;
+                        output.push_str("case ");
+                        self.write_expression(output, label, Typing::Standalone, depth)?;
+                        output.push_str(":\n");
                     }
                     if case.is_default {
                         self.indent(output, depth);
@@ -631,17 +634,15 @@ impl JavaPrinter {
                 self.indent(output, depth);
                 write!(output, "{ty} {name}")?;
                 if let Some(value) = value {
-                    write!(
-                        output,
-                        " = {}",
-                        self.target_typed_expression_at(value, depth)?
-                    )?;
+                    output.push_str(" = ");
+                    self.write_expression(output, value, Typing::Target, depth)?;
                 }
                 writeln!(output, ";")?;
             }
             JavaStmt::Expression(expression) => {
                 self.indent(output, depth);
-                writeln!(output, "{};", self.expression_at(expression, depth)?)?;
+                self.write_expression(output, expression, Typing::Standalone, depth)?;
+                output.push_str(";\n");
             }
             JavaStmt::ConstructorInvocation { target, args } => {
                 self.indent(output, depth);
@@ -649,25 +650,21 @@ impl JavaPrinter {
                     JavaConstructorTarget::This => "this",
                     JavaConstructorTarget::Super => "super",
                 };
-                writeln!(
-                    output,
-                    "{}({});",
-                    target,
-                    args.iter()
-                        .map(|argument| self.target_typed_expression_at(argument, depth))
-                        .collect::<Result<Vec<_>, _>>()?
-                        .join(", ")
-                )?;
+                write!(output, "{target}(")?;
+                for (index, argument) in args.iter().enumerate() {
+                    if index > 0 {
+                        output.push_str(", ");
+                    }
+                    self.write_expression(output, argument, Typing::Target, depth)?;
+                }
+                output.push_str(");\n");
             }
             JavaStmt::Assign { target, op, value } => {
                 self.indent(output, depth);
-                writeln!(
-                    output,
-                    "{} {} {};",
-                    self.expression_at(target, depth)?,
-                    op.token(),
-                    self.target_typed_expression_at(value, depth)?
-                )?;
+                self.write_expression(output, target, Typing::Standalone, depth)?;
+                write!(output, " {} ", op.token())?;
+                self.write_expression(output, value, Typing::Target, depth)?;
+                output.push_str(";\n");
             }
             JavaStmt::If {
                 condition,
@@ -675,7 +672,9 @@ impl JavaPrinter {
                 else_stmt,
             } => {
                 self.indent(output, depth);
-                write!(output, "if ({}) ", self.expression_at(condition, depth)?)?;
+                output.push_str("if (");
+                self.write_expression(output, condition, Typing::Standalone, depth)?;
+                output.push_str(") ");
                 if let Some(else_stmt) = else_stmt {
                     pending.push(PrintTask::Else(else_stmt, depth));
                 }
@@ -688,7 +687,9 @@ impl JavaPrinter {
             } => {
                 self.label(output, label, depth)?;
                 self.indent(output, depth);
-                write!(output, "while ({}) ", self.expression_at(condition, depth)?)?;
+                output.push_str("while (");
+                self.write_expression(output, condition, Typing::Standalone, depth)?;
+                output.push_str(") ");
                 pending.push(PrintTask::ControlBody(body, depth));
             }
             JavaStmt::DoWhile {
@@ -787,27 +788,27 @@ impl JavaPrinter {
             }
             JavaStmt::Synchronized { lock, body } => {
                 self.indent(output, depth);
-                write!(
-                    output,
-                    "synchronized ({}) ",
-                    self.expression_at(lock, depth)?
-                )?;
+                output.push_str("synchronized (");
+                self.write_expression(output, lock, Typing::Standalone, depth)?;
+                output.push_str(") ");
                 pending.push(PrintTask::ControlBody(body, depth));
             }
             JavaStmt::Return(value) => {
                 self.indent(output, depth);
                 match value {
-                    Some(value) => writeln!(
-                        output,
-                        "return {};",
-                        self.target_typed_expression_at(value, depth)?
-                    )?,
+                    Some(value) => {
+                        output.push_str("return ");
+                        self.write_expression(output, value, Typing::Target, depth)?;
+                        output.push_str(";\n");
+                    }
                     None => writeln!(output, "return;")?,
                 }
             }
             JavaStmt::Throw(value) => {
                 self.indent(output, depth);
-                writeln!(output, "throw {};", self.expression_at(value, depth)?)?;
+                output.push_str("throw ");
+                self.write_expression(output, value, Typing::Standalone, depth)?;
+                output.push_str(";\n");
             }
             JavaStmt::Break(label) => {
                 self.indent(output, depth);
@@ -819,365 +820,6 @@ impl JavaPrinter {
             }
         }
         Ok(())
-    }
-
-    fn expression_at(&self, expression: &JavaExpr, depth: usize) -> Result<String, JavaPrintError> {
-        self.render_expression(
-            expression,
-            ExpressionRequirement::Any,
-            TargetTypingContext::Standalone,
-            depth,
-        )
-    }
-
-    fn target_typed_expression_at(
-        &self,
-        expression: &JavaExpr,
-        depth: usize,
-    ) -> Result<String, JavaPrintError> {
-        self.render_expression(
-            expression,
-            ExpressionRequirement::Any,
-            TargetTypingContext::TargetTyped,
-            depth,
-        )
-    }
-
-    fn render_expression(
-        &self,
-        expression: &JavaExpr,
-        requirement: ExpressionRequirement,
-        target_typing: TargetTypingContext,
-        depth: usize,
-    ) -> Result<String, JavaPrintError> {
-        let mut pending = vec![ExpressionTask::Visit {
-            expression,
-            requirement,
-            target_typing,
-        }];
-        let mut results = Vec::new();
-        while let Some(task) = pending.pop() {
-            match task {
-                ExpressionTask::Visit {
-                    expression,
-                    requirement,
-                    target_typing,
-                } => match expression {
-                    JavaExpr::This => results.push(RenderedExpression::primary("this")),
-                    JavaExpr::QualifiedThis(ty) => {
-                        results.push(RenderedExpression::primary(format!("{ty}.this")))
-                    }
-                    JavaExpr::Super => results.push(RenderedExpression::primary("super")),
-                    JavaExpr::Name(value) => {
-                        results.push(RenderedExpression::primary(value.to_string()))
-                    }
-                    JavaExpr::Literal(value) => {
-                        results.push(RenderedExpression::primary(JavaLiterals::render(value)))
-                    }
-                    JavaExpr::ClassLiteral(ty) => {
-                        results.push(RenderedExpression::primary(format!("{ty}.class")))
-                    }
-                    JavaExpr::Allocate(ty) => results.push(RenderedExpression::primary(format!(
-                        "allocate-instance {ty}"
-                    ))),
-                    JavaExpr::DirectInit {
-                        receiver,
-                        target,
-                        args,
-                    } => {
-                        let receiver = self.expression_at(receiver, depth)?;
-                        let args = args
-                            .iter()
-                            .map(|argument| self.expression_at(argument, depth))
-                            .collect::<Result<Vec<_>, _>>()?
-                            .join(", ");
-                        results.push(RenderedExpression::primary(format!(
-                            "init-direct {receiver}, {target}, [{args}]"
-                        )));
-                    }
-                    JavaExpr::StaticField { owner, name } => {
-                        let mut text = String::new();
-                        Self::write_raw_type(&mut text, owner)?;
-                        write!(text, ".{name}")?;
-                        results.push(RenderedExpression::primary(text));
-                    }
-                    JavaExpr::Field { owner, name } => {
-                        pending.push(ExpressionTask::Rebuild(ExpressionFrame::Field {
-                            name,
-                            requirement,
-                        }));
-                        pending.push(ExpressionTask::Visit {
-                            expression: owner,
-                            requirement: ExpressionRequirement::Primary,
-                            target_typing: TargetTypingContext::Standalone,
-                        });
-                    }
-                    JavaExpr::ArrayAccess { array, index } => {
-                        pending.push(ExpressionTask::Rebuild(ExpressionFrame::ArrayAccess {
-                            requirement,
-                        }));
-                        pending.push(ExpressionTask::Visit {
-                            expression: index,
-                            requirement: ExpressionRequirement::Any,
-                            target_typing: TargetTypingContext::Standalone,
-                        });
-                        pending.push(ExpressionTask::Visit {
-                            expression: array,
-                            requirement: ExpressionRequirement::Primary,
-                            target_typing: TargetTypingContext::Standalone,
-                        });
-                    }
-                    JavaExpr::Call {
-                        receiver,
-                        owner,
-                        type_arguments,
-                        method,
-                        args,
-                    } => {
-                        pending.push(ExpressionTask::Rebuild(ExpressionFrame::Call {
-                            has_receiver: receiver.is_some(),
-                            owner: owner.as_ref(),
-                            type_arguments,
-                            method,
-                            args: args.len(),
-                            requirement,
-                        }));
-                        pending.extend(args.iter().rev().map(|argument| ExpressionTask::Visit {
-                            expression: argument,
-                            requirement: ExpressionRequirement::Any,
-                            target_typing: TargetTypingContext::TargetTyped,
-                        }));
-                        if let Some(receiver) = receiver {
-                            pending.push(ExpressionTask::Visit {
-                                expression: receiver,
-                                requirement: ExpressionRequirement::Primary,
-                                target_typing: TargetTypingContext::Standalone,
-                            });
-                        }
-                    }
-                    JavaExpr::MethodReference { receiver, method } => {
-                        pending.push(ExpressionTask::Rebuild(ExpressionFrame::MethodReference {
-                            method,
-                            requirement,
-                        }));
-                        pending.push(ExpressionTask::Visit {
-                            expression: receiver,
-                            requirement: ExpressionRequirement::Primary,
-                            target_typing: TargetTypingContext::Standalone,
-                        });
-                    }
-                    JavaExpr::Lambda { parameters, body } => {
-                        pending.push(ExpressionTask::Rebuild(ExpressionFrame::Lambda {
-                            parameters,
-                            requirement,
-                        }));
-                        pending.push(ExpressionTask::Visit {
-                            expression: body,
-                            requirement: ExpressionRequirement::Any,
-                            target_typing: TargetTypingContext::TargetTyped,
-                        });
-                    }
-                    JavaExpr::BlockLambda { parameters, body } => {
-                        let parameters = Self::lambda_parameters(parameters);
-                        let mut rendered_body = String::new();
-                        self.render(&mut rendered_body, vec![PrintTask::Statement(body, depth)])?;
-                        results.push(
-                            RenderedExpression {
-                                text: format!("{parameters} -> {}", rendered_body.trim_end()),
-                                precedence: ExpressionPrecedence::Assignment,
-                                binary: None,
-                            }
-                            .requiring(requirement),
-                        );
-                    }
-                    JavaExpr::New {
-                        enclosing,
-                        ty,
-                        target_type,
-                        args,
-                        anonymous_body,
-                    } => {
-                        let diamond = target_typing == TargetTypingContext::TargetTyped
-                            && target_type.is_some()
-                            && anonymous_body.is_none()
-                            && matches!(
-                                ty,
-                                JavaType::Class(class)
-                                    if class
-                                        .segments
-                                        .last()
-                                        .is_some_and(|segment| !segment.arguments.is_empty())
-                            );
-                        pending.push(ExpressionTask::Rebuild(ExpressionFrame::New {
-                            has_enclosing: enclosing.is_some(),
-                            ty,
-                            diamond,
-                            args: args.len(),
-                            anonymous_body: anonymous_body
-                                .as_deref()
-                                .map(|body| self.print_anonymous_body(body, depth))
-                                .transpose()?,
-                            requirement,
-                        }));
-                        pending.extend(args.iter().rev().map(|argument| ExpressionTask::Visit {
-                            expression: argument,
-                            requirement: ExpressionRequirement::Any,
-                            target_typing: TargetTypingContext::TargetTyped,
-                        }));
-                        if let Some(enclosing) = enclosing {
-                            pending.push(ExpressionTask::Visit {
-                                expression: enclosing,
-                                requirement: ExpressionRequirement::Primary,
-                                target_typing: TargetTypingContext::Standalone,
-                            });
-                        }
-                    }
-                    JavaExpr::NewArray {
-                        element_type,
-                        dimensions,
-                        initializer,
-                    } => {
-                        pending.push(ExpressionTask::Rebuild(ExpressionFrame::NewArray {
-                            element_type,
-                            dimensions: dimensions.len(),
-                            initializer: initializer.len(),
-                            requirement,
-                        }));
-                        pending.extend(initializer.iter().rev().map(|item| {
-                            ExpressionTask::Visit {
-                                expression: item,
-                                requirement: ExpressionRequirement::Any,
-                                target_typing: TargetTypingContext::TargetTyped,
-                            }
-                        }));
-                        pending.extend(dimensions.iter().rev().map(|dimension| {
-                            ExpressionTask::Visit {
-                                expression: dimension,
-                                requirement: ExpressionRequirement::Any,
-                                target_typing: TargetTypingContext::Standalone,
-                            }
-                        }));
-                    }
-                    JavaExpr::Unary { op, operand } => {
-                        pending.push(ExpressionTask::Rebuild(ExpressionFrame::Unary {
-                            op: *op,
-                            requirement,
-                        }));
-                        pending.push(ExpressionTask::Visit {
-                            expression: operand,
-                            requirement: ExpressionRequirement::Unary,
-                            target_typing: TargetTypingContext::Standalone,
-                        });
-                    }
-                    JavaExpr::Update { op, target, prefix } => {
-                        pending.push(ExpressionTask::Rebuild(ExpressionFrame::Update {
-                            op: *op,
-                            prefix: *prefix,
-                            requirement,
-                        }));
-                        pending.push(ExpressionTask::Visit {
-                            expression: target,
-                            requirement: ExpressionRequirement::Primary,
-                            target_typing: TargetTypingContext::Standalone,
-                        });
-                    }
-                    JavaExpr::Binary { left, op, right } => {
-                        pending.push(ExpressionTask::Rebuild(ExpressionFrame::Binary {
-                            op: *op,
-                            requirement,
-                        }));
-                        pending.push(ExpressionTask::Visit {
-                            expression: right,
-                            requirement: ExpressionRequirement::Any,
-                            target_typing: TargetTypingContext::Standalone,
-                        });
-                        pending.push(ExpressionTask::Visit {
-                            expression: left,
-                            requirement: ExpressionRequirement::Any,
-                            target_typing: TargetTypingContext::Standalone,
-                        });
-                    }
-                    JavaExpr::Cast { ty, value } => {
-                        pending.push(ExpressionTask::Rebuild(ExpressionFrame::Cast {
-                            ty,
-                            requirement,
-                        }));
-                        pending.push(ExpressionTask::Visit {
-                            expression: value,
-                            requirement: ExpressionRequirement::Unary,
-                            target_typing: TargetTypingContext::Standalone,
-                        });
-                    }
-                    JavaExpr::InstanceOf { value, ty } => {
-                        pending.push(ExpressionTask::Rebuild(ExpressionFrame::InstanceOf {
-                            ty,
-                            requirement,
-                        }));
-                        pending.push(ExpressionTask::Visit {
-                            expression: value,
-                            requirement: ExpressionRequirement::Any,
-                            target_typing: TargetTypingContext::Standalone,
-                        });
-                    }
-                    JavaExpr::Conditional {
-                        condition,
-                        when_true,
-                        when_false,
-                    } => {
-                        pending.push(ExpressionTask::Rebuild(ExpressionFrame::Conditional {
-                            requirement,
-                        }));
-                        pending.push(ExpressionTask::Visit {
-                            expression: when_false,
-                            requirement: ExpressionRequirement::Any,
-                            target_typing,
-                        });
-                        pending.push(ExpressionTask::Visit {
-                            expression: when_true,
-                            requirement: ExpressionRequirement::Any,
-                            target_typing,
-                        });
-                        pending.push(ExpressionTask::Visit {
-                            expression: condition,
-                            requirement: ExpressionRequirement::Any,
-                            target_typing: TargetTypingContext::Standalone,
-                        });
-                    }
-                    JavaExpr::Assignment { target, op, value } => {
-                        pending.push(ExpressionTask::Rebuild(ExpressionFrame::Assignment {
-                            op: *op,
-                            requirement,
-                        }));
-                        pending.push(ExpressionTask::Visit {
-                            expression: value,
-                            requirement: ExpressionRequirement::Any,
-                            target_typing: TargetTypingContext::TargetTyped,
-                        });
-                        pending.push(ExpressionTask::Visit {
-                            expression: target,
-                            requirement: ExpressionRequirement::Any,
-                            target_typing: TargetTypingContext::Standalone,
-                        });
-                    }
-                },
-                ExpressionTask::Rebuild(frame) => {
-                    let count = frame.child_count();
-                    let start = results
-                        .len()
-                        .checked_sub(count)
-                        .ok_or(JavaPrintError::MalformedExpression)?;
-                    let parent = frame.render(results.drain(start..))?;
-                    results.push(parent);
-                }
-            }
-        }
-        if results.len() != 1 {
-            return Err(JavaPrintError::MalformedExpression);
-        }
-        results
-            .pop()
-            .map(|rendered| rendered.text)
-            .ok_or(JavaPrintError::MalformedExpression)
     }
 
     fn write_raw_type(output: &mut String, ty: &JavaType) -> std::fmt::Result {
@@ -1291,525 +933,8 @@ enum PrintTask<'a> {
     SwitchCase(&'a JavaSwitchCase, usize),
 }
 
-enum ExpressionTask<'a> {
-    Visit {
-        expression: &'a JavaExpr,
-        requirement: ExpressionRequirement,
-        target_typing: TargetTypingContext,
-    },
-    Rebuild(ExpressionFrame<'a>),
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum TargetTypingContext {
-    Standalone,
-    TargetTyped,
-}
-
-#[derive(Clone, Copy)]
-enum ExpressionRequirement {
-    Any,
-    Unary,
-    Primary,
-}
-
-impl ExpressionRequirement {
-    fn accepts(self, shape: ExpressionShape) -> bool {
-        match self {
-            Self::Any => true,
-            Self::Unary => matches!(shape, ExpressionShape::Primary | ExpressionShape::Unary),
-            Self::Primary => shape == ExpressionShape::Primary,
-        }
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ExpressionShape {
-    Primary,
-    Unary,
-    Other,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum ExpressionPrecedence {
-    Assignment,
-    Conditional,
-    LogicalOr,
-    LogicalAnd,
-    BitOr,
-    BitXor,
-    BitAnd,
-    Equality,
-    Relational,
-    Shift,
-    Additive,
-    Multiplicative,
-    Unary,
-    Primary,
-}
-
-struct RenderedExpression {
-    text: String,
-    precedence: ExpressionPrecedence,
-    binary: Option<JavaBinaryOp>,
-}
-
-impl RenderedExpression {
-    fn primary(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            precedence: ExpressionPrecedence::Primary,
-            binary: None,
-        }
-    }
-
-    fn parenthesized(self) -> String {
-        format!("({})", self.text)
-    }
-
-    fn requiring(self, requirement: ExpressionRequirement) -> Self {
-        let shape = match self.precedence {
-            ExpressionPrecedence::Primary => ExpressionShape::Primary,
-            ExpressionPrecedence::Unary => ExpressionShape::Unary,
-            _ => ExpressionShape::Other,
-        };
-        if requirement.accepts(shape) {
-            self
-        } else {
-            Self::primary(self.parenthesized())
-        }
-    }
-}
-
-enum ExpressionFrame<'a> {
-    Field {
-        name: &'a JavaIdentifier,
-        requirement: ExpressionRequirement,
-    },
-    ArrayAccess {
-        requirement: ExpressionRequirement,
-    },
-    Call {
-        has_receiver: bool,
-        owner: Option<&'a JavaType>,
-        type_arguments: &'a [JavaType],
-        method: &'a JavaIdentifier,
-        args: usize,
-        requirement: ExpressionRequirement,
-    },
-    MethodReference {
-        method: &'a JavaIdentifier,
-        requirement: ExpressionRequirement,
-    },
-    Lambda {
-        parameters: &'a [JavaIdentifier],
-        requirement: ExpressionRequirement,
-    },
-    New {
-        has_enclosing: bool,
-        ty: &'a JavaType,
-        diamond: bool,
-        args: usize,
-        anonymous_body: Option<String>,
-        requirement: ExpressionRequirement,
-    },
-    NewArray {
-        element_type: &'a JavaType,
-        dimensions: usize,
-        initializer: usize,
-        requirement: ExpressionRequirement,
-    },
-    Unary {
-        op: JavaUnaryOp,
-        requirement: ExpressionRequirement,
-    },
-    Update {
-        op: super::JavaUpdateOp,
-        prefix: bool,
-        requirement: ExpressionRequirement,
-    },
-    Binary {
-        op: JavaBinaryOp,
-        requirement: ExpressionRequirement,
-    },
-    Cast {
-        ty: &'a JavaType,
-        requirement: ExpressionRequirement,
-    },
-    InstanceOf {
-        ty: &'a JavaType,
-        requirement: ExpressionRequirement,
-    },
-    Conditional {
-        requirement: ExpressionRequirement,
-    },
-    Assignment {
-        op: JavaAssignOp,
-        requirement: ExpressionRequirement,
-    },
-}
-
-impl ExpressionFrame<'_> {
-    fn child_count(&self) -> usize {
-        match self {
-            Self::Field { .. }
-            | Self::MethodReference { .. }
-            | Self::Lambda { .. }
-            | Self::Unary { .. }
-            | Self::Update { .. }
-            | Self::Cast { .. }
-            | Self::InstanceOf { .. } => 1,
-            Self::ArrayAccess { .. } | Self::Binary { .. } | Self::Assignment { .. } => 2,
-            Self::Conditional { .. } => 3,
-            Self::Call {
-                has_receiver, args, ..
-            } => usize::from(*has_receiver) + args,
-            Self::New {
-                has_enclosing,
-                args,
-                ..
-            } => usize::from(*has_enclosing) + args,
-            Self::NewArray {
-                dimensions,
-                initializer,
-                ..
-            } => dimensions + initializer,
-        }
-    }
-
-    fn render(
-        self,
-        children: impl IntoIterator<Item = RenderedExpression, IntoIter: ExactSizeIterator>,
-    ) -> Result<RenderedExpression, JavaPrintError> {
-        let mut children = children.into_iter();
-        if children.len() != self.child_count() {
-            return Err(JavaPrintError::MalformedExpression);
-        }
-        let (rendered, precedence, binary, requirement) = match self {
-            Self::Field { name, requirement } => {
-                let mut text = Self::child(&mut children)?;
-                write!(text, ".{name}")?;
-                (text, ExpressionPrecedence::Primary, None, requirement)
-            }
-            Self::ArrayAccess { requirement } => {
-                let mut text = Self::child(&mut children)?;
-                text.push('[');
-                text.push_str(&Self::child(&mut children)?);
-                text.push(']');
-                (text, ExpressionPrecedence::Primary, None, requirement)
-            }
-            Self::Call {
-                has_receiver,
-                owner,
-                type_arguments,
-                method,
-                args,
-                requirement,
-            } => {
-                let mut text = if has_receiver {
-                    let mut receiver = Self::child(&mut children)?;
-                    receiver.push('.');
-                    receiver
-                } else {
-                    let mut prefix = String::new();
-                    if let Some(owner) = owner {
-                        JavaPrinter::write_raw_type(&mut prefix, owner)?;
-                        prefix.push('.');
-                    }
-                    prefix
-                };
-                if !type_arguments.is_empty() {
-                    text.push('<');
-                    for (index, ty) in type_arguments.iter().enumerate() {
-                        if index != 0 {
-                            text.push_str(", ");
-                        }
-                        write!(text, "{ty}")?;
-                    }
-                    text.push('>');
-                }
-                write!(text, "{method}")?;
-                Self::arguments(&mut text, children.take(args));
-                (text, ExpressionPrecedence::Primary, None, requirement)
-            }
-            Self::MethodReference {
-                method,
-                requirement,
-            } => (
-                format!("{}::{method}", Self::child(&mut children)?),
-                ExpressionPrecedence::Primary,
-                None,
-                requirement,
-            ),
-            Self::Lambda {
-                parameters,
-                requirement,
-            } => {
-                let parameters = JavaPrinter::lambda_parameters(parameters);
-                (
-                    format!("{parameters} -> {}", Self::child(&mut children)?),
-                    ExpressionPrecedence::Assignment,
-                    None,
-                    requirement,
-                )
-            }
-            Self::New {
-                has_enclosing,
-                ty,
-                diamond,
-                args,
-                anonymous_body,
-                requirement,
-            } => {
-                let enclosing = has_enclosing
-                    .then(|| Self::child(&mut children))
-                    .transpose()?;
-                let mut expression = enclosing.unwrap_or_default();
-                if has_enclosing {
-                    let JavaType::Class(class) = ty else {
-                        return Err(JavaPrintError::MalformedExpression);
-                    };
-                    let member = class
-                        .segments
-                        .last()
-                        .ok_or(JavaPrintError::MalformedExpression)?;
-                    expression.push_str(".new ");
-                    if diamond {
-                        write!(expression, "{}<>", member.name)?;
-                    } else {
-                        write!(expression, "{member}")?;
-                    }
-                } else if diamond {
-                    let JavaType::Class(class) = ty else {
-                        return Err(JavaPrintError::MalformedExpression);
-                    };
-                    let (member, parents) = class
-                        .segments
-                        .split_last()
-                        .ok_or(JavaPrintError::MalformedExpression)?;
-                    expression.push_str("new ");
-                    for parent in parents {
-                        write!(expression, "{parent}.")?;
-                    }
-                    write!(expression, "{}<>", member.name)?;
-                } else {
-                    write!(expression, "new {ty}")?;
-                }
-                Self::arguments(&mut expression, children.take(args));
-                if let Some(body) = anonymous_body {
-                    expression.push(' ');
-                    expression.push_str(&body);
-                }
-                (expression, ExpressionPrecedence::Primary, None, requirement)
-            }
-            Self::NewArray {
-                element_type,
-                dimensions,
-                initializer,
-                requirement,
-            } => {
-                let (base_type, trailing_rank) = element_type.array_shape();
-                let dimensions = children
-                    .by_ref()
-                    .take(dimensions)
-                    .map(|dimension| format!("[{}]", dimension.text))
-                    .collect::<String>();
-                let dimensions = if dimensions.is_empty() {
-                    "[]".to_owned()
-                } else {
-                    dimensions
-                };
-                let initializer = children
-                    .take(initializer)
-                    .map(|child| child.text)
-                    .collect::<Vec<_>>();
-                let initializer = if initializer.is_empty() {
-                    String::new()
-                } else {
-                    format!(" {{ {} }}", initializer.join(", "))
-                };
-                (
-                    format!(
-                        "new {base_type}{dimensions}{}{initializer}",
-                        "[]".repeat(trailing_rank)
-                    ),
-                    ExpressionPrecedence::Primary,
-                    None,
-                    requirement,
-                )
-            }
-            Self::Unary { op, requirement } => {
-                let operand = Self::child_expression(&mut children)?;
-                let operand = if operand.precedence <= ExpressionPrecedence::Unary {
-                    operand.parenthesized()
-                } else {
-                    operand.text
-                };
-                (
-                    format!("{}{operand}", op.token()),
-                    ExpressionPrecedence::Unary,
-                    None,
-                    requirement,
-                )
-            }
-            Self::Update {
-                op,
-                prefix,
-                requirement,
-            } => {
-                let target = Self::child(&mut children)?;
-                (
-                    if prefix {
-                        format!("{}{target}", op.token())
-                    } else {
-                        format!("{target}{}", op.token())
-                    },
-                    ExpressionPrecedence::Unary,
-                    None,
-                    requirement,
-                )
-            }
-            Self::Binary { op, requirement } => {
-                let precedence = Self::binary_precedence(op);
-                let left = Self::child_expression(&mut children)?;
-                let right = Self::child_expression(&mut children)?;
-                let left = if left.precedence < precedence {
-                    left.parenthesized()
-                } else {
-                    left.text
-                };
-                let right = if right.precedence < precedence
-                    || (right.precedence == precedence && !Self::right_associative_with(op, &right))
-                {
-                    right.parenthesized()
-                } else {
-                    right.text
-                };
-                let mut text = left;
-                text.push(' ');
-                text.push_str(op.token());
-                text.push(' ');
-                text.push_str(&right);
-                (text, precedence, Some(op), requirement)
-            }
-            Self::Cast { ty, requirement } => (
-                format!("({ty}) {}", Self::child(&mut children)?),
-                ExpressionPrecedence::Unary,
-                None,
-                requirement,
-            ),
-            Self::InstanceOf { ty, requirement } => {
-                let value = Self::child_expression(&mut children)?;
-                let value = if value.precedence <= ExpressionPrecedence::Relational {
-                    value.parenthesized()
-                } else {
-                    value.text
-                };
-                (
-                    format!("{value} instanceof {ty}"),
-                    ExpressionPrecedence::Relational,
-                    None,
-                    requirement,
-                )
-            }
-            Self::Conditional { requirement } => {
-                let condition = Self::child_expression(&mut children)?;
-                let when_true = Self::child_expression(&mut children)?;
-                let when_false = Self::child_expression(&mut children)?;
-                let condition = if condition.precedence <= ExpressionPrecedence::Conditional {
-                    condition.parenthesized()
-                } else {
-                    condition.text
-                };
-                let when_false = if when_false.precedence < ExpressionPrecedence::Conditional {
-                    when_false.parenthesized()
-                } else {
-                    when_false.text
-                };
-                (
-                    format!("{condition} ? {} : {when_false}", when_true.text),
-                    ExpressionPrecedence::Conditional,
-                    None,
-                    requirement,
-                )
-            }
-            Self::Assignment { op, requirement } => (
-                format!(
-                    "{} {} {}",
-                    Self::child(&mut children)?,
-                    op.token(),
-                    Self::child(&mut children)?
-                ),
-                ExpressionPrecedence::Assignment,
-                None,
-                requirement,
-            ),
-        };
-        Ok(RenderedExpression {
-            text: rendered,
-            precedence,
-            binary,
-        }
-        .requiring(requirement))
-    }
-
-    fn arguments(output: &mut String, values: impl Iterator<Item = RenderedExpression>) {
-        output.push('(');
-        for (index, value) in values.enumerate() {
-            if index != 0 {
-                output.push_str(", ");
-            }
-            output.push_str(&value.text);
-        }
-        output.push(')');
-    }
-
-    fn child(
-        children: &mut impl Iterator<Item = RenderedExpression>,
-    ) -> Result<String, JavaPrintError> {
-        Ok(Self::child_expression(children)?.text)
-    }
-
-    fn child_expression(
-        children: &mut impl Iterator<Item = RenderedExpression>,
-    ) -> Result<RenderedExpression, JavaPrintError> {
-        children.next().ok_or(JavaPrintError::MalformedExpression)
-    }
-
-    fn binary_precedence(operator: JavaBinaryOp) -> ExpressionPrecedence {
-        match operator {
-            JavaBinaryOp::Multiply | JavaBinaryOp::Divide | JavaBinaryOp::Remainder => {
-                ExpressionPrecedence::Multiplicative
-            }
-            JavaBinaryOp::Add | JavaBinaryOp::Subtract => ExpressionPrecedence::Additive,
-            JavaBinaryOp::ShiftLeft
-            | JavaBinaryOp::ShiftRight
-            | JavaBinaryOp::UnsignedShiftRight => ExpressionPrecedence::Shift,
-            JavaBinaryOp::Less
-            | JavaBinaryOp::GreaterEqual
-            | JavaBinaryOp::Greater
-            | JavaBinaryOp::LessEqual => ExpressionPrecedence::Relational,
-            JavaBinaryOp::Equal | JavaBinaryOp::NotEqual => ExpressionPrecedence::Equality,
-            JavaBinaryOp::BitAnd => ExpressionPrecedence::BitAnd,
-            JavaBinaryOp::BitXor => ExpressionPrecedence::BitXor,
-            JavaBinaryOp::BitOr => ExpressionPrecedence::BitOr,
-            JavaBinaryOp::LogicalAnd => ExpressionPrecedence::LogicalAnd,
-            JavaBinaryOp::LogicalOr => ExpressionPrecedence::LogicalOr,
-        }
-    }
-
-    fn right_associative_with(operator: JavaBinaryOp, right: &RenderedExpression) -> bool {
-        right.binary == Some(operator)
-            && matches!(
-                operator,
-                JavaBinaryOp::BitAnd
-                    | JavaBinaryOp::BitOr
-                    | JavaBinaryOp::BitXor
-                    | JavaBinaryOp::LogicalAnd
-                    | JavaBinaryOp::LogicalOr
-            )
-    }
-}
+#[path = "emit/expression.rs"]
+mod expression;
 
 #[cfg(test)]
 mod tests {
@@ -1820,15 +945,16 @@ mod tests {
     #[test]
     fn allocated_dimensions_precede_unallocated_array_rank() {
         let element_type = JavaType::array(JavaType::Primitive(JavaPrimitiveType::Byte));
-        let expression = ExpressionFrame::NewArray {
-            element_type: &element_type,
-            dimensions: 1,
-            initializer: 0,
-            requirement: ExpressionRequirement::Any,
-        }
-        .render(vec![RenderedExpression::primary("3")])
-        .expect("array expression")
-        .text;
+        let expression = JavaPrinter::default()
+            .expression_at(
+                &JavaExpr::NewArray {
+                    element_type,
+                    dimensions: vec![JavaExpr::Literal(super::super::JavaLiteral::Integer(3))],
+                    initializer: vec![],
+                },
+                0,
+            )
+            .expect("array expression");
 
         assert_eq!(expression, "new byte[3][]");
     }
@@ -1836,15 +962,16 @@ mod tests {
     #[test]
     fn array_initializer_preserves_the_complete_rank() {
         let element_type = JavaType::array(JavaType::Primitive(JavaPrimitiveType::Byte));
-        let expression = ExpressionFrame::NewArray {
-            element_type: &element_type,
-            dimensions: 0,
-            initializer: 1,
-            requirement: ExpressionRequirement::Any,
-        }
-        .render(vec![RenderedExpression::primary("row")])
-        .expect("array expression")
-        .text;
+        let expression = JavaPrinter::default()
+            .expression_at(
+                &JavaExpr::NewArray {
+                    element_type,
+                    dimensions: vec![],
+                    initializer: vec![JavaExpr::Name(JavaIdentifier::from_hint("row"))],
+                },
+                0,
+            )
+            .expect("array expression");
 
         assert_eq!(expression, "new byte[][] { row }");
     }
@@ -1852,17 +979,18 @@ mod tests {
     #[test]
     fn qualified_class_creation_uses_the_member_type_name() {
         let ty = JavaType::source_class("example.Outer.Inner");
-        let expression = ExpressionFrame::New {
-            has_enclosing: true,
-            ty: &ty,
-            diamond: false,
-            args: 0,
-            anonymous_body: None,
-            requirement: ExpressionRequirement::Any,
-        }
-        .render(vec![RenderedExpression::primary("owner")])
-        .expect("qualified class creation")
-        .text;
+        let expression = JavaPrinter::default()
+            .expression_at(
+                &JavaExpr::New {
+                    enclosing: Some(Box::new(JavaExpr::Name(JavaIdentifier::from_hint("owner")))),
+                    ty,
+                    target_type: None,
+                    args: vec![],
+                    anonymous_body: None,
+                },
+                0,
+            )
+            .expect("qualified class creation");
 
         assert_eq!(expression, "owner.new Inner()");
     }

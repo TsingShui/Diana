@@ -139,11 +139,12 @@ fn fixed_invocations_revisit_changed_requirements_and_dynamic_invocations_revisi
     )]);
     let mut graph = TypeEquationGraph::default();
     graph.rebuild(
+        EquationOutputs::default(),
         &[],
         &calls,
         &BTreeMap::new(),
         &GenericMethodContracts::Owned(Arc::new(generic)),
-        &BTreeSet::from([&ArgType::BOOLEAN]),
+        |ty| ty == &ArgType::BOOLEAN,
     );
     let ready = |graph: &mut TypeEquationGraph| {
         graph
@@ -218,6 +219,7 @@ fn equation_inputs_track_array_storage_and_polymorphic_results() {
     };
     let mut graph = TypeEquationGraph::default();
     graph.rebuild(
+        EquationOutputs::default(),
         &[
             TypeEquation {
                 result: register(8),
@@ -231,7 +233,7 @@ fn equation_inputs_track_array_storage_and_polymorphic_results() {
         &[],
         &BTreeMap::new(),
         &GenericMethodContracts::Owned(Arc::new(BTreeMap::from([(method, contract)]))),
-        &BTreeSet::new(),
+        |_| false,
     );
     let ready = |graph: &mut TypeEquationGraph| graph.take_dirty().indices().collect::<Vec<_>>();
     assert_eq!(ready(&mut graph), [0, 1]);
@@ -284,11 +286,12 @@ fn constructor_initialization_skips_only_the_implicit_receiver_for_constraints()
     ));
     let mut graph = TypeEquationGraph::default();
     graph.rebuild(
+        EquationOutputs::default(),
         &[],
         &calls,
         &BTreeMap::new(),
         &GenericMethodContracts::Owned(Arc::default()),
-        &BTreeSet::new(),
+        |_| false,
     );
     let ready = |graph: &mut TypeEquationGraph| {
         graph
@@ -350,4 +353,125 @@ fn class_assignability_cache_keeps_ordered_immutable_type_pairs() {
         cache.insert(&class(&format!("fixture.C{index}")), &right, false);
     }
     assert_eq!(cache.get(&left, &right), None);
+}
+
+#[test]
+fn source_constraints_use_the_first_seen_erasure_without_publishing_later_definitions() {
+    use crate::ir::{
+        BlockId, InsnArg, InsnNode, InstructionId, InvokeType, LiteralArg, SemanticBlock,
+    };
+
+    let string = ArgType::object("java/lang/String");
+    let register = |id, ty| {
+        let mut register = RegisterArg::with_ssa(2, ty, 1);
+        register.code_var = Some(id);
+        register
+    };
+    let definition = |id, ty| {
+        SemanticStatement::definition(
+            InstructionId::new(id as usize),
+            register(id, ty),
+            SemanticExpression::Literal(LiteralArg::new(1, ArgType::INT)),
+        )
+    };
+    let write = |id| {
+        let mut store = InsnNode::new(InsnType::Sput, 1);
+        store.payload.reference = Some(Arc::new(MemberReference::Field(
+            "Lfixture/Scope;->count:I".parse().unwrap(),
+        )));
+        store.args.push(InsnArg::Reg(register(id, string.clone())));
+        SemanticStatement::instruction(store).unwrap()
+    };
+    let mut call = InsnNode::new(InsnType::Invoke, 1);
+    call.payload.reference = Some(Arc::new(MemberReference::Method(
+        "Lfixture/Scope;->consume(I)V".parse().unwrap(),
+    )));
+    call.payload.invoke_type = Some(InvokeType::Static);
+    call.args.push(InsnArg::Reg(register(15, string.clone())));
+    let root = SemanticNode::BasicBlock(SemanticBlock {
+        id: BlockId::new(0),
+        statements: vec![
+            write(11),
+            definition(12, ArgType::INT),
+            definition(13, string.clone()),
+            write(14),
+            SemanticStatement::instruction(call).unwrap(),
+        ],
+    });
+    let types = BTreeMap::from([
+        (ArgType::INT, JavaType::int()),
+        (string.clone(), JavaType::source_class("String")),
+    ]);
+    let facts = SourceTypeFlow::solve(
+        &root,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &SourceObjectTypes::default(),
+        &GenericMethodContracts::Owned(Arc::default()),
+        None,
+        &types,
+        Arc::new(JavaTypeErasureIndex::from_source_types(types.clone())),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        None,
+        None,
+        None,
+        None,
+        &BTreeMap::new(),
+        true,
+    )
+    .diagnostics();
+    assert_eq!(
+        facts.requirements,
+        [(14, "int".to_owned()), (15, "int".to_owned())]
+    );
+    assert_eq!(facts.value_requirements, [(2, 1, "int".to_owned())]);
+    let definitions: Vec<_> = facts
+        .equations
+        .iter()
+        .map(|eq| (eq.variable, eq.register, eq.version, &eq.erased_type))
+        .collect();
+    assert_eq!(
+        definitions,
+        [
+            (12, 2, Some(1), &ArgType::INT.to_string()),
+            (13, 2, Some(1), &string.to_string())
+        ]
+    );
+    assert_eq!(facts.invocations.len(), 1);
+    assert!(!facts.invocations[0].resolved);
+}
+
+#[test]
+fn source_type_lookup_preserves_boolean_aliases_missing_entries_and_first_reverse_spelling() {
+    let first = ArgType::object("fixture/A");
+    let second = ArgType::object("fixture/B");
+    let aliased = BTreeMap::from([
+        (ArgType::BOOLEAN, JavaType::source_class("Flag")),
+        (first.clone(), JavaType::int()),
+        (second.clone(), JavaType::int()),
+        (ArgType::INT, JavaType::source_class("Other")),
+        (
+            ArgType::LONG,
+            JavaType::Variable(JavaIdentifier::from_hint("T")),
+        ),
+    ]);
+    let forward = SourceTypeLookup::new(&aliased);
+    assert!(forward.is_dynamic_formal(&ArgType::INT));
+    assert!(forward.is_dynamic_formal(&ArgType::LONG));
+    assert!(!forward.is_dynamic_formal(&first));
+    assert!(!forward.is_dynamic_formal(&ArgType::BYTE));
+    assert_eq!(forward.get(&second), Some(&JavaType::int()));
+    let erasures = JavaTypeErasureIndex::from_source_types(aliased);
+    assert_eq!(
+        erasures
+            .erasure_of(&JavaType::int(), &BTreeMap::new())
+            .as_deref(),
+        Some(&first)
+    );
+    let plain = BTreeMap::from([
+        (ArgType::BOOLEAN, JavaType::boolean()),
+        (first.clone(), JavaType::boolean()),
+    ]);
+    assert!(SourceTypeLookup::new(&plain).is_dynamic_formal(&first));
 }
