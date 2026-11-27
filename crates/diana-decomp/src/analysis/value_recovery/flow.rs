@@ -313,7 +313,10 @@ struct SsaCopyFlow {
 }
 
 impl SsaCopyFlow {
-    fn analyze(values: &SsaValueGraph, definitions: &OccurrenceRows<DefinitionFact>) -> Self {
+    fn analyze(
+        values: &SsaValueGraph,
+        definitions: &OccurrenceRows<'_, DefinitionFact<'_>>,
+    ) -> Self {
         let sources: BTreeMap<_, _> = values
             .copies()
             .iter()
@@ -460,12 +463,12 @@ pub(super) struct ValueFlowGraph<'ir> {
     scopes: LexicalScopes,
     identity: ValueIdentity,
     logic: DomainLogic,
-    definitions: OccurrenceRows<DefinitionFact<'ir>>,
+    definitions: OccurrenceRows<'ir, DefinitionFact<'ir>>,
     definitions_without_sites: BTreeSet<SsaVar>,
     /// Values introduced by lexical binders rather than executable statements.
     /// Their definition classes are intentionally open to statement scheduling.
     bindings: BTreeSet<SsaVar>,
-    uses: OccurrenceRows<UseFact>,
+    uses: OccurrenceRows<'ir, UseFact>,
     prefixes: EvaluationPrefixes,
     semantic_roots: OnceCell<BTreeSet<SsaVar>>,
     ssa_values: Option<&'ir SsaValueGraph>,
@@ -566,10 +569,10 @@ impl<'ir> ValueFlowGraph<'ir> {
             has_select: symbols.has_select,
             has_predicate_uses: false,
             scopes: LexicalScopes::default(),
-            definitions: OccurrenceRows::default(),
+            definitions: OccurrenceRows::ssa(values),
             definitions_without_sites: BTreeSet::new(),
             bindings: BTreeSet::new(),
-            uses: OccurrenceRows::default(),
+            uses: OccurrenceRows::ssa(values),
             prefixes: EvaluationPrefixes::default(),
             semantic_roots: OnceCell::new(),
             ssa_values: Some(values),
@@ -587,7 +590,7 @@ impl<'ir> ValueFlowGraph<'ir> {
         };
         let mut graph = FlowCollector::new(graph).collect(root, cache)?;
         graph.copies = SsaCopyFlow::analyze(values, &graph.definitions);
-        graph.validate(values)?;
+        graph.validate()?;
         Ok(graph)
     }
 
@@ -876,19 +879,22 @@ impl<'ir> ValueFlowGraph<'ir> {
             )
     }
 
-    fn validate(&self, values: &SsaValueGraph) -> Result<(), ValueRecoveryError> {
-        for (value, definitions) in self.definitions.iter() {
-            if definitions.len() > 1 && !Self::are_structural_replicas(definitions) {
-                return Err(ValueRecoveryError::DuplicateDefinition(*value));
-            }
-            if values.value(*value).is_none() {
-                return Err(ValueRecoveryError::UnknownValue(*value));
+    fn validate(&self) -> Result<(), ValueRecoveryError> {
+        // The collector checked SSA membership when it created each row. Only
+        // repeated definitions need an ordered pass to classify structural replicas.
+        let unknown = self.definitions.first_unknown();
+        if self.definitions.has_repeated() {
+            for (value, definitions) in self.definitions.iter() {
+                if definitions.len() > 1 && !Self::are_structural_replicas(definitions) {
+                    return Err(ValueRecoveryError::DuplicateDefinition(*value));
+                }
+                if Some(*value) == unknown {
+                    return Err(ValueRecoveryError::UnknownValue(*value));
+                }
             }
         }
-        for value in self.uses.keys() {
-            if values.value(*value).is_none() {
-                return Err(ValueRecoveryError::UnknownValue(*value));
-            }
+        if let Some(value) = unknown.or_else(|| self.uses.first_unknown()) {
+            return Err(ValueRecoveryError::UnknownValue(value));
         }
         Ok(())
     }
@@ -911,17 +917,21 @@ impl<'ir> ValueFlowGraph<'ir> {
     fn classes_by_last_definition(&self) -> Vec<DefinitionClass<'_>> {
         let mut classes = self
             .definitions
-            .iter()
-            .filter_map(|(&key, definitions)| {
+            .values()
+            .filter_map(|definitions| {
+                let last = definitions.last()?;
                 Some(DefinitionClass {
                     definitions,
-                    // The collector appends one definition per statement event.
-                    last_event: definitions.last()?.event,
-                    bound: self.is_bound(key),
+                    last_event: last.event,
+                    bound: self.is_bound(last.key),
                 })
             })
             .collect::<Vec<_>>();
-        classes.sort_unstable_by_key(|class| class.last_event);
+        // Rows are inserted in first-event order, which also orders the last
+        // event when each identity has a single defining statement.
+        if self.definitions.has_repeated() {
+            classes.sort_unstable_by_key(|class| class.last_event);
+        }
         classes
     }
 

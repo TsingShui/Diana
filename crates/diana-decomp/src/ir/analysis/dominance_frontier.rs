@@ -19,40 +19,38 @@ impl DominanceFrontier {
             }
         }
         let mut frontiers = BTreeMap::<BlockId, BTreeSet<BlockId>>::new();
-        for &block in cfg.blocks.keys() {
-            for successor in cfg.successors(block) {
-                if dominators.idom(successor) != Some(block) {
-                    frontiers.entry(block).or_default().insert(successor);
+        for &source in cfg.blocks.keys() {
+            for target in cfg.successors(source) {
+                let stop = dominators.idom(target);
+                let mut cursor = Some(source);
+                // This edge contributes its target to the source's frontier
+                // and each ancestor below the target's immediate dominator.
+                // A previously inserted target already covered that suffix.
+                while let Some(block) = cursor {
+                    if Some(block) == stop || !frontiers.entry(block).or_default().insert(target) {
+                        break;
+                    }
+                    cursor = dominators.idom(block);
                 }
             }
         }
 
-        // An empty local frontier stays empty throughout the upward pass.
-        // Explicit caller-provided trees can include additional vertices;
-        // retain the topology checks for that case.
-        if !frontiers.is_empty() || dominators.len() != cfg.blocks.len() {
-            let mut inherited = Vec::new();
+        // Explicit callers can supply a tree containing additional vertices.
+        // Keep the original child-before-parent diagnostics in tree order.
+        if dominators.len() != cfg.blocks.len() {
             for block in dominators.postorder() {
                 for child in dominators.children(block) {
                     if !cfg.blocks.contains_key(&child) {
                         return Err(DominanceError::MissingTopology(child));
                     }
-                    if let Some(boundaries) = frontiers.get(&child) {
-                        inherited.extend(
-                            boundaries
+                    if !cfg.blocks.contains_key(&block)
+                        && frontiers.get(&child).is_some_and(|targets| {
+                            targets
                                 .iter()
-                                .copied()
-                                .filter(|&boundary| dominators.idom(boundary) != Some(block)),
-                        );
-                    }
-                    if !inherited.is_empty() {
-                        if !cfg.blocks.contains_key(&block) {
-                            return Err(DominanceError::MissingTopology(block));
-                        }
-                        frontiers
-                            .entry(block)
-                            .or_default()
-                            .extend(inherited.drain(..));
+                                .any(|&target| dominators.idom(target) != Some(block))
+                        })
+                    {
+                        return Err(DominanceError::MissingTopology(block));
                     }
                 }
             }

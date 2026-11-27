@@ -14,6 +14,44 @@ enum InvokeExceptions {
     Local(Option<Vec<ArgType>>),
 }
 
+/// All local exception contracts belong to the class being solved. Keep their
+/// original member identity borrowed until an inferred contract is returned.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct LocalSignature<'a> {
+    name: &'a str,
+    parameters: &'a [ArgType],
+    result: &'a ArgType,
+}
+
+impl<'a> LocalSignature<'a> {
+    fn declared(method: &'a MethodNode) -> Self {
+        Self {
+            name: method.name(),
+            parameters: method.param_types(),
+            result: method.return_type(),
+        }
+    }
+
+    fn invoked(method: &'a MethodReference) -> Self {
+        Self {
+            name: &method.name,
+            parameters: &method.descriptor.parameters,
+            result: &method.descriptor.return_type,
+        }
+    }
+
+    fn reference(self, owner: &ArgType) -> MethodReference {
+        MethodReference {
+            owner: owner.clone(),
+            name: self.name.to_owned(),
+            descriptor: MethodDescriptor {
+                parameters: self.parameters.to_vec(),
+                return_type: self.result.clone(),
+            },
+        }
+    }
+}
+
 /// Recovers checked-exception contracts absent from DEX method metadata.
 ///
 /// The analysis is a forward may-effect fixed point over the class-local call
@@ -42,7 +80,7 @@ impl<'a> DeclaredExceptionAnalysis<'a> {
             .filter(|(method, _)| {
                 !method.is_class_init() && Self::declared(function_object, method).is_empty()
             })
-            .map(|(method, cfg)| (Self::reference(class, method), cfg))
+            .map(|(method, cfg)| (LocalSignature::declared(method), cfg))
             .collect::<Vec<_>>();
         if candidates.is_empty() {
             return BTreeMap::new();
@@ -54,7 +92,7 @@ impl<'a> DeclaredExceptionAnalysis<'a> {
                 let exceptions = Self::declared(function_object, method);
                 (!exceptions.is_empty()).then(|| {
                     (
-                        Self::reference(class, method),
+                        LocalSignature::declared(method),
                         exceptions.iter().cloned().collect::<BTreeSet<_>>(),
                     )
                 })
@@ -62,9 +100,9 @@ impl<'a> DeclaredExceptionAnalysis<'a> {
             .collect::<BTreeMap<_, _>>();
         let candidate_refs = candidates
             .iter()
-            .map(|(reference, _)| reference)
+            .map(|(reference, _)| *reference)
             .collect::<BTreeSet<_>>();
-        let mut callers = BTreeMap::<&MethodReference, Vec<(usize, u32)>>::new();
+        let mut callers = BTreeMap::<LocalSignature, Vec<(usize, u32)>>::new();
         let mut invoked = foldhash::HashMap::default();
         let mut checked = BTreeMap::new();
 
@@ -96,10 +134,11 @@ impl<'a> DeclaredExceptionAnalysis<'a> {
                         return InvokeExceptions::Fixed(exceptions);
                     }
                     if &method.owner == class.class_type() {
-                        if candidate_refs.contains(method) {
+                        let local = LocalSignature::invoked(method);
+                        if candidate_refs.contains(&local) {
                             return InvokeExceptions::Local(None);
                         }
-                        if let Some(declared) = contracts.get(method) {
+                        if let Some(declared) = contracts.get(&local) {
                             return InvokeExceptions::Fixed(declared.iter().cloned().collect());
                         }
                     }
@@ -110,11 +149,12 @@ impl<'a> DeclaredExceptionAnalysis<'a> {
                         exceptions.iter().for_each(add_exception)
                     }
                     InvokeExceptions::Local(initial) => {
+                        let local = LocalSignature::invoked(method);
                         callers
-                            .entry(method)
+                            .entry(local)
                             .or_default()
                             .push((caller, instruction.offset));
-                        if let Some(local) = contracts.get(method) {
+                        if let Some(local) = contracts.get(&local) {
                             local.iter().for_each(add_exception);
                         } else {
                             initial
@@ -125,10 +165,7 @@ impl<'a> DeclaredExceptionAnalysis<'a> {
                     }
                 }
             }
-            contracts
-                .entry(reference.clone())
-                .or_default()
-                .extend(escapes);
+            contracts.entry(*reference).or_default().extend(escapes);
         }
 
         // Only newly discovered effects can change a caller. Keeping each
@@ -167,7 +204,12 @@ impl<'a> DeclaredExceptionAnalysis<'a> {
             .filter(|(reference, exceptions)| {
                 !exceptions.is_empty() && candidate_refs.contains(reference)
             })
-            .map(|(reference, exceptions)| (reference, exceptions.into_iter().collect()))
+            .map(|(reference, exceptions)| {
+                (
+                    reference.reference(class.class_type()),
+                    exceptions.into_iter().collect(),
+                )
+            })
             .collect()
     }
 
@@ -264,16 +306,5 @@ impl<'a> DeclaredExceptionAnalysis<'a> {
             }
         }
         &[]
-    }
-
-    fn reference(class: &ClassNode, method: &MethodNode) -> MethodReference {
-        MethodReference {
-            owner: class.class_type().clone(),
-            name: method.name().to_string(),
-            descriptor: MethodDescriptor {
-                parameters: method.param_types().to_vec(),
-                return_type: method.return_type().clone(),
-            },
-        }
     }
 }

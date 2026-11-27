@@ -284,3 +284,102 @@ fn handler_forest_matches_vertex_removal_from_virtual_entries() {
         }
     }
 }
+
+#[test]
+fn cyclic_frontiers_match_predecessor_dominance_after_vertex_removal() {
+    use crate::ir::analysis::DominanceFrontier;
+    use std::collections::BTreeSet;
+
+    let ids = [17, 1, 57].map(BlockId);
+    for mask in 0u16..512 {
+        let mut cfg = CFG::new("cyclic_frontiers");
+        cfg.entry = ids[0];
+        let mut edges = Vec::new();
+        for (row, source) in ids.into_iter().enumerate() {
+            cfg.add_block(Block::new(source));
+            for (col, target) in ids.into_iter().enumerate() {
+                if mask & (1 << (3 * row + col)) != 0 {
+                    edges.push((source, target));
+                    cfg.add_edge(source, target, EdgeKind::True);
+                    cfg.add_edge(source, target, EdgeKind::Exception);
+                }
+            }
+        }
+        if cfg.reachable().len() != ids.len() {
+            continue;
+        }
+        let tree = DominatorTree::compute(&cfg).unwrap();
+        let frontiers = DominanceFrontier::compute(&cfg, &tree).unwrap();
+        for removed in ids {
+            let mut surviving = BTreeSet::new();
+            let mut pending = vec![cfg.entry];
+            while let Some(at) = pending.pop() {
+                if at != removed && surviving.insert(at) {
+                    pending.extend(
+                        edges
+                            .iter()
+                            .filter_map(|&(from, to)| (from == at).then_some(to)),
+                    );
+                }
+            }
+            let expected = edges
+                .iter()
+                .filter_map(|&(source, target)| {
+                    (!surviving.contains(&source)
+                        && (removed == target || surviving.contains(&target)))
+                    .then_some(target)
+                })
+                .collect::<BTreeSet<_>>();
+            assert_eq!(
+                frontiers.frontier(removed).collect::<BTreeSet<_>>(),
+                expected,
+                "graph {mask}"
+            );
+        }
+    }
+}
+
+#[test]
+fn virtual_root_has_stable_orders_and_checks_boundary_propagation() {
+    use crate::ir::analysis::DominanceFrontier;
+    let [entry, first, last] = [7, 2, 18].map(BlockId);
+    let root = BlockId::INVALID;
+    let mut cfg = CFG::new("virtual_frontiers");
+    cfg.entry = entry;
+    for block in [entry, first, last] {
+        cfg.add_block(Block::new(block));
+    }
+    cfg.add_edge(entry, last, EdgeKind::Normal);
+    cfg.add_edge(entry, first, EdgeKind::Normal);
+    let tree = DominatorTree::compute(&cfg)
+        .unwrap()
+        .with_virtual_root()
+        .unwrap();
+    assert_eq!(tree.preorder(), [root, entry, first, last]);
+    assert_eq!(tree.postorder(), [first, last, entry, root]);
+    assert!(DominanceFrontier::compute(&cfg, &tree).unwrap().is_empty());
+
+    // A back edge to the physical entry has its frontier capped by the virtual root.
+    cfg.add_edge(first, entry, EdgeKind::Normal);
+    let frontier = DominanceFrontier::compute(&cfg, &tree).unwrap();
+    assert!(frontier.in_frontier(entry, entry));
+    assert!(!frontier.in_frontier(entry, root));
+
+    // A dangling edge can propagate into that absent root. A missing physical
+    // child appears earlier during the tree walk and is reported first.
+    cfg.add_edge(last, BlockId(80), EdgeKind::Normal);
+    assert_eq!(
+        DominanceFrontier::compute(&cfg, &tree).unwrap_err(),
+        DominanceError::MissingTopology(root)
+    );
+    cfg.remove_block(first);
+    assert_eq!(
+        DominanceFrontier::compute(&cfg, &tree).unwrap_err(),
+        DominanceError::MissingTopology(first)
+    );
+    cfg.add_block(Block::new(BlockId(1)));
+    assert_eq!(
+        DominanceFrontier::compute(&cfg, &tree).unwrap_err(),
+        DominanceError::MissingTopology(BlockId(1))
+    );
+}

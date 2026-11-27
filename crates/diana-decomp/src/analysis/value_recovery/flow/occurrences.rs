@@ -8,9 +8,12 @@ use std::collections::hash_map::Entry;
 use foldhash::HashMap;
 use smallvec::SmallVec;
 
-use crate::ir::analysis::SsaVar;
+use crate::ir::analysis::{SsaValueGraph, SsaVar};
 
-pub(super) struct OccurrenceRows<T> {
+pub(super) struct OccurrenceRows<'ir, T> {
+    ssa_values: Option<&'ir SsaValueGraph>,
+    first_unknown: Option<SsaVar>,
+    repeated: bool,
     index: RowIndex,
     rows: Vec<Occurrences<T>>,
 }
@@ -106,21 +109,45 @@ impl<T> Occurrences<T> {
     }
 }
 
-impl<T> Default for OccurrenceRows<T> {
+impl<T> Default for OccurrenceRows<'_, T> {
     fn default() -> Self {
         Self {
+            ssa_values: None,
+            first_unknown: None,
+            repeated: false,
             index: RowIndex::Small(SmallVec::new()),
             rows: Vec::new(),
         }
     }
 }
 
-impl<T> OccurrenceRows<T> {
+impl<'ir, T> OccurrenceRows<'ir, T> {
+    pub(super) fn ssa(values: &'ir SsaValueGraph) -> Self {
+        Self {
+            ssa_values: Some(values),
+            ..Default::default()
+        }
+    }
+    pub(super) fn has_repeated(&self) -> bool {
+        self.repeated
+    }
+    pub(super) fn first_unknown(&self) -> Option<SsaVar> {
+        self.first_unknown
+    }
+
     pub(super) fn push(&mut self, key: SsaVar, value: T) {
         let row = self.index.get_or_insert(key, self.rows.len());
         if row == self.rows.len() {
+            if self
+                .ssa_values
+                .is_some_and(|values| values.value(key).is_none())
+            {
+                self.first_unknown =
+                    Some(self.first_unknown.map_or(key, |previous| previous.min(key)));
+            }
             self.rows.push(Occurrences::One(value));
         } else {
+            self.repeated = true;
             self.rows[row].push(value);
         }
     }
@@ -158,7 +185,7 @@ impl<T> OccurrenceRows<T> {
 }
 
 #[cfg(test)]
-impl<T> std::ops::Index<&SsaVar> for OccurrenceRows<T> {
+impl<T> std::ops::Index<&SsaVar> for OccurrenceRows<'_, T> {
     type Output = [T];
     fn index(&self, key: &SsaVar) -> &Self::Output {
         self.get(key).expect("fixture value has occurrences")

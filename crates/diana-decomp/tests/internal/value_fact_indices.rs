@@ -77,6 +77,21 @@ fn numbered_occurrences_keep_original_and_alias_order_and_share_unaffected_uses(
 }
 
 #[test]
+fn single_definition_classes_follow_statement_order_across_sparse_keys() {
+    let keys = [71, 3, u32::MAX, 10, 42, 9, 1000, 6, 27, 8, 400];
+    let root = block(keys.into_iter().flat_map(|key| [store(key), negation(key)]));
+    let bound = SsaVar::new(9, 0);
+    let graph = ValueFlowGraph::build_source(&root, &BTreeSet::from([bound])).unwrap();
+    let classes = graph.classes_by_last_definition();
+    assert_eq!(classes.len(), keys.len());
+    for (i, (class, key)) in classes.iter().zip(keys).enumerate() {
+        assert_eq!(class.definitions[0].key, SsaVar::new(key, 0));
+        assert_eq!(class.last_event, 2 * i + 1);
+        assert_eq!(class.bound, key == bound.reg_num);
+    }
+}
+
+#[test]
 fn coalesced_classes_use_their_last_event_and_preserve_incoming_bindings() {
     let root = block([negation(8), negation(4), negation(8), negation(2)]);
     let bound = SsaVar::new(4, 0);

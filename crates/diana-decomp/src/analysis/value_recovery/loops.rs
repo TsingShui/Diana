@@ -13,7 +13,7 @@ pub(super) struct LoopInvariantMotion {
 
 impl LoopInvariantMotion {
     pub(super) fn apply(root: &mut SemanticNode) -> Result<bool, SemanticFoldError> {
-        if crate::ir::trivial_early_returns() && !contains_loop(root) {
+        if crate::ir::trivial_early_returns() && !contains_loop_setup(root) {
             return Ok(false);
         }
         let before = crate::ir::semantic::SemanticCompletion::analyze(root);
@@ -39,6 +39,9 @@ impl LoopInvariantMotion {
             SemanticNode::Empty => Vec::new(),
             node => vec![node],
         };
+        if !nodes.first().is_some_and(Self::movable_block) {
+            return (Vec::new(), SemanticNode::sequence(nodes));
+        }
         let mut loop_facts = SemanticExpressionFacts::of_node(body);
         for node in &nodes {
             loop_facts.merge(&SemanticExpressionFacts::of_node(node));
@@ -46,16 +49,7 @@ impl LoopInvariantMotion {
         let loop_definitions = loop_facts.defined_variables().collect::<BTreeSet<_>>();
         let mut count = 0;
         for node in &nodes {
-            let SemanticNode::BasicBlock(block) = node else {
-                break;
-            };
-            if block.statements.is_empty()
-                || block.statements.iter().any(|statement| {
-                    statement
-                        .instruction_ref()
-                        .is_none_or(|instruction| !instruction.effects().is_pure())
-                })
-            {
+            if !Self::movable_block(node) {
                 break;
             }
             let facts = SemanticExpressionFacts::of_node(node);
@@ -76,6 +70,12 @@ impl LoopInvariantMotion {
         }
         let remainder = nodes.split_off(count);
         (nodes, SemanticNode::sequence(remainder))
+    }
+
+    fn movable_block(node: &SemanticNode) -> bool {
+        matches!(node, SemanticNode::BasicBlock(block) if !block.statements.is_empty()
+            && block.statements.iter().all(|statement| statement.instruction_ref()
+                .is_some_and(|operation| operation.effects().is_pure())))
     }
 }
 
@@ -112,7 +112,7 @@ impl SemanticFolder for LoopInvariantMotion {
     }
 }
 
-fn contains_loop(root: &SemanticNode) -> bool {
+fn contains_loop_setup(root: &SemanticNode) -> bool {
     struct Finder {
         found: bool,
     }
@@ -122,7 +122,16 @@ fn contains_loop(root: &SemanticNode) -> bool {
         }
 
         fn enter_node(&mut self, node: &SemanticNode) {
-            self.found |= matches!(node, SemanticNode::Loop { .. });
+            if let SemanticNode::Loop {
+                kind: SemanticLoopKind::PreTested,
+                test,
+                ..
+            } = node
+            {
+                // Splitting also canonicalizes a sequence even when no block moves.
+                self.found |= matches!(&*test.setup, SemanticNode::Sequence(_))
+                    || LoopInvariantMotion::movable_block(&test.setup);
+            }
         }
     }
     let mut finder = Finder { found: false };

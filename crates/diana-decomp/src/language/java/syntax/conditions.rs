@@ -22,22 +22,16 @@ impl PathConditionSyntax {
     ) -> Result<bool, SemanticFoldError> {
         let catalog = PredicateCatalog::collect(root);
         let domain = PathConditionDomain::new(catalog, types);
-        let body = std::mem::replace(root, SemanticNode::Empty);
-        let original = body.clone();
         let mut reduction = PathConditionReduction::new(domain);
-        match reduction.apply(body) {
+        match reduction.apply(root) {
             Ok(reduced) => {
                 *root = reduced;
                 Ok(reduction.changed)
             }
             Err(SemanticFoldError::BooleanDomain(source)) if source.is_resource_limit() => {
-                *root = original;
                 Ok(false)
             }
-            Err(error) => {
-                *root = original;
-                Err(error)
-            }
+            Err(error) => Err(error),
         }
     }
 }
@@ -1099,7 +1093,7 @@ impl PathConditionReduction {
         }
     }
 
-    fn apply(&mut self, root: SemanticNode) -> Result<SemanticNode, SemanticFoldError> {
+    fn apply(&mut self, root: &SemanticNode) -> Result<SemanticNode, SemanticFoldError> {
         let mut tasks = vec![ReductionTask::Visit {
             node: root,
             care: self.domain.truth(),
@@ -1133,7 +1127,7 @@ impl PathConditionReduction {
                         tasks.push(ReductionTask::Rebuild(ReductionFrame::Sequence(
                             children.len(),
                         )));
-                        tasks.extend(children.into_iter().zip(inputs).rev().map(
+                        tasks.extend(children.iter().zip(inputs).rev().map(
                             |(node, (care, known))| ReductionTask::Visit { node, care, known },
                         ));
                     }
@@ -1143,7 +1137,7 @@ impl PathConditionReduction {
                         else_node,
                     } => {
                         let site = condition.site;
-                        let condition = condition.into_inner();
+                        let condition = condition.value.clone();
                         let when_true_state =
                             self.domain.assume_variables(&known, &condition, true);
                         let when_false_state =
@@ -1162,13 +1156,13 @@ impl PathConditionReduction {
                         }));
                         if let Some(node) = else_node {
                             tasks.push(ReductionTask::Visit {
-                                node: *node,
+                                node,
                                 care: when_false,
                                 known: when_false_state,
                             });
                         }
                         tasks.push(ReductionTask::Visit {
-                            node: *then_node,
+                            node: then_node,
                             care: when_true,
                             known: when_true_state,
                         });
@@ -1181,38 +1175,38 @@ impl PathConditionReduction {
                         body,
                     } => {
                         let site = test.condition.site;
-                        let condition = test.condition.into_inner();
+                        let condition = test.condition.value.clone();
                         let mut header_state = known.clone();
                         self.domain.invalidate_after(&mut header_state, &test.setup);
-                        self.domain.invalidate_after(&mut header_state, &body);
+                        self.domain.invalidate_after(&mut header_state, body);
                         let mut body_state = header_state.clone();
-                        if kind == SemanticLoopKind::PreTested {
+                        if *kind == SemanticLoopKind::PreTested {
                             body_state =
                                 self.domain.assume_variables(&body_state, &condition, true);
                         }
                         let fact = self.domain.simplify(condition, care);
                         self.changed |= fact.changed;
-                        let body_care = if kind == SemanticLoopKind::PreTested {
+                        let body_care = if *kind == SemanticLoopKind::PreTested {
                             self.domain.assume(care, fact.value, true)
                         } else {
                             care
                         };
                         tasks.push(ReductionTask::Rebuild(ReductionFrame::Loop {
-                            control,
-                            header,
-                            kind,
+                            control: *control,
+                            header: *header,
+                            kind: *kind,
                             condition: crate::ir::SemanticOperand {
                                 site,
                                 value: fact.predicate,
                             },
                         }));
                         tasks.push(ReductionTask::Visit {
-                            node: *body,
+                            node: body,
                             care: body_care,
                             known: body_state,
                         });
                         tasks.push(ReductionTask::Visit {
-                            node: *test.setup,
+                            node: &test.setup,
                             care,
                             known: header_state,
                         });
@@ -1225,11 +1219,11 @@ impl PathConditionReduction {
                         body,
                     } => {
                         let site = condition.site;
-                        let condition = condition.into_inner();
+                        let condition = condition.value.clone();
                         let mut header_state = known.clone();
-                        self.domain.invalidate_after(&mut header_state, &body);
+                        self.domain.invalidate_after(&mut header_state, body);
                         self.domain
-                            .invalidate_after_statement(&mut header_state, &update);
+                            .invalidate_after_statement(&mut header_state, update);
                         let body_state =
                             self.domain
                                 .assume_variables(&header_state, &condition, true);
@@ -1237,7 +1231,7 @@ impl PathConditionReduction {
                         self.changed |= fact.changed;
                         let body_care = self.domain.assume(care, fact.value, true);
                         tasks.push(ReductionTask::Rebuild(ReductionFrame::For {
-                            control,
+                            control: *control,
                             init,
                             condition: crate::ir::SemanticOperand {
                                 site,
@@ -1246,7 +1240,7 @@ impl PathConditionReduction {
                             update,
                         }));
                         tasks.push(ReductionTask::Visit {
-                            node: *body,
+                            node: body,
                             care: body_care,
                             known: body_state,
                         });
@@ -1258,14 +1252,14 @@ impl PathConditionReduction {
                         body,
                     } => {
                         let mut body_state = known;
-                        self.domain.invalidate_after(&mut body_state, &body);
+                        self.domain.invalidate_after(&mut body_state, body);
                         tasks.push(ReductionTask::Rebuild(ReductionFrame::ForEach {
-                            control,
+                            control: *control,
                             variable,
                             iterable,
                         }));
                         tasks.push(ReductionTask::Visit {
-                            node: *body,
+                            node: body,
                             care,
                             known: body_state,
                         });
@@ -1275,17 +1269,13 @@ impl PathConditionReduction {
                         selector,
                         cases,
                     } => {
-                        let metadata = cases
-                            .iter()
-                            .map(|case| (case.values.clone(), case.is_default))
-                            .collect::<Vec<_>>();
                         tasks.push(ReductionTask::Rebuild(ReductionFrame::Switch {
-                            region,
+                            region: *region,
                             selector,
-                            metadata,
+                            cases,
                         }));
-                        tasks.extend(cases.into_iter().rev().map(|case| ReductionTask::Visit {
-                            node: case.body,
+                        tasks.extend(cases.iter().rev().map(|case| ReductionTask::Visit {
+                            node: &case.body,
                             care,
                             known: known.clone(),
                         }));
@@ -1296,36 +1286,25 @@ impl PathConditionReduction {
                         catches,
                         finally,
                     } => {
-                        let catch_metadata = catches
-                            .iter()
-                            .map(|catch| {
-                                (
-                                    catch.region,
-                                    catch.exception_types.clone(),
-                                    catch.exception_value.clone(),
-                                )
-                            })
-                            .collect::<Vec<_>>();
-                        let finally_region = finally.as_ref().map(|finally| finally.region);
                         tasks.push(ReductionTask::Rebuild(ReductionFrame::Try {
-                            region,
-                            catch_metadata,
-                            finally_region,
+                            region: *region,
+                            catches,
+                            finally_region: finally.as_ref().map(|f| f.region),
                         }));
                         if let Some(finally) = finally {
                             tasks.push(ReductionTask::Visit {
-                                node: *finally.body,
+                                node: &finally.body,
                                 care,
                                 known: known.clone(),
                             });
                         }
-                        tasks.extend(catches.into_iter().rev().map(|catch| ReductionTask::Visit {
-                            node: catch.body,
+                        tasks.extend(catches.iter().rev().map(|catch| ReductionTask::Visit {
+                            node: &catch.body,
                             care,
                             known: known.clone(),
                         }));
                         tasks.push(ReductionTask::Visit {
-                            node: *body,
+                            node: body,
                             care,
                             known,
                         });
@@ -1337,17 +1316,18 @@ impl PathConditionReduction {
                         body,
                     } => {
                         tasks.push(ReductionTask::Rebuild(ReductionFrame::Synchronized {
-                            region,
+                            region: *region,
                             lock,
-                            method,
+                            method: *method,
                         }));
                         tasks.push(ReductionTask::Visit {
-                            node: *body,
+                            node: body,
                             care,
                             known,
                         });
                     }
-                    SemanticNode::BasicBlock(mut block) => {
+                    SemanticNode::BasicBlock(block) => {
+                        let mut block = block.clone();
                         if !known.values.is_empty() {
                             let mut known = known;
                             block.statements.retain(|statement| {
@@ -1365,14 +1345,14 @@ impl PathConditionReduction {
                         results.push(SemanticNode::BasicBlock(block));
                     }
                     SemanticNode::Label { label, body } => {
-                        tasks.push(ReductionTask::Rebuild(ReductionFrame::Label(label)));
+                        tasks.push(ReductionTask::Rebuild(ReductionFrame::Label(*label)));
                         tasks.push(ReductionTask::Visit {
-                            node: *body,
+                            node: body,
                             care,
                             known,
                         });
                     }
-                    node => results.push(node),
+                    node => results.push(node.clone()),
                 },
                 ReductionTask::Rebuild(frame) => {
                     let count = frame.child_count();
@@ -1478,16 +1458,16 @@ enum PredicateTask {
     Junction { count: usize, conjunction: bool },
 }
 
-enum ReductionTask {
+enum ReductionTask<'a> {
     Visit {
-        node: SemanticNode,
+        node: &'a SemanticNode,
         care: Bdd,
         known: BooleanState,
     },
-    Rebuild(ReductionFrame),
+    Rebuild(ReductionFrame<'a>),
 }
 
-enum ReductionFrame {
+enum ReductionFrame<'a> {
     Sequence(usize),
     If {
         condition: crate::ir::SemanticOperand<SemanticPredicate>,
@@ -1501,38 +1481,34 @@ enum ReductionFrame {
     },
     For {
         control: crate::ir::SemanticLoopControl,
-        init: Box<crate::ir::SemanticStatement>,
+        init: &'a crate::ir::SemanticStatement,
         condition: crate::ir::SemanticOperand<SemanticPredicate>,
-        update: Box<crate::ir::SemanticStatement>,
+        update: &'a crate::ir::SemanticStatement,
     },
     ForEach {
         control: crate::ir::SemanticLoopControl,
-        variable: crate::ir::RegisterArg,
-        iterable: crate::ir::SemanticOperand<crate::ir::SemanticExpression>,
+        variable: &'a crate::ir::RegisterArg,
+        iterable: &'a crate::ir::SemanticOperand<crate::ir::SemanticExpression>,
     },
     Switch {
         region: Option<crate::ir::RegionId>,
-        selector: crate::ir::SemanticOperand<crate::ir::SemanticExpression>,
-        metadata: Vec<(Vec<i32>, bool)>,
+        selector: &'a crate::ir::SemanticOperand<crate::ir::SemanticExpression>,
+        cases: &'a [SemanticSwitchCase],
     },
     Try {
         region: crate::ir::RegionId,
-        catch_metadata: Vec<(
-            crate::ir::RegionId,
-            Vec<crate::ir::ArgType>,
-            Option<crate::ir::RegisterArg>,
-        )>,
+        catches: &'a [SemanticCatch],
         finally_region: Option<crate::ir::RegionId>,
     },
     Synchronized {
         region: crate::ir::RegionId,
-        lock: crate::ir::SemanticOperand<crate::ir::SemanticExpression>,
+        lock: &'a crate::ir::SemanticOperand<crate::ir::SemanticExpression>,
         method: bool,
     },
     Label(crate::ir::SemanticLabel),
 }
 
-impl ReductionFrame {
+impl ReductionFrame<'_> {
     fn child_count(&self) -> usize {
         match self {
             Self::Sequence(count) => *count,
@@ -1542,12 +1518,12 @@ impl ReductionFrame {
             | Self::ForEach { .. }
             | Self::Synchronized { .. }
             | Self::Label(_) => 1,
-            Self::Switch { metadata, .. } => metadata.len(),
+            Self::Switch { cases, .. } => cases.len(),
             Self::Try {
-                catch_metadata,
+                catches,
                 finally_region,
                 ..
-            } => 1 + catch_metadata.len() + usize::from(finally_region.is_some()),
+            } => 1 + catches.len() + usize::from(finally_region.is_some()),
         }
     }
 
@@ -1593,9 +1569,9 @@ impl ReductionFrame {
                 update,
             } => SemanticNode::For {
                 control,
-                init,
+                init: Box::new(init.clone()),
                 condition,
-                update,
+                update: Box::new(update.clone()),
                 body: Box::new(Self::child(&mut children)?),
             },
             Self::ForEach {
@@ -1604,23 +1580,23 @@ impl ReductionFrame {
                 iterable,
             } => SemanticNode::ForEach {
                 control,
-                variable,
-                iterable,
+                variable: variable.clone(),
+                iterable: iterable.clone(),
                 body: Box::new(Self::child(&mut children)?),
             },
             Self::Switch {
                 region,
                 selector,
-                metadata,
+                cases,
             } => SemanticNode::Switch {
                 region,
-                selector,
-                cases: metadata
-                    .into_iter()
-                    .map(|(values, is_default)| {
+                selector: selector.clone(),
+                cases: cases
+                    .iter()
+                    .map(|case| {
                         Ok(SemanticSwitchCase {
-                            values,
-                            is_default,
+                            values: case.values.clone(),
+                            is_default: case.is_default,
                             body: Self::child(&mut children)?,
                         })
                     })
@@ -1628,17 +1604,17 @@ impl ReductionFrame {
             },
             Self::Try {
                 region,
-                catch_metadata,
+                catches,
                 finally_region,
             } => {
                 let body = Self::child(&mut children)?;
-                let catches = catch_metadata
-                    .into_iter()
-                    .map(|(region, exception_types, exception_value)| {
+                let catches = catches
+                    .iter()
+                    .map(|catch| {
                         Ok(SemanticCatch {
-                            region,
-                            exception_types,
-                            exception_value,
+                            region: catch.region,
+                            exception_types: catch.exception_types.clone(),
+                            exception_value: catch.exception_value.clone(),
                             body: Self::child(&mut children)?,
                         })
                     })
@@ -1663,7 +1639,7 @@ impl ReductionFrame {
                 method,
             } => SemanticNode::Synchronized {
                 region,
-                lock,
+                lock: lock.clone(),
                 method,
                 body: Box::new(Self::child(&mut children)?),
             },

@@ -537,3 +537,119 @@ fn replicated_predicate_occurrences_follow_the_selected_tests_effects() {
         }
     }
 }
+
+#[test]
+fn mutated_ssa_occurrences_preserve_ordered_definition_and_use_errors() {
+    use crate::ir::analysis::{SsaValueGraph, SsaVar};
+    use crate::ir::{block::Block, InstructionId, RegisterArg, StatementOrigin, CFG};
+
+    let constant = |k: SsaVar, id| {
+        let mut instruction = InsnNode::new(InsnType::Const, 1);
+        instruction.id = InstructionId::new(id);
+        instruction.result = Some(RegisterArg::new_ssa(k.reg_num, k.version, ArgType::INT));
+        instruction.args.push(InsnArg::lit(7, ArgType::INT));
+        instruction
+    };
+    let known = SsaVar::new(4, 1);
+    let missing = SsaVar::new(4, 2);
+    let high = SsaVar::new(u32::MAX, u32::MAX);
+    let low = SsaVar::new(0, 0);
+    let mut entry = Block::new(0u32);
+    for register in 0..10 {
+        entry.push(constant(SsaVar::new(register, 1), register as usize));
+    }
+    entry.push(constant(SsaVar::new(4, 3), 10));
+    let mut cfg = CFG::new("occurrences");
+    cfg.add_block(entry);
+    let values = SsaValueGraph::build(&cfg).unwrap();
+
+    let def = |key, id| {
+        let mut statement = SemanticStatement::instruction(constant(key, id)).unwrap();
+        statement.origin = Some(StatementOrigin {
+            block: BlockId::new(0),
+            instruction: InstructionId::new(id),
+        });
+        statement
+    };
+    let usage = |k: SsaVar| {
+        let mut instruction = InsnNode::new(InsnType::Return, 1);
+        instruction
+            .args
+            .push(InsnArg::reg_ssa(k.reg_num, k.version, ArgType::INT));
+        SemanticStatement::instruction(instruction).unwrap()
+    };
+    #[derive(Debug, PartialEq, Eq)]
+    enum Issue {
+        Duplicate(SsaVar),
+        Unknown(SsaVar),
+    }
+    let cases = [
+        (vec![def(known, 7), def(known, 7), usage(known)], None),
+        (vec![usage(high), usage(low)], Some(Issue::Unknown(low))),
+        (
+            vec![usage(low), def(missing, 7)],
+            Some(Issue::Unknown(missing)),
+        ),
+        (
+            vec![def(high, 8), def(high, 9), def(missing, 7)],
+            Some(Issue::Unknown(missing)),
+        ),
+        (
+            vec![usage(low), def(missing, 7), def(missing, 7)],
+            Some(Issue::Unknown(missing)),
+        ),
+        (
+            vec![usage(low), def(missing, 7), def(missing, 8)],
+            Some(Issue::Duplicate(missing)),
+        ),
+        (
+            vec![def(high, 7), def(known, 3), def(known, 4)],
+            Some(Issue::Duplicate(known)),
+        ),
+        (
+            vec![def(known, 7), def(known, 7), usage(high)],
+            Some(Issue::Unknown(high)),
+        ),
+    ];
+    for (statements, expected) in cases {
+        for reverse in [false, true] {
+            let mut statements = statements.clone();
+            if reverse {
+                statements.reverse();
+            }
+            let root = SemanticNode::BasicBlock(SemanticBlock {
+                id: BlockId::new(0),
+                statements,
+            });
+            let canonical = Default::default();
+            let actual = match ValueFlowGraph::build(&root, &values, &canonical) {
+                Ok(_) => None,
+                Err(ValueRecoveryError::DuplicateDefinition(k)) => Some(Issue::Duplicate(k)),
+                Err(ValueRecoveryError::UnknownValue(k)) => Some(Issue::Unknown(k)),
+                Err(other) => panic!("unexpected classification: {other:?}"),
+            };
+            assert_eq!(actual, expected);
+        }
+    }
+
+    let mut malformed = InsnNode::new(InsnType::Aput, 0);
+    malformed.offset = 29;
+    let root = SemanticNode::BasicBlock(SemanticBlock {
+        id: BlockId::new(0),
+        statements: vec![
+            def(missing, 9),
+            def(missing, 8),
+            SemanticStatement::instruction(malformed).unwrap(),
+        ],
+    });
+    assert!(matches!(
+        ValueFlowGraph::build(&root, &values, &Default::default()),
+        Err(ValueRecoveryError::SourceEvaluation(
+            SourceEvaluationError::InvalidArity {
+                instruction: InsnType::Aput,
+                offset: 29,
+                actual: 0
+            }
+        ))
+    ));
+}

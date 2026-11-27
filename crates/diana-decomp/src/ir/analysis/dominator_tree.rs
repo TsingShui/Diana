@@ -65,8 +65,8 @@ struct DominatorNode {
     block: BlockId,
     parent: Option<BlockId>,
     children: smallvec::SmallVec<[BlockId; 2]>,
-    preorder: usize,
-    subtree_end: usize,
+    preorder: u32,
+    postorder: u32,
 }
 
 impl DominatorNode {
@@ -76,7 +76,7 @@ impl DominatorNode {
             parent,
             children: Default::default(),
             preorder: 0,
-            subtree_end: 0,
+            postorder: 0,
         }
     }
 }
@@ -234,7 +234,7 @@ impl DominatorTree {
                     parent: None,
                     children: Default::default(),
                     preorder: 0,
-                    subtree_end: 1,
+                    postorder: 0,
                 }]),
             });
         }
@@ -270,17 +270,19 @@ impl DominatorTree {
                 nodes[parent_index].children.push(block);
             }
         }
-        // A subtree occupies a contiguous range in dominator-tree preorder.
-        // Queries on a chain can use these bounds without following every parent.
-        let mut next = 0;
+        // Each unique BlockId labels one vertex, so both zero-based DFS ranks
+        // fit in a u32. Discovering first and finishing last encloses a subtree.
+        let mut discovered = 0usize;
+        let mut finished = 0usize;
         let root = Self::position(&nodes, entry).ok_or(DominanceError::MissingEntry(entry))?;
         let mut pending = vec![(root, false)];
         while let Some((index, exiting)) = pending.pop() {
             if exiting {
-                nodes[index].subtree_end = next;
+                nodes[index].postorder = finished as u32;
+                finished += 1;
             } else {
-                nodes[index].preorder = next;
-                next += 1;
+                nodes[index].preorder = discovered as u32;
+                discovered += 1;
                 pending.push((index, true));
                 for &child in nodes[index].children.iter().rev() {
                     let child = Self::position(&nodes, child)
@@ -358,7 +360,8 @@ impl DominatorTree {
         let (Some(dom), Some(node)) = (self.index_of(dom), self.index_of(node)) else {
             return false;
         };
-        (self.nodes[dom].preorder..self.nodes[dom].subtree_end).contains(&self.nodes[node].preorder)
+        self.nodes[dom].preorder <= self.nodes[node].preorder
+            && self.nodes[node].postorder <= self.nodes[dom].postorder
     }
 
     /// Check if `sdom` strictly dominates `node` (dominates but not equal)
@@ -373,26 +376,19 @@ impl DominatorTree {
 
     /// Get all nodes in dominator tree preorder
     pub fn preorder(&self) -> Vec<BlockId> {
-        let mut result = Vec::new();
-        let mut pending = vec![self.entry];
-        while let Some(node) = pending.pop() {
-            result.push(node);
-            pending.extend(self.children(node).rev());
+        let first = usize::from(self.virtual_child.is_some());
+        let mut result = vec![self.entry; self.len()];
+        for node in self.nodes.iter() {
+            result[first + node.preorder as usize] = node.block;
         }
         result
     }
 
     /// Get all nodes in dominator tree postorder
     pub fn postorder(&self) -> Vec<BlockId> {
-        let mut result = Vec::new();
-        let mut pending = vec![(self.entry, false)];
-        while let Some((node, exiting)) = pending.pop() {
-            if exiting {
-                result.push(node);
-                continue;
-            }
-            pending.push((node, true));
-            pending.extend(self.children(node).rev().map(|child| (child, false)));
+        let mut result = vec![self.entry; self.len()];
+        for node in self.nodes.iter() {
+            result[node.postorder as usize] = node.block;
         }
         result
     }
@@ -850,7 +846,7 @@ impl LengauerTarjan {
                 parent: self.immediate[i].map(|parent| self.block(parent)),
                 children: Default::default(),
                 preorder: 0,
-                subtree_end: 0,
+                postorder: 0,
             })
             .collect())
     }
