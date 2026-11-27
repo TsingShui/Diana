@@ -147,3 +147,41 @@ fn shared_deep_expression_sets_structure_once_per_operation() {
         Some(OperandShape::InvalidEvaluation)
     );
 }
+
+#[test]
+fn source_identity_binding_detaches_shared_predicates_and_compound_operands() {
+    let register = |n| SemanticExpression::Register(RegisterArg::with_ssa(n, ArgType::INT, 2));
+    let mut test = operation(InsnType::If, vec![register(1)], None);
+    test.result = Some(RegisterArg::with_ssa(4, ArgType::BOOLEAN, 3));
+    let select =
+        SemanticExpression::select(SemanticPredicate::Test(test), register(2), register(3));
+    let mut root = operation(InsnType::Iget, vec![select], Some(register(5)));
+    let original = root.clone();
+    let effects = root.effects();
+    let shape = root.operand_shape();
+    RegisterSite::Operation(&mut root).bind(&|register| Some(register.reg_num + 10));
+
+    for (operation, bound) in [(&root, true), (&original, false)] {
+        let SemanticExpression::Select {
+            condition: SemanticPredicate::Test(test),
+            when_true,
+            when_false,
+        } = &operation.operands()[0]
+        else {
+            panic!("expected selected operand")
+        };
+        let registers = [
+            test.operands()[0].as_register().unwrap(),
+            when_true.as_register().unwrap(),
+            when_false.as_register().unwrap(),
+            test.result.as_ref().unwrap(),
+            operation.compound_target().unwrap().as_register().unwrap(),
+        ];
+        for (reg, n) in registers.into_iter().zip(1..=5) {
+            assert_eq!(reg.reg_num, n);
+            assert_eq!(reg.code_var, bound.then_some(n + 10));
+        }
+        assert_eq!(operation.effects(), effects);
+        assert_eq!(operation.operand_shape(), shape);
+    }
+}

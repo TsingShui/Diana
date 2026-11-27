@@ -121,17 +121,29 @@ impl SemanticInstructions {
     where
         T: SemanticExpressionTransform + ?Sized,
     {
+        Self::visit_node_inputs(node, |input| match input {
+            NodeInput::Statement(statement) => Self::transform_statement(statement, transform),
+            NodeInput::Predicate(predicate) => Self::transform_predicate(predicate, transform),
+            NodeInput::Expression(value) => Self::transform_expression(value, transform),
+            NodeInput::Binding(register) => Self::transform_register_binding(register, transform),
+        })
+    }
+
+    fn visit_node_inputs<E>(
+        node: &mut SemanticNode,
+        mut visit: impl FnMut(NodeInput<'_>) -> Result<(), E>,
+    ) -> Result<(), E> {
         match node {
             SemanticNode::BasicBlock(block) => {
                 for statement in &mut block.statements {
-                    Self::transform_statement(statement, transform)?;
+                    visit(NodeInput::Statement(statement))?;
                 }
             }
             SemanticNode::If { condition, .. } => {
-                Self::transform_predicate(condition, transform)?;
+                visit(NodeInput::Predicate(condition))?;
             }
             SemanticNode::Loop { test, .. } => {
-                Self::transform_predicate(&mut test.condition, transform)?;
+                visit(NodeInput::Predicate(&mut test.condition))?;
             }
             SemanticNode::For {
                 init,
@@ -139,38 +151,65 @@ impl SemanticInstructions {
                 update,
                 ..
             } => {
-                Self::transform_statement(init, transform)?;
-                Self::transform_predicate(condition, transform)?;
-                Self::transform_statement(update, transform)?;
+                visit(NodeInput::Statement(init))?;
+                visit(NodeInput::Predicate(condition))?;
+                visit(NodeInput::Statement(update))?;
             }
             SemanticNode::ForEach {
                 variable, iterable, ..
             } => {
-                Self::transform_register_binding(variable, transform)?;
-                Self::transform_expression(iterable, transform)?;
+                visit(NodeInput::Binding(variable))?;
+                visit(NodeInput::Expression(iterable))?;
             }
             SemanticNode::Switch { selector, .. }
             | SemanticNode::Synchronized { lock: selector, .. } => {
-                Self::transform_expression(selector, transform)?;
+                visit(NodeInput::Expression(selector))?;
             }
             SemanticNode::Try { catches, .. } => {
                 for catch in catches {
                     if let Some(value) = &mut catch.exception_value {
-                        Self::transform_register_binding(value, transform)?;
+                        visit(NodeInput::Binding(value))?;
                     }
                 }
             }
             SemanticNode::Leave(leave) => {
                 if let Some(condition) = &mut leave.condition {
-                    Self::transform_predicate(condition, transform)?;
+                    visit(NodeInput::Predicate(condition))?;
                 }
                 if let Some(value) = leave.value_mut() {
-                    Self::transform_expression(value, transform)?;
+                    visit(NodeInput::Expression(value))?;
                 }
             }
             SemanticNode::Empty | SemanticNode::Sequence(_) | SemanticNode::Label { .. } => {}
         }
         Ok(())
+    }
+
+    /// Assign only source-variable identities. Instruction kinds, operand
+    /// evaluation, branch shapes and register types are preserved.
+    pub(crate) fn bind_code_variables(
+        node: &mut SemanticNode,
+        lookup: impl Fn(&RegisterArg) -> Option<u32>,
+    ) {
+        let result = Self::visit_node_inputs(node, |input| {
+            use super::expression::RegisterSite;
+            match input {
+                NodeInput::Statement(statement) => match &mut statement.kind {
+                    SemanticStatementKind::Instruction(operation) => {
+                        RegisterSite::Operation(operation).bind(&lookup)
+                    }
+                    SemanticStatementKind::Definition { result, value, .. } => {
+                        result.code_var = lookup(result);
+                        RegisterSite::Expression(value).bind(&lookup);
+                    }
+                },
+                NodeInput::Predicate(predicate) => RegisterSite::Predicate(predicate).bind(&lookup),
+                NodeInput::Expression(value) => RegisterSite::Expression(value).bind(&lookup),
+                NodeInput::Binding(register) => register.code_var = lookup(register),
+            }
+            Ok::<(), std::convert::Infallible>(())
+        });
+        let Ok(()) = result;
     }
 
     pub fn transform_statement<T>(
@@ -472,6 +511,13 @@ impl SemanticInstructions {
         }
         Ok(())
     }
+}
+
+enum NodeInput<'a> {
+    Statement(&'a mut SemanticStatement),
+    Predicate(&'a mut SemanticPredicate),
+    Expression(&'a mut SemanticExpression),
+    Binding(&'a mut RegisterArg),
 }
 
 enum ExpressionTask {

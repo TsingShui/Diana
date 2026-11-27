@@ -344,12 +344,20 @@ pub(super) fn for_each_block_mut(
     root: &mut SemanticNode,
     mut edit: impl FnMut(&mut super::SemanticBlock),
 ) {
+    for_each_node_mut(root, |node| {
+        if let SemanticNode::BasicBlock(block) = node {
+            edit(block);
+        }
+    });
+}
+
+pub(crate) fn for_each_node_mut(root: &mut SemanticNode, mut edit: impl FnMut(&mut SemanticNode)) {
     let mut pending = smallvec::SmallVec::<[&mut SemanticNode; 8]>::new();
     let mut current = root;
     loop {
+        edit(current);
         match current {
-            SemanticNode::Empty | SemanticNode::Leave(_) => {}
-            SemanticNode::BasicBlock(block) => edit(block),
+            SemanticNode::Empty | SemanticNode::Leave(_) | SemanticNode::BasicBlock(_) => {}
             SemanticNode::Sequence(nodes) => pending.extend(nodes.iter_mut().rev()),
             SemanticNode::If {
                 then_node,

@@ -25,6 +25,7 @@ mod string_building;
 mod verify;
 #[path = "semantic/visit.rs"]
 mod visit;
+pub(crate) use visit::for_each_node_mut;
 
 pub(crate) use completion::{
     CompletionDomain, CompletionInterpreter, ControlCompletion, SemanticCompletion,

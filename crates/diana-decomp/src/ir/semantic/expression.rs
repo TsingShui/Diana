@@ -29,6 +29,76 @@ pub enum SemanticExpression {
     },
 }
 
+pub(super) enum RegisterSite<'a> {
+    Operation(&'a mut SemanticOperation),
+    Expression(&'a mut SemanticExpression),
+    Predicate(&'a mut SemanticPredicate),
+}
+
+impl RegisterSite<'_> {
+    pub(super) fn bind(self, lookup: &impl Fn(&RegisterArg) -> Option<u32>) {
+        let mut next = self;
+        let mut pending = smallvec::SmallVec::<[Self; 8]>::new();
+        loop {
+            match next {
+                Self::Expression(SemanticExpression::Register(register)) => {
+                    register.code_var = lookup(register)
+                }
+                Self::Expression(SemanticExpression::Literal(_)) => {}
+                Self::Expression(SemanticExpression::Operation(op))
+                | Self::Predicate(SemanticPredicate::Test(op))
+                | Self::Operation(op) => {
+                    // Variable annotations are independent of cached operand
+                    // shape and effects. Detach a shared operation only when
+                    // it has a register or child requiring annotation.
+                    if op.result.is_some()
+                        || !op.operands.is_empty()
+                        || op.compound_target.is_some()
+                    {
+                        let data = Arc::make_mut(&mut op.0);
+                        if let Some(result) = &mut data.result {
+                            result.code_var = lookup(result);
+                        }
+                        for value in data
+                            .operands
+                            .iter_mut()
+                            .chain(data.compound_target.as_deref_mut())
+                        {
+                            match value {
+                                SemanticExpression::Register(register) => {
+                                    register.code_var = lookup(register)
+                                }
+                                SemanticExpression::Literal(_) => {}
+                                _ => pending.push(Self::Expression(value)),
+                            }
+                        }
+                    }
+                }
+                Self::Expression(SemanticExpression::Select {
+                    condition,
+                    when_true,
+                    when_false,
+                }) => {
+                    pending.push(Self::Expression(when_false));
+                    pending.push(Self::Expression(when_true));
+                    next = Self::Predicate(condition);
+                    continue;
+                }
+                Self::Predicate(SemanticPredicate::False | SemanticPredicate::True) => {}
+                Self::Predicate(SemanticPredicate::Not(inner)) => {
+                    next = Self::Predicate(inner);
+                    continue;
+                }
+                Self::Predicate(SemanticPredicate::And(terms) | SemanticPredicate::Or(terms)) => {
+                    pending.extend(terms.iter_mut().rev().map(Self::Predicate));
+                }
+            }
+            let Some(site) = pending.pop() else { break };
+            next = site;
+        }
+    }
+}
+
 /// One source-level operation with semantic expressions as its operands.
 ///
 /// `instruction.args` and `instruction.payload.compound_target` are always

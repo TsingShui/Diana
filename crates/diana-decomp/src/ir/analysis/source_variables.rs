@@ -10,9 +10,8 @@ use std::fmt;
 
 use crate::ir::{
     BlockId, InsnArg, InstructionTreeError, RegionGraph, RegisterArg, SemanticExpression,
-    SemanticExpressionTransform, SemanticFoldError, SemanticFolder, SemanticInstructions,
-    SemanticMethod, SemanticNode, SemanticOperation, SemanticVisitor, SourceSemantics,
-    ValueSemantics, CFG,
+    SemanticFoldError, SemanticInstructions, SemanticMethod, SemanticNode, SemanticOperation,
+    SemanticVisitor, SourceSemantics, ValueSemantics, CFG,
 };
 
 use super::types::SourceTypeLattice;
@@ -215,8 +214,7 @@ impl SourceVariableAllocation {
         hierarchy: &dyn super::TypeHierarchy,
     ) -> Result<SemanticMethod<SourceSemantics>, SourceVariableError> {
         self.annotate_cfg(cfg)?;
-        let needs_control_rewrite =
-            SourceAnnotation::new(&self.variables).apply(method.body_mut())?;
+        let needs_control_rewrite = SourceAnnotation::apply(&self.variables, method.body_mut());
         let copies = PhiCopies::collect(
             cfg,
             &self.required_phis,
@@ -822,28 +820,25 @@ impl SourceInputs {
     }
 }
 
-struct SourceAnnotation<'a> {
-    variables: &'a CodeVariables,
-    needs_control_rewrite: bool,
-}
+struct SourceAnnotation;
 
-impl<'a> SourceAnnotation<'a> {
-    fn new(variables: &'a CodeVariables) -> Self {
-        Self {
-            variables,
-            needs_control_rewrite: false,
-        }
-    }
-
-    fn apply(mut self, root: &mut SemanticNode) -> Result<bool, SourceVariableError> {
-        let body = std::mem::replace(root, SemanticNode::Empty);
-        *root = self.fold_node(body)?;
-        Ok(self.needs_control_rewrite)
-    }
-
-    fn annotate_register(&self, register: &mut RegisterArg) {
-        register.code_var =
-            SsaVar::from_reg(register).and_then(|value| self.variables.variable_of(value));
+impl SourceAnnotation {
+    fn apply(variables: &CodeVariables, root: &mut SemanticNode) -> bool {
+        let mut needs_control_rewrite = false;
+        crate::ir::semantic::for_each_node_mut(root, |node| {
+            needs_control_rewrite |= PhiLowering::rewrites_without_copies(node);
+            SemanticInstructions::bind_code_variables(node, |register| {
+                SsaVar::from_reg(register).and_then(|value| variables.variable_of(value))
+            });
+            if let SemanticNode::BasicBlock(block) = node {
+                block.statements.retain(|statement| {
+                    statement
+                        .instruction_ref()
+                        .is_none_or(|op| !Self::is_identity_copy(op))
+                });
+            }
+        });
+        needs_control_rewrite
     }
 
     fn is_identity_copy(instruction: &SemanticOperation) -> bool {
@@ -863,35 +858,6 @@ impl<'a> SourceAnnotation<'a> {
             .and_then(SemanticExpression::as_register)
             .and_then(|source| source.code_var)
             == Some(destination)
-    }
-}
-
-impl SemanticExpressionTransform for SourceAnnotation<'_> {
-    fn transform_register(&mut self, mut register: RegisterArg) -> SemanticExpression {
-        self.annotate_register(&mut register);
-        SemanticExpression::Register(register)
-    }
-
-    fn transform_result(&mut self, mut result: RegisterArg) -> RegisterArg {
-        self.annotate_register(&mut result);
-        result
-    }
-}
-
-impl SemanticFolder for SourceAnnotation<'_> {
-    type Error = SourceVariableError;
-
-    fn finish_node(&mut self, mut node: SemanticNode) -> Result<SemanticNode, Self::Error> {
-        self.needs_control_rewrite |= PhiLowering::rewrites_without_copies(&node);
-        SemanticInstructions::transform_node(&mut node, self)?;
-        if let SemanticNode::BasicBlock(block) = &mut node {
-            block.statements.retain(|statement| {
-                statement
-                    .instruction_ref()
-                    .is_none_or(|instruction| !Self::is_identity_copy(instruction))
-            });
-        }
-        Ok(node)
     }
 }
 
