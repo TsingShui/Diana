@@ -791,7 +791,7 @@ where
     let next = AtomicUsize::new(0);
     pool.broadcast(|_| {
         let mut local = context();
-        while let Ok(ordinal) = next.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |ordinal| {
+        while let Ok(ordinal) = next.try_update(Ordering::Relaxed, Ordering::Relaxed, |ordinal| {
             (ordinal < count).then(|| ordinal + 1)
         }) {
             if let Err(error) = work(&mut local, ordinal, workers > 1) {

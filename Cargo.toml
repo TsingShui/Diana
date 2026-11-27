@@ -10,6 +10,7 @@ default-members = ["apps/diana", "crates/diana-decomp"]
 [workspace.package]
 version = "1.0.2"
 edition = "2021"
+rust-version = "1.100"
 license = "Apache-2.0"
 
 [profile.release]

@@ -115,7 +115,7 @@ Contributors MUST check capabilities against active code and independent evidenc
 not infer them from scaffold markers or historical completion labels. Build and
 lint success does not establish semantic correctness or real-application coverage.
 
-Run from the repository root with Rust 1.93 or newer:
+Run from the repository root with Rust 1.100 or newer:
 
 ```sh
 cargo fmt --all -- --check
@@ -123,8 +123,8 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo build --workspace --release --locked
 ```
 
-The CLI and engine hold the 1.93 minimum. The GPUI desktop application needs
-current stable and the platform GUI libraries for local builds.
+The CLI, engine and GPUI desktop application share the Rust version declared in
+the workspace manifest. GUI builds also require the platform GUI libraries.
 Current CI behavior is described in [README](README.md#regression-workflow-status).
 
 Bare Cargo commands select Diana only. Do not build or release archived reference
@@ -361,8 +361,8 @@ Use a host that can run the target binary. Install the target's native C build
 tools and linker, then run the following commands from a Git checkout.
 
 ```sh
-rustup toolchain install 1.93.0 --profile minimal --component llvm-tools-preview
-rustup run 1.93.0 python3 tools/release/build_cli.py
+rustup toolchain install 1.100.0 --profile minimal --component llvm-tools-preview
+rustup run 1.100.0 python3 tools/release/build_cli.py
 ```
 
 Pass `--target <triple>` to select a runnable target explicitly. The build

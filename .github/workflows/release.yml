@@ -92,8 +92,8 @@ jobs:
 
       - name: Rust toolchain
         run: |
-          rustup toolchain install 1.93.0 --profile minimal --target "$TARGET" --component llvm-tools-preview
-          rustup default 1.93.0
+          rustup toolchain install 1.100.0 --profile minimal --target "$TARGET" --component llvm-tools-preview
+          rustup default 1.100.0
 
       - uses: Swatinem/rust-cache@v2
         with:

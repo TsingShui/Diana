@@ -1380,13 +1380,9 @@ impl<'a> ValuePlanner<'a> {
         };
         let domain_sink =
             self.is_domain_preserving_sink(definition, usage, &effect, same_domain)?;
-        if self
+        Ok(self
             .prove_movement(definition, usage, &effect, same_domain, domain_sink)
-            .is_err()
-        {
-            return Ok(false);
-        }
-        Ok(true)
+            .is_ok())
     }
 
     fn adjacent_inline(

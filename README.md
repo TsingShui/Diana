@@ -2,21 +2,22 @@
   <img src="assets/diana.png" width="176" height="176" alt="Diana — a white, laurel-crowned profile on black">
 </p>
 <h1 align="center">Diana</h1>
-<p align="center">Native APK/DEX decompilation and static code investigation.</p>
+<p align="center">Native Android and JVM decompilation and static analysis.</p>
 <p align="center">
   <a href="#about">About</a> · <a href="#install">Install</a> · <a href="#usage">Usage</a>
 </p>
 
 ## About
 
-Diana is an in-development Rust decompiler for APK and DEX files.
-Diana GUI is in development and aims to support more than DEX.
+Diana is an in-development Rust decompiler for APKs, standalone DEX files,
+JARs and standalone JVM class files. The CLI recovers Java-like source,
+finds cross-references, compares versions and exports sources and resources.
 
 [Apache-2.0](LICENSE)
 
 ## Install
 
-With Cargo (Rust 1.93+ and native build tools; installs the CLI only):
+With Cargo (Rust 1.100+ and native build tools; installs the CLI only):
 
 ```sh
 cargo install --git https://github.com/TsingShui/Diana.git --branch main --locked diana
@@ -35,50 +36,35 @@ Or download a binary from the [releases page](https://github.com/TsingShui/Diana
 
 ### CLI
 
+Run `diana --help` for the command list or `diana <command> --help` for options.
+
+#### Android APK and DEX
+
 ```sh
-diana --help
-Analyze APK archives and standalone DEX files
-
-Usage: diana <COMMAND>
-
-Commands:
-  skill           Print the Diana Agent Skill, or install it with -i
-  entries         List the entries an archive holds, in central-directory order
-  classes         List classes defined in every root DEX
-  tree            Show the package hierarchy of defined classes
-  fields          List every field declared in every root DEX
-  methods         List defined methods, excluding reference-only method_ids entries
-  strings         List every string in every root DEX
-  resources       List resources.arsc IDs, names, configurations and original values
-  get-class       Locate a class in an APK or DEX and decompile it
-  get-method      Decompile one method as Java, selected by its methods.at coordinate
-  outline-class   Show one class call tree with aggregated imports
-  outline-method  Show the call tree below one method
-  diff            Compare DEX methods across two versions
-  export          Export Java-like sources by package, APK resources and the manifest
-  extract         Write one original entry to -o; --raw keeps binary XML
-  xref            Find code references in every root DEX
-  manifest        Decode the binary AndroidManifest.xml
-  help            Print this message or the help of the given subcommand(s)
-
-Options:
-  -h, --help     Print help
-  -V, --version  Print version
-
-Examples:
-  diana classes app.apk --filter MainActivity
-  diana strings app.apk --filter Authorization
-  diana get-class app.apk 'e0:l0:c123'
-  diana get-method app.apk 'e0:l0:c123:m45'
-  diana outline-class app.apk 'e0:l0:c123' --call-depth 2
-  diana diff old.apk new.apk --format json -o changes.json
-  diana xref app.apk string Authorization
-  diana manifest app.apk
-Copy classes.at to get-class, methods.at to get-method/outline-method; locators (entry:index) skip the APK-wide scan.
-Root DEX only: classes.dex and classes<N>.dex at the archive root, or a bare DEX; DEX in assets/, res/raw/ or nested archives needs extract, then a bare-DEX run.
-Lists show 50 rows by default and warn on truncation; --no-limit reaches several MB on a large APK, so prefer --filter or -o.
-Outline crosses root DEX; a class outside the input stays [other-dex]. Java may contain explicit stubs.
+diana classes app.apk --filter MainActivity
+diana get-class app.apk 'e0:l0:c123'
+diana export app.apk -o apk-project
+diana diff old.apk new.apk
 ```
+
+Use the `at` value returned by `classes` to select an original class.
+APK analysis covers root DEX files. The same commands also accept standalone
+DEX files.
+
+#### JAR and JVM class files
+
+```sh
+diana classes app.jar --filter Main
+diana get-class app.jar com.example.Main -o Main.java
+diana export app.jar -o jar-project
+diana diff old.jar new.jar
+```
+
+Use `bytecode` to inspect the original instructions of a JVM method.
+JVM analysis also accepts standalone `.class` files and `.diana-jvm.json`
+project descriptors for multiple archives or a Java release view. See the
+[CLI guide](apps/diana/README.md#jvm-archives-and-class-files) for input
+selection, method locators and more examples.
 
 Install the Agent Skill to `~/.agents/skills/diana/SKILL.md`:
 

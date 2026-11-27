@@ -6,7 +6,7 @@ authored content.
 
 ## Run
 
-From the repository root with Rust 1.93+ and the native tools described in
+From the repository root with Rust 1.100+ and the native tools described in
 [GPUI Kit installation](https://gpui-kit.com/docs/installation/):
 
 ```sh
