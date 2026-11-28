@@ -440,6 +440,14 @@ impl SourceGenericTypeProjection {
 }
 
 impl crate::language::java::GenericTypeProjection for SourceGenericTypeProjection {
+    fn has_standalone_method_result(&self, method: &crate::ir::MethodReference) -> bool {
+        self.source_abi.has_standalone_method_result(method)
+    }
+
+    fn is_inaccessible_reference_type(&self, ty: &ArgType) -> bool {
+        self.source_abi.is_inaccessible_reference_type(ty)
+    }
+
     fn specialize_subtype(
         &self,
         subtype: &ArgType,

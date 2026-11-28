@@ -159,6 +159,14 @@ fn owner_type_parameter_name(argument: &TypeArgument) -> Option<&str> {
 }
 
 pub(crate) trait GenericTypeProjection: std::fmt::Debug {
+    fn has_standalone_method_result(&self, _method: &MethodReference) -> bool {
+        false
+    }
+
+    fn is_inaccessible_reference_type(&self, _ty: &ArgType) -> bool {
+        false
+    }
+
     fn specialize_subtype(
         &self,
         subtype: &ArgType,

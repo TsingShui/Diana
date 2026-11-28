@@ -952,6 +952,29 @@ pub(crate) struct GenericTypeHierarchy {
 }
 
 impl GenericTypeHierarchy {
+    /// A directly loaded declaration with no method type parameters has no
+    /// return inference from the enclosing call. Missing owners or overloads
+    /// cannot establish this fact.
+    pub(crate) fn has_standalone_method_result(&self, method: &crate::ir::MethodReference) -> bool {
+        let Some(class) = self.hierarchy.loaded.classes.get(&method.owner) else {
+            return false;
+        };
+        let mut matches = class
+            .methods_named(&method.name, false)
+            .filter(|candidate| {
+                candidate.params == method.descriptor.parameters
+                    && candidate.return_type == method.descriptor.return_type
+            });
+        let Some(candidate) = matches.next() else {
+            return false;
+        };
+        matches.next().is_none()
+            && candidate
+                .generic_signature
+                .as_ref()
+                .is_none_or(|signature| signature.type_parameters.is_empty())
+    }
+
     pub(crate) fn from_classes<'a>(
         classes: impl IntoIterator<Item = &'a ClassNode>,
     ) -> OverrideResult<Self> {

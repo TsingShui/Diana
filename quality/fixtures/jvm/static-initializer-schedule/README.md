@@ -37,9 +37,9 @@ The verifier checks original invocation order with `javap`. In the
 protected initializer the result write at byte 11 precedes the exception
 range at bytes 14 through 19. The handler records the exact exception
 from the later operation. The verifier checks that the safe first-argument
-case stays a compact field initializer. It accepts an explicit `Object`
-cast around the producer because retaining the original local type protects
-the calling context from changes in type inference or overload resolution.
+case stays a compact field initializer with both calls in their original
+order. It also accepts explicit `Object` casts that retain the original
+argument types when the external declarations are unavailable.
 Each class publication is recompiled separately and run with the unchanged
 observer and support class.
 

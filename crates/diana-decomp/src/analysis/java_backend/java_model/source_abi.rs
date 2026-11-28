@@ -1080,6 +1080,17 @@ impl JavaSourceAbi {
             .contains(&import.to_string())
     }
 
+    pub(crate) fn is_inaccessible_reference_type(&self, ty: &ArgType) -> bool {
+        let mut leaf = ty;
+        while let ArgType::Array(element) = leaf {
+            leaf = element;
+        }
+        leaf.as_object().is_some_and(|name| {
+            self.inaccessible_top_level_imports
+                .contains(&name.replace('/', "."))
+        })
+    }
+
     fn index_generic_method(
         declarations: &mut BTreeMap<
             (String, MethodDescriptor),
@@ -1279,6 +1290,12 @@ impl JavaSourceAbi {
             .as_ref()
             .and_then(|symbols| platform_method_exceptions(symbols, method))
             .unwrap_or_default()
+    }
+
+    pub(crate) fn has_standalone_method_result(&self, method: &MethodReference) -> bool {
+        self.generic_hierarchy
+            .as_ref()
+            .is_some_and(|hierarchy| hierarchy.has_standalone_method_result(method))
     }
 
     pub(crate) fn generic_method(

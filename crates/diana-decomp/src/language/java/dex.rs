@@ -2686,7 +2686,7 @@ impl DexJavaDialect {
                 }))
             }
         };
-        let args = invocation_arguments
+        let mut args = invocation_arguments
             .iter()
             .enumerate()
             .map(|(index, arg)| {
@@ -2778,6 +2778,7 @@ impl DexJavaDialect {
                 Ok(InvocationArgument { index, expression, inferred: target_type })
             })
             .collect::<Result<Vec<_>, _>>()?;
+        self.anchor_nested_invocation_arguments(method, invocation_arguments, &mut args);
         let args = self.bind_invocation_arguments(method, invocation_arguments, args)?;
         Ok(JavaExpr::Call {
             receiver,
@@ -2840,6 +2841,154 @@ impl DexJavaDialect {
             .get(method)
             .and_then(|contract| contract.signature.parameter_types.get(index));
         (!formal.is_some_and(|formal| formal.contains_type_variable())).then_some(raw)
+    }
+
+    fn nested_invocation_argument_cast(
+        &self,
+        destination: &MethodReference,
+        expected: &ArgType,
+        original: &SemanticExpression,
+        argument: &InvocationArgument,
+    ) -> Option<JavaType> {
+        let JavaExpr::Call { type_arguments, .. } = &argument.expression else {
+            return None;
+        };
+        if !expected.is_reference() || !type_arguments.is_empty() {
+            return None;
+        }
+        let mut value = original;
+        let producer = loop {
+            let operation = value.as_operation()?;
+            match operation.insn_type {
+                InsnType::Move => value = operation.operands().first()?,
+                InsnType::Invoke
+                    if matches!(
+                        operation.payload.invoke_type,
+                        Some(
+                            InvokeType::Static
+                                | InvokeType::Virtual
+                                | InvokeType::Interface
+                                | InvokeType::Direct
+                                | InvokeType::Super
+                        )
+                    ) =>
+                {
+                    break Self::method(operation.payload.reference.as_deref()).ok()?;
+                }
+                _ => return None,
+            }
+        };
+        let result = &producer.descriptor.return_type;
+        if !result.is_reference() {
+            return None;
+        }
+
+        // Fixing the result context must also leave the producer's argument
+        // typing intact. An erased reference input can hide a dependency on
+        // the same type parameter when its original Signature is unavailable.
+        match self.generic_methods.get(producer) {
+            Some(contract) => {
+                let signature = &contract.signature;
+                if signature.type_parameters.is_empty()
+                    || !signature.return_type.contains_type_variable()
+                    || signature
+                        .parameter_types
+                        .iter()
+                        .any(JvmTypeSignature::contains_type_variable)
+                {
+                    return None;
+                }
+            }
+            None if producer
+                .descriptor
+                .parameters
+                .iter()
+                .any(ArgType::is_reference)
+                || (result == expected && result.as_object() != Some("java/lang/Object"))
+                || self
+                    .generic_type_projection
+                    .as_deref()
+                    .is_some_and(|projection| {
+                        projection.has_standalone_method_result(producer)
+                    }) =>
+            {
+                return None;
+            }
+            None => {}
+        }
+        if self
+            .generic_methods
+            .get(destination)
+            .and_then(|contract| contract.signature.parameter_types.get(argument.index))
+            .is_some_and(|formal| {
+                formal.contains_type_variable() || Self::signature_is_parameterized(formal)
+            })
+        {
+            return None;
+        }
+        let ty = self.invocation_reference_cast(
+            destination,
+            argument.index,
+            expected,
+            argument.inferred.as_ref(),
+        )?;
+        if !matches!(ty, JavaType::Class(_) | JavaType::Array(_))
+            || ty != self.source_type(expected).ok()?.into_raw()
+            || self.current_type.as_ref() != Some(expected)
+                && self
+                    .generic_type_projection
+                    .as_deref()
+                    .is_some_and(|projection| projection.is_inaccessible_reference_type(expected))
+        {
+            return None;
+        }
+
+        // The original return descriptor establishes the runtime value
+        // before Java target typing. Only use identity or widening casts.
+        (result == expected
+            || expected.as_object() == Some("java/lang/Object")
+            || self
+                .generic_type_projection
+                .as_deref()
+                .is_some_and(|projection| projection.is_subtype(result, expected)))
+        .then_some(ty)
+    }
+
+    fn anchor_nested_invocation_arguments(
+        &self,
+        method: &MethodReference,
+        arguments: &[SemanticExpression],
+        lowered: &mut [InvocationArgument],
+    ) {
+        let parameters = &method.descriptor.parameters;
+        if lowered.len() != parameters.len() || arguments.len() != parameters.len() {
+            return;
+        }
+        for argument in lowered {
+            let index = argument.index;
+            let (Some(expected), Some(original)) = (parameters.get(index), arguments.get(index))
+            else {
+                continue;
+            };
+            // A final array can be a variable-arity formal. Its existing
+            // argument syntax determines fixed versus variable arity.
+            if index + 1 == parameters.len() && matches!(expected, ArgType::Array(_)) {
+                continue;
+            }
+            let Some(ty) =
+                self.nested_invocation_argument_cast(method, expected, original, argument)
+            else {
+                continue;
+            };
+            let expression = std::mem::replace(
+                &mut argument.expression,
+                JavaExpr::Literal(JavaLiteral::Null),
+            );
+            argument.expression = JavaExpr::Cast {
+                ty,
+                value: Box::new(expression),
+            };
+        }
     }
 
     fn bind_invocation_arguments(

@@ -373,6 +373,11 @@ fn recovered_jvm_static_initializers_preserve_evaluation_order() {
     verify_jvm_fixture("jvm/static-initializer-schedule/verify.py");
 }
 
+#[test]
+fn recovered_jvm_generic_arguments_preserve_original_overload() {
+    verify_jvm_fixture("jvm/generic-overload-binding/verify.py");
+}
+
 fn verify_jvm_fixture(path: &str) {
     let output = tempfile::tempdir().unwrap();
     let verifier = Path::new(env!("CARGO_MANIFEST_DIR"))

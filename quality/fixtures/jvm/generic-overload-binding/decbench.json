@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "id": "jvm-generic-overload-binding",
+  "prepared": true,
+  "input": "generic-overload-binding/bindings.jar",
+  "probe": "verify.py",
+  "oracle_files": [
+    "CheckGeneric.java",
+    "CheckGenericArray.java",
+    "GenericArrayEffects.java",
+    "GenericArrayOperand.java",
+    "GenericEffects.java",
+    "GenericOperand.java"
+  ],
+  "methods": [
+    {
+      "at": "j0:m1",
+      "member": "LGenericOperand;-><clinit>()V",
+      "issues": [],
+      "behavior": true
+    },
+    {
+      "at": "j1:m1",
+      "member": "LGenericArrayOperand;->object(I)Ljava/lang/String;",
+      "issues": [],
+      "behavior": true
+    },
+    {
+      "at": "j1:m2",
+      "member": "LGenericArrayOperand;->array(I)Ljava/lang/String;",
+      "issues": [],
+      "behavior": true
+    }
+  ]
+}

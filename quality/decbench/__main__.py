@@ -198,6 +198,7 @@ def prepare_corpus(destination: Path) -> None:
             "string-switch-receiver",
             "interface-initializer-snapshot",
             "static-initializer-schedule",
+            "generic-overload-binding",
         ):
             recipe = ROOT / "quality/fixtures/jvm" / fixture / "verify.py"
             subprocess.run([

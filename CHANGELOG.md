@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.28 - 2026-11-29
+
+- Preserved original overload selection for nested generic invocation arguments.
+- Used identity and widening type anchors while retaining original argument order and checks.
+
 ## 0.4.27 - 2026-11-29
 
 - Preserved evaluation order and exception timing in recovered field initializers.

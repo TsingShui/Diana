@@ -204,7 +204,7 @@ def verify(binary, artifact, evidence, timeout):
             compact = re.search(
                 r"\bObject\s+RESULT\s*=\s*ScheduleEffects\.joinFirst\("
                 r"\s*(?:\((?:java\.lang\.)?Object\)\s*)?ScheduleEffects\.capture\(\),"
-                r"\s*ScheduleEffects\.earlier\(\)\s*\)",
+                r"\s*(?:\((?:java\.lang\.)?Object\)\s*)?ScheduleEffects\.earlier\(\)\s*\)",
                 source,
             ) is not None
             rows.append({"id": "compact-first-operand", "expected": True, "observed": compact,
