@@ -347,6 +347,7 @@ pub struct RegionGraph {
     handler_adapters: BTreeMap<BlockId, BlockId>,
     cleanup_representatives: BTreeMap<BlockId, BlockId>,
     cleanup_value_bindings: BTreeSet<(super::analysis::SsaVar, super::analysis::SsaVar)>,
+    cleanup_catch_values: BTreeMap<super::analysis::SsaVar, super::exception::CleanupCatchValue>,
     implicit_cleanup_completions: BTreeMap<RegionId, BTreeSet<BlockId>>,
     exceptional_contractions: Vec<(BlockId, BlockId)>,
     exceptional_rethrow_sources: BTreeMap<BlockId, BTreeSet<BlockId>>,
@@ -479,6 +480,12 @@ impl RegionGraph {
         &self,
     ) -> &BTreeSet<(super::analysis::SsaVar, super::analysis::SsaVar)> {
         &self.cleanup_value_bindings
+    }
+
+    pub(crate) fn cleanup_catch_values(
+        &self,
+    ) -> &BTreeMap<super::analysis::SsaVar, super::exception::CleanupCatchValue> {
+        &self.cleanup_catch_values
     }
 
     pub fn is_implicit_cleanup_completion(&self, region: RegionId, block: BlockId) -> bool {

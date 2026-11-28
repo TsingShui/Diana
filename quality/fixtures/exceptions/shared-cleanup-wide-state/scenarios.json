@@ -1,0 +1,15 @@
+{
+  "run": [
+    {"id":"observe-both-fresh-words-normally","arguments":["none","0"],"expected":["initialClock","schedule","save:4294967400","wait","refreshClock","reacquire","cancel","complete:8589934600:21474836620","return"]},
+    {"id":"early-failure-observes-both-old-words","arguments":["early","0"],"expected":["initialClock","schedule","cancel","diagnostic:4294967400:12884901992:primary","escape:primary"]},
+    {"id":"early-cancel-replacement-keeps-both-old-words","arguments":["early","1"],"expected":["initialClock","schedule","cancel","diagnostic:4294967400:12884901992:replacement","escape:replacement"]},
+    {"id":"refresh-failure-observes-old-clock-and-middle-marker","arguments":["refresh-clock","0"],"expected":["initialClock","schedule","save:4294967400","wait","refreshClock","cancel","diagnostic:4294967400:17179869364:primary","escape:primary"]},
+    {"id":"reacquire-failure-observes-new-clock-and-middle-marker","arguments":["late","0"],"expected":["initialClock","schedule","save:4294967400","wait","refreshClock","reacquire","cancel","diagnostic:8589934600:17179869364:primary","escape:primary"]},
+    {"id":"normal-cleanup-fault-observes-both-fresh-words","arguments":["none","1"],"expected":["initialClock","schedule","save:4294967400","wait","refreshClock","reacquire","cancel","diagnostic:8589934600:21474836620:replacement","escape:replacement"]},
+    {"id":"nested-wait-fault-refreshes-both-words","arguments":["wait","0"],"expected":["initialClock","schedule","save:4294967400","wait","refreshClock","reacquire","cancel","diagnostic:8589934600:21474836620:primary","escape:primary"]},
+    {"id":"cancel-replaces-nested-wait-fault","arguments":["wait","1"],"expected":["initialClock","schedule","save:4294967400","wait","refreshClock","reacquire","cancel","diagnostic:8589934600:21474836620:replacement","escape:replacement"]},
+    {"id":"caught-interruption-then-normal-report","arguments":["interrupt","0"],"expected":["initialClock","schedule","save:4294967400","wait","interruption:interrupted","refreshClock","reacquire","cancel","complete:8589934600:21474836620","return"]},
+    {"id":"post-cancel-report-failure-does-not-repeat-cancel","arguments":["complete","0"],"expected":["initialClock","schedule","save:4294967400","wait","refreshClock","reacquire","cancel","complete:8589934600:21474836620","diagnostic:8589934600:21474836620:completion-fault","escape:completion-fault"]},
+    {"id":"refresh-fault-after-save-fault-preserves-both-old-words","arguments":["save-and-refresh","0"],"expected":["initialClock","schedule","save:4294967400","refreshClock","cancel","diagnostic:4294967400:12884901992:refresh-replacement","escape:refresh-replacement"]}
+  ]
+}

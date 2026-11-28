@@ -541,6 +541,9 @@ impl<'a> GatedPhiAnalysis<'a> {
         let mut committed_materializations = BTreeSet::new();
         let mut diagnostics = ValueRecoveryDiagnostics::default();
         for phi in self.phi_order(&live) {
+            if self.graph.is_retained(phi.result) {
+                continue;
+            }
             diagnostics.gated_candidates += 1;
             if !live.contains(&phi.result) {
                 eliminated.insert(phi.result);
@@ -666,6 +669,7 @@ impl<'a> GatedPhiAnalysis<'a> {
         let mut pending = semantic_roots
             .iter()
             .copied()
+            .chain(self.graph.retained_values.iter().copied())
             .filter(|&result| self.values.phi(result).is_some())
             .collect::<Vec<_>>();
         while let Some(result) = pending.pop() {

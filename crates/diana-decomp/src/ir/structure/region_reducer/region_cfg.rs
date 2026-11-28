@@ -24,7 +24,13 @@ impl RegionAnchors {
         graph: &RegionGraph,
         edge_arguments: &ControlContractions,
     ) -> Result<Self, StructureError> {
-        let phi_predecessors = edge_arguments.phi_copy_anchors(cfg);
+        let mut phi_predecessors = edge_arguments.phi_copy_anchors(cfg);
+        phi_predecessors.extend(graph.cleanup_catch_values().values().flat_map(|value| {
+            value
+                .inputs
+                .keys()
+                .filter_map(|edge| (!edge.kind.is_exception()).then_some(edge.source))
+        }));
         // Region layout may contract only blocks that denote the same lexical
         // region node. Exceptional edge-argument contractions additionally
         // relate throw sites to cleanup destinations for Phi evaluation; using

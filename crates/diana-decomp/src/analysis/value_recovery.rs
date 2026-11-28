@@ -279,6 +279,15 @@ impl SemanticTransform<SsaSemantics> for ValueRecovery {
         // which its empty substitution can still reduce.
         let has_select = ValueSchedule::contains_select(method.body());
         let retained = cleanup_state_values(&method, &self.ssa_constants);
+        let catch_state = method
+            .state()
+            .regions()
+            .cleanup_catch_values()
+            .iter()
+            .flat_map(|(&result, plan)| {
+                std::iter::once(result).chain(plan.inputs.values().copied())
+            })
+            .collect::<BTreeSet<_>>();
         let mut first_plan = None;
         let mut recovered_phis = BTreeSet::new();
         if method.state().values().phis().is_empty() && !has_select {
@@ -291,6 +300,7 @@ impl SemanticTransform<SsaSemantics> for ValueRecovery {
                 &self.ssa_constants,
                 &self.source_flow_cache,
             )?;
+            graph.retain_values(catch_state);
             let saturated = graph.proof_budget_exhausted();
             let recovery =
                 graph.recover_gated_phis(method.state().values(), &self.gated_control)?;
@@ -341,12 +351,17 @@ fn cleanup_state_values(
     method: &SemanticMethod<SsaSemantics>,
     constants: &BTreeMap<SsaVar, crate::ir::InsnArg>,
 ) -> BTreeSet<SsaVar> {
-    let roots = method
-        .state()
-        .regions()
+    let regions = method.state().regions();
+    let roots = regions
         .cleanup_value_bindings()
         .iter()
-        .flat_map(|(handler, normal)| [*handler, *normal]);
+        .flat_map(|(handler, normal)| [*handler, *normal])
+        .chain(
+            regions
+                .cleanup_catch_values()
+                .values()
+                .flat_map(|plan| plan.inputs.values().copied()),
+        );
     cleanup_state_closure(roots, method.state().values(), constants)
 }
 

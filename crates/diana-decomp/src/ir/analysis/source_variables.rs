@@ -28,13 +28,17 @@ mod phi;
 
 use interference::{ClassInterference, InterferenceGraph, SsaLiveness};
 use lexical_exits::LexicalExitLowering;
-use phi::{ExceptionalCopyPlacement, PhiCopies, PhiLowering, PhiTypeAnalysis, SemanticSsaValues};
+use phi::{
+    CleanupCatches, ExceptionalCopyPlacement, PhiCopies, PhiLowering, PhiTypeAnalysis,
+    SemanticSsaValues,
+};
 
 pub struct SourceVariableAllocation {
     variables: CodeVariables,
     liveness: SsaLiveness,
     required_phis: BTreeSet<SsaVar>,
     statement_definitions: BTreeSet<SsaVar>,
+    cleanup_catches: CleanupCatches,
     contractions: ControlContractions,
     phi_types: BTreeMap<SsaVar, crate::ir::ArgType>,
 }
@@ -77,7 +81,9 @@ impl SourceVariableAllocation {
         flow: impl FnOnce() -> std::sync::Arc<super::SemanticFlowGraph>,
     ) -> Result<Self, SourceVariableError> {
         let semantic_values = SemanticSsaValues::collect(root);
-        let required_phis = semantic_values.required(cfg, values, constants, &contractions)?;
+        let cleanup_catches = CleanupCatches::resolve(cfg, root, regions);
+        let required_phis =
+            semantic_values.required(cfg, values, constants, &contractions, &cleanup_catches)?;
         let (mut retained, statement_definitions) = semantic_values.into_retained_and_definitions();
         let mut cleanup_values = regions
             .cleanup_value_bindings()
@@ -97,6 +103,7 @@ impl SourceVariableAllocation {
         }
         retained.extend(required_phis.iter().copied());
         retained.extend(cleanup_values.iter().copied());
+        retained.extend(cleanup_catches.inputs(&required_phis));
         let edge_arguments =
             edge_arguments::ContractedEdgeArguments::new(cfg, values, constants, &contractions);
         let inputs = SourceInputs::of(cfg);
@@ -194,6 +201,7 @@ impl SourceVariableAllocation {
             liveness,
             required_phis,
             statement_definitions,
+            cleanup_catches,
             contractions,
             phi_types,
         })
@@ -217,6 +225,8 @@ impl SourceVariableAllocation {
         let needs_control_rewrite = SourceAnnotation::apply(&self.variables, method.body_mut());
         let copies = PhiCopies::collect(
             cfg,
+            &self.variables,
+            &self.cleanup_catches,
             &self.required_phis,
             &self.statement_definitions,
             method.state().values(),

@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "id": "dex-shared-cleanup-wide-state",
+  "default": false,
+  "input": "classes.dex",
+  "input_sha256": "c38b813b986a1f0ed0ad832e224401f167ff2977f7401c53faa4ab3f58c99fdc",
+  "probe": "decbench_probe.py",
+  "oracle_files": [
+    "BackoffTwoWide.java",
+    "BackoffTwoWide.smali",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m7",
+      "member": "Lfixture/BackoffTwoWide;->run()V",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

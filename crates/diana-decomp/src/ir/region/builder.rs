@@ -148,6 +148,7 @@ impl<'a> RegionGraphBuilder<'a> {
             handler_adapters,
             cleanup_representatives,
             cleanup_value_bindings: analysis.cleanup_value_bindings.clone(),
+            cleanup_catch_values: analysis.cleanup_catch_values.clone(),
             implicit_cleanup_completions,
             exceptional_contractions: exceptional_cleanup.contractions,
             exceptional_rethrow_sources: exceptional_cleanup.rethrow_sources,

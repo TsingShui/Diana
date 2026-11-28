@@ -48,3 +48,41 @@ fn split_cleanup_captures_have_one_finally() {
         }
     }
 }
+
+#[test]
+fn shared_catch_state_keeps_one_cleanup_operation() {
+    // The fixture's DecBench scenarios check the values and fault identities.
+    // The same cleanup should also appear once in the recovered source.
+    let fixtures: [(&[u8], &str); 3] = [
+        (
+            include_bytes!("../../../quality/fixtures/exceptions/shared-cleanup-state/classes.dex"),
+            "Lfixture/SharedCleanupState;",
+        ),
+        (
+            include_bytes!("../../../quality/fixtures/exceptions/shared-cleanup-wide-state/classes.dex"),
+            "Lfixture/BackoffTwoWide;",
+        ),
+        (
+            include_bytes!("../../../quality/fixtures/exceptions/shared-cleanup-loop-state/classes.dex"),
+            "Lfixture/BackoffRepeated;",
+        ),
+    ];
+    for (fixture, descriptor) in fixtures {
+        let engine = support::engine(fixture);
+        let class = support::class(fixture, &engine, descriptor);
+        let facts = engine.class_facts(class).expect("class facts");
+        let method = facts
+            .resolve_method(
+                &"run".encode_utf16().collect::<Vec<_>>(),
+                &"()V".encode_utf16().collect::<Vec<_>>(),
+            )
+            .expect("original method");
+        let analysis = engine.analyze_method(class, method).expect("method");
+        assert!(analysis.failures.is_empty(), "{:?}", analysis.failures);
+        let text = analysis.rendered.text();
+        let (body, cleanup) = text.split_once("} finally {").expect(text);
+        assert!(!body.contains(".cancel();"), "{text}");
+        assert!(!cleanup.contains("} finally {"), "{text}");
+        assert_eq!(cleanup.matches(".cancel();").count(), 1, "{text}");
+    }
+}

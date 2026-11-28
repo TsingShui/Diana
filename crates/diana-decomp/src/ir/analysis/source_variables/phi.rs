@@ -477,6 +477,7 @@ impl SemanticSsaValues {
         graph: &SsaValueGraph,
         constants: &BTreeMap<SsaVar, InsnArg>,
         contractions: &ControlContractions,
+        cleanup_catches: &CleanupCatches,
     ) -> Result<BTreeSet<SsaVar>, SourceVariableError> {
         let mut pending = self.uses.iter().copied().collect::<Vec<_>>();
         let mut visited = BTreeSet::new();
@@ -505,6 +506,10 @@ impl SemanticSsaValues {
             required.insert(value);
             match instruction.insn_type {
                 InsnType::Phi => {
+                    if let Some((_, plan)) = cleanup_catches.0.get(&value) {
+                        pending.extend(plan.inputs.values().copied());
+                        continue;
+                    }
                     for argument in edge_arguments.resolve_all(position.block, instruction)? {
                         let Some(value) = argument.value.explicit() else {
                             continue;
@@ -562,6 +567,7 @@ impl SemanticVisitor for SemanticSsaValues {
 pub(super) struct CollectedPhiCopies {
     normal: BTreeMap<NormalCopySite, Vec<EdgeCopy>>,
     exceptional: BTreeMap<ExceptionalEdge, Vec<EdgeCopy>>,
+    cleanup_catches: Vec<CleanupCatchCopies>,
     variable_types: BTreeMap<u32, ArgType>,
 }
 
@@ -569,6 +575,7 @@ pub(super) struct PhiCopySet {
     normal: BTreeMap<NormalCopySite, Vec<EdgeCopy>>,
     exceptional: BTreeMap<StatementOrigin, Vec<EdgeCopy>>,
     exceptional_spills: Vec<ExceptionalSpill>,
+    cleanup_catches: Vec<CleanupCatchCopies>,
     detached_catches: BTreeMap<DetachedCatch, (InstructionId, Vec<EdgeCopy>)>,
     variable_types: BTreeMap<u32, ArgType>,
 }
@@ -784,6 +791,145 @@ struct ExceptionalSpill {
     origin: StatementOrigin,
     handler: ExceptionHandlerPort,
     copy: EdgeCopy,
+}
+
+enum CleanupCopySite {
+    Normal(NormalCopySite),
+    Exceptional(StatementOrigin),
+}
+
+struct CleanupCatchCopies {
+    handler: ExceptionHandlerPort,
+    destination: RegisterArg,
+    inputs: Vec<(CleanupCopySite, InsnArg)>,
+}
+
+#[derive(Default)]
+pub(super) struct CleanupCatches(
+    BTreeMap<
+        SsaVar,
+        (
+            ExceptionHandlerPort,
+            crate::ir::exception::CleanupCatchValue,
+        ),
+    >,
+);
+
+impl CleanupCatches {
+    pub(super) fn resolve(cfg: &CFG, root: &SemanticNode, regions: &RegionGraph) -> Self {
+        let plans = regions.cleanup_catch_values();
+        if plans.is_empty() {
+            return Self::default();
+        }
+        let mut sites = CleanupCaptureSites::default();
+        for plan in plans.values() {
+            for edge in plan.inputs.keys().filter(|edge| edge.kind.is_exception()) {
+                if let Some(terminal) = cfg.block(edge.source).and_then(|block| block.terminator())
+                {
+                    sites.operations.entry(terminal.id).or_default();
+                }
+            }
+        }
+        sites.visit_node(root);
+        Self(
+            plans
+                .iter()
+                .filter_map(|(&result, plan)| {
+                    let adapter = regions.handler_adapters().get(&plan.target).copied();
+                    let mut ports = sites.handlers.iter().filter_map(|&region| {
+                        let entry = regions.tree().region(region)?.entry?;
+                        (entry == plan.target || Some(entry) == adapter)
+                            .then_some(ExceptionHandlerPort { region, entry })
+                    });
+                    let port = ports.next()?;
+                    if ports.next().is_some()
+                        || !plan.inputs.keys().all(|edge| sites.contains(cfg, *edge))
+                    {
+                        return None;
+                    }
+                    Some((result, (port, plan.clone())))
+                })
+                .collect(),
+        )
+    }
+
+    pub(super) fn inputs<'a>(
+        &'a self,
+        required: &'a BTreeSet<SsaVar>,
+    ) -> impl Iterator<Item = SsaVar> + 'a {
+        self.0
+            .iter()
+            .filter(|(result, _)| required.contains(result))
+            .flat_map(|(_, (_, plan))| plan.inputs.values().copied())
+    }
+}
+
+#[derive(Default)]
+struct CleanupCaptureSites {
+    handlers: BTreeSet<RegionId>,
+    blocks: BTreeSet<BlockId>,
+    throws: BTreeSet<BlockId>,
+    operations: BTreeMap<InstructionId, (usize, usize)>,
+}
+
+impl CleanupCaptureSites {
+    fn contains(&self, cfg: &CFG, edge: crate::ir::RegionEdge) -> bool {
+        if !edge.kind.is_exception() {
+            return self.blocks.contains(&edge.source);
+        }
+        let Some(terminal) = cfg.block(edge.source).and_then(|block| block.terminator()) else {
+            return false;
+        };
+        let (evaluations, separate) = self
+            .operations
+            .get(&terminal.id)
+            .copied()
+            .unwrap_or_default();
+        // A statement prefix cannot be placed between two nested operations.
+        // A retained explicit throw can use the existing terminal prefix.
+        if evaluations == 0 {
+            terminal.insn_type == InsnType::Throw && self.throws.contains(&edge.source)
+        } else {
+            evaluations == separate
+        }
+    }
+}
+
+impl SemanticVisitor for CleanupCaptureSites {
+    fn enter_node(&mut self, node: &SemanticNode) {
+        match node {
+            SemanticNode::Try { catches, .. } => self
+                .handlers
+                .extend(catches.iter().map(|catch| catch.region)),
+            SemanticNode::BasicBlock(block) => {
+                self.blocks.insert(block.id);
+            }
+            SemanticNode::Leave(leave) => {
+                self.blocks.extend(leave.origin);
+                if leave.edge.is_none()
+                    && matches!(leave.kind, crate::ir::SemanticLeaveKind::Throw(_))
+                {
+                    self.throws.extend(leave.origin);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn visit_statement(&mut self, statement: &SemanticStatement) {
+        if let [instruction] = EvaluationInstructions::of_statement(statement).as_slice() {
+            if let Some((_, separate)) = self.operations.get_mut(instruction) {
+                *separate += 1;
+            }
+        }
+        crate::ir::semantic::walk_statement(self, statement);
+    }
+
+    fn enter_operation(&mut self, operation: &crate::ir::SemanticOperation) {
+        if let Some((evaluations, _)) = self.operations.get_mut(&operation.id) {
+            *evaluations += 1;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1365,6 +1511,7 @@ impl<'a> ExceptionalCopyPlacement<'a> {
                 })
                 .collect(),
             exceptional_spills,
+            cleanup_catches: copies.cleanup_catches,
             detached_catches,
             variable_types: copies.variable_types,
         })
@@ -1604,6 +1751,8 @@ impl<'a> ExceptionalCopyPlacement<'a> {
 impl PhiCopies {
     pub(super) fn collect(
         cfg: &CFG,
+        variables: &CodeVariables,
+        cleanup_values: &CleanupCatches,
         required: &BTreeSet<SsaVar>,
         statement_definitions: &BTreeSet<SsaVar>,
         values: &SsaValueGraph,
@@ -1615,6 +1764,7 @@ impl PhiCopies {
     ) -> Result<CollectedPhiCopies, SourceVariableError> {
         let mut normal = BTreeMap::<NormalCopySite, Vec<EdgeCopy>>::new();
         let mut exceptional = BTreeMap::<ExceptionalEdge, Vec<EdgeCopy>>::new();
+        let mut cleanup_catches = Vec::new();
         let mut variable_types = BTreeMap::<u32, (ArgType, SsaVar, BlockId)>::new();
         let type_lattice = SourceTypeLattice::new(hierarchy);
         let contracted_arguments =
@@ -1665,6 +1815,43 @@ impl PhiCopies {
                             })?;
                         entry.insert((joined, result_value, successor));
                     }
+                }
+                if let Some((handler, plan)) = cleanup_values.0.get(&result_value) {
+                    let mut inputs = Vec::with_capacity(plan.inputs.len());
+                    for (&edge, &value) in &plan.inputs {
+                        let site = if edge.kind.is_exception() {
+                            let terminator = cfg
+                                .block(edge.source)
+                                .and_then(|block| block.terminator())
+                                .ok_or(SourceVariableError::MissingThrowSite(edge.source))?;
+                            CleanupCopySite::Exceptional(StatementOrigin {
+                                block: edge.source,
+                                instruction: terminator.id,
+                            })
+                        } else {
+                            CleanupCopySite::Normal(NormalCopySite::Block(edge.source))
+                        };
+                        let mut register = RegisterArg::new_ssa(
+                            value.reg_num,
+                            value.version,
+                            destination_type.clone(),
+                        );
+                        register.code_var = variables.variable_of(value);
+                        let source = copy_resolver.resolve(InsnArg::Reg(register));
+                        let source = source
+                            .as_register()
+                            .and_then(SsaVar::from_reg)
+                            .and_then(|value| Self::canonical_constant(constants, value))
+                            .and_then(|constant| Self::typed_constant(constant, &destination_type))
+                            .unwrap_or(source);
+                        inputs.push((site, source));
+                    }
+                    cleanup_catches.push(CleanupCatchCopies {
+                        handler: *handler,
+                        destination: result.clone(),
+                        inputs,
+                    });
+                    continue;
                 }
                 for argument in contracted_arguments.resolve_all(successor, phi)? {
                     let Some(value) = argument.value.into_explicit() else {
@@ -1767,6 +1954,7 @@ impl PhiCopies {
         Ok(CollectedPhiCopies {
             normal,
             exceptional,
+            cleanup_catches,
             variable_types: variable_types
                 .into_iter()
                 .map(|(variable, (ty, _, _))| (variable, ty))
@@ -2244,6 +2432,8 @@ pub(super) struct PhiLowering {
     exceptional: BTreeMap<InstructionId, (BlockId, Vec<SemanticStatement>)>,
     terminal_exceptional: BTreeMap<BlockId, InstructionId>,
     handler_entries: BTreeMap<BlockId, Vec<SemanticStatement>>,
+    cleanup_entries: BTreeMap<ExceptionHandlerPort, Vec<SemanticStatement>>,
+    placed_catch_entries: BTreeSet<ExceptionHandlerPort>,
     detached_entries: BTreeMap<DetachedCatch, (InstructionId, Vec<SemanticStatement>)>,
     placed_detached: BTreeSet<DetachedCatch>,
     handler_regions: BTreeMap<RegionId, BlockId>,
@@ -2267,16 +2457,57 @@ impl PhiLowering {
         regions: &RegionGraph,
     ) -> Result<Self, SourceVariableError> {
         let PhiCopySet {
-            normal: normal_copies,
+            normal: mut normal_copies,
             exceptional: mut exceptional_copies,
             exceptional_spills,
+            cleanup_catches,
             detached_catches,
             variable_types,
         } = copies;
-        let canonical_sites = EquivalentCopySites::analyze(cfg, regions, &normal_copies);
         for (&variable, ty) in &variable_types {
             types.merge_variable(variable, ty.clone(), hierarchy)?;
         }
+
+        let mut cleanup_entry_copies = BTreeMap::<ExceptionHandlerPort, Vec<EdgeCopy>>::new();
+        for plan in cleanup_catches {
+            let ty = types.register_type(&plan.destination)?.clone();
+            let mut temporary = RegisterArg::new(plan.destination.reg_num, ty.clone());
+            let variable = next_variable;
+            next_variable = next_variable
+                .checked_add(1)
+                .ok_or(SourceVariableError::SyntheticIdentityExhausted)?;
+            temporary.code_var = Some(variable);
+            types.bind_variable(variable, ty)?;
+            for (site, source) in plan.inputs {
+                let copy = EdgeCopy {
+                    destination: temporary.clone(),
+                    source,
+                };
+                match site {
+                    CleanupCopySite::Normal(site) => {
+                        normal_copies.entry(site).or_default().push(copy)
+                    }
+                    CleanupCopySite::Exceptional(origin) => {
+                        if regions.is_elided(&origin) {
+                            return Err(SourceVariableError::MissingExceptionalCopySite {
+                                block: origin.block,
+                                instruction: origin.instruction,
+                            });
+                        }
+                        exceptional_copies.entry(origin).or_default().push(copy);
+                    }
+                }
+            }
+            cleanup_entry_copies
+                .entry(plan.handler)
+                .or_default()
+                .push(EdgeCopy {
+                    destination: plan.destination,
+                    source: InsnArg::Reg(temporary),
+                });
+        }
+
+        let canonical_sites = EquivalentCopySites::analyze(cfg, regions, &normal_copies);
         let mut normal = BTreeMap::new();
         for (block, copies) in normal_copies {
             let statements = PhiCopies::sequentialize(copies, &mut next_variable, types)?;
@@ -2362,6 +2593,11 @@ impl PhiLowering {
                 handler_entries.insert(handler, statements);
             }
         }
+        let mut cleanup_entries = BTreeMap::new();
+        for (port, copies) in cleanup_entry_copies {
+            let statements = PhiCopies::sequentialize(copies, &mut next_variable, types)?;
+            cleanup_entries.insert(port, statements);
+        }
         let mut detached_entries = BTreeMap::new();
         for (catch, (origin, copies)) in detached_catches {
             let statements = PhiCopies::sequentialize(copies, &mut next_variable, types)?;
@@ -2386,6 +2622,8 @@ impl PhiLowering {
             exceptional,
             terminal_exceptional,
             handler_entries,
+            cleanup_entries,
+            placed_catch_entries: BTreeSet::new(),
             detached_entries,
             placed_detached: BTreeSet::new(),
             handler_regions,
@@ -2425,6 +2663,7 @@ impl PhiLowering {
             && self.normal.by_site.is_empty()
             && self.exceptional.is_empty()
             && self.handler_entries.is_empty()
+            && self.cleanup_entries.is_empty()
             && self.detached_entries.is_empty()
         {
             return Ok(());
@@ -2457,13 +2696,19 @@ impl PhiLowering {
                 instruction: *instruction,
             });
         }
+        if let Some(port) = self
+            .cleanup_entries
+            .keys()
+            .find(|port| !self.placed_catch_entries.contains(port))
+        {
+            return Err(SourceVariableError::MissingHandlerEntry(port.entry));
+        }
         if let Some(block) = self
             .handler_entries
             .keys()
             .find(|block| !self.seen.contains(block))
-            .copied()
         {
-            return Err(SourceVariableError::MissingHandlerEntry(block));
+            return Err(SourceVariableError::MissingHandlerEntry(*block));
         }
         if let Some(catch) = self
             .detached_entries
@@ -2761,7 +3006,15 @@ impl PhiLowering {
                 handler: catch.region,
                 continuation: entry,
             };
+            let port = ExceptionHandlerPort {
+                region: catch.region,
+                entry,
+            };
             let mut statements = self.handler_entries.remove(&entry).unwrap_or_default();
+            if let Some(cleanup) = self.cleanup_entries.get(&port) {
+                self.placed_catch_entries.insert(port);
+                statements.extend(cleanup.iter().cloned());
+            }
             if let Some((origin, detached)) = self.detached_entries.get(&key) {
                 if EvaluationInstructions::of_node(&body).contains(origin) {
                     self.placed_detached.insert(key);
@@ -3066,6 +3319,7 @@ mod tests {
                 &values,
                 &BTreeMap::new(),
                 &ControlContractions::identity(),
+                &CleanupCatches::default(),
             )
             .expect("required Phi analysis");
 

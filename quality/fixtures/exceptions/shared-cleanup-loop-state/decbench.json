@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "id": "dex-shared-cleanup-loop-state",
+  "default": false,
+  "input": "classes.dex",
+  "input_sha256": "76bbf486de63891b02ad9a2d0e6e1cd4a15590c1eb531c51b9e7faa5f43aeeb7",
+  "probe": "decbench_probe.py",
+  "oracle_files": [
+    "BackoffRepeated.java",
+    "BackoffRepeated.smali",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m8",
+      "member": "Lfixture/BackoffRepeated;->run()V",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

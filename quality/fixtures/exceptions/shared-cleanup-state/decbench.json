@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "id": "dex-shared-cleanup-state",
+  "default": false,
+  "input": "classes.dex",
+  "input_sha256": "3f106fd354722d43dcce6693464dcc0d791e0dc2cda366c14ab045a8174ebc14",
+  "probe": "decbench_probe.py",
+  "oracle_files": [
+    "SharedCleanupState.java",
+    "SharedCleanupState.smali",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m6",
+      "member": "Lfixture/SharedCleanupState;->run()V",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

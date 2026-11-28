@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.6 - 2026-11-28
+
+- Preserved the values an enclosing DEX catch sees when both normal and
+  exceptional cleanup reach it through a shared `finally`.
+- Added DecBench coverage for faults before and after a state update, two
+  independent wide values, and repeated cleanup in a loop.
+
 ## 0.4.5 - 2026-11-28
 
 - Preserved the local state at explicit DEX rethrows after cleanup. In

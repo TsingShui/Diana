@@ -12,6 +12,8 @@ use crate::ir::{
 
 use super::{CleanupContraction, HandlerKind, TryRegion};
 
+#[path = "cleanup/catch_values.rs"]
+pub(super) mod catch_values;
 #[path = "cleanup/family.rs"]
 mod family;
 
@@ -31,6 +33,7 @@ pub(super) struct CleanupRecoveryResult {
     pub(super) contractions: Vec<CleanupContraction>,
     pub(super) normal_contractions: Vec<CleanupContraction>,
     pub(super) value_bindings: BTreeSet<(SsaVar, SsaVar)>,
+    pub(super) catch_values: Vec<catch_values::CatchValueTransfer>,
     pub(super) diagnostics: Vec<CleanupProofDiagnostic>,
 }
 
@@ -231,6 +234,8 @@ impl<'a> CleanupRecovery<'a> {
             let mut copy_blocks = BTreeSet::new();
             let mut contractions = Vec::new();
             let mut value_bindings = BTreeSet::new();
+            let mut normal_cleanup = BTreeSet::new();
+            let mut entry_matches = true;
             let mut proven = true;
             for normal_entry in exits.iter().copied() {
                 let mut matched = None;
@@ -306,6 +311,13 @@ impl<'a> CleanupRecovery<'a> {
                         let mut contraction_blocks = blocks.clone();
                         contraction_blocks.extend(corridor);
                         let value_bindings = proof.value_bindings();
+                        if closed_family {
+                            if proof.blocks.get(&handler.canonical_entry) == Some(&candidate) {
+                                normal_cleanup.insert(candidate);
+                            } else {
+                                entry_matches = false;
+                            }
+                        }
                         matched = Some((
                             proof.matched_normal,
                             blocks.clone(),
@@ -352,6 +364,14 @@ impl<'a> CleanupRecovery<'a> {
             copy_blocks.extend(catch_copies.blocks);
             value_bindings.extend(catch_copies.value_bindings);
             contractions.extend(catch_copies.contractions);
+            if closed_family && entry_matches {
+                result.catch_values.extend(catch_values::analyze(
+                    self.cfg,
+                    self.values.graph,
+                    handler,
+                    &normal_cleanup,
+                ));
+            }
             CleanupContractionClosure::new(self.cfg).expand(&mut contractions);
             handler.kind = HandlerKind::Finally;
             recovered_finally = true;

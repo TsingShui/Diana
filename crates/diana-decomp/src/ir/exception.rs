@@ -268,6 +268,15 @@ pub struct CleanupContraction {
     pub completion: BlockId,
 }
 
+/// Values carried to one physical catch after normal and abrupt cleanup
+/// paths are represented by the same finally. Each input is selected on a
+/// concrete edge before the cleanup or at another direct entry to the catch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CleanupCatchValue {
+    pub(crate) target: BlockId,
+    pub(crate) inputs: BTreeMap<super::RegionEdge, SsaVar>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ExceptionAnalysis {
     pub regions: Vec<TryRegion>,
@@ -277,6 +286,7 @@ pub struct ExceptionAnalysis {
     pub elided_instructions: BTreeSet<super::semantic::StatementOrigin>,
     pub cleanup_contractions: Vec<CleanupContraction>,
     pub cleanup_value_bindings: BTreeSet<(SsaVar, SsaVar)>,
+    pub(crate) cleanup_catch_values: BTreeMap<SsaVar, CleanupCatchValue>,
     pub cleanup_proofs: Vec<CleanupProofDiagnostic>,
 }
 
@@ -662,6 +672,7 @@ impl<'a> ExceptionRegions<'a> {
         let mut elided_instructions = BTreeSet::new();
         let mut cleanup_contractions = Vec::new();
         let mut cleanup_value_bindings = BTreeSet::new();
+        let mut cleanup_catch_transfers = Vec::new();
         let mut cleanup_proofs = Vec::new();
         let mut cleanup_representatives = BTreeMap::new();
         let t4 = std::time::Instant::now();
@@ -687,6 +698,7 @@ impl<'a> ExceptionRegions<'a> {
             )?;
             elided_instructions.extend(cleanup.elided);
             cleanup_value_bindings.extend(cleanup.value_bindings);
+            cleanup_catch_transfers.extend(cleanup.catch_values);
             cleanup_proofs.extend(cleanup.diagnostics);
             for contraction in &cleanup.normal_contractions {
                 for block in &contraction.blocks {
@@ -768,6 +780,7 @@ impl<'a> ExceptionRegions<'a> {
             }
             elided_instructions.extend(cleanup.elided);
             cleanup_value_bindings.extend(cleanup.value_bindings);
+            cleanup_catch_transfers.extend(cleanup.catch_values);
             cleanup_proofs.extend(cleanup.diagnostics);
             for contraction in &cleanup.normal_contractions {
                 for block in &contraction.blocks {
@@ -806,6 +819,13 @@ impl<'a> ExceptionRegions<'a> {
             })
             .collect::<BTreeSet<_>>();
         handler_adapters.retain(|block, _| live_handler_adapters.contains(block));
+        let cleanup_catch_values = cleanup::catch_values::compose(
+            self.cfg,
+            self.values,
+            cleanup_catch_transfers,
+            &elided_instructions,
+            &cleanup_representatives,
+        );
         let cleanup_ms = t4.elapsed();
 
         if stats {
@@ -837,6 +857,7 @@ impl<'a> ExceptionRegions<'a> {
             elided_instructions,
             cleanup_contractions,
             cleanup_value_bindings,
+            cleanup_catch_values,
             cleanup_proofs,
             ..ExceptionAnalysis::default()
         };
