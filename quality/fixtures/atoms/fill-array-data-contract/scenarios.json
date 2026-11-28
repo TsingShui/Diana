@@ -1,0 +1,16 @@
+{
+  "short": ["throw:ArrayIndexOutOfBoundsException", "contents:7", "trace:0", "caught:none", "alias:true"],
+  "null": ["throw:NullPointerException", "contents:null", "trace:0", "caught:none", "alias:true"],
+  "int-prefix": ["return:void", "contents:11/22/9/10", "trace:0", "caught:none", "alias:true"],
+  "empty": ["throw:NullPointerException", "contents:null", "trace:0", "caught:none", "alias:true"],
+  "empty-array": ["return:void", "contents:", "trace:0", "caught:none", "alias:true"],
+  "empty-with-tail": ["return:void", "contents:7/8/9/10", "trace:0", "caught:none", "alias:true"],
+  "receiver": ["return:void", "contents:11/22/9/10", "trace:1", "caught:none", "alias:true"],
+  "receiver-null": ["throw:NullPointerException", "contents:null", "trace:1", "caught:none", "alias:true"],
+  "floats": ["return:void", "contents:3fc00000/80000000/41100000", "trace:0", "caught:none", "alias:true"],
+  "float-bits": ["return:void", "contents:00000000/80000000/7fc12345/41200000", "trace:0", "caught:none", "alias:true"],
+  "protected-normal": ["return:1", "contents:11/22/9/10", "trace:1", "caught:none", "alias:true"],
+  "protected-short": ["return:7", "contents:7", "trace:1", "caught:none", "alias:true"],
+  "protected-null": ["throw:NullPointerException", "contents:null", "trace:1", "caught:none", "alias:true"],
+  "protected-fault": ["return:-1", "contents:7/8/9/10", "trace:1", "caught:exact", "alias:true"]
+}

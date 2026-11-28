@@ -1,6 +1,6 @@
 use super::{
-    JavaAssignOp, JavaAstMutator, JavaAstRewriter, JavaAstTransform, JavaExpr, JavaLiteral,
-    JavaMethodBody, JavaStmt,
+    JavaAssignOp, JavaAstMutator, JavaAstRewriter, JavaAstTransform, JavaBinaryOp, JavaExpr,
+    JavaIdentifier, JavaLiteral, JavaMethodBody, JavaStmt,
 };
 
 #[derive(Debug, Default)]
@@ -21,6 +21,9 @@ impl AggregateInitializer {
                 pair[1],
                 JavaStmt::Assign {
                     op: JavaAssignOp::Assign,
+                    ..
+                } | JavaStmt::If {
+                    else_stmt: None,
                     ..
                 }
             )
@@ -88,7 +91,15 @@ impl AggregateInitializer {
         }
         // A DEX dimension can be far larger than the statement list. Only
         // complete, consecutively indexed stores are an aggregate initializer.
-        let Some(writes) = pending.as_slice().get(..length) else {
+        let after_declaration = pending.as_slice();
+        let skip_guard = after_declaration
+            .first()
+            .is_some_and(|statement| Self::redundant_length_guard(statement, name, length));
+        let first_write = usize::from(skip_guard);
+        let Some(writes) = after_declaration
+            .get(first_write..)
+            .and_then(|following| following.get(..length))
+        else {
             return;
         };
         let complete = writes.iter().enumerate().all(|(index, write)| {
@@ -101,6 +112,9 @@ impl AggregateInitializer {
                 && !ExpressionNameUse::contains(value, name)
         });
         if complete {
+            if skip_guard {
+                pending.next();
+            }
             dimensions.clear();
             initializer.extend(pending.take(length).map(|statement| match statement {
                 JavaStmt::Assign { value, .. } => value,
@@ -108,6 +122,29 @@ impl AggregateInitializer {
             }));
             self.changed = true;
         }
+    }
+
+    fn redundant_length_guard(statement: &JavaStmt, array: &JavaIdentifier, length: usize) -> bool {
+        let JavaStmt::If {
+            condition:
+                JavaExpr::Binary {
+                    left,
+                    op: JavaBinaryOp::Less,
+                    right,
+                },
+            else_stmt: None,
+            ..
+        } = statement
+        else {
+            return false;
+        };
+        matches!(
+            (left.as_ref(), right.as_ref()),
+            (JavaExpr::Field { owner, name }, JavaExpr::Literal(JavaLiteral::Integer(required)))
+                if name.as_str() == "length"
+                    && matches!(owner.as_ref(), JavaExpr::Name(name) if name == array)
+                    && usize::try_from(*required).is_ok_and(|required| required <= length)
+        )
     }
 }
 

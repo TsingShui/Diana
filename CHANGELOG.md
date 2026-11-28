@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.19 - 2026-11-28
+
+- Preserved single receiver evaluation, null checks and whole-range bounds
+  checks before writes in DEX `fill-array-data` recovery.
+- Retained floating-point payload bit patterns and compact array initializers
+  when a fresh array has a proven sufficient length.
+
 ## 0.4.18 - 2026-11-28
 
 - Preserved the referenced owner of DEX and JVM instance field reads and

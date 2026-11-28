@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "id": "dex-fill-array-data-contract",
+  "default": true,
+  "input": "classes.dex",
+  "input_sha256": "7085797575f054fe80f32a9f4b00f9ae63bddb58fb1e64e91c29f07936253510",
+  "probe": "verify.py",
+  "oracle_files": [
+    "CheckFillData.java",
+    "FillData.java",
+    "FillData.smali",
+    "raw_proof.py",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m0",
+      "member": "Lfixture/FillData;->fillEmpty([I)V",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m1",
+      "member": "Lfixture/FillData;->fillFloat([F)V",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m2",
+      "member": "Lfixture/FillData;->fillFloatBits([F)V",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m3",
+      "member": "Lfixture/FillData;->fillFromReceiver()V",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m4",
+      "member": "Lfixture/FillData;->fillTwo([I)V",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m5",
+      "member": "Lfixture/FillData;->protectedFill([ILjava/lang/ArithmeticException;)I",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

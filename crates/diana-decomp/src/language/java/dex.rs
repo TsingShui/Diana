@@ -4464,16 +4464,6 @@ impl DexJavaDialect {
             .operands()
             .first()
             .ok_or(JavaLoweringError::MissingArgument(insn.insn_type))?;
-        let array = self.arg(array_arg)?;
-        let array_type = self.ssa_expression_type(array_arg)?.clone();
-        let element = array_type
-            .as_array_element()
-            .ok_or_else(|| JavaLoweringError::InvalidArrayType {
-                instruction: insn.insn_type,
-                offset: insn.offset,
-                ty: array_type.clone(),
-            })?
-            .clone();
         let data = insn
             .payload
             .fill_array_data
@@ -4485,38 +4475,132 @@ impl DexJavaDialect {
                 data.element_width,
             ));
         }
-        let statements = data
-            .data
-            .chunks_exact(width)
-            .take(data.size as usize)
-            .enumerate()
-            .map(|(index, bytes)| {
-                let index = i32::try_from(index)
-                    .map_err(|_| JavaLoweringError::InvalidIntegerLiteral(index as i64))?;
-                let bits = bytes.iter().enumerate().fold(0u64, |value, (shift, byte)| {
-                    value | (u64::from(*byte) << (shift * 8))
-                });
-                let shift = 64 - width * 8;
-                let signed = ((bits << shift) as i64) >> shift;
-                let literal = if width == 8 {
-                    JavaLiteral::Long(signed)
-                } else {
-                    JavaLiteral::Integer(
-                        i32::try_from(signed)
-                            .map_err(|_| JavaLoweringError::InvalidIntegerLiteral(signed))?,
-                    )
-                };
-                Ok(JavaStmt::Assign {
-                    target: JavaExpr::ArrayAccess {
-                        array: Box::new(array.clone()),
-                        index: Box::new(JavaExpr::Literal(JavaLiteral::Integer(index))),
-                    },
-                    op: JavaAssignOp::Assign,
-                    value: self.coerce(JavaExpr::Literal(literal), &element),
-                })
-            })
-            .collect::<Result<Vec<_>, JavaLoweringError>>()?;
+        let count = i32::try_from(data.size)
+            .map_err(|_| JavaLoweringError::InvalidIntegerLiteral(i64::from(data.size)))?;
+        let size = usize::try_from(count).map_err(|_| JavaLoweringError::ArrayDataCapacity)?;
+        if size.checked_mul(width) != Some(data.data.len()) {
+            return Err(JavaLoweringError::InvalidArrayDataLength);
+        }
+        // DEX accepts a literal zero as a reference even without an
+        // inferred component type. No payload element can be written.
+        if Self::constant(array_arg) == Some(0) {
+            return self.array_fill_exception("java/lang/NullPointerException", Vec::new());
+        }
+        let array_type = self.ssa_expression_type(array_arg)?.clone();
+        let element =
+            array_type
+                .as_array_element()
+                .ok_or_else(|| JavaLoweringError::InvalidArrayType {
+                    instruction: insn.insn_type,
+                    offset: insn.offset,
+                    ty: array_type.clone(),
+                })?;
+        if !data.type_matches_width(element) {
+            return Err(JavaLoweringError::IncompatibleArrayData {
+                width: data.element_width,
+                element: element.clone(),
+            });
+        }
+        let mut statements = Vec::new();
+        statements
+            .try_reserve(size.saturating_add(2))
+            .map_err(|_| JavaLoweringError::ArrayDataCapacity)?;
+
+        let mut array = self.arg_as(array_arg, &array_type)?;
+        if !matches!(array, JavaExpr::Name(_)) {
+            let name = self.synthetic_variable("fillArray");
+            statements.push(JavaStmt::Variable {
+                ty: self.source_type(&array_type)?,
+                name: name.clone(),
+                value: Some(array),
+            });
+            array = JavaExpr::Name(name);
+        }
+        let length = JavaExpr::Field {
+            owner: Box::new(array.clone()),
+            name: JavaIdentifier::from_dex("length"),
+        };
+        // DEX checks the whole destination range before any element write.
+        // An empty payload still dereferences its destination.
+        if count == 0 {
+            statements.push(JavaStmt::Variable {
+                ty: JavaType::Primitive(JavaPrimitiveType::Int),
+                name: self.synthetic_variable("arrayLength"),
+                value: Some(length),
+            });
+        } else {
+            let required = JavaExpr::Literal(JavaLiteral::Integer(count));
+            statements.push(JavaStmt::If {
+                condition: JavaExpr::Binary {
+                    left: Box::new(length),
+                    op: JavaBinaryOp::Less,
+                    right: Box::new(required.clone()),
+                },
+                then_stmt: Box::new(self.array_fill_exception(
+                    "java/lang/ArrayIndexOutOfBoundsException",
+                    vec![required],
+                )?),
+                else_stmt: None,
+            });
+        }
+        for index in 0..count {
+            let argument = data
+                .literal_arg(index as usize, element)
+                .ok_or(JavaLoweringError::InvalidArrayDataLength)?;
+            let literal = argument
+                .as_literal()
+                .ok_or(JavaLoweringError::InvalidArrayDataLength)?;
+            statements.push(JavaStmt::Assign {
+                target: JavaExpr::ArrayAccess {
+                    array: Box::new(array.clone()),
+                    index: Box::new(JavaExpr::Literal(JavaLiteral::Integer(index))),
+                },
+                op: JavaAssignOp::Assign,
+                value: self.array_data_element(literal)?,
+            });
+        }
         Ok(JavaStmt::Block(statements))
+    }
+
+    fn array_fill_exception(
+        &self,
+        class: &str,
+        args: Vec<JavaExpr>,
+    ) -> Result<JavaStmt, JavaLoweringError> {
+        Ok(JavaStmt::Throw(JavaExpr::New {
+            enclosing: None,
+            ty: self.source_type(&ArgType::object(class))?,
+            target_type: None,
+            args,
+            anonymous_body: None,
+        }))
+    }
+
+    fn array_data_element(
+        &self,
+        literal: &crate::ir::LiteralArg,
+    ) -> Result<JavaExpr, JavaLoweringError> {
+        // A Java NaN constant does not encode the original payload bits.
+        let (owner, method, bits) = match Self::literal(literal)? {
+            JavaLiteral::Float(value) if value.is_nan() => (
+                "java/lang/Float",
+                "intBitsToFloat",
+                JavaLiteral::Integer(literal.value as i32),
+            ),
+            JavaLiteral::Double(value) if value.is_nan() => (
+                "java/lang/Double",
+                "longBitsToDouble",
+                JavaLiteral::Long(literal.value),
+            ),
+            value => return Ok(JavaExpr::Literal(value)),
+        };
+        Ok(JavaExpr::Call {
+            receiver: None,
+            owner: Some(self.source_type(&ArgType::object(owner))?),
+            type_arguments: Vec::new(),
+            method: JavaIdentifier::from_dex(method),
+            args: vec![JavaExpr::Literal(bits)],
+        })
     }
 
     fn predicate(&mut self, condition: &SemanticPredicate) -> Result<JavaExpr, JavaLoweringError> {
@@ -5602,6 +5686,12 @@ pub enum JavaLoweringError {
     MalformedPredicate,
     MissingArrayData,
     InvalidArrayElementWidth(u16),
+    InvalidArrayDataLength,
+    ArrayDataCapacity,
+    IncompatibleArrayData {
+        width: u16,
+        element: ArgType,
+    },
     InvalidArrayType {
         instruction: InsnType,
         offset: u32,
@@ -5695,6 +5785,18 @@ impl fmt::Display for JavaLoweringError {
             Self::MissingArrayData => f.write_str("fill-array instruction has no array data"),
             Self::InvalidArrayElementWidth(width) => {
                 write!(f, "fill-array uses unsupported element width {width}")
+            }
+            Self::InvalidArrayDataLength => {
+                f.write_str("fill-array payload byte length differs from its element count")
+            }
+            Self::ArrayDataCapacity => {
+                f.write_str("fill-array statements exceed available capacity")
+            }
+            Self::IncompatibleArrayData { width, element } => {
+                write!(
+                    f,
+                    "fill-array cannot use {width}-byte elements for {element}[]"
+                )
             }
             Self::InvalidArrayType {
                 instruction,

@@ -529,7 +529,7 @@ impl FillArrayData {
         self.default_element_type()
     }
 
-    fn type_matches_width(&self, ty: &ArgType) -> bool {
+    pub(crate) fn type_matches_width(&self, ty: &ArgType) -> bool {
         ty.as_primitive()
             .is_some_and(|primitive| self.primitive_matches_width(primitive))
     }
@@ -547,7 +547,7 @@ impl FillArrayData {
     fn raw_element(&self, index: usize) -> Option<u64> {
         let width = self.element_width as usize;
         let start = index.checked_mul(width)?;
-        let bytes = self.data.get(start..start + width)?;
+        let bytes = self.data.get(start..start.checked_add(width)?)?;
         Some(
             bytes
                 .iter()
