@@ -78,9 +78,6 @@ impl StaticInitializationRecovery {
         let JavaStmt::Block(statements) = &mut body.root else {
             return;
         };
-        if declaration.kind.is_interface() {
-            InterfaceInitialization::inline_replayable_locals(statements);
-        }
         let interface_snapshot = declaration
             .kind
             .is_interface()
@@ -280,59 +277,15 @@ impl StaticInitializationRecovery {
 struct InterfaceInitialization;
 
 impl InterfaceInitialization {
-    fn inline_replayable_locals(statements: &mut Vec<JavaStmt>) {
-        let mut index = 0;
-        while index < statements.len() {
-            let JavaStmt::Variable {
-                name,
-                value: Some(value),
-                ..
-            } = &statements[index]
-            else {
-                index += 1;
-                continue;
-            };
-            let name = name.clone();
-            let value = value.clone();
-            let following = &statements[index + 1..];
-            let first_uses = following
-                .first()
-                .map(ExpressionNames::collect_statement)
-                .unwrap_or_default();
-            let uses = following
-                .iter()
-                .flat_map(ExpressionNames::collect_statement)
-                .filter(|candidate| candidate == &name)
-                .count();
-            if uses < 2
-                || !first_uses.contains(&name)
-                || !ReplayableInitialization::check(&value)
-                || LocalAssignment::check(&name, following)
-            {
-                index += 1;
-                continue;
-            }
-
-            let mut substitution = NameSubstitution {
-                values: std::collections::BTreeMap::from([(name, value)]),
-            };
-            for statement in &mut statements[index + 1..] {
-                *statement =
-                    substitution.rewrite_statement(std::mem::replace(statement, JavaStmt::Empty));
-            }
-            statements.remove(index);
-        }
-    }
-
     fn recover(
         ownership: &StaticInitializerFields<'_>,
         fields: &mut [JavaFieldDeclaration],
         statements: &mut Vec<JavaStmt>,
         method_names: &mut JavaNameScope,
     ) -> Option<JavaMethodDeclaration> {
-        let (field_name, value) = Self::terminal_assignment(ownership, statements.last()?)?;
+        let (field_name, value) = Self::static_assignment(ownership, statements.last()?)?;
         let field_index = fields.iter().position(|field| {
-            field.name == field_name
+            &field.name == field_name
                 && field.modifiers.contains(&JavaModifier::Static)
                 && field.modifiers.contains(&JavaModifier::Final)
                 && ownership.has_default_initializer(field)
@@ -343,12 +296,13 @@ impl InterfaceInitialization {
             fields.iter().map(|field| field.name.clone()).collect(),
         );
         writes.rewrite_statement(JavaStmt::Block(statements.clone()));
-        if writes.fields.len() != 1 || !writes.fields.contains(&field_name) {
+        if writes.fields.len() != 1 || !writes.fields.contains(field_name) {
             return None;
         }
 
         let field = &mut fields[field_index];
         let helper_name = method_names.claim(JavaIdentifier::from_dex("initialize"));
+        let value = value.clone();
         let mut helper_statements = std::mem::take(statements);
         *helper_statements.last_mut()? = JavaStmt::Return(Some(value));
         field.initializer = Some(JavaExpr::Call {
@@ -394,9 +348,12 @@ impl InterfaceInitialization {
         };
         writes.rewrite_body(&mut analyzed);
         // A holder delays publication of the interface fields until its
-        // initialization returns. Keep the original writes when a recovered
-        // runtime scalar might be observed while initialization is in flight.
+        // initialization returns. An effect between the original writes can
+        // reenter the interface and observe a field that is already published.
         if writes.fields.is_empty() || !writes.fields.is_disjoint(ownership.constant_capable) {
+            return None;
+        }
+        if !Self::can_delay_publication(ownership, statements, &writes.fields) {
             return None;
         }
         let selected = fields
@@ -410,6 +367,7 @@ impl InterfaceInitialization {
                 !field.modifiers.contains(&JavaModifier::Static)
                     || !field.modifiers.contains(&JavaModifier::Final)
                     || !ownership.has_default_initializer(field)
+                    || matches!(field.ty, JavaType::Primitive(_))
             })
         {
             return None;
@@ -479,10 +437,51 @@ impl InterfaceInitialization {
         })
     }
 
-    fn terminal_assignment(
+    fn can_delay_publication(
         ownership: &StaticInitializerFields<'_>,
-        statement: &JavaStmt,
-    ) -> Option<(JavaIdentifier, JavaExpr)> {
+        statements: &[JavaStmt],
+        fields: &BTreeSet<JavaIdentifier>,
+    ) -> bool {
+        let Some(start) = statements.len().checked_sub(fields.len()) else {
+            return false;
+        };
+        let (setup, publication) = statements.split_at(start);
+        let saved_references = setup
+            .iter()
+            .filter_map(|statement| match statement {
+                JavaStmt::Variable { name, ty, .. } if !matches!(ty, JavaType::Primitive(_)) => {
+                    Some(name)
+                }
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let mut assigned = BTreeSet::new();
+        for statement in publication {
+            let Some((name, value)) = Self::static_assignment(ownership, statement) else {
+                return false;
+            };
+            if !fields.contains(name)
+                || !assigned.insert(name)
+                || !matches!(value, JavaExpr::Name(local) if saved_references.contains(local))
+                    && !matches!(value, JavaExpr::Literal(JavaLiteral::Null))
+            {
+                return false;
+            }
+        }
+
+        let mut earlier_use = EarlierInterfaceFieldUse {
+            ownership,
+            fields,
+            found: false,
+        };
+        earlier_use.rewrite_statement(JavaStmt::Block(setup.to_vec()));
+        !earlier_use.found
+    }
+
+    fn static_assignment<'s>(
+        ownership: &StaticInitializerFields<'_>,
+        statement: &'s JavaStmt,
+    ) -> Option<(&'s JavaIdentifier, &'s JavaExpr)> {
         let JavaStmt::Assign {
             target:
                 JavaExpr::StaticField {
@@ -495,9 +494,26 @@ impl InterfaceInitialization {
         else {
             return None;
         };
-        ownership
-            .owns(field_owner, name)
-            .then(|| (name.clone(), value.clone()))
+        ownership.owns(field_owner, name).then_some((name, value))
+    }
+}
+
+struct EarlierInterfaceFieldUse<'a> {
+    ownership: &'a StaticInitializerFields<'a>,
+    fields: &'a BTreeSet<JavaIdentifier>,
+    found: bool,
+}
+
+impl JavaAstRewriter for EarlierInterfaceFieldUse<'_> {
+    fn finish_expression(&mut self, expression: JavaExpr) -> JavaExpr {
+        self.found |= match &expression {
+            JavaExpr::StaticField { owner, name } => {
+                self.fields.contains(name) && self.ownership.owns(owner, name)
+            }
+            JavaExpr::Name(name) => self.fields.contains(name),
+            _ => false,
+        };
+        expression
     }
 }
 
@@ -520,123 +536,6 @@ impl JavaAstRewriter for InterfaceStaticHolderReferences<'_> {
             }
             expression => expression,
         }
-    }
-}
-
-struct ReplayableInitialization;
-
-impl ReplayableInitialization {
-    fn check(expression: &JavaExpr) -> bool {
-        match expression {
-            JavaExpr::Literal(_) | JavaExpr::ClassLiteral(_) => true,
-            JavaExpr::StaticField { owner, name } => Self::stable_static_field(owner, name),
-            JavaExpr::Cast { value, .. } => Self::check(value),
-            JavaExpr::Call {
-                receiver: None,
-                owner: Some(JavaType::Class(owner)),
-                method,
-                args,
-                ..
-            } => Self::cached_boxing_value(owner.name().components(), method, args),
-            _ => false,
-        }
-    }
-
-    fn stable_static_field(owner: &JavaType, name: &JavaIdentifier) -> bool {
-        if name.as_str() == "INSTANCE" {
-            return true;
-        }
-        let JavaType::Class(owner) = owner else {
-            return false;
-        };
-        let is_boolean = match owner.name().components() {
-            [wrapper] => wrapper.as_str() == "Boolean",
-            [package, module, wrapper] => {
-                package.as_str() == "java"
-                    && module.as_str() == "lang"
-                    && wrapper.as_str() == "Boolean"
-            }
-            _ => false,
-        };
-        is_boolean && matches!(name.as_str(), "TRUE" | "FALSE")
-    }
-
-    fn cached_boxing_value(
-        owner: &[JavaIdentifier],
-        method: &JavaIdentifier,
-        args: &[JavaExpr],
-    ) -> bool {
-        let wrapper = match owner {
-            [wrapper] => wrapper,
-            [package, module, wrapper]
-                if package.as_str() == "java" && module.as_str() == "lang" =>
-            {
-                wrapper
-            }
-            _ => return false,
-        };
-        if method.as_str() != "valueOf" {
-            return false;
-        }
-        let [value] = args else {
-            return false;
-        };
-        matches!(
-            (wrapper.as_str(), value),
-            ("Boolean", JavaExpr::Literal(JavaLiteral::Boolean(_)))
-                | (
-                    "Byte" | "Short" | "Integer",
-                    JavaExpr::Literal(JavaLiteral::Integer(-128..=127))
-                )
-                | ("Long", JavaExpr::Literal(JavaLiteral::Long(-128..=127)))
-                | (
-                    "Character",
-                    JavaExpr::Literal(JavaLiteral::Character(0..=127))
-                )
-        )
-    }
-}
-
-struct LocalAssignment<'a> {
-    name: &'a JavaIdentifier,
-    assigned: bool,
-}
-
-impl<'a> LocalAssignment<'a> {
-    fn check(name: &'a JavaIdentifier, statements: &[JavaStmt]) -> bool {
-        let mut assignment = Self {
-            name,
-            assigned: false,
-        };
-        assignment.rewrite_statement(JavaStmt::Block(statements.to_vec()));
-        assignment.assigned
-    }
-}
-
-impl JavaAstRewriter for LocalAssignment<'_> {
-    fn finish_expression(&mut self, expression: JavaExpr) -> JavaExpr {
-        if matches!(
-            &expression,
-            JavaExpr::Update { target, .. }
-                | JavaExpr::Assignment { target, .. }
-                    if matches!(target.as_ref(), JavaExpr::Name(name) if name == self.name)
-        ) {
-            self.assigned = true;
-        }
-        expression
-    }
-
-    fn finish_statement(&mut self, statement: JavaStmt) -> JavaStmt {
-        if matches!(
-            &statement,
-            JavaStmt::Assign {
-                target: JavaExpr::Name(name),
-                ..
-            } if name == self.name
-        ) {
-            self.assigned = true;
-        }
-        statement
     }
 }
 
@@ -921,25 +820,12 @@ mod tests {
     }
 
     #[test]
-    fn interface_static_singleton_aliases_become_field_initializers() {
-        let value = JavaExpr::StaticField {
+    fn interface_shared_static_reads_and_boxing_calls_are_evaluated_once() {
+        let boolean_field = JavaExpr::StaticField {
             owner: JavaType::source_class("java.lang.Boolean"),
             name: JavaIdentifier::from_dex("TRUE"),
         };
-        let mut declaration = interface_with_shared_value(value.clone());
-
-        recover(&mut declaration);
-
-        assert!(declaration.methods.is_empty());
-        assert!(declaration
-            .fields
-            .iter()
-            .all(|field| field.initializer.as_ref() == Some(&value)));
-    }
-
-    #[test]
-    fn interface_cached_boxing_aliases_become_field_initializers() {
-        let value = JavaExpr::Call {
+        let boxing_call = JavaExpr::Call {
             receiver: None,
             owner: Some(JavaType::source_class("java.lang.Integer")),
             type_arguments: Vec::new(),
@@ -947,15 +833,26 @@ mod tests {
             method: JavaIdentifier::from_dex("valueOf"),
             args: vec![JavaExpr::Literal(JavaLiteral::Integer(0))],
         };
-        let mut declaration = interface_with_shared_value(value.clone());
 
-        recover(&mut declaration);
+        for value in [boolean_field, boxing_call] {
+            let mut declaration = interface_with_shared_value(value.clone());
+            recover(&mut declaration);
 
-        assert!(declaration.methods.is_empty());
-        assert!(declaration
-            .fields
-            .iter()
-            .all(|field| field.initializer.as_ref() == Some(&value)));
+            assert!(declaration.methods.is_empty());
+            let [holder] = declaration.nested.as_slice() else {
+                panic!("expected one static holder");
+            };
+            let root = &holder.methods[0].body.as_ref().unwrap().root;
+            assert!(matches!(
+                root,
+                JavaStmt::Block(statements)
+                    if matches!(statements.as_slice(),
+                        [JavaStmt::Variable { name, value: Some(initializer), .. },
+                         JavaStmt::Assign { value: JavaExpr::Name(first), .. },
+                         JavaStmt::Assign { value: JavaExpr::Name(second), .. }]
+                        if initializer == &value && first == name && second == name)
+            ));
+        }
     }
 
     #[test]

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.26 - 2026-11-29
+
+- Preserved one-time evaluation of interface initializer locals.
+- Retained original field publication when initialization can reenter between writes.
+
 ## 0.4.25 - 2026-11-29
 
 - Preserved virtual dispatch in switch patterns with custom hash or equality methods.

@@ -194,10 +194,11 @@ def prepare_corpus(destination: Path) -> None:
                 sys.executable, str(JVM_FIXTURE / "prepare.py"), str(staging / variant),
                 "--variant", variant,
             ], check=True, timeout=120)
-        string_switch_recipe = ROOT / "quality/fixtures/jvm/string-switch-receiver/verify.py"
-        subprocess.run([
-            sys.executable, str(string_switch_recipe), "--prepare", str(staging / "string-switch-receiver"),
-        ], check=True, timeout=120, stdout=subprocess.DEVNULL)
+        for fixture in ("string-switch-receiver", "interface-initializer-snapshot"):
+            recipe = ROOT / "quality/fixtures/jvm" / fixture / "verify.py"
+            subprocess.run([
+                sys.executable, str(recipe), "--prepare", str(staging / fixture),
+            ], check=True, timeout=120, stdout=subprocess.DEVNULL)
         apk_recipe = ROOT / "quality/fixtures/export/multidex-resources/prepare.py"
         subprocess.run([
             sys.executable, str(apk_recipe), str(staging / "multidex.apk"), "complete",

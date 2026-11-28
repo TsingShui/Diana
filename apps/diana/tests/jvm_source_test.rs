@@ -363,6 +363,11 @@ fn recovered_jvm_string_switches_preserve_custom_virtual_dispatch() {
     verify_jvm_fixture("jvm/string-switch-receiver/verify.py");
 }
 
+#[test]
+fn recovered_jvm_interface_initializers_preserve_static_snapshots() {
+    verify_jvm_fixture("jvm/interface-initializer-snapshot/verify.py");
+}
+
 fn verify_jvm_fixture(path: &str) {
     let output = tempfile::tempdir().unwrap();
     let verifier = Path::new(env!("CARGO_MANIFEST_DIR"))
