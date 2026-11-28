@@ -1,0 +1,163 @@
+import java.util.ArrayList;
+import java.util.List;
+
+public final class SubscriptionFragment {
+    static final String PREF_NUM_COLUMNS = "columns";
+    static final int PREVIOUS_COLUMNS = 7;
+    static final List<String> events = new ArrayList<>();
+    static boolean rejectLayout;
+
+    record Context() {}
+
+    static final class LayoutUnavailable extends RuntimeException {}
+
+    static final class RecyclerView {
+        static final int VERTICAL = 1;
+
+        static class LayoutManager {
+            final int spans;
+
+            LayoutManager(int spans) {
+                this.spans = spans;
+            }
+        }
+
+        static class ItemDecoration {
+            final String label;
+
+            ItemDecoration(String label) {
+                this.label = label;
+            }
+        }
+
+        LayoutManager layout = new LayoutManager(PREVIOUS_COLUMNS);
+        ItemDecoration attached;
+
+        void removeItemDecoration(ItemDecoration decoration) {
+            if (decoration != attached) {
+                throw new AssertionError("the removed decorator was not the attached decorator");
+            }
+            events.add("remove:" + decoration.label);
+            attached = null;
+        }
+
+        void addItemDecoration(ItemDecoration decoration) {
+            if (attached != null) {
+                throw new AssertionError("another decorator was already attached");
+            }
+            events.add("add:" + decoration.label);
+            attached = decoration;
+        }
+
+        void setLayoutManager(LayoutManager next) {
+            events.add("layout:" + next.spans);
+            this.layout = next;
+        }
+    }
+
+    static final class GridLayoutManager extends RecyclerView.LayoutManager {
+        GridLayoutManager(Context context, int spans, int direction, boolean reverse) {
+            super(spans);
+            if (context == null) {
+                throw new AssertionError("missing layout context");
+            }
+            events.add("grid:" + spans + ":" + direction + ":" + reverse);
+            if (rejectLayout) {
+                throw new LayoutUnavailable();
+            }
+        }
+    }
+
+    static final class SubscriptionsRecyclerAdapter {
+        int columns = PREVIOUS_COLUMNS;
+
+        void setColumnCount(int next) {
+            events.add("adapter:" + next);
+            columns = next;
+        }
+
+        static final class GridDividerItemDecorator extends RecyclerView.ItemDecoration {
+            GridDividerItemDecorator() {
+                super("new");
+                events.add("create:new");
+            }
+        }
+    }
+
+    static final class SharedPreferences {
+        int stored = PREVIOUS_COLUMNS;
+
+        Editor edit() {
+            events.add("prefs-edit");
+            return new Editor();
+        }
+
+        final class Editor {
+            int pending;
+
+            Editor putInt(String key, int next) {
+                events.add("prefs-put:" + key + ":" + next);
+                pending = next;
+                return this;
+            }
+
+            void apply() {
+                events.add("prefs-apply");
+                stored = pending;
+            }
+        }
+    }
+
+    final int defaultColumns;
+    final RecyclerView subscriptionRecycler = new RecyclerView();
+    final SubscriptionsRecyclerAdapter subscriptionAdapter = new SubscriptionsRecyclerAdapter();
+    final SharedPreferences prefs = new SharedPreferences();
+    RecyclerView.ItemDecoration itemDecoration;
+
+    SubscriptionFragment(int defaultColumns, boolean priorDecoration) {
+        this.defaultColumns = defaultColumns;
+        if (priorDecoration) {
+            itemDecoration = new RecyclerView.ItemDecoration("old");
+            subscriptionRecycler.attached = itemDecoration;
+        }
+    }
+
+    int getDefaultNumOfColumns() {
+        events.add("default:" + defaultColumns);
+        return defaultColumns;
+    }
+
+    Context getContext() {
+        events.add("context");
+        return new Context();
+    }
+
+    void refreshToolbarState() {
+        events.add("refresh");
+    }
+
+    static String decorationLabel(RecyclerView.ItemDecoration decoration) {
+        return decoration == null ? "none" : decoration.label;
+    }
+
+    public static void main(String[] args) {
+        int columns = Integer.parseInt(args[0]);
+        int defaultColumns = Integer.parseInt(args[1]);
+        boolean priorDecoration = Boolean.parseBoolean(args[2]);
+        rejectLayout = Boolean.parseBoolean(args[3]);
+        var subject = new SubscriptionFragment(defaultColumns, priorDecoration);
+        try {
+            subject.setColumnNumber(columns);
+        } catch (LayoutUnavailable error) {
+            events.add("layout-constructor-threw");
+        }
+        events.add("field:" + decorationLabel(subject.itemDecoration));
+        events.add("attached:" + decorationLabel(subject.subscriptionRecycler.attached));
+        events.add("state-layout:" + subject.subscriptionRecycler.layout.spans);
+        events.add("state-adapter:" + subject.subscriptionAdapter.columns);
+        events.add("state-prefs:" + subject.prefs.stored);
+        System.out.println(String.join(",", events));
+    }
+
+    /* DECBENCH_SELECTED_METHOD */
+}

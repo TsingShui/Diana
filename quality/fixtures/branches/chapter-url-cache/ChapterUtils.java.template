@@ -1,0 +1,70 @@
+import java.io.InterruptedIOException;
+import java.util.AbstractList;
+import java.util.List;
+
+public final class ChapterUtils {
+    private enum Scenario {
+        FORCED, FORCED_INTERRUPTED, MISSING, EMPTY, SINGLE, TWO, CACHE_INTERRUPTED, FALLBACK_INTERRUPTED
+    }
+
+    private static final String URL = "https://fixture.invalid/chapters";
+    private static final InterruptedIOException INTERRUPTED = new InterruptedIOException("fixture interruption");
+    private static final List<Chapter> NETWORK = List.of(new Chapter());
+    private static final List<Chapter> CACHE = new RecordingList();
+    private static final List<String> EVENTS = new java.util.ArrayList<>();
+    private static Scenario scenario;
+
+    /* DECBENCH_SELECTED_METHOD */
+
+    public static void main(String[] args) {
+        scenario = Scenario.valueOf(args[0]);
+        try {
+            boolean refresh = scenario == Scenario.FORCED || scenario == Scenario.FORCED_INTERRUPTED;
+            List<Chapter> result = loadChaptersFromUrl(URL, refresh);
+            EVENTS.add(result == NETWORK ? "return-network" : result == CACHE ? "return-cache" :
+                       result == null ? "return-null" : "return-other");
+        } catch (Throwable error) {
+            EVENTS.add(error == INTERRUPTED ? "throw-interrupted" : "throw-" + error.getClass().getSimpleName());
+        }
+        System.out.println(String.join(",", EVENTS));
+    }
+
+    private static List<Chapter> loadChaptersFromUrl(String url, CacheControl policy) throws InterruptedIOException {
+        if (!URL.equals(url)) {
+            EVENTS.add("wrong-url");
+        }
+        if (policy == CacheControl.FORCE_CACHE) {
+            EVENTS.add("cache");
+            if (scenario == Scenario.CACHE_INTERRUPTED) throw INTERRUPTED;
+            return scenario == Scenario.MISSING ? null : CACHE;
+        }
+        if (policy == CacheControl.FORCE_NETWORK) {
+            EVENTS.add("network");
+            if (scenario == Scenario.FORCED_INTERRUPTED || scenario == Scenario.FALLBACK_INTERRUPTED)
+                throw INTERRUPTED;
+            return NETWORK;
+        }
+        EVENTS.add("wrong-policy");
+        return null;
+    }
+
+    private static final class Chapter {}
+
+    private static final class CacheControl {
+        static final CacheControl FORCE_CACHE = new CacheControl();
+        static final CacheControl FORCE_NETWORK = new CacheControl();
+    }
+
+    private static final class RecordingList extends AbstractList<Chapter> {
+        @Override
+        public int size() {
+            EVENTS.add("cache-size");
+            return switch (scenario) { case EMPTY -> 0; case TWO -> 2; default -> 1; };
+        }
+
+        @Override
+        public Chapter get(int index) {
+            throw new AssertionError("the selected method must assess the cache by size");
+        }
+    }
+}

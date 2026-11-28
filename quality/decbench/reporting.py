@@ -1,6 +1,6 @@
 """Compare DecBench observations and render portable HTML evidence."""
 
-from collections import Counter
+from collections import Counter, defaultdict
 from html import escape
 from itertools import groupby
 import json
@@ -94,7 +94,8 @@ def transition(before, after, same_evidence):
 
 
 def metadata(report):
-    return {key: report[key] for key in ("backend", "revision", "binary", "created_at") if key in report}
+    return {key: report[key] for key in ("backend", "revision", "binary", "created_at", "evaluator_sha256")
+            if key in report}
 
 
 def publication_fields(method):
@@ -104,11 +105,18 @@ def publication_fields(method):
     return {key: observation[key] for key in ("exit_code", "text", "issues", "error") if key in observation}
 
 
+def evaluator_compatible(baseline, candidate):
+    return (baseline.get("backend") != candidate.get("backend")
+            or baseline.get("evaluator_sha256") == candidate.get("evaluator_sha256"))
+
+
 def compare_reports(baseline: dict, candidate: dict) -> dict:
-    """Compare saved checks only when the original bytes and oracle agree."""
+    """Compare compatible independent checks, retaining any incomparable output."""
     before, old_inputs = index_methods(baseline)
     after, new_inputs = index_methods(candidate)
+    compatible = evaluator_compatible(baseline, candidate)
     summary = dict.fromkeys(TRANSITIONS, 0)
+    metrics = defaultdict(Counter)
     methods = []
     for key in sorted(before.keys() | after.keys()):
         suite, artifact, oracle, at, member = key
@@ -118,8 +126,9 @@ def compare_reports(baseline: dict, candidate: dict) -> dict:
         for metric, check_id in sorted(old_checks.keys() | new_checks.keys()):
             previous = old_checks.get((metric, check_id))
             current = new_checks.get((metric, check_id))
-            change = transition(previous, current, bool(artifact and oracle))
+            change = transition(previous, current, bool(artifact and oracle and compatible))
             summary[change] += 1
+            metrics[metric][change] += 1
             checks.append({
                 "id": check_id, "metric": metric, "transition": change,
                 "baseline": previous, "candidate": current,
@@ -137,6 +146,8 @@ def compare_reports(baseline: dict, candidate: dict) -> dict:
     return {
         "schema_version": 1, "kind": COMPARISON_KIND,
         "baseline": metadata(baseline), "candidate": metadata(candidate), "summary": summary,
+        "evaluator_compatible": compatible,
+        "metrics": dict(sorted(metrics.items())),
         "input_coverage": [
             {
                 "suite": suite, "input_sha256": artifact or None, "oracle_sha256": oracle or None,
@@ -155,6 +166,25 @@ def format_data(value):
 
 def label(value):
     return escape(str(value))
+
+
+def render_source(source):
+    if not source:
+        return ""
+    path = label(source["path"])
+    lines = f"{label(source['start_line'])}–{label(source['end_line'])}"
+    url = source.get("url", "")
+    reference = f"<code>{path}</code>"
+    if isinstance(url, str):
+        try:
+            parsed = urlsplit(url)
+            if parsed.scheme == "https" and parsed.hostname and parsed.username is None:
+                reference = f"<a href='{escape(url, quote=True)}'>{reference}</a>"
+        except ValueError:
+            pass
+    snippet = source.get("text")
+    excerpt = f"<pre>{label(snippet)}</pre>" if snippet else ""
+    return f"<details><summary>Original source · {reference} · lines {lines}</summary>{excerpt}</details>"
 
 
 def format_check_value(metric, value):
@@ -202,9 +232,14 @@ def render_check_rows(checks, comparison):
             expected = format_check_value(check["metric"], side["expected"])
             observed = format_check_value(check["metric"], side["observed"])
             detail = label(side.get("detail", ""))
+            original_dex = side.get("original_dex")
+            raw = ""
+            if original_dex:
+                raw = ("<details><summary>Original DEX model · " + label(original_dex["status"])
+                       + "</summary><pre>" + format_data(original_dex) + "</pre></details>")
             cells.append(
                 f"<td><strong>{status}</strong><dl><dt>Expected</dt><dd><pre>{expected}</pre></dd>"
-                f"<dt>Observed</dt><dd><pre>{observed}</pre></dd></dl><p>{detail}</p></td>"
+                f"<dt>Observed</dt><dd><pre>{observed}</pre></dd></dl><p>{detail}</p>{raw}</td>"
             )
         changed = (
             " · evidence changed" if comparison and check.get("evidence_changed")
@@ -233,7 +268,7 @@ def render_method(method, comparison, anchor):
             check["transition"] != "unchanged" for check in method["checks"]
         )
     else:
-        sides = [("Diana publication", method)]
+        sides = [("Recovered publication", method)]
         location = ""
         open_method = any(check["status"] != "PASS" for check in method["checks"])
     output = []
@@ -242,13 +277,25 @@ def render_method(method, comparison, anchor):
             output.append(f"<div><h4>{name}</h4><p>Method absent</p></div>")
         else:
             observation = render_observation(side.get("observation"))
-            output.append(f"<details><summary>{name}</summary>{observation}</details>")
+            structure = render_source_structure(side.get("source_structure"))
+            output.append(f"<details><summary>{name}</summary>{observation}{structure}</details>")
     open_attribute = " open" if open_method else ""
+    source = next((side["source"] for _, side in sides if side and side.get("source")), None)
     return (
         f"<details id='{anchor}'{open_attribute}><summary>{title}</summary>{location}"
+        + render_source(source)
         + render_check_rows(method["checks"], comparison)
         + "<div class='publications'>" + "".join(output) + "</div></details>"
     )
+
+
+def render_source_structure(receipt):
+    if not receipt:
+        return ""
+    graphs = "".join(f"<dt>{title}</dt><dd><pre>{format_check_value('structure', receipt[key])}</pre></dd>"
+                     for key, title in (("expected", "Original source"), ("observed", "Recovered publication")))
+    detail = f"<p>{label(receipt['detail'])}</p>" if receipt.get("detail") else ""
+    return f"<details><summary>Source CFG · {label(receipt['outcome'])}</summary>{detail}<dl>{graphs}</dl></details>"
 
 
 def method_index(methods, comparison):
@@ -281,12 +328,31 @@ def method_index(methods, comparison):
 
 def render_report(report: dict) -> str:
     """Return a standalone HTML page with escaped reports and method evidence."""
+    if isinstance(report, dict) and report.get("kind") == "diana-decbench-coverage":
+        import corpus_coverage
+
+        return corpus_coverage.render(report)
+    if isinstance(report, dict) and report.get("kind") == "diana-decbench-campaign-comparison":
+        import corpus_comparison
+
+        return corpus_comparison.render(report)
+    if isinstance(report, dict) and report.get("kind") == "diana-decbench-corpus-triage":
+        import corpus_triage
+
+        return corpus_triage.render(report)
+    if isinstance(report, dict) and report.get("kind") == "diana-decbench-review":
+        import corpus_review
+
+        return corpus_review.render(report)
+    if isinstance(report, dict) and report.get("kind") == "diana-decbench-timing":
+        return render_timing(report)
     if isinstance(report, dict) and report.get("kind") == COMPARISON_KIND:
         require_report(report, COMPARISON_KIND)
         title = "Diana DecBench comparison"
         provenance = {"baseline": report["baseline"], "candidate": report["candidate"]}
         summary = report["summary"]
         coverage = f"<h2>Input coverage</h2><pre>{format_data(report['input_coverage'])}</pre>"
+        columns = TRANSITIONS
         sections = "".join(
             render_method(method, True, f"method-{index}")
             for index, method in enumerate(report["methods"])
@@ -303,6 +369,7 @@ def render_report(report: dict) -> str:
             for check in method["checks"]
         )
         coverage = ""
+        columns = STATUSES
         sections = []
         all_methods = []
         for artifact in report["inputs"]:
@@ -310,6 +377,8 @@ def render_report(report: dict) -> str:
             source = label(artifact.get("path"))
             identity = format_data({
                 "input_sha256": artifact.get("sha256"), "oracle_sha256": artifact.get("oracle_sha256"),
+                **({"inventory": artifact["inventory"], "corpus": artifact["corpus"]}
+                   if artifact.get("corpus") else {}),
             })
             start = len(all_methods)
             methods = "".join(
@@ -321,12 +390,65 @@ def render_report(report: dict) -> str:
         sections = "".join(sections)
         method_links = method_index(all_methods, False)
     numbers = "".join(f"<li><strong>{label(count)}</strong> {label(name)}</li>" for name, count in summary.items())
+    metrics = render_metrics(report.get("metrics", {}), columns)
     body = (
         f"<ul>{numbers}</ul>"
         f"<details><summary>Run provenance</summary><pre>{format_data(provenance)}</pre></details>"
-        f"{coverage}{method_links}<h2>Methods</h2>{sections}"
+        f"{metrics}{coverage}{method_links}<h2>Methods</h2>{sections}"
     )
     return html_page(title, body)
+
+
+def render_metrics(metrics, columns):
+    if not metrics:
+        return ""
+    show_scope = columns == STATUSES
+    scope = ("fully_measured", "partially_measured", "unmeasured") if show_scope else ()
+    headings = "".join(f"<th>{label(name.replace('_', ' '))}</th>" for name in (*columns, *scope))
+    rows = []
+    for metric, data in metrics.items():
+        counts = data["checks"] if show_scope else data
+        amounts = [counts.get(name, 0) for name in columns]
+        amounts.extend(data["method_rows"].get(name, 0) for name in scope)
+        cells = "".join(f"<td>{label(count)}</td>" for count in amounts)
+        rows.append(f"<tr><th scope='row'>{label(metric)}</th>{cells}</tr>")
+    return ("<h2>Evidence by metric</h2><table><thead>"
+            f"<tr><th scope='col'>Metric</th>{headings}</tr></thead><tbody>{''.join(rows)}</tbody></table>")
+
+
+def render_timing(report):
+    require_report(report, "diana-decbench-timing")
+    comparison = report["comparison"]
+
+    def row(name, result):
+        if result is None:
+            return f"<tr><th scope='row'>{name}</th><td colspan='4'>Unavailable</td></tr>"
+        numbers = [result[arm]["median_seconds"] * 1000 for arm in ("baseline", "candidate")]
+        numbers.append(result["median_paired_delta_seconds"] * 1000)
+        cells = "".join(f"<td>{value:.3f}</td>" for value in numbers)
+        deviation = result.get("paired_deltas", {}).get("median_absolute_deviation_seconds")
+        cells += f"<td>{deviation * 1000:.3f}</td>" if deviation is not None else "<td>—</td>"
+        return f"<tr><th scope='row'>{name}</th>{cells}</tr>"
+
+    rows = [row("Original method inventory", comparison["inventory"]),
+            row("Selected retrieval total per trial", comparison["method_totals"])]
+    for method in comparison["methods"]:
+        name = f"<code>{label(method['member'])}</code> <small>{label(method['at'])}</small>"
+        publication = method.get("publication")
+        if publication and not publication["identical_all_trials"]:
+            name += f"<pre>{format_data(publication['distinct_outputs'])}</pre>"
+        rows.append(row(name, method["comparison"]))
+    provenance = format_data(report["provenance"])
+    status = "complete" if report["comparable"] else "incomplete"
+    return html_page("Diana DecBench paired timings", (
+        f"<p>{len(report['measurements'])} paired trials. Evidence {status}.</p>"
+        f"<details><summary>Input and tool provenance</summary><pre>{provenance}</pre></details>"
+        f"<div><h2>Paired CLI latency in milliseconds</h2><table><thead><tr>"
+        "<th>Operation</th><th>Baseline median</th><th>Candidate median</th>"
+        f"<th>Median paired difference</th><th>Median absolute deviation</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table></div>"
+        f"<pre>{format_data(report['errors'])}</pre>"
+    ))
 
 
 def html_page(title, body):
@@ -383,12 +505,19 @@ def series(reports):
     for position, report in enumerate(reports):
         indexed, inputs = index_methods(report)
         backend = backend_name(report)
-        checks = {
-            (*identity, *case, json_identity(check["expected"])): check
-            for identity, (_, _, group) in indexed.items()
-            if identity[1] and identity[2]
-            for case, check in group.items()
+        profiles = {
+            (item["suite"], item.get("sha256"), item.get("oracle_sha256")): item.get("corpus", {}).get("profile", "")
+            for item in report["inputs"]
         }
+        methods = {}
+        for identity, (_, _, group) in indexed.items():
+            suite, artifact, oracle, at, member = identity
+            if not artifact or not oracle:
+                continue
+            profile = profiles.get(identity[:3], "")
+            methods[(suite, artifact, at, member, profile)] = {
+                (*identity, *case, json_identity(check["expected"])): check for case, check in group.items()
+            }
         counts = Counter(
             check["status"] for _, _, group in indexed.values() for check in group.values()
         )
@@ -400,20 +529,31 @@ def series(reports):
                 for suite, artifact, oracle in sorted(inputs)
             ],
         })
-        backends.setdefault(backend, []).append((position, checks))
+        backends.setdefault(backend, []).append((position, methods))
     return runs, backends
 
 
-def triage(backends):
-    latest = {backend: history[-1] for backend, history in backends.items()}
-    prior = {backend: history[-2][1] for backend, history in backends.items() if len(history) > 1}
-    cases = set().union(*(checks.keys() for _, checks in latest.values()))
+def triage(backends, runs):
+    latest = defaultdict(dict)
+    prior = defaultdict(dict)
+    for backend, history in backends.items():
+        for position, methods in history:
+            for method, checks in methods.items():
+                previous = latest[backend].get(method)
+                if previous and evaluator_compatible(runs[previous[0]], runs[position]):
+                    prior[backend][method] = previous[1]
+                else:
+                    prior[backend].pop(method, None)
+                latest[backend][method] = (position, checks)
+    cases = {(method, identity) for observations in latest.values()
+             for method, (_, checks) in observations.items() for identity in checks}
     mined = []
-    for identity in sorted(cases):
+    for method, identity in sorted(cases):
         suite, artifact, oracle, at, member, metric, check_id, _ = identity
         arms = [
             {"backend": backend, "run": position, "check": checks.get(identity)}
-            for backend, (position, checks) in sorted(latest.items())
+            for backend in sorted(backends)
+            for position, checks in [latest[backend].get(method, (None, {}))]
         ]
         failed = [arm["backend"] for arm in arms if arm["check"] and arm["check"]["status"] == "FAIL"]
         if not failed:
@@ -421,7 +561,7 @@ def triage(backends):
         passed = [arm["backend"] for arm in arms if arm["check"] and arm["check"]["status"] == "PASS"]
         regressions = [
             backend for backend in failed
-            if prior.get(backend, {}).get(identity, {}).get("status") == "PASS"
+            if prior[backend].get(method, {}).get(identity, {}).get("status") == "PASS"
         ]
         signals = []
         if regressions:
@@ -433,6 +573,7 @@ def triage(backends):
         mined.append({
             "suite": suite, "input_sha256": artifact, "oracle_sha256": oracle,
             "at": at, "member": member, "metric": metric, "id": check_id,
+            **({"profile": method[-1]} if method[-1] else {}),
             "expected": json.loads(identity[-1]),
             "signals": signals, "regressions": regressions, "failing": failed, "passing": passed,
             "unmeasured": [arm["backend"] for arm in arms if arm["backend"] not in failed + passed],
@@ -443,8 +584,8 @@ def triage(backends):
 
 def mine_reports(reports: list[dict]) -> list[dict]:
     """Find candidate checks across the latest arms of oldest-to-newest reports."""
-    _, backends = series(reports)
-    return triage(backends)
+    runs, backends = series(reports)
+    return triage(backends, runs)
 
 
 def build_index(reports: list[dict]) -> dict:
@@ -452,7 +593,13 @@ def build_index(reports: list[dict]) -> dict:
     runs, backends = series(reports)
     history = []
     for backend, snapshots in sorted(backends.items()):
-        for (previous, _), (current, _) in zip(snapshots, snapshots[1:]):
+        previous_by_selection = {}
+        for current, methods in snapshots:
+            selection = (json_identity(runs[current]["input_scopes"]), tuple(sorted(methods)))
+            previous = previous_by_selection.get(selection)
+            previous_by_selection[selection] = current
+            if previous is None:
+                continue
             comparison = compare_reports(reports[previous], reports[current])
             history.append({
                 "backend": backend, "baseline": previous, "candidate": current,
@@ -460,7 +607,7 @@ def build_index(reports: list[dict]) -> dict:
             })
     return {
         "schema_version": 1, "kind": INDEX_KIND,
-        "runs": runs, "history": history, "mining": triage(backends),
+        "runs": runs, "history": history, "mining": triage(backends, runs),
     }
 
 
@@ -498,7 +645,8 @@ def render_index(index: dict) -> str:
         for case in cases:
             arms = []
             for arm in case["arms"]:
-                name = names[arm["run"]]
+                name = (names[arm["run"]] if arm["run"] is not None
+                        else f"{label(arm['backend'])} · no matching method")
                 observation = format_data(arm["check"])
                 arms.append(f"<h4>{name}</h4><pre>{observation}</pre>")
             title = (

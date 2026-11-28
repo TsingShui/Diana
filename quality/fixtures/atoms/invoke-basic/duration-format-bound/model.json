@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "class_name": "DurationFormatModel",
+  "template": "DurationFormatModel.java",
+  "scenarios": [
+    {
+      "id": "negative-duration",
+      "arguments": ["-31"],
+      "expected": ["format:0", "return:elapsed:0"]
+    },
+    {
+      "id": "minimum-signed-long",
+      "arguments": ["-9223372036854775808"],
+      "expected": ["format:0", "return:elapsed:0"]
+    },
+    {
+      "id": "zero-duration",
+      "arguments": ["0"],
+      "expected": ["format:0", "return:elapsed:0"]
+    },
+    {
+      "id": "positive-duration",
+      "arguments": ["3661"],
+      "expected": ["format:3661", "return:elapsed:3661"]
+    },
+    {
+      "id": "maximum-signed-long",
+      "arguments": ["9223372036854775807"],
+      "expected": ["format:9223372036854775807", "return:elapsed:9223372036854775807"]
+    }
+  ]
+}

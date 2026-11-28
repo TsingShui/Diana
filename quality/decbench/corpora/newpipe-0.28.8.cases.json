@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "input_sha256": "88a1c99ca48394af431b24379783165860aaab3f7f45cce9ca6b8a7d2139a4d6",
+  "source_revision": "84d7db5c1348a1a2f73c80970b977d8e1ef6a83d",
+  "revision_entry": "META-INF/version-control-info.textproto",
+  "methods": [
+    {
+      "at": "e4:l0:c7451:m55054",
+      "member": "Lorg/schabi/newpipe/player/helper/PlayerHelper;->captionLanguageStemOf(Ljava/lang/String;)Ljava/lang/String;",
+      "source": {
+        "path": "app/src/main/java/org/schabi/newpipe/player/helper/PlayerHelper.java",
+        "start_line": 125,
+        "end_line": 137,
+        "sha256": "04866a22d21a6219326c3313ca27c792b2458481b35678f82d3cd585de4c0c3b",
+        "url": "https://github.com/TeamNewPipe/NewPipe/blob/84d7db5c1348a1a2f73c80970b977d8e1ef6a83d/app/src/main/java/org/schabi/newpipe/player/helper/PlayerHelper.java#L125-L137"
+      },
+      "obligations": [
+        {
+          "id": "caption-delimiter-and-trim-calls",
+          "kind": "call_sequence",
+          "description": "Preserve both delimiter tests, the prefix test, and the split and trim calls for each caption direction.",
+          "targets": [
+            {"owner": "Ljava/lang/String;", "name": "contains", "descriptor": "(Ljava/lang/CharSequence;)Z"},
+            {"owner": "Ljava/lang/String;", "name": "startsWith", "descriptor": "(Ljava/lang/String;)Z"},
+            {"owner": "Ljava/lang/String;", "name": "split", "descriptor": "(Ljava/lang/String;)[Ljava/lang/String;"},
+            {"owner": "Ljava/lang/String;", "name": "trim", "descriptor": "()Ljava/lang/String;"}
+          ]
+        }
+      ]
+    },
+    {
+      "at": "e4:l0:c7706:m56258",
+      "member": "Lorg/schabi/newpipe/util/ListHelper;->compareVideoStreamResolution(Ljava/lang/String;Ljava/lang/String;)I",
+      "source": {
+        "path": "app/src/main/java/org/schabi/newpipe/util/ListHelper.java",
+        "start_line": 682,
+        "end_line": 696,
+        "sha256": "e6e755484c428d1d70f55b20a4db8b4752c4a1fec59bee64b98c8480d37157d8",
+        "url": "https://github.com/TeamNewPipe/NewPipe/blob/84d7db5c1348a1a2f73c80970b977d8e1ef6a83d/app/src/main/java/org/schabi/newpipe/util/ListHelper.java#L682-L696"
+      },
+      "obligations": [
+        {
+          "id": "resolution-normalization-and-parse-calls",
+          "kind": "call_sequence",
+          "description": "Show both regex substitutions before parsing each resolution, with the first resolution parsed before the second.",
+          "targets": [
+            {"owner": "Ljava/lang/String;", "name": "replaceAll", "descriptor": "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"},
+            {"owner": "Ljava/lang/Integer;", "name": "parseInt", "descriptor": "(Ljava/lang/String;)I"}
+          ]
+        }
+      ]
+    },
+    {
+      "at": "e4:l0:c7707:m56282",
+      "member": "Lorg/schabi/newpipe/util/Localization;->getDurationString(J)Ljava/lang/String;",
+      "model": "atoms/invoke-basic/duration-format-bound/model.json",
+      "source": {
+        "path": "app/src/main/java/org/schabi/newpipe/util/Localization.java",
+        "start_line": 270,
+        "end_line": 272,
+        "sha256": "ab5c3c42e488ed14513f54e7eba6facdd64b991bd319e26e42389bcf5686b60f",
+        "url": "https://github.com/TeamNewPipe/NewPipe/blob/84d7db5c1348a1a2f73c80970b977d8e1ef6a83d/app/src/main/java/org/schabi/newpipe/util/Localization.java#L270-L272"
+      },
+      "obligations": [
+        {
+          "id": "duration-bound-and-format-calls",
+          "kind": "call_sequence",
+          "description": "Show the duration bound call before the elapsed-time formatter.",
+          "targets": [
+            {"owner": "Ljava/lang/Math;", "name": "max", "descriptor": "(JJ)J"},
+            {"owner": "Landroid/text/format/DateUtils;", "name": "formatElapsedTime", "descriptor": "(J)Ljava/lang/String;"}
+          ]
+        }
+      ]
+    }
+  ]
+}

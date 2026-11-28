@@ -1,0 +1,91 @@
+import java.io.InterruptedIOException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
+public final class ChapterUtils {
+    static final String TAG = "ChapterUtils";
+    static final List<String> events = new ArrayList<>();
+    static boolean interruptNetwork;
+
+    static class Context {}
+    static class Chapter {}
+
+    interface Playable {
+        List<Chapter> getChapters();
+        void setChapters(List<Chapter> chapters);
+    }
+
+    static final class FeedItem {
+        final boolean database;
+        final String url;
+
+        FeedItem(boolean database, boolean network) {
+            this.database = database;
+            this.url = network ? "model" : "";
+        }
+
+        boolean hasChapters() { return database; }
+        String getPodcastIndexChapterUrl() { return url; }
+    }
+
+    static final class FeedMedia implements Playable {
+        FeedItem item;
+
+        FeedMedia(FeedItem item) { this.item = item; }
+        FeedItem getItem() { return item; }
+        long getItemId() { return 17L; }
+        void setItem(FeedItem next) { item = next; }
+        public List<Chapter> getChapters() { return null; }
+
+        public void setChapters(List<Chapter> chapters) {
+            events.add(chapters == null ? "set-null" : "set");
+        }
+    }
+
+    static final class DBReader {
+        static FeedItem getFeedItem(long id) { throw new AssertionError("unexpected fetch"); }
+
+        static List<Chapter> loadChaptersOfFeedItem(FeedItem item) {
+            events.add("database");
+            return List.of(new Chapter());
+        }
+    }
+
+    static final class TextUtils {
+        static boolean isEmpty(String value) { return value == null || value.isEmpty(); }
+    }
+
+    static final class ChapterMerger {
+        static List<Chapter> merge(List<Chapter> left, List<Chapter> right) {
+            events.add("merge");
+            return List.of(new Chapter());
+        }
+    }
+
+    static final class Log {
+        static void d(String tag, String message) { events.add("interrupted"); }
+    }
+
+    static List<Chapter> loadChaptersFromUrl(String url, boolean force) throws InterruptedIOException {
+        events.add("network");
+        if (interruptNetwork) {
+            throw new InterruptedIOException("model");
+        }
+        return List.of(new Chapter());
+    }
+
+    static List<Chapter> loadChaptersFromMediaFile(Playable playable, Context context) {
+        events.add("media");
+        return List.of(new Chapter());
+    }
+
+    public static void main(String[] arguments) {
+        interruptNetwork = Boolean.parseBoolean(arguments[2]);
+        FeedItem item = new FeedItem(Boolean.parseBoolean(arguments[0]), Boolean.parseBoolean(arguments[1]));
+        loadChapters(new FeedMedia(item), new Context(), false);
+        System.out.println(String.join(",", events));
+    }
+
+    /* DECBENCH_SELECTED_METHOD */
+}

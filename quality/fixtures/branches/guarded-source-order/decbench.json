@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "id": "dex-guarded-source-order",
+  "default": false,
+  "input": "classes.dex",
+  "input_sha256": "cba93e4b1d4636da2248a2b32657f75b5dcc3bb3bb25b2732c3c1de22702d8ed",
+  "probe": "decbench_probe.py",
+  "oracle_files": [
+    "GuardedSourceOrder.java",
+    "GuardedSourceOrder.smali",
+    "GuardedSourceOrder$Effects.smali",
+    "GuardedSourceOrder$Selection.smali",
+    "CheckGuardedSourceOrder.java",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c2:m13",
+      "member": "Lfixture/GuardedSourceOrder;->collect(Ljava/lang/Object;I)Ljava/lang/Object;",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c2:m14",
+      "member": "Lfixture/GuardedSourceOrder;->collectAfterOpening(Ljava/lang/Object;I)Ljava/lang/Object;",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

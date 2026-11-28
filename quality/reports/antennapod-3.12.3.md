@@ -12,6 +12,22 @@ The fixture-backed follow-ups below address C1 and the reproduced P6 ownership
 limitations R1/R2. The original review table and observations remain scoped to
 that recorded baseline.
 
+Diana DecBench can repeat these selections against the pinned APK and source
+archive. On Diana 0.4.2, the model for `ChapterUtils.loadChapters` observed
+the network request before the database load when both were needed. A network
+interruption also prevented the preceding database load from taking place.
+The independent [guarded source order fixture](../fixtures/branches/guarded-source-order/)
+reproduces that ordering mechanism with standalone DEX.
+
+The discovered `SubscriptionFragment.setColumnNumber` case shows a second
+effect-order problem. Diana 0.4.2 moves the ordinary single-column layout
+constructor after the adapter update. A throwing constructor leaves the
+prior adapter value in the source control and changes it in the Diana
+execution. [Executable subscription model](../fixtures/branches/subscription-layout-order/)
+
+Use the [public corpus workflow](../decbench/README.md#replay-a-public-apk-corpus)
+to acquire the inputs and repeat the evaluation.
+
 The reviewed control, retry and cleanup paths have no identified contradiction
 under the source models below, apart from the baseline character-use spelling.
 Some baseline protection and retry structures remain explicit. Their notation is a

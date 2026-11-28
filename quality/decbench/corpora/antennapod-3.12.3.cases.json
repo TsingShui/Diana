@@ -1,0 +1,863 @@
+{
+  "schema_version": 1,
+  "input_sha256": "6e79f28f69cef1a8b2e4f5f88c9c3cf3c3d7c51356f01394ac23b0dc5d56a00b",
+  "source_revision": "175e5ef8fe3e125a5014d70ef0c57cf85661c71b",
+  "revision_entry": "META-INF/version-control-info.textproto",
+  "methods": [
+    {
+      "at": "e4:l0:c8017:m54019",
+      "member": "Lde/danoeh/antennapod/model/feed/FeedItemFilter;->matches(Lde/danoeh/antennapod/model/feed/FeedItem;)Z",
+      "source": {
+        "path": "model/src/main/java/de/danoeh/antennapod/model/feed/FeedItemFilter.java",
+        "start_line": 104,
+        "end_line": 152,
+        "sha256": "201d762a425d8f0d6e55db3d9d228713474a0efe0e391e6ee469a25993d6d0ba",
+        "url": "https://github.com/AntennaPod/AntennaPod/blob/175e5ef8fe3e125a5014d70ef0c57cf85661c71b/model/src/main/java/de/danoeh/antennapod/model/feed/FeedItemFilter.java#L104-L152"
+      },
+      "obligations": [
+        {
+          "id": "item-flag-and-state-calls",
+          "kind": "call_sequence",
+          "description": "Preserve the displayed sequence of selected flag, media-history and feed-state calls, including repeated calls.",
+          "targets": [
+            {
+              "owner": "Lde/danoeh/antennapod/model/feed/FeedItem;",
+              "name": "isNew",
+              "descriptor": "()Z"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/model/feed/FeedItem;",
+              "name": "isPlayed",
+              "descriptor": "()Z"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/model/feed/FeedItem;",
+              "name": "isInProgress",
+              "descriptor": "()Z"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/model/feed/FeedItem;",
+              "name": "isTagged",
+              "descriptor": "(Ljava/lang/String;)Z"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/model/feed/FeedItem;",
+              "name": "isDownloaded",
+              "descriptor": "()Z"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/model/feed/FeedItem;",
+              "name": "hasMedia",
+              "descriptor": "()Z"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/model/feed/FeedItem;",
+              "name": "getMedia",
+              "descriptor": "()Lde/danoeh/antennapod/model/feed/FeedMedia;"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/model/feed/FeedMedia;",
+              "name": "getLastPlayedTimeHistory",
+              "descriptor": "()Ljava/util/Date;"
+            },
+            {
+              "owner": "Ljava/util/Date;",
+              "name": "getTime",
+              "descriptor": "()J"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/model/feed/FeedItem;",
+              "name": "getFeed",
+              "descriptor": "()Lde/danoeh/antennapod/model/feed/Feed;"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/model/feed/Feed;",
+              "name": "getState",
+              "descriptor": "()I"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "at": "e4:l0:c8167:m54687",
+      "member": "Lde/danoeh/antennapod/net/download/serviceinterface/FileNameGenerator;->generateFileName(Ljava/lang/String;)Ljava/lang/String;",
+      "source": {
+        "path": "net/download/service-interface/src/main/java/de/danoeh/antennapod/net/download/serviceinterface/FileNameGenerator.java",
+        "start_line": 32,
+        "end_line": 53,
+        "sha256": "aa24974a6c040b53083c5f6cad3f49ed95f115ec752e1e68cfce27ed83934822",
+        "url": "https://github.com/AntennaPod/AntennaPod/blob/175e5ef8fe3e125a5014d70ef0c57cf85661c71b/net/download/service-interface/src/main/java/de/danoeh/antennapod/net/download/serviceinterface/FileNameGenerator.java#L32-L53"
+      },
+      "obligations": [
+        {
+          "id": "filename-scan-and-fallback-calls",
+          "kind": "call_sequence",
+          "description": "Preserve the displayed sequence of accent normalization, space filtering, accepted-character append, empty-name fallback and digest suffix calls.",
+          "targets": [
+            {
+              "owner": "Lorg/apache/commons/lang3/StringUtils;",
+              "name": "stripAccents",
+              "descriptor": "(Ljava/lang/String;)Ljava/lang/String;"
+            },
+            {
+              "owner": "Ljava/lang/Character;",
+              "name": "isSpaceChar",
+              "descriptor": "(C)Z"
+            },
+            {
+              "owner": "Lorg/apache/commons/lang3/ArrayUtils;",
+              "name": "contains",
+              "descriptor": "([CC)Z"
+            },
+            {
+              "owner": "Ljava/lang/StringBuilder;",
+              "name": "append",
+              "descriptor": "(C)Ljava/lang/StringBuilder;"
+            },
+            {
+              "owner": "Ljava/lang/String;",
+              "name": "trim",
+              "descriptor": "()Ljava/lang/String;"
+            },
+            {
+              "owner": "Landroid/text/TextUtils;",
+              "name": "isEmpty",
+              "descriptor": "(Ljava/lang/CharSequence;)Z"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/net/download/serviceinterface/FileNameGenerator;",
+              "name": "randomString",
+              "descriptor": "(I)Ljava/lang/String;"
+            },
+            {
+              "owner": "Ljava/lang/String;",
+              "name": "substring",
+              "descriptor": "(II)Ljava/lang/String;"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/net/download/serviceinterface/FileNameGenerator;",
+              "name": "md5",
+              "descriptor": "(Ljava/lang/String;)Ljava/lang/String;"
+            }
+          ]
+        },
+        {
+          "id": "filename-append-char",
+          "kind": "char_arguments",
+          "description": "Show a char argument at the selected StringBuilder.append site during accepted-character scanning.",
+          "targets": [
+            {
+              "owner": "Ljava/lang/StringBuilder;",
+              "name": "append",
+              "descriptor": "(C)Ljava/lang/StringBuilder;"
+            }
+          ]
+        },
+        {
+          "id": "filename-fallback-length",
+          "kind": "argument_values",
+          "description": "Show the original length 8 argument at the empty-name fallback call.",
+          "targets": [
+            {
+              "owner": "Lde/danoeh/antennapod/net/download/serviceinterface/FileNameGenerator;",
+              "name": "randomString",
+              "descriptor": "(I)Ljava/lang/String;"
+            }
+          ],
+          "argument_indexes": [
+            0
+          ]
+        }
+      ],
+      "model": "atoms/scalar-use-views/file-name-generation/model.json"
+    },
+    {
+      "at": "e4:l0:c8167:m54688",
+      "member": "Lde/danoeh/antennapod/net/download/serviceinterface/FileNameGenerator;->md5(Ljava/lang/String;)Ljava/lang/String;",
+      "source": {
+        "path": "net/download/service-interface/src/main/java/de/danoeh/antennapod/net/download/serviceinterface/FileNameGenerator.java",
+        "start_line": 63,
+        "end_line": 75,
+        "sha256": "aa24974a6c040b53083c5f6cad3f49ed95f115ec752e1e68cfce27ed83934822",
+        "url": "https://github.com/AntennaPod/AntennaPod/blob/175e5ef8fe3e125a5014d70ef0c57cf85661c71b/net/download/service-interface/src/main/java/de/danoeh/antennapod/net/download/serviceinterface/FileNameGenerator.java#L63-L75"
+      },
+      "obligations": [
+        {
+          "id": "digest-and-byte-rendering-calls",
+          "kind": "call_sequence",
+          "description": "Preserve the displayed digest setup, string byte conversion, digest and hexadecimal byte-rendering call sequence.",
+          "targets": [
+            {
+              "owner": "Ljava/security/MessageDigest;",
+              "name": "getInstance",
+              "descriptor": "(Ljava/lang/String;)Ljava/security/MessageDigest;"
+            },
+            {
+              "owner": "Ljava/lang/String;",
+              "name": "getBytes",
+              "descriptor": "(Ljava/lang/String;)[B"
+            },
+            {
+              "owner": "Ljava/security/MessageDigest;",
+              "name": "digest",
+              "descriptor": "([B)[B"
+            },
+            {
+              "owner": "Ljava/lang/Integer;",
+              "name": "toHexString",
+              "descriptor": "(I)Ljava/lang/String;"
+            },
+            {
+              "owner": "Ljava/lang/String;",
+              "name": "substring",
+              "descriptor": "(II)Ljava/lang/String;"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "at": "e4:l0:c8167:m54689",
+      "member": "Lde/danoeh/antennapod/net/download/serviceinterface/FileNameGenerator;->randomString(I)Ljava/lang/String;",
+      "source": {
+        "path": "net/download/service-interface/src/main/java/de/danoeh/antennapod/net/download/serviceinterface/FileNameGenerator.java",
+        "start_line": 55,
+        "end_line": 61,
+        "sha256": "aa24974a6c040b53083c5f6cad3f49ed95f115ec752e1e68cfce27ed83934822",
+        "url": "https://github.com/AntennaPod/AntennaPod/blob/175e5ef8fe3e125a5014d70ef0c57cf85661c71b/net/download/service-interface/src/main/java/de/danoeh/antennapod/net/download/serviceinterface/FileNameGenerator.java#L55-L61"
+      },
+      "obligations": [
+        {
+          "id": "random-char-append-sequence",
+          "kind": "call_sequence",
+          "description": "Preserve the displayed random draw followed by character append before final string conversion.",
+          "targets": [
+            {
+              "owner": "Ljava/lang/Math;",
+              "name": "random",
+              "descriptor": "()D"
+            },
+            {
+              "owner": "Ljava/lang/StringBuilder;",
+              "name": "append",
+              "descriptor": "(C)Ljava/lang/StringBuilder;"
+            },
+            {
+              "owner": "Ljava/lang/StringBuilder;",
+              "name": "toString",
+              "descriptor": "()Ljava/lang/String;"
+            }
+          ]
+        },
+        {
+          "id": "random-append-char",
+          "kind": "char_arguments",
+          "description": "Show the indexed char-array value as a char argument rather than an integer argument at StringBuilder.append.",
+          "targets": [
+            {
+              "owner": "Ljava/lang/StringBuilder;",
+              "name": "append",
+              "descriptor": "(C)Ljava/lang/StringBuilder;"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "at": "e4:l0:c8337:m55145",
+      "member": "Lde/danoeh/antennapod/parser/feed/util/DateUtils;->parse(Ljava/lang/String;)Ljava/util/Date;",
+      "source": {
+        "path": "parser/feed/src/main/java/de/danoeh/antennapod/parser/feed/util/DateUtils.java",
+        "start_line": 27,
+        "end_line": 130,
+        "sha256": "c8d06e56e046908b5466a818cf70b11c61c5d6d7a28491f2f0b1bb76eaa4de6a",
+        "url": "https://github.com/AntennaPod/AntennaPod/blob/175e5ef8fe3e125a5014d70ef0c57cf85661c71b/parser/feed/src/main/java/de/danoeh/antennapod/parser/feed/util/DateUtils.java#L27-L130"
+      },
+      "obligations": [
+        {
+          "id": "date-normalization-and-retry-calls",
+          "kind": "call_sequence",
+          "description": "Preserve the displayed normalization calls, parse-position reset before the two-argument parse, and subsequent retry-test and diagnostic calls.",
+          "targets": [
+            {
+              "owner": "Ljava/lang/ThreadLocal;",
+              "name": "get",
+              "descriptor": "()Ljava/lang/Object;"
+            },
+            {
+              "owner": "Ljava/lang/String;",
+              "name": "trim",
+              "descriptor": "()Ljava/lang/String;"
+            },
+            {
+              "owner": "Ljava/lang/String;",
+              "name": "replace",
+              "descriptor": "(CC)Ljava/lang/String;"
+            },
+            {
+              "owner": "Ljava/lang/String;",
+              "name": "replaceAll",
+              "descriptor": "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"
+            },
+            {
+              "owner": "Ljava/text/SimpleDateFormat;",
+              "name": "applyPattern",
+              "descriptor": "(Ljava/lang/String;)V"
+            },
+            {
+              "owner": "Ljava/text/ParsePosition;",
+              "name": "setIndex",
+              "descriptor": "(I)V"
+            },
+            {
+              "owner": "Ljava/text/SimpleDateFormat;",
+              "name": "parse",
+              "descriptor": "(Ljava/lang/String;Ljava/text/ParsePosition;)Ljava/util/Date;"
+            },
+            {
+              "owner": "Ljava/text/ParsePosition;",
+              "name": "getIndex",
+              "descriptor": "()I"
+            },
+            {
+              "owner": "Ljava/lang/String;",
+              "name": "matches",
+              "descriptor": "(Ljava/lang/String;)Z"
+            },
+            {
+              "owner": "Ljava/io/PrintStream;",
+              "name": "println",
+              "descriptor": "(Ljava/lang/String;)V"
+            }
+          ]
+        },
+        {
+          "id": "date-replace-char-overload",
+          "kind": "char_arguments",
+          "description": "Show character arguments at both operand positions of the original String.replace call.",
+          "targets": [
+            {
+              "owner": "Ljava/lang/String;",
+              "name": "replace",
+              "descriptor": "(CC)Ljava/lang/String;"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "at": "e4:l0:c8337:m55146",
+      "member": "Lde/danoeh/antennapod/parser/feed/util/DateUtils;->parseOrNullIfFuture(Ljava/lang/String;)Ljava/util/Date;",
+      "source": {
+        "path": "parser/feed/src/main/java/de/danoeh/antennapod/parser/feed/util/DateUtils.java",
+        "start_line": 136,
+        "end_line": 146,
+        "sha256": "c8d06e56e046908b5466a818cf70b11c61c5d6d7a28491f2f0b1bb76eaa4de6a",
+        "url": "https://github.com/AntennaPod/AntennaPod/blob/175e5ef8fe3e125a5014d70ef0c57cf85661c71b/parser/feed/src/main/java/de/danoeh/antennapod/parser/feed/util/DateUtils.java#L136-L146"
+      },
+      "obligations": [
+        {
+          "id": "date-parse-and-future-test",
+          "kind": "call_sequence",
+          "description": "Preserve the displayed parse call before constructing the comparison date and testing whether the result is after it.",
+          "targets": [
+            {
+              "owner": "Lde/danoeh/antennapod/parser/feed/util/DateUtils;",
+              "name": "parse",
+              "descriptor": "(Ljava/lang/String;)Ljava/util/Date;"
+            },
+            {
+              "owner": "Ljava/util/Date;",
+              "name": "<init>",
+              "descriptor": "()V"
+            },
+            {
+              "owner": "Ljava/util/Date;",
+              "name": "after",
+              "descriptor": "(Ljava/util/Date;)Z"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "at": "e4:l0:c8337:m55147",
+      "member": "Lde/danoeh/antennapod/parser/feed/util/DateUtils;->parseTimeString(Ljava/lang/String;)J",
+      "source": {
+        "path": "parser/feed/src/main/java/de/danoeh/antennapod/parser/feed/util/DateUtils.java",
+        "start_line": 154,
+        "end_line": 169,
+        "sha256": "c8d06e56e046908b5466a818cf70b11c61c5d6d7a28491f2f0b1bb76eaa4de6a",
+        "url": "https://github.com/AntennaPod/AntennaPod/blob/175e5ef8fe3e125a5014d70ef0c57cf85661c71b/parser/feed/src/main/java/de/danoeh/antennapod/parser/feed/util/DateUtils.java#L154-L169"
+      },
+      "obligations": [
+        {
+          "id": "time-component-parser-order",
+          "kind": "call_sequence",
+          "description": "Preserve the displayed split, both integer conversion sites and the subsequent floating-point seconds conversion.",
+          "targets": [
+            {
+              "owner": "Ljava/lang/String;",
+              "name": "split",
+              "descriptor": "(Ljava/lang/String;)[Ljava/lang/String;"
+            },
+            {
+              "owner": "Ljava/lang/Integer;",
+              "name": "parseInt",
+              "descriptor": "(Ljava/lang/String;)I"
+            },
+            {
+              "owner": "Ljava/lang/Float;",
+              "name": "parseFloat",
+              "descriptor": "(Ljava/lang/String;)F"
+            }
+          ]
+        }
+      ],
+      "model": "exceptions/handler-retry-rejoin/time-string-arithmetic/model.json"
+    },
+    {
+      "at": "e5:l0:c362:m2869",
+      "member": "Lde/danoeh/antennapod/storage/importexport/OpmlReader;->readDocument(Ljava/io/Reader;)Ljava/util/ArrayList;",
+      "source": {
+        "path": "storage/importexport/src/main/java/de/danoeh/antennapod/storage/importexport/OpmlReader.java",
+        "start_line": 27,
+        "end_line": 90,
+        "sha256": "f59d5a31ed7f1e8e2307d127a74152355767d933f1833a9b93ecc608b36ffff1",
+        "url": "https://github.com/AntennaPod/AntennaPod/blob/175e5ef8fe3e125a5014d70ef0c57cf85661c71b/storage/importexport/src/main/java/de/danoeh/antennapod/storage/importexport/OpmlReader.java#L27-L90"
+      },
+      "obligations": [
+        {
+          "id": "parser-setup-and-advance",
+          "kind": "call_sequence",
+          "description": "Preserve the displayed parser creation and configuration calls before initial event retrieval and parser advancement.",
+          "targets": [
+            {
+              "owner": "Lorg/xmlpull/v1/XmlPullParserFactory;",
+              "name": "newInstance",
+              "descriptor": "()Lorg/xmlpull/v1/XmlPullParserFactory;"
+            },
+            {
+              "owner": "Lorg/xmlpull/v1/XmlPullParserFactory;",
+              "name": "setNamespaceAware",
+              "descriptor": "(Z)V"
+            },
+            {
+              "owner": "Lorg/xmlpull/v1/XmlPullParserFactory;",
+              "name": "newPullParser",
+              "descriptor": "()Lorg/xmlpull/v1/XmlPullParser;"
+            },
+            {
+              "owner": "Lorg/xmlpull/v1/XmlPullParser;",
+              "name": "setInput",
+              "descriptor": "(Ljava/io/Reader;)V"
+            },
+            {
+              "owner": "Lorg/xmlpull/v1/XmlPullParser;",
+              "name": "getEventType",
+              "descriptor": "()I"
+            },
+            {
+              "owner": "Lorg/xmlpull/v1/XmlPullParser;",
+              "name": "next",
+              "descriptor": "()I"
+            }
+          ]
+        },
+        {
+          "id": "outline-field-calls",
+          "kind": "call_presence",
+          "description": "Retain explicit outline attribute reads, field setters and result insertion calls.",
+          "targets": [
+            {
+              "owner": "Lorg/xmlpull/v1/XmlPullParser;",
+              "name": "getAttributeValue",
+              "descriptor": "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/storage/importexport/OpmlElement;",
+              "name": "setText",
+              "descriptor": "(Ljava/lang/String;)V"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/storage/importexport/OpmlElement;",
+              "name": "setXmlUrl",
+              "descriptor": "(Ljava/lang/String;)V"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/storage/importexport/OpmlElement;",
+              "name": "setHtmlUrl",
+              "descriptor": "(Ljava/lang/String;)V"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/storage/importexport/OpmlElement;",
+              "name": "setType",
+              "descriptor": "(Ljava/lang/String;)V"
+            },
+            {
+              "owner": "Ljava/util/ArrayList;",
+              "name": "add",
+              "descriptor": "(Ljava/lang/Object;)Z"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "at": "e5:l0:c364:m2873",
+      "member": "Lde/danoeh/antennapod/storage/importexport/OpmlWriter;->writeDocument(Ljava/util/List;Ljava/io/Writer;)V",
+      "source": {
+        "path": "storage/importexport/src/main/java/de/danoeh/antennapod/storage/importexport/OpmlWriter.java",
+        "start_line": 29,
+        "end_line": 70,
+        "sha256": "a8ac38eba604d0e5c22c428aacbfada847214ac93226dd041c31ae599a5d4860",
+        "url": "https://github.com/AntennaPod/AntennaPod/blob/175e5ef8fe3e125a5014d70ef0c57cf85661c71b/storage/importexport/src/main/java/de/danoeh/antennapod/storage/importexport/OpmlWriter.java#L29-L70"
+      },
+      "obligations": [
+        {
+          "id": "serializer-and-feed-calls",
+          "kind": "call_sequence",
+          "description": "Preserve the displayed serializer event sequence and feed getter occurrences, including both title reads and the repeated optional-field getters.",
+          "targets": [
+            {
+              "owner": "Landroid/util/Xml;",
+              "name": "newSerializer",
+              "descriptor": "()Lorg/xmlpull/v1/XmlSerializer;"
+            },
+            {
+              "owner": "Lorg/xmlpull/v1/XmlSerializer;",
+              "name": "setFeature",
+              "descriptor": "(Ljava/lang/String;Z)V"
+            },
+            {
+              "owner": "Lorg/xmlpull/v1/XmlSerializer;",
+              "name": "setOutput",
+              "descriptor": "(Ljava/io/Writer;)V"
+            },
+            {
+              "owner": "Lorg/xmlpull/v1/XmlSerializer;",
+              "name": "startDocument",
+              "descriptor": "(Ljava/lang/String;Ljava/lang/Boolean;)V"
+            },
+            {
+              "owner": "Lorg/xmlpull/v1/XmlSerializer;",
+              "name": "startTag",
+              "descriptor": "(Ljava/lang/String;Ljava/lang/String;)Lorg/xmlpull/v1/XmlSerializer;"
+            },
+            {
+              "owner": "Lorg/xmlpull/v1/XmlSerializer;",
+              "name": "text",
+              "descriptor": "(Ljava/lang/String;)Lorg/xmlpull/v1/XmlSerializer;"
+            },
+            {
+              "owner": "Lorg/xmlpull/v1/XmlSerializer;",
+              "name": "endTag",
+              "descriptor": "(Ljava/lang/String;Ljava/lang/String;)Lorg/xmlpull/v1/XmlSerializer;"
+            },
+            {
+              "owner": "Lorg/xmlpull/v1/XmlSerializer;",
+              "name": "attribute",
+              "descriptor": "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Lorg/xmlpull/v1/XmlSerializer;"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/model/feed/Feed;",
+              "name": "getState",
+              "descriptor": "()I"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/model/feed/Feed;",
+              "name": "getTitle",
+              "descriptor": "()Ljava/lang/String;"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/model/feed/Feed;",
+              "name": "getType",
+              "descriptor": "()Ljava/lang/String;"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/model/feed/Feed;",
+              "name": "getDownloadUrl",
+              "descriptor": "()Ljava/lang/String;"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/model/feed/Feed;",
+              "name": "getLink",
+              "descriptor": "()Ljava/lang/String;"
+            },
+            {
+              "owner": "Lorg/xmlpull/v1/XmlSerializer;",
+              "name": "endDocument",
+              "descriptor": "()V"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "at": "e5:l0:c462:m3261",
+      "member": "Lde/danoeh/antennapod/ui/chapters/ChapterUtils;->loadChapters(Lde/danoeh/antennapod/model/playback/Playable;Landroid/content/Context;Z)V",
+      "source": {
+        "path": "ui/chapters/src/main/java/de/danoeh/antennapod/ui/chapters/ChapterUtils.java",
+        "start_line": 45,
+        "end_line": 83,
+        "sha256": "8dd2137ed0f98319e430dc677e36452f5140e844f7d31889d732717fd2147a3d",
+        "url": "https://github.com/AntennaPod/AntennaPod/blob/175e5ef8fe3e125a5014d70ef0c57cf85661c71b/ui/chapters/src/main/java/de/danoeh/antennapod/ui/chapters/ChapterUtils.java#L45-L83"
+      },
+      "obligations": [
+        {
+          "id": "chapter-source-and-merge-calls",
+          "kind": "call_sequence",
+          "description": "Preserve the displayed sequence of cached-state check, database retrieval, podcast-index retrieval, media retrieval, two merges and state publication calls.",
+          "targets": [
+            {
+              "owner": "Lde/danoeh/antennapod/model/playback/Playable;",
+              "name": "getChapters",
+              "descriptor": "()Ljava/util/List;"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/storage/database/DBReader;",
+              "name": "loadChaptersOfFeedItem",
+              "descriptor": "(Lde/danoeh/antennapod/model/feed/FeedItem;)Ljava/util/List;"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/ui/chapters/ChapterUtils;",
+              "name": "loadChaptersFromUrl",
+              "descriptor": "(Ljava/lang/String;Z)Ljava/util/List;"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/ui/chapters/ChapterUtils;",
+              "name": "loadChaptersFromMediaFile",
+              "descriptor": "(Lde/danoeh/antennapod/model/playback/Playable;Landroid/content/Context;)Ljava/util/List;"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/ui/chapters/ChapterMerger;",
+              "name": "merge",
+              "descriptor": "(Ljava/util/List;Ljava/util/List;)Ljava/util/List;"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/model/playback/Playable;",
+              "name": "setChapters",
+              "descriptor": "(Ljava/util/List;)V"
+            }
+          ]
+        }
+      ],
+      "model": "exceptions/response-close-snapshots/chapter-source-order/model.json"
+    },
+    {
+      "at": "e5:l0:c462:m3262",
+      "member": "Lde/danoeh/antennapod/ui/chapters/ChapterUtils;->loadChaptersFromMediaFile(Lde/danoeh/antennapod/model/playback/Playable;Landroid/content/Context;)Ljava/util/List;",
+      "source": {
+        "path": "ui/chapters/src/main/java/de/danoeh/antennapod/ui/chapters/ChapterUtils.java",
+        "start_line": 85,
+        "end_line": 124,
+        "sha256": "8dd2137ed0f98319e430dc677e36452f5140e844f7d31889d732717fd2147a3d",
+        "url": "https://github.com/AntennaPod/AntennaPod/blob/175e5ef8fe3e125a5014d70ef0c57cf85661c71b/ui/chapters/src/main/java/de/danoeh/antennapod/ui/chapters/ChapterUtils.java#L85-L124"
+      },
+      "obligations": [
+        {
+          "id": "chapter-format-attempt-calls",
+          "kind": "call_sequence",
+          "description": "Preserve a displayed stream acquisition followed by each of the ID3, Ogg and M4A parsing attempts in order.",
+          "targets": [
+            {
+              "owner": "Lde/danoeh/antennapod/ui/chapters/ChapterUtils;",
+              "name": "openStream",
+              "descriptor": "(Lde/danoeh/antennapod/model/playback/Playable;Landroid/content/Context;)Lorg/apache/commons/io/input/CountingInputStream;"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/ui/chapters/ChapterUtils;",
+              "name": "readId3ChaptersFrom",
+              "descriptor": "(Lorg/apache/commons/io/input/CountingInputStream;)Ljava/util/List;"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/ui/chapters/ChapterUtils;",
+              "name": "readOggChaptersFromInputStream",
+              "descriptor": "(Ljava/io/InputStream;)Ljava/util/List;"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/ui/chapters/ChapterUtils;",
+              "name": "readM4AChaptersFromInputStream",
+              "descriptor": "(Ljava/io/InputStream;)Ljava/util/List;"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "at": "e5:l0:c462:m3263",
+      "member": "Lde/danoeh/antennapod/ui/chapters/ChapterUtils;->loadChaptersFromUrl(Ljava/lang/String;Lokhttp3/CacheControl;)Ljava/util/List;",
+      "source": {
+        "path": "ui/chapters/src/main/java/de/danoeh/antennapod/ui/chapters/ChapterUtils.java",
+        "start_line": 161,
+        "end_line": 180,
+        "sha256": "8dd2137ed0f98319e430dc677e36452f5140e844f7d31889d732717fd2147a3d",
+        "url": "https://github.com/AntennaPod/AntennaPod/blob/175e5ef8fe3e125a5014d70ef0c57cf85661c71b/ui/chapters/src/main/java/de/danoeh/antennapod/ui/chapters/ChapterUtils.java#L161-L180"
+      },
+      "obligations": [
+        {
+          "id": "request-and-response-calls",
+          "kind": "call_sequence",
+          "description": "Preserve the displayed request construction, execution, response checks and response-body parsing calls.",
+          "targets": [
+            {
+              "owner": "Lokhttp3/Request$Builder;",
+              "name": "<init>",
+              "descriptor": "()V"
+            },
+            {
+              "owner": "Lokhttp3/Request$Builder;",
+              "name": "url",
+              "descriptor": "(Ljava/lang/String;)Lokhttp3/Request$Builder;"
+            },
+            {
+              "owner": "Lokhttp3/Request$Builder;",
+              "name": "cacheControl",
+              "descriptor": "(Lokhttp3/CacheControl;)Lokhttp3/Request$Builder;"
+            },
+            {
+              "owner": "Lokhttp3/Request$Builder;",
+              "name": "build",
+              "descriptor": "()Lokhttp3/Request;"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/net/common/AntennapodHttpClient;",
+              "name": "getHttpClient",
+              "descriptor": "()Lokhttp3/OkHttpClient;"
+            },
+            {
+              "owner": "Lokhttp3/OkHttpClient;",
+              "name": "newCall",
+              "descriptor": "(Lokhttp3/Request;)Lokhttp3/Call;"
+            },
+            {
+              "owner": "Lokhttp3/Call;",
+              "name": "execute",
+              "descriptor": "()Lokhttp3/Response;"
+            },
+            {
+              "owner": "Lokhttp3/Response;",
+              "name": "isSuccessful",
+              "descriptor": "()Z"
+            },
+            {
+              "owner": "Lokhttp3/Response;",
+              "name": "body",
+              "descriptor": "()Lokhttp3/ResponseBody;"
+            },
+            {
+              "owner": "Lokhttp3/ResponseBody;",
+              "name": "string",
+              "descriptor": "()Ljava/lang/String;"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/parser/feed/PodcastIndexChapterParser;",
+              "name": "parse",
+              "descriptor": "(Ljava/lang/String;)Ljava/util/List;"
+            }
+          ]
+        },
+        {
+          "id": "response-cleanup-call",
+          "kind": "call_presence",
+          "description": "Retain an explicit response cleanup call. This witness covers presence without asserting cleanup on every route.",
+          "targets": [
+            {
+              "owner": "Lokhttp3/Response;",
+              "name": "close",
+              "descriptor": "()V"
+            }
+          ]
+        }
+      ],
+      "model": "exceptions/response-close-snapshots/chapter-response-close/model.json"
+    },
+    {
+      "at": "e5:l0:c462:m3264",
+      "member": "Lde/danoeh/antennapod/ui/chapters/ChapterUtils;->loadChaptersFromUrl(Ljava/lang/String;Z)Ljava/util/List;",
+      "source": {
+        "path": "ui/chapters/src/main/java/de/danoeh/antennapod/ui/chapters/ChapterUtils.java",
+        "start_line": 149,
+        "end_line": 159,
+        "sha256": "8dd2137ed0f98319e430dc677e36452f5140e844f7d31889d732717fd2147a3d",
+        "url": "https://github.com/AntennaPod/AntennaPod/blob/175e5ef8fe3e125a5014d70ef0c57cf85661c71b/ui/chapters/src/main/java/de/danoeh/antennapod/ui/chapters/ChapterUtils.java#L149-L159"
+      },
+      "obligations": [
+        {
+          "id": "cache-probe-and-fallback-calls",
+          "kind": "call_sequence",
+          "description": "Preserve the displayed three request sites and the intervening cached result size check.",
+          "targets": [
+            {
+              "owner": "Lde/danoeh/antennapod/ui/chapters/ChapterUtils;",
+              "name": "loadChaptersFromUrl",
+              "descriptor": "(Ljava/lang/String;Lokhttp3/CacheControl;)Ljava/util/List;"
+            },
+            {
+              "owner": "Ljava/util/List;",
+              "name": "size",
+              "descriptor": "()I"
+            }
+          ]
+        },
+        {
+          "id": "cache-policy-arguments",
+          "kind": "argument_values",
+          "description": "Preserve the network, cache and network policy arguments at the three displayed request sites.",
+          "targets": [
+            {
+              "owner": "Lde/danoeh/antennapod/ui/chapters/ChapterUtils;",
+              "name": "loadChaptersFromUrl",
+              "descriptor": "(Ljava/lang/String;Lokhttp3/CacheControl;)Ljava/util/List;"
+            }
+          ],
+          "argument_indexes": [
+            1
+          ]
+        }
+      ],
+      "model": "branches/chapter-url-cache/model.json"
+    },
+    {
+      "at": "e6:l0:c1031:m6631",
+      "member": "Lde/danoeh/antennapod/ui/screen/subscriptions/SubscriptionFragment;->setColumnNumber(I)V",
+      "source": {
+        "path": "app/src/main/java/de/danoeh/antennapod/ui/screen/subscriptions/SubscriptionFragment.java",
+        "start_line": 302,
+        "end_line": 321,
+        "sha256": "0d35a96da963bd24f39653fe879527290c302e5cc05638145407a2cc7cac643f",
+        "url": "https://github.com/AntennaPod/AntennaPod/blob/175e5ef8fe3e125a5014d70ef0c57cf85661c71b/app/src/main/java/de/danoeh/antennapod/ui/screen/subscriptions/SubscriptionFragment.java#L302-L321"
+      },
+      "obligations": [
+        {
+          "id": "column-and-layout-updates",
+          "kind": "call_presence",
+          "description": "Retain the original default-column lookup, adapter update and layout update calls.",
+          "targets": [
+            {
+              "owner": "Lde/danoeh/antennapod/ui/screen/subscriptions/SubscriptionFragment;",
+              "name": "getDefaultNumOfColumns",
+              "descriptor": "()I"
+            },
+            {
+              "owner": "Lde/danoeh/antennapod/ui/screen/subscriptions/SubscriptionsRecyclerAdapter;",
+              "name": "setColumnCount",
+              "descriptor": "(I)V"
+            },
+            {
+              "owner": "Landroidx/recyclerview/widget/RecyclerView;",
+              "name": "setLayoutManager",
+              "descriptor": "(Landroidx/recyclerview/widget/RecyclerView$LayoutManager;)V"
+            }
+          ]
+        }
+      ],
+      "model": "branches/subscription-layout-order/model.json",
+      "module": "app",
+      "source_forms": [
+        "branches"
+      ]
+    }
+  ]
+}

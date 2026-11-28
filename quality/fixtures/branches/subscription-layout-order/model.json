@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "template": "SubscriptionFragment.java.template",
+  "class_name": "SubscriptionFragment",
+  "scenarios": [
+    {
+      "id": "tablet-preserves-two-spans",
+      "arguments": ["1", "5", "false", "false"],
+      "expected": [
+        "default:5", "context", "grid:2:1:false", "adapter:1", "layout:2", "prefs-edit",
+        "prefs-put:columns:1", "prefs-apply", "refresh", "field:none", "attached:none",
+        "state-layout:2", "state-adapter:1", "state-prefs:1"
+      ]
+    },
+    {
+      "id": "tablet-removes-prior-decoration",
+      "arguments": ["1", "5", "true", "false"],
+      "expected": [
+        "remove:old", "default:5", "context", "grid:2:1:false", "adapter:1", "layout:2",
+        "prefs-edit", "prefs-put:columns:1", "prefs-apply", "refresh", "field:none",
+        "attached:none", "state-layout:2", "state-adapter:1", "state-prefs:1"
+      ]
+    },
+    {
+      "id": "handset-constructs-before-adapter",
+      "arguments": ["1", "3", "false", "false"],
+      "expected": [
+        "default:3", "context", "grid:1:1:false", "adapter:1", "layout:1", "prefs-edit",
+        "prefs-put:columns:1", "prefs-apply", "refresh", "field:none", "attached:none",
+        "state-layout:1", "state-adapter:1", "state-prefs:1"
+      ]
+    },
+    {
+      "id": "handset-removes-prior-decoration",
+      "arguments": ["1", "3", "true", "false"],
+      "expected": [
+        "remove:old", "default:3", "context", "grid:1:1:false", "adapter:1", "layout:1",
+        "prefs-edit", "prefs-put:columns:1", "prefs-apply", "refresh", "field:none",
+        "attached:none", "state-layout:1", "state-adapter:1", "state-prefs:1"
+      ]
+    },
+    {
+      "id": "multi-column-adds-decoration",
+      "arguments": ["3", "5", "false", "false"],
+      "expected": [
+        "context", "grid:3:1:false", "create:new", "add:new", "adapter:3", "layout:3",
+        "prefs-edit", "prefs-put:columns:3", "prefs-apply", "refresh", "field:new",
+        "attached:new", "state-layout:3", "state-adapter:3", "state-prefs:3"
+      ]
+    },
+    {
+      "id": "multi-column-replaces-prior-decoration",
+      "arguments": ["4", "3", "true", "false"],
+      "expected": [
+        "remove:old", "context", "grid:4:1:false", "create:new", "add:new", "adapter:4",
+        "layout:4", "prefs-edit", "prefs-put:columns:4", "prefs-apply", "refresh",
+        "field:new", "attached:new", "state-layout:4", "state-adapter:4", "state-prefs:4"
+      ]
+    },
+    {
+      "id": "throwing-handset-constructor-skips-adapter",
+      "arguments": ["1", "3", "true", "true"],
+      "expected": [
+        "remove:old", "default:3", "context", "grid:1:1:false", "layout-constructor-threw",
+        "field:none", "attached:none", "state-layout:7", "state-adapter:7", "state-prefs:7"
+      ]
+    },
+    {
+      "id": "throwing-tablet-constructor-skips-adapter",
+      "arguments": ["1", "5", "true", "true"],
+      "expected": [
+        "remove:old", "default:5", "context", "grid:2:1:false", "layout-constructor-threw",
+        "field:none", "attached:none", "state-layout:7", "state-adapter:7", "state-prefs:7"
+      ]
+    },
+    {
+      "id": "throwing-multi-column-constructor-skips-new-decoration",
+      "arguments": ["4", "3", "true", "true"],
+      "expected": [
+        "remove:old", "context", "grid:4:1:false", "layout-constructor-threw", "field:none",
+        "attached:none", "state-layout:7", "state-adapter:7", "state-prefs:7"
+      ]
+    }
+  ]
+}

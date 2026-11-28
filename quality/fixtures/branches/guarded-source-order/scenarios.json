@@ -1,0 +1,17 @@
+{
+  "collect": [
+    {"id": "plain", "arguments": ["plain", "0"], "expected": ["trace:FMM", "result:F", "remote:none"]},
+    {"id": "neither", "arguments": ["neither", "0"], "expected": ["trace:FMM", "result:F", "remote:false"]},
+    {"id": "first-only", "arguments": ["first", "0"], "expected": ["trace:PFMM", "result:PF", "remote:false"]},
+    {"id": "second-only", "arguments": ["second", "0"], "expected": ["trace:CFMM", "result:FC", "remote:true"]},
+    {"id": "both", "arguments": ["both", "0"], "expected": ["trace:PCFMM", "result:PFC", "remote:true"]},
+    {"id": "second-interrupted", "arguments": ["both", "1"], "expected": ["trace:PCX", "result:null", "remote:true"]}
+  ],
+  "collectAfterOpening": [
+    {"id": "first-opens-second", "arguments": ["first", "0"], "expected": ["trace:OCFMM", "result:OFC", "remote:true"]},
+    {"id": "both-open", "arguments": ["both", "0"], "expected": ["trace:OCFMM", "result:OFC", "remote:true"]},
+    {"id": "first-interrupted", "arguments": ["both", "-1"], "expected": ["trace:OX", "result:null", "remote:true"]},
+    {"id": "second-only", "arguments": ["second", "0"], "expected": ["trace:CFMM", "result:FC", "remote:true"]},
+    {"id": "newly-reachable-second-interrupted", "arguments": ["first", "1"], "expected": ["trace:OCX", "result:null", "remote:true"]}
+  ]
+}

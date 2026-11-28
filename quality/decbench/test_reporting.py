@@ -125,6 +125,48 @@ class ComparisonTest(unittest.TestCase):
 
 
 class SnapshotsTest(unittest.TestCase):
+    def test_historical_evaluator_change_keeps_peer_evidence_without_attributing_a_regression(self):
+        before = run(method("j1:m0", check())) | {"evaluator_sha256": "previous"}
+        after = run(method("j1:m0", check("FAIL", observed=8))) | {"evaluator_sha256": "new"}
+        peer = run(method("j1:m0", check())) | {"backend": "reference", "evaluator_sha256": "peer"}
+        comparison = compare_reports(before, after)
+        self.assertFalse(comparison["evaluator_compatible"])
+        self.assertEqual(comparison["summary"]["coverage_changed"], 1)
+        self.assertEqual(comparison["summary"]["newly_failing"], 0)
+        index = build_index([before, peer, after])
+        finding, = index["mining"]
+        self.assertEqual(finding["signals"], ["peer_gap"])
+        self.assertNotIn("regression", finding["signals"])
+
+    def test_revisit_one_corpus_without_losing_other_corpus_findings(self):
+        first = run(method("j1:m0", check()), artifact="first")
+        other = run(method("j1:m0", check("FAIL", observed=9)), artifact="other")
+        peer = first | {"backend": "peer"}
+        regression = run(method("j1:m0", check("FAIL", observed=8)), artifact="first")
+        index = build_index([first, other, peer, regression])
+        rows = {case["input_sha256"]: case for case in index["mining"]}
+        self.assertEqual(set(rows), {"first", "other"})
+        self.assertEqual(rows["first"]["signals"], ["regression", "peer_gap"])
+        self.assertEqual(rows["other"]["unmeasured"], ["peer"])
+        self.assertEqual([(item["baseline"], item["candidate"]) for item in index["history"]], [(0, 3)])
+        self.assertIn("no matching method", render_index(index))
+
+    def test_narrow_rerun_updates_only_the_selected_original_method(self):
+        failed = run(method("j1:m0", check("FAIL", observed=8)), method("j1:m1", check("FAIL", observed=9)))
+        selected = run(method("j1:m0", check()))
+        findings = mine_reports([failed, selected])
+        self.assertEqual([case["at"] for case in findings], ["j1:m1"])
+        self.assertEqual(findings[0]["arms"][0]["run"], 0)
+        self.assertEqual(build_index([failed, selected])["history"], [])
+
+    def test_current_oracle_replaces_only_the_matching_profile(self):
+        first = run(method("j1:m0", check("FAIL", observed=8)))
+        correction = run(method("j1:m0", check()), oracle="replacement")
+        self.assertEqual(mine_reports([first, correction]), [])
+        first["inputs"][0]["corpus"] = {"profile": "modeled"}
+        correction["inputs"][0]["corpus"] = {"profile": "reviewed"}
+        self.assertEqual([case["profile"] for case in mine_reports([first, correction])], ["modeled"])
+
     def test_mines_a_regression_that_a_peer_already_passes(self):
         first = run(method("j1:m0", check()))
         peer = run(method("j1:m0", check())) | {"backend": "reference", "link": "reference.html"}

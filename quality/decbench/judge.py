@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import importlib
@@ -307,17 +307,68 @@ def run_or_resume(suite: dict, binary: Path, binary_hash: str, prepared: Path,
     return result
 
 
-def run(binary: Path, prepared: Path, suites: list[dict], revision: str | None,
-        jobs: int, timeout: int, backend: str, checkpoint: Path | None) -> dict:
-    started = time.perf_counter()
-    binary_hash = file_digest(binary)
-    evaluator_hash = digest([file_digest(Path(__file__)), file_digest(Path(__file__).with_name("evidence.py"))])
-    report = {
+def run_header(binary: Path, binary_hash: str, prepared: Path, revision: str | None,
+               backend: str, evaluator_hash: str) -> dict:
+    return {
         "schema_version": 1, "kind": "diana-decbench-run",
         "created_at": datetime.now(timezone.utc).isoformat(), "revision": revision,
         "binary": {"path": str(binary), "sha256": binary_hash}, "backend": backend,
         "prepared": str(prepared), "evaluator_sha256": evaluator_hash,
     }
+
+
+def summarize(report: dict, started: float) -> dict:
+    report["methods_by_status"] = dict(Counter(
+        row["status"] for item in report["inputs"] for row in item["methods"]
+    ))
+    report["checks_by_status"] = dict(Counter(
+        check["status"] for item in report["inputs"] for row in item["methods"]
+        for check in row["checks"]
+    ))
+    metrics = defaultdict(lambda: {"checks": Counter(), "method_rows": Counter()})
+    measured = {"PASS", "FAIL"}
+    for item in report["inputs"]:
+        for row in item["methods"]:
+            observed = defaultdict(set)
+            for result in row["checks"]:
+                metric, outcome = result["metric"], result["status"]
+                metrics[metric]["checks"][outcome] += 1
+                observed[metric].add(outcome)
+            for metric, outcomes in observed.items():
+                if outcomes <= measured:
+                    scope = "fully_measured"
+                elif outcomes & measured:
+                    scope = "partially_measured"
+                else:
+                    scope = "unmeasured"
+                metrics[metric]["method_rows"][scope] += 1
+    report["metrics"] = dict(sorted(metrics.items()))
+    report["inventory_complete"] = all(item["inventory"]["complete"] for item in report["inputs"])
+    report["elapsed_seconds"] = time.perf_counter() - started
+    return report
+
+
+def result_code(report: dict) -> int:
+    counts = report["checks_by_status"]
+    inspection_failed = any(item.get("corpus", {}).get("source_structure", {}).get("SETUP_ERROR")
+                            for item in report["inputs"])
+    if (not report["inventory_complete"] or counts.get("SETUP_ERROR") or counts.get("UNCHECKED")
+            or inspection_failed):
+        return 2
+    return 1 if counts.get("FAIL") else 0
+
+
+def evaluator_fingerprint() -> str:
+    here = Path(__file__)
+    return digest([file_digest(here), file_digest(here.with_name("evidence.py"))])
+
+
+def run(binary: Path, prepared: Path, suites: list[dict], revision: str | None,
+        jobs: int, timeout: int, backend: str, checkpoint: Path | None) -> dict:
+    started = time.perf_counter()
+    binary_hash = file_digest(binary)
+    evaluator_hash = evaluator_fingerprint()
+    report = run_header(binary, binary_hash, prepared, revision, backend, evaluator_hash)
     with ThreadPoolExecutor(max_workers=jobs) as workers:
         report["inputs"] = list(workers.map(
             lambda suite: run_or_resume(
@@ -326,13 +377,4 @@ def run(binary: Path, prepared: Path, suites: list[dict], revision: str | None,
         ))
     if file_digest(binary) != binary_hash:
         raise ValueError("Diana executable changed during evaluation")
-    report["methods_by_status"] = dict(Counter(
-        row["status"] for item in report["inputs"] for row in item["methods"]
-    ))
-    report["checks_by_status"] = dict(Counter(
-        check["status"] for item in report["inputs"] for row in item["methods"]
-        for check in row["checks"]
-    ))
-    report["inventory_complete"] = all(item["inventory"]["complete"] for item in report["inputs"])
-    report["elapsed_seconds"] = time.perf_counter() - started
-    return report
+    return summarize(report, started)

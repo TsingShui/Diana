@@ -1,0 +1,161 @@
+import java.io.IOException;
+import java.io.InterruptedIOException;
+import java.util.ArrayList;
+import java.util.List;
+
+public final class ChapterUtils {
+    private enum Scenario {
+        SUCCESS, UNSUCCESSFUL, EXECUTE_IO, EXECUTE_INTERRUPTED, READ_IO, READ_INTERRUPTED,
+        PARSE_FAILURE, SUCCESS_CLOSE_FAILURE, READ_IO_CLOSE_FAILURE, INTERRUPTED_CLOSE_FAILURE,
+        LOG_FAILURE
+    }
+
+    private static final String TAG = "ChapterUtils";
+    private static final String URL = "https://fixture.invalid/chapters";
+    private static final CacheControl CACHE = new CacheControl();
+    private static final List<Chapter> CHAPTERS = List.of(new Chapter());
+    private static final IOException IO = new IOException("fixture I/O");
+    private static final InterruptedIOException INTERRUPTED = new InterruptedIOException("fixture interruption");
+    private static final IllegalStateException PARSE = new IllegalStateException("fixture parser failure");
+    private static final IllegalStateException CLOSE = new IllegalStateException("fixture close failure");
+    private static final IllegalStateException LOGGER = new IllegalStateException("fixture logger failure");
+    private static final List<String> EVENTS = new ArrayList<>();
+    private static Scenario scenario;
+
+    /* DECBENCH_SELECTED_METHOD */
+
+    private static void record(String event) {
+        EVENTS.add(event);
+    }
+
+    private static String failure(Throwable error) {
+        if (error == IO) return "io";
+        if (error == INTERRUPTED) return "interrupted";
+        if (error == PARSE) return "parser";
+        if (error == CLOSE) return "close";
+        if (error == LOGGER) return "logger";
+        return "unexpected-" + error.getClass().getSimpleName();
+    }
+
+    public static void main(String[] args) {
+        scenario = Scenario.valueOf(args[0]);
+        try {
+            List<Chapter> result = loadChaptersFromUrl(URL, CACHE);
+            record(result == CHAPTERS ? "return-chapters" : result == null ? "return-null" : "return-other");
+        } catch (Throwable error) {
+            record("throw-" + failure(error) + "-suppressed-" + error.getSuppressed().length);
+        }
+        System.out.println(String.join(",", EVENTS));
+    }
+
+    private static final class Chapter {}
+    private static final class CacheControl {}
+
+    private record Request(String url, CacheControl cache) {
+        private static final class Builder {
+            private String url;
+            private CacheControl cache;
+
+            Builder() { record("request-builder"); }
+
+            Builder url(String selection) {
+                record(URL.equals(selection) ? "request-url" : "wrong-url");
+                url = selection;
+                return this;
+            }
+
+            Builder cacheControl(CacheControl selection) {
+                record(selection == CACHE ? "request-cache" : "wrong-cache");
+                cache = selection;
+                return this;
+            }
+
+            Request build() {
+                record("request-build");
+                return new Request(url, cache);
+            }
+        }
+    }
+
+    private static final class AntennapodHttpClient {
+        static HttpClient getHttpClient() {
+            record("client");
+            return new HttpClient();
+        }
+    }
+
+    private static final class HttpClient {
+        Call newCall(Request request) {
+            record(request != null && URL.equals(request.url()) && request.cache() == CACHE
+                   ? "new-call" : "wrong-request");
+            return new Call();
+        }
+    }
+
+    private static final class Call {
+        Response execute() throws IOException {
+            record("execute");
+            if (scenario == Scenario.EXECUTE_IO) throw IO;
+            if (scenario == Scenario.EXECUTE_INTERRUPTED) throw INTERRUPTED;
+            record("acquire-response");
+            return new Response("acquired");
+        }
+    }
+
+    private static final class Response {
+        private final String id;
+        private final ResponseBody body;
+
+        Response(String id) {
+            this.id = id;
+            this.body = new ResponseBody(id);
+        }
+
+        boolean isSuccessful() {
+            record("status-" + id);
+            return scenario != Scenario.UNSUCCESSFUL;
+        }
+
+        ResponseBody body() {
+            record("body-" + id);
+            return body;
+        }
+
+        void close() {
+            record("close-" + id);
+            if (scenario == Scenario.SUCCESS_CLOSE_FAILURE || scenario == Scenario.READ_IO_CLOSE_FAILURE
+                    || scenario == Scenario.INTERRUPTED_CLOSE_FAILURE) throw CLOSE;
+        }
+    }
+
+    private static final class ResponseBody {
+        private final String responseId;
+
+        ResponseBody(String responseId) { this.responseId = responseId; }
+
+        String string() throws IOException {
+            record("read-" + responseId);
+            if (scenario == Scenario.READ_IO || scenario == Scenario.READ_IO_CLOSE_FAILURE
+                    || scenario == Scenario.LOG_FAILURE) throw IO;
+            if (scenario == Scenario.READ_INTERRUPTED || scenario == Scenario.INTERRUPTED_CLOSE_FAILURE)
+                throw INTERRUPTED;
+            return responseId;
+        }
+    }
+
+    private static final class PodcastIndexChapterParser {
+        static List<Chapter> parse(String responseId) {
+            record("parse-" + responseId);
+            if (scenario == Scenario.PARSE_FAILURE) throw PARSE;
+            return CHAPTERS;
+        }
+    }
+
+    private static final class Log {
+        static int d(String tag, String message, Throwable error) {
+            record(TAG.equals(tag) && message.contains(URL) ? "log-" + failure(error) : "wrong-log");
+            if (scenario == Scenario.LOG_FAILURE) throw LOGGER;
+            return 0;
+        }
+    }
+}

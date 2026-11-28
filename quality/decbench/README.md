@@ -48,6 +48,223 @@ reused only for the same executable, input bytes, evaluator, oracle and selectio
 Collection errors and unchecked suites are attempted again. Omit `--resume`
 when reproducing a finding or measuring execution time.
 
+## Replay a public APK corpus
+
+`corpora` lists the opt-in projects. The checked-in manifests pin the APK release,
+source revision, and reviewed methods for AntennaPod 3.12.3 and NewPipe 0.28.8.
+`prepare --corpus ID --download` fetches the release and source archive into
+`.cache/decbench/public-corpora/`. With `--apk PATH --source PATH`, it imports
+local copies instead. Runs only read cached inputs. The evaluated APK and
+selected source files must match the case evidence. Downloaded APKs, upstream
+source, peer tools, and generated reports belong in ignored local storage.
+
+```sh
+python3 quality/decbench corpora
+python3 quality/decbench prepare --corpus antennapod-3.12.3 --download
+python3 quality/decbench run --corpus antennapod-3.12.3 \
+  --binary target/debug/diana --revision "$(git rev-parse HEAD)" \
+  --output .cache/decbench/antennapod-diana.json
+python3 quality/decbench run --corpus antennapod-3.12.3 \
+  --jadx-jar /path/to/jadx-1.5.7-all.jar \
+  --output .cache/decbench/antennapod-jadx.json
+python3 quality/decbench review .cache/decbench/antennapod-diana.json \
+  .cache/decbench/antennapod-jadx.json --output .cache/decbench/antennapod-review.json
+python3 quality/decbench report .cache/decbench/antennapod-review.json \
+  --output .cache/decbench/antennapod-review.html
+```
+
+The peer adapter takes the fat JAR from the [official JADX 1.5.7 release](https://github.com/skylot/jadx/releases/tag/v1.5.7).
+It binds each body to the exact original DEX entry and full descriptor and keeps
+the original JADX spelling. Both runs evaluate the same independently selected
+source and DEX evidence. `mine` finds verified regressions and peer gaps. `review`
+links each paired method to its pinned source and identifies places to inspect,
+such as a missing body, unresolved types, or a different cleanup form. Review
+signals carry no correctness verdict. Only independently failing Diana checks
+enter the repair queue.
+The review also surfaces explicit jumps or unresolved types present in both
+outputs and methods whose two parsed CFGs differ from the source CFG.
+
+The default AntennaPod cases cover the 13 methods in the
+[source-aligned report](../reports/antennapod-3.12.3.md) and the discovered
+[subscription layout case](../fixtures/branches/subscription-layout-order/).
+Select `--at LOCATOR` for one method. Add `--execute-models` to compile the source method and a
+Java-compatible recovered method in the same authored model, with known
+initial state and recording stubs. The
+[chapter-order model](../fixtures/exceptions/response-close-snapshots/chapter-source-order/) checks ordinary
+completion as well as a network interruption. It runs the modeled method in
+scratch storage. The APK and Android services are outside the execution scope.
+Use the same model setting on each arm of a comparison.
+
+Each selected original code item has a body-availability check. A declaration
+without a body and a decompiler's diagnosed failure stub can establish a
+recovery gap. A missing tool or unidentifiable display leaves body coverage
+unknown. The raw publication and independently supported call evidence remain
+visible.
+
+Declaration type checks compare explicitly displayed primitive return and
+parameter types with the exact original DEX descriptor. Primitive arrays
+retain their rank. Same-arity overloads, unknown spelling, and unresolved owner
+wrappers leave the affected evidence unchecked. This check does not cover
+reference type inference or local variables.
+
+The [response cleanup](../fixtures/exceptions/response-close-snapshots/chapter-response-close/)
+and [cache selection](../fixtures/branches/chapter-url-cache/) models also run
+selected original DEX instructions against recording stubs. The report records
+each model's original code-unit positions, branch targets and handler
+transfers. Unsupported raw paths remain visible with their uncertainty.
+
+Run one command across the cached projects to save a campaign bundle. Each
+project and shard preserves its selection, producer reports, and processing
+status. The index and opportunities files summarize independently evaluated
+changes. The optional peer adds a side-by-side source review.
+
+```sh
+python3 quality/decbench campaign --binary target/release/diana \
+  --jadx-jar /path/to/jadx-1.5.7-all.jar --execute-models --inspect-structure
+python3 quality/decbench campaign --binary target/release/diana \
+  --profile sample --shards 8 --limit 512 --inspect-structure
+```
+
+The sample limit applies per shard. Repeat `--corpus` to select projects. Use
+`--resume` to reuse comparable completed evaluations. The campaign writes new
+evidence under the configured output directory and reads only prepared assets.
+It scans each project's pinned source and DEX once, then verifies the
+selections for each shard. Each project includes a coverage report that shows
+original definitions, source file populations, selected methods, and methods
+measured by each evidence family.
+
+```sh
+python3 quality/decbench compare-campaign --baseline /path/to/earlier/campaign.json \
+  --candidate /path/to/later/campaign.json --output .cache/decbench/campaign-delta.json --gate
+python3 quality/decbench report .cache/decbench/campaign-delta.json \
+  --output .cache/decbench/campaign-delta.html
+python3 quality/decbench coverage --corpus antennapod-3.12.3 \
+  --report .cache/decbench/antennapod-diana.json --report .cache/decbench/antennapod-jadx.json
+```
+
+Campaign comparison pairs exact producer roles, shard selections, method
+identities, APKs, oracles and evaluator versions. The gate fails on newly
+failing checks, lost evidence, setup failures or incompatible scope. A known
+unchecked result can remain in a compatible comparison. Coverage accepts
+repeated `--cases` and `--report` arguments for generated shards.
+
+### Discover source-aligned methods
+
+Discovery reads the cached source archive and original DEX before running a
+decompiler. It matches unique top-level Java methods by their original
+descriptor, verifies each selected call against source and DEX, then samples
+across modules, control forms, and classes in a stable order. It excludes the
+curated methods and writes the selected cases to the cache. Coverage is limited
+to methods the independent matcher can establish. It checks displayed call
+presence, selected argument values and character types, and simple direct field
+accesses that the source and original DEX can both identify.
+
+```sh
+python3 quality/decbench discover --corpus antennapod-3.12.3 --limit 100
+python3 quality/decbench run --corpus antennapod-3.12.3 \
+  --cases .cache/decbench/discovery/antennapod-3.12.3-100.json \
+  --binary target/debug/diana --output .cache/decbench/antennapod-sample-diana.json
+```
+
+Reuse the same generated manifest on the peer and on subsequent Diana builds.
+Use `--shard 2/4` to select one nonoverlapping partition of a larger run.
+Each partition is ordered deterministically and can contain up to 512 methods.
+`--inspect-structure` records the parsed source CFG and recovery CFG for review.
+Branch condition expressions and exception effects are outside this graph's
+model. A visible CFG difference directs inspection and carries no failure
+verdict. `review` preserves the CFG evidence alongside both backend outputs.
+Standalone APK input with `run --input` supports member inventory and
+publication checks. Capturing the input and source revision alone establishes
+provenance. The corpus cases specify what quality evidence is measured.
+
+The [public corpus workflow](../../.github/workflows/decbench-public.yml) is
+manually dispatched for a selected catalog entry and evidence profile. Set the
+repository variable `DECBENCH_PUBLIC_ENABLED` to `true` to enable the weekly
+public matrix. It evaluates reviewed cases with the authored models and a
+separate 100-method sample for each project. It keeps the previous compatible
+Diana result as a regression baseline and uploads generated evidence.
+The fixture-only weekly workflow runs without public APK downloads.
+
+### Add a public corpus
+
+Choose a specific APK release from the upstream publisher or a public
+distributor. Match the release variant and version code to an immutable
+upstream commit. Check the APK's embedded revision when available and record
+the publisher or distributor's build evidence and the source license.
+
+Add two JSON files under `quality/decbench/corpora/` and set `schema_version` to
+`1` in both. Use the NewPipe entries as examples. [Project catalog](corpora/newpipe-0.28.8.json) ·
+[Reviewed cases](corpora/newpipe-0.28.8.cases.json)
+
+- In `<id>.json`, set `id` to the filename stem and provide `name`, `version`,
+  `apk`, `source`, `source_commit`, `source_root`, and `provenance`. Each asset
+  needs a version-specific HTTPS `url` and a `max_bytes` bound for the downloaded
+  file. Use a gzip-compressed tar archive whose URL includes the full source
+  commit and whose top-level directory matches `source_root`. Record the
+  distribution, build evidence, and license under `provenance`. Include
+  `source_repository_url` to enable discovery and pinned source links.
+- In `<id>.cases.json`, record the signed APK's `input_sha256`, the matching
+  `source_revision`, and `revision_entry` when the APK embeds that revision.
+  Use the same digest in the catalog's optional `apk.sha256`. Each method needs its
+  original physical `at` locator, complete `member` descriptor, `source`, and
+  independent `obligations`. Give the source path relative to `source_root`,
+  inclusive `start_line` and `end_line`, and the SHA-256 of the whole source
+  file. Include a link to those lines at the pinned revision. Give each
+  obligation a stable `id`, `kind`, and description. Call witnesses also list
+  `targets` with `owner`, `name`, and `descriptor`. Argument-value witnesses
+  identify zero-based `argument_indexes`. An optional `model` names an
+  authored execution model relative to `quality/fixtures/`.
+
+Use the independent DEX inventory to confirm the original locator and complete
+descriptor. Check the selected source span and obligation against the original
+instructions before looking at either decompiler output. The evaluator checks
+the pinned APK and selected source bytes. Acquisition checks file bounds and
+container formats. See the [file verification policy](../../docs/diana/CONTRIBUTING.md#file-verification).
+
+```sh
+python3 quality/decbench corpora
+python3 quality/decbench prepare --corpus newpipe-0.28.8 \
+  --apk /path/to/org.schabi.newpipe_1013.apk --source /path/to/NewPipe-source.tar.gz
+PYTHONPATH=quality/decbench python3 - <<'PY'
+from pathlib import Path
+from dex_truth import apk_methods
+
+apk = Path('.cache/decbench/public-corpora/newpipe-0.28.8/input.apk')
+for at, member in apk_methods(apk):
+    if member == 'Lorg/schabi/newpipe/util/Localization;->getDurationString(J)Ljava/lang/String;':
+        print(at, member)
+PY
+python3 quality/decbench run --corpus newpipe-0.28.8 --at e4:l0:c7707:m56282 \
+  --binary target/debug/diana
+```
+
+Track the manifests and authored evidence. Keep APKs, JADX JARs, source
+archives, and generated reports in ignored `.cache/` storage. A catalog entry
+is available for local use as soon as its assets are prepared. To add it to CI,
+update the dispatch choices and scheduled corpus matrix in the
+[public corpus workflow](../../.github/workflows/decbench-public.yml).
+
+### Measure two builds on the same host
+
+`timing` verifies the selected public cases, warms both executables, and then
+alternates their order across matched trials. It records each exact original
+method and complete inventory pairing. Incomplete measurements stay visible
+with diagnostics. Medians include process startup, input loading, and JSON
+publication. Use release builds on a quiet host for a performance comparison.
+The report includes trial-to-trial variation and flags methods whose output
+bytes differ across the paired runs.
+The public workflow accepts an optional `timing_baseline` commit for a manual run.
+It builds both release executables in isolated target directories on the same
+runner and attaches the raw timings and HTML to the evidence artifact.
+
+```sh
+python3 quality/decbench timing --corpus antennapod-3.12.3 \
+  --baseline /path/to/baseline/diana --candidate /path/to/candidate/diana \
+  --repeats 5 --output .cache/decbench/antennapod-timing.json
+python3 quality/decbench report .cache/decbench/antennapod-timing.json \
+  --output .cache/decbench/antennapod-timing.html
+```
+
 ## Corpus and evidence
 
 - **Original member identity and descriptor.** An independent standalone DEX
@@ -193,6 +410,24 @@ python3 quality/decbench queue --metric effect_order --status pending
    recovered checks and detect new failures, lost coverage and publication
    changes across the full scope.
 
+For a public corpus case, replay the original method on a current Diana build
+before changing the engine. The replay verifies the saved APK, source archive,
+method identity and oracle first. The optional peer runs on the same evidence.
+The receipt preserves the saved and fresh outcomes, including any checks that
+can no longer be decided.
+
+```sh
+python3 quality/decbench triage --baseline .cache/decbench/antennapod-diana.json \
+  --at e5:l0:c462:m3261 --binary target/release/diana \
+  --output .cache/decbench/antennapod-triage.json
+python3 quality/decbench report .cache/decbench/antennapod-triage.json \
+  --output .cache/decbench/antennapod-triage.html
+```
+
+Supply the original generated manifest with `--cases` when it is outside the
+run report directory. A campaign bundle keeps the manifest in the shard
+directory with the producer reports.
+
 ```sh
 python3 quality/decbench compare --baseline before.json \
   --candidate after.json --output changes.json --gate
@@ -251,6 +486,17 @@ evidence. It writes the candidate report, comparison and an attempt receipt
 under the state directory. The next cycle can use the accepted report as its
 baseline. Repository review, fixture challenges and integration follow the
 normal Diana process.
+
+Repeat `--guard-baseline PATH` to replay additional fixture or public corpus
+reports before the attempt can be accepted. These reports must measure the
+same original Diana executable as the primary baseline. Each guard reuses its
+recorded selection and check settings. A guard can retain pre-existing failures
+and must preserve the measured coverage. The attempt stores each guard report
+and comparison.
+Use `--prepared` when the public assets were moved. A copied campaign bundle
+provides the adjacent manifest for each public report. Use `--cases` for a
+separately stored primary manifest. Rerun a baseline with the current
+evaluator when its fingerprint changes.
 
 The [weekly workflow](../../.github/workflows/decbench.yml) evaluates the
 default branch, compares against the previous complete evaluation, publishes

@@ -4,6 +4,7 @@ import com.sun.source.util.JavacTask;
 import com.sun.source.util.SourcePositions;
 import com.sun.source.util.Trees;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
@@ -26,7 +27,7 @@ final class FlowShape {
         }
     }
 
-    private record Selector(String name, int arity) {}
+    private record Selector(String name, int arity, List<String> parameters) {}
     private record Targets(Node leave, Node continueAt) {}
     private record Edge(String kind, Node target) {}
 
@@ -306,7 +307,32 @@ final class FlowShape {
         System.out.println(side + "\t" + index + "\tunchecked\t" + quote(detail));
     }
 
-    private static void scan(int side, Path path, String owner, List<Selector> selectors) throws Exception {
+    private static String sourceType(Tree tree) {
+        return switch (tree.getKind()) {
+            case PRIMITIVE_TYPE -> ((PrimitiveTypeTree) tree).getPrimitiveTypeKind().name().toLowerCase(Locale.ROOT);
+            case IDENTIFIER -> ((IdentifierTree) tree).getName().toString();
+            case MEMBER_SELECT -> ((MemberSelectTree) tree).getIdentifier().toString();
+            case PARAMETERIZED_TYPE -> sourceType(((ParameterizedTypeTree) tree).getType());
+            case ANNOTATED_TYPE -> sourceType(((AnnotatedTypeTree) tree).getUnderlyingType());
+            case ARRAY_TYPE -> sourceType(((ArrayTypeTree) tree).getType()) + "[]";
+            default -> "";
+        };
+    }
+
+    private static boolean matches(MethodTree method, Selector selector, boolean originalSelection) {
+        if (!method.getName().contentEquals(selector.name())
+            || method.getParameters().size() != selector.arity()) return false;
+        if (!originalSelection) return true;
+        if (method.getBody() == null) return false;
+        for (int index = 0; index < selector.parameters().size(); index++) {
+            if (!sourceType(method.getParameters().get(index).getType()).equals(selector.parameters().get(index)))
+                return false;
+        }
+        return true;
+    }
+
+    private static void scan(int side, Path path, String owner, List<Selector> selectors,
+                             boolean originalSelection) throws Exception {
         var diagnostics = new DiagnosticCollector<JavaFileObject>();
         var javac = ToolProvider.getSystemJavaCompiler();
         try (var files = javac.getStandardFileManager(diagnostics, Locale.ROOT, StandardCharsets.UTF_8)) {
@@ -326,17 +352,23 @@ final class FlowShape {
                 .filter(diagnostic -> diagnostic.getKind() == Diagnostic.Kind.ERROR).toList();
             for (int index = 0; index < selectors.size(); index++) {
                 Selector selector = selectors.get(index);
-                var matches = methods.stream().filter(method ->
-                    method.getName().contentEquals(selector.name())
-                    && method.getParameters().size() == selector.arity()).toList();
+                var matches = methods.stream().filter(method -> matches(method, selector, originalSelection)).toList();
                 if (matches.size() != 1 || matches.get(0).getBody() == null) {
-                    unavailable(side, index, "method body is missing or its name and arity are ambiguous");
+                    unavailable(side, index, originalSelection
+                        ? "method body is missing or the selected method signature is ambiguous"
+                        : "method body is missing or its name and arity are ambiguous");
                     continue;
                 }
                 MethodTree method = matches.get(0);
+                if (originalSelection && (positions.getStartPosition(unit, method.getBody()) < 0
+                    || positions.getEndPosition(unit, method.getBody()) < 0)) {
+                    unavailable(side, index, "the selected method body has no original source range");
+                    continue;
+                }
                 var syntax = syntaxErrors.stream().filter(error ->
                     contains(unit, positions, method, error.getPosition())
-                    || methods.stream().noneMatch(other -> contains(unit, positions, other, error.getPosition()))
+                    || !originalSelection && methods.stream()
+                        .noneMatch(other -> contains(unit, positions, other, error.getPosition()))
                 ).findFirst();
                 if (syntax.isPresent()) {
                     unavailable(side, index, "source syntax could not be parsed: " + syntax.get().getCode());
@@ -353,13 +385,37 @@ final class FlowShape {
         }
     }
 
+    private static void batch(Path plan) throws Exception {
+        try (var rows = Files.newBufferedReader(plan, StandardCharsets.UTF_8)) {
+            String line;
+            for (int index = 0; (line = rows.readLine()) != null; index++) {
+                String[] fields = line.split("\t", -1);
+                if (fields.length != 5) throw new IllegalArgumentException("invalid CFG batch request");
+                List<String> parameters = fields[4].isEmpty() ? List.of() : List.of(fields[4].split(",", -1));
+                var selector = new Selector(fields[2], Integer.parseInt(fields[3]), parameters);
+                try {
+                    scan(index, plan.resolveSibling(fields[0]), fields[1], List.of(selector), true);
+                } catch (StackOverflowError limit) {
+                    unavailable(index, 0, "source parser exceeded the nesting bound");
+                } catch (java.io.IOException problem) {
+                    unavailable(index, 0, "could not read selected source: " + problem.getMessage());
+                }
+            }
+        }
+    }
+
     public static void main(String[] args) throws Exception {
+        if (args.length == 2 && args[0].equals("--batch")) {
+            batch(Path.of(args[1]));
+            return;
+        }
+
         var selectors = new ArrayList<Selector>();
         for (int offset = 3; offset < args.length; offset += 2)
-            selectors.add(new Selector(args[offset], Integer.parseInt(args[offset + 1])));
+            selectors.add(new Selector(args[offset], Integer.parseInt(args[offset + 1]), List.of()));
         for (int side = 0; side < 2; side++) {
             try {
-                scan(side, Path.of(args[side]), args[2], selectors);
+                scan(side, Path.of(args[side]), args[2], selectors, false);
             } catch (StackOverflowError limit) {
                 for (int index = 0; index < selectors.size(); index++)
                     unavailable(side, index, "source parser exceeded the nesting bound");

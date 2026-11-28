@@ -80,6 +80,8 @@ python3 quality/decbench run --binary target/debug/diana \
 Public application reviews record pinned APK and source provenance, selection
 and retrieval coverage, method-level comparisons, and evidence limits. Keep
 downloaded inputs and generated output in ignored local storage.
+Replay AntennaPod and NewPipe through the public corpus commands.
+[Public DecBench corpus](decbench/README.md#replay-a-public-apk-corpus) ·
 [AntennaPod 3.12.3 review](reports/antennapod-3.12.3.md)
 
 ## Fixtures

@@ -1,0 +1,27 @@
+public final class TimeStringModel {
+    /* DECBENCH_SELECTED_METHOD */
+
+    public static void main(String[] args) {
+        String input = args.length == 0 ? null : args[0];
+        try {
+            long result = parseTimeString(input);
+            System.out.println("return:" + result);
+        } catch (NumberFormatException error) {
+            System.out.println("throw:NumberFormatException,parser:" + failingParser(error));
+        } catch (RuntimeException error) {
+            System.out.println("throw:" + error.getClass().getSimpleName());
+        }
+    }
+
+    private static String failingParser(NumberFormatException error) {
+        for (StackTraceElement frame : error.getStackTrace()) {
+            if (frame.getClassName().equals("java.lang.Integer") && frame.getMethodName().equals("parseInt")) {
+                return "integer";
+            }
+            if (frame.getClassName().equals("java.lang.Float") && frame.getMethodName().equals("parseFloat")) {
+                return "float";
+            }
+        }
+        throw new IllegalStateException("The exception did not identify either JDK parser", error);
+    }
+}

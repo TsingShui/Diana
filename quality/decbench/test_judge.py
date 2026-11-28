@@ -84,6 +84,28 @@ class JudgmentTest(unittest.TestCase):
 
 
 class QueueTest(unittest.TestCase):
+    def test_late_failure_cannot_override_a_newer_pass_without_an_existing_candidate(self):
+        row = {"at": AT, "member": MEMBER, "status": "PASS", "checks": [{
+            "id": "required", "metric": "behavior", "status": "PASS", "expected": 7, "observed": 7,
+        }]}
+        report = {"created_at": "b", "binary": {}, "inputs": [{
+            "suite": "example", "path": "/example", "sha256": "input", "oracle_sha256": "oracle",
+            "methods": [row],
+        }]}
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary)
+            with closing(candidates.connect(state)) as db:
+                candidates.enqueue(db, report, "newer-pass.json")
+                self.assertEqual(candidates.cases(db, None, None), [])
+            row["status"] = "FAIL"
+            row["checks"][0].update(status="FAIL", observed=8)
+            with closing(candidates.connect(state)) as db:
+                candidates.enqueue(db, dict(report, created_at="a"), "older-failure.json")
+                self.assertEqual(candidates.cases(db, "pending", None), [])
+                candidates.enqueue(db, dict(report, created_at="c"), "current-failure.json")
+                current, = candidates.cases(db, "pending", None)
+                self.assertEqual(current["report"], "current-failure.json")
+
     def test_leased_case_group_and_recurring_observation(self):
         row = {"at": AT, "member": MEMBER, "status": "FAIL", "checks": [{
             "id": "required", "metric": "behavior", "status": "FAIL", "expected": 7, "observed": 8,

@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "class_name": "FileNameGenerator",
+  "template": "FileNameGenerator.java",
+  "scenarios": [
+    {
+      "id": "ascii-character",
+      "arguments": [
+        "A"
+      ],
+      "expected": [
+        "return:A"
+      ]
+    },
+    {
+      "id": "ascii-allowed-and-space-collapse",
+      "arguments": [
+        "\t  A  _-- Z9@  "
+      ],
+      "expected": [
+        "return:A _-- Z9"
+      ]
+    },
+    {
+      "id": "unicode-accent-and-compatibility-fold",
+      "arguments": [
+        "  \u00c5ngstr\u00f6m\u00a0  caf\u00e9\u0301 \u2615\ud83d\ude42 \u2009\uff23  "
+      ],
+      "expected": [
+        "return:Angstrom cafe C"
+      ]
+    },
+    {
+      "id": "unicode-spaces-from-normalization",
+      "arguments": [
+        "x\u00a0y\u2009z"
+      ],
+      "expected": [
+        "return:x y z"
+      ]
+    },
+    {
+      "id": "unicode-line-separator-rejected",
+      "arguments": [
+        "x\u2028y"
+      ],
+      "expected": [
+        "return:xy"
+      ]
+    },
+    {
+      "id": "empty-fallback",
+      "arguments": [
+        ""
+      ],
+      "expected": [
+        "random:8",
+        "return:B7_r-N0q"
+      ]
+    },
+    {
+      "id": "rejected-characters-fallback",
+      "arguments": [
+        "\t ./\ud83d\ude42\u2028"
+      ],
+      "expected": [
+        "random:8",
+        "return:B7_r-N0q"
+      ]
+    },
+    {
+      "id": "length-241",
+      "arguments": [
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      ],
+      "expected": [
+        "return:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      ]
+    },
+    {
+      "id": "length-242",
+      "arguments": [
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB"
+      ],
+      "expected": [
+        "md5:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB",
+        "return:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA_25c72835b3f9f11c9183be3b09dd6aa1"
+      ]
+    },
+    {
+      "id": "input-length-242-filtered-to-241",
+      "arguments": [
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA."
+      ],
+      "expected": [
+        "return:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      ]
+    }
+  ]
+}

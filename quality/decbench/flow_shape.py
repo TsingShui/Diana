@@ -1,6 +1,7 @@
 """Compare normalized statement control flow without judging semantic equivalence."""
 
 from collections import Counter
+from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
@@ -12,9 +13,14 @@ from evidence import run_cli
 
 
 PARSER = Path(__file__).with_name("FlowShape.java")
+JAVA = ["java", "-XX:+IgnoreUnrecognizedVMOptions", "-XX:-UsePerfData"]
 SOURCE_BYTES = 4 * 1024 * 1024
+BATCH_UNITS = 256
+BATCH_BYTES = 16 * 1024 * 1024
 MATCH_BUDGET = 20_000
 DESCRIPTOR = re.compile(r"\[*(?:[BCDFIJSZ]|L[^;]+;)")
+PRIMITIVE = {"B": "byte", "C": "char", "D": "double", "F": "float", "I": "int",
+             "J": "long", "S": "short", "Z": "boolean"}
 
 
 def request(member, owner):
@@ -126,19 +132,22 @@ def divergence(reference, observed):
     return "normalized statement control flow differs from the authored reference"
 
 
+def java_environment():
+    return {
+        key: value for key, value in os.environ.items()
+        if key not in {"CLASSPATH", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "JAVA_TOOL_OPTIONS"}
+    }
+
+
 def parse_graphs(reference, recovered, owner, methods, timeout):
     if reference.stat().st_size > SOURCE_BYTES or recovered.stat().st_size > SOURCE_BYTES:
         raise ValueError("source exceeds the structural probe size bound")
     arguments = [str(reference), str(recovered), owner[1:-1]]
     for method in methods:
         arguments.extend(request(method["member"], owner))
-    environment = {
-        key: value for key, value in os.environ.items()
-        if key not in {"CLASSPATH", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "JAVA_TOOL_OPTIONS"}
-    }
     process = subprocess.run(
-        ["java", "-Xmx256m", str(PARSER), *arguments],
-        capture_output=True, text=True, encoding="utf-8", env=environment,
+        [*JAVA, "-Xmx256m", str(PARSER), *arguments],
+        capture_output=True, text=True, encoding="utf-8", env=java_environment(),
         timeout=timeout, check=False,
     )
     if process.returncode:
@@ -158,6 +167,82 @@ def parse_graphs(reference, recovered, owner, methods, timeout):
     if any(len(side) != len(methods) for side in sides):
         raise ValueError("Java parser report is incomplete")
     return sides
+
+
+@dataclass(frozen=True)
+class ParseUnit:
+    owner: str
+    member: str
+    source: bytes
+
+
+def source_parameter_names(member):
+    arguments = member.split("(", 1)[1].split(")", 1)[0]
+    names = []
+    for descriptor in DESCRIPTOR.findall(arguments):
+        base = descriptor.lstrip("[")
+        rank = len(descriptor) - len(base)
+        name = PRIMITIVE.get(base, base[1:-1].replace("$", "/").rsplit("/", 1)[-1])
+        names.append(name + "[]" * rank)
+    return ",".join(names)
+
+
+def parse_batch(units: list[ParseUnit], timeout: float) -> list[dict]:
+    """Run one JDK launcher for independent Java units, retaining complete rows on timeout."""
+    if not units:
+        return []
+    sizes = [len(unit.source) for unit in units]
+    if max(sizes) > SOURCE_BYTES or len(units) > BATCH_UNITS or sum(sizes) > BATCH_BYTES:
+        raise ValueError("structural batch exceeds the source or method bound")
+
+    try:
+        with TemporaryDirectory(prefix="decbench-flow-batch-") as directory:
+            scratch = Path(directory)
+            plan = scratch / "requests.tsv"
+            with plan.open("w", encoding="utf-8") as batch:
+                for index, unit in enumerate(units):
+                    name, arity = request(unit.member, unit.owner)
+                    owner = unit.owner[1:-1]
+                    parameters = source_parameter_names(unit.member)
+                    if any(character in field for field in (name, owner, parameters) for character in "\t\r\n"):
+                        raise ValueError("structural batch identity contains a request delimiter")
+                    filename = f"Source{index}.java"
+                    (scratch / filename).write_bytes(unit.source)
+                    batch.write("\t".join((filename, owner, name, arity, parameters)) + "\n")
+            try:
+                process = subprocess.run(
+                    [*JAVA, "-Xmx256m", str(PARSER), "--batch", str(plan)],
+                    capture_output=True, env=java_environment(), timeout=timeout, check=False,
+                )
+            except subprocess.TimeoutExpired as error:
+                output = error.stdout or b""
+                detail = "structural probe batch timed out"
+            else:
+                output = process.stdout
+                detail = (f"structural probe worker exited {process.returncode}"
+                          if process.returncode else "structural probe omitted the selected source")
+    except OSError as error:
+        return [{"setup_error": str(error)} for _ in units]
+
+    observed = {}
+    # Every published Java row ends with a newline. An interrupted final row
+    # cannot establish the corresponding method's result.
+    for line in output.split(b"\n")[:-1]:
+        try:
+            job, method, kind, payload = line.decode("utf-8").split("\t", 3)
+            index = int(job)
+            if method != "0" or not 0 <= index < len(units):
+                continue
+            result = json.loads(payload)
+        except (UnicodeError, ValueError):
+            continue
+        if index in observed:
+            observed[index] = {"setup_error": "structural probe repeated the selected source"}
+        elif kind == "graph" and isinstance(result, list) and result:
+            observed[index] = {"graph": result}
+        elif kind == "unchecked" and isinstance(result, str):
+            observed[index] = {"detail": result}
+    return [observed.get(index, {"setup_error": detail}) for index in range(len(units))]
 
 
 def check(status, expected=None, observed=None, detail=None):

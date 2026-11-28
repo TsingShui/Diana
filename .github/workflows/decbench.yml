@@ -87,6 +87,12 @@ jobs:
               --output "$DECBENCH_STATE/comparison.json" || status=$?
             python3 quality/decbench report "$DECBENCH_STATE/comparison.json" \
               --output "$DECBENCH_STATE/comparison.html"
+            if [[ "$status" == 1 ]] && python3 -c \
+              'import json, sys; sys.exit(json.load(open(sys.argv[1]))["evaluator_compatible"])' \
+              "$DECBENCH_STATE/comparison.json"; then
+              echo "The evaluator changed. This complete run starts a new baseline." >> "$GITHUB_STEP_SUMMARY"
+              status=0
+            fi
           fi
           mapfile -t history < <(find "$DECBENCH_STATE/judgements" -name report.json -printf '%T@ %p\n' |
             sort -n | cut -d ' ' -f 2-)

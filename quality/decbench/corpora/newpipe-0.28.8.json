@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "id": "newpipe-0.28.8",
+  "name": "NewPipe",
+  "version": "0.28.8",
+  "apk": {
+    "url": "https://f-droid.org/repo/org.schabi.newpipe_1013.apk",
+    "max_bytes": 67108864,
+    "sha256": "88a1c99ca48394af431b24379783165860aaab3f7f45cce9ca6b8a7d2139a4d6"
+  },
+  "source": {
+    "url": "https://codeload.github.com/TeamNewPipe/NewPipe/tar.gz/84d7db5c1348a1a2f73c80970b977d8e1ef6a83d",
+    "max_bytes": 33554432
+  },
+  "source_commit": "84d7db5c1348a1a2f73c80970b977d8e1ef6a83d",
+  "source_root": "NewPipe-84d7db5c1348a1a2f73c80970b977d8e1ef6a83d",
+  "provenance": {
+    "application_id": "org.schabi.newpipe",
+    "version_code": 1013,
+    "variant": "release",
+    "distribution": "F-Droid",
+    "distribution_url": "https://f-droid.org/packages/org.schabi.newpipe/",
+    "build_metadata_url": "https://gitlab.com/fdroid/fdroiddata/-/raw/master/metadata/org.schabi.newpipe.yml",
+    "reproducibility_url": "https://verification.f-droid.org/unsigned/org.schabi.newpipe_1013.apk.json",
+    "source_repository_url": "https://github.com/TeamNewPipe/NewPipe",
+    "license": "GPL-3.0-or-later",
+    "license_url": "https://github.com/TeamNewPipe/NewPipe/blob/84d7db5c1348a1a2f73c80970b977d8e1ef6a83d/LICENSE",
+    "source_alignment": "The released APK embeds the upstream commit and matches the F-Droid reproducibility report for the signed F-Droid artifact. The release build enables shrinking and keeps names under its -dontobfuscate rule. Selected methods retain their original declarations and the assessed source call sites.",
+    "usage": "Static development benchmark. APK and upstream source remain external inputs."
+  }
+}

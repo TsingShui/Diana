@@ -89,7 +89,7 @@ def inventory(binary: Path, path: Path, timeout: float) -> tuple[set, dict]:
     return methods, evidence
 
 
-def method(binary: Path, path: Path, at: str, timeout: int) -> dict:
+def method(binary: Path, path: Path, at: str, timeout: int, *, member: str | None = None) -> dict:
     argv = [str(binary), "get-method", str(path), at, "--format", "json"]
     capture = run_cli(argv, timeout)
     publication = capture.get("publication", {})
@@ -97,6 +97,8 @@ def method(binary: Path, path: Path, at: str, timeout: int) -> dict:
     selection = publication.get("selection")
     issues = publication.get("issues")
     selected = selection.get("method_at") if isinstance(selection, dict) else None
+    published_member = selected.partition("::")[2] if isinstance(selected, str) else ""
+    valid_member = not member or published_member in ("", member, member.partition("->")[0] + "->")
     observation = {"argv": argv, "exit_code": capture["exit_code"]}
     for field in ("stderr", "elapsed_seconds"):
         if field in capture:
@@ -106,6 +108,7 @@ def method(binary: Path, path: Path, at: str, timeout: int) -> dict:
         or publication.get("command") != "get-method"
         or not isinstance(selected, str)
         or selected.split("::", 1)[0] != at
+        or not valid_member
         or not isinstance(result, dict)
         or not isinstance(result.get("text"), str)
         or not isinstance(issues, list)

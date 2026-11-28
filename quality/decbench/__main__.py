@@ -31,15 +31,63 @@ def positive(value: str) -> int:
     return number
 
 
+def shard_number(value: str) -> tuple[int, int]:
+    fields = value.split("/")
+    if len(fields) != 2 or not all(field.isascii() and field.isdecimal() for field in fields):
+        raise argparse.ArgumentTypeError("expected a 1-based shard such as 2/4")
+    number, count = map(int, fields)
+    if not 1 <= number <= count:
+        raise argparse.ArgumentTypeError("expected a shard number in its partition range")
+    return number, count
+
+
 def parse_args():
     parser = argparse.ArgumentParser(prog="diana-decbench", description=__doc__)
     parser.add_argument("--state", type=absolute, default=DEFAULT_STATE)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("suites", help="list authored suites and their methods")
-    prepare = commands.add_parser("prepare", help="prepare the authored APK and JVM corpus")
+    commands.add_parser("corpora", help="list public APK corpora available for opt-in evaluation")
+    prepare = commands.add_parser("prepare", help="prepare fixtures or one opt-in public corpus")
     prepare.add_argument("--prepared", type=absolute)
+    prepare.add_argument("--corpus", help="public corpus ID")
+    prepare.add_argument("--download", action="store_true", help="allow fetching the selected public corpus")
+    prepare.add_argument("--apk", type=absolute, help="import a local copy of the public APK")
+    prepare.add_argument("--source", type=absolute, help="import a local copy of the pinned source archive")
+    discover = commands.add_parser("discover", help="select source-aligned methods from a cached public corpus")
+    discover.add_argument("--corpus", required=True)
+    discover.add_argument("--prepared", type=absolute)
+    discover.add_argument("--limit", type=positive, default=100)
+    discover.add_argument("--shard", type=shard_number, default=(1, 1), help="select one deterministic partition, such as 2/4")
+    discover.add_argument("--output", type=absolute)
+    coverage = commands.add_parser("coverage", help="summarize original, selected, and actually checked public methods")
+    coverage.add_argument("--corpus", required=True)
+    coverage.add_argument("--prepared", type=absolute)
+    coverage.add_argument("--cases", action="append", type=absolute, help="use a generated selection manifest")
+    coverage.add_argument("--report", action="append", type=absolute, default=[], help="include receipts from one run")
+    coverage.add_argument("--output", type=absolute)
+    campaign = commands.add_parser("campaign", help="evaluate cached public corpora and collect one evidence bundle")
+    campaign.add_argument("--corpus", action="append", help="select a public corpus ID, defaulting to all")
+    campaign.add_argument("--prepared", type=absolute)
+    campaign.add_argument("--binary", type=absolute, required=True)
+    campaign.add_argument("--jadx-jar", type=absolute, help="evaluate the same methods with official JADX")
+    campaign.add_argument("--revision", help="source revision for the Diana executable")
+    campaign.add_argument("--profile", choices=("reviewed", "sample"), default="reviewed")
+    campaign.add_argument("--limit", type=positive, help="limit the selected methods per shard")
+    campaign.add_argument("--shards", type=positive, default=1)
+    campaign.add_argument("--execute-models", action="store_true")
+    campaign.add_argument("--inspect-structure", action="store_true")
+    campaign.add_argument("--resume", action="store_true")
+    campaign.add_argument("--jobs", type=positive, default=4)
+    campaign.add_argument("--timeout", type=positive, default=45)
+    campaign.add_argument("--output", type=absolute, help="parent directory for the new campaign bundle")
     run = commands.add_parser("run", help="judge one Diana executable")
-    run.add_argument("--binary", required=True, type=absolute)
+    producer = run.add_mutually_exclusive_group(required=True)
+    producer.add_argument("--binary", type=absolute)
+    producer.add_argument("--jadx-jar", type=absolute, help="official JADX JAR for an opt-in public corpus")
+    run.add_argument("--corpus", help="evaluate reviewed methods of this cached public corpus")
+    run.add_argument("--cases", type=absolute, help="evaluate a generated public case manifest")
+    run.add_argument("--execute-models", action="store_true", help="run authored Java models for selected public methods")
+    run.add_argument("--inspect-structure", action="store_true", help="compare source and recovered CFGs for review")
     run.add_argument("--prepared", type=absolute)
     run.add_argument("--suite", action="append")
     run.add_argument("--inventory-only", action="store_true", help="check definitions only, without fetching publications")
@@ -57,6 +105,11 @@ def parse_args():
     diff.add_argument("--candidate", required=True, type=absolute)
     diff.add_argument("--output", type=absolute)
     diff.add_argument("--gate", action="store_true", help="fail on regressions or lost evidence")
+    variation = commands.add_parser("compare-campaign", help="compare two public bundles by corpus, producer, and shard")
+    variation.add_argument("--baseline", required=True, type=absolute, help="baseline bundle or campaign.json")
+    variation.add_argument("--candidate", required=True, type=absolute, help="candidate bundle or campaign.json")
+    variation.add_argument("--output", type=absolute)
+    variation.add_argument("--gate", action="store_true", help="fail on regressions, lost, or incompatible evidence")
     index = commands.add_parser("index", help="build a dashboard of ordered evaluation reports")
     index.add_argument("inputs", type=absolute, nargs="+")
     index.add_argument("--output", type=absolute, required=True)
@@ -64,11 +117,41 @@ def parse_args():
     mining.add_argument("inputs", type=absolute, nargs="+")
     mining.add_argument("--output", type=absolute)
     mining.add_argument("--metric", help="select findings for one evidence metric")
+    review = commands.add_parser("review", help="collect source-aligned differences for qualitative review")
+    review.add_argument("inputs", type=absolute, nargs="+")
+    review.add_argument("--target", default="diana")
+    review.add_argument("--peer", default="jadx")
+    review.add_argument("--output", type=absolute)
+    triage = commands.add_parser("triage", help="replay one public candidate on a current executable")
+    triage.add_argument("--baseline", required=True, type=absolute, help="saved Diana run report")
+    triage.add_argument("--at", required=True, help="one exact original DEX method locator")
+    triage.add_argument("--binary", required=True, type=absolute, help="explicit current Diana executable")
+    triage.add_argument("--prepared", type=absolute)
+    triage.add_argument("--cases", type=absolute, help="original custom cases if the selection was moved")
+    triage.add_argument("--jadx-jar", type=absolute)
+    triage.add_argument("--revision")
+    triage.add_argument("--timeout", type=positive, default=60)
+    triage.add_argument("--output", type=absolute)
+    timing = commands.add_parser("timing", help="measure two Diana builds on the same cached public methods")
+    timing.add_argument("--corpus", required=True)
+    timing.add_argument("--prepared", type=absolute)
+    timing.add_argument("--cases", type=absolute)
+    timing.add_argument("--at", action="append")
+    timing.add_argument("--baseline", type=absolute, required=True)
+    timing.add_argument("--candidate", type=absolute, required=True)
+    timing.add_argument("--repeats", type=positive, default=5)
+    timing.add_argument("--timeout", type=positive, default=45)
+    timing.add_argument("--time-budget", type=positive, default=300)
+    timing.add_argument("--output", type=absolute)
     view = commands.add_parser("report", help="render an evaluation or comparison as standalone HTML")
     view.add_argument("input", type=absolute)
     view.add_argument("--output", required=True, type=absolute)
     automate = commands.add_parser("cycle", help="run a repair worker and verify the proposed build")
     automate.add_argument("--baseline", type=absolute, required=True)
+    automate.add_argument("--guard-baseline", type=absolute, action="append", default=[],
+                          help="require the proposed build to preserve an additional Diana evaluation")
+    automate.add_argument("--prepared", type=absolute, help="override the prepared assets for public baselines")
+    automate.add_argument("--cases", type=absolute, help="override the primary public case manifest")
     automate.add_argument("--worker", type=absolute, required=True)
     automate.add_argument("--worktree", type=absolute, required=True)
     automate.add_argument("--group")
@@ -120,6 +203,15 @@ def read_json(path: Path) -> dict:
 
 
 def evaluate(args, prepared: Path) -> int:
+    if args.corpus:
+        import corpus_cli
+
+        return save_evaluation(args, corpus_cli.judge(args, prepared))
+    if args.jadx_jar:
+        raise ValueError("--jadx-jar requires --corpus")
+    if args.execute_models or args.cases or args.inspect_structure:
+        raise ValueError("--cases, --execute-models and --inspect-structure require --corpus")
+
     suites = judge.load_suites(judge.QUALITY / "fixtures")
     external = [judge.external_suite(path) for path in sorted(set(args.input or []))]
     for item in external:
@@ -149,20 +241,15 @@ def evaluate(args, prepared: Path) -> int:
         args.binary, prepared, chosen, args.revision, args.jobs, args.timeout, args.backend,
         args.state / "checkpoints" if args.resume else None,
     )
-    runs = args.state / "judgements"
-    runs.mkdir(parents=True, exist_ok=True)
-    path = Path(tempfile.mkdtemp(prefix="run-", dir=runs)) / "report.json"
-    write_json(path, result)
-    with closing(candidates.connect(args.state)) as db:
-        if args.backend == "diana":
-            candidates.enqueue(db, result, str(path.relative_to(args.state)))
+    return save_evaluation(args, result)
+
+
+def save_evaluation(args, result: dict) -> int:
+    path = candidates.record_run(args.state, result)
     if args.output:
         write_json(args.output, result)
     print(args.output or path)
-    counts = result["checks_by_status"]
-    if not result["inventory_complete"] or counts.get("SETUP_ERROR") or counts.get("UNCHECKED"):
-        return 2
-    return 1 if counts.get("FAIL") else 0
+    return judge.result_code(result)
 
 
 def cases_for_metric(cases: list[dict], metric: str | None) -> list[dict]:
@@ -181,10 +268,28 @@ def main() -> int:
                  "default": suite.get("default", True)} for suite in suites.values()
             ], indent=2))
             return 0
+        if args.command in ("corpora", "discover", "coverage", "campaign", "timing"):
+            import corpus_cli
+
+            if args.command == "corpora":
+                return corpus_cli.list_projects()
+            if args.command == "discover":
+                return corpus_cli.discover(args)
+            if args.command == "coverage":
+                return corpus_cli.coverage(args)
+            if args.command == "campaign":
+                return corpus_cli.campaign(args)
+            return corpus_cli.time_builds(args)
         if args.command in ("prepare", "run"):
-            prepared = args.prepared or args.state / "corpus"
+            prepared = args.prepared or args.state / ("public-corpora" if args.corpus else "corpus")
             if args.command == "run":
                 return evaluate(args, prepared)
+            if args.corpus:
+                import corpus_cli
+
+                return corpus_cli.prepare(args, prepared)
+            if args.download or args.apk or args.source:
+                raise ValueError("--download, --apk and --source require --corpus")
             prepare_corpus(prepared)
             return 0
         if args.command == "compare":
@@ -194,7 +299,19 @@ def main() -> int:
                 print(args.output)
             else:
                 print(json.dumps(diff, indent=2))
-            return int(args.gate and any(diff["summary"][key] for key in ("newly_failing", "coverage_lost", "coverage_changed")))
+            return int(args.gate and (not diff["evaluator_compatible"] or any(
+                diff["summary"][key] for key in ("newly_failing", "coverage_lost", "coverage_changed")
+            )))
+        if args.command == "compare-campaign":
+            import corpus_comparison
+
+            comparison = corpus_comparison.compare(args.baseline, args.candidate)
+            if args.output:
+                write_json(args.output, comparison)
+                print(args.output)
+            else:
+                print(json.dumps(comparison, indent=2))
+            return corpus_comparison.result_code(comparison) if args.gate else 0
         if args.command in ("index", "mine"):
             reports = [read_json(path) for path in args.inputs]
             if args.command == "mine":
@@ -218,9 +335,29 @@ def main() -> int:
             args.output.write_text(document, encoding="utf-8")
             print(args.output)
             return 0
+        if args.command == "review":
+            import corpus_review
+
+            path = args.output or args.state / "public-review.json"
+            write_json(path, corpus_review.review([read_json(path) for path in args.inputs], args.target, args.peer))
+            print(path)
+            return 0
+        if args.command == "triage":
+            import corpus_triage
+
+            result = corpus_triage.triage(args.baseline, args.at, args.binary, cache=args.prepared,
+                                          case_path=args.cases, jadx_jar=args.jadx_jar,
+                                          revision=args.revision, timeout=args.timeout)
+            if args.output:
+                write_json(args.output, result)
+                print(args.output)
+            else:
+                print(json.dumps(result, indent=2))
+            return corpus_triage.result_code(result)
         with closing(candidates.connect(args.state)) as db:
             if args.command == "cycle":
-                attempt, result = cycle.execute(args, db, read_json(args.baseline))
+                guards = [(path, read_json(path)) for path in dict.fromkeys(args.guard_baseline)]
+                attempt, result = cycle.execute(args, db, read_json(args.baseline), guards)
                 if attempt:
                     print(attempt)
                 return result
@@ -237,7 +374,17 @@ def main() -> int:
                 ]
                 if result.get("inventory_only"):
                     result["reproduce"].append("--inventory-only")
-                if result["suite"].startswith("external:"):
+                if result["suite"].startswith("public:"):
+                    result["reproduce"].extend(("--corpus", result["suite"].split(":", 1)[1],
+                                                "--at", result["at"]))
+                    corpus = next(item["corpus"] for item in report["inputs"] if item["suite"] == result["suite"])
+                    if corpus.get("execute_models"):
+                        result["reproduce"].append("--execute-models")
+                    if corpus.get("inspect_structure"):
+                        result["reproduce"].append("--inspect-structure")
+                    if corpus.get("external_cases"):
+                        result["reproduce"].extend(("--cases", corpus["cases"]))
+                elif result["suite"].startswith("external:"):
                     result["reproduce"].extend(("--input", result["input"]))
                 else:
                     result["reproduce"].extend(("--suite", result["suite"]))

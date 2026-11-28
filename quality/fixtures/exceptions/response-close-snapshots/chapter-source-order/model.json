@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "template": "ChapterUtils.java.template",
+  "class_name": "ChapterUtils",
+  "scenarios": [
+    {
+      "id": "database-then-network",
+      "arguments": ["true", "true", "false"],
+      "expected": ["database", "network", "media", "merge", "merge", "set"]
+    },
+    {
+      "id": "database-only",
+      "arguments": ["true", "false", "false"],
+      "expected": ["database", "media", "merge", "merge", "set"]
+    },
+    {
+      "id": "network-only",
+      "arguments": ["false", "true", "false"],
+      "expected": ["network", "media", "merge", "merge", "set"]
+    },
+    {
+      "id": "network-interruption-after-database",
+      "arguments": ["true", "true", "true"],
+      "expected": ["database", "network", "interrupted", "set-null"]
+    }
+  ]
+}

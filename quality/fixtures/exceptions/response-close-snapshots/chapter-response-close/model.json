@@ -1,0 +1,242 @@
+{
+  "schema_version": 1,
+  "template": "ChapterUtils.java.template",
+  "class_name": "ChapterUtils",
+  "raw_probe": "dex_probe.py",
+  "scenarios": [
+    {
+      "id": "response-success",
+      "arguments": [
+        "SUCCESS"
+      ],
+      "expected": [
+        "request-builder",
+        "request-url",
+        "request-cache",
+        "request-build",
+        "client",
+        "new-call",
+        "execute",
+        "acquire-response",
+        "status-acquired",
+        "body-acquired",
+        "body-acquired",
+        "read-acquired",
+        "parse-acquired",
+        "close-acquired",
+        "return-chapters"
+      ]
+    },
+    {
+      "id": "response-unsuccessful",
+      "arguments": [
+        "UNSUCCESSFUL"
+      ],
+      "expected": [
+        "request-builder",
+        "request-url",
+        "request-cache",
+        "request-build",
+        "client",
+        "new-call",
+        "execute",
+        "acquire-response",
+        "status-acquired",
+        "close-acquired",
+        "return-null"
+      ]
+    },
+    {
+      "id": "response-execute-io",
+      "arguments": [
+        "EXECUTE_IO"
+      ],
+      "expected": [
+        "request-builder",
+        "request-url",
+        "request-cache",
+        "request-build",
+        "client",
+        "new-call",
+        "execute",
+        "log-io",
+        "return-null"
+      ]
+    },
+    {
+      "id": "response-execute-interrupted",
+      "arguments": [
+        "EXECUTE_INTERRUPTED"
+      ],
+      "expected": [
+        "request-builder",
+        "request-url",
+        "request-cache",
+        "request-build",
+        "client",
+        "new-call",
+        "execute",
+        "throw-interrupted-suppressed-0"
+      ]
+    },
+    {
+      "id": "response-read-io",
+      "arguments": [
+        "READ_IO"
+      ],
+      "expected": [
+        "request-builder",
+        "request-url",
+        "request-cache",
+        "request-build",
+        "client",
+        "new-call",
+        "execute",
+        "acquire-response",
+        "status-acquired",
+        "body-acquired",
+        "body-acquired",
+        "read-acquired",
+        "log-io",
+        "close-acquired",
+        "return-null"
+      ]
+    },
+    {
+      "id": "response-read-interrupted",
+      "arguments": [
+        "READ_INTERRUPTED"
+      ],
+      "expected": [
+        "request-builder",
+        "request-url",
+        "request-cache",
+        "request-build",
+        "client",
+        "new-call",
+        "execute",
+        "acquire-response",
+        "status-acquired",
+        "body-acquired",
+        "body-acquired",
+        "read-acquired",
+        "close-acquired",
+        "throw-interrupted-suppressed-0"
+      ]
+    },
+    {
+      "id": "response-parser-failure",
+      "arguments": [
+        "PARSE_FAILURE"
+      ],
+      "expected": [
+        "request-builder",
+        "request-url",
+        "request-cache",
+        "request-build",
+        "client",
+        "new-call",
+        "execute",
+        "acquire-response",
+        "status-acquired",
+        "body-acquired",
+        "body-acquired",
+        "read-acquired",
+        "parse-acquired",
+        "close-acquired",
+        "throw-parser-suppressed-0"
+      ]
+    },
+    {
+      "id": "response-success-close-failure",
+      "arguments": [
+        "SUCCESS_CLOSE_FAILURE"
+      ],
+      "expected": [
+        "request-builder",
+        "request-url",
+        "request-cache",
+        "request-build",
+        "client",
+        "new-call",
+        "execute",
+        "acquire-response",
+        "status-acquired",
+        "body-acquired",
+        "body-acquired",
+        "read-acquired",
+        "parse-acquired",
+        "close-acquired",
+        "throw-close-suppressed-0"
+      ]
+    },
+    {
+      "id": "response-io-close-failure",
+      "arguments": [
+        "READ_IO_CLOSE_FAILURE"
+      ],
+      "expected": [
+        "request-builder",
+        "request-url",
+        "request-cache",
+        "request-build",
+        "client",
+        "new-call",
+        "execute",
+        "acquire-response",
+        "status-acquired",
+        "body-acquired",
+        "body-acquired",
+        "read-acquired",
+        "log-io",
+        "close-acquired",
+        "throw-close-suppressed-0"
+      ]
+    },
+    {
+      "id": "response-interrupted-close-failure",
+      "arguments": [
+        "INTERRUPTED_CLOSE_FAILURE"
+      ],
+      "expected": [
+        "request-builder",
+        "request-url",
+        "request-cache",
+        "request-build",
+        "client",
+        "new-call",
+        "execute",
+        "acquire-response",
+        "status-acquired",
+        "body-acquired",
+        "body-acquired",
+        "read-acquired",
+        "close-acquired",
+        "throw-close-suppressed-0"
+      ]
+    },
+    {
+      "id": "response-logger-failure",
+      "arguments": [
+        "LOG_FAILURE"
+      ],
+      "expected": [
+        "request-builder",
+        "request-url",
+        "request-cache",
+        "request-build",
+        "client",
+        "new-call",
+        "execute",
+        "acquire-response",
+        "status-acquired",
+        "body-acquired",
+        "body-acquired",
+        "read-acquired",
+        "log-io",
+        "close-acquired",
+        "throw-logger-suppressed-0"
+      ]
+    }
+  ]
+}

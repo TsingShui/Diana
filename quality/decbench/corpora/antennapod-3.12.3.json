@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "id": "antennapod-3.12.3",
+  "name": "AntennaPod",
+  "version": "3.12.3",
+  "apk": {
+    "url": "https://f-droid.org/repo/de.danoeh.antennapod_3120395.apk",
+    "max_bytes": 67108864,
+    "sha256": "6e79f28f69cef1a8b2e4f5f88c9c3cf3c3d7c51356f01394ac23b0dc5d56a00b"
+  },
+  "source": {
+    "url": "https://codeload.github.com/AntennaPod/AntennaPod/tar.gz/175e5ef8fe3e125a5014d70ef0c57cf85661c71b",
+    "max_bytes": 33554432
+  },
+  "source_commit": "175e5ef8fe3e125a5014d70ef0c57cf85661c71b",
+  "source_root": "AntennaPod-175e5ef8fe3e125a5014d70ef0c57cf85661c71b",
+  "provenance": {
+    "application_id": "de.danoeh.antennapod",
+    "version_code": 3120395,
+    "variant": "free",
+    "distribution": "F-Droid",
+    "distribution_url": "https://f-droid.org/packages/de.danoeh.antennapod/",
+    "build_metadata_url": "https://gitlab.com/fdroid/fdroiddata/-/blob/master/metadata/de.danoeh.antennapod.yml",
+    "source_repository_url": "https://github.com/AntennaPod/AntennaPod",
+    "license": "GPL-3.0-only",
+    "license_url": "https://github.com/AntennaPod/AntennaPod/blob/175e5ef8fe3e125a5014d70ef0c57cf85661c71b/LICENSE",
+    "source_alignment": "The released APK embeds the upstream commit in META-INF/version-control-info.textproto. The F-Droid recipe removes lines containing play from app-wearos/build.gradle and net/sync/wear-interface/build.gradle. The selected Java source is outside those files.",
+    "usage": "Static development benchmark. APK and upstream source remain external inputs."
+  }
+}

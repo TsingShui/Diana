@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "template": "ChapterUtils.java.template",
+  "class_name": "ChapterUtils",
+  "raw_probe": "dex_probe.py",
+  "scenarios": [
+    {"id": "forced-network", "arguments": ["FORCED"], "expected": ["network", "return-network"]},
+    {"id": "forced-interrupted", "arguments": ["FORCED_INTERRUPTED"], "expected": ["network", "throw-interrupted"]},
+    {"id": "cache-missing", "arguments": ["MISSING"], "expected": ["cache", "network", "return-network"]},
+    {"id": "cache-empty", "arguments": ["EMPTY"], "expected": ["cache", "cache-size", "network", "return-network"]},
+    {"id": "cache-single", "arguments": ["SINGLE"], "expected": ["cache", "cache-size", "network", "return-network"]},
+    {"id": "cache-two", "arguments": ["TWO"], "expected": ["cache", "cache-size", "return-cache"]},
+    {"id": "cache-interrupted", "arguments": ["CACHE_INTERRUPTED"], "expected": ["cache", "throw-interrupted"]},
+    {"id": "fallback-interrupted", "arguments": ["FALLBACK_INTERRUPTED"], "expected": ["cache", "cache-size", "network", "throw-interrupted"]}
+  ]
+}

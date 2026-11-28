@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "class_name": "TimeStringModel",
+  "template": "TimeStringModel.java.template",
+  "scenarios": [
+    {
+      "id": "hours-minutes-seconds",
+      "arguments": ["01:02:03.5"],
+      "expected": ["return:3723500"]
+    },
+    {
+      "id": "minutes-seconds",
+      "arguments": ["02:03.5"],
+      "expected": ["return:123500"]
+    },
+    {
+      "id": "single-component",
+      "arguments": ["not-a-number"],
+      "expected": ["return:0"]
+    },
+    {
+      "id": "only-delimiters",
+      "arguments": ["::"],
+      "expected": ["return:0"]
+    },
+    {
+      "id": "extra-components",
+      "arguments": ["1:2:ignored:ignored"],
+      "expected": ["return:62000"]
+    },
+    {
+      "id": "trailing-delimiter",
+      "arguments": ["1:2:"],
+      "expected": ["return:62000"]
+    },
+    {
+      "id": "empty-minute",
+      "arguments": ["1::2"],
+      "expected": ["throw:NumberFormatException", "parser:integer"]
+    },
+    {
+      "id": "negative-components",
+      "arguments": ["-2:-3.5"],
+      "expected": ["return:-123500"]
+    },
+    {
+      "id": "large-minutes",
+      "arguments": ["2147483647:0"],
+      "expected": ["return:128849018820000"]
+    },
+    {
+      "id": "float-precision",
+      "arguments": ["0:16777217"],
+      "expected": ["return:16777216000"]
+    },
+    {
+      "id": "fraction-toward-zero",
+      "arguments": ["0:-0.0009"],
+      "expected": ["return:0"]
+    },
+    {
+      "id": "nan-with-minutes",
+      "arguments": ["1:NaN"],
+      "expected": ["return:60000"]
+    },
+    {
+      "id": "positive-infinity",
+      "arguments": ["0:Infinity"],
+      "expected": ["return:9223372036854775807"]
+    },
+    {
+      "id": "negative-infinity",
+      "arguments": ["0:-Infinity"],
+      "expected": ["return:-9223372036854775808"]
+    },
+    {
+      "id": "infinity-after-long-addition",
+      "arguments": ["1:Infinity"],
+      "expected": ["return:-9223372036854715809"]
+    },
+    {
+      "id": "bad-minute-first",
+      "arguments": ["bad-minute:bad-second"],
+      "expected": ["throw:NumberFormatException", "parser:integer"]
+    },
+    {
+      "id": "bad-seconds",
+      "arguments": ["0:bad-second"],
+      "expected": ["throw:NumberFormatException", "parser:float"]
+    },
+    {
+      "id": "bad-hour-first",
+      "arguments": ["bad-hour:1:bad-second"],
+      "expected": ["throw:NumberFormatException", "parser:integer"]
+    },
+    {
+      "id": "null-input",
+      "arguments": [],
+      "expected": ["throw:NullPointerException"]
+    }
+  ]
+}

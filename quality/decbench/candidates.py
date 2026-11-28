@@ -1,12 +1,14 @@
 """Persistent, leased review queue populated by independent findings."""
 
+from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
+from tempfile import mkdtemp
 import time
 from uuid import uuid4
 
-from evidence import digest
+from evidence import digest, write_json
 
 
 def connect(state: Path) -> sqlite3.Connection:
@@ -31,6 +33,11 @@ def connect(state: Path) -> sqlite3.Connection:
             candidate TEXT PRIMARY KEY, scope TEXT NOT NULL
         )
     """)
+    database.execute("""
+        CREATE TABLE IF NOT EXISTS latest_observations (
+            scope TEXT PRIMARY KEY, last_seen TEXT NOT NULL
+        )
+    """)
     database.execute("CREATE INDEX IF NOT EXISTS scopes_by_method ON case_scopes(scope)")
     return database
 
@@ -42,12 +49,25 @@ def queue_row(row: sqlite3.Row) -> dict:
 
 
 def scope(item: dict, row: dict) -> str:
-    return digest([item["suite"], item["sha256"], item.get("inventory_only", False),
-                   row["at"], row["member"]])
+    fields = [item["suite"], item["sha256"], item.get("inventory_only", False), row["at"], row["member"]]
+    if profile := item.get("corpus", {}).get("profile"):
+        fields.append(profile)
+    return digest(fields)
 
 
 def identity(item: dict, row: dict) -> str:
     return digest([scope(item, row), item["oracle_sha256"]])
+
+
+def record_run(state: Path, report: dict) -> Path:
+    runs = state / "judgements"
+    runs.mkdir(parents=True, exist_ok=True)
+    path = Path(mkdtemp(prefix="run-", dir=runs)) / "report.json"
+    write_json(path, report)
+    if report["backend"] == "diana":
+        with closing(connect(state)) as database:
+            enqueue(database, report, str(path.relative_to(state)))
+    return path
 
 
 def enqueue(database: sqlite3.Connection, report: dict, report_path: str) -> None:
@@ -60,12 +80,16 @@ def enqueue(database: sqlite3.Connection, report: dict, report_path: str) -> Non
                 case_id = identity(item, row)
                 timestamp = report["created_at"]
                 method_scope = scope(item, row)
-                newest = database.execute("""
-                    SELECT MAX(candidates.last_seen) FROM candidates
-                    JOIN case_scopes ON candidates.id = case_scopes.candidate
-                    WHERE case_scopes.scope = ?
-                """, (method_scope,)).fetchone()[0]
-                if newest and newest > timestamp:
+                observation = database.execute("""
+                    INSERT INTO latest_observations (scope, last_seen)
+                    SELECT ?, ? WHERE NOT EXISTS (
+                        SELECT 1 FROM candidates JOIN case_scopes ON candidates.id = case_scopes.candidate
+                        WHERE case_scopes.scope = ? AND candidates.last_seen > ?
+                    )
+                    ON CONFLICT(scope) DO UPDATE SET last_seen = excluded.last_seen
+                    WHERE latest_observations.last_seen <= excluded.last_seen
+                """, (method_scope, timestamp, method_scope, timestamp))
+                if not observation.rowcount:
                     continue
                 database.execute("""
                     UPDATE candidates SET status = 'superseded', last_seen = ?,
@@ -82,7 +106,7 @@ def enqueue(database: sqlite3.Connection, report: dict, report_path: str) -> Non
                     continue
                 failures = [check for check in row["checks"] if check["status"] == "FAIL"]
                 revision = digest([item["oracle_sha256"], failures])
-                priority = 0 if any(f["metric"] == "behavior" for f in failures) else 1
+                priority = 0 if any(f["metric"] in ("behavior", "modeled_behavior") for f in failures) else 1
                 details = json.dumps({
                     "suite": item["suite"], "input": item["path"], "input_sha256": item["sha256"],
                     "oracle_sha256": item["oracle_sha256"], "inventory_only": item.get("inventory_only", False),
@@ -131,6 +155,7 @@ def show(state: Path, case: dict) -> dict:
         for row in item["methods"]:
             if identity(item, row) == case["id"]:
                 return {**case, "observation": row["observation"], "checks": row["checks"],
+                        **({"source": row["source"]} if row.get("source") else {}),
                         "oracle_sources": item.get("oracle_sources", [])}
     raise ValueError("candidate evidence is absent from its report")
 

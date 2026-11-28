@@ -1,0 +1,373 @@
+name: Diana DecBench Public Corpus
+
+on:
+  schedule:
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      corpus:
+        description: Reviewed public corpus
+        type: choice
+        required: true
+        default: antennapod-3.12.3
+        options:
+          - antennapod-3.12.3
+          - newpipe-0.28.8
+      profile:
+        description: Evidence selection
+        type: choice
+        required: true
+        default: reviewed
+        options:
+          - reviewed
+          - sample100
+      timing_baseline:
+        description: Optional baseline commit SHA for paired release-build timing
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  DECBENCH_STATE: .cache/decbench-public/state
+  DECBENCH_EVIDENCE: .cache/decbench-public/evidence
+  DECBENCH_BASELINE: .cache/decbench-public/baseline/diana.json
+  JADX_VERSION: "1.5.7"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  evaluate:
+    if: github.event_name == 'workflow_dispatch' || vars.DECBENCH_PUBLIC_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        corpus: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('["{0}"]', inputs.corpus)) || fromJSON('["antennapod-3.12.3", "newpipe-0.28.8"]') }}
+        profile: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('["{0}"]', inputs.profile)) || fromJSON('["reviewed", "sample100"]') }}
+    concurrency:
+      group: diana-decbench-public-${{ github.ref }}-${{ matrix.corpus }}-${{ matrix.profile }}
+      cancel-in-progress: false
+    env:
+      CORPUS: ${{ matrix.corpus }}
+      PROFILE: ${{ matrix.profile }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Record toolchain and build Diana
+        run: |
+          mkdir -p "$DECBENCH_EVIDENCE"
+          rustup toolchain install stable --profile minimal
+          {
+            git log -1 --format='revision=%H'
+            printf 'corpus=%s\n' "$CORPUS"
+            printf 'profile=%s\n' "$PROFILE"
+            rustc +stable --version
+            cargo +stable --version
+            python3 --version
+            java -version
+          } > "$DECBENCH_EVIDENCE/environment.txt" 2>&1
+          cargo +stable build --locked -p diana
+          target/debug/diana --version >> "$DECBENCH_EVIDENCE/environment.txt"
+
+      - name: Prepare the selected APK and pinned upstream source
+        timeout-minutes: 18
+        run: |
+          for attempt in 1 2; do
+            if python3 quality/decbench --state "$DECBENCH_STATE" \
+              prepare --corpus "$CORPUS" --download; then
+              exit 0
+            fi
+            if [[ "$attempt" != 2 ]]; then sleep 5; fi
+          done
+          exit 1
+
+      - name: Select a deterministic source-aligned sample
+        if: matrix.profile == 'sample100'
+        run: |
+          python3 quality/decbench --state "$DECBENCH_STATE" discover --corpus "$CORPUS" \
+            --limit 100 --output "$DECBENCH_EVIDENCE/cases.json"
+
+      - name: Acquire the pinned JADX release for this run
+        timeout-minutes: 4
+        id: jadx
+        continue-on-error: true
+        run: |
+          tool_dir=$(mktemp -d "$RUNNER_TEMP/decbench-jadx-XXXXXX")
+          archive="$tool_dir/jadx.zip"
+          member="lib/jadx-$JADX_VERSION-all.jar"
+          jar="$tool_dir/jadx.jar"
+          curl --fail --location --proto '=https' --proto-redir '=https' \
+            --connect-timeout 15 --max-time 60 --retry 2 --retry-max-time 120 \
+            --output "$archive" \
+            "https://github.com/skylot/jadx/releases/download/v$JADX_VERSION/jadx-$JADX_VERSION.zip"
+          unzip -p "$archive" "$member" > "$jar"
+          {
+            printf 'JADX version: '
+            java -jar "$jar" --version
+            sha256sum "$jar"
+          } >> "$DECBENCH_EVIDENCE/environment.txt"
+          printf 'jar=%s\n' "$jar" >> "$GITHUB_OUTPUT"
+
+      - name: Restore prior Diana evidence for this corpus and branch
+        id: baseline
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.DECBENCH_BASELINE }}
+          key: diana-decbench-public-v2-${{ matrix.corpus }}-${{ matrix.profile }}-${{ github.ref }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: diana-decbench-public-v2-${{ matrix.corpus }}-${{ matrix.profile }}-${{ github.ref }}-
+
+      - name: Restore the repair queue
+        id: queue
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .cache/decbench-public/state/findings.sqlite3
+            .cache/decbench-public/state/judgements
+          key: diana-decbench-public-queue-v1-${{ matrix.corpus }}-${{ matrix.profile }}-${{ github.ref }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: diana-decbench-public-queue-v1-${{ matrix.corpus }}-${{ matrix.profile }}-${{ github.ref }}-
+
+      - name: Evaluate both backends on the same input
+        id: evaluate
+        timeout-minutes: 15
+        env:
+          JADX_JAR: ${{ steps.jadx.outputs.jar }}
+        run: |
+          if [[ "$PROFILE" == sample100 ]]; then
+            selection=(--cases "$DECBENCH_EVIDENCE/cases.json" --inspect-structure)
+          else
+            selection=(--execute-models --inspect-structure)
+          fi
+          diana_status=0
+          timeout --kill-after=15s 6m python3 quality/decbench --state "$DECBENCH_STATE" run \
+            --corpus "$CORPUS" --binary target/debug/diana --revision "$GITHUB_SHA" \
+            "${selection[@]}" --timeout 90 --output "$DECBENCH_EVIDENCE/diana.json" \
+            > "$DECBENCH_EVIDENCE/diana-console.txt" 2>&1 || diana_status=$?
+          if [[ -n "$JADX_JAR" && -r "$JADX_JAR" ]]; then
+            jadx_status=0
+            timeout --kill-after=15s 6m python3 quality/decbench --state "$DECBENCH_STATE" run \
+              --corpus "$CORPUS" --jadx-jar "$JADX_JAR" \
+              "${selection[@]}" --timeout 120 --output "$DECBENCH_EVIDENCE/jadx.json" \
+              > "$DECBENCH_EVIDENCE/jadx-console.txt" 2>&1 || jadx_status=$?
+          else
+            jadx_status=2
+            printf '%s\n' 'The pinned JADX release was unavailable. See the acquisition step.' \
+              > "$DECBENCH_EVIDENCE/jadx-console.txt"
+          fi
+          printf 'diana_status=%s\njadx_status=%s\n' "$diana_status" "$jadx_status" >> "$GITHUB_OUTPUT"
+
+      - name: Render evidence and review paired methods
+        id: review
+        env:
+          DIANA_STATUS: ${{ steps.evaluate.outputs.diana_status }}
+          JADX_STATUS: ${{ steps.evaluate.outputs.jadx_status }}
+        run: |
+          status=0
+          coverage_args=()
+          if [[ -f "$DECBENCH_EVIDENCE/cases.json" ]]; then
+            coverage_args+=(--cases "$DECBENCH_EVIDENCE/cases.json")
+          fi
+          for backend in diana jadx; do
+            if [[ -f "$DECBENCH_EVIDENCE/$backend.json" ]]; then
+              coverage_args+=(--report "$DECBENCH_EVIDENCE/$backend.json")
+              python3 quality/decbench report "$DECBENCH_EVIDENCE/$backend.json" \
+                --output "$DECBENCH_EVIDENCE/$backend.html" || status=2
+            fi
+          done
+          python3 quality/decbench --state "$DECBENCH_STATE" coverage --corpus "$CORPUS" \
+            "${coverage_args[@]}" --output "$DECBENCH_EVIDENCE/coverage.json" || status=2
+          if [[ -f "$DECBENCH_EVIDENCE/coverage.json" ]]; then
+            python3 quality/decbench report "$DECBENCH_EVIDENCE/coverage.json" \
+              --output "$DECBENCH_EVIDENCE/coverage.html" || status=2
+          fi
+          if [[ -f "$DECBENCH_EVIDENCE/diana.json" && -f "$DECBENCH_EVIDENCE/jadx.json" ]]; then
+            python3 quality/decbench review "$DECBENCH_EVIDENCE/diana.json" "$DECBENCH_EVIDENCE/jadx.json" \
+              --output "$DECBENCH_EVIDENCE/review.json" || status=2
+            if [[ -f "$DECBENCH_EVIDENCE/review.json" ]]; then
+              python3 quality/decbench report "$DECBENCH_EVIDENCE/review.json" \
+                --output "$DECBENCH_EVIDENCE/review.html" || status=2
+            fi
+            python3 quality/decbench mine "$DECBENCH_EVIDENCE/diana.json" "$DECBENCH_EVIDENCE/jadx.json" \
+              --output "$DECBENCH_EVIDENCE/opportunities.json" || status=2
+          fi
+          if [[ -f "$DECBENCH_EVIDENCE/diana.json" ]]; then
+            python3 quality/decbench --state "$DECBENCH_STATE" queue --status pending \
+              > "$DECBENCH_EVIDENCE/repair-queue.json" || status=2
+          fi
+          python3 - "$status" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import sys
+
+          evidence = Path(os.environ["DECBENCH_EVIDENCE"])
+          setup_failed = bool(int(sys.argv[1]))
+          diana_valid = False
+          print(f"### DecBench public corpus · {os.environ['CORPUS']} · {os.environ['PROFILE']}")
+          print("\n| Backend | Exit | Inventory complete | Pass | Fail | Unchecked | Setup error |")
+          print("| --- | ---: | --- | ---: | ---: | ---: | ---: |")
+          for backend in ("diana", "jadx"):
+              exit_code = int(os.environ[f"{backend.upper()}_STATUS"])
+              path = evidence / f"{backend}.json"
+              if not path.is_file():
+                  setup_failed = True
+                  print(f"| {backend} | {exit_code} | No report | — | — | — | — |")
+                  continue
+              report = json.loads(path.read_text(encoding="utf-8"))
+              counts = report["checks_by_status"]
+              passed, failed, unchecked, setup = (
+                  counts.get(key, 0) for key in ("PASS", "FAIL", "UNCHECKED", "SETUP_ERROR")
+              )
+              complete = report["inventory_complete"]
+              producer_failed = any(item.get("inventory", {}).get("setup_error") for item in report["inputs"])
+              inspection_failed = any(item.get("corpus", {}).get("source_structure", {}).get("SETUP_ERROR")
+                                      for item in report["inputs"])
+              invalid = (setup or producer_failed or inspection_failed or not complete
+                         or exit_code not in (0, 1, 2) or exit_code == 2 and not unchecked)
+              if backend == "diana":
+                  diana_valid = not invalid
+              if invalid:
+                  setup_failed = True
+              print(f"| {backend} | {exit_code} | {complete} | {passed} | {failed} | {unchecked} | {setup} |")
+          review_path = evidence / "review.json"
+          if review_path.is_file():
+              review = json.loads(review_path.read_text(encoding="utf-8"))
+              coverage = review["coverage"]
+              print(f"\nPaired method review coverage: {coverage['paired']}.")
+              if not coverage["paired"] or coverage["target_only"] or coverage["peer_only"]:
+                  setup_failed = True
+          population = evidence / "coverage.json"
+          if population.is_file():
+              data = json.loads(population.read_text(encoding="utf-8"))
+              original = data["original"].get("method_definitions")
+              selected = data["selection"]["matched_original_and_source_pin_methods"]
+              print(f"\nOriginal DEX method definitions: {original}. Source-pinned selections: {selected}.")
+              for pool in data["evidence"]["unique_methods_by_tool_and_evaluator"]:
+                  print(f"- {pool['backend']} measured quality checks on {pool['methods_with_measured_quality_checks']} methods.")
+          if (evidence / "repair-queue.json").is_file():
+              print("\nThe queue index can also reference historical reports in the Actions cache.")
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write(f"diana_valid={str(diana_valid).lower()}\n")
+              output.write(f"complete={str(not setup_failed).lower()}\n")
+          if setup_failed:
+              print("\nOne or more setup or reporting steps failed. Download the evidence for diagnostics.")
+          PY
+
+      - name: Persist independently confirmed repair candidates
+        if: steps.review.outputs.diana_valid == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .cache/decbench-public/state/findings.sqlite3
+            .cache/decbench-public/state/judgements
+          key: ${{ steps.queue.outputs.cache-primary-key }}
+
+      - name: Compare compatible Diana snapshots
+        id: compare
+        if: steps.review.outputs.diana_valid == 'true'
+        run: |
+          result="$DECBENCH_EVIDENCE/comparison.json"
+          if [[ -f "$DECBENCH_BASELINE" ]]; then
+            python3 quality/decbench compare --baseline "$DECBENCH_BASELINE" \
+              --candidate "$DECBENCH_EVIDENCE/diana.json" --output "$result"
+            python3 quality/decbench report "$result" --output "$DECBENCH_EVIDENCE/comparison.html"
+          fi
+          python3 - "$result" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import sys
+
+          result = Path(sys.argv[1])
+          if result.is_file():
+              comparison = json.loads(result.read_text(encoding="utf-8"))
+              coverage = comparison["input_coverage"]
+              same_evaluator = (comparison["baseline"].get("evaluator_sha256")
+                                == comparison["candidate"].get("evaluator_sha256"))
+              if same_evaluator and coverage and all(row["baseline"] and row["candidate"] for row in coverage):
+                  summary = comparison["summary"]
+                  print("\n### Diana changes from the prior compatible run")
+                  print(f"\nNew failures: {summary['newly_failing']}. "
+                        f"Resolved failures: {summary['recovered']}. "
+                        f"Lost coverage: {summary['coverage_lost']}. "
+                        f"Other coverage changes: {summary['coverage_changed']}.")
+                  if any(summary[key] for key in ("newly_failing", "coverage_lost", "coverage_changed")):
+                      raise SystemExit(1)
+              else:
+                  print("\nThe previous input, oracle or evaluator differs. This run starts a new baseline.")
+          else:
+              print("\nNo previous Diana snapshot was found for this corpus and branch.")
+          current = Path(os.environ["DECBENCH_EVIDENCE"]) / "diana.json"
+          if json.loads(current.read_text(encoding="utf-8"))["inventory_complete"]:
+              baseline = Path(os.environ["DECBENCH_BASELINE"])
+              baseline.parent.mkdir(parents=True, exist_ok=True)
+              baseline.write_bytes(current.read_bytes())
+              with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+                  output.write("promote=true\n")
+          else:
+              print("\nThe current Diana inventory is incomplete. The prior baseline stays in use.")
+          PY
+
+      - name: Retain the latest complete Diana baseline
+        if: steps.compare.outputs.promote == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.DECBENCH_BASELINE }}
+          key: ${{ steps.baseline.outputs.cache-primary-key }}
+
+      - name: Time compatible release builds on the same runner
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.timing_baseline != '' && steps.review.outputs.diana_valid == 'true' }}
+        timeout-minutes: 12
+        env:
+          TIMING_BASELINE: ${{ inputs.timing_baseline }}
+        run: |
+          if [[ ! "$TIMING_BASELINE" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Timing requires a full lowercase commit SHA." >&2
+            exit 2
+          fi
+          work=$(mktemp -d "$RUNNER_TEMP/decbench-timing-XXXXXX")
+          git fetch --depth=1 --no-tags origin "$TIMING_BASELINE"
+          git worktree add --detach "$work/baseline" "$TIMING_BASELINE"
+          CARGO_TARGET_DIR="$work/baseline-target" cargo +stable build \
+            --manifest-path "$work/baseline/Cargo.toml" --locked --release -p diana
+          CARGO_TARGET_DIR="$work/candidate-target" cargo +stable build --locked --release -p diana
+          printf 'timing_baseline=%s\n' "$TIMING_BASELINE" >> "$DECBENCH_EVIDENCE/environment.txt"
+          selection=()
+          if [[ "$PROFILE" == sample100 ]]; then
+            selection=(--cases "$DECBENCH_EVIDENCE/cases.json")
+          fi
+          status=0
+          python3 quality/decbench --state "$DECBENCH_STATE" timing --corpus "$CORPUS" \
+            --baseline "$work/baseline-target/release/diana" \
+            --candidate "$work/candidate-target/release/diana" "${selection[@]}" \
+            --output "$DECBENCH_EVIDENCE/timing.json" || status=$?
+          if [[ -f "$DECBENCH_EVIDENCE/timing.json" ]]; then
+            python3 quality/decbench report "$DECBENCH_EVIDENCE/timing.json" \
+              --output "$DECBENCH_EVIDENCE/timing.html"
+          fi
+          exit "$status"
+
+      - name: Report incomplete assessment
+        if: ${{ !cancelled() && steps.evaluate.outcome == 'success' && steps.review.outputs.complete != 'true' }}
+        run: exit 2
+
+      - name: Upload generated DecBench evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: diana-decbench-public-${{ matrix.corpus }}-${{ matrix.profile }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.DECBENCH_EVIDENCE }}/
+          include-hidden-files: true
+          if-no-files-found: error
