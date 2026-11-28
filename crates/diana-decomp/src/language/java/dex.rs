@@ -1656,6 +1656,7 @@ impl DexJavaDialect {
                 Ok(JavaExpr::Call {
                     receiver: None,
                     owner: None,
+                    virtual_target: None,
                     type_arguments: Vec::new(),
                     method: JavaIdentifier::from_dex(if insn.insn_type == InsnType::MonitorEnter {
                         "monitor_enter"
@@ -2319,6 +2320,7 @@ impl DexJavaDialect {
                 body: Box::new(JavaExpr::Call {
                     receiver: None,
                     owner: Some(self.source_type(&lambda.implementation.owner)?),
+                    virtual_target: None,
                     type_arguments: Vec::new(),
                     method: self.member_names.method(&lambda.implementation),
                     args,
@@ -2784,6 +2786,12 @@ impl DexJavaDialect {
             } else {
                 None
             },
+            virtual_target: insn
+                .payload
+                .reference
+                .as_ref()
+                .filter(|_| invoke_type == InvokeType::Virtual)
+                .cloned(),
             type_arguments: invocation_type_arguments,
             method: self.member_names.method(method),
             args,
@@ -4386,6 +4394,7 @@ impl DexJavaDialect {
             return Ok(JavaExpr::Call {
                 receiver: None,
                 owner: Some(owner_type),
+                virtual_target: None,
                 type_arguments: Vec::new(),
                 method: JavaIdentifier::from_dex("compare"),
                 args: vec![left, right],
@@ -4404,6 +4413,7 @@ impl DexJavaDialect {
         let is_nan = |value| JavaExpr::Call {
             receiver: None,
             owner: Some(owner_type.clone()),
+            virtual_target: None,
             type_arguments: Vec::new(),
             method: JavaIdentifier::from_dex("isNaN"),
             args: vec![value],
@@ -5424,6 +5434,7 @@ impl JavaDialect for DexJavaDialect {
                 JavaStmt::Expression(JavaExpr::Call {
                     receiver: None,
                     owner: None,
+                    virtual_target: None,
                     type_arguments: Vec::new(),
                     method: JavaIdentifier::from_dex(if insn.insn_type == InsnType::MonitorEnter {
                         "monitor_enter"

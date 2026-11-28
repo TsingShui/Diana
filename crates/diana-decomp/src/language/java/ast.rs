@@ -873,6 +873,8 @@ pub enum JavaExpr {
     Call {
         receiver: Option<Box<JavaExpr>>,
         owner: Option<JavaType>,
+        /// Original symbolic target of a virtual invocation, before naming.
+        virtual_target: Option<Arc<crate::ir::MemberReference>>,
         type_arguments: Vec<JavaType>,
         method: JavaIdentifier,
         args: Vec<JavaExpr>,

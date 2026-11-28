@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.25 - 2026-11-29
+
+- Preserved virtual dispatch in switch patterns with custom hash or equality methods.
+- Based String switch recovery on the original invocation targets.
+
 ## 0.4.24 - 2026-11-29
 
 - Recovered counted loops with explicit continuation tails and effectful exits.

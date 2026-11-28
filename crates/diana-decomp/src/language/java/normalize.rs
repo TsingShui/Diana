@@ -3,6 +3,7 @@ use super::{
     JavaIdentifier, JavaLiteral, JavaMethodBody, JavaPrimitiveType, JavaStmt, JavaSwitchCase,
     JavaType, JavaUnaryOp,
 };
+use crate::ir::{ArgType, MemberReference, MethodReference};
 
 pub trait JavaAstTransform {
     type Error;
@@ -924,8 +925,8 @@ impl JavaAstRewriter for NameWriteDetector<'_> {
 /// `javac`/D8 first switches on `value.hashCode()`, stores a synthetic integer
 /// selector after an `equals` check, and then switches on that selector.  The
 /// source form is both shorter and single-evaluates the string selector.  This
-/// recovery accepts only the canonical one-string-per-hash shape and verifies
-/// every hash and fallback assignment before removing the synthetic local.
+/// recovery verifies the original String calls, each hash and each fallback
+/// assignment in the canonical one-string-per-hash shape.
 struct StringSwitchRecovery;
 
 impl StringSwitchRecovery {
@@ -1055,6 +1056,7 @@ impl StringSwitchRecovery {
         let JavaExpr::Call {
             receiver: Some(receiver),
             owner: None,
+            virtual_target: Some(target),
             type_arguments,
             method,
             args,
@@ -1063,6 +1065,13 @@ impl StringSwitchRecovery {
             return None;
         };
         if !type_arguments.is_empty() || method.as_str() != "hashCode" || !args.is_empty() {
+            return None;
+        }
+        let target = Self::string_method(target)?;
+        if target.name != "hashCode"
+            || !target.descriptor.parameters.is_empty()
+            || target.descriptor.return_type != ArgType::INT
+        {
             return None;
         }
         let JavaExpr::Name(source) = receiver.as_ref() else {
@@ -1104,6 +1113,7 @@ impl StringSwitchRecovery {
         let JavaExpr::Call {
             receiver: Some(receiver),
             owner: None,
+            virtual_target: Some(target),
             type_arguments,
             method,
             args,
@@ -1114,10 +1124,21 @@ impl StringSwitchRecovery {
         let [JavaExpr::Literal(JavaLiteral::String(literal))] = args.as_slice() else {
             return None;
         };
+        let target = Self::string_method(target)?;
         (type_arguments.is_empty()
             && method.as_str() == "equals"
+            && target.name == "equals"
+            && target.descriptor.return_type == ArgType::BOOLEAN
+            && matches!(target.descriptor.parameters.as_slice(), [parameter] if parameter.as_object() == Some("java/lang/Object"))
             && matches!(receiver.as_ref(), JavaExpr::Name(candidate) if candidate == source))
         .then_some(literal)
+    }
+
+    fn string_method(target: &MemberReference) -> Option<&MethodReference> {
+        let MemberReference::Method(method) = target else {
+            return None;
+        };
+        (method.owner.as_object() == Some("java/lang/String")).then_some(method)
     }
 
     fn selected_value(
@@ -2279,6 +2300,7 @@ mod tests {
                 condition: JavaExpr::Call {
                     receiver: None,
                     owner: None,
+                    virtual_target: None,
                     type_arguments: Vec::new(),
                     method: JavaIdentifier::from_dex("ready"),
                     args: Vec::new(),
@@ -2480,6 +2502,7 @@ mod tests {
         let mut body = complementary_condition(JavaExpr::Call {
             receiver: None,
             owner: None,
+            virtual_target: None,
             type_arguments: Vec::new(),
             method: JavaIdentifier::from_dex("guard"),
             args: Vec::new(),
@@ -2525,10 +2548,21 @@ mod tests {
         }
     }
 
-    fn string_call(receiver: &JavaIdentifier, method: &str, args: Vec<JavaExpr>) -> JavaExpr {
+    const STRING_HASH: &str = "Ljava/lang/String;->hashCode()I";
+    const STRING_EQUALS: &str = "Ljava/lang/String;->equals(Ljava/lang/Object;)Z";
+
+    fn string_call(
+        receiver: &JavaIdentifier,
+        method: &str,
+        member: Option<&str>,
+        args: Vec<JavaExpr>,
+    ) -> JavaExpr {
         JavaExpr::Call {
             receiver: Some(Box::new(JavaExpr::Name(receiver.clone()))),
             owner: None,
+            virtual_target: member.map(|member| {
+                std::sync::Arc::new(MemberReference::Method(member.parse().unwrap()))
+            }),
             type_arguments: Vec::new(),
             method: JavaIdentifier::from_dex(method),
             args,
@@ -2536,6 +2570,13 @@ mod tests {
     }
 
     fn lowered_string_switch() -> JavaMethodBody {
+        string_switch_with_targets(Some(STRING_HASH), Some(STRING_EQUALS))
+    }
+
+    fn string_switch_with_targets(
+        hash_target: Option<&str>,
+        equals_target: Option<&str>,
+    ) -> JavaMethodBody {
         let source = JavaIdentifier::from_dex("source");
         let synthetic = JavaIdentifier::from_dex("selector");
         let hash_case = |literal: &str, selected: i32| JavaSwitchCase {
@@ -2547,6 +2588,7 @@ mod tests {
                     condition: string_call(
                         &source,
                         "equals",
+                        equals_target,
                         vec![JavaExpr::Literal(JavaLiteral::String(literal.into()))],
                     ),
                     then_stmt: Box::new(JavaStmt::Block(if selected == 0 {
@@ -2570,7 +2612,7 @@ mod tests {
                 },
                 JavaStmt::Switch {
                     label: None,
-                    selector: string_call(&source, "hashCode", Vec::new()),
+                    selector: string_call(&source, "hashCode", hash_target, Vec::new()),
                     cases: vec![
                         hash_case("alpha", 0),
                         hash_case("beta", 1),
@@ -2632,6 +2674,36 @@ mod tests {
             [JavaExpr::Literal(JavaLiteral::String(value))] if value.to_string_lossy() == "beta"
         ));
         assert!(cases[2].is_default);
+    }
+
+    #[test]
+    fn keeps_string_switch_lowering_without_both_original_string_calls() {
+        for (hash, equals) in [
+            (None, Some(STRING_EQUALS)),
+            (Some("Lfixture/Key;->hashCode()I"), Some(STRING_EQUALS)),
+            (Some("Ljava/lang/String;->hashCode()J"), Some(STRING_EQUALS)),
+            (Some(STRING_HASH), None),
+            (
+                Some(STRING_HASH),
+                Some("Lfixture/Key;->equals(Ljava/lang/Object;)Z"),
+            ),
+            (
+                Some(STRING_HASH),
+                Some("Ljava/lang/String;->equals(Ljava/lang/String;)Z"),
+            ),
+        ] {
+            let mut body = string_switch_with_targets(hash, equals);
+            let JavaStmt::Block(statements) = &mut body.root else {
+                unreachable!();
+            };
+            let original = statements.clone();
+
+            assert!(
+                !StringSwitchRecovery::apply(statements),
+                "{hash:?} {equals:?}"
+            );
+            assert_eq!(*statements, original);
+        }
     }
 
     #[test]
@@ -2777,6 +2849,7 @@ mod tests {
             Some(JavaExpr::Call {
                 receiver: None,
                 owner: None,
+                virtual_target: None,
                 type_arguments: Vec::new(),
                 method: JavaIdentifier::from_dex("initialize"),
                 args: Vec::new(),

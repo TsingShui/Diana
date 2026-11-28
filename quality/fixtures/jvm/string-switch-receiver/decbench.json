@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "id": "jvm-string-switch-receiver",
+  "prepared": true,
+  "input": "string-switch-receiver/StringDispatch.class",
+  "probe": "verify.py",
+  "oracle_files": ["StringDispatch.java", "SwitchKey.java", "CheckStringDispatch.java"],
+  "methods": [
+    {
+      "at": "j0:m1",
+      "member": "LStringDispatch;->custom(LSwitchKey;)I",
+      "issues": [],
+      "behavior": true
+    },
+    {
+      "at": "j0:m2",
+      "member": "LStringDispatch;->overloaded(LOverloadedSwitchKey;)I",
+      "issues": [],
+      "behavior": true
+    },
+    {
+      "at": "j0:m3",
+      "member": "LStringDispatch;->genuine(Ljava/lang/String;)I",
+      "issues": [],
+      "behavior": true
+    },
+    {
+      "at": "j0:m4",
+      "member": "LStringDispatch;->genuineCollision(Ljava/lang/String;)I",
+      "issues": [],
+      "behavior": true
+    }
+  ]
+}

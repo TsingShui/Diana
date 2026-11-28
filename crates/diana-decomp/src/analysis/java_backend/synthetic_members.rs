@@ -341,6 +341,7 @@ impl JavaAstRewriter for SuperBridgeCalls<'_> {
             type_arguments,
             method,
             mut args,
+            virtual_target,
         } = expression
         else {
             return expression;
@@ -353,6 +354,7 @@ impl JavaAstRewriter for SuperBridgeCalls<'_> {
                 type_arguments,
                 method,
                 args,
+                virtual_target,
             };
         }
         let receiver = args.remove(0);
@@ -362,6 +364,7 @@ impl JavaAstRewriter for SuperBridgeCalls<'_> {
             type_arguments,
             method,
             args,
+            virtual_target: None,
         }
     }
 }
@@ -797,6 +800,7 @@ impl JavaAstRewriter for AccessorInliner<'_> {
             type_arguments,
             method,
             args,
+            virtual_target,
         } = expression
         else {
             return expression;
@@ -809,6 +813,7 @@ impl JavaAstRewriter for AccessorInliner<'_> {
                 type_arguments,
                 method,
                 args,
+                virtual_target,
             };
         };
         let values = accessor

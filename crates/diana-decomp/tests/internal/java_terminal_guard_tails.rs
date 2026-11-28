@@ -93,6 +93,7 @@ fn equal_boolean_returns_keep_the_order_of_short_circuited_calls() {
     let call = |name| JavaExpr::Call {
         receiver: None,
         owner: None,
+        virtual_target: None,
         type_arguments: Vec::new(),
         method: JavaIdentifier::from_hint(name),
         args: Vec::new(),

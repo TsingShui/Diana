@@ -355,6 +355,7 @@ impl InterfaceInitialization {
             receiver: None,
             owner: None,
             type_arguments: Vec::new(),
+            virtual_target: None,
             method: helper_name.clone(),
             args: Vec::new(),
         });
@@ -942,6 +943,7 @@ mod tests {
             receiver: None,
             owner: Some(JavaType::source_class("java.lang.Integer")),
             type_arguments: Vec::new(),
+            virtual_target: None,
             method: JavaIdentifier::from_dex("valueOf"),
             args: vec![JavaExpr::Literal(JavaLiteral::Integer(0))],
         };

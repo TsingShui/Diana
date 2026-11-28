@@ -714,6 +714,7 @@ impl JavaAstRewriter for RecoveredAnonymousTypeBinding<'_> {
                 type_arguments,
                 method,
                 args,
+                virtual_target,
             } => JavaExpr::Call {
                 receiver,
                 owner: owner.map(|owner| self.ty(owner)),
@@ -723,6 +724,7 @@ impl JavaAstRewriter for RecoveredAnonymousTypeBinding<'_> {
                     .collect(),
                 method,
                 args,
+                virtual_target,
             },
             JavaExpr::StaticField { owner, name } => JavaExpr::StaticField {
                 owner: self.ty(owner),
@@ -2468,6 +2470,7 @@ impl FunctionContract {
                     receiver: Some(receiver),
                     owner: None,
                     type_arguments: Vec::new(),
+                    virtual_target: None,
                     method,
                     args: parameters.iter().cloned().map(JavaExpr::Name).collect(),
                 };
@@ -2576,6 +2579,7 @@ impl JavaAstRewriter for AnonymousIdentitySubstitution<'_> {
                 type_arguments,
                 method,
                 args,
+                virtual_target,
             } if matches!(receiver.as_ref(), JavaExpr::QualifiedThis(owner) if AnonymousTypeIdentity::matches(self.identity, owner)) => {
                 JavaExpr::Call {
                     receiver: None,
@@ -2583,6 +2587,7 @@ impl JavaAstRewriter for AnonymousIdentitySubstitution<'_> {
                     type_arguments,
                     method,
                     args,
+                    virtual_target,
                 }
             }
             JavaExpr::Field { owner, name } if matches!(owner.as_ref(), JavaExpr::QualifiedThis(identity) if AnonymousTypeIdentity::matches(self.identity, identity)) => {
@@ -2600,12 +2605,14 @@ impl JavaAstRewriter for AnonymousIdentitySubstitution<'_> {
                 type_arguments,
                 method,
                 args,
+                virtual_target,
             } if &owner == self.identity => JavaExpr::Call {
                 receiver: None,
                 owner: None,
                 type_arguments,
                 method,
                 args,
+                virtual_target,
             },
             JavaExpr::StaticField { owner, name } if &owner == self.identity => {
                 JavaExpr::Name(name)

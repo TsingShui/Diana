@@ -50,6 +50,7 @@ fn joins_and_short_circuits_preserve_definite_assignment_across_word_boundaries(
     statements.push(JavaStmt::Expression(JavaExpr::Call {
         receiver: None,
         owner: None,
+        virtual_target: None,
         type_arguments: Vec::new(),
         method: JavaIdentifier::from_hint("observe"),
         args: arguments,

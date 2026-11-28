@@ -1305,7 +1305,7 @@ dependencies = [
 
 [[package]]
 name = "diana"
-version = "0.4.24"
+version = "0.4.25"
 dependencies = [
  "clap",
  "diana-decomp",

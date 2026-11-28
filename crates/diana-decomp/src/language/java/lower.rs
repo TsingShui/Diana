@@ -708,6 +708,7 @@ impl LoopConditionBinding {
             JavaExpr::Call {
                 receiver: Some(receiver),
                 owner,
+                virtual_target,
                 type_arguments,
                 method,
                 args,
@@ -716,6 +717,7 @@ impl LoopConditionBinding {
                     *receiver, name, assignment,
                 )?)),
                 owner,
+                virtual_target,
                 type_arguments,
                 method,
                 args,

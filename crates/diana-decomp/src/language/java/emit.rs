@@ -1061,6 +1061,7 @@ mod tests {
         let expression = JavaExpr::Call {
             receiver: None,
             owner: Some(JavaType::Class(owner)),
+            virtual_target: None,
             type_arguments: vec![JavaType::source_class("java.lang.Integer")],
             method: JavaIdentifier::from_dex("select"),
             args: Vec::new(),

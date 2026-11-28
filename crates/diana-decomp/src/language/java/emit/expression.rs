@@ -332,6 +332,7 @@ impl JavaPrinter {
                     type_arguments,
                     method,
                     args,
+                    ..
                 } => {
                     pending.push(Text(")"));
                     sequence(&mut pending, args, Target);
