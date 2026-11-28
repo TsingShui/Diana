@@ -11,6 +11,8 @@ merge and setter events. Its interruption scenario throws before a network
 result is delivered. Compare the recovered method and pinned source against
 the same stubs and independently stated event traces in [model.json](model.json).
 This tests selected interactions and effect order under those stubs.
+The `TextUtils.isEmpty` stub uses the `CharSequence` parameter recorded in
+the original DEX call descriptor.
 
 The original source ran all four scenarios against the expected traces. On
 Diana 0.4.2, the recovered method passed the two individual-source controls.
