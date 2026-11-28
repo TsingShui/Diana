@@ -37,7 +37,8 @@ def prepare(destination, variant="debug"):
     destination.mkdir(parents=True, exist_ok=True)
     fixture = Path(__file__).resolve().parent
     source_files = [fixture / name for name in (
-        "SourceRecovery.java", "CustomBootstrap.java", "ExceptionChains.java", "TypedLocals.java",
+        "SourceRecovery.java", "CustomBootstrap.java", "ExceptionChains.java",
+        "TypedLocals.java", "EffectSequences.java",
     )]
     classes = destination / "classes"
     subprocess.run(

@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "id": "dex-invoke-bindings",
+  "input": "classes.dex",
+  "input_sha256": "8bf6415f4379a0ba189c7d8e298a31862b084cd2e05a11b11f8325d0bab49343",
+  "call_bindings": {
+    "class_at": "e0:l0:c2",
+    "class_member": "Lfixture/InvokeBasic;"
+  },
+  "methods": [
+    {
+      "at": "e0:l0:c2:m4",
+      "member": "Lfixture/InvokeBasic;->constructorCall(I)Lfixture/InvokeBasic$Step;",
+      "call_bindings": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c2:m5",
+      "member": "Lfixture/InvokeBasic;->interfaceCall(Lfixture/InvokeBasic$Counter;)I",
+      "call_bindings": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c2:m8",
+      "member": "Lfixture/InvokeBasic;->staticCall(I)I",
+      "call_bindings": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c2:m9",
+      "member": "Lfixture/InvokeBasic;->virtualCall(Lfixture/InvokeBasic$Step;)I",
+      "call_bindings": true,
+      "issues": []
+    }
+  ]
+}

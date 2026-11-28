@@ -99,3 +99,22 @@ recovered publication, so a renamed variable does not change the expectation.
 `decbench-local-types-debug.json` also checks the integer accumulator and
 typed catch in `SourceRecovery.java`. The stripped counterpart shows how
 the benchmark reports absent original debug-type evidence.
+
+## Field order and values between effects
+
+`EffectSequences.java` supplies straight-line field-effect witnesses.
+`exchange` must read the old value of `left` before writing the new value,
+then store the old value in `right`. `accumulate` updates and reads `left`
+before incrementing `count`. That saved value is then written to `right`.
+`updatePair` writes the two input parameters to separate fields in order.
+
+The first call to `exchange(7)` on a fresh authored instance returns zero,
+and `exchange(19)` on the same instance then returns seven. The
+`CheckEffectSequences.java` witness checks these independent expectations.
+It also exercises the counter update and the return of the sum in
+`updatePair`.
+
+The ordinary Diana 0.4.2 publication writes `left` first and reads it only
+for the following write to `right`. The witness passes on the authored
+Java and reports expected 0, observed 7 when compiled with the recovered
+publication. The effect-order check compares the source evidence separately.

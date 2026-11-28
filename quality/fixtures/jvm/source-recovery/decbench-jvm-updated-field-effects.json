@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "id": "jvm-updated-field-effects",
+  "prepared": true,
+  "input": "debug/source.jar",
+  "effect_order": {
+    "reference": "SourceRecovery.java",
+    "class_at": "j1",
+    "class_member": "Lfixture/jvm/SourceRecovery;"
+  },
+  "methods": [
+    {
+      "at": "j1:m6",
+      "member": "Lfixture/jvm/SourceRecovery;->update(I)I",
+      "effect_order": true,
+      "issues": []
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "id": "jvm-effect-sequences",
+  "prepared": true,
+  "input": "debug/classes/fixture/jvm/EffectSequences.class",
+  "effect_order": {
+    "reference": "EffectSequences.java",
+    "class_at": "j0",
+    "class_member": "Lfixture/jvm/EffectSequences;"
+  },
+  "methods": [
+    {
+      "at": "j0:m1",
+      "member": "Lfixture/jvm/EffectSequences;->exchange(I)I",
+      "effect_order": true,
+      "issues": []
+    },
+    {
+      "at": "j0:m2",
+      "member": "Lfixture/jvm/EffectSequences;->accumulate(I)I",
+      "effect_order": true,
+      "issues": []
+    },
+    {
+      "at": "j0:m3",
+      "member": "Lfixture/jvm/EffectSequences;->updatePair(II)I",
+      "effect_order": true,
+      "issues": []
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "jvm-call-bindings",
+  "prepared": true,
+  "input": "debug/source.jar",
+  "call_bindings": {
+    "class_at": "j1",
+    "class_member": "Lfixture/jvm/SourceRecovery;"
+  },
+  "methods": [
+    {
+      "at": "j1:m1",
+      "member": "Lfixture/jvm/SourceRecovery;->calculate(I)I",
+      "call_bindings": true,
+      "issues": []
+    }
+  ]
+}

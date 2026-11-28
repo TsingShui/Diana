@@ -21,6 +21,9 @@ STATUSES = ("FAIL", "SETUP_ERROR", "UNCHECKED", "PASS")
 ADAPTERS = {
     "structure": ("flow_shape", "FlowShape.java"),
     "local_types": ("local_types", "LocalTypes.java"),
+    "call_bindings": ("call_bindings", "CallBindings.java", "dex_calls.py",
+                      "dex_truth.py", "local_types.py"),
+    "effect_order": ("effect_order", "EffectOrder.java", "local_types.py", "dex_truth.py"),
 }
 METRICS = ("behavior", *ADAPTERS)
 
@@ -44,8 +47,11 @@ def read_suite(manifest: Path) -> dict:
         raise ValueError(f"{manifest}: each method needs a locator and an original signature")
     for metric in ADAPTERS:
         requested = any(entry.get(metric) for entry in entries)
-        if requested and not isinstance(suite.get(metric), dict):
-            raise ValueError(f"{manifest}: requested {metric} checks need a suite configuration")
+        config = suite.get(metric, {})
+        if not isinstance(config, dict) or (requested and metric not in suite):
+            raise ValueError(f"{manifest}: {metric} checks need a suite configuration object")
+        if "reference" in config and (not isinstance(config["reference"], str) or not config["reference"]):
+            raise ValueError(f"{manifest}: {metric} reference must be a relative input path")
     suite["methods"] = entries
     keys = [(entry["at"], entry["member"]) for entry in entries]
     if len(set(keys)) != len(keys) or len({at for at, _ in keys}) != len(keys):
@@ -189,6 +195,15 @@ def append_probe_checks(checks: list[dict], spec: dict, results: dict) -> None:
             checks.append({**row, "id": f"{metric}:{row['id']}", "metric": metric})
 
 
+def reference_files(suite: dict) -> list[Path]:
+    root = suite["manifest"].parent
+    names = dict.fromkeys(suite.get("oracle_files", []))
+    for metric in ADAPTERS:
+        if reference := suite.get(metric, {}).get("reference"):
+            names[reference] = None
+    return [child_path(root, name) for name in names]
+
+
 def oracle_hash(suite: dict) -> str:
     manifest = suite["manifest"]
     profile = "identity" if suite.get("inventory_only") else "identity-and-publication"
@@ -197,18 +212,20 @@ def oracle_hash(suite: dict) -> str:
     if suite.get("jvm_definitions"):
         return digest([file_digest(Path(jvm_truth.__file__)),
                        file_digest(QUALITY / "decbench/cfr.py"), profile])
-    files = [manifest, *[child_path(manifest.parent, name) for name in suite.get("oracle_files", [])]]
+    files = [manifest]
     if suite.get("probe"):
         files.append(child_path(manifest.parent, suite["probe"]))
-    for metric, (module, helper) in ADAPTERS.items():
+    for metric, (module, *helpers) in ADAPTERS.items():
         if metric in suite:
-            files += [QUALITY / "decbench" / name for name in (f"{module}.py", helper)]
-    reference = suite.get("structure", {}).get("reference")
-    if reference:
-        source = child_path(manifest.parent, reference)
-        if source not in files:
-            files.append(source)
-    return digest([[path.name, file_digest(path)] for path in files])
+            files += [QUALITY / "decbench" / name for name in (f"{module}.py", *helpers)]
+    fingerprints = [[path.name, file_digest(path)] for path in files]
+    for path in reference_files(suite):
+        try:
+            checksum = file_digest(path)
+        except (OSError, ValueError):
+            checksum = None
+        fingerprints.append([path.name, checksum])
+    return digest(fingerprints)
 
 
 def run_suite(suite: dict, binary: Path, prepared: Path, timeout: int) -> dict:
@@ -220,8 +237,7 @@ def run_suite(suite: dict, binary: Path, prepared: Path, timeout: int) -> dict:
         "suite": suite["id"], "path": str(artifact), "sha256": None,
         "inventory_only": suite.get("inventory_only", False),
         "oracle_sha256": oracle_hash(suite), "methods": rows,
-        "oracle_sources": [str(child_path(manifest.parent, name))
-                           for name in suite.get("oracle_files", [])],
+        "oracle_sources": [str(path) for path in reference_files(suite)],
     }
     seen, probes = set(), {}
     specs = suite["methods"]

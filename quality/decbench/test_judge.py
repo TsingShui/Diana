@@ -163,3 +163,30 @@ class MetricDispatchTest(unittest.TestCase):
         })
         self.assertEqual([row["status"] for row in checks], ["PASS", "SETUP_ERROR"])
         self.assertEqual(checks[1]["detail"], "JDK tool unavailable")
+
+
+class MetricReferenceTest(unittest.TestCase):
+    def test_each_metric_reference_is_recorded_once(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            suite = {
+                "manifest": folder / "decbench.json",
+                "oracle_files": ["Fixture.java"],
+                "structure": {"reference": "Fixture.java"},
+                "effect_order": {"reference": "Other.java"},
+            }
+            self.assertEqual(judge.reference_files(suite),
+                             [folder / "Fixture.java", folder / "Other.java"])
+            suite["effect_order"] = {"reference": "../outside.java"}
+            with self.assertRaises(ValueError):
+                judge.reference_files(suite)
+
+    def test_unavailable_reference_has_a_fingerprint(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            manifest = folder / "decbench.json"
+            manifest.write_text("{}", encoding="utf-8")
+            suite = {"manifest": manifest, "effect_order": {"reference": "Fixture.java"}}
+            before = judge.oracle_hash(suite)
+            (folder / "Fixture.java").write_text("class Fixture {}", encoding="utf-8")
+            self.assertNotEqual(before, judge.oracle_hash(suite))

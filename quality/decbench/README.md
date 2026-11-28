@@ -31,9 +31,12 @@ suite manifests. The default also checks definitions for the whole prepared DEX
 fixture tree. `--prepared PATH` selects a prepared APK and JVM corpus.
 `run --input PATH` evaluates an authorized APK, DEX, JVM class, or flat JAR.
 The JVM oracle uses the JDK's original descriptors and archive positions.
-Nested JVM arrangements use their explicit fixture expectations. The APK check uses physical ZIP
-locations and root DEX membership, and declares incomplete coverage for a root
-outside the reader's scope. For large inputs, `--inventory-only` measures member
+Nested JVM arrangements use their explicit fixture expectations. To update an
+existing prepared corpus after adding fixtures, choose a new directory with
+`prepare --prepared PATH` and pass that directory to `run --prepared PATH`. The
+APK check uses physical ZIP locations and root DEX membership, and declares
+incomplete coverage for a root outside the reader's scope. For large inputs,
+`--inventory-only` measures member
 identity without a per-method retrieval process. Use `--state PATH` before the
 subcommand to isolate local campaigns and worktrees.
 
@@ -73,6 +76,18 @@ when reproducing a finding or measuring execution time.
   binding or a unique returned local. Comparisons use original method descriptors
   and fixture-defined anchors. Missing debug metadata or a binding that cannot
   be uniquely established stays `UNCHECKED`.
+- **Call bindings.** The call probe reads original invoke targets and resolves
+  selected straight-line calls in recovered Java with the JDK symbol resolver.
+  The report pairs the original bytecode position, owner, method name,
+  descriptor and supported dispatch form with the binding in the recovered
+  text. Ambiguous site correspondence or unresolved inheritance leaves the
+  affected evidence `UNCHECKED`.
+- **Field effects and value dependencies.** The effect probe compares authored
+  Java and the recovered publication along supported straight-line paths. It
+  records the ordered field reads and writes, which values reach writes and
+  returns, and where the first difference occurs. The probe follows value
+  origins through local assignments. Branches, unknown calls and unsupported
+  aliases stay `UNCHECKED`.
 - **Timing.** Reports record elapsed time and per-method CLI durations,
   including process overhead. Compare fresh runs with matching toolchains,
   worker counts and environments.
@@ -128,6 +143,32 @@ python3 quality/decbench mine before.json after.json --metric local_types
 selected dimension. Structural findings and type evidence support a focused
 review. Layout quality, names and general readability remain qualitative
 judgments, and a structural finding does not establish a behavioral error.
+
+### Inspect call bindings and field effects
+
+Add a suite `call_bindings` configuration with the original `class_at` and
+`class_member`. Set `call_bindings: true` on the methods to compare. For DEX
+fixtures, the expected targets come from the original instructions, with the
+original bytecode locations retained in the report.
+
+An `effect_order` suite additionally names an independently authored Java
+`reference`. Methods selected with `effect_order: true` use that source as the
+oracle for ordered effects and data dependencies. The selected JVM class must
+match the class rebuilt from the reference byte for byte. Set `variant` to
+`stripped` for fixtures compiled without debug information. A DEX reference
+requires a pinned input digest. For example,
+[EffectSequences](../fixtures/jvm/source-recovery/EffectSequences.java) requires
+saving the old value of `left` before writing the new one, then using that saved
+value at the write to `right`.
+
+```sh
+python3 quality/decbench run --binary target/debug/diana \
+  --suite dex-scalar-type-uses --suite dex-invoke-bindings --suite jvm-call-bindings
+python3 quality/decbench run --binary target/debug/diana \
+  --suite jvm-updated-field-effects --suite jvm-effect-sequences
+python3 quality/decbench queue --metric call_bindings --status pending
+python3 quality/decbench queue --metric effect_order --status pending
+```
 
 ## Find, repair and verify
 
