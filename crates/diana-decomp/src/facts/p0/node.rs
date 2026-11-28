@@ -78,6 +78,7 @@ pub(crate) fn build(facts: &ClassFacts) -> Option<BackendClass> {
             info,
             AccessInfo::for_field(entry.access_flags().raw()),
         );
+        field.default_preparation = entry.default_preparation();
         if let Some(scalar) = entry.scalar() {
             field.initial_value = scalar_value(scalar, field.field_type());
         }

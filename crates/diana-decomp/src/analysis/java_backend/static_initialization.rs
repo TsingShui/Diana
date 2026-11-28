@@ -1,8 +1,29 @@
+use std::collections::BTreeSet;
+
 use crate::language::java::{
-    JavaAssignOp, JavaAstRewriter, JavaExpr, JavaFieldDeclaration, JavaIdentifier, JavaLiteral,
-    JavaMethodBody, JavaMethodDeclaration, JavaMethodDeclarationKind, JavaModifier, JavaNameScope,
-    JavaPrimitiveType, JavaStmt, JavaType, JavaTypeDeclaration, JavaTypeDeclarationKind,
+    JavaAssignOp, JavaAstRewriter, JavaBinaryOp, JavaExpr, JavaFieldDeclaration, JavaIdentifier,
+    JavaLiteral, JavaMethodBody, JavaMethodDeclaration, JavaMethodDeclarationKind, JavaModifier,
+    JavaNameScope, JavaPrimitiveType, JavaStmt, JavaType, JavaTypeDeclaration,
+    JavaTypeDeclarationKind,
 };
+
+pub(super) struct StaticInitializerFields<'a> {
+    pub owner: &'a JavaType,
+    pub ambiguous: &'a BTreeSet<JavaIdentifier>,
+    pub constant_capable: &'a BTreeSet<JavaIdentifier>,
+    pub prepared_defaults: &'a BTreeSet<JavaIdentifier>,
+}
+
+impl StaticInitializerFields<'_> {
+    fn owns(&self, owner: &JavaType, name: &JavaIdentifier) -> bool {
+        self.owner == owner && !self.ambiguous.contains(name)
+    }
+
+    fn has_default_initializer(&self, field: &JavaFieldDeclaration) -> bool {
+        self.prepared_defaults.contains(&field.name)
+            && StaticInitializationRecovery::is_default_initializer(field)
+    }
+}
 
 /// Recovers the direct-assignment prefix of `<clinit>` as field initializers.
 ///
@@ -11,7 +32,10 @@ use crate::language::java::{
 pub(super) struct StaticInitializationRecovery;
 
 impl StaticInitializationRecovery {
-    pub(super) fn apply(declaration: &mut JavaTypeDeclaration) {
+    pub(super) fn apply(
+        declaration: &mut JavaTypeDeclaration,
+        fields: &StaticInitializerFields<'_>,
+    ) {
         let Some(initializer_index) = declaration
             .methods
             .iter()
@@ -45,20 +69,34 @@ impl StaticInitializationRecovery {
         let mut assigned_fields = std::collections::BTreeSet::new();
         let mut consumed = 0usize;
         while consumed < statements.len() {
-            let Some(fact) = InitializationFact::analyze(&statements[consumed..]) else {
+            let Some(fact) = InitializationFact::analyze(&statements[consumed..], fields) else {
                 break;
             };
             let Some(field_index) = declaration.fields.iter().position(|field| {
                 field.name == fact.field
-                    && (field.initializer.is_none() || Self::is_default_initializer(field))
+                    && fields.prepared_defaults.contains(&field.name)
+                    && (field.initializer.is_none() || fields.has_default_initializer(field))
                     && field.modifiers.contains(&JavaModifier::Static)
             }) else {
                 break;
             };
+            let value = if fields.constant_capable.contains(&fact.field) {
+                // Moving a runtime write into a final scalar declaration can
+                // turn reads into constants and skip class initialization.
+                if !declaration.kind.is_interface() {
+                    break;
+                }
+                let Some(default) = declaration.fields[field_index].initializer.clone() else {
+                    break;
+                };
+                InterfaceInitialization::runtime_value(fact.value, default)
+            } else {
+                fact.value
+            };
             if !assigned_fields.insert(field_index) {
                 break;
             }
-            assignments.push((field_index, fact.value));
+            assignments.push((field_index, value));
             consumed += fact.consumed;
         }
         if !assignments.is_empty() {
@@ -97,7 +135,7 @@ impl StaticInitializationRecovery {
                 return;
             }
             if let Some(initialization) = InterfaceInitialization::recover(
-                &declaration.name,
+                fields,
                 &mut declaration.fields,
                 statements,
                 &mut method_names,
@@ -105,8 +143,8 @@ impl StaticInitializationRecovery {
                 declaration.methods[initializer_index] = initialization;
                 return;
             }
-            if let Some((fields, original_statements)) = interface_snapshot {
-                declaration.fields = fields;
+            if let Some((original_fields, original_statements)) = interface_snapshot {
+                declaration.fields = original_fields;
                 *statements = original_statements;
                 let mut type_names = JavaNameScope::default();
                 type_names.reserve(declaration.name.clone());
@@ -116,7 +154,7 @@ impl StaticInitializationRecovery {
                 let holder_name =
                     type_names.claim(JavaIdentifier::from_dex("DexdecStaticInitialization"));
                 if let Some(holder) = InterfaceInitialization::recover_with_holder(
-                    &declaration.name,
+                    fields,
                     holder_name,
                     &mut declaration.fields,
                     statements,
@@ -130,7 +168,7 @@ impl StaticInitializationRecovery {
 
         let remove_initializer = statements.is_empty();
         let mut writes = StaticInitializerWrites::new(
-            declaration.name.clone(),
+            fields,
             declaration
                 .fields
                 .iter()
@@ -142,7 +180,7 @@ impl StaticInitializationRecovery {
             if writes.fields.contains(&field.name)
                 && field.modifiers.contains(&JavaModifier::Static)
                 && field.modifiers.contains(&JavaModifier::Final)
-                && Self::is_default_initializer(field)
+                && fields.has_default_initializer(field)
             {
                 field.initializer = None;
             }
@@ -182,11 +220,11 @@ impl StaticInitializationRecovery {
             (
                 JavaType::Primitive(JavaPrimitiveType::Float),
                 Some(JavaExpr::Literal(JavaLiteral::Float(value))),
-            ) => *value == 0.0,
+            ) => value.to_bits() == 0,
             (
                 JavaType::Primitive(JavaPrimitiveType::Double),
                 Some(JavaExpr::Literal(JavaLiteral::Double(value))),
-            ) => *value == 0.0,
+            ) => value.to_bits() == 0,
             _ => false,
         }
     }
@@ -195,6 +233,22 @@ impl StaticInitializationRecovery {
 struct InterfaceInitialization;
 
 impl InterfaceInitialization {
+    fn runtime_value(value: JavaExpr, default: JavaExpr) -> JavaExpr {
+        // An interface field has to initialize at its declaration. The null
+        // comparison has no effects and keeps the selected value outside
+        // Java's constant-expression grammar.
+        let null = || Box::new(JavaExpr::Literal(JavaLiteral::Null));
+        JavaExpr::Conditional {
+            condition: Box::new(JavaExpr::Binary {
+                left: null(),
+                op: JavaBinaryOp::Equal,
+                right: null(),
+            }),
+            when_true: Box::new(value),
+            when_false: Box::new(default),
+        }
+    }
+
     fn inline_replayable_locals(statements: &mut Vec<JavaStmt>) {
         let mut index = 0;
         while index < statements.len() {
@@ -240,21 +294,21 @@ impl InterfaceInitialization {
     }
 
     fn recover(
-        owner: &JavaIdentifier,
+        ownership: &StaticInitializerFields<'_>,
         fields: &mut [JavaFieldDeclaration],
         statements: &mut Vec<JavaStmt>,
         method_names: &mut JavaNameScope,
     ) -> Option<JavaMethodDeclaration> {
-        let (field_name, value) = Self::terminal_assignment(owner, statements.last()?)?;
+        let (field_name, value) = Self::terminal_assignment(ownership, statements.last()?)?;
         let field_index = fields.iter().position(|field| {
             field.name == field_name
                 && field.modifiers.contains(&JavaModifier::Static)
                 && field.modifiers.contains(&JavaModifier::Final)
-                && StaticInitializationRecovery::is_default_initializer(field)
+                && ownership.has_default_initializer(field)
         })?;
 
         let mut writes = StaticInitializerWrites::new(
-            owner.clone(),
+            ownership,
             fields.iter().map(|field| field.name.clone()).collect(),
         );
         writes.rewrite_statement(JavaStmt::Block(statements.clone()));
@@ -291,7 +345,7 @@ impl InterfaceInitialization {
     }
 
     fn recover_with_holder(
-        owner: &JavaIdentifier,
+        ownership: &StaticInitializerFields<'_>,
         holder_name: JavaIdentifier,
         fields: &mut [JavaFieldDeclaration],
         statements: &mut Vec<JavaStmt>,
@@ -300,12 +354,15 @@ impl InterfaceInitialization {
             .iter()
             .map(|field| field.name.clone())
             .collect::<std::collections::BTreeSet<_>>();
-        let mut writes = StaticInitializerWrites::new(owner.clone(), declared_fields);
+        let mut writes = StaticInitializerWrites::new(ownership, declared_fields);
         let mut analyzed = JavaMethodBody {
             root: JavaStmt::Block(statements.clone()),
         };
         writes.rewrite_body(&mut analyzed);
-        if writes.fields.is_empty() {
+        // A holder delays publication of the interface fields until its
+        // initialization returns. Keep the original writes when a recovered
+        // runtime scalar might be observed while initialization is in flight.
+        if writes.fields.is_empty() || !writes.fields.is_disjoint(ownership.constant_capable) {
             return None;
         }
         let selected = fields
@@ -318,7 +375,7 @@ impl InterfaceInitialization {
                 let field = &fields[*index];
                 !field.modifiers.contains(&JavaModifier::Static)
                     || !field.modifiers.contains(&JavaModifier::Final)
-                    || !StaticInitializationRecovery::is_default_initializer(field)
+                    || !ownership.has_default_initializer(field)
             })
         {
             return None;
@@ -349,7 +406,7 @@ impl InterfaceInitialization {
             root: JavaStmt::Block(std::mem::take(statements)),
         };
         InterfaceStaticHolderReferences {
-            owner,
+            ownership,
             holder: holder_type,
             fields: &writes.fields,
         }
@@ -386,7 +443,7 @@ impl InterfaceInitialization {
     }
 
     fn terminal_assignment(
-        owner: &JavaIdentifier,
+        ownership: &StaticInitializerFields<'_>,
         statement: &JavaStmt,
     ) -> Option<(JavaIdentifier, JavaExpr)> {
         let JavaStmt::Assign {
@@ -401,13 +458,14 @@ impl InterfaceInitialization {
         else {
             return None;
         };
-        StaticInitializerWrites::is_own_owner(owner, field_owner)
+        ownership
+            .owns(field_owner, name)
             .then(|| (name.clone(), value.clone()))
     }
 }
 
 struct InterfaceStaticHolderReferences<'a> {
-    owner: &'a JavaIdentifier,
+    ownership: &'a StaticInitializerFields<'a>,
     holder: JavaType,
     fields: &'a std::collections::BTreeSet<JavaIdentifier>,
 }
@@ -416,8 +474,7 @@ impl JavaAstRewriter for InterfaceStaticHolderReferences<'_> {
     fn finish_expression(&mut self, expression: JavaExpr) -> JavaExpr {
         match expression {
             JavaExpr::StaticField { owner, name }
-                if self.fields.contains(&name)
-                    && StaticInitializerWrites::is_own_owner(self.owner, &owner) =>
+                if self.fields.contains(&name) && self.ownership.owns(&owner, &name) =>
             {
                 JavaExpr::StaticField {
                     owner: self.holder.clone(),
@@ -553,19 +610,20 @@ struct InitializationFact {
 }
 
 impl InitializationFact {
-    fn analyze(statements: &[JavaStmt]) -> Option<Self> {
-        Self::direct(statements).or_else(|| Self::straight_line(statements))
+    fn analyze(statements: &[JavaStmt], fields: &StaticInitializerFields<'_>) -> Option<Self> {
+        Self::direct(statements, fields).or_else(|| Self::straight_line(statements, fields))
     }
 
-    fn direct(statements: &[JavaStmt]) -> Option<Self> {
+    fn direct(statements: &[JavaStmt], fields: &StaticInitializerFields<'_>) -> Option<Self> {
         let JavaStmt::Assign {
-            target: JavaExpr::StaticField { name, .. },
+            target: JavaExpr::StaticField { owner, name },
             op: JavaAssignOp::Assign,
             value,
         } = statements.first()?
         else {
             return None;
         };
+        fields.owns(owner, name).then_some(())?;
         Some(Self {
             field: name.clone(),
             value: value.clone(),
@@ -573,7 +631,10 @@ impl InitializationFact {
         })
     }
 
-    fn straight_line(statements: &[JavaStmt]) -> Option<Self> {
+    fn straight_line(
+        statements: &[JavaStmt],
+        fields: &StaticInitializerFields<'_>,
+    ) -> Option<Self> {
         let mut definitions = Vec::new();
         for statement in statements {
             let JavaStmt::Variable {
@@ -590,13 +651,14 @@ impl InitializationFact {
             return None;
         }
         let JavaStmt::Assign {
-            target: JavaExpr::StaticField { name: field, .. },
+            target: JavaExpr::StaticField { owner, name: field },
             op: JavaAssignOp::Assign,
             value,
         } = statements.get(definitions.len())?
         else {
             return None;
         };
+        fields.owns(owner, field).then_some(())?;
 
         let names = definitions
             .iter()
@@ -686,37 +748,30 @@ impl JavaAstRewriter for NameSubstitution {
     }
 }
 
-struct StaticInitializerWrites {
-    owner: crate::language::java::JavaIdentifier,
-    declared_fields: std::collections::BTreeSet<crate::language::java::JavaIdentifier>,
-    fields: std::collections::BTreeSet<crate::language::java::JavaIdentifier>,
+struct StaticInitializerWrites<'a> {
+    ownership: &'a StaticInitializerFields<'a>,
+    declared_fields: BTreeSet<JavaIdentifier>,
+    fields: BTreeSet<JavaIdentifier>,
 }
 
-impl StaticInitializerWrites {
+impl<'a> StaticInitializerWrites<'a> {
     fn new(
-        owner: crate::language::java::JavaIdentifier,
-        declared_fields: std::collections::BTreeSet<crate::language::java::JavaIdentifier>,
+        ownership: &'a StaticInitializerFields<'a>,
+        declared_fields: BTreeSet<JavaIdentifier>,
     ) -> Self {
         Self {
-            owner,
+            ownership,
             declared_fields,
-            fields: std::collections::BTreeSet::new(),
+            fields: BTreeSet::new(),
         }
     }
 
-    fn is_own_field(&self, owner: &JavaType, name: &crate::language::java::JavaIdentifier) -> bool {
-        self.declared_fields.contains(name) && Self::is_own_owner(&self.owner, owner)
-    }
-
-    fn is_own_owner(owner: &JavaIdentifier, candidate: &JavaType) -> bool {
-        matches!(
-            candidate,
-            JavaType::Class(class) if class.name().components().last() == Some(owner)
-        )
+    fn is_own_field(&self, owner: &JavaType, name: &JavaIdentifier) -> bool {
+        self.declared_fields.contains(name) && self.ownership.owns(owner, name)
     }
 }
 
-impl JavaAstRewriter for StaticInitializerWrites {
+impl JavaAstRewriter for StaticInitializerWrites<'_> {
     fn finish_statement(&mut self, statement: JavaStmt) -> JavaStmt {
         if let JavaStmt::Assign {
             target: JavaExpr::StaticField { owner, name },
@@ -744,12 +799,29 @@ impl JavaAstRewriter for StaticInitializerWrites {
 
 #[cfg(test)]
 mod tests {
-    use super::StaticInitializationRecovery;
+    use super::{BTreeSet, StaticInitializationRecovery, StaticInitializerFields};
     use crate::language::java::{
         JavaAssignOp, JavaExpr, JavaFieldDeclaration, JavaIdentifier, JavaLiteral, JavaMethodBody,
         JavaMethodDeclaration, JavaMethodDeclarationKind, JavaModifier, JavaStmt, JavaType,
         JavaTypeDeclaration, JavaTypeDeclarationKind,
     };
+
+    fn recover(declaration: &mut JavaTypeDeclaration) {
+        let prepared_defaults = declaration
+            .fields
+            .iter()
+            .map(|field| field.name.clone())
+            .collect();
+        StaticInitializationRecovery::apply(
+            declaration,
+            &StaticInitializerFields {
+                owner: &JavaType::source_class("Settings"),
+                ambiguous: &BTreeSet::new(),
+                constant_capable: &BTreeSet::new(),
+                prepared_defaults: &prepared_defaults,
+            },
+        );
+    }
 
     fn interface_with_shared_value(value: JavaExpr) -> JavaTypeDeclaration {
         let owner = JavaIdentifier::from_dex("Settings");
@@ -815,7 +887,7 @@ mod tests {
         };
         let mut declaration = interface_with_shared_value(value.clone());
 
-        StaticInitializationRecovery::apply(&mut declaration);
+        recover(&mut declaration);
 
         assert!(declaration.methods.is_empty());
         assert!(declaration
@@ -835,7 +907,7 @@ mod tests {
         };
         let mut declaration = interface_with_shared_value(value.clone());
 
-        StaticInitializationRecovery::apply(&mut declaration);
+        recover(&mut declaration);
 
         assert!(declaration.methods.is_empty());
         assert!(declaration
@@ -855,7 +927,7 @@ mod tests {
         };
         let mut declaration = interface_with_shared_value(value);
 
-        StaticInitializationRecovery::apply(&mut declaration);
+        recover(&mut declaration);
 
         assert!(declaration.methods.is_empty());
         assert_eq!(declaration.nested.len(), 1);
@@ -885,7 +957,7 @@ mod tests {
         };
         let mut declaration = interface_with_shared_value(value);
 
-        StaticInitializationRecovery::apply(&mut declaration);
+        recover(&mut declaration);
 
         assert!(declaration.methods.is_empty());
         assert_eq!(declaration.nested.len(), 1);

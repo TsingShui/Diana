@@ -1,0 +1,7 @@
+{
+  "compile-only": ["compile:true:42"],
+  "success-text": ["compile:true:42","first:text","begin:runtime:7","complete","value:text:runtime:true","second:number","value:number:7","compile:true:42"],
+  "success-number": ["compile:true:42","first:number","begin:runtime:7","complete","value:number:7","second:text","value:text:runtime:true","compile:true:42"],
+  "fail-text": ["compile:true:42","first:text","begin:runtime:7","initializer-fault","error:initializer:true","second:number","error:prior-initializer","compile:true:42"],
+  "fail-number": ["compile:true:42","first:number","begin:runtime:7","initializer-fault","error:initializer:true","second:text","error:prior-initializer","compile:true:42"]
+}

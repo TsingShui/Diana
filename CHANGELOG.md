@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.14 - 2026-11-28
+
+- Preserved runtime writes to static final primitive and string fields so
+  cross-class reads still trigger initialization and observe its failures.
+- Kept static initializer writes associated with their original declaring
+  class, including when two classes share a simple name.
+
 ## 0.4.13 - 2026-11-28
 
 - Preserved string reference identity when DEX builder chains and JVM

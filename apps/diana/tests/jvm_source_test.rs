@@ -249,6 +249,71 @@ fn runtime_concat_checks(classes: &Path) -> String {
 }
 
 #[test]
+fn recovered_classes_preserve_runtime_static_final_initialization() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../quality/fixtures/classes/runtime-static-final/jvm");
+    let hooks = fixture.join("InitEffects.java");
+    let checker = fixture.join("CheckInitialization.java");
+    let original = tempfile::tempdir().unwrap();
+    compile_java_sources(
+        original.path(),
+        &[
+            &fixture.join("RuntimeFields.java"),
+            &fixture.join("ReadRuntimeFields.java"),
+            &hooks,
+            &checker,
+        ],
+    );
+    let recovered = tempfile::tempdir().unwrap();
+    for class in ["RuntimeFields", "ReadRuntimeFields"] {
+        let publication = json_source(
+            "get-class",
+            &original.path().join(format!("{class}.class")),
+            "j0",
+            0,
+        );
+        assert!(publication["issues"].as_array().unwrap().is_empty());
+        std::fs::write(
+            recovered.path().join(format!("{class}.java")),
+            text(&publication),
+        )
+        .unwrap();
+    }
+    compile_java_sources(
+        recovered.path(),
+        &[
+            &recovered.path().join("RuntimeFields.java"),
+            &recovered.path().join("ReadRuntimeFields.java"),
+            &hooks,
+            &checker,
+        ],
+    );
+    let scenarios: std::collections::BTreeMap<String, Vec<String>> =
+        serde_json::from_slice(&std::fs::read(fixture.join("scenarios.json")).unwrap()).unwrap();
+    assert_eq!(scenarios.len(), 5);
+    for (scenario, expected) in scenarios {
+        for classes in [original.path(), recovered.path()] {
+            let result = Command::new("java")
+                .args(["-XX:-UsePerfData", "-cp"])
+                .arg(classes)
+                .args(["CheckInitialization", &scenario])
+                .output()
+                .expect("execute the independent class initialization witness");
+            assert!(
+                result.status.success(),
+                "{scenario}: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&result.stdout).trim(),
+                expected.join(","),
+                "{scenario}"
+            );
+        }
+    }
+}
+
+#[test]
 fn get_method_recovers_the_same_original_method_by_name_and_position() {
     let fixture = fixture();
     let inputs = [

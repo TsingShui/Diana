@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "id": "dex-blank-static-finals",
+  "default": true,
+  "input": "classes.dex",
+  "input_sha256": "c1da143c2c45f8e00b44ed1e381d03bbe25893695c79d33e05e75c3b27355101",
+  "probe": "verify.py",
+  "oracle_files": [
+    "CheckInitialization.java",
+    "DexConsumer.java",
+    "DexConsumer.smali",
+    "DexInitEvents.java",
+    "DexInitEvents.smali",
+    "DexProvider.java",
+    "DexProvider.smali",
+    "raw_proof.py",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m0",
+      "member": "Lfixture/DexConsumer;->compileNumber()I",
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m1",
+      "member": "Lfixture/DexConsumer;->compileText()Ljava/lang/String;",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m2",
+      "member": "Lfixture/DexConsumer;->runtimeNumber()I",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m3",
+      "member": "Lfixture/DexConsumer;->runtimeText()Ljava/lang/String;",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

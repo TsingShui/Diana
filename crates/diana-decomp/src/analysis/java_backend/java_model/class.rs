@@ -166,6 +166,7 @@ pub(in crate::analysis::java_backend) struct JavaFieldDeclaration {
     pub field_type: ArgType,
     pub name: JavaIdentifier,
     pub initializer: Option<DexValue>,
+    pub default_preparation: bool,
     pub access_flags: AccessInfo,
     /// Parsed JVM generic field signature, when the field carries a
     /// `Ldalvik/annotation/Signature;` annotation.
@@ -182,6 +183,7 @@ impl JavaFieldDeclaration {
             field_type: field.field_type().clone(),
             name: JavaIdentifier::from_dex(field.name()),
             initializer: Self::initial_value(field),
+            default_preparation: field.default_preparation,
             access_flags: field.access_flags,
             signature: field
                 .signature

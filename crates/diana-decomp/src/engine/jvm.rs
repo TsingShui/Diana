@@ -432,11 +432,14 @@ fn field_node(
             }) {
             Ok(Some(value)) => field = field.with_initial_value(value),
             Ok(None) => (),
-            Err(error) => issues.push(SourceIssue::declaration(
-                Some(member.ordinal()),
-                None,
-                error,
-            )),
+            Err(error) => {
+                field.default_preparation = false;
+                issues.push(SourceIssue::declaration(
+                    Some(member.ordinal()),
+                    None,
+                    error,
+                ));
+            }
         }
     }
     if has_annotations {

@@ -17,11 +17,13 @@ use super::constants::JavaConstantLowering;
 use super::constructor_syntax::{ConstructorMethodReturnTypes, ConstructorSyntaxRecovery};
 use super::enum_lowering::{EnumDeclarationRecovery, EnumSwitchRecovery};
 use super::function_object_types::FunctionObjectTypeCatalog;
-use super::java_model::method::{JavaMethodDeclarationKind as MethodModelKind, JavaMethodModel};
+use super::java_model::method::{
+    JavaMethodDeclarationKind as MethodModelKind, JavaMethodModel, MemberReferences,
+};
 use super::java_model::{JavaClassKind, JavaFieldDeclaration as FieldModel};
 use super::java_model::{JavaClassModel, JavaMethodDeclaration as MethodModel};
 use super::member_names::ClassMemberNames;
-use super::static_initialization::StaticInitializationRecovery;
+use super::static_initialization::{StaticInitializationRecovery, StaticInitializerFields};
 use super::synthetic_members::SyntheticMemberRecovery;
 use super::type_names::JavaTypeNameResolver;
 use super::type_uses::{include_abi_type, ClassTypeUses, GenericTypeUses, JavaMethodTypeUses};
@@ -720,6 +722,8 @@ impl<'a> JavaTypeLowering<'a> {
                     class.declaration.name.clone(),
                 )))
             });
+        let ambiguous_initializer_fields =
+            self.ambiguous_initializer_fields(class, owner.as_ref(), &identity);
         let mut source_field_types = self.source_field_types.clone();
         if let Some(owner) = &owner {
             let lexical_field_types = class
@@ -841,6 +845,22 @@ impl<'a> JavaTypeLowering<'a> {
                 .map(|field| self.field(field, owner.as_ref()))
                 .collect::<Result<Vec<_>, _>>()
         }?;
+        let mut prepared_defaults = std::collections::BTreeSet::new();
+        let mut constant_capable = std::collections::BTreeSet::new();
+        for (model, field) in class.fields.iter().zip(&fields) {
+            if !model.access_flags.is_static() {
+                continue;
+            }
+            if model.default_preparation {
+                prepared_defaults.insert(field.name.clone());
+            }
+            if model.access_flags.is_final()
+                && (model.field_type.is_primitive()
+                    || model.field_type.as_object() == Some("java/lang/String"))
+            {
+                constant_capable.insert(field.name.clone());
+            }
+        }
         let synthetic_final_fields = class
             .fields
             .iter()
@@ -895,7 +915,15 @@ impl<'a> JavaTypeLowering<'a> {
             self.names,
             self.source_abi,
         );
-        StaticInitializationRecovery::apply(&mut declaration);
+        StaticInitializationRecovery::apply(
+            &mut declaration,
+            &StaticInitializerFields {
+                owner: &identity,
+                ambiguous: &ambiguous_initializer_fields,
+                constant_capable: &constant_capable,
+                prepared_defaults: &prepared_defaults,
+            },
+        );
         Self::remove_implicit_field_modifiers(class.declaration.kind, &mut declaration.fields);
         ConstructorSyntaxRecovery::apply_with_method_returns(
             &mut declaration,
@@ -928,6 +956,42 @@ impl<'a> JavaTypeLowering<'a> {
                 .with_recovered_functions(recovery.recovered_functions),
             declaration,
         })
+    }
+
+    fn ambiguous_initializer_fields(
+        &self,
+        class: &JavaClassModel,
+        owner: Option<&ArgType>,
+        identity: &JavaType,
+    ) -> std::collections::BTreeSet<JavaIdentifier> {
+        let Some(body) = class.methods.iter().find_map(|method| {
+            (method.declaration.kind == MethodModelKind::ClassInitializer)
+                .then_some(method.body.as_ref())
+                .flatten()
+        }) else {
+            return std::collections::BTreeSet::new();
+        };
+        let original_fields = class
+            .fields
+            .iter()
+            .filter(|field| field.access_flags.is_static())
+            .map(|field| (field.name.original_name(), &field.field_type))
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut references = MemberReferences::default();
+        body.collect_member_references(&mut references);
+        references
+            .fields()
+            .filter(|field| {
+                let declared = owner == Some(&field.owner)
+                    && original_fields.contains(&(field.name.as_str(), &field.field_type));
+                !declared
+                    && self
+                        .names
+                        .resolve_type(&field.owner)
+                        .is_ok_and(|shown| shown == *identity)
+            })
+            .map(|field| self.members.field(field))
+            .collect()
     }
 
     fn assign_nested_names(owner: &JavaTypeDeclaration, nested: &mut [LoweredNestedType]) {

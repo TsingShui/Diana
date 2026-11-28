@@ -59,6 +59,8 @@ pub struct FieldNode {
     pub access_flags: AccessInfo,
     /// Initial value (for static fields)
     pub initial_value: Option<DexValue>,
+    /// Whether the original preparation leaves this field at its default.
+    pub(crate) default_preparation: bool,
     /// JVM generic signature recovered from the
     /// `Ldalvik/annotation/Signature;` field annotation, when present.
     pub signature: Option<String>,
@@ -74,6 +76,7 @@ impl FieldNode {
             info,
             access_flags,
             initial_value: None,
+            default_preparation: true,
             signature: None,
             annotations: Vec::new(),
         }
@@ -82,6 +85,7 @@ impl FieldNode {
     /// Create field node with initial value
     pub fn with_initial_value(mut self, value: DexValue) -> Self {
         self.initial_value = Some(value);
+        self.default_preparation = false;
         self
     }
 

@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "dex-interface-runtime-reentry",
+  "default": true,
+  "input": "classes.dex",
+  "input_sha256": "73764c40ac9c7726a5651101264c580d34c7c9cafe110dc218500c09eb225c08",
+  "probe": "verify.py",
+  "oracle_files": [
+    "CheckInterface.java",
+    "FaceConsumer.java",
+    "FaceConsumer.smali",
+    "InterfaceEffects.java",
+    "InterfaceEffects.smali",
+    "RuntimeFace.java",
+    "RuntimeFace.smali",
+    "raw_proof.py",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m0",
+      "member": "Lfixture/FaceConsumer;->first()Ljava/lang/String;",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m1",
+      "member": "Lfixture/FaceConsumer;->second()Ljava/lang/String;",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c2:m4",
+      "member": "Lfixture/RuntimeFace;->readFirst()Ljava/lang/String;",
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c2:m5",
+      "member": "Lfixture/RuntimeFace;->readSecond()Ljava/lang/String;",
+      "issues": []
+    }
+  ]
+}

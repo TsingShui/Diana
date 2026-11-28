@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "id": "dex-static-initializer-field-owners",
+  "default": true,
+  "input": "classes.dex",
+  "input_sha256": "2231dc8ac6e9c5eb6504cce61cf15b44068047c9824fffffba34e87216ab3d1b",
+  "probe": "verify.py",
+  "oracle_files": [
+    "original/control/ObserveOwners.java",
+    "original/control/OwnerEvents.java",
+    "original/origin/LateOwner.java",
+    "original/origin/PrefixOwner.java",
+    "original/outside/LateOwner.java",
+    "original/outside/PrefixOwner.java",
+    "smali/LateOwner.smali",
+    "smali/OutsideLate.smali",
+    "smali/OutsidePrefix.smali",
+    "smali/OwnerEvents.smali",
+    "smali/PrefixOwner.smali"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c1:m2",
+      "member": "Lorigin/LateOwner;->observed()I",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c2:m4",
+      "member": "Lorigin/PrefixOwner;->observed()I",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

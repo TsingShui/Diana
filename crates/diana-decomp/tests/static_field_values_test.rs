@@ -6,6 +6,10 @@ const DEX: &[u8] =
     include_bytes!("../../../quality/fixtures/atoms/static-field-values/classes.dex");
 const WIDTHS: &[u8] =
     include_bytes!("../../../quality/fixtures/atoms/static-field-value-widths/classes.dex");
+const RUNTIME: &[u8] =
+    include_bytes!("../../../quality/fixtures/classes/runtime-static-final/classes.dex");
+const OWNERS: &[u8] =
+    include_bytes!("../../../quality/fixtures/classes/static-initializer-owners/classes.dex");
 
 #[test]
 fn renders_original_static_field_preparations() {
@@ -66,6 +70,63 @@ fn mixed_width_preparations_preserve_values_and_class_initialization() {
         assert!(
             text.contains(expected),
             "missing original {expected}: {text}"
+        );
+    }
+}
+
+#[test]
+fn runtime_final_writes_stay_before_later_class_initialization() {
+    let engine = support::engine(RUNTIME);
+    let class = support::class(RUNTIME, &engine, "Lfixture/DexProvider;");
+    let analysis = engine
+        .analyze(Request {
+            class,
+            method: None,
+        })
+        .expect("class analysis");
+    assert!(analysis.failures.is_empty());
+    let text = analysis.rendered.text();
+    assert!(
+        text.contains("static final String COMPILE_TEXT = \"compiled\";"),
+        "{text}"
+    );
+    assert!(text.contains("static final String RUNTIME_TEXT;"), "{text}");
+    let mut remaining = text;
+    for marker in [
+        "static {",
+        "RUNTIME_TEXT = \"runtime\";",
+        "RUNTIME_NUMBER = 7;",
+        "DexInitEvents.begin(",
+        "DexInitEvents.complete()",
+    ] {
+        remaining = remaining
+            .split_once(marker)
+            .unwrap_or_else(|| panic!("missing {marker}:\n{text}"))
+            .1;
+    }
+}
+
+#[test]
+fn static_initializers_preserve_foreign_members_with_the_same_owner_name() {
+    let engine = support::engine(OWNERS);
+    for (owner, expected) in [
+        ("Lorigin/PrefixOwner;", "outside.PrefixOwner.value = 7;"),
+        ("Lorigin/LateOwner;", "outside.LateOwner.value = 5;"),
+    ] {
+        let class = support::class(OWNERS, &engine, owner);
+        let analysis = engine
+            .analyze(Request {
+                class,
+                method: None,
+            })
+            .expect("class analysis");
+        assert!(analysis.failures.is_empty());
+        let text = analysis.rendered.text();
+        assert!(text.contains("static int value;"), "{text}");
+        assert!(
+            text.split_once("static {")
+                .is_some_and(|(_, body)| body.contains(expected)),
+            "{text}"
         );
     }
 }
