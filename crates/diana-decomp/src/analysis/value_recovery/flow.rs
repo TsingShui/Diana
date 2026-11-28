@@ -164,7 +164,7 @@ struct UseFact {
     repetitive: bool,
     evaluation_prefix: EvaluationPrefix,
     context: UseContext,
-    consumer: Option<InsnType>,
+    requires_replayable: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

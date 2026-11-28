@@ -315,16 +315,26 @@ fn recovered_classes_preserve_runtime_static_final_initialization() {
 
 #[test]
 fn recovered_jvm_monitor_scopes_match_execution_and_bytecode() {
+    verify_jvm_fixture("sync/monitor-execution-contract/jvm/verify.py");
+}
+
+#[test]
+fn recovered_jvm_float_comparisons_preserve_operand_effects() {
+    verify_jvm_fixture("atoms/float-comparison-effects/jvm/verify.py");
+}
+
+fn verify_jvm_fixture(path: &str) {
     let output = tempfile::tempdir().unwrap();
     let verifier = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../quality/fixtures/sync/monitor-execution-contract/jvm/verify.py");
+        .join("../../quality/fixtures")
+        .join(path);
     let process = Command::new(if cfg!(windows) { "python" } else { "python3" })
         .arg("-B")
         .arg(verifier)
         .args(["--binary", env!("CARGO_BIN_EXE_diana"), "--output"])
         .arg(output.path().join("report.json"))
         .output()
-        .expect("run the independent JVM monitor witness");
+        .expect("run the independent JVM fixture verifier");
     assert!(
         process.status.success(),
         "{}\n{}",

@@ -4,7 +4,7 @@ use crate::ir::{
 };
 
 use super::super::effects::EffectSummary;
-use super::{FlowCollector, FlowTask, UseSite};
+use super::{FlowCollector, FlowTask, OperandContext, UseSite};
 use crate::analysis::value_recovery::{domain::ControlDomain, ValueRecoveryError};
 
 pub(super) struct NodeScheduler<'collector, 'node> {
@@ -282,9 +282,13 @@ impl<'collector, 'node> NodeScheduler<'collector, 'node> {
         site: Option<UseSite>,
     ) -> Result<(), ValueRecoveryError> {
         let event = self.collector.event();
-        let effect =
-            self.collector
-                .visit_predicate_uses(predicate, self.domain, event, site.into())?;
+        let effect = self.collector.visit_predicate_uses(
+            predicate,
+            self.domain,
+            event,
+            OperandContext::PREDICATE,
+            site.into(),
+        )?;
         self.collector
             .record_effect(site.map(UseSite::id), self.domain, effect);
         Ok(())

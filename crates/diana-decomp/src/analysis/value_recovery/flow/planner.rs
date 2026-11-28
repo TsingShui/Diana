@@ -282,6 +282,9 @@ impl<'a> ValuePlanner<'a> {
             }
             for &candidate in candidates {
                 let definition = &definitions[candidate];
+                if !self.can_replay_at(definition, usage) {
+                    return Ok(None);
+                }
                 let Some(site) = definition.site else {
                     return Ok(None);
                 };
@@ -992,6 +995,8 @@ impl<'a> ValuePlanner<'a> {
                 Some("protection-boundary")
             } else if definition.loop_owner != usage.loop_owner {
                 Some("loop-boundary")
+            } else if !self.can_replay_at(definition, usage) {
+                Some("non-replayable")
             } else if !effect.can_predicate() {
                 Some("non-predicable")
             } else if self.definition_depends_on(definition, definitions[0].key) {
@@ -1098,6 +1103,9 @@ impl<'a> ValuePlanner<'a> {
                     return Ok(None);
                 }
             };
+        if usage.requires_replayable && !EffectSummary::expression(&expression).is_pure() {
+            return Ok(None);
+        }
         if !self.expression_visible_at((&expression).into(), usage.scope) {
             return Ok(None);
         }
@@ -1344,18 +1352,8 @@ impl<'a> ValuePlanner<'a> {
         if definition.required_statement && !snapshot_inline {
             return Ok(false);
         }
-        // A materialized DEX `cmpg`/`cmpl` is lowered with explicit NaN bias
-        // and may inspect each operand more than once. Keep effectful operand
-        // producers as locals until the comparison itself can be rewritten as
-        // a source predicate; predicate operands are single-evaluated there.
-        if usage.consumer == Some(InsnType::Cmp) && usage.context != UseContext::Predicate {
-            let Some(effect) = self.relocatable_definition_effect_with_dependencies(definition)
-            else {
-                return Ok(false);
-            };
-            if !effect.is_pure() {
-                return Ok(false);
-            }
+        if !self.can_replay_at(definition, usage) {
+            return Ok(false);
         }
         if self.adjacent_inline(definition, usage)? {
             return Ok(true);
@@ -1516,12 +1514,22 @@ impl<'a> ValuePlanner<'a> {
         Ok(control_use && prefix.is_pure_without_control())
     }
 
+    fn can_replay_at(&self, definition: &DefinitionFact, usage: &UseFact) -> bool {
+        !usage.requires_replayable
+            || self
+                .relocatable_definition_effect_with_dependencies(definition)
+                .is_some_and(|effect| effect.is_pure())
+    }
+
     fn can_move(
         &self,
         definition: &DefinitionFact,
         usage: &UseFact,
         effect: EffectSummary,
     ) -> Result<bool, ValueRecoveryError> {
+        if !self.can_replay_at(definition, usage) {
+            return Ok(false);
+        }
         let same_domain = self
             .graph()
             .logic

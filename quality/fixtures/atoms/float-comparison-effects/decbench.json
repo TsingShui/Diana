@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "id": "dex-floating-compare-operands",
+  "default": true,
+  "input": "classes.dex",
+  "input_sha256": "863f63955fe40eecc6709108530f0c9b23310f263b6263823d6a9b81d6668529",
+  "probe": "verify.py",
+  "oracle_files": [
+    "CheckFloat.java",
+    "FloatCompare.java",
+    "FloatCompare.smali",
+    "raw_proof.py",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m0",
+      "member": "Lfixture/FloatCompare;->doubleFinite()Z",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m1",
+      "member": "Lfixture/FloatCompare;->doubleHigh(Ljava/lang/RuntimeException;)I",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m3",
+      "member": "Lfixture/FloatCompare;->doubleLow(Ljava/lang/RuntimeException;)Z",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m7",
+      "member": "Lfixture/FloatCompare;->lowFloatZero(Ljava/lang/RuntimeException;)Z",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m8",
+      "member": "Lfixture/FloatCompare;->nanSkips(Ljava/lang/RuntimeException;)Z",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m9",
+      "member": "Lfixture/FloatCompare;->one()Z",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m12",
+      "member": "Lfixture/FloatCompare;->value()I",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m13",
+      "member": "Lfixture/FloatCompare;->zero()Z",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

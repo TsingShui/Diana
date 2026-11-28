@@ -2,7 +2,7 @@ use std::cell::RefCell;
 
 use crate::ir::semantic::{CompletionDomain, CompletionInterpreter};
 use crate::ir::{
-    InsnType, SemanticExpression, SemanticLabel, SemanticLeave, SemanticLoopControl,
+    CmpBias, InsnType, SemanticExpression, SemanticLabel, SemanticLeave, SemanticLoopControl,
     SemanticLoopKind, SemanticNode, SemanticOperation, SemanticPredicate, SemanticStatement,
     SemanticStatementKind,
 };
@@ -19,6 +19,38 @@ use crate::analysis::value_recovery::{
 mod scheduler;
 
 use scheduler::NodeScheduler;
+
+#[derive(Clone, Copy)]
+struct OperandContext {
+    kind: UseContext,
+    requires_replayable: bool,
+}
+
+impl OperandContext {
+    const VALUE: Self = Self {
+        kind: UseContext::Value,
+        requires_replayable: false,
+    };
+    const PREDICATE: Self = Self::VALUE.predicate();
+
+    const fn predicate(self) -> Self {
+        Self {
+            kind: UseContext::Predicate,
+            ..self
+        }
+    }
+
+    fn operands(self, operation: &SemanticOperation) -> Self {
+        // Java's materialized floating comparison can repeat or skip an
+        // operand. A rewrite to a direct relation removes this restriction.
+        Self {
+            requires_replayable: self.requires_replayable
+                || (operation.insn_type == InsnType::Cmp
+                    && matches!(operation.payload.cmp_bias, Some(CmpBias::Lt | CmpBias::Gt))),
+            ..self
+        }
+    }
+}
 
 /// Semantic blocks typically keep dense CFG ordinals even when structured
 /// branches visit them out of order. Unusually sparse labels stay in a map.
@@ -151,8 +183,13 @@ impl<'ir> FlowCollector<'ir> {
                 }
                 FlowTask::Predicate(predicate, domain, site) => {
                     let event = self.event();
-                    let effect =
-                        self.visit_predicate_uses(predicate, domain, event, site.into())?;
+                    let effect = self.visit_predicate_uses(
+                        predicate,
+                        domain,
+                        event,
+                        OperandContext::PREDICATE,
+                        site.into(),
+                    )?;
                     self.record_effect(site.map(UseSite::id), domain, effect);
                 }
                 FlowTask::EnterScope(repetitive) => self.enter_scope(repetitive),
@@ -212,7 +249,7 @@ impl<'ir> FlowCollector<'ir> {
                     execution_domain,
                     event,
                     &mut evaluation_prefix,
-                    UseContext::Value,
+                    OperandContext::VALUE,
                     site.into(),
                 )?;
                 (
@@ -297,8 +334,7 @@ impl<'ir> FlowCollector<'ir> {
                     domain,
                     event,
                     prefix,
-                    UseContext::Value,
-                    None,
+                    OperandContext::VALUE,
                     argument_site.into(),
                 )
             }
@@ -314,6 +350,7 @@ impl<'ir> FlowCollector<'ir> {
                         condition,
                         domain,
                         event,
+                        OperandContext::PREDICATE,
                         site.map(|site| UseSite::SelectedPredicate(site, current))
                             .into(),
                     )?,
@@ -365,6 +402,7 @@ impl<'ir> FlowCollector<'ir> {
             condition,
             domain,
             event,
+            OperandContext::PREDICATE,
             location
                 .id()
                 .map_or(UseLocation::Missing, UseLocation::Observation),
@@ -374,8 +412,7 @@ impl<'ir> FlowCollector<'ir> {
             domain,
             event,
             &mut prefix,
-            UseContext::Value,
-            None,
+            OperandContext::VALUE,
             location,
         )?;
         Ok(prefix)
@@ -396,6 +433,7 @@ impl<'ir> FlowCollector<'ir> {
         predicate: &SemanticPredicate,
         domain: ControlDomain,
         event: usize,
+        context: OperandContext,
         location: UseLocation,
     ) -> Result<EffectSummary, ValueRecoveryError> {
         let mut pending = Vec::new();
@@ -438,7 +476,7 @@ impl<'ir> FlowCollector<'ir> {
                         domain,
                         event,
                         &mut evaluation_prefix,
-                        UseContext::Predicate,
+                        context,
                         location,
                     )?;
                 }
@@ -483,8 +521,7 @@ impl<'ir> FlowCollector<'ir> {
             domain,
             event,
             &mut prefix,
-            UseContext::Value,
-            None,
+            OperandContext::VALUE,
             location,
         )?;
         Ok(prefix)
@@ -496,10 +533,11 @@ impl<'ir> FlowCollector<'ir> {
         domain: ControlDomain,
         event: usize,
         prefix: &mut EffectSummary,
-        context: UseContext,
+        context: OperandContext,
         location: UseLocation,
     ) -> Result<bool, ValueRecoveryError> {
         let mut operation = operation;
+        let mut context = context.operands(operation);
         let (mut operands, mut covers_operation) = evaluation_operands(operation)?;
         self.record_throwing_owner(location, operation);
         prefix.include_before_arguments(operation);
@@ -508,20 +546,15 @@ impl<'ir> FlowCollector<'ir> {
         let mut parents = smallvec::SmallVec::<[_; 3]>::new();
         loop {
             match operands.next() {
-                Some(SemanticExpression::Register(register)) => self.record_use(
-                    register,
-                    domain,
-                    event,
-                    prefix,
-                    context,
-                    Some(operation.insn_type),
-                    location,
-                ),
+                Some(SemanticExpression::Register(register)) => {
+                    self.record_use(register, domain, event, prefix, context, location)
+                }
                 Some(SemanticExpression::Literal(_)) => {}
                 Some(SemanticExpression::Operation(child)) => {
                     let (children, covers_child) = evaluation_operands(child)?;
                     covers_operation &= covers_child;
-                    parents.push((operation, operands));
+                    parents.push((operation, operands, context));
+                    context = context.operands(child);
                     operation = child;
                     operands = children;
                     self.record_throwing_owner(location, operation);
@@ -533,9 +566,13 @@ impl<'ir> FlowCollector<'ir> {
                     when_false,
                 }) => {
                     covers_operation = false;
-                    *prefix = prefix
-                        .clone()
-                        .join(self.visit_predicate_uses(condition, domain, event, location)?);
+                    *prefix = prefix.clone().join(self.visit_predicate_uses(
+                        condition,
+                        domain,
+                        event,
+                        context.predicate(),
+                        location,
+                    )?);
                     let condition = self.graph.logic.predicate(condition)?;
                     let true_domain = self.graph.logic.and(domain, condition)?;
                     let negated = self.graph.logic.not(condition)?;
@@ -547,7 +584,6 @@ impl<'ir> FlowCollector<'ir> {
                         event,
                         &mut true_prefix,
                         context,
-                        Some(operation.insn_type),
                         location,
                     )?;
                     let mut false_prefix = prefix.clone();
@@ -557,17 +593,17 @@ impl<'ir> FlowCollector<'ir> {
                         event,
                         &mut false_prefix,
                         context,
-                        Some(operation.insn_type),
                         location,
                     )?;
                     *prefix = true_prefix.join(false_prefix);
                 }
                 None => {
                     *prefix = std::mem::take(prefix).join(EffectSummary::direct(operation));
-                    let Some((parent, remaining)) = parents.pop() else {
+                    let Some((parent, remaining, parent_context)) = parents.pop() else {
                         return Ok(covers_operation);
                     };
                     operation = parent;
+                    context = parent_context;
                     operands = remaining;
                 }
             }
@@ -580,12 +616,11 @@ impl<'ir> FlowCollector<'ir> {
         domain: ControlDomain,
         event: usize,
         prefix: &EffectSummary,
-        context: UseContext,
-        consumer: Option<InsnType>,
+        context: OperandContext,
         location: UseLocation,
     ) {
         if let Some(key) = self.graph.key(register) {
-            self.graph.has_predicate_uses |= context == UseContext::Predicate;
+            self.graph.has_predicate_uses |= context.kind == UseContext::Predicate;
             self.graph.uses.push(
                 key,
                 UseFact {
@@ -597,8 +632,8 @@ impl<'ir> FlowCollector<'ir> {
                     event,
                     repetitive: self.loop_owner != ScopeId::default(),
                     evaluation_prefix: self.graph.prefixes.record(prefix),
-                    context,
-                    consumer,
+                    context: context.kind,
+                    requires_replayable: context.requires_replayable,
                 },
             );
         }
@@ -627,13 +662,12 @@ impl<'ir> FlowCollector<'ir> {
         domain: ControlDomain,
         event: usize,
         prefix: &mut EffectSummary,
-        context: UseContext,
-        consumer: Option<InsnType>,
+        context: OperandContext,
         location: UseLocation,
     ) -> Result<bool, ValueRecoveryError> {
         match expression {
             SemanticExpression::Register(register) => {
-                self.record_use(register, domain, event, prefix, context, consumer, location);
+                self.record_use(register, domain, event, prefix, context, location);
                 Ok(true)
             }
             SemanticExpression::Operation(operation) => {
@@ -644,9 +678,13 @@ impl<'ir> FlowCollector<'ir> {
                 when_true,
                 when_false,
             } => {
-                *prefix = prefix
-                    .clone()
-                    .join(self.visit_predicate_uses(condition, domain, event, location)?);
+                *prefix = prefix.clone().join(self.visit_predicate_uses(
+                    condition,
+                    domain,
+                    event,
+                    context.predicate(),
+                    location,
+                )?);
                 let condition = self.graph.logic.predicate(condition)?;
                 let true_domain = self.graph.logic.and(domain, condition)?;
                 let negated = self.graph.logic.not(condition)?;
@@ -658,7 +696,6 @@ impl<'ir> FlowCollector<'ir> {
                     event,
                     &mut true_prefix,
                     context,
-                    consumer,
                     location,
                 )?;
                 let mut false_prefix = prefix.clone();
@@ -668,7 +705,6 @@ impl<'ir> FlowCollector<'ir> {
                     event,
                     &mut false_prefix,
                     context,
-                    consumer,
                     location,
                 )?;
                 *prefix = true_prefix.join(false_prefix);

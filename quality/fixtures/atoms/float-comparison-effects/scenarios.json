@@ -1,0 +1,14 @@
+{
+  "finite-float-one": ["return:true", "trace:12"],
+  "finite-float-zero": ["return:true", "trace:12"],
+  "finite-float-value": ["return:1", "trace:12"],
+  "nan-float-high": ["return:true", "trace:12"],
+  "nan-float-high-fault": ["throw:true", "trace:12"],
+  "nan-float-low": ["return:true", "trace:12"],
+  "nan-float-low-fault": ["throw:true", "trace:12"],
+  "finite-double-one": ["return:true", "trace:12"],
+  "nan-double-high": ["return:1", "trace:12"],
+  "nan-double-high-fault": ["throw:true", "trace:12"],
+  "nan-double-low": ["return:true", "trace:12"],
+  "nan-double-low-fault": ["throw:true", "trace:12"]
+}

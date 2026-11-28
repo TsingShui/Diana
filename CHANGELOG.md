@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.16 - 2026-11-28
+
+- Preserved eager, left-to-right evaluation of effectful floating-point
+  comparison operands in DEX and JVM recovery, including comparisons whose
+  operands can throw.
+- Kept the original NaN bias and signed-zero behavior when recovering
+  floating-point comparisons.
+
 ## 0.4.15 - 2026-11-28
 
 - Preserved explicit monitor scopes in DEX and JVM methods, including nested

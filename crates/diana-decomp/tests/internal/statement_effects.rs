@@ -88,17 +88,16 @@ fn a_wide_call_resumes_siblings_after_a_deep_store_in_evaluation_order() {
 
     let uses = &graph.uses[&SsaVar::new(3, 0)];
     assert_eq!(uses.len(), 97);
-    assert!(uses[..48].iter().all(|usage| {
-        usage.consumer == Some(InsnType::Invoke) && graph.evaluation_prefix(usage).is_pure()
-    }));
-    assert_eq!(uses[48].consumer, Some(InsnType::Iput));
+    assert!(uses[..48]
+        .iter()
+        .all(|usage| graph.evaluation_prefix(usage).is_pure()));
     assert_eq!(
         graph.evaluation_prefix(&uses[48]),
         &EffectSummary::direct(&read)
     );
-    assert!(uses[49..].iter().all(|usage| {
-        usage.consumer == Some(InsnType::Invoke) && graph.evaluation_prefix(usage) == &after_store
-    }));
+    assert!(uses[49..]
+        .iter()
+        .all(|usage| graph.evaluation_prefix(usage) == &after_store));
     assert_eq!(graph.effects.len(), 1);
     assert_eq!(graph.effects[0].effect, total);
 }
