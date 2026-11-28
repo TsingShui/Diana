@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.7 - 2026-11-28
+
+- Preserved integral overloads when DEX and JVM recovery publish Java-like
+  calls, `new` expressions, and constructor delegation. A `char` or `byte`
+  keeps its value when an original invocation needs the wider formal.
+- Added DecBench coverage for crossed argument types, numeric boundaries,
+  and constructor binding, plus a JVM check of results and effect order.
+
 ## 0.4.6 - 2026-11-28
 
 - Preserved the values an enclosing DEX catch sees when both normal and

@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "id": "jvm-overload-bindings",
+  "default": false,
+  "prepared": true,
+  "input": "debug/classes/fixture/overloads/OverloadWitness.class",
+  "oracle_files": ["OverloadWitness.java", "CheckOverload.java"],
+  "call_bindings": {
+    "class_at": "j0",
+    "class_member": "Lfixture/overloads/OverloadWitness;"
+  },
+  "methods": [
+    {
+      "at": "j0:m8",
+      "member": "Lfixture/overloads/OverloadWitness;-><init>(CZ)V",
+      "call_bindings": true,
+      "issues": []
+    },
+    {
+      "at": "j0:m9",
+      "member": "Lfixture/overloads/OverloadWitness;->wide(C)I",
+      "call_bindings": true,
+      "issues": []
+    },
+    {
+      "at": "j0:m10",
+      "member": "Lfixture/overloads/OverloadWitness;->narrow(C)I",
+      "call_bindings": true,
+      "issues": []
+    },
+    {
+      "at": "j0:m15",
+      "member": "Lfixture/overloads/OverloadWitness;->generic(Ljava/lang/String;Ljava/util/List;)I",
+      "call_bindings": true,
+      "issues": []
+    }
+  ]
+}

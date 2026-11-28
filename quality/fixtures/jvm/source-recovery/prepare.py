@@ -39,6 +39,7 @@ def prepare(destination, variant="debug"):
     source_files = [fixture / name for name in (
         "SourceRecovery.java", "CustomBootstrap.java", "ExceptionChains.java",
         "TypedLocals.java", "EffectSequences.java",
+        "OverloadWitness.java",
     )]
     classes = destination / "classes"
     subprocess.run(

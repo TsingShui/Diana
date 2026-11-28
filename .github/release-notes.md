@@ -1,25 +1,26 @@
-## Diana CLI 0.4.6
+## Diana CLI 0.4.7
 
-- DEX recovery preserves the values an enclosing catch sees when normal and
-  exceptional exits share one `finally`. The catch sees each value committed
-  before the fault, including when cleanup replaces a pending exception.
-- Three new DecBench fixtures check a wide timestamp, two values committed
-  at different points, and faults on successive loop iterations.
+- DEX and JVM recovery preserve integral overloads in calls, `new`
+  expressions, and constructor delegation. The published arguments keep
+  their value and select the original wider formal where needed.
+- DecBench now checks crossed numeric overloads and edge values such as
+  U+FFFF and negative bytes. A JVM fixture also checks the selected
+  constructors, returned values, and effect order.
 
 ### Install or upgrade Diana
 
 For macOS and Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/TsingShui/Diana/diana-v0.4.6/install.sh -o install-diana.sh
-sh install-diana.sh diana-v0.4.6
+curl -fsSL https://raw.githubusercontent.com/TsingShui/Diana/diana-v0.4.7/install.sh -o install-diana.sh
+sh install-diana.sh diana-v0.4.7
 ```
 
 To build the released CLI from source, use Rust 1.100 or newer and native
 build tools.
 
 ```sh
-cargo install --git https://github.com/TsingShui/Diana.git --tag diana-v0.4.6 --locked diana
+cargo install --git https://github.com/TsingShui/Diana.git --tag diana-v0.4.7 --locked diana
 ```
 
 Windows users can extract `diana.exe` from the matching ZIP and add it to PATH.

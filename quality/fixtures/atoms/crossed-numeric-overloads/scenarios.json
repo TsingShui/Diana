@@ -1,0 +1,10 @@
+{
+  "run": [
+    {"id": "max-unit-min-signed-octet", "arguments": ["run", "65535", "-128", "0"], "expected": ["constructor:CI:65535:65535", "char:CI:65535:65535", "char:IC:65535:65535", "byte:BI:-128:-128", "byte:IB:-128:-128", "constructor:IC:65535:65535"]},
+    {"id": "nul-unit-all-bits-signed-octet", "arguments": ["run", "0", "-1", "0"], "expected": ["constructor:CI:0:0", "char:CI:0:0", "char:IC:0:0", "byte:BI:-1:-1", "byte:IB:-1:-1", "constructor:IC:0:0"]},
+    {"id": "unsigned-unit-high-bit-and-positive-octet", "arguments": ["run", "32768", "127", "0"], "expected": ["constructor:CI:32768:32768", "char:CI:32768:32768", "char:IC:32768:32768", "byte:BI:127:127", "byte:IB:127:127", "constructor:IC:32768:32768"]}
+  ],
+  "control": [
+    {"id": "matching-identical-formals", "arguments": ["control", "65535", "-128", "65536"], "expected": ["constructor:CC:65535:65535", "char:CC:65535:65535", "byte:BB:-128:-128", "char:II:65536:65536", "byte:II:65536:65536"]}
+  ]
+}

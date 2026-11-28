@@ -58,18 +58,24 @@ fn overload_applicability_uses_the_operands_of_each_call_site() {
     )
     .unwrap();
 
-    let any = SemanticExpression::Register(RegisterArg::new(1, object));
-    let null = SemanticExpression::Literal(crate::ir::LiteralArg::int(0));
+    let any = Some(InvocationOperandType::Known(JavaType::source_class(
+        "Object",
+    )));
+    let null = Some(InvocationOperandType::Null);
+    let cast_types = [
+        Some(JavaType::source_class("Object")),
+        Some(JavaType::source_class("Object")),
+    ];
     assert_eq!(
-        dialect.overload_argument_casts(&selected, &[any.clone(), null.clone()]),
+        dialect.overload_argument_casts(&selected, &mut [any.clone(), null.clone()], &cast_types),
         BTreeSet::from([1])
     );
     assert_eq!(
-        dialect.overload_argument_casts(&selected, &[null.clone(), any]),
+        dialect.overload_argument_casts(&selected, &mut [null.clone(), any], &cast_types),
         BTreeSet::from([0])
     );
     assert_eq!(
-        dialect.overload_argument_casts(&selected, &[null.clone(), null]),
+        dialect.overload_argument_casts(&selected, &mut [null.clone(), null], &cast_types),
         BTreeSet::from([0, 1])
     );
 }

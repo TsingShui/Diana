@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "dex-crossed-numeric-overloads",
+  "default": false,
+  "input": "classes.dex",
+  "input_sha256": "9b814ffcaa50a1376f2b240cd73e7993dacda85871b767b590c41e7b4792ed0c",
+  "probe": "decbench_probe.py",
+  "oracle_files": [
+    "CrossedNumerics.java",
+    "CrossedNumerics.smali",
+    "scenarios.json"
+  ],
+  "call_bindings": {
+    "class_at": "e0:l0:c0",
+    "class_member": "Lfixture/CrossedNumerics;"
+  },
+  "methods": [
+    {
+      "at": "e0:l0:c0:m14",
+      "member": "Lfixture/CrossedNumerics;->run(CB)V",
+      "behavior": true,
+      "call_bindings": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m4",
+      "member": "Lfixture/CrossedNumerics;->control(CBI)V",
+      "behavior": true,
+      "call_bindings": true,
+      "issues": []
+    }
+  ]
+}

@@ -75,3 +75,25 @@ failure. A null input escapes after cleanup. The rendered `mark` method
 preserves the multiply and add that encode the order of those calls.
 The source recompiles and passes all eight reference paths with their
 original trace values.
+## Overload binding review
+
+The original wide route evaluates `once` before either call or allocation.
+Its selected static and instance calls, direct construction, and delegated
+construction all use the integer formals. The narrow path intentionally
+keeps the character formals. Each implementation records a distinct digit
+and uses its argument once in the return value or field assignment.
+
+Diana 0.4.6 publishes the character argument bare at the integer call
+sites. Recompilation changes the selected implementations, so both the
+value and the trace change while `once` still runs exactly once. Diana
+0.4.7 emits the integer view at each widening site. The allocation,
+delegation, call and effect sequence then matches the original for the
+ASCII and high UTF-16 code units. The narrow route and its trace are
+preserved. Call attribution and execution run separately from this review.
+
+The generic control selects the overload with one shared `T`. The
+`List<String>` argument fixes `T` to `String`. The alternative with
+`U extends Number` cannot accept that list, and the two-`Object` overload
+is less specific. The candidate preserves the `String` argument type and
+returns 1, as does the original. An erased cast to `Object` would change
+the call to the fallback and return 3.

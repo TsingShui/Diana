@@ -105,6 +105,18 @@ impl ComparisonSemantics {
     }
 }
 
+struct InvocationArgument {
+    index: usize,
+    expression: JavaExpr,
+    inferred: Option<JavaType>,
+}
+
+#[derive(Clone)]
+enum InvocationOperandType {
+    Null,
+    Known(JavaType),
+}
+
 struct GenericCast<'a> {
     target: &'a JavaType,
     erased: &'a JavaType,
@@ -1904,43 +1916,42 @@ impl DexJavaDialect {
                 let enclosing_parameter = self.member_names.enclosing_constructor_parameter(method);
                 let mut enclosing = None;
                 let mut enclosing_type = None;
-                let args = insn
-                    .operands()
+                let call_arguments = insn.operands().get(1..).unwrap_or_default();
+                let args = call_arguments
                     .iter()
-                    .skip(1)
                     .enumerate()
                     .filter_map(|(index, arg)| {
                         if !hidden
                             .as_ref()
                             .is_some_and(|hidden| hidden.contains(&index))
                         {
-                            return Some(match method.descriptor.parameters.get(index) {
-                                Some(expected) => {
-                                    match argument_source_types.get(index).cloned().flatten() {
-                                        Some(source) => self
-                                            .arg_as_source_target(arg, expected, &source)
-                                            .map(|expression| {
-                                                if explicit_function_targets
-                                                    && self.is_function_object_expression(arg)
-                                                {
-                                                    JavaExpr::Cast {
-                                                        ty: source,
-                                                        value: Box::new(expression),
-                                                    }
-                                                } else {
-                                                    expression
-                                                }
-                                            }),
-                                        None => self.arg_as(arg, expected),
-                                    }
-                                    .and_then(|expression| {
-                                        self.disambiguate_null_argument(
-                                            method, index, expected, expression,
-                                        )
-                                    })
-                                }
-                                None => self.arg(arg),
-                            });
+                            let inferred = argument_source_types.get(index).cloned().flatten();
+                            let expression = match (
+                                method.descriptor.parameters.get(index),
+                                inferred.as_ref(),
+                            ) {
+                                (Some(expected), Some(source)) => self
+                                    .arg_as_source_target(arg, expected, source)
+                                    .map(|expression| {
+                                        if explicit_function_targets
+                                            && self.is_function_object_expression(arg)
+                                        {
+                                            JavaExpr::Cast {
+                                                ty: source.clone(),
+                                                value: Box::new(expression),
+                                            }
+                                        } else {
+                                            expression
+                                        }
+                                    }),
+                                (Some(expected), None) => self.arg_as(arg, expected),
+                                (None, _) => self.arg(arg),
+                            };
+                            return Some(expression.map(|expression| InvocationArgument {
+                                index,
+                                expression,
+                                inferred,
+                            }));
                         }
                         if enclosing_parameter == Some(index) {
                             let expression = self.arg(arg);
@@ -1950,6 +1961,7 @@ impl DexJavaDialect {
                         None
                     })
                     .collect::<Result<Vec<_>, _>>()?;
+                let args = self.bind_invocation_arguments(method, call_arguments, args)?;
                 let enclosing = enclosing.transpose()?.filter(|expression| {
                     !self.is_implicit_enclosing_instance(expression, enclosing_type.as_ref())
                 });
@@ -2619,15 +2631,12 @@ impl DexJavaDialect {
                 }))
             }
         };
-        let overload_casts = self.overload_argument_casts(method, invocation_arguments);
-        let args = insn
-            .operands()
+        let args = invocation_arguments
             .iter()
-            .skip(usize::from(!is_static))
             .enumerate()
             .map(|(index, arg)| {
                 let Some(expected) = method.descriptor.parameters.get(index) else {
-                    return self.arg(arg);
+                    return self.arg(arg).map(|expression| InvocationArgument { index, expression, inferred: None });
                 };
                 let mut target_type = argument_source_types
                     .get(index)
@@ -2711,19 +2720,10 @@ impl DexJavaDialect {
                 } else {
                     expression
                 };
-                let expression = if overload_casts.contains(&index)
-                    && !matches!(&expression, JavaExpr::Cast { ty, .. } if self.source_erasure(ty).as_ref() == Some(expected))
-                {
-                    JavaExpr::Cast {
-                        ty: self.overload_cast_type(expected, target_type.as_ref())?,
-                        value: Box::new(expression),
-                    }
-                } else {
-                    expression
-                };
-                self.disambiguate_null_argument(method, index, expected, expression)
+                Ok(InvocationArgument { index, expression, inferred: target_type })
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let args = self.bind_invocation_arguments(method, invocation_arguments, args)?;
         Ok(JavaExpr::Call {
             receiver,
             owner: if is_static {
@@ -2752,127 +2752,250 @@ impl DexJavaDialect {
             })
     }
 
-    fn overload_cast_type(
+    fn invocation_reference_cast(
         &self,
+        method: &MethodReference,
+        index: usize,
         erased: &ArgType,
         inferred: Option<&JavaType>,
-    ) -> Result<JavaType, JavaLoweringError> {
+    ) -> Option<JavaType> {
+        if !erased.is_reference() {
+            return None;
+        }
         if let Some(inferred) = inferred {
             if self.source_erasure(inferred).as_ref() == Some(erased) {
-                return Ok(inferred.clone());
+                return Some(inferred.clone());
             }
         }
-        Ok(self.source_type(erased)?.into_raw())
+        let raw = self.source_type(erased).ok()?.into_raw();
+        // An erased formal does not necessarily accept the same arguments
+        // as the instantiated one. Casting a T=String argument to Object
+        // can invalidate inference from another invariant argument.
+        if let Some(inferred) = inferred {
+            return self.source_assignable_to(&raw, inferred).then_some(raw);
+        }
+        let formal = self
+            .generic_methods
+            .get(method)
+            .and_then(|contract| contract.signature.parameter_types.get(index));
+        (!formal.is_some_and(|formal| formal.contains_type_variable())).then_some(raw)
+    }
+
+    fn bind_invocation_arguments(
+        &self,
+        method: &MethodReference,
+        arguments: &[SemanticExpression],
+        mut lowered: Vec<InvocationArgument>,
+    ) -> Result<Vec<JavaExpr>, JavaLoweringError> {
+        let parameters = &method.descriptor.parameters;
+        let has_alternatives = self
+            .member_names
+            .overloads(method)
+            .is_some_and(|overloads| {
+                overloads
+                    .iter()
+                    .any(|candidate| candidate.parameters != *parameters)
+            });
+        let mut actuals = smallvec::SmallVec::<[Option<InvocationOperandType>; 4]>::new();
+        let mut reference_casts = smallvec::SmallVec::<[Option<JavaType>; 4]>::new();
+        if has_alternatives {
+            actuals.resize_with(arguments.len(), || None);
+            reference_casts.resize_with(arguments.len(), || None);
+        }
+        for argument in &mut lowered {
+            let index = argument.index;
+            let (Some(expected), Some(original)) = (parameters.get(index), arguments.get(index))
+            else {
+                continue;
+            };
+            let integral_target = expected.as_primitive().filter(|primitive| {
+                matches!(
+                    primitive,
+                    PrimitiveType::Short | PrimitiveType::Int | PrimitiveType::Long
+                )
+            });
+            if integral_target.is_none() && !has_alternatives {
+                continue;
+            }
+            let mut actual = self.invocation_operand_type(&argument.expression, original);
+            if let (Some(target), Some(InvocationOperandType::Known(JavaType::Primitive(source)))) =
+                (integral_target, actual.as_ref())
+            {
+                // This cast makes the descriptor visible at the call site.
+                // Integral widening preserves the value and introduces no check,
+                // even when the input has no declarations for other overloads.
+                if JavaPrimitiveSemantics::is_widening(Self::erased_primitive(*source), target) {
+                    let ty = self.source_type(expected)?;
+                    let expression = std::mem::replace(
+                        &mut argument.expression,
+                        JavaExpr::Literal(JavaLiteral::Null),
+                    );
+                    argument.expression = JavaExpr::Cast {
+                        ty: ty.clone(),
+                        value: Box::new(expression),
+                    };
+                    actual = Some(InvocationOperandType::Known(ty));
+                }
+            }
+            if let Some(slot) = actuals.get_mut(index) {
+                *slot = actual;
+                reference_casts[index] = self.invocation_reference_cast(
+                    method,
+                    index,
+                    expected,
+                    argument.inferred.as_ref(),
+                );
+            }
+        }
+        let casts = self.overload_argument_casts(method, &mut actuals, &reference_casts);
+        lowered
+            .into_iter()
+            .map(|argument| {
+                let InvocationArgument {
+                    index,
+                    mut expression,
+                    ..
+                } = argument;
+                let Some(expected) = parameters.get(index) else {
+                    return Ok(expression);
+                };
+                if let Some(ty) = casts
+                    .contains(&index)
+                    .then(|| reference_casts[index].take())
+                    .flatten()
+                {
+                    expression = JavaExpr::Cast {
+                        ty,
+                        value: Box::new(expression),
+                    };
+                }
+                self.disambiguate_null_argument(method, index, expected, expression)
+            })
+            .collect()
+    }
+
+    fn invocation_operand_type(
+        &self,
+        expression: &JavaExpr,
+        original: &SemanticExpression,
+    ) -> Option<InvocationOperandType> {
+        if matches!(expression, JavaExpr::Literal(JavaLiteral::Null)) {
+            return Some(InvocationOperandType::Null);
+        }
+        let ty = self.invocation_expression_type(expression).or_else(|| {
+            self.source_primitive_type(original)
+                .and_then(|primitive| self.source_type(&ArgType::Primitive(primitive)).ok())
+                .or_else(|| self.source_expression_type(original))
+        })?;
+        Some(InvocationOperandType::Known(ty))
+    }
+
+    fn invocation_expression_type(&self, expression: &JavaExpr) -> Option<JavaType> {
+        let primitive = match expression {
+            JavaExpr::Literal(JavaLiteral::Boolean(_)) => JavaPrimitiveType::Boolean,
+            JavaExpr::Literal(JavaLiteral::Character(_)) => JavaPrimitiveType::Char,
+            JavaExpr::Literal(JavaLiteral::Integer(_)) => JavaPrimitiveType::Int,
+            JavaExpr::Literal(JavaLiteral::Long(_)) => JavaPrimitiveType::Long,
+            JavaExpr::Literal(JavaLiteral::Float(_)) => JavaPrimitiveType::Float,
+            JavaExpr::Literal(JavaLiteral::Double(_)) => JavaPrimitiveType::Double,
+            JavaExpr::Literal(JavaLiteral::String(_)) => {
+                return self.source_type(&ArgType::object("java/lang/String")).ok();
+            }
+            JavaExpr::Conditional {
+                when_true,
+                when_false,
+                ..
+            } => {
+                let left = self.invocation_expression_type(when_true)?;
+                let right = self.invocation_expression_type(when_false)?;
+                return if left == right {
+                    Some(left)
+                } else {
+                    self.type_relations().least_upper_bound(&left, &right)
+                };
+            }
+            _ => return self.emitted_expression_type(expression),
+        };
+        Some(JavaType::Primitive(primitive))
+    }
+
+    fn strict_invocation_conversion(&self, source: &JavaType, target: &JavaType) -> bool {
+        match (source, target) {
+            (JavaType::Primitive(source), JavaType::Primitive(target)) => {
+                source == target
+                    || JavaPrimitiveSemantics::is_widening(
+                        Self::erased_primitive(*source),
+                        Self::erased_primitive(*target),
+                    )
+            }
+            _ => self.source_assignable_to(source, target),
+        }
+    }
+
+    fn accepts_invocation_operand(
+        &self,
+        actual: Option<&InvocationOperandType>,
+        target: &JavaType,
+    ) -> bool {
+        match actual {
+            Some(InvocationOperandType::Null) => !matches!(target, JavaType::Primitive(_)),
+            Some(InvocationOperandType::Known(actual)) => {
+                self.strict_invocation_conversion(actual, target)
+            }
+            None => false,
+        }
     }
 
     fn overload_argument_casts(
         &self,
         method: &MethodReference,
-        arguments: &[SemanticExpression],
+        arguments: &mut [Option<InvocationOperandType>],
+        reference_casts: &[Option<JavaType>],
     ) -> BTreeSet<usize> {
-        if arguments.is_empty() {
-            return BTreeSet::new();
+        let mut casts = BTreeSet::new();
+        let arity = arguments.len();
+        if arity == 0 || arity != method.descriptor.parameters.len() {
+            return casts;
         }
         let Some(overloads) = self.member_names.overloads(method) else {
-            return BTreeSet::new();
+            return casts;
         };
-        let mut alternatives = overloads
-            .iter()
-            .filter(|candidate| {
-                candidate.parameters.len() == arguments.len()
-                    && candidate.parameters != method.descriptor.parameters
-            })
-            .peekable();
-        if alternatives.peek().is_none() {
-            return BTreeSet::new();
-        }
-        // Applicability observes the same operand expression at one call site
-        // for every competing declaration. Compute its source type on demand.
-        let actuals = arguments
-            .iter()
-            .map(|_| std::cell::OnceCell::<Option<JavaType>>::new())
-            .collect::<smallvec::SmallVec<[_; 4]>>();
-        let actual_type = |index: usize| {
-            actuals[index]
-                .get_or_init(|| self.source_expression_type(&arguments[index]))
-                .as_ref()
-        };
-        let target_types = method
-            .descriptor
-            .parameters
-            .iter()
-            .map(|ty| self.source_type(ty).ok())
-            .collect::<smallvec::SmallVec<[_; 4]>>();
-        let mut casts = BTreeSet::new();
-        for candidate in alternatives {
+        for candidate in overloads.iter().filter(|candidate| {
+            candidate.parameters.len() == arity
+                && candidate.parameters != method.descriptor.parameters
+        }) {
             let candidate_types = candidate
                 .parameters
                 .iter()
                 .map(|ty| self.source_type(ty).ok())
                 .collect::<smallvec::SmallVec<[_; 4]>>();
-            let applicable = arguments.iter().zip(&candidate_types).enumerate().all(
-                |(index, (argument, target))| {
-                    let Some(target) = target else {
-                        return false;
-                    };
-                    if Self::constant(argument) == Some(0)
-                        && !matches!(target, JavaType::Primitive(_))
-                    {
-                        return true;
-                    }
-                    actual_type(index)
-                        .is_some_and(|actual| self.source_assignable_to(actual, target))
-                },
-            );
-            if !applicable {
-                continue;
-            }
-            let mut strict = None;
-            let more_specific = candidate_types.iter().zip(&target_types).enumerate().all(
-                |(index, (candidate, target))| {
-                    let (Some(candidate), Some(target)) = (candidate, target) else {
-                        return false;
-                    };
-                    if candidate == target {
-                        return true;
-                    }
-                    if self.source_assignable_to(candidate, target) {
-                        strict.get_or_insert(index);
-                        true
-                    } else {
-                        false
-                    }
-                },
-            );
-            if more_specific {
-                if let Some(index) = strict {
-                    casts.insert(index);
-                }
-                continue;
-            }
-            if let Some(index) = candidate_types
+            if !arguments
                 .iter()
-                .zip(&target_types)
-                .enumerate()
-                .find_map(|(index, (candidate, target))| {
-                    let (Some(candidate), Some(target)) = (candidate, target) else {
-                        return None;
-                    };
-                    if candidate == target
-                        || self.source_assignable_to(candidate, target)
-                        || self.source_assignable_to(target, candidate)
-                    {
-                        return None;
-                    }
-                    actual_type(index)
-                        .is_some_and(|actual| {
-                            self.source_assignable_to(actual, candidate)
-                                && self.source_assignable_to(actual, target)
-                        })
-                        .then_some(index)
+                .zip(&candidate_types)
+                .all(|(actual, target)| {
+                    target.as_ref().is_some_and(|target| {
+                        self.accepts_invocation_operand(actual.as_ref(), target)
+                    })
                 })
             {
-                casts.insert(index);
+                continue;
+            }
+            // The original declaration remains applicable after a widening
+            // reference cast. Exclude a competitor using a slot where the
+            // selected formal cannot convert to the competing one.
+            for (index, (candidate, target)) in
+                candidate_types.iter().zip(reference_casts).enumerate()
+            {
+                let (Some(candidate), Some(target)) = (candidate, target) else {
+                    continue;
+                };
+                if !self.strict_invocation_conversion(target, candidate)
+                    && self.accepts_invocation_operand(arguments[index].as_ref(), target)
+                {
+                    casts.insert(index);
+                    arguments[index] = Some(InvocationOperandType::Known(target.clone()));
+                    break;
+                }
             }
         }
         casts
@@ -4138,58 +4261,52 @@ impl DexJavaDialect {
             })
             .unwrap_or_default();
         let call_arguments = insn.operands().get(1..).unwrap_or_default();
-        let overload_casts = self.overload_argument_casts(method, call_arguments);
+        let args = call_arguments
+            .iter()
+            .enumerate()
+            .filter_map(|(index, arg)| {
+                if hidden.contains(&index) {
+                    return None;
+                }
+                Some(match method.descriptor.parameters.get(index) {
+                    Some(expected) => {
+                        let target_type = source_argument_types
+                            .get(index)
+                            .and_then(Option::as_ref)
+                            .cloned();
+                        let expression = match target_type.as_ref() {
+                            Some(source) => self.arg_as_source_target(arg, expected, source),
+                            None => self.arg_as(arg, expected),
+                        };
+                        expression.and_then(|expression| {
+                            let needs_null_cast = expected.is_reference()
+                                && matches!(&expression, JavaExpr::Literal(JavaLiteral::Null));
+                            let expression = if needs_null_cast {
+                                JavaExpr::Cast {
+                                    ty: target_type.clone().unwrap_or(self.source_type(expected)?),
+                                    value: Box::new(expression),
+                                }
+                            } else {
+                                expression
+                            };
+                            Ok(InvocationArgument {
+                                index,
+                                expression,
+                                inferred: target_type,
+                            })
+                        })
+                    }
+                    None => self.arg(arg).map(|expression| InvocationArgument {
+                        index,
+                        expression,
+                        inferred: None,
+                    }),
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(JavaStmt::ConstructorInvocation {
             target,
-            args: insn
-                .operands()
-                .iter()
-                .skip(1)
-                .enumerate()
-                .filter_map(|(index, arg)| {
-                    if hidden.contains(&index) {
-                        return None;
-                    }
-                    Some(match method.descriptor.parameters.get(index) {
-                        Some(expected) => {
-                            let target_type =
-                                source_argument_types.get(index).and_then(Option::as_ref).cloned();
-                            let expression = match target_type.as_ref() {
-                                Some(source) => self.arg_as_source_target(arg, expected, source),
-                                None => self.arg_as(arg, expected),
-                            };
-                            expression.and_then(|expression| {
-                                let needs_overload_cast = overload_casts.contains(&index)
-                                    && !matches!(&expression, JavaExpr::Cast { ty, .. } if self.source_erasure(ty).as_ref() == Some(expected));
-                                let needs_null_cast = expected.is_reference()
-                                    && matches!(
-                                        &expression,
-                                        JavaExpr::Literal(JavaLiteral::Null)
-                                    );
-                                let expression = if needs_overload_cast || needs_null_cast {
-                                    JavaExpr::Cast {
-                                        ty: if needs_overload_cast {
-                                            self.overload_cast_type(
-                                                expected,
-                                                target_type.as_ref(),
-                                            )?
-                                        } else {
-                                            target_type
-                                                .clone()
-                                                .unwrap_or(self.source_type(expected)?)
-                                        },
-                                        value: Box::new(expression),
-                                    }
-                                } else {
-                                    expression
-                                };
-                                self.disambiguate_null_argument(method, index, expected, expression)
-                            })
-                        }
-                        None => self.arg(arg),
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?,
+            args: self.bind_invocation_arguments(method, call_arguments, args)?,
         })
     }
 

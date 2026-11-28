@@ -59,11 +59,15 @@ fn shared_catch_state_keeps_one_cleanup_operation() {
             "Lfixture/SharedCleanupState;",
         ),
         (
-            include_bytes!("../../../quality/fixtures/exceptions/shared-cleanup-wide-state/classes.dex"),
+            include_bytes!(
+                "../../../quality/fixtures/exceptions/shared-cleanup-wide-state/classes.dex"
+            ),
             "Lfixture/BackoffTwoWide;",
         ),
         (
-            include_bytes!("../../../quality/fixtures/exceptions/shared-cleanup-loop-state/classes.dex"),
+            include_bytes!(
+                "../../../quality/fixtures/exceptions/shared-cleanup-loop-state/classes.dex"
+            ),
             "Lfixture/BackoffRepeated;",
         ),
     ];

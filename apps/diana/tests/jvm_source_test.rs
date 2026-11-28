@@ -69,6 +69,49 @@ fn assert_contains(text: &str, parts: &[&str]) {
 }
 
 #[test]
+fn recovered_source_preserves_overload_results_and_effect_order() {
+    let fixture = fixture();
+    let class = fixture
+        .path()
+        .join("classes/fixture/overloads/OverloadWitness.class");
+    let recovered = json_source("get-class", &class, "j0", 0);
+    assert!(recovered["issues"].as_array().unwrap().is_empty());
+    let source = fixture.path().join("OverloadWitness.java");
+    std::fs::write(&source, text(&recovered)).unwrap();
+    let witness = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../quality/fixtures/jvm/source-recovery/CheckOverload.java");
+    let classes = fixture.path().join("recovered-overloads");
+    let result = Command::new("java")
+        .args([
+            "-m",
+            "jdk.compiler/com.sun.tools.javac.Main",
+            "-encoding",
+            "UTF-8",
+            "-d",
+        ])
+        .args([&classes, &source, &witness])
+        .output()
+        .expect("compile the recovered overload fixture with the JDK");
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let result = Command::new("java")
+        .arg("-classpath")
+        .arg(classes)
+        .arg("fixture.overloads.CheckOverload")
+        .output()
+        .expect("execute the independent overload witness");
+    assert!(
+        result.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
 fn get_method_recovers_the_same_original_method_by_name_and_position() {
     let fixture = fixture();
     let inputs = [

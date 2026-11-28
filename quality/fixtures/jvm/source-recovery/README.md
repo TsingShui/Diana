@@ -71,6 +71,35 @@ The `lookupswitch` in `classify` starts at byte 1. Its first following case
 starts at byte 44 and accepts both `-7` and `40`. The default target is byte
 50. The `100` case starts later at byte 56.
 
+## Overload binding and effect order
+
+`OverloadWitness.java` distinguishes `char` and `int` formals in static and
+instance calls, instance creation, and constructor delegation. The prepared
+class is `debug/classes/fixture/overloads/OverloadWitness.class` in DecBench.
+At offsets 10, 19, and 25 of `wide(C)I`, the original owner is
+`Lfixture/overloads/OverloadWitness;` and the selected descriptors are
+`choose(I)I`, `<init>(I)V`, and `select(I)I`. The delegated constructor
+`<init>(CZ)V` also calls `<init>(I)V`, at byte offset 2.
+
+`CheckOverload.java` supplies independent expectations for the results and
+the ordered trace. The wide route evaluates its character input once and
+produces trace `137578`. Its results for `A` and U+FFFE are 2060 and 263936.
+The narrow route produces trace `1264` with results 1095 and 197502. On the
+0.4.6 baseline, the wide `A` route becomes 1660 with trace `126468` when the
+recovered Java is compiled. The narrow control keeps its expected behavior.
+Diana 0.4.7 preserves both routes. The CLI integration test recompiles the
+exact recovered class and executes the independent expectations.
+
+The generic control passes `String` and `List<String>` to `selectGeneric`.
+Its original descriptor is `(Ljava/lang/Object;Ljava/util/List;)I` and the
+call returns 1. Widening the first argument to `Object` would conflict with
+the type inferred from `List<String>` and select the fallback returning 3.
+
+```sh
+python3 quality/decbench run --suite jvm-overload-bindings --binary /path/to/diana
+cargo nextest run --locked -p diana --test jvm_source_test recovered_source_preserves_overload_results_and_effect_order
+```
+
 ## Overlapping JVM exception tables
 
 `ExceptionChains.java` supplies neighboring statements protected by different
