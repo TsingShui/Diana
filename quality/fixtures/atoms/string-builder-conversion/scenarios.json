@@ -1,0 +1,21 @@
+{
+  "precomputed": [
+    {"id":"both-producers-precede-first-conversion","arguments":["precomputed","0"],"expected":["produce:1","produce:2","convert:1","convert:2","result:left/right"]},
+    {"id":"first-producer-fault-skips-second","arguments":["precomputed","1"],"expected":["produce:1","escape:first-producer"]},
+    {"id":"second-producer-fault-skips-both-conversions","arguments":["precomputed","2"],"expected":["produce:1","produce:2","escape:second-producer"]},
+    {"id":"first-conversion-fault-keeps-second-producer","arguments":["precomputed","4"],"expected":["produce:1","produce:2","convert:1","escape:first-conversion"]},
+    {"id":"second-conversion-fault-follows-first","arguments":["precomputed","8"],"expected":["produce:1","produce:2","convert:1","convert:2","escape:second-conversion"]},
+    {"id":"second-producer-wins-over-skipped-conversion","arguments":["precomputed","6"],"expected":["produce:1","produce:2","escape:second-producer"]},
+    {"id":"null-first-argument-has-no-toString-callback","arguments":["precomputed","16"],"expected":["produce:1","produce:2","convert:2","result:null/right"]}
+  ],
+  "protectedBuffer": [
+    {"id":"buffer-effects-retain-order","arguments":["protectedBuffer","0"],"expected":["produce:1","produce:2","convert:1","convert:2","result:left/right"]},
+    {"id":"first-producer-reaches-matching-catch","arguments":["protectedBuffer","1"],"expected":["produce:1","caught:producer:first-producer","result:producer"]},
+    {"id":"second-producer-reaches-matching-catch-before-conversion","arguments":["protectedBuffer","2"],"expected":["produce:1","produce:2","caught:producer:second-producer","result:producer"]},
+    {"id":"first-conversion-reaches-matching-catch-after-producers","arguments":["protectedBuffer","4"],"expected":["produce:1","produce:2","convert:1","caught:conversion:first-conversion","result:conversion"]},
+    {"id":"second-conversion-reaches-matching-catch-after-first","arguments":["protectedBuffer","8"],"expected":["produce:1","produce:2","convert:1","convert:2","caught:conversion:second-conversion","result:conversion"]},
+    {"id":"second-producer-wins-and-selects-its-typed-catch","arguments":["protectedBuffer","6"],"expected":["produce:1","produce:2","caught:producer:second-producer","result:producer"]},
+    {"id":"unmatched-second-producer-fault-escapes","arguments":["protectedBuffer","32"],"expected":["produce:1","produce:2","escape:unmatched"]},
+    {"id":"null-buffer-argument-has-no-toString-callback","arguments":["protectedBuffer","16"],"expected":["produce:1","produce:2","convert:2","result:null/right"]}
+  ]
+}

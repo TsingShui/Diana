@@ -118,10 +118,15 @@ impl StringBuilderProtocol {
         let mut appended = Vec::new();
         let seed = loop {
             if let Some(method) = Self::append(current, owner) {
-                appended.push((
-                    current.operands()[1].clone(),
-                    method.descriptor.parameters[0].clone(),
-                ));
+                let parameter = &method.descriptor.parameters[0];
+                // append(Object) can run user code immediately after its
+                // argument. Flat concatenation exposes only the effects of the
+                // complete operation to scheduling. Keep that conversion as
+                // an explicit append so later arguments cannot cross it.
+                if parameter.as_object() == Some("java/lang/Object") {
+                    return None;
+                }
+                appended.push((current.operands()[1].clone(), parameter.clone()));
                 current = current.operands()[0].as_operation()?;
                 continue;
             }

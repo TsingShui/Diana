@@ -113,26 +113,7 @@ fn recovered_source_preserves_overload_results_and_effect_order() {
 
 #[test]
 fn get_method_keeps_explicit_string_builder_capacities() {
-    let directory = tempfile::tempdir().unwrap();
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../quality/fixtures/atoms/string-builder-capacity/BuilderCapacity.java");
-    let compilation = Command::new("java")
-        .args([
-            "-XX:-UsePerfData",
-            "-m",
-            "jdk.compiler/com.sun.tools.javac.Main",
-            "-g",
-            "-d",
-        ])
-        .args([directory.path(), &fixture])
-        .output()
-        .expect("compile the builder capacity fixture with the JDK");
-    assert!(
-        compilation.status.success(),
-        "{}",
-        String::from_utf8_lossy(&compilation.stderr)
-    );
-
+    let directory = compile_builder_fixture("string-builder-capacity/BuilderCapacity.java");
     let class = directory.path().join("BuilderCapacity.class");
     let buffer = json_source(
         "get-method",
@@ -161,6 +142,60 @@ fn get_method_keeps_explicit_string_builder_capacities() {
             "catch (IllegalStateException ",
         ],
     );
+}
+
+fn compile_builder_fixture(relative_path: &str) -> TempDir {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../quality/fixtures/atoms")
+        .join(relative_path);
+    let compilation = Command::new("java")
+        .args([
+            "-XX:-UsePerfData",
+            "-m",
+            "jdk.compiler/com.sun.tools.javac.Main",
+            "-g",
+            "-d",
+        ])
+        .args([directory.path(), &fixture])
+        .output()
+        .expect("compile the string builder fixture with the JDK");
+    assert!(
+        compilation.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compilation.stderr)
+    );
+
+    directory
+}
+
+#[test]
+fn get_method_preserves_precomputed_inputs_before_object_conversion() {
+    let directory = compile_builder_fixture("string-builder-conversion/BuilderConversion.java");
+    let class = directory.path().join("BuilderConversion.class");
+    let protected = json_source(
+        "get-method",
+        &class,
+        "LBuilderConversion;->protectedBuffer(I)Ljava/lang/String;",
+        0,
+    );
+    assert!(protected["issues"].as_array().unwrap().is_empty());
+    let mut remaining = text(&protected);
+    for fragment in [
+        "try {",
+        "BuilderConversion.produce(1, mode);",
+        "BuilderConversion.produce(2, mode);",
+        "return new StringBuffer().append(",
+        ").append(",
+        ").toString();",
+        "catch (IllegalArgumentException ",
+        "catch (IllegalStateException ",
+    ] {
+        remaining = remaining
+            .split_once(fragment)
+            .unwrap_or_else(|| panic!("{}", text(&protected)))
+            .1;
+    }
 }
 
 #[test]

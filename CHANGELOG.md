@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.12 - 2026-11-28
+
+- Preserved `StringBuilder.append(Object)` and `StringBuffer.append(Object)`
+  calls so object-to-string conversion stays in its original order relative
+  to argument computations, including when either operation throws.
+
 ## 0.4.11 - 2026-11-28
 
 - Preserved explicit capacities and their computation when recovering

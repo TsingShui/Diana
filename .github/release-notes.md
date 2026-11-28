@@ -1,25 +1,24 @@
-## Diana CLI 0.4.11
+## Diana CLI 0.4.12
 
-- DEX and JVM recovery retain explicit `StringBuilder` and `StringBuffer`
-  capacities. FairEmail's `Selection.toString()` now keeps the second `size()`
-  call that computes the initial capacity.
-- DecBench exercises negative capacities, append argument failures, and
-  exception routing through typed catches.
+- DEX and JVM recovery keep `append(Object)` calls on `StringBuilder` and
+  `StringBuffer`. User-defined `toString()` runs at the original point,
+  preserving argument evaluations that occurred before it and exception
+  paths that skip later appends.
 
 ### Install or upgrade Diana
 
 For macOS and Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/TsingShui/Diana/diana-v0.4.11/install.sh -o install-diana.sh
-sh install-diana.sh diana-v0.4.11
+curl -fsSL https://raw.githubusercontent.com/TsingShui/Diana/diana-v0.4.12/install.sh -o install-diana.sh
+sh install-diana.sh diana-v0.4.12
 ```
 
 To build the released CLI from source, use Rust 1.100 or newer and native
 build tools.
 
 ```sh
-cargo install --git https://github.com/TsingShui/Diana.git --tag diana-v0.4.11 --locked diana
+cargo install --git https://github.com/TsingShui/Diana.git --tag diana-v0.4.12 --locked diana
 ```
 
 Windows users can extract `diana.exe` from the matching ZIP and add it to PATH.

@@ -123,6 +123,40 @@ fn string_builder_capacity_stays_before_appends_and_inside_its_handlers() {
 }
 
 #[test]
+fn string_builder_keeps_precomputed_values_before_object_conversion() {
+    let input =
+        include_bytes!("../../../quality/fixtures/atoms/string-builder-conversion/classes.dex");
+    for (name, class) in [
+        ("precomputed", "StringBuilder"),
+        ("protectedBuffer", "StringBuffer"),
+    ] {
+        let analysis = method(
+            input,
+            "Lfixture/BuilderConversion;",
+            name,
+            "(I)Ljava/lang/String;",
+        );
+        no_failures(&analysis.failures);
+        let text = analysis.rendered.text();
+        let chain = format!("return new {class}().append(");
+        let markers = [
+            "BuilderConversion.produce(1,",
+            "BuilderConversion.produce(2,",
+            chain.as_str(),
+            ").append(",
+            ").toString();",
+        ];
+        let mut remaining = text;
+        for marker in markers {
+            remaining = remaining
+                .split_once(marker)
+                .unwrap_or_else(|| panic!("{text}"))
+                .1;
+        }
+    }
+}
+
+#[test]
 fn split_construction_preserves_each_exception_snapshot() {
     let analysis = method(
         include_bytes!(
