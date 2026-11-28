@@ -368,6 +368,11 @@ fn recovered_jvm_interface_initializers_preserve_static_snapshots() {
     verify_jvm_fixture("jvm/interface-initializer-snapshot/verify.py");
 }
 
+#[test]
+fn recovered_jvm_static_initializers_preserve_evaluation_order() {
+    verify_jvm_fixture("jvm/static-initializer-schedule/verify.py");
+}
+
 fn verify_jvm_fixture(path: &str) {
     let output = tempfile::tempdir().unwrap();
     let verifier = Path::new(env!("CARGO_MANIFEST_DIR"))

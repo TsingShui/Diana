@@ -87,7 +87,9 @@ impl StaticInitializationRecovery {
         let mut assigned_fields = std::collections::BTreeSet::new();
         let mut consumed = 0usize;
         while consumed < statements.len() {
-            let Some(fact) = InitializationFact::analyze(&statements[consumed..], fields) else {
+            let Some(fact) =
+                InitializationFact::analyze(&statements[consumed..], fields, &declaration.fields)
+            else {
                 break;
             };
             let Some(field_index) = declaration.fields.iter().position(|field| {
@@ -546,8 +548,13 @@ struct InitializationFact {
 }
 
 impl InitializationFact {
-    fn analyze(statements: &[JavaStmt], fields: &StaticInitializerFields<'_>) -> Option<Self> {
-        Self::direct(statements, fields).or_else(|| Self::straight_line(statements, fields))
+    fn analyze(
+        statements: &[JavaStmt],
+        fields: &StaticInitializerFields<'_>,
+        declarations: &[JavaFieldDeclaration],
+    ) -> Option<Self> {
+        Self::direct(statements, fields)
+            .or_else(|| Self::first_evaluation(statements, fields, declarations))
     }
 
     fn direct(statements: &[JavaStmt], fields: &StaticInitializerFields<'_>) -> Option<Self> {
@@ -567,75 +574,85 @@ impl InitializationFact {
         })
     }
 
-    fn straight_line(
+    fn first_evaluation(
         statements: &[JavaStmt],
         fields: &StaticInitializerFields<'_>,
+        declarations: &[JavaFieldDeclaration],
     ) -> Option<Self> {
-        let mut definitions = Vec::new();
-        for statement in statements {
-            let JavaStmt::Variable {
-                name,
-                value: Some(value),
-                ..
-            } = statement
-            else {
-                break;
-            };
-            definitions.push((name.clone(), value.clone()));
-        }
-        if definitions.is_empty() {
-            return None;
-        }
-        let JavaStmt::Assign {
+        let [JavaStmt::Variable {
+            ty,
+            name,
+            value: Some(saved),
+            ..
+        }, JavaStmt::Assign {
             target: JavaExpr::StaticField { owner, name: field },
             op: JavaAssignOp::Assign,
             value,
-        } = statements.get(definitions.len())?
+        }, trailing @ ..] = statements
         else {
             return None;
         };
-        fields.owns(owner, field).then_some(())?;
-
-        let names = definitions
-            .iter()
-            .map(|(name, _)| name.clone())
-            .collect::<std::collections::BTreeSet<_>>();
-        if definitions.iter().any(|(_, value)| {
-            ExpressionNames::collect(value)
+        if !fields.owns(owner, field)
+            || ExpressionNames::collect(value)
                 .iter()
-                .any(|name| names.contains(name))
-        }) {
-            return None;
-        }
-        let uses = ExpressionNames::collect(value)
-            .into_iter()
-            .filter(|name| names.contains(name))
-            .collect::<Vec<_>>();
-        if uses
-            != definitions
+                .filter(|candidate| *candidate == name)
+                .count()
+                != 1
+            || trailing
                 .iter()
-                .map(|(name, _)| name.clone())
-                .collect::<Vec<_>>()
+                .flat_map(ExpressionNames::collect_statement)
+                .any(|candidate| &candidate == name)
         {
             return None;
         }
-        let live_out = statements
-            .iter()
-            .skip(definitions.len() + 1)
-            .flat_map(ExpressionNames::collect_statement)
-            .collect::<std::collections::BTreeSet<_>>();
-        if names.iter().any(|name| live_out.contains(name)) {
+
+        let mut value = value.clone();
+        // A direct store to the same type keeps the assignment context,
+        // including target typing and conversions of the initializer.
+        let same_assignment = matches!(&value, JavaExpr::Name(candidate) if candidate == name)
+            && declarations
+                .iter()
+                .any(|declaration| &declaration.name == field && &declaration.ty == ty);
+        let replacement = if same_assignment {
+            saved.clone()
+        } else {
+            Self::preserve_binding_type(saved, ty)?
+        };
+        if !value.bind_first_evaluation(name, replacement) {
             return None;
         }
-
-        let mut substitution = NameSubstitution {
-            values: definitions.into_iter().collect(),
-        };
         Some(Self {
             field: field.clone(),
-            value: substitution.rewrite_expression(value.clone()),
-            consumed: uses.len() + 1,
+            value,
+            consumed: 2,
         })
+    }
+
+    fn preserve_binding_type(value: &JavaExpr, ty: &JavaType) -> Option<JavaExpr> {
+        match value {
+            JavaExpr::Cast { ty: source, .. } if source == ty => Some(value.clone()),
+            JavaExpr::Literal(literal)
+                if Self::primitive_literal_type(literal).as_ref() == Some(ty) =>
+            {
+                Some(value.clone())
+            }
+            _ => None,
+        }
+    }
+
+    fn primitive_literal_type(literal: &JavaLiteral) -> Option<JavaType> {
+        use JavaPrimitiveType::{Boolean, Char, Double, Float, Int, Long};
+
+        let primitive = match literal {
+            JavaLiteral::Boolean(_) => Boolean,
+            JavaLiteral::Character(_) => Char,
+            JavaLiteral::Integer(_) => Int,
+            JavaLiteral::Long(_) => Long,
+            JavaLiteral::Float(_) => Float,
+            JavaLiteral::Double(_) => Double,
+            _ => return None,
+        };
+        Some(JavaType::Primitive(primitive))
     }
 }
 
@@ -664,23 +681,6 @@ impl JavaAstRewriter for ExpressionNames {
             self.names.push(name.clone());
         }
         expression
-    }
-}
-
-struct NameSubstitution {
-    values: std::collections::BTreeMap<crate::language::java::JavaIdentifier, JavaExpr>,
-}
-
-impl JavaAstRewriter for NameSubstitution {
-    fn finish_expression(&mut self, expression: JavaExpr) -> JavaExpr {
-        match expression {
-            JavaExpr::Name(name) => self
-                .values
-                .get(&name)
-                .cloned()
-                .unwrap_or(JavaExpr::Name(name)),
-            expression => expression,
-        }
     }
 }
 

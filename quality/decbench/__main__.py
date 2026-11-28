@@ -194,7 +194,11 @@ def prepare_corpus(destination: Path) -> None:
                 sys.executable, str(JVM_FIXTURE / "prepare.py"), str(staging / variant),
                 "--variant", variant,
             ], check=True, timeout=120)
-        for fixture in ("string-switch-receiver", "interface-initializer-snapshot"):
+        for fixture in (
+            "string-switch-receiver",
+            "interface-initializer-snapshot",
+            "static-initializer-schedule",
+        ):
             recipe = ROOT / "quality/fixtures/jvm" / fixture / "verify.py"
             subprocess.run([
                 sys.executable, str(recipe), "--prepare", str(staging / fixture),

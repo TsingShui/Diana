@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.27 - 2026-11-29
+
+- Preserved evaluation order and exception timing in recovered field initializers.
+- Retained compact initializers for proven first-evaluation bindings.
+
 ## 0.4.26 - 2026-11-29
 
 - Preserved one-time evaluation of interface initializer locals.

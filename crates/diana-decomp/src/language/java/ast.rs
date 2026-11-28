@@ -1084,6 +1084,41 @@ impl NegationPlan {
 }
 
 impl JavaExpr {
+    /// Replace a local read only at the first mandatory evaluation point.
+    /// A later argument, conditional arm, allocation operand or deferred body
+    /// may execute after an effect or may not execute at all.
+    pub(crate) fn bind_first_evaluation(
+        &mut self,
+        name: &JavaIdentifier,
+        replacement: JavaExpr,
+    ) -> bool {
+        let mut current = self;
+        loop {
+            current = match current {
+                JavaExpr::Name(candidate) if candidate == name => {
+                    *current = replacement;
+                    return true;
+                }
+                JavaExpr::Unary { operand, .. } => operand,
+                JavaExpr::Binary { left, .. } => left,
+                JavaExpr::Cast { value, .. } | JavaExpr::InstanceOf { value, .. } => value,
+                JavaExpr::Field { owner, .. } => owner,
+                JavaExpr::ArrayAccess { array, .. } => array,
+                JavaExpr::Call { receiver, args, .. } => {
+                    if let Some(receiver) = receiver {
+                        receiver
+                    } else if let Some(argument) = args.first_mut() {
+                        argument
+                    } else {
+                        return false;
+                    }
+                }
+                JavaExpr::Conditional { condition, .. } => condition,
+                _ => return false,
+            };
+        }
+    }
+
     pub(crate) fn negated(mut self) -> Self {
         if let Some(edit) = NegationEdit::atom(&self) {
             edit.apply_atom(&mut self);

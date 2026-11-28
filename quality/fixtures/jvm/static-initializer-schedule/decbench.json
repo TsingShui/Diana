@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "id": "jvm-static-initializer-schedule",
+  "prepared": true,
+  "input": "static-initializer-schedule/schedule.jar",
+  "probe": "verify.py",
+  "oracle_files": [
+    "CheckSchedule.java",
+    "ConditionalOperand.java",
+    "EarlierOperand.java",
+    "FirstOperand.java",
+    "ProtectedOperand.java",
+    "ScheduleEffects.java",
+    "ShortOperand.java"
+  ],
+  "methods": [
+    {
+      "at": "j0:m1",
+      "member": "LEarlierOperand;-><clinit>()V",
+      "issues": [],
+      "behavior": true
+    },
+    {
+      "at": "j1:m0",
+      "member": "LConditionalOperand;-><clinit>()V",
+      "issues": [],
+      "behavior": true
+    },
+    {
+      "at": "j2:m1",
+      "member": "LShortOperand;-><clinit>()V",
+      "issues": [],
+      "behavior": true
+    },
+    {
+      "at": "j3:m1",
+      "member": "LProtectedOperand;-><clinit>()V",
+      "issues": [],
+      "behavior": true
+    },
+    {
+      "at": "j4:m1",
+      "member": "LFirstOperand;-><clinit>()V",
+      "issues": [],
+      "behavior": true
+    }
+  ]
+}

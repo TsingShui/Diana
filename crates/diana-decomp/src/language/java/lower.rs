@@ -647,7 +647,7 @@ enum BoundLoopCondition {
 struct LoopConditionBinding;
 
 impl LoopConditionBinding {
-    fn recover(setup: Vec<JavaStmt>, condition: JavaExpr) -> BoundLoopCondition {
+    fn recover(setup: Vec<JavaStmt>, mut condition: JavaExpr) -> BoundLoopCondition {
         let [JavaStmt::Assign {
             target,
             op: JavaAssignOp::Assign,
@@ -664,75 +664,11 @@ impl LoopConditionBinding {
             op: JavaAssignOp::Assign,
             value: Box::new(value.clone()),
         };
-        match Self::bind_first_evaluation(condition, name, assignment) {
-            Some(condition) => BoundLoopCondition::Expression(condition),
-            None => BoundLoopCondition::Separate { setup },
+        if condition.bind_first_evaluation(name, assignment) {
+            BoundLoopCondition::Expression(condition)
+        } else {
+            BoundLoopCondition::Separate { setup }
         }
-    }
-
-    /// The setup may move into the condition only at its first mandatory
-    /// evaluation point. This preserves Java's left-to-right evaluation,
-    /// short-circuit behavior, exceptions, and side effects.
-    fn bind_first_evaluation(
-        expression: JavaExpr,
-        name: &JavaIdentifier,
-        assignment: JavaExpr,
-    ) -> Option<JavaExpr> {
-        Some(match expression {
-            JavaExpr::Name(candidate) if &candidate == name => assignment,
-            JavaExpr::Unary { op, operand } => JavaExpr::Unary {
-                op,
-                operand: Box::new(Self::bind_first_evaluation(*operand, name, assignment)?),
-            },
-            JavaExpr::Binary { left, op, right } => JavaExpr::Binary {
-                left: Box::new(Self::bind_first_evaluation(*left, name, assignment)?),
-                op,
-                right,
-            },
-            JavaExpr::Cast { ty, value } => JavaExpr::Cast {
-                ty,
-                value: Box::new(Self::bind_first_evaluation(*value, name, assignment)?),
-            },
-            JavaExpr::InstanceOf { value, ty } => JavaExpr::InstanceOf {
-                value: Box::new(Self::bind_first_evaluation(*value, name, assignment)?),
-                ty,
-            },
-            JavaExpr::Field { owner, name: field } => JavaExpr::Field {
-                owner: Box::new(Self::bind_first_evaluation(*owner, name, assignment)?),
-                name: field,
-            },
-            JavaExpr::ArrayAccess { array, index } => JavaExpr::ArrayAccess {
-                array: Box::new(Self::bind_first_evaluation(*array, name, assignment)?),
-                index,
-            },
-            JavaExpr::Call {
-                receiver: Some(receiver),
-                owner,
-                virtual_target,
-                type_arguments,
-                method,
-                args,
-            } => JavaExpr::Call {
-                receiver: Some(Box::new(Self::bind_first_evaluation(
-                    *receiver, name, assignment,
-                )?)),
-                owner,
-                virtual_target,
-                type_arguments,
-                method,
-                args,
-            },
-            JavaExpr::Conditional {
-                condition,
-                when_true,
-                when_false,
-            } => JavaExpr::Conditional {
-                condition: Box::new(Self::bind_first_evaluation(*condition, name, assignment)?),
-                when_true,
-                when_false,
-            },
-            _ => return None,
-        })
     }
 }
 
