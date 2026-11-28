@@ -16,7 +16,10 @@ pub enum JavaPrimitiveType {
 }
 
 #[derive(Clone)]
-pub struct JavaIdentifier(IdentifierSpelling);
+pub struct JavaIdentifier {
+    spelling: IdentifierSpelling,
+    local_reference: bool,
+}
 
 #[derive(Clone)]
 enum IdentifierSpelling {
@@ -48,13 +51,14 @@ impl JavaIdentifier {
     }
 
     fn with_dex_spelling(original: &str, source_name: SmolStr) -> Self {
-        if original == source_name.as_str() {
-            Self(IdentifierSpelling::Dex(source_name))
+        let spelling = if original == source_name.as_str() {
+            IdentifierSpelling::Dex(source_name)
         } else {
-            Self(IdentifierSpelling::Alias(std::sync::Arc::new((
-                source_name,
-                SmolStr::new(original),
-            ))))
+            IdentifierSpelling::Alias(std::sync::Arc::new((source_name, SmolStr::new(original))))
+        };
+        Self {
+            spelling,
+            local_reference: false,
         }
     }
 
@@ -80,18 +84,21 @@ impl JavaIdentifier {
         } else {
             Self::sanitize_dex_name(value)
         };
-        Self(IdentifierSpelling::Hint(source_name))
+        Self {
+            spelling: IdentifierSpelling::Hint(source_name),
+            local_reference: false,
+        }
     }
 
     pub fn as_str(&self) -> &str {
-        match &self.0 {
+        match &self.spelling {
             IdentifierSpelling::Dex(name) | IdentifierSpelling::Hint(name) => name,
             IdentifierSpelling::Alias(names) => &names.0,
         }
     }
 
     fn dex_name(&self) -> Option<&str> {
-        match &self.0 {
+        match &self.spelling {
             IdentifierSpelling::Dex(name) => Some(name),
             IdentifierSpelling::Hint(_) => None,
             IdentifierSpelling::Alias(names) => Some(&names.1),
@@ -103,10 +110,24 @@ impl JavaIdentifier {
     }
 
     fn with_source_name(&self, source_name: String) -> Self {
-        match self.dex_name() {
+        let mut identifier = match self.dex_name() {
             Some(original) => Self::with_dex_spelling(original, source_name.into()),
-            None => Self(IdentifierSpelling::Hint(source_name.into())),
-        }
+            None => Self {
+                spelling: IdentifierSpelling::Hint(source_name.into()),
+                local_reference: false,
+            },
+        };
+        identifier.local_reference = self.local_reference;
+        identifier
+    }
+
+    pub(super) fn local_reference(mut self) -> Self {
+        self.local_reference = true;
+        self
+    }
+
+    pub(super) fn is_local_reference(&self) -> bool {
+        self.local_reference
     }
 
     fn printed_name(&self) -> &str {
@@ -642,6 +663,8 @@ pub enum JavaUpdateOp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JavaBinaryOp {
     Add,
+    /// The outer operator of a runtime concatenation that yields a new string.
+    StringConcat,
     Subtract,
     Multiply,
     Divide,
@@ -700,7 +723,7 @@ impl JavaUpdateOp {
 impl JavaBinaryOp {
     pub(crate) fn token(self) -> &'static str {
         match self {
-            Self::Add => "+",
+            Self::Add | Self::StringConcat => "+",
             Self::Subtract => "-",
             Self::Multiply => "*",
             Self::Divide => "/",
@@ -1013,6 +1036,7 @@ impl JavaExpr {
             JavaBinaryOp::Greater => JavaBinaryOp::LessEqual,
             JavaBinaryOp::LessEqual => JavaBinaryOp::Greater,
             JavaBinaryOp::Add
+            | JavaBinaryOp::StringConcat
             | JavaBinaryOp::Subtract
             | JavaBinaryOp::Multiply
             | JavaBinaryOp::Divide

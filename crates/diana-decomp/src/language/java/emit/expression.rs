@@ -30,7 +30,9 @@ impl Precedence {
             JavaBinaryOp::Multiply | JavaBinaryOp::Divide | JavaBinaryOp::Remainder => {
                 Self::Multiplicative
             }
-            JavaBinaryOp::Add | JavaBinaryOp::Subtract => Self::Additive,
+            JavaBinaryOp::Add | JavaBinaryOp::StringConcat | JavaBinaryOp::Subtract => {
+                Self::Additive
+            }
             JavaBinaryOp::ShiftLeft
             | JavaBinaryOp::ShiftRight
             | JavaBinaryOp::UnsignedShiftRight => Self::Shift,
@@ -112,6 +114,38 @@ fn sequence<'a>(pending: &mut Pending<'a>, values: &'a [JavaExpr], typing: Typin
             pending.push(Token::Text(", "));
         }
     }
+}
+
+/// Inlining and declaration recovery can expose constant operands. A field
+/// can name a constant variable even when the input lacks its declaration.
+fn may_be_constant(left: &JavaExpr, right: &JavaExpr) -> bool {
+    let mut pending = smallvec::SmallVec::<[&JavaExpr; 8]>::from_slice(&[left, right]);
+    while let Some(expression) = pending.pop() {
+        match expression {
+            JavaExpr::Literal(_) | JavaExpr::StaticField { .. } => {}
+            JavaExpr::Name(name) if !name.is_local_reference() => {}
+            JavaExpr::Field { owner, .. } => {
+                // A field reached through an expression such as `this` is
+                // distinct from a qualified name of a constant variable.
+                pending.push(owner);
+            }
+            JavaExpr::Unary { operand, .. } | JavaExpr::Cast { value: operand, .. } => {
+                pending.push(operand);
+            }
+            JavaExpr::Binary { left, op, right } if *op != JavaBinaryOp::StringConcat => {
+                pending.extend([left.as_ref(), right.as_ref()]);
+            }
+            JavaExpr::Conditional {
+                condition,
+                when_true,
+                when_false,
+            } => {
+                pending.extend([condition.as_ref(), when_true.as_ref(), when_false.as_ref()]);
+            }
+            _ => return false,
+        }
+    }
+    true
 }
 
 impl JavaPrinter {
@@ -390,7 +424,25 @@ impl JavaPrinter {
                 JavaExpr::Binary { left, op, right } => {
                     pending.push(Visit(right, BinaryRight(*op), Standalone));
                     pending.push(Token::Infix(op.token()));
-                    pending.push(Visit(left, AtLeast(Precedence::binary(*op)), Standalone));
+                    if *op == JavaBinaryOp::StringConcat && may_be_constant(left, right) {
+                        let mut first = left.as_ref();
+                        while let JavaExpr::Binary {
+                            left,
+                            op: JavaBinaryOp::Add,
+                            right,
+                        } = first
+                        {
+                            pending.push(Visit(right, BinaryRight(JavaBinaryOp::Add), Standalone));
+                            pending.push(Token::Infix("+"));
+                            first = left;
+                        }
+                        // The first term is a String. These casts preserve its
+                        // value and evaluation point while preventing interning.
+                        output.push_str("(java.lang.String) (java.lang.Object) ");
+                        pending.push(Visit(first, AtLeast(Precedence::Unary), Standalone));
+                    } else {
+                        pending.push(Visit(left, AtLeast(Precedence::binary(*op)), Standalone));
+                    }
                 }
                 JavaExpr::Cast { ty, value } => {
                     write!(output, "({ty}) ")?;

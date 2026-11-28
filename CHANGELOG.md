@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.13 - 2026-11-28
+
+- Preserved string reference identity when DEX builder chains and JVM
+  runtime concatenations could otherwise become interned Java constant
+  expressions. Literal-only builder chains keep their original calls.
+
 ## 0.4.12 - 2026-11-28
 
 - Preserved `StringBuilder.append(Object)` and `StringBuffer.append(Object)`

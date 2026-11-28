@@ -149,7 +149,12 @@ impl StringBuilderProtocol {
                 .into_iter()
                 .map(|(value, parameter)| Self::declared(value, &parameter)),
         );
-        Some(terms)
+        // A literal-only sum would need an explicit runtime conversion to
+        // preserve identity. The original builder calls express it directly.
+        (!terms
+            .iter()
+            .all(|term| term.literal_value().is_some() || Self::is_string_literal(term)))
+        .then_some(terms)
     }
 
     /// The term restated at the type its call declared for it.

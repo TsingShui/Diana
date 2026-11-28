@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "id": "dex-builder-string-identity",
+  "default": true,
+  "input": "classes.dex",
+  "input_sha256": "830ff548d89edd47817db4706714e05987fc03ecfe101ee20890526f22e0896a",
+  "probe": "decbench_probe.py",
+  "oracle_files": [
+    "BuilderIdentity.java",
+    "BuilderIdentity.smali",
+    "scenarios.json",
+    "raw_proof.py"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m0",
+      "member": "Lfixture/BuilderIdentity;->arithmeticBuffer()V",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m1",
+      "member": "Lfixture/BuilderIdentity;->branchedString(Z)V",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m2",
+      "member": "Lfixture/BuilderIdentity;->dynamicSeed(I)V",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m3",
+      "member": "Lfixture/BuilderIdentity;->literalBuilder()V",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m5",
+      "member": "Lfixture/BuilderIdentity;->primitiveBuffer()V",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m6",
+      "member": "Lfixture/BuilderIdentity;->singleObjectLiteral()V",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m7",
+      "member": "Lfixture/BuilderIdentity;->staticString()V",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

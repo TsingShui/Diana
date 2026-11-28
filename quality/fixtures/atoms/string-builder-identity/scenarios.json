@@ -1,0 +1,119 @@
+{
+  "literalBuilder": [
+    {
+      "id": "two-string-literals-produce-a-fresh-result",
+      "arguments": [
+        "literalBuilder",
+        "prefixsuffix"
+      ],
+      "expected": [
+        "text:prefixsuffix",
+        "identity:distinct"
+      ]
+    }
+  ],
+  "singleObjectLiteral": [
+    {
+      "id": "one-object-literal-produces-a-fresh-result",
+      "arguments": [
+        "singleObjectLiteral",
+        "payload"
+      ],
+      "expected": [
+        "text:payload",
+        "identity:distinct"
+      ]
+    }
+  ],
+  "primitiveBuffer": [
+    {
+      "id": "int-char-boolean-buffer-remains-distinct",
+      "arguments": [
+        "primitiveBuffer",
+        "37:true"
+      ],
+      "expected": [
+        "text:37:true",
+        "identity:distinct"
+      ]
+    }
+  ],
+  "dynamicSeed": [
+    {
+      "id": "literal-seed-and-runtime-positive-value",
+      "arguments": [
+        "dynamicSeed",
+        "value=7",
+        "7"
+      ],
+      "expected": [
+        "text:value=7",
+        "identity:distinct"
+      ]
+    },
+    {
+      "id": "literal-seed-and-runtime-negative-value",
+      "arguments": [
+        "dynamicSeed",
+        "value=-3",
+        "-3"
+      ],
+      "expected": [
+        "text:value=-3",
+        "identity:distinct"
+      ]
+    }
+  ],
+  "arithmeticBuffer": [
+    {
+      "id": "arithmetic-and-narrowing-preserve-a-fresh-reference",
+      "arguments": [
+        "arithmeticBuffer",
+        "number=-127"
+      ],
+      "expected": [
+        "text:number=-127",
+        "identity:distinct"
+      ]
+    }
+  ],
+  "staticString": [
+    {
+      "id": "declared-static-constant-does-not-intern-builder-result",
+      "arguments": [
+        "staticString",
+        "field=fixed"
+      ],
+      "expected": [
+        "text:field=fixed",
+        "identity:distinct"
+      ]
+    }
+  ],
+  "branchedString": [
+    {
+      "id": "left-runtime-branch",
+      "arguments": [
+        "branchedString",
+        "route=left",
+        "0"
+      ],
+      "expected": [
+        "text:route=left",
+        "identity:distinct"
+      ]
+    },
+    {
+      "id": "right-runtime-branch",
+      "arguments": [
+        "branchedString",
+        "route=right",
+        "1"
+      ],
+      "expected": [
+        "text:route=right",
+        "identity:distinct"
+      ]
+    }
+  ]
+}

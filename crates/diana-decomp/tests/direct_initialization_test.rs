@@ -157,6 +157,28 @@ fn string_builder_keeps_precomputed_values_before_object_conversion() {
 }
 
 #[test]
+fn literal_builder_results_keep_runtime_construction() {
+    let input =
+        include_bytes!("../../../quality/fixtures/atoms/string-builder-identity/classes.dex");
+    let owner = "Lfixture/BuilderIdentity;";
+    let literals = method(input, owner, "literalBuilder", "()V");
+    no_failures(&literals.failures);
+    let rendered = literals.rendered.text();
+    assert!(
+        rendered.contains("new StringBuilder().append(\"prefix\").append(\"suffix\").toString()"),
+        "{rendered}"
+    );
+
+    let dynamic = method(input, owner, "dynamicSeed", "(I)V");
+    no_failures(&dynamic.failures);
+    let rendered = dynamic.rendered.text();
+    assert!(
+        rendered.contains("BuilderIdentity.observe(\"value=\" + "),
+        "{rendered}"
+    );
+}
+
+#[test]
 fn split_construction_preserves_each_exception_snapshot() {
     let analysis = method(
         include_bytes!(

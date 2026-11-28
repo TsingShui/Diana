@@ -149,6 +149,11 @@ fn compile_builder_fixture(relative_path: &str) -> TempDir {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../quality/fixtures/atoms")
         .join(relative_path);
+    compile_java_sources(directory.path(), &[&fixture]);
+    directory
+}
+
+fn compile_java_sources(destination: &Path, sources: &[&Path]) {
     let compilation = Command::new("java")
         .args([
             "-XX:-UsePerfData",
@@ -157,16 +162,15 @@ fn compile_builder_fixture(relative_path: &str) -> TempDir {
             "-g",
             "-d",
         ])
-        .args([directory.path(), &fixture])
+        .arg(destination)
+        .args(sources)
         .output()
-        .expect("compile the string builder fixture with the JDK");
+        .expect("compile the Java source fixture with the JDK");
     assert!(
         compilation.status.success(),
         "{}",
         String::from_utf8_lossy(&compilation.stderr)
     );
-
-    directory
 }
 
 #[test]
@@ -196,6 +200,52 @@ fn get_method_preserves_precomputed_inputs_before_object_conversion() {
             .unwrap_or_else(|| panic!("{}", text(&protected)))
             .1;
     }
+}
+
+#[test]
+fn recovered_class_preserves_runtime_string_reference_identity() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../quality/fixtures/atoms/string-builder-identity");
+    let source = fixture.join("RuntimeConcat.java");
+    let checker = fixture.join("CheckRuntimeConcat.java");
+    let original = tempfile::tempdir().unwrap();
+    compile_java_sources(original.path(), &[&source, &checker]);
+    let original_checks = runtime_concat_checks(original.path());
+    assert_eq!(original_checks.lines().count(), 20, "{original_checks}");
+    assert!(
+        original_checks
+            .lines()
+            .all(|row| row.split('\t').nth(1) == Some("PASS")),
+        "{original_checks}"
+    );
+
+    let publication = json_source(
+        "get-class",
+        &original.path().join("RuntimeConcat.class"),
+        "j0",
+        0,
+    );
+    assert!(publication["issues"].as_array().unwrap().is_empty());
+    let recovered = tempfile::tempdir().unwrap();
+    let source = recovered.path().join("RuntimeConcat.java");
+    std::fs::write(&source, text(&publication)).unwrap();
+    compile_java_sources(recovered.path(), &[&source, &checker]);
+    assert_eq!(runtime_concat_checks(recovered.path()), original_checks);
+}
+
+fn runtime_concat_checks(classes: &Path) -> String {
+    let result = Command::new("java")
+        .args(["-XX:-UsePerfData", "-cp"])
+        .arg(classes)
+        .arg("CheckRuntimeConcat")
+        .output()
+        .expect("execute the independent runtime concatenation witness");
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    String::from_utf8(result.stdout).expect("UTF-8 scenario observations")
 }
 
 #[test]

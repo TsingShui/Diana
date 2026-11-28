@@ -687,9 +687,9 @@ impl DexJavaDialect {
                     .ok_or_else(|| Self::missing_reference())?;
                 Ok(JavaExpr::QualifiedThis(self.source_type(&outer)?))
             }
-            SemanticExpression::Register(register) => {
-                Ok(JavaExpr::Name(self.register_name(register)?))
-            }
+            SemanticExpression::Register(register) => Ok(JavaExpr::Name(
+                self.register_name(register)?.local_reference(),
+            )),
             SemanticExpression::Literal(literal) => Ok(JavaExpr::Literal(Self::literal(literal)?)),
             SemanticExpression::Operation(operation) => self.insn_expr(operation, None, None),
             SemanticExpression::Select {
@@ -1671,15 +1671,19 @@ impl DexJavaDialect {
                 Ok(JavaArithmetic::binary(left, operator, right))
             }
             InsnType::StringConcat => {
-                let mut args = insn.operands().iter();
+                let mut args = insn.operands().iter().peekable();
                 let first = args
                     .next()
                     .ok_or(JavaLoweringError::MissingArgument(insn.insn_type))?;
                 let mut expression = self.arg(first)?;
-                for arg in args {
+                while let Some(arg) = args.next() {
                     expression = JavaExpr::Binary {
                         left: Box::new(expression),
-                        op: JavaBinaryOp::Add,
+                        op: if args.peek().is_none() {
+                            JavaBinaryOp::StringConcat
+                        } else {
+                            JavaBinaryOp::Add
+                        },
                         right: Box::new(self.arg(arg)?),
                     };
                 }
@@ -5742,7 +5746,7 @@ impl LocalAssignment {
             return Self::plain(JavaExpr::Binary { left, op, right });
         };
         let value = *right;
-        if Self::is_one(&value) {
+        if op != JavaBinaryOp::StringConcat && Self::is_one(&value) {
             if operator == JavaAssignOp::Add {
                 return Self::Update(super::JavaUpdateOp::Increment);
             }
@@ -5785,7 +5789,7 @@ impl LocalAssignment {
 
     fn compound_operator(operator: JavaBinaryOp) -> Option<JavaAssignOp> {
         Some(match operator {
-            JavaBinaryOp::Add => JavaAssignOp::Add,
+            JavaBinaryOp::Add | JavaBinaryOp::StringConcat => JavaAssignOp::Add,
             JavaBinaryOp::Subtract => JavaAssignOp::Subtract,
             JavaBinaryOp::Multiply => JavaAssignOp::Multiply,
             JavaBinaryOp::Divide => JavaAssignOp::Divide,
