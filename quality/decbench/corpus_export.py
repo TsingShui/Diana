@@ -9,7 +9,7 @@ import re
 from subprocess import TimeoutExpired
 from tempfile import TemporaryDirectory
 
-from corpus_discover import method_declarations, source_environment, source_match
+from corpus_discover import method_declarations, qualified, source_environment, source_match
 from corpus_oracles import BYTE_LIMIT, CALL_OWNER, Unavailable, View, logical_path
 import evidence
 import tool_capture
@@ -97,6 +97,33 @@ def class_paths(root, classes, paths, failed):
     return paths
 
 
+def has_unresolved_imports(view, owners):
+    words = view.words
+    for index, word in enumerate(words):
+        if word != "import" or view.scopes[index] is not None:
+            continue
+        start = index + 1
+        end = words.index(";", start)
+        if words[start] == "static":
+            return True
+        name = words[start:end]
+        if qualified(name) is not None:
+            continue
+
+        # An original single-type import with a hyphen in its terminal
+        # spelling cannot introduce an ordinary Java identifier.
+        dotted = "".join(name)
+        _, separator, terminal = dotted.rpartition(".")
+        descriptor = "L" + dotted.replace(".", "/") + ";"
+        if (not separator or "-" not in terminal
+                or not CALL_OWNER.fullmatch(descriptor) or descriptor not in owners):
+            return True
+        spans = view.offsets[start:end]
+        if any(left[1] != right[0] for left, right in zip(spans, spans[1:])):
+            return True
+    return False
+
+
 def collect(root, path, owner, methods, owners, issues):
     if path is None:
         raise Unavailable("the original class has no unambiguous export file")
@@ -110,7 +137,8 @@ def collect(root, path, owner, methods, owners, issues):
         raise Unavailable("the export class exceeds the scan bound")
     text = data.decode("utf-8")
     view = View(text, locate_tokens=True)
-    environment = source_environment(view, owner)
+    package, imports, wildcard, nested, body = source_environment(view, owner)
+    environment = package, imports, wildcard and has_unresolved_imports(view, owners), nested, body
     declarations = defaultdict(list)
     for declaration in method_declarations(view, environment[-1], include_declarations=True):
         declarations[declaration.name].append(declaration)

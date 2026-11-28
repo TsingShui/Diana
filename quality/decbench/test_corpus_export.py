@@ -40,6 +40,37 @@ class Probe {
         self.assertFalse(result["5"]["has_body"])
         self.assertEqual(result["5"]["issues"], [diagnostic])
 
+    def test_original_generated_import_keeps_other_type_attribution_available(self):
+        path = self.root / "Probe.java"
+        owner = "Lsample/Probe;"
+        methods = [("selected", owner + "->choose(J)Ljava/lang/String;")]
+        generated = "import generated.Companion$-CC;"
+        generated_type = "Lgenerated/Companion$-CC;"
+        for imports, owners, matched in (
+            (generated, {generated_type}, True),
+            (generated, set(), False),
+            (generated + " import generated.*;", {generated_type}, False),
+            (generated + " import other.String;", {generated_type}, False),
+            (generated + " import java.lang.String; import other.String;", {generated_type}, False),
+            (generated, {generated_type, "Lsample/String;"}, False),
+            ("import static generated.Companion.String;", {"Lgenerated/Companion;"}, False),
+            ("import generated.bad-name.String;", {"Lgenerated/bad-name/String;"}, False),
+            ("import generated.Companion$ -CC;", {generated_type}, False),
+        ):
+            with self.subTest(imports=imports, owners=owners):
+                path.write_text(f"""package sample;
+{imports}
+class Probe {{
+    String choose(long value) {{ return format(value); }}
+    String choose(long value, boolean flag) {{ return fallback(value, flag); }}
+}}
+""")
+                selected = corpus_export.collect(self.root, path, owner, methods, owners | {owner}, [])["selected"]
+                if matched:
+                    self.assertEqual(selected["text"], "String choose(long value) { return format(value); }")
+                else:
+                    self.assertIn("error", selected)
+
     def test_fallback_coordinates_and_source_failure_leave_siblings_available(self):
         owner = "Lsample/Probe;"
         classes = {f"e4:l0:c{index}": owner for index in range(3)}
