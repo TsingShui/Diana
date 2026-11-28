@@ -1,0 +1,127 @@
+name: Diana DecBench
+
+on:
+  schedule:
+    - cron: "24 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: diana-decbench-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
+  DECBENCH_STATE: .cache/decbench
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Restore completed evaluations and candidate queue
+        id: snapshots
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .cache/decbench/findings.sqlite3
+            .cache/decbench/checkpoints
+            .cache/decbench/judgements
+            .cache/decbench/latest-complete.json
+          key: diana-decbench-judge-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: diana-decbench-judge-v1-
+
+      - name: Record toolchain and build Diana
+        run: |
+          rustup toolchain install stable --profile minimal
+          mkdir -p "$DECBENCH_STATE"
+          {
+            git log -1 --format='revision=%H'
+            rustc +stable --version
+            python3 --version
+            java -version
+          } > "$DECBENCH_STATE/environment.txt" 2>&1
+          cargo +stable build --locked -p diana
+
+      - name: Check the runner and prepare the corpus
+        run: |
+          python3 -m unittest discover -s quality/decbench -v
+          python3 quality/decbench --state "$DECBENCH_STATE" prepare
+
+      - name: Evaluate one Diana build
+        id: judge
+        run: |
+          status=0
+          python3 quality/decbench --state "$DECBENCH_STATE" run \
+            --binary target/debug/diana --revision "$GITHUB_SHA" --resume \
+            --output "$DECBENCH_STATE/current.json" || status=$?
+          test -f "$DECBENCH_STATE/current.json"
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+
+      - name: Render reports and compare with the prior complete run
+        if: steps.judge.outcome == 'success'
+        run: |
+          status=0
+          python3 quality/decbench report "$DECBENCH_STATE/current.json" \
+            --output "$DECBENCH_STATE/current.html"
+          if [[ -f "$DECBENCH_STATE/latest-complete.json" ]]; then
+            python3 quality/decbench compare \
+              --baseline "$DECBENCH_STATE/latest-complete.json" \
+              --candidate "$DECBENCH_STATE/current.json" --gate \
+              --output "$DECBENCH_STATE/comparison.json" || status=$?
+            python3 quality/decbench report "$DECBENCH_STATE/comparison.json" \
+              --output "$DECBENCH_STATE/comparison.html"
+          fi
+          mapfile -t history < <(find "$DECBENCH_STATE/judgements" -name report.json -printf '%T@ %p\n' |
+            sort -n | cut -d ' ' -f 2-)
+          python3 quality/decbench index "${history[@]}" --output "$DECBENCH_STATE/index.html"
+          python3 quality/decbench mine "${history[@]}" --output "$DECBENCH_STATE/mined.json"
+          python3 quality/decbench --state "$DECBENCH_STATE" queue > "$DECBENCH_STATE/candidates.json"
+          if [[ "${{ steps.judge.outputs.exit_code }}" != 2 ]]; then
+            cp "$DECBENCH_STATE/current.json" "$DECBENCH_STATE/latest-complete.json"
+          fi
+          test "$status" = 0
+
+      - name: Persist the benchmark state
+        if: ${{ !cancelled() && steps.judge.outcome == 'success' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .cache/decbench/findings.sqlite3
+            .cache/decbench/checkpoints
+            .cache/decbench/judgements
+            .cache/decbench/latest-complete.json
+          key: ${{ steps.snapshots.outputs.cache-primary-key }}
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && steps.judge.outcome == 'success' }}
+        with:
+          name: diana-decbench-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .cache/decbench/*.json
+            .cache/decbench/*.html
+            .cache/decbench/environment.txt
+            .cache/decbench/findings.sqlite3
+            .cache/decbench/judgements/
+          include-hidden-files: true
+          if-no-files-found: error
+
+      - name: Surface incomplete evaluations or contradictions
+        if: steps.judge.outcome == 'success'
+        run: exit "${{ steps.judge.outputs.exit_code }}"

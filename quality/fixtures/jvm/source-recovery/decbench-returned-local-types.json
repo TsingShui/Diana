@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "id": "jvm-returned-local-types",
+  "prepared": true,
+  "input": "debug/classes/fixture/jvm/TypedLocals.class",
+  "local_types": {
+    "class_at": "j0",
+    "class_member": "Lfixture/jvm/TypedLocals;",
+    "type_aliases": {
+      "String": "Ljava/lang/String;",
+      "java.lang.String": "Ljava/lang/String;"
+    }
+  },
+  "oracle_files": [
+    "TypedLocals.java",
+    "prepare.py"
+  ],
+  "methods": [
+    {
+      "at": "j0:m1",
+      "member": "Lfixture/jvm/TypedLocals;->runningTotal(I)J",
+      "issues": [],
+      "local_types": [
+        {
+          "id": "returned-local",
+          "original": {
+            "name": "total",
+            "slot": 1
+          },
+          "recovered": {
+            "kind": "returned-local"
+          }
+        }
+      ]
+    },
+    {
+      "at": "j0:m2",
+      "member": "Lfixture/jvm/TypedLocals;->copyWindow(I)[I",
+      "issues": [],
+      "local_types": [
+        {
+          "id": "returned-local",
+          "original": {
+            "name": "result",
+            "slot": 1
+          },
+          "recovered": {
+            "kind": "returned-local"
+          }
+        }
+      ]
+    },
+    {
+      "at": "j0:m3",
+      "member": "Lfixture/jvm/TypedLocals;->keepLast([Ljava/lang/String;)Ljava/lang/String;",
+      "issues": [],
+      "local_types": [
+        {
+          "id": "returned-local",
+          "original": {
+            "name": "last",
+            "slot": 1
+          },
+          "recovered": {
+            "kind": "returned-local"
+          }
+        }
+      ]
+    },
+    {
+      "at": "j0:m4",
+      "member": "Lfixture/jvm/TypedLocals;->runningFraction(I)D",
+      "issues": [],
+      "local_types": [
+        {
+          "id": "returned-local",
+          "original": {
+            "name": "total",
+            "slot": 1
+          },
+          "recovered": {
+            "kind": "returned-local"
+          }
+        }
+      ]
+    }
+  ]
+}

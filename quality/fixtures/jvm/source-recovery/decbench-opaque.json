@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "id": "jvm-opaque-bootstrap",
+  "input": "debug/opaque-bundle.jar",
+  "methods": [
+    {
+      "at": "j1/j0:m6",
+      "member": "Lfixture/jvm/SourceRecovery;->update(I)I",
+      "issues": [
+        {
+          "context": "j1/j0:m6",
+          "kind": "Unsupported",
+          "range_bytes": [
+            15,
+            20
+          ]
+        }
+      ],
+      "contains": [
+        "fixture/jvm/CustomBootstrap;->makeConcatWithConstants",
+        "this.last ="
+      ]
+    },
+    {
+      "at": "j1/j0:m7",
+      "member": "Lfixture/jvm/SourceRecovery;->last()Ljava/lang/String;",
+      "issues": []
+    }
+  ],
+  "prepared": true,
+  "oracle_files": [
+    "README.md",
+    "prepare.py",
+    "SourceRecovery.java",
+    "CustomBootstrap.java"
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "id": "jvm-inventory:source-debug",
+  "prepared": true,
+  "input": "debug/source.jar",
+  "jvm_definitions": true
+}

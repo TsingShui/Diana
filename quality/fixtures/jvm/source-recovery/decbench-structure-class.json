@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "id": "jvm-source-structure-class",
+  "prepared": true,
+  "input": "debug/classes/fixture/jvm/SourceRecovery.class",
+  "structure": {
+    "reference": "SourceRecovery.java",
+    "class_at": "j0",
+    "class_member": "Lfixture/jvm/SourceRecovery;"
+  },
+  "methods": [
+    {
+      "at": "j0:m3",
+      "member": "Lfixture/jvm/SourceRecovery;->choose(I)I",
+      "structure": true,
+      "issues": []
+    },
+    {
+      "at": "j0:m4",
+      "member": "Lfixture/jvm/SourceRecovery;->descendingSum(I)I",
+      "structure": true,
+      "issues": []
+    },
+    {
+      "at": "j0:m8",
+      "member": "Lfixture/jvm/SourceRecovery;->classify(I)I",
+      "structure": true,
+      "issues": []
+    }
+  ],
+  "default": false
+}

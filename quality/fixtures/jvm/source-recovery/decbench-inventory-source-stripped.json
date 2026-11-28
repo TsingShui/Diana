@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "id": "jvm-inventory:source-stripped",
+  "prepared": true,
+  "input": "stripped/source.jar",
+  "jvm_definitions": true
+}

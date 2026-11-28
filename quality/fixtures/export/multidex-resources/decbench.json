@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "id": "apk:multidex-resources",
+  "prepared": true,
+  "input": "multidex.apk",
+  "dex_definitions": true
+}

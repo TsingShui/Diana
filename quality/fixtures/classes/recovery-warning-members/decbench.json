@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "id": "dex-recovery-warnings",
+  "input": "classes.dex",
+  "methods": [
+    {
+      "at": "e0:l0:c0:m0",
+      "member": "Lfixture/BrokenConstructor;-><init>()V",
+      "issues": [
+        {
+          "class": "Lfixture/BrokenConstructor;",
+          "name": "<init>",
+          "prototype": "()V"
+        }
+      ],
+      "contains": [
+        "// Diana: WARNING:",
+        "has no constructor"
+      ]
+    },
+    {
+      "at": "e0:l0:c0:m1",
+      "member": "Lfixture/BrokenConstructor;->sibling()I",
+      "issues": [],
+      "contains": [
+        "return 9;"
+      ]
+    },
+    {
+      "at": "e0:l0:c1:m2",
+      "member": "Lfixture/BrokenInitializer;-><clinit>()V",
+      "issues": [
+        {
+          "class": "Lfixture/BrokenInitializer;",
+          "name": "<clinit>",
+          "prototype": "()V"
+        }
+      ],
+      "contains": [
+        "// Diana: WARNING:",
+        "has no constructor"
+      ]
+    },
+    {
+      "at": "e0:l0:c1:m3",
+      "member": "Lfixture/BrokenInitializer;->sibling()I",
+      "issues": [],
+      "contains": [
+        "return 11;"
+      ]
+    },
+    {
+      "at": "e0:l0:c2:m4",
+      "member": "Lfixture/RecoveryWarningMembers;->broken()Ljava/lang/Object;",
+      "issues": [
+        {
+          "class": "Lfixture/RecoveryWarningMembers;",
+          "name": "broken",
+          "prototype": "()Ljava/lang/Object;"
+        }
+      ],
+      "contains": [
+        "// Diana: WARNING:",
+        "has no constructor"
+      ]
+    },
+    {
+      "at": "e0:l0:c2:m5",
+      "member": "Lfixture/RecoveryWarningMembers;->originalThrow()V",
+      "issues": [],
+      "contains": [
+        "throw new UnsupportedOperationException("
+      ]
+    },
+    {
+      "at": "e0:l0:c2:m6",
+      "member": "Lfixture/RecoveryWarningMembers;->sibling()I",
+      "issues": [],
+      "contains": [
+        "return 7;"
+      ]
+    }
+  ],
+  "input_sha256": "2b8953ec80a22ee714c9372b9daa7fb1d088518f0a78e0c4eb413227c3b00be7",
+  "oracle_files": [
+    "README.md",
+    "BrokenConstructor.smali",
+    "BrokenInitializer.smali",
+    "RecoveryWarningMembers.smali"
+  ]
+}

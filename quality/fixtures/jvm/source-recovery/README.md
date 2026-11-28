@@ -30,6 +30,24 @@ independently authored `CustomBootstrap`. Its bytecode delegates to the
 standard bootstrap when executed in the JVM. Diana can preserve the original
 dynamic site and surrounding code through an explicit local coverage issue.
 
+## Debug metadata variants
+
+For the DecBench corpus, prepare both Java 17 variants in separate directories.
+
+```sh
+fixture=quality/fixtures/jvm/source-recovery
+corpus=.cache/decbench/corpus/jvm-source-recovery
+python3 "$fixture/prepare.py" "$corpus/debug" --variant debug
+python3 "$fixture/prepare.py" "$corpus/stripped" --variant stripped
+```
+
+The default `debug` variant retains local-variable, line-number and source
+metadata. The `stripped` variant uses `javac -g:none`. Each directory has
+the same archive and class layout. The same independent expectations apply to
+both variants, including the effect order and escaping exceptions. With the
+same JDK and Python compression library, repeated preparation of each variant
+produces identical bytes. Keep the prepared files under `.cache/`.
+
 ## Independent expectations
 
 | Method | Paths and effects |
@@ -69,3 +87,15 @@ The `trace` field starts at one. Each `mark` appends a digit to expose order.
 | Divide `21` by zero | `-7`, `124` | `-7`, `123` |
 | Read an empty array | `-8`, `15` | `-8`, `135` |
 | Read a null array | Escaping `NullPointerException`, `1` | Escaping `NullPointerException`, `13` |
+
+## Local variable type witnesses
+
+`TypedLocals.java` supplies original debug slots for a `long` accumulator,
+an `int[]` value, a `String` value and a `double` accumulator. All four
+selected locals are declared in slot 1 and flow directly to the method's
+return. The independent selector uses that returned-local role in the
+recovered publication, so a renamed variable does not change the expectation.
+
+`decbench-local-types-debug.json` also checks the integer accumulator and
+typed catch in `SourceRecovery.java`. The stripped counterpart shows how
+the benchmark reports absent original debug-type evidence.

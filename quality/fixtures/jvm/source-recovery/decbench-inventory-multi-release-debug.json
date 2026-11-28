@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "id": "jvm-inventory:multi-release-debug",
+  "prepared": true,
+  "input": "debug/multi-release.jar",
+  "jvm_definitions": true
+}

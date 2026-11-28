@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "id": "jvm-exception-chains-debug",
+  "input": "debug/classes/fixture/jvm/ExceptionChains.class",
+  "methods": [
+    {
+      "at": "j0:m1",
+      "member": "Lfixture/jvm/ExceptionChains;->guarded([II)I",
+      "issues": [],
+      "behavior": true
+    },
+    {
+      "at": "j0:m2",
+      "member": "Lfixture/jvm/ExceptionChains;->guardedFinally([II)I",
+      "issues": [],
+      "behavior": true
+    }
+  ],
+  "prepared": true,
+  "probe": "decbench_probe.py",
+  "oracle_files": [
+    "README.md",
+    "DecBenchHandlers.java",
+    "ExceptionChains.java"
+  ]
+}

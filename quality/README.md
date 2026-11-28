@@ -107,6 +107,12 @@ an automated behavioral execution result or executed behavioral-regression accep
 failed deterministic check; repair acceptance still follows
 [EVOLUTION](../docs/diana/EVOLUTION.md#acceptance-and-regression).
 
+## Diana DecBench
+
+The [Diana DecBench subproject](decbench/README.md) runs one decompiler build on
+the fixture corpus, checks independently specified expectations, and records
+method-level evidence for finding and verifying repairs.
+
 ## Source-aligned APK reviews
 
 Public application reviews record pinned APK/source provenance, retrieval coverage,

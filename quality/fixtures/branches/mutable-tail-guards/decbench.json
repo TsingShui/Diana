@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "dex-mutable-tail-guards",
+  "input": "classes.dex",
+  "input_sha256": "3fcec13c31d98cc5a56c8e3a51494eed71f1410ecd5303cf96e08f9c8e214b6e",
+  "probe": "decbench_probe.py",
+  "oracle_files": [
+    "README.md",
+    "GuardTrace.smali",
+    "MutableGuardRoutes.smali",
+    "scenarios.tsv",
+    "CheckMutableRoutes.java"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c1:m1",
+      "member": "Lfixture/MutableGuardRoutes;->extended(II)I",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c1:m2",
+      "member": "Lfixture/MutableGuardRoutes;->route(II)I",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

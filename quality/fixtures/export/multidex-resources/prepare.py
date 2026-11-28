@@ -4,7 +4,7 @@ import sys
 from zlib import crc32
 from pathlib import Path
 from struct import pack
-from zipfile import ZIP_BZIP2, ZIP_DEFLATED, ZIP_STORED, ZipFile
+from zipfile import ZIP_BZIP2, ZIP_DEFLATED, ZIP_STORED, ZipFile, ZipInfo
 
 
 FIXTURES = Path(__file__).resolve().parents[2]
@@ -22,38 +22,44 @@ def manifest():
     return pack("<HHI", 3, 8, 8 + len(chunks)) + chunks
 
 
+def write_entry(archive, name, data, compression):
+    entry = ZipInfo(name)
+    entry.create_system = 3
+    archive.writestr(entry, data, compression)
+
+
 def prepare(archive, scenario):
     arithmetic = (FIXTURES / "atoms/expr-arith/classes.dex").read_bytes()
     branches = (FIXTURES / "branches/branch-ifz/classes.dex").read_bytes()
     gap = (FIXTURES / "classes/direct-initialization/classes.dex").read_bytes()
     with ZipFile(archive, "x") as output:
-        output.writestr("classes.dex", arithmetic, ZIP_DEFLATED)
-        output.writestr("AndroidManifest.xml", manifest(), ZIP_DEFLATED)
-        output.writestr("resources.arsc", b"opaque table\x00\xff", ZIP_STORED)
-        output.writestr("assets/nested.dex", gap, ZIP_DEFLATED)
+        write_entry(output, "classes.dex", arithmetic, ZIP_DEFLATED)
+        write_entry(output, "AndroidManifest.xml", manifest(), ZIP_DEFLATED)
+        write_entry(output, "resources.arsc", b"opaque table\x00\xff", ZIP_STORED)
+        write_entry(output, "assets/nested.dex", gap, ZIP_DEFLATED)
         # Cross several transfer-buffer boundaries and finish with a short tail.
-        output.writestr("res/raw/payload", bytes(range(256)) * 2048 + b"end", ZIP_DEFLATED)
-        output.writestr("lib/arm64-v8a/libsample.so", b"\x7fELF\x02\x01\x00\xff", ZIP_STORED)
+        write_entry(output, "res/raw/payload", bytes(range(256)) * 2048 + b"end", ZIP_DEFLATED)
+        write_entry(output, "lib/arm64-v8a/libsample.so", b"\x7fELF\x02\x01\x00\xff", ZIP_STORED)
         if scenario == "partial":
-            output.writestr("assets/damaged", b"stored-crc-fixture", ZIP_STORED)
-            output.writestr("res/raw/unsupported", b"bzip2 payload", ZIP_BZIP2)
-            output.writestr("classes3.dex", gap, ZIP_DEFLATED)
-            output.writestr("classes4.dex", b"dex\n035\x00", ZIP_STORED)
-            output.writestr("classes5.dex", arithmetic, ZIP_STORED)
+            write_entry(output, "assets/damaged", b"stored-crc-fixture", ZIP_STORED)
+            write_entry(output, "res/raw/unsupported", b"bzip2 payload", ZIP_BZIP2)
+            write_entry(output, "classes3.dex", gap, ZIP_DEFLATED)
+            write_entry(output, "classes4.dex", b"dex\n035\x00", ZIP_STORED)
+            write_entry(output, "classes5.dex", arithmetic, ZIP_STORED)
         elif scenario == "duplicate":
             # Parent and Child have the same descriptors across both roots.
             # Only the second Parent records event(2) before storing the value.
             effect = (FIXTURES / "exceptions/direct-initialization-effects/classes.dex").read_bytes()
-            output.writestr("classes3.dex", gap, ZIP_STORED)
-            output.writestr("classes4.dex", effect, ZIP_DEFLATED)
+            write_entry(output, "classes3.dex", gap, ZIP_STORED)
+            write_entry(output, "classes4.dex", effect, ZIP_DEFLATED)
         elif scenario == "nested":
             member = (FIXTURES / "classes/class-inner-static/classes.dex").read_bytes()
-            output.writestr("classes3.dex", member, ZIP_DEFLATED)
+            write_entry(output, "classes3.dex", member, ZIP_DEFLATED)
         elif scenario == "unsafe-path":
-            output.writestr("../../escape", b"outside", ZIP_STORED)
+            write_entry(output, "../../escape", b"outside", ZIP_STORED)
         elif scenario != "complete":
             raise ValueError(scenario)
-        output.writestr("classes2.dex", branches, ZIP_STORED)
+        write_entry(output, "classes2.dex", branches, ZIP_STORED)
     if scenario == "partial":
         data = bytearray(archive.read_bytes())
         data[data.index(b"stored-crc-fixture")] ^= 1

@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "id": "dex-structure-loop-for",
+  "input": "classes.dex",
+  "input_sha256": "c68a03ed56b958497d080e2bb3a53834db964f39069b61dc52ed77ed17d33983",
+  "structure": {
+    "reference": "LoopFor.java",
+    "class_at": "e0:l0:c0",
+    "class_member": "Lfixture/LoopFor;"
+  },
+  "methods": [
+    {
+      "at": "e0:l0:c0:m1",
+      "member": "Lfixture/LoopFor;->skipNegative([I)I",
+      "structure": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m2",
+      "member": "Lfixture/LoopFor;->stopAt([II)I",
+      "structure": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m3",
+      "member": "Lfixture/LoopFor;->sumTo(I)I",
+      "structure": true,
+      "issues": []
+    }
+  ]
+}

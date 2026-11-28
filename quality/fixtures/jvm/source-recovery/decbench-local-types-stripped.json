@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "id": "jvm-local-types-stripped",
+  "default": false,
+  "prepared": true,
+  "input": "stripped/classes/fixture/jvm/SourceRecovery.class",
+  "oracle_files": [
+    "SourceRecovery.java",
+    "prepare.py"
+  ],
+  "local_types": {
+    "class_at": "j0",
+    "class_member": "Lfixture/jvm/SourceRecovery;",
+    "type_aliases": {
+      "ArithmeticException": "Ljava/lang/ArithmeticException;",
+      "java.lang.ArithmeticException": "Ljava/lang/ArithmeticException;"
+    }
+  },
+  "methods": [
+    {
+      "at": "j0:m4",
+      "member": "Lfixture/jvm/SourceRecovery;->descendingSum(I)I",
+      "local_types": [
+        {
+          "id": "returned-accumulator",
+          "original": {
+            "name": "total",
+            "slot": 1
+          },
+          "recovered": {
+            "kind": "returned-local"
+          }
+        }
+      ],
+      "issues": []
+    },
+    {
+      "at": "j0:m5",
+      "member": "Lfixture/jvm/SourceRecovery;->divideOrDefault(II)I",
+      "local_types": [
+        {
+          "id": "handler-exception",
+          "original": {
+            "name": "error",
+            "slot": 2
+          },
+          "recovered": {
+            "kind": "catch",
+            "name": "exception"
+          }
+        }
+      ],
+      "issues": []
+    }
+  ]
+}

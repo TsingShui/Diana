@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "id": "dex-structure-branch-switch-packed",
+  "input": "classes.dex",
+  "input_sha256": "0fa287d902c42f8fb4bcf2a746cd5bdbe7d979494ef57af832ddf5b93d553d73",
+  "structure": {
+    "reference": "BranchSwitchPacked.java",
+    "class_at": "e0:l0:c0",
+    "class_member": "Lfixture/BranchSwitchPacked;"
+  },
+  "methods": [
+    {
+      "at": "e0:l0:c0:m1",
+      "member": "Lfixture/BranchSwitchPacked;->classify(I)I",
+      "structure": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m2",
+      "member": "Lfixture/BranchSwitchPacked;->clustered(I)I",
+      "structure": true,
+      "issues": []
+    }
+  ]
+}

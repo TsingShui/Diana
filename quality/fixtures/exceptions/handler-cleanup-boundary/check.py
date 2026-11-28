@@ -1,10 +1,32 @@
 """Exercise the recovered run body with the fault matrix from README.md."""
 
+import json
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
+
+
+PREFIX = "acquire7 probe read21"
+LOGGED = PREFIX + " logI"
+AUDITED = LOGGED + " audit21"
+CLOSED = " close21"
+# Each observation names a path and an independently authored ordered trace.
+SCENARIOS = (
+    ("normal", (), PREFIX + CLOSED, "return", 8),
+    ("acquire-throws", ("acquireI",), "acquire7", "throw", "I"),
+    ("probe-throws", ("probe",), "acquire7 probe", "throw", "P"),
+    ("typed-handler", ("readI",), AUDITED + CLOSED, "return", -2),
+    ("log-throws", ("readI", "log"), LOGGED + CLOSED, "throw", "L"),
+    ("log-and-close-throw", ("readI", "log", "close"), LOGGED + CLOSED, "throw", "C"),
+    ("audit-throws", ("readI", "audit"), AUDITED, "throw", "A"),
+    ("handler-close-throws", ("readI", "close"), AUDITED + CLOSED, "throw", "C"),
+    ("unchecked-read", ("readR",), PREFIX + CLOSED, "throw", "R"),
+    ("unchecked-read-and-close-throw", ("readR", "close"), PREFIX + CLOSED, "throw", "C"),
+    ("normal-close-throws", ("close",), PREFIX + CLOSED, "throw", "C"),
+)
 
 
 def helper(match):
@@ -39,49 +61,142 @@ MAIN = """
             default -> new IllegalArgumentException(helper);
         };
     }
+    static String exitIdentity(Throwable thrown) {
+        if (thrown == I) return "I";
+        if (thrown == P) return "P";
+        if (thrown == R) return "R";
+        if (thrown == L) return "L";
+        if (thrown == A) return "A";
+        if (thrown == C) return "C";
+        return "unexpected:" + thrown.getClass().getName();
+    }
     public static void main(String[] args) {
-        String first = "acquire7 ", second = first + "probe ", third = second + "read21 ";
-        String logged = third + "logI ", audited = logged + "audit21 ", closed = "close21 ";
-        String[][] selectors = {{},{"acquireI"},{"probe"},{"readI"},{"readI","log"},
-            {"readI","log","close"},{"readI","audit"},{"readI","close"},{"readR"},
-            {"readR","close"},{"close"}};
-        String[] expected = {third+closed, first, second, audited+closed, logged+closed,
-            logged+closed, audited, audited+closed, third+closed, third+closed, third+closed};
-        Throwable[] errors = {null,I,P,null,L,C,A,C,R,C,C};
-        int failed = 0;
-        for (int i=0; i<selectors.length; i++) {
-            faults = java.util.Set.of(selectors[i]); trace = "";
-            Throwable thrown = null; int result = 0;
-            try { result = run(7); } catch (Throwable t) { thrown=t; }
-            if (!trace.equals(expected[i]) || thrown != errors[i] ||
-                (thrown == null && result != (i == 3 ? -2 : 8))) {
-                failed++;
-                System.err.println("scenario " + i + ", trace " + trace + ", exit " +
-                    (thrown == null ? result : thrown.getMessage()));
+        for (int i = 0; i < args.length; i++) {
+            faults = args[i].isEmpty() ? java.util.Set.of() : java.util.Set.of(args[i].split(","));
+            trace = "";
+            try {
+                int result = run(7);
+                System.out.println(i + "\\t" + trace + "\\treturn\\t" + result);
+            } catch (Throwable thrown) {
+                System.out.println(i + "\\t" + trace + "\\tthrow\\t" + exitIdentity(thrown));
             }
         }
-        System.out.println("scenarios=" + selectors.length + " failed=" + failed);
-        if (failed > 0) System.exit(1);
     }
 """
 
 
-def check(source):
+def harness(source: str) -> str:
     program, count = re.subn(
         r"public static native (int|void) (acquire|probe|read|log|audit|close)\(([^)]*)\)(?: throws IOException)?;",
-        helper, source.read_text(),
+        helper, source,
     )
-    assert count == 6
+    if count != 6:
+        raise ValueError("expected the six original native helper declarations")
     program, count = re.subn(
         r"(public static int run\(int \w+\))(?: throws (?:IOException|Throwable))? \{",
         r"\1 throws Throwable {", program,
     )
-    assert count == 1
+    if count != 1:
+        raise ValueError("expected the selected run declaration")
     prefix, suffix = program.rsplit("}", 1)
+    return prefix + MAIN + "}" + suffix
+
+
+def outcomes(status: str, detail: str, observations=None) -> list[dict]:
+    observations = observations or {}
+    rows = []
+    for index, (name, _, trace, kind, value) in enumerate(SCENARIOS):
+        expected = {"trace": trace.split(), "exit": {"kind": kind, "value": value}}
+        actual = observations.get(index)
+        row = {"id": name, "expected": expected, "observed": actual}
+        if actual is None:
+            row.update(status=status, detail=detail)
+        else:
+            row["status"] = "PASS" if actual == expected else "FAIL"
+        rows.append(row)
+    return rows
+
+
+def parse_observations(stdout: str) -> dict:
+    observations = {}
+    for line in stdout.splitlines():
+        index, trace, kind, value = line.split("\t")
+        index = int(index)
+        if not 0 <= index < len(SCENARIOS) or index in observations:
+            raise ValueError("invalid or duplicate scenario index")
+        if kind not in ("return", "throw"):
+            raise ValueError("unknown scenario exit kind")
+        observations[index] = {
+            "trace": trace.split(),
+            "exit": {"kind": kind, "value": int(value) if kind == "return" else value},
+        }
+    return observations
+
+
+def replay(source: str, timeout: int) -> list[dict]:
+    try:
+        program = harness(source)
+    except ValueError as error:
+        return outcomes("UNCHECKED", str(error))
+
     with TemporaryDirectory() as tmp:
         main = Path(tmp, "HandlerCleanupBoundary.java")
-        main.write_text(prefix + MAIN + "}" + suffix)
-        return subprocess.run(["java", str(main)]).returncode
+        main.write_text(program, encoding="utf-8")
+        environment = {
+            name: value for name, value in os.environ.items()
+            if name not in ("CLASSPATH", "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS")
+        }
+        command_options = {
+            "cwd": tmp, "env": environment, "timeout": timeout,
+            "capture_output": True, "encoding": "utf-8", "errors": "replace", "check": False,
+        }
+        try:
+            compile_result = subprocess.run(
+                [
+                    "java", "-m", "jdk.compiler/com.sun.tools.javac.Main",
+                    "-source", "17", "-target", "17", "-Xlint:-options",
+                    "-encoding", "UTF-8", "-proc:none",
+                    "-classpath", tmp, "-d", tmp, str(main),
+                ],
+                **command_options,
+            )
+            if compile_result.returncode:
+                diagnostics = (compile_result.stderr or compile_result.stdout).strip()
+                status = (
+                    "SETUP_ERROR" if any(message in diagnostics for message in (
+                        "Module jdk.compiler not found", "invalid source release",
+                    ))
+                    else "UNCHECKED"
+                )
+                return outcomes(status, f"optional fixture compilation: {diagnostics}")
+            execution = subprocess.run(
+                [
+                    "java", "--class-path", tmp, "fixture.HandlerCleanupBoundary",
+                    *(",".join(faults) for _, faults, _, _, _ in SCENARIOS),
+                ],
+                **command_options,
+            )
+        except subprocess.TimeoutExpired as error:
+            return outcomes("UNCHECKED", str(error))
+        except OSError as error:
+            return outcomes("SETUP_ERROR", str(error))
+
+    if execution.returncode:
+        return outcomes("UNCHECKED", f"fixture replay exited {execution.returncode}: {execution.stderr.strip()}")
+    try:
+        observations = parse_observations(execution.stdout)
+    except ValueError as error:
+        return outcomes("UNCHECKED", f"invalid fixture replay output: {error}")
+    return outcomes("UNCHECKED", "scenario observation absent", observations)
+
+
+def check(source: Path) -> int:
+    rows = replay(source.read_text(encoding="utf-8"), timeout=60)
+    failed = [row for row in rows if row["status"] != "PASS"]
+    for row in failed:
+        print(json.dumps(row), file=sys.stderr)
+    print(f"scenarios={len(rows)} failed={len(failed)}")
+    return bool(failed)
 
 
 if __name__ == "__main__":

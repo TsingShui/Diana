@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "id": "dex-handler-cleanup",
+  "input": "classes.dex",
+  "methods": [
+    {
+      "at": "e0:l0:c0:m6",
+      "member": "Lfixture/HandlerCleanupBoundary;->run(I)I",
+      "issues": [],
+      "behavior": true
+    }
+  ],
+  "input_sha256": "1ee4f0787fccf4a40c666dcdeb9c7475f128edc4685a03c287d005e7864e6069",
+  "probe": "decbench_probe.py",
+  "oracle_files": [
+    "check.py",
+    "HandlerCleanupBoundary.smali",
+    "README.md"
+  ]
+}

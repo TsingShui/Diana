@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "id": "dex-scalar-type-uses",
+  "input": "classes.dex",
+  "input_sha256": "553c4bfe8381a31dec5ea577315ef49a408409e7232bac7ed982b14aff6ede56",
+  "probe": "decbench_probe.py",
+  "oracle_files": [
+    "README.md",
+    "Case.smali",
+    "Case.java",
+    "DecBenchScalar.java"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m0",
+      "member": "Lfixture/ScalarViews;->array([C)Ljava/lang/String;",
+      "issues": [],
+      "behavior": true
+    },
+    {
+      "at": "e0:l0:c0:m1",
+      "member": "Lfixture/ScalarViews;->boundaries()I",
+      "issues": [],
+      "behavior": true
+    },
+    {
+      "at": "e0:l0:c0:m2",
+      "member": "Lfixture/ScalarViews;->carrier(Ljava/lang/String;)I",
+      "issues": [],
+      "behavior": true
+    },
+    {
+      "at": "e0:l0:c0:m3",
+      "member": "Lfixture/ScalarViews;->escaped(Ljava/lang/String;)Ljava/lang/String;",
+      "issues": [],
+      "behavior": true
+    },
+    {
+      "at": "e0:l0:c0:m4",
+      "member": "Lfixture/ScalarViews;->literal(Ljava/lang/String;)Ljava/lang/String;",
+      "issues": [],
+      "behavior": true
+    },
+    {
+      "at": "e0:l0:c0:m5",
+      "member": "Lfixture/ScalarViews;->parameter(C)I",
+      "issues": [],
+      "behavior": true
+    }
+  ]
+}
