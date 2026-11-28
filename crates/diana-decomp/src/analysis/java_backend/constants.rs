@@ -1,8 +1,8 @@
 use crate::frontend::{AnnotationNode, DexValue};
 use crate::ir::ty::ArgType;
 use crate::language::java::{
-    JavaAnnotation, JavaAnnotationElement, JavaAnnotationValue, JavaExpr, JavaIdentifier,
-    JavaLiteral, JavaMemberNames,
+    JavaAnnotation, JavaAnnotationElement, JavaAnnotationValue, JavaConstantOrigin, JavaExpr,
+    JavaIdentifier, JavaLiteral, JavaMemberNames,
 };
 
 use super::type_names::{JavaTypeNameError, JavaTypeNameResolver};
@@ -93,6 +93,7 @@ impl<'a> JavaConstantLowering<'a> {
         &self,
         field_type: &ArgType,
         value: &DexValue,
+        origin: JavaConstantOrigin,
     ) -> Result<JavaExpr, JavaConstantError> {
         use crate::ir::PrimitiveType;
 
@@ -117,8 +118,12 @@ impl<'a> JavaConstantLowering<'a> {
                 _ => JavaExpr::Literal(JavaLiteral::Integer(*value)),
             },
             DexValue::Long(value) => JavaExpr::Literal(JavaLiteral::Long(*value)),
-            DexValue::Float(value) => JavaExpr::Literal(JavaLiteral::Float(*value)),
-            DexValue::Double(value) => JavaExpr::Literal(JavaLiteral::Double(*value)),
+            DexValue::Float(value) => {
+                JavaExpr::Literal(JavaLiteral::Float(*value).with_constant_origin(origin))
+            }
+            DexValue::Double(value) => {
+                JavaExpr::Literal(JavaLiteral::Double(*value).with_constant_origin(origin))
+            }
             DexValue::String(value) => JavaExpr::Literal(JavaLiteral::String(value.clone())),
             DexValue::Type(ty) => JavaExpr::ClassLiteral(self.names.resolve_type(ty)?),
             DexValue::Enum(field) => JavaExpr::StaticField {
@@ -158,8 +163,14 @@ impl<'a> JavaConstantLowering<'a> {
             DexValue::Char(value) => Self::expression(JavaLiteral::Character(*value)),
             DexValue::Int(value) => Self::expression(JavaLiteral::Integer(*value)),
             DexValue::Long(value) => Self::expression(JavaLiteral::Long(*value)),
-            DexValue::Float(value) => Self::expression(JavaLiteral::Float(*value)),
-            DexValue::Double(value) => Self::expression(JavaLiteral::Double(*value)),
+            DexValue::Float(value) => Self::expression(
+                JavaLiteral::Float(*value)
+                    .with_constant_origin(JavaConstantOrigin::EncodedAnnotationValue),
+            ),
+            DexValue::Double(value) => Self::expression(
+                JavaLiteral::Double(*value)
+                    .with_constant_origin(JavaConstantOrigin::EncodedAnnotationValue),
+            ),
             DexValue::String(value) => Self::expression(JavaLiteral::String(value.clone())),
             DexValue::Type(ty) => JavaAnnotationValue::Expression(JavaExpr::ClassLiteral(
                 self.names.resolve_type(ty)?,

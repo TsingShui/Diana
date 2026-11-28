@@ -1,11 +1,19 @@
 //! Java source literals shared by instruction and annotation lowering.
 
-use super::JavaLiteral;
+use super::{JavaConstantOrigin, JavaLiteral, JavaNaNBits};
 
 pub(crate) struct JavaLiterals;
 
 impl JavaLiterals {
     pub(crate) fn render(value: &JavaLiteral) -> String {
+        if let Some(bits) = value.nan_payload() {
+            return match bits {
+                JavaNaNBits::Float(bits) => format!("java.lang.Float.intBitsToFloat(0x{bits:08x})"),
+                JavaNaNBits::Double(bits) => {
+                    format!("java.lang.Double.longBitsToDouble(0x{bits:016x}L)")
+                }
+            };
+        }
         match value {
             JavaLiteral::Null => "null".to_string(),
             JavaLiteral::Boolean(value) => value.to_string(),
@@ -13,6 +21,18 @@ impl JavaLiterals {
             JavaLiteral::Long(value) => format!("{value}L"),
             JavaLiteral::Float(value) => Self::float(*value),
             JavaLiteral::Double(value) => Self::double(*value),
+            JavaLiteral::EncodedNaN { bits, origin } => {
+                let literal = match bits {
+                    JavaNaNBits::Float(bits) => format!("float-bits(0x{bits:08x})"),
+                    JavaNaNBits::Double(bits) => format!("double-bits(0x{bits:016x})"),
+                };
+                let origin = match origin {
+                    JavaConstantOrigin::JvmConstantValue => "JVM ConstantValue",
+                    JavaConstantOrigin::EncodedFieldValue => "encoded field value",
+                    JavaConstantOrigin::EncodedAnnotationValue => "encoded annotation value",
+                };
+                format!("{literal} /* {origin} */")
+            }
             JavaLiteral::Character(value) => Self::character(*value),
             JavaLiteral::String(value) => Self::string(value),
         }

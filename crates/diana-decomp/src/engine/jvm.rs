@@ -430,7 +430,10 @@ fn field_node(
                     .map(|value| constant_value(value.value, field.field_type()))
                     .transpose()
             }) {
-            Ok(Some(value)) => field = field.with_initial_value(value),
+            Ok(Some(value)) => {
+                field = field.with_initial_value(value);
+                field.jvm_constant_value = true;
+            }
             Ok(None) => (),
             Err(error) => {
                 field.default_preparation = false;

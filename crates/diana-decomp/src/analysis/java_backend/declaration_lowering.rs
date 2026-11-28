@@ -2,10 +2,10 @@ use crate::analysis::{MethodRecoveryFailure, MethodRecoveryStage};
 use crate::ir::generic_types::{ClassSignature, JvmTypeSignature, MethodSignature};
 use crate::ir::ty::ArgType;
 use crate::language::java::{
-    JavaAnnotation, JavaClassName, JavaClassType, JavaCompilationUnit, JavaExpr,
-    JavaFieldDeclaration, JavaFieldSymbol, JavaIdentifier, JavaMemberNames, JavaMethodBody,
-    JavaMethodDeclaration, JavaMethodDeclarationKind, JavaMethodParameter, JavaMethodSymbol,
-    JavaModifier, JavaStmt, JavaType, JavaTypeArgument, JavaTypeDeclaration,
+    JavaAnnotation, JavaClassName, JavaClassType, JavaCompilationUnit, JavaConstantOrigin,
+    JavaExpr, JavaFieldDeclaration, JavaFieldSymbol, JavaIdentifier, JavaMemberNames,
+    JavaMethodBody, JavaMethodDeclaration, JavaMethodDeclarationKind, JavaMethodParameter,
+    JavaMethodSymbol, JavaModifier, JavaStmt, JavaType, JavaTypeArgument, JavaTypeDeclaration,
     JavaTypeDeclarationKind, JavaTypeParameter, SourceObjectTypes,
 };
 
@@ -1165,6 +1165,11 @@ impl<'a> JavaTypeLowering<'a> {
         owner: Option<&ArgType>,
     ) -> Result<JavaFieldDeclaration, JavaDecompilerError> {
         let implicit_initializer = field.implicit_initializer();
+        let origin = if field.jvm_constant_value {
+            JavaConstantOrigin::JvmConstantValue
+        } else {
+            JavaConstantOrigin::EncodedFieldValue
+        };
         Ok(JavaFieldDeclaration {
             annotations: self.constants.annotations(&field.annotations)?,
             modifiers: field.modifiers.clone(),
@@ -1185,7 +1190,10 @@ impl<'a> JavaTypeLowering<'a> {
                 .initializer
                 .as_ref()
                 .or(implicit_initializer.as_ref())
-                .map(|value| self.constants.field_initializer(&field.field_type, value))
+                .map(|value| {
+                    self.constants
+                        .field_initializer(&field.field_type, value, origin)
+                })
                 .transpose()?,
         })
     }

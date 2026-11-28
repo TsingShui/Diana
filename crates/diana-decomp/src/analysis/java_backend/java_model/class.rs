@@ -166,6 +166,7 @@ pub(in crate::analysis::java_backend) struct JavaFieldDeclaration {
     pub field_type: ArgType,
     pub name: JavaIdentifier,
     pub initializer: Option<DexValue>,
+    pub jvm_constant_value: bool,
     pub default_preparation: bool,
     pub access_flags: AccessInfo,
     /// Parsed JVM generic field signature, when the field carries a
@@ -183,6 +184,7 @@ impl JavaFieldDeclaration {
             field_type: field.field_type().clone(),
             name: JavaIdentifier::from_dex(field.name()),
             initializer: field.initial_value.clone(),
+            jvm_constant_value: field.jvm_constant_value,
             default_preparation: field.default_preparation,
             access_flags: field.access_flags,
             signature: field

@@ -1,0 +1,12 @@
+[
+  ["noncanonical-float-return", "floatValue", false, false, "7fc01234"],
+  ["noncanonical-double-return", "doubleValue", false, false, "fff8000000005678"],
+  ["canonical-float-return", "canonicalFloat", false, false, "7fc00000"],
+  ["selection-positive-float", "bits", true, false, "7fc01234"],
+  ["selection-negative-float", "bits", false, false, "ffc04321"],
+  ["runtime-double-store", "store", false, false, "fff8000000005678"],
+  ["protected-positive-return", "protectedBits", true, false, "7ff8000000009abc:7ff8000000009abc:normal"],
+  ["protected-negative-return", "protectedBits", false, false, "fff8000000005678:fff8000000005678:normal"],
+  ["protected-positive-fault", "protectedBits", true, true, "7ff8000000009abc:7ff8000000009abc:same-fault"],
+  ["protected-negative-fault", "protectedBits", false, true, "fff8000000005678:fff8000000005678:same-fault"]
+]

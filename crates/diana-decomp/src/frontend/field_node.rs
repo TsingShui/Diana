@@ -59,6 +59,8 @@ pub struct FieldNode {
     pub access_flags: AccessInfo,
     /// Initial value (for static fields)
     pub initial_value: Option<DexValue>,
+    /// A validated JVM ConstantValue initializes before superclass code.
+    pub(crate) jvm_constant_value: bool,
     /// Whether the original preparation leaves this field at its default.
     pub(crate) default_preparation: bool,
     /// JVM generic signature recovered from the
@@ -76,6 +78,7 @@ impl FieldNode {
             info,
             access_flags,
             initial_value: None,
+            jvm_constant_value: false,
             default_preparation: true,
             signature: None,
             annotations: Vec::new(),

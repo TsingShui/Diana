@@ -348,6 +348,11 @@ fn recovered_jvm_signed_zero_selections_preserve_value_bits() {
     verify_jvm_fixture("branches/signed-zero-selection/jvm/verify.py");
 }
 
+#[test]
+fn recovered_jvm_nan_literals_preserve_payloads_and_constant_preparation() {
+    verify_jvm_fixture("atoms/nan-payload-bits/jvm/verify.py");
+}
+
 fn verify_jvm_fixture(path: &str) {
     let output = tempfile::tempdir().unwrap();
     let verifier = Path::new(env!("CARGO_MANIFEST_DIR"))

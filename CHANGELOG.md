@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.22 - 2026-11-28
+
+- Preserved noncanonical NaN bits in recovered DEX and JVM expressions.
+- Displayed original NaN bits in encoded field and annotation values,
+  including early JVM ConstantValue field initialization.
+
 ## 0.4.21 - 2026-11-28
 
 - Preserved selections between positive and negative zero in recovered DEX

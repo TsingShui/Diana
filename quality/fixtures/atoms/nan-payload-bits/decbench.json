@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "id": "dex-nan-payload-bits",
+  "default": true,
+  "input": "classes.dex",
+  "input_sha256": "6728778c3fa2898342a61d0fdf55cdee697670d25afa761c53d446c92cf80614",
+  "probe": "verify.py",
+  "oracle_files": [
+    "CheckScalars.java",
+    "ScalarNan.java",
+    "ScalarNan.smali",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m0",
+      "member": "Lfixture/ScalarNan;->bits(Z)I",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m1",
+      "member": "Lfixture/ScalarNan;->canonicalFloat()F",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m2",
+      "member": "Lfixture/ScalarNan;->doubleValue()D",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m3",
+      "member": "Lfixture/ScalarNan;->floatValue()F",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m5",
+      "member": "Lfixture/ScalarNan;->protectedBits(ZLjava/lang/ArithmeticException;)J",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m6",
+      "member": "Lfixture/ScalarNan;->store()V",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

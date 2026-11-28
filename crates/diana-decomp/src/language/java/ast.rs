@@ -643,8 +643,45 @@ pub enum JavaLiteral {
     Long(i64),
     Float(f32),
     Double(f64),
+    EncodedNaN {
+        bits: JavaNaNBits,
+        origin: JavaConstantOrigin,
+    },
     Character(u16),
     String(Utf16String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JavaNaNBits {
+    Float(u32),
+    Double(u64),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JavaConstantOrigin {
+    JvmConstantValue,
+    EncodedFieldValue,
+    EncodedAnnotationValue,
+}
+
+impl JavaLiteral {
+    pub(crate) fn nan_payload(&self) -> Option<JavaNaNBits> {
+        match self {
+            Self::Float(value) if value.is_nan() && value.to_bits() != 0x7fc0_0000 => {
+                Some(JavaNaNBits::Float(value.to_bits()))
+            }
+            Self::Double(value) if value.is_nan() && value.to_bits() != 0x7ff8_0000_0000_0000 => {
+                Some(JavaNaNBits::Double(value.to_bits()))
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn with_constant_origin(self, origin: JavaConstantOrigin) -> Self {
+        self.nan_payload()
+            .map(|bits| Self::EncodedNaN { bits, origin })
+            .unwrap_or(self)
+    }
 }
 
 impl PartialEq for JavaLiteral {
@@ -658,6 +695,16 @@ impl PartialEq for JavaLiteral {
             (Self::Long(left), Self::Long(right)) => left == right,
             (Self::Float(left), Self::Float(right)) => left.to_bits() == right.to_bits(),
             (Self::Double(left), Self::Double(right)) => left.to_bits() == right.to_bits(),
+            (
+                Self::EncodedNaN {
+                    bits: left,
+                    origin: left_origin,
+                },
+                Self::EncodedNaN {
+                    bits: right,
+                    origin: right_origin,
+                },
+            ) => left == right && left_origin == right_origin,
             (Self::Character(left), Self::Character(right)) => left == right,
             (Self::String(left), Self::String(right)) => left == right,
             _ => false,

@@ -4556,7 +4556,7 @@ impl DexJavaDialect {
                     index: Box::new(JavaExpr::Literal(JavaLiteral::Integer(index))),
                 },
                 op: JavaAssignOp::Assign,
-                value: self.array_data_element(literal)?,
+                value: JavaExpr::Literal(Self::literal(literal)?),
             });
         }
         Ok(JavaStmt::Block(statements))
@@ -4574,33 +4574,6 @@ impl DexJavaDialect {
             args,
             anonymous_body: None,
         }))
-    }
-
-    fn array_data_element(
-        &self,
-        literal: &crate::ir::LiteralArg,
-    ) -> Result<JavaExpr, JavaLoweringError> {
-        // A Java NaN constant does not encode the original payload bits.
-        let (owner, method, bits) = match Self::literal(literal)? {
-            JavaLiteral::Float(value) if value.is_nan() => (
-                "java/lang/Float",
-                "intBitsToFloat",
-                JavaLiteral::Integer(literal.value as i32),
-            ),
-            JavaLiteral::Double(value) if value.is_nan() => (
-                "java/lang/Double",
-                "longBitsToDouble",
-                JavaLiteral::Long(literal.value),
-            ),
-            value => return Ok(JavaExpr::Literal(value)),
-        };
-        Ok(JavaExpr::Call {
-            receiver: None,
-            owner: Some(self.source_type(&ArgType::object(owner))?),
-            type_arguments: Vec::new(),
-            method: JavaIdentifier::from_dex(method),
-            args: vec![JavaExpr::Literal(bits)],
-        })
     }
 
     fn predicate(&mut self, condition: &SemanticPredicate) -> Result<JavaExpr, JavaLoweringError> {
