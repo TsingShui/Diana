@@ -611,6 +611,25 @@ impl<'a> TryRegionEnvelopeAnalysis<'a> {
                 );
             }
             additions.retain(|block| !blocks.contains(block));
+            // Scope containment can establish a nested handler's private
+            // path without enclosing another handler that receives it. Its
+            // dispatch adapters must stay with that receiving continuation.
+            let external_adapters = additions
+                .iter()
+                .copied()
+                .filter(|block| {
+                    self.analysis
+                        .handler_adapters
+                        .get(block)
+                        .is_some_and(|target| {
+                            let target = self.representatives.get(target).unwrap_or(target);
+                            !blocks.contains(target) && !additions.contains(target)
+                        })
+                })
+                .collect::<Vec<_>>();
+            for adapter in external_adapters {
+                additions.remove(&adapter);
+            }
             if additions.is_empty() {
                 return Ok(());
             }
@@ -898,7 +917,14 @@ impl<'a> ExceptionRegionRelaminarizer<'a> {
                         .is_some_and(|region| matches!(region.kind, RegionKind::Try))
                 })
                 .collect::<Vec<_>>();
-            if mapped.len() < 2 {
+            if mapped.len() < 2
+                || ExceptionRegionTreeBuilder::forwarded_cleanup_protection(
+                    self.analysis,
+                    self.source_cfg,
+                    source,
+                )
+                .is_some()
+            {
                 continue;
             }
             let Some(TryRegionEnvelope { entry, blocks }) = TryRegionEnvelopeAnalysis::new(
@@ -1284,6 +1310,9 @@ impl<'a> ExceptionRegionTreeBuilder<'a> {
             if let Some(parent) = source.parent {
                 return Ok(ExceptionParent::Try(parent));
             }
+            if self.has_shared_handler_ingress(&blocks, &entries) {
+                return Ok(ExceptionParent::Root);
+            }
             return Err(RegionInvariantError::AmbiguousExceptionHandlerParent {
                 region: source.id,
                 handlers: minimal,
@@ -1298,6 +1327,54 @@ impl<'a> ExceptionRegionTreeBuilder<'a> {
                 },
             )?,
         })
+    }
+
+    /// A protected continuation can follow several handler
+    /// families without being lexically contained in any one of them. The
+    /// original ingress cut proves that its execution comes from those
+    /// families. Control placement retains the actual incoming edges.
+    fn has_shared_handler_ingress(
+        &self,
+        protected: &BTreeSet<BlockId>,
+        handlers: &BTreeSet<BlockId>,
+    ) -> bool {
+        let mut pending = protected
+            .iter()
+            .copied()
+            .filter(|block| {
+                *block == self.cfg.entry
+                    || self
+                        .cfg
+                        .incoming_sources(*block)
+                        .any(|source| !protected.contains(&source))
+            })
+            .collect::<Vec<_>>();
+        let dominance = self.facts.semantic_dominators();
+        if pending.is_empty()
+            || handlers.iter().any(|handler| {
+                pending
+                    .iter()
+                    .all(|entry| dominance.dominates(*handler, *entry))
+            })
+        {
+            return false;
+        }
+
+        let mut visited = BTreeSet::new();
+        let mut reached = BTreeSet::new();
+        while let Some(block) = pending.pop() {
+            if !visited.insert(block) || !dominance.dominates(self.cfg.entry, block) {
+                continue;
+            }
+            if handlers.contains(&block) {
+                reached.insert(block);
+            } else if block == self.cfg.entry {
+                return false;
+            } else {
+                pending.extend(self.cfg.incoming_sources(block));
+            }
+        }
+        reached.len() > 1
     }
 
     fn protected_shell(
@@ -1334,16 +1411,21 @@ impl<'a> ExceptionRegionTreeBuilder<'a> {
             .analysis
             .region(source_id)
             .ok_or(RegionInvariantError::MissingExceptionRegion(source_id))?;
-        let envelope = TryRegionEnvelopeAnalysis::new(
-            self.analysis,
-            self.cfg,
-            self.envelope_cfg,
-            self.envelope_facts,
-            self.cleanup_representatives,
-            &self.tree,
-        )
-        .analyze(source)?
-        .proven();
+        let exact_dispatch = Self::forwarded_cleanup_protection(self.analysis, self.cfg, source);
+        let envelope = if exact_dispatch.is_some() {
+            None
+        } else {
+            TryRegionEnvelopeAnalysis::new(
+                self.analysis,
+                self.cfg,
+                self.envelope_cfg,
+                self.envelope_facts,
+                self.cleanup_representatives,
+                &self.tree,
+            )
+            .analyze(source)?
+            .proven()
+        };
         let mut regions = match envelope {
             Some(TryRegionEnvelope { entry, blocks }) => {
                 match self
@@ -1357,7 +1439,8 @@ impl<'a> ExceptionRegionTreeBuilder<'a> {
             None => Vec::new(),
         };
         if regions.is_empty() {
-            let fragments = self.fragment_blocks(source)?;
+            let protected = exact_dispatch.as_ref().unwrap_or(source);
+            let fragments = self.fragment_blocks(protected)?;
             if fragments.is_empty() {
                 return Err(RegionInvariantError::EmptyExceptionRegion(source_id));
             }
@@ -1426,6 +1509,84 @@ impl<'a> ExceptionRegionTreeBuilder<'a> {
             self.handlers.insert(*region, handler_regions.clone());
         }
         Ok(regions)
+    }
+
+    /// A cleanup that only forwards captured state into a different cleanup
+    /// is an exception entry, not an enclosing protection scope. Fragment
+    /// its normalized range where a throwing operation selects another
+    /// physical entry. Wrapping that operation in the forwarding catch
+    /// could catch the receiver's own failure or rethrow a second time.
+    fn forwarded_cleanup_protection(
+        analysis: &ExceptionAnalysis,
+        cfg: &CFG,
+        source: &crate::ir::exception::TryRegion,
+    ) -> Option<crate::ir::exception::TryRegion> {
+        let [handler] = source.handlers.as_slice() else {
+            return None;
+        };
+        if handler.kind != HandlerKind::Cleanup || !handler.is_catch_all() {
+            return None;
+        }
+        let mut current = handler.semantic_entry;
+        let mut visited = BTreeSet::new();
+        let target = loop {
+            if !visited.insert(current) {
+                return None;
+            }
+            let block = cfg.block(current)?;
+            if block.insns.iter().any(|insn| insn.can_throw())
+                || cfg
+                    .successors_with_kind(current)
+                    .iter()
+                    .any(|(_, kind)| kind.is_exception())
+            {
+                return None;
+            }
+            let mut successors = cfg.normal_successors(current);
+            let successor = successors.next()?;
+            if successors.next().is_some() {
+                return None;
+            }
+            if analysis.handler_adapters.get(&current) == Some(&successor)
+                && successor != handler.semantic_entry
+                && analysis
+                    .regions
+                    .iter()
+                    .flat_map(|region| &region.handlers)
+                    .any(|receiver| {
+                        receiver.kind == HandlerKind::Cleanup
+                            && receiver.semantic_entry == successor
+                    })
+            {
+                break successor;
+            }
+            current = successor;
+        };
+
+        // Preserve every original entry to this adapter. Remove only blocks
+        // proved to dispatch elsewhere; any copied state stays in the CFG.
+        let mut exact = source.clone();
+        exact.blocks.retain(|block| {
+            cfg.block(*block).is_some_and(|body| {
+                body.insns.iter().all(|insn| !insn.can_throw())
+                    || cfg
+                        .successors_with_kind(*block)
+                        .iter()
+                        .any(|(destination, kind)| {
+                            kind.is_exception()
+                                && (handler.entry_blocks.contains(destination)
+                                    || *destination == handler.semantic_entry)
+                        })
+            })
+        });
+        (exact.blocks.len() < source.blocks.len()
+            && !exact.blocks.contains(&target)
+            && exact.blocks.iter().any(|block| {
+                cfg.successors_with_kind(*block)
+                    .iter()
+                    .any(|(_, kind)| kind.is_exception())
+            }))
+        .then_some(exact)
     }
 
     fn semantic_handler_parent(
@@ -1583,7 +1744,71 @@ impl<'a> ExceptionRegionTreeBuilder<'a> {
             if current == owner || self.tree.is_ancestor(owner, current)? {
                 continue;
             }
+            self.release_dispatch_adapters(current, owner, &blocks)?;
             self.tree.reparent(fragment, owner)?;
+        }
+        Ok(())
+    }
+
+    /// A normalized protected range can still list another region's physical
+    /// catch entry and its register-state transfers. Once a fragment of that
+    /// adapter is placed with the handler, the old protected envelope must
+    /// release the same lexical blocks. The original CFG and handler table
+    /// continue to describe every dispatch and state transfer.
+    fn release_dispatch_adapters(
+        &mut self,
+        previous: RegionId,
+        handler: RegionId,
+        blocks: &BTreeSet<BlockId>,
+    ) -> Result<(), RegionInvariantError> {
+        let descriptor = self
+            .tree
+            .region(handler)
+            .ok_or(RegionInvariantError::UnknownRegion(handler))?;
+        let Some(entry) = descriptor.entry else {
+            return Ok(());
+        };
+        if !matches!(
+            descriptor.kind,
+            RegionKind::Catch(_) | RegionKind::Cleanup(_)
+        ) {
+            return Ok(());
+        }
+        let ordinary = self.facts.dominators();
+        if !blocks.iter().all(|block| {
+            self.analysis.handler_adapters.get(block) == Some(&entry)
+                && !ordinary.dominates(self.cfg.entry, *block)
+                && self.cfg.block(*block).is_some_and(|body| {
+                    body.insns
+                        .iter()
+                        .all(|instruction| !instruction.can_throw())
+                })
+                && self
+                    .cfg
+                    .successors_with_kind(*block)
+                    .iter()
+                    .all(|(_, kind)| !kind.is_exception())
+        }) {
+            return Ok(());
+        }
+
+        for ancestor in self.tree.parent_chain(previous)? {
+            if !self
+                .handlers
+                .get(&ancestor)
+                .is_some_and(|handlers| handlers.contains(&handler))
+            {
+                continue;
+            }
+            let scope = self
+                .tree
+                .region_mut(ancestor)
+                .ok_or(RegionInvariantError::UnknownRegion(ancestor))?;
+            if matches!(scope.kind, RegionKind::Try)
+                && scope.entry.is_some_and(|entry| !blocks.contains(&entry))
+            {
+                scope.blocks.retain(|block| !blocks.contains(block));
+            }
         }
         Ok(())
     }
@@ -2051,6 +2276,10 @@ impl<'a> SingleEntryTryFragments<'a> {
             .unwrap_or((u32::MAX, block.raw()))
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/exception_adapter_ownership.rs"]
+mod exception_adapter_ownership;
 
 #[cfg(test)]
 mod tests {

@@ -9,8 +9,9 @@ on:
         description: Reviewed public corpus
         type: choice
         required: true
-        default: antennapod-3.12.3
+        default: fairemail-1.2338
         options:
+          - fairemail-1.2338
           - antennapod-3.12.3
           - newpipe-0.28.8
       profile:
@@ -44,7 +45,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        corpus: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('["{0}"]', inputs.corpus)) || fromJSON('["antennapod-3.12.3", "newpipe-0.28.8"]') }}
+        corpus: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('["{0}"]', inputs.corpus)) || fromJSON('["fairemail-1.2338", "antennapod-3.12.3", "newpipe-0.28.8"]') }}
         profile: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('["{0}"]', inputs.profile)) || fromJSON('["reviewed", "sample100"]') }}
     concurrency:
       group: diana-decbench-public-${{ github.ref }}-${{ matrix.corpus }}-${{ matrix.profile }}

@@ -1229,9 +1229,11 @@ impl<'a> JavaTypeLowering<'a> {
                     .flatten()
             })
             .collect::<Vec<_>>();
+        let has_recovered_body = method_body.is_some();
         let mut body = method
             .failure
             .as_ref()
+            .filter(|_| !has_recovered_body)
             .map(Self::failure_body)
             .map(Ok)
             .or_else(|| {
@@ -1332,6 +1334,19 @@ impl<'a> JavaTypeLowering<'a> {
                         bounds: vec![throwable],
                     });
                     throws.push(variable);
+                }
+            }
+        }
+        if let (Some(failure), Some(body)) = (
+            method.failure.as_ref().filter(|_| has_recovered_body),
+            body.as_mut(),
+        ) {
+            let diagnostic = JavaStmt::RecoveryGap(failure.cause().to_owned());
+            match &mut body.root {
+                JavaStmt::Block(statements) => statements.insert(0, diagnostic),
+                root => {
+                    *root =
+                        JavaStmt::Block(vec![diagnostic, std::mem::replace(root, JavaStmt::Empty)]);
                 }
             }
         }
@@ -1741,6 +1756,7 @@ impl MergedThrowableRethrow {
             }
             JavaStmt::Empty
             | JavaStmt::RecoveryFailure(_)
+            | JavaStmt::RecoveryGap(_)
             | JavaStmt::Variable { .. }
             | JavaStmt::Expression(_)
             | JavaStmt::ConstructorInvocation { .. }
@@ -1793,6 +1809,7 @@ impl MergedThrowableRethrow {
             }
             JavaStmt::Empty
             | JavaStmt::RecoveryFailure(_)
+            | JavaStmt::RecoveryGap(_)
             | JavaStmt::Variable { .. }
             | JavaStmt::Expression(_)
             | JavaStmt::ConstructorInvocation { .. }

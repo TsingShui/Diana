@@ -114,9 +114,11 @@ def attach_raw_controls(checks, controls):
     return checks
 
 
-def method_source(text: str, member: str) -> str:
+def method_source(text: str, member: str, *, require_statements: bool = False) -> str:
     view = corpus_oracles.View(text)
     opening, closing = view.method_body(member)
+    if require_statements and closing == opening + 1:
+        raise corpus_oracles.Unavailable("the publication reports recovery issues and has no visible statements")
     first, last = view.tokens[opening].line - 1, view.tokens[closing].line
     _, name, _ = corpus_oracles.member_parts(member)
     declaration = re.compile(rf"^[\t ]*(?:public|protected|private)\s+(?:static\s+)?[^;{{}}]+\b{re.escape(name)}\s*\(")
@@ -184,7 +186,8 @@ def compare(model: Model, original: str | None, observation: dict | None, member
         recovered = [(None, unavailable) for _ in model.scenarios]
         if observation and not observation.get("error") and observation.get("text"):
             try:
-                recovered = execute(model, method_source(observation["text"], member), scratch / "observed", timeout)
+                body = method_source(observation["text"], member, require_statements=bool(observation.get("issues")))
+                recovered = execute(model, body, scratch / "observed", timeout)
             except (OSError, ValueError, subprocess.SubprocessError) as error:
                 recovered = [(None, str(error)) for _ in model.scenarios]
     rows = []
@@ -196,3 +199,22 @@ def compare(model: Model, original: str | None, observation: dict | None, member
         else:
             rows.append(row(spec, "PASS" if observed == expected else "FAIL", observed))
     return rows
+
+
+def fixture_method_probe(fixture, source, binary, artifact, timeout):
+    """Run a fixture whose single Java reference supplies the recording helpers."""
+    from evidence import method
+
+    manifest = json.loads((fixture / "decbench.json").read_bytes())
+    scenarios = json.loads((fixture / "scenarios.json").read_bytes())
+    reference = source.read_text(encoding="utf-8")
+    results = {}
+    for case in manifest["methods"]:
+        at, member = case["at"], case["member"]
+        name = member.split("->", 1)[1].split("(", 1)[0]
+        original = method_source(reference, member)
+        template = reference.replace(original, MARKER, 1)
+        model = Model(fixture / "scenarios.json", source, template, source.stem, scenarios[name], None)
+        captured = method(binary, artifact, at, timeout, member=member)
+        results[at] = compare(model, original, captured, member, timeout)
+    return results

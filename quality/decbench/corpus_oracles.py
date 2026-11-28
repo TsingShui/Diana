@@ -186,8 +186,9 @@ class Site:
 
 
 class View:
-    def __init__(self, text, first_line=1):
+    def __init__(self, text, first_line=1, *, locate_tokens=False):
         self.tokens = []
+        self.offsets = [] if locate_tokens else None
         self.ends = {}
         self.scopes = []
         stack = []
@@ -196,6 +197,8 @@ class View:
         for match in TOKEN.finditer(text):
             value = match[0]
             if not match["skip"]:
+                if self.offsets is not None:
+                    self.offsets.append(match.span())
                 self.scopes.append(scopes[-1] if scopes else None)
                 if value == "{":
                     scopes.append(len(self.tokens))

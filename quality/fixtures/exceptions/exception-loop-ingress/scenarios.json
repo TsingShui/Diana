@@ -1,0 +1,169 @@
+{
+  "run": [
+    {
+      "id": "no-input",
+      "arguments": [
+        "none",
+        "-"
+      ],
+      "expected": [
+        "next:null",
+        "return:null"
+      ]
+    },
+    {
+      "id": "joined-normal-clears",
+      "arguments": [
+        "none",
+        "-",
+        "a-",
+        "b"
+      ],
+      "expected": [
+        "next:a-",
+        "partial:a-",
+        "next:b",
+        "append:a-+b",
+        "partial:a-b",
+        "parse:a-b",
+        "next:null",
+        "return:null"
+      ]
+    },
+    {
+      "id": "joined-shape-clears",
+      "arguments": [
+        "shape",
+        "a-b",
+        "a-",
+        "b"
+      ],
+      "expected": [
+        "next:a-",
+        "partial:a-",
+        "next:b",
+        "append:a-+b",
+        "partial:a-b",
+        "parse:a-b",
+        "fault:shape",
+        "next:null",
+        "return:null"
+      ]
+    },
+    {
+      "id": "joined-bounds-retains",
+      "arguments": [
+        "bounds",
+        "a-b",
+        "a-",
+        "b"
+      ],
+      "expected": [
+        "next:a-",
+        "partial:a-",
+        "next:b",
+        "append:a-+b",
+        "partial:a-b",
+        "parse:a-b",
+        "fault:bounds",
+        "next:null",
+        "return:a-b"
+      ]
+    },
+    {
+      "id": "joined-bounds-retains-on-backedge",
+      "arguments": [
+        "bounds",
+        "a-b",
+        "a-",
+        "b",
+        "c"
+      ],
+      "expected": [
+        "next:a-",
+        "partial:a-",
+        "next:b",
+        "append:a-+b",
+        "partial:a-b",
+        "parse:a-b",
+        "fault:bounds",
+        "next:c",
+        "append:a-b+c",
+        "partial:a-bc",
+        "parse:a-bc",
+        "next:null",
+        "return:null"
+      ]
+    },
+    {
+      "id": "single-shape-clears",
+      "arguments": [
+        "shape",
+        "b",
+        "b"
+      ],
+      "expected": [
+        "next:b",
+        "partial:b",
+        "parse:b",
+        "fault:shape",
+        "next:null",
+        "return:null"
+      ]
+    },
+    {
+      "id": "single-bounds-clears",
+      "arguments": [
+        "bounds",
+        "b",
+        "b"
+      ],
+      "expected": [
+        "next:b",
+        "partial:b",
+        "parse:b",
+        "fault:bounds",
+        "next:null",
+        "return:null"
+      ]
+    },
+    {
+      "id": "unmatched-exception-escapes",
+      "arguments": [
+        "unexpected",
+        "a-b",
+        "a-",
+        "b",
+        "c"
+      ],
+      "expected": [
+        "next:a-",
+        "partial:a-",
+        "next:b",
+        "append:a-+b",
+        "partial:a-b",
+        "parse:a-b",
+        "fault:unexpected",
+        "throw:unexpected"
+      ]
+    },
+    {
+      "id": "exception-before-protection-escapes",
+      "arguments": [
+        "append-bounds",
+        "-",
+        "a-",
+        "b",
+        "c"
+      ],
+      "expected": [
+        "next:a-",
+        "partial:a-",
+        "next:b",
+        "append:a-+b",
+        "fault:append-bounds",
+        "throw:append-bounds"
+      ]
+    }
+  ]
+}

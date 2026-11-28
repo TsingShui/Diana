@@ -1,0 +1,99 @@
+{
+  "input_sha256": "a9be897603ebba8b188d8a80ef61f0fc54162d45045ec3a2834a648426c0ad90",
+  "methods": [
+    {
+      "at": "e4:l0:c5092:m37558",
+      "member": "Leu/faircode/email/ConnectionHelper;->isAborted(Ljava/lang/Throwable;)Z",
+      "module": "app",
+      "obligations": [
+        {
+          "description": "Retain displayed names and argument counts for selected unique invocation sites in source and DEX.",
+          "id": "discovered-invocation-presence",
+          "kind": "call_presence",
+          "targets": [
+            {
+              "descriptor": "()Ljava/lang/Throwable;",
+              "name": "getCause",
+              "owner": "Ljava/lang/Throwable;"
+            },
+            {
+              "descriptor": "()Ljava/lang/String;",
+              "name": "getMessage",
+              "owner": "Ljava/lang/Throwable;"
+            }
+          ]
+        }
+      ],
+      "source": {
+        "end_line": 530,
+        "path": "app/src/main/java/eu/faircode/email/ConnectionHelper.java",
+        "sha256": "0ac369beb48f5e9a8b019fc22f03c639f19e1f5741b03a71f0ad05365029b11e",
+        "start_line": 519,
+        "url": "https://github.com/M66B/FairEmail/blob/a239b8bf3f4599b2f0ad27795c13ff97e0f4f4cd/app/src/main/java/eu/faircode/email/ConnectionHelper.java#L519-L530"
+      },
+      "source_forms": [
+        "loops",
+        "branches"
+      ]
+    },
+    {
+      "at": "e4:l0:c5823:m40438",
+      "member": "Leu/faircode/email/EditTextMultiAutoComplete;->getTokenEnd(Landroid/text/Editable;I)I",
+      "module": "app",
+      "obligations": [
+        {
+          "description": "Retain displayed names and argument counts for selected unique invocation sites in source and DEX.",
+          "id": "discovered-invocation-presence",
+          "kind": "call_presence",
+          "targets": [
+            {
+              "descriptor": "(I)C",
+              "name": "charAt",
+              "owner": "Ljava/lang/CharSequence;"
+            },
+            {
+              "descriptor": "()I",
+              "name": "length",
+              "owner": "Ljava/lang/CharSequence;"
+            }
+          ]
+        }
+      ],
+      "source": {
+        "end_line": 647,
+        "path": "app/src/main/java/eu/faircode/email/EditTextMultiAutoComplete.java",
+        "sha256": "7dac955752042b0f9f46d45ae87926a02c0fd4efc8bef7fc752fad31e736a6aa",
+        "start_line": 642,
+        "url": "https://github.com/M66B/FairEmail/blob/a239b8bf3f4599b2f0ad27795c13ff97e0f4f4cd/app/src/main/java/eu/faircode/email/EditTextMultiAutoComplete.java#L642-L647"
+      },
+      "source_forms": [
+        "loops"
+      ]
+    },
+    {
+      "at": "e4:l0:c5109:m37647",
+      "member": "Leu/faircode/email/ContactInfo;->getDisplayName()Ljava/lang/String;",
+      "module": "app",
+      "obligations": [
+        {
+          "description": "Keep the original own-instance field read or write in the displayed accessor.",
+          "id": "discovered-field-access",
+          "kind": "field_access"
+        }
+      ],
+      "source": {
+        "end_line": 160,
+        "path": "app/src/main/java/eu/faircode/email/ContactInfo.java",
+        "sha256": "49c0575dafd26372a3be001c319ed2db9464e28e4c0820535b1a5e8051ece1dc",
+        "start_line": 158,
+        "url": "https://github.com/M66B/FairEmail/blob/a239b8bf3f4599b2f0ad27795c13ff97e0f4f4cd/app/src/main/java/eu/faircode/email/ContactInfo.java#L158-L160"
+      },
+      "source_forms": [
+        "field-access",
+        "straight-line"
+      ]
+    }
+  ],
+  "schema_version": 1,
+  "source_revision": "a239b8bf3f4599b2f0ad27795c13ff97e0f4f4cd"
+}

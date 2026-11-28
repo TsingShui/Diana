@@ -129,7 +129,7 @@ def recovery_body(case, observation):
             "original_body_error", "the original DEX body was not established",
         ))
     if observation.get("has_body") is False:
-        return judge.check(metric, metric, "FAIL", True, False, "the peer emitted no recovered body")
+        return judge.check(metric, metric, "FAIL", True, False, "the publication declares the method without a body")
     if observation.get("error"):
         return judge.check(metric, metric, "UNCHECKED", True, None, observation["error"])
     if observation.get("has_body") is True:
@@ -197,7 +197,7 @@ def checked_method(case, observation, original_member, inventory):
     return row
 
 
-def evaluator_fingerprint(backend, inspect_structure):
+def evaluator_fingerprint(backend, inspect_structure, *, export=False):
     here = Path(__file__).parent
     files = [Path(__file__), Path(evidence.__file__), Path(judge.__file__), here / "tool_capture.py"]
     if backend == "jadx":
@@ -206,6 +206,8 @@ def evaluator_fingerprint(backend, inspect_structure):
         files.extend((Path(jadx.__file__), jadx.HELPER))
     else:
         files.append(Path(legacy_diana.__file__))
+        if export:
+            files.append(here / "corpus_export.py")
     if inspect_structure:
         files.extend(here / name for name in ("corpus_structure.py", "flow_shape.py", "FlowShape.java"))
     return evidence.digest([evidence.file_digest(path) for path in files])
@@ -214,7 +216,7 @@ def evaluator_fingerprint(backend, inspect_structure):
 def run(project, cache: Path, binary: Path, revision: str | None, backend: str,
         selected: list[str] | None, jobs: int, timeout: int, *, execute_models: bool = False,
         case_path: Path | None = None, checkpoint: Path | None = None, inspect_structure: bool = False,
-        expected_evidence: dict | None = None) -> dict:
+        expected_evidence: dict | None = None, exported=None) -> dict:
     started = time.perf_counter()
     assets = corpus_assets.prepare_assets(project, cache)
     external_cases = case_path is not None
@@ -264,7 +266,7 @@ def run(project, cache: Path, binary: Path, revision: str | None, backend: str,
         error = case.get("original_error") or case.get("source_error")
         if error:
             raise ValueError("could not verify the selected original evidence: " + error)
-    evaluator_hash = evaluator_fingerprint(backend, inspect_structure)
+    evaluator_hash = evaluator_fingerprint(backend, inspect_structure, export=exported is not None)
     report = judge.run_header(binary, binary_hash, cache, revision, backend, evaluator_hash)
     checkpoint_path = None
     if checkpoint is not None:
@@ -281,6 +283,10 @@ def run(project, cache: Path, binary: Path, revision: str | None, backend: str,
         observations, by_locator = {}, {}
         inventory = {"complete": False, "observed": 0, "setup_error": True,
                      "error": "APK bytes differ from the pinned assessment input"}
+    elif exported is not None:
+        if (backend != "diana" or exported.binary_sha256 != binary_hash or exported.input_sha256 != input_hash):
+            raise ValueError("the export does not match the Diana executable and original APK")
+        observations, by_locator, inventory = exported.select(cases)
     elif backend == "diana":
         observations, by_locator, inventory = native_publications(binary, assets.apk, cases, jobs, timeout)
     else:

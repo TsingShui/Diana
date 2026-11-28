@@ -1,0 +1,17 @@
+{
+  "run": [
+    {"id": "no-message", "arguments": ["null"], "expected": ["return:false"]},
+    {"id": "first-predicate-skips-second", "arguments": ["both"],
+     "expected": ["left:both", "return:true"]},
+    {"id": "second-predicate-can-accept", "arguments": ["right"],
+     "expected": ["left:right", "right:right", "return:true"]},
+    {"id": "neither-predicate-accepts", "arguments": ["miss"],
+     "expected": ["left:miss", "right:miss", "next:miss", "return:false"]},
+    {"id": "predicates-repeat-for-next-message", "arguments": ["chain"],
+     "expected": ["left:chain", "right:chain", "next:chain", "left:right", "right:right", "return:true"]},
+    {"id": "first-predicate-throws", "arguments": ["left-fault"],
+     "expected": ["left:left-fault", "throw:left"]},
+    {"id": "second-predicate-throws", "arguments": ["right-fault"],
+     "expected": ["left:right-fault", "right:right-fault", "throw:right"]}
+  ]
+}

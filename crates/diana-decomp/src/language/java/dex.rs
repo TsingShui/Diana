@@ -4053,12 +4053,14 @@ impl DexJavaDialect {
                 crate::ir::analysis::SsaVar::from_reg(register)
                     .and_then(|value| self.source_value_types.get(&value))
             })
+            .filter(|ty| self.source_type_fits_storage(register, ty))
     }
 
     fn source_definition_type(&self, register: &RegisterArg) -> Option<JavaType> {
         let variable_type = self.source_register_type(register);
         let value_type = crate::ir::analysis::SsaVar::from_reg(register)
-            .and_then(|value| self.source_value_types.get(&value));
+            .and_then(|value| self.source_value_types.get(&value))
+            .filter(|ty| self.source_type_fits_storage(register, ty));
         match (variable_type, value_type) {
             (Some(variable), Some(value))
                 if Self::same_erasure(variable, value)
@@ -4074,6 +4076,12 @@ impl DexJavaDialect {
             (None, Some(value)) => Some(value.clone()),
             (None, None) => None,
         }
+    }
+
+    fn source_type_fits_storage(&self, register: &RegisterArg, ty: &JavaType) -> bool {
+        // A predicate can seed an integer local through an edge copy. Its
+        // expression type cannot narrow the local that holds later values.
+        ty != &JavaType::boolean() || self.types.register_type(register).ok() != Some(&ArgType::INT)
     }
 
     fn constructor_invocation(

@@ -78,7 +78,7 @@ class CampaignTest(unittest.TestCase):
         report["inputs"] = [{"suite": f"public:{project.id}", "path": str(self.assets(project, cache).apk),
                              "sha256": config["input_sha256"], "oracle_sha256": evidence.digest(config),
                              "methods": observed, "inventory": {"complete": True},
-                             "corpus": {"profile": "discovered" if case_path else "reviewed"}}]
+                             "corpus": {"id": project.id, "profile": "discovered" if case_path else "reviewed"}}]
         return judge.summarize(report, perf_counter())
 
     def campaign(self, **options):
@@ -169,6 +169,36 @@ class CampaignTest(unittest.TestCase):
         self.assertEqual(len(list(second.parent.rglob("cases.json"))), 4)
         self.assertFalse(list(second.parent.rglob("*.apk")))
         self.assertFalse(list(second.parent.rglob("*.tar.gz")))
+
+    def test_full_scan_reuses_one_export_per_project_across_all_shards(self):
+        def prepare(artifact, source, root, revision, repository, **options):
+            discovered = [method(root, number) for number in range(3, 9)]
+
+            def select(limit, shard, *, include):
+                number, count = shard
+                self.assertEqual(count, 3)
+                self.assertEqual(limit, 3)
+                return {"input_sha256": options["input_sha256"], "discovery": {},
+                        "methods": [*include, *discovered][number - 1::count]}
+
+            return SimpleNamespace(candidates=discovered, select=select)
+
+        with patch("corpus_campaign.corpus_discover.prepare_discovery", side_effect=prepare):
+            with patch("corpus_campaign.corpus_export.publish", side_effect=["alpha-export", "beta-export"]) as publish:
+                path, _ = self.campaign(profile="full", limit=3)
+        self.assertEqual(publish.call_count, 2)
+        self.assertEqual([len(call.args[2]) for call in publish.call_args_list], [9, 9])
+        for call in self.evaluate.call_args_list:
+            if call.args[4] == "diana":
+                self.assertEqual(call.kwargs["exported"], call.args[0].id + "-export")
+            else:
+                self.assertNotIn("exported", call.kwargs)
+            self.assertTrue(call.kwargs["inspect_structure"])
+        receipt = read(path)
+        self.assertEqual(receipt["project_shards"], {"alpha": 3, "beta": 3})
+        self.assertEqual(len(receipt["units"]), 12)
+        bench = path.parent / receipt["artifacts"]["bench_html"]
+        self.assertIn('"scanned":18,"methods":[]', bench.read_text(encoding="utf-8"))
 
     def test_incomplete_original_population_preserves_valid_arms_and_returns_setup_status(self):
         available = self.coverage.return_value

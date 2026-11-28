@@ -1,0 +1,26 @@
+{
+  "run": [
+    {"id": "selected-producer", "arguments": ["direct", "true", "none"],
+     "expected": ["prepare", "publish", "consume:prepared", "return:prepared"]},
+    {"id": "unselected-producer", "arguments": ["direct", "false", "none"],
+     "expected": ["publish", "consume:null", "return:null"]},
+    {"id": "producer-throws", "arguments": ["direct", "true", "prepare"],
+     "expected": ["prepare", "recover", "return:null"]},
+    {"id": "publication-throws", "arguments": ["direct", "true", "publish"],
+     "expected": ["prepare", "publish", "recover", "return:null"]}
+  ],
+  "runWithCleanup": [
+    {"id": "selected-with-cleanup", "arguments": ["challenge", "true", "none"],
+     "expected": ["prepare", "publish", "consume:prepared", "cleanup", "return:prepared"]},
+    {"id": "unselected-with-cleanup", "arguments": ["challenge", "false", "none"],
+     "expected": ["publish", "consume:null", "cleanup", "return:null"]},
+    {"id": "producer-throws-before-cleanup", "arguments": ["challenge", "true", "prepare"],
+     "expected": ["prepare", "recover", "cleanup", "return:null"]},
+    {"id": "publication-throws-before-cleanup", "arguments": ["challenge", "true", "publish"],
+     "expected": ["prepare", "publish", "recover", "cleanup", "return:null"]},
+    {"id": "unmatched-fault-cleans-up", "arguments": ["challenge", "true", "consume"],
+     "expected": ["prepare", "publish", "consume:prepared", "cleanup", "escape"]},
+    {"id": "catch-fault-cleans-up", "arguments": ["challenge", "true", "recover"],
+     "expected": ["prepare", "publish", "recover", "cleanup", "escape"]}
+  ]
+}

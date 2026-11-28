@@ -58,7 +58,7 @@ impl<'a> ObservedBounds<'a> {
 pub(super) struct TypeConstraintGraph<'a> {
     classes: Option<SsaClasses>,
     bounds: ObservedBounds<'a>,
-    flows: BTreeSet<(SsaVar, SsaVar)>,
+    flows: BTreeSet<(SsaVar, SsaVar, FlowKind)>,
     upper_flows: BTreeSet<(SsaVar, SsaVar)>,
     arrays: BTreeSet<ArrayConstraint>,
 }
@@ -68,9 +68,15 @@ pub(super) struct NormalizedTypeConstraints {
     /// original bounds keys are precisely the observed singleton values.
     pub(super) members: Option<Vec<(SsaVar, SsaVar)>>,
     pub(super) bounds: Vec<(SsaVar, TypeBounds)>,
-    pub(super) flows: BTreeSet<(SsaVar, SsaVar)>,
+    pub(super) flows: BTreeSet<(SsaVar, SsaVar, FlowKind)>,
     pub(super) upper_flows: BTreeSet<(SsaVar, SsaVar)>,
     pub(super) arrays: BTreeSet<ArrayConstraint>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum FlowKind {
+    Phi,
+    Bitwise,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -120,14 +126,23 @@ impl<'a> TypeConstraintGraph<'a> {
                     graph.add_value_bound(phi.result, BoundKind::Fallback, ty);
                     graph.upper_flows.insert((input.value, phi.result));
                 } else {
-                    graph.flows.insert((input.value, phi.result));
+                    graph.flows.insert((input.value, phi.result, FlowKind::Phi));
                 }
             }
         }
         graph.collect_method_inputs(cfg)?;
+        let mut catch_types = BTreeMap::<u32, BTreeSet<ArgType>>::new();
+        for handler in &cfg.handlers {
+            catch_types.entry(handler.handler).or_default().insert(
+                handler
+                    .catch_type
+                    .clone()
+                    .unwrap_or_else(ArgType::throwable),
+            );
+        }
         for block in cfg.blocks.values() {
             for instruction in &block.insns {
-                graph.constrain_instruction(instruction, cfg)?;
+                graph.constrain_instruction(instruction, cfg, &catch_types)?;
             }
         }
         Ok(graph)
@@ -136,7 +151,7 @@ impl<'a> TypeConstraintGraph<'a> {
     pub(super) fn normalize(mut self) -> NormalizedTypeConstraints {
         let mut rows = self.bounds.into_sorted();
         let Some(classes) = self.classes else {
-            self.flows.retain(|(source, target)| source != target);
+            self.flows.retain(|(source, target, _)| source != target);
             self.upper_flows.retain(|(source, target)| source != target);
             return NormalizedTypeConstraints {
                 members: None,
@@ -176,10 +191,10 @@ impl<'a> TypeConstraintGraph<'a> {
         let flows = self
             .flows
             .into_iter()
-            .filter_map(|(source, target)| {
+            .filter_map(|(source, target, kind)| {
                 let source = root_of(source);
                 let target = root_of(target);
-                (source != target).then_some((source, target))
+                (source != target).then_some((source, target, kind))
             })
             .collect();
         let upper_flows = self
@@ -235,6 +250,7 @@ impl<'a> TypeConstraintGraph<'a> {
         &mut self,
         instruction: &InsnNode,
         cfg: &CFG,
+        catch_types: &BTreeMap<u32, BTreeSet<ArgType>>,
     ) -> Result<(), TypeConstraintError> {
         if let Some(result) = &instruction.result {
             self.observe_register_type(result);
@@ -277,6 +293,13 @@ impl<'a> TypeConstraintGraph<'a> {
             InsnType::MoveException => {
                 if let Some(result) = &instruction.result {
                     self.add_register_bound(result, BoundKind::Upper, ArgType::throwable());
+                    // The ordered handler table supplies a producer type for
+                    // each real landing pad. Shared entries carry the union
+                    // of their clauses, so exception values can flow into Phi
+                    // arguments even with no typed register use at the catch.
+                    for ty in catch_types.get(&instruction.offset).into_iter().flatten() {
+                        self.add_register_bound(result, BoundKind::Lower, ty.clone());
+                    }
                 }
             }
             InsnType::NewInstance => {
@@ -298,7 +321,7 @@ impl<'a> TypeConstraintGraph<'a> {
             }
             InsnType::InstanceOf => {
                 if let Some(result) = &instruction.result {
-                    self.add_register_bound(result, BoundKind::Exact, ArgType::BOOLEAN);
+                    self.add_register_bound(result, BoundKind::PredicateWord, ArgType::BOOLEAN);
                 }
                 if let Some(value) = instruction.args.first() {
                     self.add_argument_bound(value, BoundKind::Upper, ArgType::unknown_object());
@@ -575,7 +598,7 @@ impl<'a> TypeConstraintGraph<'a> {
         let mut has_value_source = false;
         for argument in &instruction.args {
             if let Some(source) = Self::argument_value(argument) {
-                self.flows.insert((source, result));
+                self.flows.insert((source, result, FlowKind::Bitwise));
                 has_value_source = true;
                 continue;
             }
@@ -748,8 +771,8 @@ mod tests {
 
         graph.constrain_arithmetic(&instruction);
 
-        assert!(graph.flows.contains(&(left, result)));
-        assert!(graph.flows.contains(&(right, result)));
+        assert!(graph.flows.contains(&(left, result, FlowKind::Bitwise)));
+        assert!(graph.flows.contains(&(right, result, FlowKind::Bitwise)));
         assert!(!graph.bounds.additional.get(&result).is_some_and(|bounds| {
             bounds.contains(&TypeBound::new(BoundKind::Lower, ArgType::INT))
         }));
@@ -794,7 +817,7 @@ mod tests {
         ));
 
         graph
-            .constrain_instruction(&instruction, &CFG::new("handler"))
+            .constrain_instruction(&instruction, &CFG::new("handler"), &BTreeMap::new())
             .expect("move-exception constraint");
 
         assert!(graph.bounds.additional.get(&value).is_some_and(|bounds| {

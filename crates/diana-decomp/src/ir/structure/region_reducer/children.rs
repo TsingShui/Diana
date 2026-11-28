@@ -12,7 +12,7 @@ use super::super::{
     StructureError,
 };
 use super::{
-    handlers::HandlerReducer,
+    handlers::{CleanupContinuation, HandlerReducer},
     labels::LexicalLabels,
     region_cfg::{RegionAnchors, RegionScope},
     ReducedRegion,
@@ -21,7 +21,9 @@ use super::{
 pub(super) struct RegionChildren {
     pub(super) ordinary: Vec<RegionId>,
     pub(super) handlers: Vec<RegionId>,
+    pub(super) forwarded_cleanups: BTreeMap<RegionId, CleanupContinuation>,
     pub(super) releases: BTreeSet<RegionId>,
+    pub(super) unresolved_dispatch: BTreeSet<(u32, u32)>,
 }
 
 impl RegionChildren {
@@ -33,14 +35,25 @@ impl RegionChildren {
         // DEX handler order is semantic: a typed catch must remain before a
         // later catch-all clause. Region ids describe construction order and
         // cannot be used to sort catch clauses.
+        let handler_reducer = HandlerReducer::new(graph);
         let mut handlers = Vec::new();
         let mut seen_handlers = BTreeSet::new();
+        let mut forwarded_cleanups = BTreeMap::new();
+        let mut can_throw = None;
+        let mut unresolved_dispatch = BTreeSet::new();
         for handler in graph.handlers_of(region.id).iter().copied() {
             if graph
                 .tree()
                 .is_ancestor(handler, region.id)
                 .map_err(|_| StructureError::UnknownRegion(handler))?
             {
+                Self::record_ancestor_dispatch(
+                    cfg,
+                    graph,
+                    region,
+                    handler,
+                    &mut unresolved_dispatch,
+                )?;
                 continue;
             }
             let handler_kind = &graph
@@ -49,14 +62,36 @@ impl RegionChildren {
                 .ok_or(StructureError::UnknownRegion(handler))?
                 .kind;
             // A catch clause with no exceptional ingress cannot affect this
-            // protected fragment. Finally and cleanup handlers may still be
-            // required on normal completion, so retain those unconditionally.
+            // protected fragment. A synthetic cleanup is also catch-only
+            // unless it encloses a proven source finally.
             if matches!(handler_kind, RegionKind::Catch(_))
                 && !Self::reaches_handler(cfg, graph, region, handler)?
             {
                 continue;
             }
+            if matches!(handler_kind, RegionKind::Cleanup(_))
+                && !*can_throw.get_or_insert_with(|| {
+                    region.blocks.iter().any(|block| {
+                        cfg.block(*block).is_none_or(|body| {
+                            body.insns.iter().any(|instruction| instruction.can_throw())
+                        }) || cfg
+                            .successors_with_kind(*block)
+                            .iter()
+                            .any(|(_, kind)| kind.is_exception())
+                    })
+                })
+                && handler_reducer
+                    .source_finally_body(region.id, handler)?
+                    .is_none()
+            {
+                continue;
+            }
             if seen_handlers.insert(handler) {
+                if let Some(continuation) =
+                    handler_reducer.forwarded_cleanup(cfg, region.id, handler)?
+                {
+                    forwarded_cleanups.insert(handler, continuation);
+                }
                 handlers.push(handler);
             }
         }
@@ -74,7 +109,6 @@ impl RegionChildren {
                 handlers.push(release);
             }
         }
-        let handler_reducer = HandlerReducer::new(graph);
         let handler_bodies = handlers
             .iter()
             .copied()
@@ -130,8 +164,61 @@ impl RegionChildren {
         Ok(Self {
             ordinary,
             handlers,
+            forwarded_cleanups,
             releases,
+            unresolved_dispatch,
         })
+    }
+
+    fn record_ancestor_dispatch(
+        cfg: &CFG,
+        graph: &RegionGraph,
+        region: &StructuredRegion,
+        handler: RegionId,
+        unresolved: &mut BTreeSet<(u32, u32)>,
+    ) -> Result<(), StructureError> {
+        for &source in &region.blocks {
+            let Some(instruction) = cfg.block(source).and_then(|body| body.terminator()) else {
+                continue;
+            };
+            if !instruction.can_throw()
+                || graph.is_elided(&crate::ir::StatementOrigin {
+                    block: source,
+                    instruction: instruction.id,
+                })
+            {
+                continue;
+            }
+            for &(target, kind) in cfg.successors_with_kind(source) {
+                if !kind.is_exception() {
+                    continue;
+                }
+                let canonical = graph
+                    .handler_adapters()
+                    .get(&target)
+                    .copied()
+                    .unwrap_or(target);
+                let Some(owner) = graph.owner_of(canonical) else {
+                    continue;
+                };
+                if !graph
+                    .tree()
+                    .is_ancestor(handler, owner)
+                    .map_err(StructureError::from)?
+                {
+                    continue;
+                }
+                let Some(physical) = cfg.block(target).filter(|body| !body.synthetic) else {
+                    continue;
+                };
+                if cfg.handlers.iter().any(|entry| {
+                    entry.covers(instruction.offset) && entry.handler == physical.offset
+                }) {
+                    unresolved.insert((instruction.offset, physical.offset));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn reaches_handler(
@@ -628,20 +715,24 @@ mod tests {
 
     #[test]
     fn ignores_handler_dependency_without_exception_ingress() {
-        let (cfg, graph, owner) = graph_with_handler(false, HandlerKind::Catch);
-        let region = graph.tree().region(owner).expect("try region");
-        let children = RegionChildren::classify(&cfg, &graph, region).expect("children");
+        for kind in [HandlerKind::Catch, HandlerKind::Cleanup] {
+            let (cfg, graph, owner) = graph_with_handler(false, kind);
+            let region = graph.tree().region(owner).expect("try region");
+            let children = RegionChildren::classify(&cfg, &graph, region).expect("children");
 
-        assert!(children.handlers.is_empty());
+            assert!(children.handlers.is_empty(), "{kind:?}");
+        }
     }
 
     #[test]
     fn retains_handler_dependency_with_exception_ingress() {
-        let (cfg, graph, owner) = graph_with_handler(true, HandlerKind::Catch);
-        let region = graph.tree().region(owner).expect("try region");
-        let children = RegionChildren::classify(&cfg, &graph, region).expect("children");
+        for kind in [HandlerKind::Catch, HandlerKind::Cleanup] {
+            let (cfg, graph, owner) = graph_with_handler(true, kind);
+            let region = graph.tree().region(owner).expect("try region");
+            let children = RegionChildren::classify(&cfg, &graph, region).expect("children");
 
-        assert_eq!(children.handlers.len(), 1);
+            assert_eq!(children.handlers.len(), 1, "{kind:?}");
+        }
     }
 
     #[test]

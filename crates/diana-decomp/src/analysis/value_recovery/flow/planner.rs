@@ -307,6 +307,8 @@ impl<'a> ValuePlanner<'a> {
     /// read, or call after both actions are composed. Applying producer leaves
     /// first preserves use cardinality and lets the next recovery stage rebuild
     /// domains, effects, and use-def facts before moving the expanded consumer.
+    /// A pure consumer can cross an intervening call under its own proof even
+    /// when the inherited producer cannot cross that call.
     /// A single lexical use in a loop is also a repeated dynamic use and may
     /// not acquire an effect evaluated before that loop.
     fn retain_replacement_frontier(
@@ -365,12 +367,7 @@ impl<'a> ValuePlanner<'a> {
                     .iter()
                     .filter_map(|usage| usage.location.id())
                     .any(|site| erased.contains(&site));
-            if lost_effect
-                || (!inputs.is_disjoint(blocking)
-                    && (!ssa
-                        || uses.len() > 1
-                        || self.replacement_changes_execution_context(key, &inputs, blocking)))
-            {
+            if lost_effect || !inputs.is_disjoint(blocking) {
                 deferred.insert(key);
             }
         }
@@ -436,30 +433,6 @@ impl<'a> ValuePlanner<'a> {
                 }
             }
         }
-    }
-
-    // A register copy can acquire a throwing producer when replacements are
-    // composed. Preserve its exception scope and execution count until the
-    // next movement proof sees the expanded expression's effects.
-    fn replacement_changes_execution_context(
-        &self,
-        key: SsaVar,
-        dependencies: &BTreeSet<SsaVar>,
-        blocking_keys: &BTreeSet<SsaVar>,
-    ) -> bool {
-        self.facts.uses_of(key).iter().any(|usage| {
-            dependencies.intersection(blocking_keys).any(|dependency| {
-                self.graph()
-                    .definitions
-                    .get(dependency)
-                    .is_none_or(|definitions| {
-                        definitions.iter().any(|definition| {
-                            definition.protection != usage.protection
-                                || (usage.repetitive && !definition.repetitive)
-                        })
-                    })
-            })
-        })
     }
 
     fn register_move_source(&self, definition: &DefinitionFact) -> Option<SsaVar> {
@@ -2065,7 +2038,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_linear_alias_chain_with_effectful_producer() {
+    fn plans_the_effectful_producer_before_its_linear_alias_chain() {
         let array_type = ArgType::object_array();
         let allocation = SsaVar::new(10, 0);
         let first_alias = SsaVar::new(14, 0);
@@ -2094,8 +2067,8 @@ mod tests {
         let scheduled = scheduled_replacements("allocation_alias_chain", block);
 
         assert!(scheduled.contains(&allocation));
-        assert!(scheduled.contains(&first_alias));
-        assert!(scheduled.contains(&second_alias));
+        assert!(!scheduled.contains(&first_alias));
+        assert!(!scheduled.contains(&second_alias));
     }
 
     #[test]

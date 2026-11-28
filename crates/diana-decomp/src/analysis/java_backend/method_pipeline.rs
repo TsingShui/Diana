@@ -1,4 +1,6 @@
-use crate::analysis::{value_recovery::ValueRecovery, SemanticTransform};
+use crate::analysis::{
+    value_recovery::ValueRecovery, MethodRecoveryFailure, MethodRecoveryStage, SemanticTransform,
+};
 use crate::ir::semantic::SemanticDeadCodeElimination;
 use crate::ir::{
     analysis::{SourceVariableAllocation, TypeHierarchy, TypeSolver},
@@ -14,6 +16,7 @@ use super::JavaDecompilerError;
 
 pub(super) struct MethodBodyAnalysis {
     pub body: SemanticNode,
+    pub recovery_gap: Option<MethodRecoveryFailure>,
     pub types: crate::ir::analysis::SourceTypeEnvironment,
     pub is_static: bool,
     pub this_code_var: Option<u32>,
@@ -86,9 +89,9 @@ impl<'a> MethodBodyPipeline<'a> {
         let t = stats.then(std::time::Instant::now);
         let contractions =
             crate::ir::analysis::ControlContractions::for_edge_arguments(cfg, &region_graph);
-        let body = {
+        let (body, recovery_gap) = {
             RegionReducer::with_edge_arguments(cfg, &region_graph, self.observer, &contractions)
-                .and_then(|reducer| reducer.reduce())
+                .and_then(RegionReducer::reduce_with_gaps)
                 .map_err(JavaDecompilerError::from)
         }?;
         mark(&mut stages, "structure", t);
@@ -240,6 +243,8 @@ impl<'a> MethodBodyPipeline<'a> {
         let (body, state) = semantic.into_parts();
         Ok(MethodBodyAnalysis {
             body,
+            recovery_gap: recovery_gap
+                .map(|gap| MethodRecoveryFailure::new(MethodRecoveryStage::Semantics, gap)),
             types: state.into_types(),
             is_static: cfg.method().is_static(),
             this_code_var: cfg.this_code_variable(),

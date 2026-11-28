@@ -1865,6 +1865,7 @@ impl ReturnExpression {
                 Some(Self::select(condition.clone(), when_true, when_false))
             }
             JavaStmt::RecoveryFailure(_)
+            | JavaStmt::RecoveryGap(_)
             | JavaStmt::Variable { .. }
             | JavaStmt::Expression(_)
             | JavaStmt::Assign { .. }

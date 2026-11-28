@@ -104,6 +104,7 @@ impl LexicalReferenceAnalysis {
         match statement {
             JavaStmt::Empty
             | JavaStmt::RecoveryFailure(_)
+            | JavaStmt::RecoveryGap(_)
             | JavaStmt::Break(_)
             | JavaStmt::Continue(_) => {}
             JavaStmt::Block(statements) => self.child_block(statements, scope, index),
@@ -515,6 +516,7 @@ impl DeclarationRewriter {
             }
             JavaStmt::Empty
             | JavaStmt::RecoveryFailure(_)
+            | JavaStmt::RecoveryGap(_)
             | JavaStmt::Variable { .. }
             | JavaStmt::Expression(_)
             | JavaStmt::ConstructorInvocation { .. }

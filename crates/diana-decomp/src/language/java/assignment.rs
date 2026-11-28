@@ -40,7 +40,7 @@ struct RewriteResult {
 impl KnownValues {
     fn rewrite(&mut self, statement: &mut JavaStmt) -> RewriteResult {
         match statement {
-            JavaStmt::RecoveryFailure(_) => {
+            JavaStmt::RecoveryFailure(_) | JavaStmt::RecoveryGap(_) => {
                 self.values.clear();
                 Self::complete(false)
             }
@@ -371,6 +371,7 @@ impl JavaAstRewriter for StatementWrites {
             JavaStmt::Assign { target, .. } => self.record_target(target),
             JavaStmt::Empty
             | JavaStmt::RecoveryFailure(_)
+            | JavaStmt::RecoveryGap(_)
             | JavaStmt::Block(_)
             | JavaStmt::Labeled { .. }
             | JavaStmt::Expression(_)
@@ -439,6 +440,7 @@ impl Declarations {
                 }
                 JavaStmt::Empty
                 | JavaStmt::RecoveryFailure(_)
+                | JavaStmt::RecoveryGap(_)
                 | JavaStmt::Expression(_)
                 | JavaStmt::ConstructorInvocation { .. }
                 | JavaStmt::Assign { .. }
@@ -548,7 +550,7 @@ impl AssignmentAnalysis {
 
     fn statement(&mut self, statement: &JavaStmt, mut flow: Flow) -> Flow {
         match statement {
-            JavaStmt::RecoveryFailure(_) => {
+            JavaStmt::RecoveryFailure(_) | JavaStmt::RecoveryGap(_) => {
                 flow.assigned.words.clear();
                 flow
             }
@@ -920,6 +922,7 @@ impl AssignmentAnalysis {
             }
             JavaStmt::Empty
             | JavaStmt::RecoveryFailure(_)
+            | JavaStmt::RecoveryGap(_)
             | JavaStmt::Variable { .. }
             | JavaStmt::Expression(_)
             | JavaStmt::ConstructorInvocation { .. }

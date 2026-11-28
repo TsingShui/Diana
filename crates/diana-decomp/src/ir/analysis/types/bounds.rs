@@ -11,6 +11,7 @@ pub(super) enum BoundKind {
     Upper,
     Lower,
     Exact,
+    PredicateWord,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -50,6 +51,7 @@ impl BoundKinds {
             BoundKind::Upper,
             BoundKind::Lower,
             BoundKind::Exact,
+            BoundKind::PredicateWord,
         ]
         .into_iter()
         .filter(|&kind| self.has(kind));

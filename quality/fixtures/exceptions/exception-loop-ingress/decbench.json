@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "id": "dex-exception-loop-ingress",
+  "default": false,
+  "input": "classes.dex",
+  "input_sha256": "4f9e613200aad751501577d2f1feb40c4fbbda76c623051f784094ca09f7bc73",
+  "probe": "decbench_probe.py",
+  "oracle_files": [
+    "ExceptionLoopIngress.java",
+    "ExceptionLoopIngress.smali",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m4",
+      "member": "Lfixture/ExceptionLoopIngress;->run()Ljava/lang/String;",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

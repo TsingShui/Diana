@@ -38,7 +38,7 @@ def project_apk(path, *, duplicate=False):
 def analyze(text):
     view = View(text)
     source = SourceFile("app/src/main/java/example/Example.java", "app", "Lexample/Example;", text.encode())
-    environment = source_environment(view, source)
+    environment = source_environment(view, source.owner)
     return method_declarations(view, environment[-1]), environment
 
 

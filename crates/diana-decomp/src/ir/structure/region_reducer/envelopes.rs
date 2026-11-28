@@ -6,7 +6,10 @@ use crate::ir::{
     SemanticVisitor, CFG,
 };
 
-use super::{super::StructureError, labels::LexicalLabels};
+use super::{
+    super::{continuation::ContinuationFacts, StructureError},
+    labels::LexicalLabels,
+};
 
 /// Places one lexical exception envelope for every structured exception
 /// region. A region can expose several reduction ports, but those ports are
@@ -1481,6 +1484,91 @@ impl<'a> HandlerCleanupEnvelopePlacement<'a> {
         }
         Ok(())
     }
+
+    fn is_closed_handler(catch: &SemanticCatch) -> bool {
+        let continuation = ContinuationFacts::analyze(&catch.body);
+        continuation.ports().is_empty()
+            && continuation.controls().is_empty()
+            && !crate::ir::semantic::ControlCompletion::normally_completes(&catch.body)
+    }
+}
+
+/// A terminal cleanup already attached to the enclosing protection must
+/// handle a matching exception once. Its inner copy would execute inside
+/// that same outer protection, where its own rethrow would run it again.
+struct RemoveInheritedCleanup<'a> {
+    regions: &'a RegionGraph,
+    catch: &'a SemanticCatch,
+    protected_bodies: Vec<SemanticNode>,
+}
+
+#[cfg(test)]
+#[path = "../../../../tests/internal/inherited_cleanup_dispatch.rs"]
+mod inherited_cleanup_dispatch;
+
+impl SemanticFolder for RemoveInheritedCleanup<'_> {
+    type Error = StructureError;
+
+    fn begin_node(&mut self, mut node: SemanticNode) -> Result<SemanticFoldControl, Self::Error> {
+        loop {
+            let SemanticNode::Try {
+                region,
+                body,
+                mut catches,
+                finally,
+            } = node
+            else {
+                return Ok(SemanticFoldControl::Descend(node));
+            };
+            // Finally can intervene before an outer cleanup executes,
+            // including when the exception originates in a catch body.
+            if finally.is_some() {
+                return Ok(SemanticFoldControl::Emit(SemanticNode::Try {
+                    region,
+                    body,
+                    catches,
+                    finally,
+                }));
+            }
+            if self
+                .regions
+                .handlers_of(region)
+                .contains(&self.catch.region)
+                && catches.last().is_some_and(|inner| {
+                    inner.region == self.catch.region
+                        && inner.exception_types == self.catch.exception_types
+                        && inner.exception_value == self.catch.exception_value
+                        && HandlerCleanupEnvelopePlacement::is_closed_handler(inner)
+                })
+            {
+                catches.pop();
+            }
+            if catches.is_empty() {
+                node = *body;
+                continue;
+            }
+
+            // The remaining catches intercept their protected body only. An
+            // exception from a catch still reaches the outer protection.
+            self.protected_bodies.push(*body);
+            return Ok(SemanticFoldControl::Descend(SemanticNode::Try {
+                region,
+                body: Box::new(SemanticNode::Empty),
+                catches,
+                finally,
+            }));
+        }
+    }
+
+    fn finish_node(&mut self, mut node: SemanticNode) -> Result<SemanticNode, Self::Error> {
+        if let SemanticNode::Try { body, .. } = &mut node {
+            **body = self
+                .protected_bodies
+                .pop()
+                .ok_or(SemanticFoldError::MalformedWorkStack)?;
+        }
+        Ok(node)
+    }
 }
 
 impl SemanticFolder for HandlerCleanupEnvelopePlacement<'_> {
@@ -1513,6 +1601,18 @@ impl SemanticFolder for HandlerCleanupEnvelopePlacement<'_> {
             && catches.len() == 1
             && matches!(&cleanup_kind.kind, crate::ir::RegionKind::Cleanup(_))
         {
+            if self.regions.handlers_of(region).contains(&cleanup)
+                && Self::is_closed_handler(&catches[0])
+            {
+                body = Box::new(
+                    RemoveInheritedCleanup {
+                        regions: self.regions,
+                        catch: &catches[0],
+                        protected_bodies: Vec::new(),
+                    }
+                    .fold_node(*body)?,
+                );
+            }
             if let SemanticNode::Try {
                 catches: inner_catches,
                 ..

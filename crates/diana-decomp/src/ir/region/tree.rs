@@ -1587,7 +1587,12 @@ impl SynchronizationPlacement {
         let tries = tree
             .regions
             .values()
-            .filter(|region| matches!(region.kind, RegionKind::Try))
+            .filter(|region| {
+                // The continuation cut belongs to this monitor's lexical
+                // partition. A separate try can use its own handler's
+                // continuation as the entry of a protected body.
+                matches!(region.kind, RegionKind::Try) && !region.blocks.is_disjoint(sync_blocks)
+            })
             .map(|region| region.id)
             .collect::<Vec<_>>();
         for try_region in tries {
@@ -2742,3 +2747,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/internal/monitor_partition_scope.rs"]
+mod monitor_partition_scope;

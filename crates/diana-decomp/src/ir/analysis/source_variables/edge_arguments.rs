@@ -70,20 +70,9 @@ impl<'a> ContractedEdgeArguments<'a> {
         successor: BlockId,
         phi: &InsnNode,
     ) -> Result<Option<Vec<ResolvedEdgeArgument>>, SourceVariableError> {
-        let mut component = self.contractions.component(successor);
-        let direct_component = component.iter().any(|block| *block != successor);
-        if direct_component {
-            component.remove(&successor);
-        } else if let Some(terminal) = self
-            .contractions
-            .terminal(successor)
-            .filter(|terminal| *terminal != successor)
-        {
-            component = self.contractions.component(terminal);
-            component.remove(&terminal);
-        } else {
-            component.remove(&successor);
-        }
+        let (terminal, members) = self.contractions.phi_component(successor);
+        let mut component = members.clone();
+        component.remove(&terminal);
         if component.is_empty()
             || !phi
                 .payload
@@ -203,7 +192,6 @@ struct BoundaryEvaluator<'a> {
     reachable: &'a BTreeSet<BlockId>,
     boundary: BoundaryEdge,
     states: BTreeMap<SsaVar, SymbolicValue>,
-    destination_variable: Option<u32>,
 }
 
 impl<'a> BoundaryEvaluator<'a> {
@@ -223,12 +211,10 @@ impl<'a> BoundaryEvaluator<'a> {
             reachable,
             boundary,
             states: BTreeMap::new(),
-            destination_variable: None,
         }
     }
 
     fn evaluate_phi(&mut self, block: BlockId, phi: &InsnNode) -> SymbolicValue {
-        self.destination_variable = phi.result.as_ref().and_then(|result| result.code_var);
         self.solve();
         self.merge_phi_inputs(block, phi)
     }
@@ -322,9 +308,6 @@ impl<'a> BoundaryEvaluator<'a> {
         let Some(value) = SsaVar::from_reg(register) else {
             return SymbolicValue::Conflict;
         };
-        if register.code_var.is_some() && register.code_var == self.destination_variable {
-            return SymbolicValue::Known(InsnArg::Reg(register.clone()));
-        }
         if let Some(constant) = self.constants.get(&value) {
             return SymbolicValue::Known(constant.clone());
         }
@@ -332,6 +315,9 @@ impl<'a> BoundaryEvaluator<'a> {
         if definition.is_none_or(|position| !self.reachable.contains(&position.block)) {
             return SymbolicValue::Known(InsnArg::Reg(register.clone()));
         }
+        // Coalesced source variables still have distinct SSA definitions.
+        // An ingress copy must use the value reaching this edge when its
+        // definition is inside the contracted component.
         self.states
             .get(&value)
             .cloned()

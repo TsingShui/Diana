@@ -112,7 +112,8 @@ def inspect(cases, source_archive: Path, source_root: str, observations, timeout
         error = publication.get("error")
         if isinstance(text, str) and text.strip():
             try:
-                jobs.append(((at, 1), parse_unit(text, owner, member, backend == "jadx")))
+                jobs.append(((at, 1), parse_unit(text, owner, member,
+                                                backend == "jadx" or publication.get("fragment", False))))
             except (Unavailable, UnicodeError) as problem:
                 sides[1] = {"detail": str(problem)}
             else:

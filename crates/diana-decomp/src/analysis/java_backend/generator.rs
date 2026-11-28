@@ -26,6 +26,9 @@ impl JavaDecompiler {
     pub fn generate_method(&mut self, cfg: &mut CFG) -> Result<String, JavaDecompilerError> {
         let current_type = cfg.method().owner().clone();
         let method = self.build_method_model(cfg)?;
+        if let Some(failure) = &method.failure {
+            observe_body_gap(self.observer.as_ref(), cfg, failure);
+        }
         let declaration = JavaSingleMethodLowering::lower(
             method,
             None,
@@ -68,6 +71,9 @@ impl JavaDecompiler {
             None,
             OuterInstanceField::analyze(class).as_ref(),
         )?;
+        if let Some(failure) = &method.failure {
+            observe_body_gap(self.observer.as_ref(), cfg, failure);
+        }
         let declaration = JavaSingleMethodLowering::lower(
             method,
             source_package_name(class),
@@ -295,6 +301,16 @@ impl JavaDecompiler {
             );
             match recovered {
                 Ok(model) => {
+                    if !parallel {
+                        if let Some(failure) = &model.failure {
+                            failure.observe(
+                                self.observer.as_ref(),
+                                class.type_descriptor(),
+                                &decoded_method.info.name,
+                                &descriptor,
+                            );
+                        }
+                    }
                     observe_stage("done");
                     Ok(Ok(model))
                 }
@@ -569,6 +585,20 @@ fn method_model_from_body_analysis(
     options: super::java_model::MethodBodyOptions,
 ) -> Result<JavaMethodModel, JavaDecompilerError> {
     JavaMethodModel::from_body_analysis_with_options(declaration, body, options)
+}
+
+fn observe_body_gap(
+    observer: &dyn crate::ir::AnalysisObserver,
+    cfg: &CFG,
+    failure: &MethodRecoveryFailure,
+) {
+    let method = cfg.method();
+    failure.observe(
+        observer,
+        &method.owner().to_string(),
+        method.name(),
+        &method.descriptor().to_string(),
+    );
 }
 
 fn source_package_name(class: &ClassNode) -> Option<&str> {

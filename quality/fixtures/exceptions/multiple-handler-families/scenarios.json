@@ -1,0 +1,30 @@
+{
+  "run": [
+    {"id": "normal-start-returns", "arguments": ["once", "success", "left", "i"],
+     "expected": ["start", "return"]},
+    {"id": "normal-retry-returns", "arguments": ["once", "right", "success", "i"],
+     "expected": ["start", "mark:2:right:same", "retry", "return"]},
+    {"id": "left-and-right-then-interrupt", "arguments": ["once", "left", "right", "i"],
+     "expected": ["start", "mark:1:left:same", "retry", "mark:4:right:same", "await:0", "mark:5:interrupt:same", "return"]},
+    {"id": "right-and-left-then-success", "arguments": ["once", "right", "left", "s"],
+     "expected": ["start", "mark:2:right:same", "retry", "mark:3:left:same", "await:0", "return"]},
+    {"id": "unmatched-start-escapes", "arguments": ["once", "other", "left", "i"],
+     "expected": ["start", "throw:start-other"]},
+    {"id": "unmatched-retry-escapes", "arguments": ["once", "left", "other", "i"],
+     "expected": ["start", "mark:1:left:same", "retry", "throw:retry-other"]},
+    {"id": "unmatched-await-escapes", "arguments": ["once", "right", "right", "x"],
+     "expected": ["start", "mark:2:right:same", "retry", "mark:4:right:same", "await:0", "throw:await-other"]},
+    {"id": "handler-fault-does-not-enter-retry-protection", "arguments": ["once", "left", "hook", "i"],
+     "expected": ["start", "mark:1:left:same", "throw:handler-hook"]}
+  ],
+  "runRepeated": [
+    {"id": "nonpositive-limit-skips-protected-work", "arguments": ["0", "left", "left", "i"],
+     "expected": ["return"]},
+    {"id": "two-interrupts-each-preserve-caught-identity", "arguments": ["3", "left", "left", "isi"],
+     "expected": ["start", "mark:1:left:same", "retry", "mark:3:left:same", "await:0", "mark:5:interrupt:same",
+                  "await:1", "await:2", "mark:5:interrupt:same", "return"]},
+    {"id": "later-unmatched-fault-stops-the-loop", "arguments": ["3", "right", "right", "ixs"],
+     "expected": ["start", "mark:2:right:same", "retry", "mark:4:right:same", "await:0", "mark:5:interrupt:same",
+                  "await:1", "throw:await-other"]}
+  ]
+}

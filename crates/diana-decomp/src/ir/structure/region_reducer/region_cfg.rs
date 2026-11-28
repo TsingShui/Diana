@@ -137,7 +137,16 @@ impl RegionEntryPorts {
                 .ok_or(StructureError::UnknownRegion(source_owner))?;
             for target in cfg.normal_successors(source) {
                 let target = contractions.terminal(target).unwrap_or(target);
-                if graph.handler_adapters().get(&source).copied() == Some(target) {
+                if graph.handler_adapters().get(&source).copied() == Some(target)
+                    && !matches!(
+                        (graph.enclosing_exception_handler(source), graph.enclosing_exception_handler(target)),
+                        (Some(from), Some(to)) if from != to
+                    )
+                {
+                    // A physical dispatch adapter for this same handler
+                    // supplies no ordinary entry. An already active handler
+                    // that forwards to a different handler body still needs
+                    // a port for the exact normal continuation.
                     continue;
                 }
                 let target_owner =

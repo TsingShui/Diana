@@ -71,7 +71,8 @@ def parse_args():
     campaign.add_argument("--binary", type=absolute, required=True)
     campaign.add_argument("--jadx-jar", type=absolute, help="evaluate the same methods with official JADX")
     campaign.add_argument("--revision", help="source revision for the Diana executable")
-    campaign.add_argument("--profile", choices=("reviewed", "sample"), default="reviewed")
+    campaign.add_argument("--profile", choices=("reviewed", "sample", "full"), default="reviewed",
+                          help="full exports each APK once and evaluates all source-aligned selections")
     campaign.add_argument("--limit", type=positive, help="limit the selected methods per shard")
     campaign.add_argument("--shards", type=positive, default=1)
     campaign.add_argument("--execute-models", action="store_true")
@@ -80,6 +81,11 @@ def parse_args():
     campaign.add_argument("--jobs", type=positive, default=4)
     campaign.add_argument("--timeout", type=positive, default=45)
     campaign.add_argument("--output", type=absolute, help="parent directory for the new campaign bundle")
+    bench = commands.add_parser("bench", help="build a human-readable source diff from a saved public campaign")
+    bench.add_argument("--campaign", type=absolute, help="campaign directory or campaign.json")
+    bench.add_argument("--run", type=absolute, action="append", default=[], help="include a saved public run report")
+    bench.add_argument("--prepared", type=absolute, help="override the cached corpus directory")
+    bench.add_argument("--output", required=True, type=absolute, help="destination HTML file")
     run = commands.add_parser("run", help="judge one Diana executable")
     producer = run.add_mutually_exclusive_group(required=True)
     producer.add_argument("--binary", type=absolute)
@@ -261,6 +267,16 @@ def cases_for_metric(cases: list[dict], metric: str | None) -> list[dict]:
 def main() -> int:
     args = parse_args()
     try:
+        if args.command == "bench":
+            import corpus_bench
+
+            if args.campaign is None and not args.run:
+                raise ValueError("bench requires --campaign or --run")
+            document = corpus_bench.from_evidence(args.campaign, args.run, args.prepared)
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(document, encoding="utf-8")
+            print(args.output)
+            return 0
         if args.command == "suites":
             suites = judge.load_suites(judge.QUALITY / "fixtures")
             print(json.dumps([

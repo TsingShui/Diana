@@ -1,0 +1,22 @@
+{
+  "select": [
+    {"id": "predicate-zero", "arguments": ["select", "null", "12", "false"],
+     "expected": ["count:0", "return:0"]},
+    {"id": "predicate-one", "arguments": ["select", "text", "12", "false"],
+     "expected": ["count:1", "return:1"]},
+    {"id": "negative-alternative", "arguments": ["select", "text", "-7", "true"],
+     "expected": ["count:-7", "return:-7"]}
+  ],
+  "run": [
+    {"id": "empty-from-zero", "arguments": ["run", "other", ""],
+     "expected": ["return:0"]},
+    {"id": "empty-from-one", "arguments": ["run", "text", ""],
+     "expected": ["return:1"]},
+    {"id": "zero-with-observable-branch", "arguments": ["run", "null", "00"],
+     "expected": ["count:0", "absent", "count:0", "absent", "return:0"]},
+    {"id": "advance-from-zero-to-two", "arguments": ["run", "other", "0110"],
+     "expected": ["count:0", "absent", "count:1", "count:2", "count:2", "return:2"]},
+    {"id": "advance-from-one-to-three", "arguments": ["run", "text", "101"],
+     "expected": ["count:2", "count:2", "count:3", "return:3"]}
+  ]
+}

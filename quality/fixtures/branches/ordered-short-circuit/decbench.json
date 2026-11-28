@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "id": "dex-ordered-short-circuit",
+  "default": false,
+  "input": "classes.dex",
+  "input_sha256": "f9bb7f6c5bfb05e7cb329df85035f08069ee7c644d7080d04f8c8b098b60921f",
+  "probe": "decbench_probe.py",
+  "oracle_files": [
+    "OrderedShortCircuit.java",
+    "OrderedShortCircuit.smali",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m3",
+      "member": "Lfixture/OrderedShortCircuit;->run(Ljava/lang/String;)Z",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

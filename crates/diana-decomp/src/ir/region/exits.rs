@@ -101,6 +101,10 @@ pub(super) struct CleanupChainAnalysis<'a> {
     handlers: &'a BTreeMap<RegionId, Vec<RegionId>>,
 }
 
+#[cfg(test)]
+#[path = "../../../tests/internal/exception_cleanup_parents.rs"]
+mod cleanup_parents;
+
 impl<'a> CleanupChainAnalysis<'a> {
     pub(super) fn new(
         tree: &'a RegionTree,
@@ -121,8 +125,14 @@ impl<'a> CleanupChainAnalysis<'a> {
             .into_iter()
             .collect::<BTreeSet<_>>();
         let mut exited_child = None;
+        let mut visited = BTreeSet::new();
+        let mut source_ancestors = Vec::new();
 
         while !target_ancestors.contains(&current_id) {
+            source_ancestors.push(current_id);
+            if !visited.insert(current_id) {
+                return Err(RegionInvariantError::RegionParentCycle(source_ancestors));
+            }
             let current = self
                 .tree
                 .region(current_id)
@@ -141,12 +151,13 @@ impl<'a> CleanupChainAnalysis<'a> {
                     if !already_in_cleanup {
                         let mut cleanups = Vec::new();
                         for child in self.handlers.get(&current_id).into_iter().flatten() {
-                            if self
-                                .tree
-                                .region(*child)
-                                .ok_or(RegionInvariantError::UnknownRegion(*child))?
-                                .kind
-                                .is_finally_handler()
+                            if !self.tree.is_ancestor(*child, current_id)?
+                                && self
+                                    .tree
+                                    .region(*child)
+                                    .ok_or(RegionInvariantError::UnknownRegion(*child))?
+                                    .kind
+                                    .is_finally_handler()
                             {
                                 cleanups.push(*child);
                             }
@@ -199,6 +210,12 @@ impl<'a> CleanupChainAnalysis<'a> {
         let semantic_parent = semantic_owners
             .into_iter()
             .try_fold(None, |common, owner| {
+                // A protected block inside this handler can dispatch back
+                // to the same handler. That edge does not make the protected
+                // scope an enclosing scope for a normal exit from here.
+                if self.tree.is_ancestor(region, owner)? {
+                    return Ok(common);
+                }
                 Ok::<_, RegionInvariantError>(Some(match common {
                     Some(common) => self.tree.common_ancestor(common, owner)?,
                     None => owner,

@@ -1857,7 +1857,7 @@ impl ConstructorSyntaxRecovery {
         in_loop: bool,
     ) -> bool {
         match statement {
-            JavaStmt::RecoveryFailure(_) => false,
+            JavaStmt::RecoveryFailure(_) | JavaStmt::RecoveryGap(_) => false,
             JavaStmt::Empty => true,
             JavaStmt::Block(statements) => {
                 let mut nested = scope.clone();

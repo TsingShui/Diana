@@ -47,14 +47,15 @@ pub(in crate::analysis::java_backend) struct JavaMethodBody {
 impl JavaMethodModel {
     pub fn from_body_analysis_with_options(
         declaration: JavaMethodDeclaration,
-        analysis: MethodBodyAnalysis,
+        mut analysis: MethodBodyAnalysis,
         options: MethodBodyOptions,
     ) -> Result<Self, JavaDecompilerError> {
+        let failure = analysis.recovery_gap.take();
         let body = JavaMethodBody::from_analysis(analysis, options);
         Ok(Self {
             declaration,
             body: Some(body),
-            failure: None,
+            failure,
         })
     }
 

@@ -961,6 +961,17 @@ impl SemanticFlowGraph {
                 clones.insert(mapping[block], node);
             }
             self.nodes.extend(clones);
+            // Copies retain the enclosing control domains of their original
+            // nodes. Alpha renaming above only changes labels owned by a
+            // copied body, so free loop continuations still refer to these
+            // enclosing scopes.
+            for continuation in self.continues.values_mut() {
+                for (&original, &copy) in &mapping {
+                    if continuation.members.contains(&original) {
+                        continuation.members.insert(copy);
+                    }
+                }
+            }
             let replacement = BTreeMap::from([(entry, mapping[&entry])]);
             for predecessor in predecessors.get(&entry).into_iter().flatten() {
                 if component.contains(predecessor) {
@@ -4840,3 +4851,7 @@ mod tests {
 #[cfg(test)]
 #[path = "../../../tests/internal/flow_seeds.rs"]
 mod seed_tests;
+
+#[cfg(test)]
+#[path = "../../../tests/internal/copied_loop_continuations.rs"]
+mod copied_loop_continuations;

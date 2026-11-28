@@ -367,6 +367,21 @@ class CorpusEvaluationTest(unittest.TestCase):
         self.assertEqual(report["methods_by_status"], {"SETUP_ERROR": 1, "PASS": 1})
         self.assertEqual(report["metrics"]["modeled_behavior"]["checks"], {"SETUP_ERROR": 1})
 
+    def test_model_does_not_execute_a_comment_only_recovery_diagnostic(self):
+        self.make_model("result:3")
+        self.capture.side_effect = None
+        self.capture.return_value = {
+            "text": "public static int staticCall(int input) { /* recovery failed */ }",
+            "issues": [{"stage": "semantic recovery", "reason": "unavailable region"}],
+        }
+        with patch("corpus_eval.corpus_models.QUALITY", self.root), patch(
+            "corpus_eval.corpus_models.execute", return_value=[(["result:3"], None)],
+        ) as execute:
+            report = self.evaluate([STATIC], models=True)
+
+        self.assertEqual(execute.call_count, 1)
+        self.assertEqual(report["metrics"]["modeled_behavior"]["checks"], {"UNCHECKED": 1})
+
     def test_bad_unselected_model_leaves_a_scoped_run_and_sibling_available(self):
         model = "calls/abs/wrong.json"
         self.config["methods"][1]["model"] = model

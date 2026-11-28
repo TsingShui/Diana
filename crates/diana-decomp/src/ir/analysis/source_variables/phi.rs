@@ -569,6 +569,7 @@ pub(super) struct PhiCopySet {
     normal: BTreeMap<NormalCopySite, Vec<EdgeCopy>>,
     exceptional: BTreeMap<StatementOrigin, Vec<EdgeCopy>>,
     exceptional_spills: Vec<ExceptionalSpill>,
+    detached_catches: BTreeMap<DetachedCatch, (InstructionId, Vec<EdgeCopy>)>,
     variable_types: BTreeMap<u32, ArgType>,
 }
 
@@ -819,6 +820,13 @@ impl ExceptionHandlerTarget {
 struct ExceptionHandlerPort {
     region: RegionId,
     entry: BlockId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct DetachedCatch {
+    scope: RegionId,
+    handler: RegionId,
+    continuation: BlockId,
 }
 
 impl ExceptionHandlerPort {
@@ -1252,6 +1260,7 @@ impl<'a> ExceptionalCopyPlacement<'a> {
             )
             .apply(&mut copies);
         }
+        let detached_catches = self.place_detached_catch_copies(&mut copies.exceptional);
         let exceptional_effects = self.exceptional_effects(&copies.exceptional)?;
         let available = AvailableCopyAnalysis::analyze(
             self.cfg,
@@ -1356,7 +1365,144 @@ impl<'a> ExceptionalCopyPlacement<'a> {
                 })
                 .collect(),
             exceptional_spills,
+            detached_catches,
             variable_types: copies.variable_types,
+        })
+    }
+
+    fn place_detached_catch_copies(
+        &self,
+        exceptional: &mut BTreeMap<ExceptionalEdge, Vec<EdgeCopy>>,
+    ) -> BTreeMap<DetachedCatch, (InstructionId, Vec<EdgeCopy>)> {
+        let unresolved = exceptional
+            .keys()
+            .filter(|edge| edge.handler.port.is_none())
+            .map(|edge| edge.predecessor)
+            .collect::<BTreeSet<_>>();
+        if unresolved.is_empty() {
+            return BTreeMap::new();
+        }
+        let mut outcomes = BTreeMap::<BlockId, Vec<ExceptionalEdge>>::new();
+        for &edge in exceptional.keys() {
+            if !unresolved.contains(&edge.predecessor) {
+                continue;
+            }
+            outcomes.entry(edge.predecessor).or_default().push(edge);
+        }
+        let mut detached_catches = BTreeMap::new();
+        for (predecessor, edges) in outcomes {
+            let Ok(origin) = self.throw_site(predecessor) else {
+                continue;
+            };
+            if self.regions.is_elided(&origin) {
+                continue;
+            }
+            // Keep this throw's entire outgoing state intact until a catch
+            // is selected. Moving only some copies could let another
+            // outcome's copy overwrite that state before the throw.
+            let Some(ports) = edges
+                .iter()
+                .copied()
+                .map(|edge| {
+                    let port = self.detached_catch_for(edge)?;
+                    let mut copies = BTreeMap::<u32, EdgeCopy>::new();
+                    for copy in &exceptional[&edge] {
+                        let destination = copy.destination.code_var?;
+                        if let Some(existing) = copies.get(&destination) {
+                            if !same_value(&existing.source, &copy.source) {
+                                return None;
+                            }
+                        } else {
+                            copies.insert(destination, copy.clone());
+                        }
+                    }
+                    Some((port, copies.into_values().collect()))
+                })
+                .collect::<Option<Vec<_>>>()
+            else {
+                continue;
+            };
+            for (edge, (catch, copies)) in edges.into_iter().zip(ports) {
+                exceptional.remove(&edge);
+                detached_catches.insert(catch, (origin.instruction, copies));
+            }
+        }
+        detached_catches
+    }
+
+    fn detached_catch_for(&self, edge: ExceptionalEdge) -> Option<DetachedCatch> {
+        let continuation = edge.handler.ingress;
+        let tree = self.regions.tree();
+        let incoming = self.cfg.incoming_edges(continuation);
+        // The physical ingress remains a valid CFG successor. Establish that
+        // the requested throw is among its exceptional predecessors.
+        if !incoming.contains(&(edge.predecessor, crate::ir::EdgeKind::Exception)) {
+            return None;
+        }
+        let entry = self
+            .cfg
+            .block(continuation)
+            .filter(|block| !block.synthetic)?;
+        let throw = self.cfg.block(edge.predecessor)?.terminator()?;
+        let catch_types = self
+            .cfg
+            .handlers
+            .iter()
+            .filter(|handler| handler.covers(throw.offset) && handler.handler == entry.offset)
+            .map(|handler| {
+                handler
+                    .catch_type
+                    .clone()
+                    .unwrap_or_else(ArgType::throwable)
+            })
+            .collect::<BTreeSet<_>>();
+        if catch_types.is_empty() {
+            return None;
+        }
+        let mut ports = tree
+            .regions()
+            .filter_map(|handler| {
+                let crate::ir::RegionKind::Catch(info) = &handler.kind else {
+                    return None;
+                };
+                (handler.entry.is_none()
+                    && handler.blocks.is_empty()
+                    && info.exception_value.is_none()
+                    && info.continuation == Some(continuation)
+                    && info.exception_types.len() == catch_types.len()
+                    && info
+                        .exception_types
+                        .iter()
+                        .all(|ty| catch_types.contains(ty)))
+                .then_some(handler.id)
+            })
+            .flat_map(|handler| {
+                self.regions
+                    .handler_owners(handler)
+                    .filter_map(move |scope| {
+                        let scope = tree.region(scope)?;
+                        (matches!(scope.kind, crate::ir::RegionKind::Try)
+                            && scope.blocks.contains(&edge.predecessor))
+                        .then_some((scope, handler))
+                    })
+            });
+        let (scope, handler) = ports.next()?;
+        if ports.next().is_some() {
+            return None;
+        }
+        // A single incoming throw establishes which copy applies on every
+        // execution of this catch. Other catches may share its continuation.
+        if incoming.iter().any(|&(predecessor, kind)| {
+            kind.is_exception()
+                && predecessor != edge.predecessor
+                && scope.blocks.contains(&predecessor)
+        }) {
+            return None;
+        }
+        Some(DetachedCatch {
+            scope: scope.id,
+            handler,
+            continuation,
         })
     }
 
@@ -2082,6 +2228,8 @@ pub(super) struct PhiLowering {
     exceptional: BTreeMap<InstructionId, (BlockId, Vec<SemanticStatement>)>,
     terminal_exceptional: BTreeMap<BlockId, InstructionId>,
     handler_entries: BTreeMap<BlockId, Vec<SemanticStatement>>,
+    detached_entries: BTreeMap<DetachedCatch, (InstructionId, Vec<SemanticStatement>)>,
+    placed_detached: BTreeSet<DetachedCatch>,
     handler_regions: BTreeMap<RegionId, BlockId>,
     handler_blocks: BTreeSet<BlockId>,
     semantic_blocks: BTreeSet<BlockId>,
@@ -2106,6 +2254,7 @@ impl PhiLowering {
             normal: normal_copies,
             exceptional: mut exceptional_copies,
             exceptional_spills,
+            detached_catches,
             variable_types,
         } = copies;
         let canonical_sites = EquivalentCopySites::analyze(cfg, regions, &normal_copies);
@@ -2197,6 +2346,13 @@ impl PhiLowering {
                 handler_entries.insert(handler, statements);
             }
         }
+        let mut detached_entries = BTreeMap::new();
+        for (catch, (origin, copies)) in detached_catches {
+            let statements = PhiCopies::sequentialize(copies, &mut next_variable, types)?;
+            if !statements.is_empty() {
+                detached_entries.insert(catch, (origin, statements));
+            }
+        }
         let handler_regions = regions
             .tree()
             .regions()
@@ -2214,6 +2370,8 @@ impl PhiLowering {
             exceptional,
             terminal_exceptional,
             handler_entries,
+            detached_entries,
+            placed_detached: BTreeSet::new(),
             handler_regions,
             handler_blocks,
             semantic_blocks: BTreeSet::new(),
@@ -2251,6 +2409,7 @@ impl PhiLowering {
             && self.normal.by_site.is_empty()
             && self.exceptional.is_empty()
             && self.handler_entries.is_empty()
+            && self.detached_entries.is_empty()
         {
             return Ok(());
         }
@@ -2289,6 +2448,13 @@ impl PhiLowering {
             .copied()
         {
             return Err(SourceVariableError::MissingHandlerEntry(block));
+        }
+        if let Some(catch) = self
+            .detached_entries
+            .keys()
+            .find(|catch| !self.placed_detached.contains(catch))
+        {
+            return Err(SourceVariableError::MissingHandlerEntry(catch.continuation));
         }
         LoopExitCopyPlacement::apply(root)?;
         Ok(())
@@ -2574,9 +2740,21 @@ impl PhiLowering {
             let Some(entry) = self.handler_regions.get(&catch.region).copied() else {
                 continue;
             };
-            let Some(statements) = self.handler_entries.remove(&entry) else {
-                continue;
+            let key = DetachedCatch {
+                scope: region,
+                handler: catch.region,
+                continuation: entry,
             };
+            let mut statements = self.handler_entries.remove(&entry).unwrap_or_default();
+            if let Some((origin, detached)) = self.detached_entries.get(&key) {
+                if EvaluationInstructions::of_node(&body).contains(origin) {
+                    self.placed_detached.insert(key);
+                    statements.extend(detached.iter().cloned());
+                }
+            }
+            if statements.is_empty() {
+                continue;
+            }
             self.seen.insert(entry);
             catch.body = SemanticNode::sequence([
                 SemanticNode::BasicBlock(SemanticBlock {

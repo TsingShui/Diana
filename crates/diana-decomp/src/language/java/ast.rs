@@ -1132,6 +1132,8 @@ pub enum JavaStmt {
     Empty,
     /// Unavailable original code, rendered only as a Diana diagnostic comment.
     RecoveryFailure(String),
+    /// An unresolved part of an otherwise recovered method.
+    RecoveryGap(String),
     Block(Vec<JavaStmt>),
     Labeled {
         label: JavaIdentifier,

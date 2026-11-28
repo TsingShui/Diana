@@ -1,0 +1,31 @@
+{
+  "apk": {
+    "max_bytes": 67108864,
+    "sha256": "a9be897603ebba8b188d8a80ef61f0fc54162d45045ec3a2834a648426c0ad90",
+    "url": "https://f-droid.org/repo/eu.faircode.email_2338.apk"
+  },
+  "id": "fairemail-1.2338",
+  "name": "FairEmail",
+  "provenance": {
+    "application_id": "eu.faircode.email",
+    "version_code": 2338,
+    "variant": "fdroid",
+    "distribution": "F-Droid",
+    "distribution_url": "https://f-droid.org/packages/eu.faircode.email/",
+    "build_metadata_url": "https://gitlab.com/fdroid/fdroiddata/-/raw/master/metadata/eu.faircode.email.yml",
+    "reproducibility_url": "https://verification.f-droid.org/unsigned/eu.faircode.email_2338.apk.json",
+    "source_repository_url": "https://github.com/M66B/FairEmail",
+    "license": "GPLv3",
+    "license_url": "https://github.com/M66B/FairEmail/blob/a239b8bf3f4599b2f0ad27795c13ff97e0f4f4cd/LICENSE",
+    "source_alignment": "The F-Droid build recipe pins this commit and its fdroid variant. The signed APK matches the independent reproducibility report. The selected Java files are tracked in the pinned source tree.",
+    "usage": "Static development benchmark. APK and upstream source remain external inputs."
+  },
+  "schema_version": 1,
+  "source": {
+    "max_bytes": 67108864,
+    "url": "https://codeload.github.com/M66B/FairEmail/tar.gz/a239b8bf3f4599b2f0ad27795c13ff97e0f4f4cd"
+  },
+  "source_commit": "a239b8bf3f4599b2f0ad27795c13ff97e0f4f4cd",
+  "source_root": "FairEmail-a239b8bf3f4599b2f0ad27795c13ff97e0f4f4cd",
+  "version": "1.2338"
+}

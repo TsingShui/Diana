@@ -1,0 +1,18 @@
+{
+  "run": [
+    {"id": "left-success", "arguments": ["left", "normal"],
+     "expected": ["start:11", "return"]},
+    {"id": "right-success", "arguments": ["right", "normal"],
+     "expected": ["start:22", "return"]},
+    {"id": "left-adapter-preserves-receiver-state-and-throwable", "arguments": ["left", "fault"],
+     "expected": ["start:11", "cleanup:left:11:4294967297:amber:left-original", "outward:left-original", "return"]},
+    {"id": "right-adapter-preserves-receiver-state-and-throwable", "arguments": ["right", "fault"],
+     "expected": ["start:22", "cleanup:right:22:8589934594:blue:right-original", "outward:right-original", "return"]},
+    {"id": "left-cleanup-fault-replaces-caught-object", "arguments": ["left", "replace"],
+     "expected": ["start:11", "cleanup:left:11:4294967297:amber:left-original", "outward:replacement", "return"]},
+    {"id": "right-cleanup-fault-replaces-caught-object", "arguments": ["right", "replace"],
+     "expected": ["start:22", "cleanup:right:22:8589934594:blue:right-original", "outward:replacement", "return"]},
+    {"id": "outward-handler-fault-escapes", "arguments": ["left", "reporter-fault"],
+     "expected": ["start:11", "cleanup:left:11:4294967297:amber:left-original", "outward:left-original", "escape:reporter"]}
+  ]
+}

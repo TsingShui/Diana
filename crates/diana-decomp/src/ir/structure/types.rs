@@ -16,6 +16,7 @@ pub enum StructureError {
     MissingEntry(RegionId),
     MissingBlock(BlockId),
     MissingReduction(RegionId),
+    UnresolvedExceptionDispatch(Vec<(u32, u32)>),
     InvalidHandlerRegion {
         owner: RegionId,
         handler: RegionId,
@@ -117,6 +118,13 @@ impl fmt::Display for StructureError {
             Self::MissingBlock(block) => write!(f, "missing CFG block {block}"),
             Self::MissingReduction(region) => {
                 write!(f, "region {region} has no reduced semantic node")
+            }
+            Self::UnresolvedExceptionDispatch(edges) => {
+                write!(f, "exception dispatch could not be placed")?;
+                for (source, handler) in edges {
+                    write!(f, " [0x{source:x} -> handler 0x{handler:x}]")?;
+                }
+                Ok(())
             }
             Self::InvalidHandlerRegion { owner, handler } => {
                 write!(f, "region {handler} is not a handler child of {owner}")

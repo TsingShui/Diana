@@ -82,13 +82,14 @@ def review(reports, target_backend="diana", peer_backend="jadx"):
                     latest[backend][key] = (method, reporting.metadata(report))
     target, peer = latest[target_backend], latest[peer_backend]
     common = target.keys() & peer.keys()
+    source_only = peer_backend is None
     findings = []
     complete_pairs = 0
     unverified_pairs = 0
-    for key in sorted(common):
+    for key in sorted(target if source_only else common):
         suite, artifact, oracle, at, member = key
         left, left_meta = target[key]
-        right, right_meta = peer[key]
+        right, right_meta = peer.get(key, ({}, {}))
         a, b = visible_observation(left), visible_observation(right)
         if any(side.get("provenance", {}).get(fact) is False for side in (left, right)
                for fact in ("original_verified", "source_verified")):
@@ -96,13 +97,22 @@ def review(reports, target_backend="diana", peer_backend="jadx"):
             continue
         if complete_publication(a) and complete_publication(b):
             complete_pairs += 1
-        signals = signals_for(a, b)
+        if source_only:
+            signals = [{"kind": kind, "target": lines}
+                       for kind, lines in lexical_markers(a.get("text") or "").items()
+                       if kind in SHARED_MARKERS or kind == "explicit_effect_views"]
+            if a.get("issues"):
+                signals.append({"kind": "recovery_diagnostics", "side": "target", "issues": a["issues"]})
+        else:
+            signals = signals_for(a, b)
         for side, row in (("target", left), ("peer", right)):
-            body = next((check for check in row["checks"] if check["metric"] == "body_recovery"), None)
+            body = next((check for check in row.get("checks", []) if check["metric"] == "body_recovery"), None)
             if body and body["status"] == "FAIL":
                 signals.append({"kind": "body_recovery_gap", "side": side, "check": body})
         shape_a, shape_b = left.get("source_structure"), right.get("source_structure")
-        if (shape_a and shape_b and shape_a.get("expected") == shape_b.get("expected")
+        if source_only and shape_a and shape_a["outcome"] == "DIFFERENT":
+            signals.append({"kind": "source_cfg_difference", "target": shape_a})
+        elif (shape_a and shape_b and shape_a.get("expected") == shape_b.get("expected")
                 and "SETUP_ERROR" not in (shape_a["outcome"], shape_b["outcome"])):
             outcomes = shape_a["outcome"], shape_b["outcome"]
             if outcomes[0] != outcomes[1]:
@@ -114,11 +124,12 @@ def review(reports, target_backend="diana", peer_backend="jadx"):
                              "at": at, "member": member, "source": left["source"], "signals": signals,
                              **{field: left[field] for field in ("module", "source_forms") if field in left},
                              "target": {**left_meta, "observation": a},
-                             "peer": {**right_meta, "observation": b}})
+                             **({} if source_only else {"peer": {**right_meta, "observation": b}})})
     return {"kind": REVIEW_KIND, "schema_version": 1,
             "target": target_backend, "peer": peer_backend,
-            "coverage": {"paired": len(common), "target_only": len(target.keys() - peer.keys()),
-                         "peer_only": len(peer.keys() - target.keys())},
+            "coverage": ({"source_aligned": len(target) - unverified_pairs, "unverified": unverified_pairs}
+                         if source_only else {"paired": len(common), "target_only": len(target.keys() - peer.keys()),
+                                              "peer_only": len(peer.keys() - target.keys())}),
             "complete_publication_pairs": complete_pairs, "unverified_pairs": unverified_pairs,
             "methods": findings}
 
@@ -133,7 +144,7 @@ def render(document):
         anchor = f"review-method-{index}"
         signals = reporting.format_data(method["signals"])
         panes = []
-        for arm in ("target", "peer"):
+        for arm in ("target", "peer") if "peer" in method else ("target",):
             snapshot = method[arm]
             view = reporting.render_observation(snapshot["observation"])
             panes.append(f"<div><h4>{label(snapshot['backend'])}</h4>{view}</div>")
@@ -142,13 +153,14 @@ def render(document):
         for group in {signal["kind"] for signal in method["signals"]}:
             groups.setdefault(group, []).append(f"<li><a href='#{anchor}'>{title}</a></li>")
     counts = Counter(signal["kind"] for method in document["methods"] for signal in method["signals"])
-    coverage = reporting.format_data({
-        "methods": document["coverage"], "complete_publication_pairs": document.get("complete_publication_pairs"),
-        "unverified_pairs": document.get("unverified_pairs"),
-        "signals": counts,
-    })
+    coverage = {"methods": document["coverage"], "signals": counts}
+    if document["peer"] is not None:
+        coverage.update(complete_publication_pairs=document.get("complete_publication_pairs"),
+                        unverified_pairs=document.get("unverified_pairs"))
     navigation = "".join(f"<details><summary>{label(group.replace('_', ' '))} · {len(items)}</summary>"
                          f"<ol>{''.join(items)}</ol></details>" for group, items in sorted(groups.items()))
-    heading = f"{label(document['target'])} and {label(document['peer'])}"
+    heading = label(document["target"])
+    if document["peer"] is not None:
+        heading += f" and {label(document['peer'])}"
     return reporting.html_page("Diana DecBench review",
-                               f"<h2>{heading}</h2><pre>{coverage}</pre>{navigation}{''.join(rows)}")
+                               f"<h2>{heading}</h2><pre>{reporting.format_data(coverage)}</pre>{navigation}{''.join(rows)}")

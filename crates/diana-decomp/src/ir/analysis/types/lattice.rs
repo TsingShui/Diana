@@ -4,7 +4,7 @@ use crate::ir::{analysis::SsaVar, ArgType, PrimitiveType};
 
 use super::{
     bounds::{BoundKind, TypeBound, TypeBounds},
-    constraints::{ArrayConstraint, NormalizedTypeConstraints},
+    constraints::{ArrayConstraint, FlowKind, NormalizedTypeConstraints},
     hierarchy::{SubtypeRelation, TypeHierarchy},
 };
 
@@ -16,9 +16,31 @@ impl TypeBounds {
             .reduce(|left, right| TypeLattice::join(left, right, hierarchy))
     }
 
-    fn produced_type(&self, hierarchy: &dyn TypeHierarchy) -> Option<ArgType> {
+    fn ordinary_producer(&self, hierarchy: &dyn TypeHierarchy) -> Option<ArgType> {
         self.joined(BoundKind::Exact, hierarchy)
             .or_else(|| self.joined(BoundKind::Lower, hierarchy))
+    }
+
+    fn has_predicate_word(&self) -> bool {
+        self.evidence(BoundKind::PredicateWord).next().is_some()
+    }
+
+    fn produced_type(
+        &self,
+        ordinary: Option<ArgType>,
+        hierarchy: &dyn TypeHierarchy,
+    ) -> Option<ArgType> {
+        if !self.has_predicate_word() {
+            return ordinary;
+        }
+        // A predicate's 0/1 word fits in an integer join without changing
+        // the range of the other arms. A Boolean declaration alone does not
+        // establish that fact about a DEX word.
+        Some(match ordinary {
+            Some(ArgType::INT) => ArgType::INT,
+            Some(ty) => TypeLattice::join(ty, ArgType::BOOLEAN, hierarchy),
+            None => ArgType::BOOLEAN,
+        })
     }
 }
 
@@ -82,14 +104,21 @@ impl TypeLattice {
     ) {
         #[derive(Default)]
         struct Relations {
-            outgoing: smallvec::SmallVec<[SsaVar; 1]>,
+            outgoing: smallvec::SmallVec<[(SsaVar, FlowKind); 1]>,
             incoming: smallvec::SmallVec<[SsaVar; 1]>,
             arrays: smallvec::SmallVec<[(SsaVar, BoundKind); 1]>,
         }
         let mut relations = BTreeMap::<SsaVar, Relations>::new();
-        for &(source, target) in &constraints.flows {
-            relations.entry(source).or_default().outgoing.push(target);
-            relations.entry(target).or_default().incoming.push(source);
+        for &(source, target, kind) in &constraints.flows {
+            relations
+                .entry(source)
+                .or_default()
+                .outgoing
+                .push((target, kind));
+            let incoming = &mut relations.entry(target).or_default().incoming;
+            if incoming.last() != Some(&source) {
+                incoming.push(source);
+            }
         }
         for &(source, target) in &constraints.upper_flows {
             let incoming = &mut relations.entry(target).or_default().incoming;
@@ -133,9 +162,11 @@ impl TypeLattice {
             let incoming = (!edges.incoming.is_empty()).then_some(&edges.incoming);
             let arrays = (!edges.arrays.is_empty()).then_some(&edges.arrays);
             let state = &states[&root];
-            let produced = (outgoing.is_some() || arrays.is_some())
-                .then(|| state.produced_type(hierarchy))
+            let ordinary = (outgoing.is_some() || arrays.is_some())
+                .then(|| state.ordinary_producer(hierarchy))
                 .flatten();
+            let produced = state.produced_type(ordinary.clone(), hierarchy);
+            let predicate_word = state.has_predicate_word();
             let array_element = arrays.and_then(|_| match &produced {
                 Some(ArgType::Array(element)) => Some((**element).clone()),
                 Some(_) => None,
@@ -158,26 +189,31 @@ impl TypeLattice {
                 );
             }
 
-            if let Some(produced) = &produced {
-                for &target in outgoing.into_iter().flatten() {
+            for &(target, kind) in outgoing.into_iter().flatten() {
+                let lower = match kind {
+                    FlowKind::Phi => &ordinary,
+                    FlowKind::Bitwise => &produced,
+                };
+                if let Some(lower) = lower {
                     Self::insert_bound(
                         states,
                         target,
                         BoundKind::Lower,
-                        produced.clone(),
+                        lower.clone(),
                         &mut queued,
                         &mut pending,
                     );
                 }
-            }
-            for target in outgoing.into_iter().flatten() {
-                let state = states.entry(*target).or_default();
+                let state = states.entry(target).or_default();
                 let mut changed = false;
+                if predicate_word && kind == FlowKind::Phi {
+                    changed |= state.insert_ref(BoundKind::PredicateWord, &ArgType::BOOLEAN);
+                }
                 for ty in &fallback {
                     changed |= state.insert_ref(BoundKind::Fallback, ty);
                 }
-                if changed && queued.insert(*target) {
-                    pending.push_back(*target);
+                if changed && queued.insert(target) {
+                    pending.push_back(target);
                 }
             }
             for source in incoming.into_iter().flatten() {
@@ -226,7 +262,18 @@ impl TypeLattice {
         if let Some(ty) = state.sole_type().filter(|ty| Self::is_concrete(ty)) {
             return Some(ty.clone());
         }
-        let strong = state.produced_type(hierarchy);
+        let ordinary = state.ordinary_producer(hierarchy);
+        let predicate_only = ordinary.is_none() && state.has_predicate_word();
+        let strong = state.produced_type(ordinary, hierarchy);
+        if predicate_only
+            && Self::domain_accepts(state, &ArgType::BOOLEAN)
+            && state.evidence(BoundKind::Upper).all(|upper| {
+                matches!(upper, &ArgType::BOOLEAN | &ArgType::INT)
+                    || Self::is_assignable(&ArgType::BOOLEAN, upper, hierarchy)
+            })
+        {
+            return Some(ArgType::BOOLEAN);
+        }
         if let Some(ty) = strong.as_ref().filter(|ty| Self::is_concrete(ty)) {
             if state
                 .evidence(BoundKind::Upper)
@@ -244,7 +291,13 @@ impl TypeLattice {
             let lower_satisfies = state
                 .evidence(BoundKind::Lower)
                 .all(|bound| Self::producer_bound_compatible(bound, candidate, hierarchy));
-            if exact_satisfies && lower_satisfies && Self::domain_accepts(state, candidate) {
+            let predicate_satisfies = !state.has_predicate_word()
+                || matches!(candidate, &ArgType::BOOLEAN | &ArgType::INT);
+            if exact_satisfies
+                && lower_satisfies
+                && predicate_satisfies
+                && Self::domain_accepts(state, candidate)
+            {
                 return upper;
             }
         }
@@ -528,7 +581,7 @@ mod tests {
                     TypeBounds::from([TypeBound::new(BoundKind::Exact, ArgType::BOOLEAN)]),
                 ),
             ]),
-            flows: BTreeSet::from([(source, target)]),
+            flows: BTreeSet::from([(source, target, FlowKind::Phi)]),
             upper_flows: BTreeSet::new(),
             arrays: BTreeSet::new(),
         };

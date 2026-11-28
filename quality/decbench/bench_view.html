@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Diana DecBench · 方法差异</title>
+<style>
+:root{color-scheme:light;--ink:#142322;--muted:#526663;--paper:#fff;--bg:#f0f4f1;--line:#d9e3dc;--green:#176147;--focus:#08785a;--mono:"Cascadia Code",Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 system-ui,"Microsoft YaHei UI",sans-serif}
+button,input{font:inherit;color:inherit}
+button,a,input{outline-offset:3px}
+:focus-visible{outline:2px solid var(--focus)}
+a{color:var(--green);text-decoration-thickness:1px;text-underline-offset:3px}
+button{cursor:pointer}
+[hidden]{display:none!important}
+.top{background:#132d25;color:#f3fbf5;border-bottom:3px solid #79b79b}
+.wrap{max-width:1680px;margin:auto;padding:0 clamp(16px,3vw,48px)}
+.top .wrap{min-height:54px;display:flex;align-items:center;justify-content:space-between;gap:16px}
+.brand{font-weight:730;letter-spacing:.065em;font-size:14px}
+.brand span{color:#a2c9b4;margin-left:10px;font-weight:520;letter-spacing:0}
+#scope{color:#c7ded1;font-size:13px}
+header.intro{display:flex;justify-content:space-between;gap:20px;align-items:flex-end;padding:24px 0 17px;border-bottom:1px solid var(--line)}
+h1,h2,p{margin:0}
+h1{font-size:clamp(26px,3vw,39px);line-height:1.13;letter-spacing:-.035em}
+.intro p{color:var(--muted);margin-top:6px}
+#summary{font-variant-numeric:tabular-nums;font-weight:650;color:var(--green);flex:none}
+.workspace{display:grid;grid-template-columns:minmax(240px,300px) minmax(0,1fr);align-items:start;gap:20px;padding:18px 0 34px}
+.selector,.detail{background:var(--paper);border:1px solid var(--line);border-radius:12px;min-width:0;box-shadow:0 3px 15px #19372809}
+.selector{position:sticky;top:10px}
+.side-controls{padding:14px;border-bottom:1px solid var(--line)}
+.side-controls label{font-weight:700;display:block;margin-bottom:6px}
+input[type=search]{width:100%;border:1px solid #bfcfc5;border-radius:7px;padding:8px 10px;background:#fcfefc}
+.filters{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.filter{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:7px;background:#f7faf8;padding:4px 7px;font-size:12px}
+.filter[aria-pressed=true]{background:#dbeee4;border-color:#80b89c;color:#0e523c;font-weight:650}
+.filter strong{font-variant-numeric:tabular-nums;font-size:11px}
+#methods{margin:0;padding:4px 0;list-style:none;max-height:calc(100dvh - 265px);min-height:140px;overflow:auto;scrollbar-gutter:stable}
+#methods button{display:block;width:100%;text-align:left;border:0;border-left:3px solid transparent;border-bottom:1px solid #edf2ee;padding:10px 11px;background:#fff;overflow-wrap:anywhere}
+#methods button:hover{background:#f1f7f3}
+#methods button[aria-current=true]{background:#e6f3ec;border-left-color:#268465}
+.method-name{font:650 12px/1.5 var(--mono);display:block}
+.subline{font-size:11px;color:var(--muted);display:block;margin-top:3px}
+.status{color:var(--muted);min-height:33px;border-top:1px solid var(--line);padding:7px 14px;font-size:12px}
+.detail-head{padding:17px 18px 14px}
+.detail-head h2{font:700 clamp(15px,2vw,23px)/1.35 var(--mono);overflow-wrap:anywhere}
+.detail-head .byline{margin-top:6px;color:var(--muted);font-size:12px;overflow-wrap:anywhere}
+.badges{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.badge{display:inline-block;font-size:11px;font-weight:700;border-radius:5px;padding:3px 7px;background:#e5f0ea;color:#176147}
+.badge[data-kind=flow]{background:#e9effc;color:#294b8a}
+.badge[data-kind=checks]{background:#fff2da;color:#795115}
+.badge[data-kind=recovery]{background:#fbe9e8;color:#822c2a}
+.badge[data-kind=behavior]{background:#ffe4df;color:#8b2821}
+.evidence{display:flex;flex-wrap:wrap;gap:8px 22px;padding:12px 18px;background:#f6f9f7;border-block:1px solid var(--line);align-items:baseline}
+#notes{margin:0;padding-left:17px;flex:1 1 270px;overflow-wrap:anywhere}
+#flow{display:flex;flex-wrap:wrap;gap:5px 12px;color:#294b8a;list-style:none;margin:0;padding:0;font-size:12px;font-variant-numeric:tabular-nums}
+#flow li{padding:2px 7px;border-radius:4px;background:#e9effc}
+.scenarios{background:#fffbf4;border-bottom:1px solid var(--line);padding:11px 18px}
+.scenarios details+details{margin-top:6px}
+.scenarios summary{cursor:pointer;font-weight:650;overflow-wrap:anywhere}
+.trace{font-size:12px;margin:5px 0 5px 17px}
+.trace strong{margin-right:6px}
+.trace code{white-space:normal;overflow-wrap:anywhere;font:12px/1.6 var(--mono)}
+.controls{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:11px 18px;font-size:12px}
+.controls label{display:flex;align-items:center;gap:6px;cursor:pointer}
+.controls input{accent-color:var(--green)}
+.legend{display:flex;flex-wrap:wrap;gap:10px;color:var(--muted)}
+.legend i{font-style:normal;font-weight:800;margin-right:3px}
+.legend .old i{color:#a63934}
+.legend .new i{color:#117650}
+.diff-scroll{overflow:auto;border-top:1px solid var(--line);border-radius:0 0 12px 12px;max-height:70vh}
+table{width:100%;min-width:590px;table-layout:fixed;border-collapse:collapse}
+col.number{width:46px}
+th{padding:9px;text-align:left;background:#e9f1ed;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:1}
+th:nth-child(2),td:nth-child(3){border-left:1px solid var(--line)}
+td{vertical-align:top;padding:2px 6px}
+td.number{text-align:right;color:#586c66;background:#f7faf8;font:11px/1.65 var(--mono);user-select:none}
+td.code{background:#fff;font:12px/1.52 var(--mono);font-variant-ligatures:none;white-space:pre-wrap;overflow-wrap:anywhere;tab-size:4}
+td.deleted{background:#fdecea}
+td.inserted{background:#e3f5eb}
+td.blank{background:#f2f6f3}
+.gap td{padding:4px 14px;border-block:1px solid var(--line);background:#eef4f0;color:var(--muted);font-size:11px}
+.kw{color:#234e9c;font-weight:660}
+.literal{color:#844a00}
+.comment{color:#586b60;font-style:italic}
+.empty{padding:28px 18px;color:var(--muted)}
+.detail footer{padding:9px 18px;color:var(--muted);font-size:11px}
+@media(max-width:860px){.workspace{grid-template-columns:1fr}.selector{position:static}#methods{max-height:235px;min-height:90px}.diff-scroll{max-height:65vh}}
+@media(max-width:595px){header.intro{display:block}#summary{margin-top:8px}.controls{flex-wrap:wrap}.top .wrap{min-height:49px}}
+</style>
+</head>
+<body>
+<div class="top"><div class="wrap"><div class="brand">DIANA <span>DecBench</span></div><div id="scope"></div></div></div>
+<main class="wrap">
+<header class="intro"><div><h1>反编译差异</h1><p>按方法查看原始 Java 与 Diana 输出。</p></div><div id="summary"></div></header>
+<div class="workspace">
+<aside class="selector" aria-label="方法筛选">
+<div class="side-controls">
+<label for="search">查找方法</label>
+<input id="search" type="search" placeholder="类名、方法名或源码路径" autocomplete="off">
+<div class="filters" id="filters" aria-label="差异类型"></div>
+</div>
+<ul id="methods" aria-label="有差异的方法"></ul>
+<div id="visible" class="status" aria-live="polite"></div>
+</aside>
+<section class="detail" aria-label="方法差异">
+<div id="empty" class="empty" hidden>当前筛选没有匹配的方法。</div>
+<div id="selected" hidden>
+<div class="detail-head">
+<div id="badges" class="badges"></div>
+<h2 id="name"></h2>
+<div class="byline"><a id="original" target="_blank" rel="noopener noreferrer"></a><span id="path" hidden></span><span id="location"></span></div>
+</div>
+<div class="evidence"><ul id="notes"></ul><ul id="flow" aria-label="源码与 Diana 的控制流节点变化"></ul></div>
+<section id="scenarios" class="scenarios" aria-label="失败的执行场景" hidden></section>
+<div class="controls">
+<label><input id="show-all" type="checkbox">显示完整方法</label>
+<div class="legend" aria-label="颜色图例"><span class="old"><i>−</i>源码差异</span><span class="new"><i>+</i>Diana 差异</span></div>
+</div>
+<div class="diff-scroll" tabindex="0" aria-label="源码对比">
+<table aria-label="原始 Java 和 Diana 代码对照">
+<colgroup><col class="number"><col><col class="number"><col></colgroup>
+<thead><tr><th colspan="2">原始 Java</th><th colspan="2">Diana 输出</th></tr></thead>
+<tbody id="code"></tbody>
+</table>
+</div>
+<footer id="evidence-note"></footer>
+</div>
+</section>
+</div>
+</main>
+<script id="bench-data" type="application/json"><!-- BENCH_DATA --></script>
+<script>
+"use strict";
+const byId = id => document.getElementById(id);
+const data = JSON.parse(byId("bench-data").textContent);
+const category = {all:"全部", behavior:"行为错误", recovery:"恢复问题", flow:"控制流", readability:"可读性", checks:"检查差异"};
+const fmt = new Intl.NumberFormat("zh-CN");
+const methodsById = new Map(data.methods.map(method => [method.id, method]));
+const filters = byId("filters");
+const list = byId("methods");
+const search = byId("search");
+const full = byId("show-all");
+let active = null;
+let selectedCategory = "all";
+
+function node(tag, text, className) {
+    const element = document.createElement(tag);
+    if (text !== undefined) element.textContent = text;
+    if (className) element.className = className;
+    return element;
+}
+
+const scope = [...new Set(data.methods.map(row => row.project))];
+byId("scope").textContent = scope.length === 1 ? scope[0] : fmt.format(scope.length) + " 个有差异的项目";
+byId("summary").textContent = fmt.format(data.methods.length) + " 个方法有差异 / " + fmt.format(data.scanned) + " 个已评测";
+for (const [key, label] of Object.entries(category)) {
+    const count = key === "all" ? data.methods.length : data.methods.filter(row => row.notes[key]).length;
+    if (count === 0 && key !== "all") continue;
+    const button = node("button", label, "filter");
+    button.type = "button";
+    button.dataset.kind = key;
+    button.append(node("strong", fmt.format(count)));
+    button.setAttribute("aria-pressed", String(key === selectedCategory));
+    button.addEventListener("click", () => { selectedCategory = key; refreshList(); });
+    filters.append(button);
+}
+
+function syntax(target, line) {
+    const tokens = /\/\/.*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b(?:abstract|boolean|break|byte|case|catch|char|class|continue|do|double|else|final|finally|float|for|if|int|long|new|null|private|protected|public|return|short|static|switch|synchronized|throw|throws|try|void|while)\b|\b(?:true|false|\d+(?:\.\d+)?)\b/g;
+    let offset = 0;
+    for (const match of line.matchAll(tokens)) {
+        target.append(document.createTextNode(line.slice(offset, match.index)));
+        const text = match[0];
+        const style = text.startsWith("//") ? "comment" : /^[a-z]+$/.test(text) && !["true", "false"].includes(text) ? "kw" : "literal";
+        target.append(node("span", text, style));
+        offset = match.index + text.length;
+    }
+    target.append(document.createTextNode(line.slice(offset) || (line ? "" : " ")));
+}
+
+function renderCode() {
+    if (!active) return;
+    const rows = document.createDocumentFragment();
+    const equal = active.diff.every(block => block[0] === "equal");
+    function line(row, text, number, color) {
+        const index = node("td", text === undefined ? "" : String(number), "number");
+        const content = node("td", undefined, "code " + (text === undefined ? "blank" : color));
+        if (text !== undefined) syntax(content, text);
+        row.append(index, content);
+    }
+    function gap(text) {
+        const row = node("tr", undefined, "gap");
+        const cell = node("td", text);
+        cell.colSpan = 4;
+        row.append(cell);
+        rows.append(row);
+    }
+    if (!active.source.length) gap("原始 Java 片段不可用。可打开上方固定版本的源码链接。");
+    if (!active.diana.length) gap("此方法缺少可显示的 Diana 输出。");
+    active.diff.forEach(([kind, a, b, c, d], index) => {
+        const count = Math.max(b - a, d - c);
+        for (let i = 0; i < count; i++) {
+            if (kind === "equal" && !full.checked && !equal) {
+                const start = index === 0 ? 0 : 2;
+                const end = index === active.diff.length - 1 ? count : count - 2;
+                if (i >= start && i < end) {
+                    if (i === start) gap("收起 " + fmt.format(end - start) + " 行相同内容");
+                    continue;
+                }
+            }
+            const row = node("tr");
+            line(row, a + i < b ? active.source[a + i] : undefined, active.line + a + i, kind === "equal" ? "" : "deleted");
+            line(row, c + i < d ? active.diana[c + i] : undefined, c + i + 1, kind === "equal" ? "" : "inserted");
+            rows.append(row);
+        }
+    });
+    byId("code").replaceChildren(rows);
+    byId("evidence-note").textContent = active.notes.flow
+        ? "节点来自语句结构分析。颜色标出文本差异，语义影响需结合代码复核。"
+        : "左列使用源码文件行号，右列从方法片段的第一行开始编号。";
+}
+
+function renderScenarios(scenarios) {
+    const root = byId("scenarios");
+    root.hidden = scenarios.length === 0;
+    root.replaceChildren(...scenarios.map((scenario, index) => {
+        const group = node("details");
+        group.open = index === 0;
+        group.append(node("summary", scenario.id.replaceAll("-", " ")));
+        for (const [label, events] of [["原始 Java", scenario.source], ["Diana", scenario.diana]]) {
+            const trace = node("div", undefined, "trace");
+            trace.append(node("strong", label), node("code", events.join(" → ")));
+            group.append(trace);
+        }
+        return group;
+    }));
+}
+
+function select(row) {
+    active = row;
+    byId("selected").hidden = !row;
+    byId("empty").hidden = Boolean(row);
+    for (const button of list.querySelectorAll("button")) {
+        const current = Boolean(row && row.id === button.dataset.id);
+        button.setAttribute("aria-current", String(current));
+        if (current) {
+            const item = button.getBoundingClientRect();
+            const viewport = list.getBoundingClientRect();
+            if (item.top < viewport.top) list.scrollTop += item.top - viewport.top;
+            else if (item.bottom > viewport.bottom) list.scrollTop += item.bottom - viewport.bottom;
+        }
+    }
+    if (!row) return;
+    history.replaceState(null, "", "#" + encodeURIComponent(row.id));
+    byId("name").textContent = row.name;
+    byId("name").title = row.descriptor;
+    const sourceLabel = row.path.split("/").pop() + ":" + row.line;
+    const link = byId("original");
+    const path = byId("path");
+    link.hidden = !row.sourceUrl;
+    path.hidden = Boolean(row.sourceUrl);
+    if (row.sourceUrl) { link.href = row.sourceUrl; link.textContent = sourceLabel; }
+    else path.textContent = sourceLabel;
+    byId("location").textContent = "  ·  " + row.project;
+    const badges = Object.keys(row.notes).map(kind => {
+        const badge = node("span", category[kind], "badge");
+        badge.dataset.kind = kind;
+        return badge;
+    });
+    byId("badges").replaceChildren(...badges);
+    byId("notes").replaceChildren(...Object.values(row.notes).flat().map(text => node("li", text)));
+    const changes = row.flow.map(change => node("li", change.label + " " + change.source + " → " + change.diana));
+    if (row.notes.flow && !changes.length) changes.push(node("li", "节点数量相同，连接方式有差异"));
+    byId("flow").replaceChildren(...changes);
+    renderScenarios(row.scenarios || []);
+    renderCode();
+    byId("code").closest(".diff-scroll").scrollTop = 0;
+}
+
+function refreshList(preferred) {
+    const query = search.value.trim().toLowerCase();
+    for (const button of filters.querySelectorAll("button")) {
+        button.setAttribute("aria-pressed", String(button.dataset.kind === selectedCategory));
+    }
+    const visible = data.methods.filter(row =>
+        (selectedCategory === "all" || row.notes[selectedCategory])
+        && (row.name + " " + row.descriptor + " " + row.path + " " + row.project).toLowerCase().includes(query));
+    const entries = visible.map(row => {
+        const item = node("li");
+        const button = node("button");
+        button.type = "button";
+        button.dataset.id = row.id;
+        button.append(node("span", row.name, "method-name"),
+            node("span", Object.keys(row.notes).map(kind => category[kind]).join(" · "), "subline"));
+        button.addEventListener("click", () => select(row));
+        item.append(button);
+        return item;
+    });
+    list.replaceChildren(...entries);
+    byId("visible").textContent = "显示 " + fmt.format(visible.length) + " 个方法";
+    const wanted = preferred || active;
+    select(wanted && visible.includes(wanted) ? wanted : visible[0]);
+}
+
+function linkedMethod() {
+    try { return methodsById.get(decodeURIComponent(location.hash.slice(1))); }
+    catch { return undefined; }
+}
+
+search.addEventListener("input", () => refreshList());
+full.addEventListener("change", renderCode);
+window.addEventListener("hashchange", () => {
+    selectedCategory = "all";
+    search.value = "";
+    refreshList(linkedMethod());
+});
+refreshList(linkedMethod());
+</script>
+</body>
+</html>

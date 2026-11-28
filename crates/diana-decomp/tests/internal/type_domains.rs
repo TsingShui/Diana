@@ -51,7 +51,7 @@ fn type_reduction_keeps_sorted_evidence_order_and_coincident_domain_hints() {
         for ty in order {
             evidence.insert(TypeBound::new(BoundKind::Exact, ty));
         }
-        assert_eq!(evidence.produced_type(&hierarchy), Some(first.clone()));
+        assert_eq!(evidence.ordinary_producer(&hierarchy), Some(first.clone()));
     }
 
     let mut domain = TypeBounds::from([

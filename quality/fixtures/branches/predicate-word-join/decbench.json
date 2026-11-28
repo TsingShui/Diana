@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "id": "dex-predicate-word-join",
+  "default": false,
+  "input": "classes.dex",
+  "input_sha256": "d998a32e0e7f70fc81ff446c98fa8c144df83e437fafadb54d09ce973cf5e3a5",
+  "probe": "decbench_probe.py",
+  "oracle_files": [
+    "PredicateWordJoin.java",
+    "PredicateWordJoin.smali",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m2",
+      "member": "Lfixture/PredicateWordJoin;->run(Ljava/lang/Object;[Z)I",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m3",
+      "member": "Lfixture/PredicateWordJoin;->select(Ljava/lang/Object;IZ)I",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

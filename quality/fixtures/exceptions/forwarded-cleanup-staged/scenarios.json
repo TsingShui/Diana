@@ -1,0 +1,20 @@
+{
+  "run": [
+    {"id": "normal-forwarding-is-not-entered", "arguments": ["0", "normal"],
+     "expected": ["start:11", "return"]},
+    {"id": "direct-normal-return-bypasses-cleanup", "arguments": ["2", "normal"],
+     "expected": ["start:33", "return"]},
+    {"id": "left-entry-transfers-pending-and-shares-tag", "arguments": ["0", "fault"],
+     "expected": ["start:11", "cleanup:left:11:4294967297:forwarded:left-original", "outward:left-original", "return"]},
+    {"id": "right-entry-bypasses-pending-move-and-shares-tag", "arguments": ["1", "fault"],
+     "expected": ["start:22", "cleanup:right:22:8589934594:forwarded:right-original", "outward:right-original", "return"]},
+    {"id": "direct-entry-skips-forwarded-tag", "arguments": ["2", "fault"],
+     "expected": ["start:33", "cleanup:direct:33:12884901891:direct:direct-original", "outward:direct-original", "return"]},
+    {"id": "forwarded-cleanup-fault-replaces-pending", "arguments": ["0", "replace"],
+     "expected": ["start:11", "cleanup:left:11:4294967297:forwarded:left-original", "outward:replacement", "return"]},
+    {"id": "direct-cleanup-fault-replaces-pending", "arguments": ["2", "replace"],
+     "expected": ["start:33", "cleanup:direct:33:12884901891:direct:direct-original", "outward:replacement", "return"]},
+    {"id": "outward-handler-fault-escapes", "arguments": ["1", "reporter-fault"],
+     "expected": ["start:22", "cleanup:right:22:8589934594:forwarded:right-original", "outward:right-original", "escape:reporter"]}
+  ]
+}

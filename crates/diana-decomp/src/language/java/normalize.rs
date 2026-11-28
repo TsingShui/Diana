@@ -341,6 +341,7 @@ impl JavaAstNormalizer {
             match child {
                 JavaStmt::Empty
                 | JavaStmt::RecoveryFailure(_)
+                | JavaStmt::RecoveryGap(_)
                 | JavaStmt::Return(_)
                 | JavaStmt::Variable { .. }
                 | JavaStmt::ConstructorInvocation { .. }
@@ -406,6 +407,7 @@ impl JavaAstNormalizer {
         }
         if has_if {
             changed |= ConditionalResultJoin::apply(&mut flattened);
+            changed |= TerminalBranchLinearizer::join_boolean_guards(&mut flattened);
         }
         if has_switch {
             changed |= SwitchResultReturn::apply(&mut flattened);
@@ -1358,6 +1360,99 @@ pub(super) fn statements_can_complete_normally(statements: &[JavaStmt]) -> bool 
 impl TerminalBranchLinearizer {
     const NESTING_PENALTY: usize = 12;
 
+    fn join_boolean_guards(statements: &mut Vec<JavaStmt>) -> bool {
+        let same_return = |left: &JavaStmt, right: &JavaStmt| {
+            Self::guard_return(left).is_some_and(|value| Self::guard_return(right) == Some(value))
+        };
+        let Some(first) = statements
+            .windows(2)
+            .position(|pair| same_return(&pair[0], &pair[1]))
+        else {
+            return false;
+        };
+        let mut tail = statements.split_off(first).into_iter().peekable();
+        while let Some(statement) = tail.next() {
+            if !tail
+                .peek()
+                .is_some_and(|next| same_return(&statement, next))
+            {
+                statements.push(statement);
+                continue;
+            }
+            let JavaStmt::If {
+                condition,
+                then_stmt,
+                ..
+            } = statement
+            else {
+                unreachable!("the boolean guard was selected above");
+            };
+            let value = Self::boolean_return(&then_stmt);
+            let mut operands = vec![condition];
+            while tail
+                .peek()
+                .is_some_and(|next| Self::guard_return(next) == value)
+            {
+                let Some(JavaStmt::If { condition, .. }) = tail.next() else {
+                    unreachable!("the next boolean guard was selected above");
+                };
+                operands.push(condition);
+            }
+            let count = operands.len();
+            // A true left guard used to return before evaluating the right
+            // guard. Logical OR keeps that short-circuit boundary, including
+            // effects and exceptions in either condition.
+            statements.push(JavaStmt::If {
+                condition: Self::ordered_disjunction(&mut operands.into_iter(), count),
+                then_stmt,
+                else_stmt: None,
+            });
+        }
+        true
+    }
+
+    // Keep long adjacent runs shallow while preserving operand order.
+    fn ordered_disjunction(
+        operands: &mut impl Iterator<Item = JavaExpr>,
+        count: usize,
+    ) -> JavaExpr {
+        if count == 1 {
+            return operands.next().expect("one disjunction operand");
+        }
+        let left = count / 2;
+        JavaExpr::Binary {
+            left: Box::new(Self::ordered_disjunction(operands, left)),
+            op: JavaBinaryOp::LogicalOr,
+            right: Box::new(Self::ordered_disjunction(operands, count - left)),
+        }
+    }
+
+    fn guard_return(statement: &JavaStmt) -> Option<bool> {
+        let JavaStmt::If {
+            then_stmt,
+            else_stmt: None,
+            ..
+        } = statement
+        else {
+            return None;
+        };
+        Self::boolean_return(then_stmt)
+    }
+
+    fn boolean_return(statement: &JavaStmt) -> Option<bool> {
+        let body = match statement {
+            JavaStmt::Block(statements) => match statements.as_slice() {
+                [only] => only,
+                _ => return None,
+            },
+            body => body,
+        };
+        match body {
+            JavaStmt::Return(Some(JavaExpr::Literal(JavaLiteral::Boolean(value)))) => Some(*value),
+            _ => None,
+        }
+    }
+
     fn apply(statements: &mut Vec<JavaStmt>) -> bool {
         Self::linearize_candidates(statements, Self::next_candidate)
     }
@@ -1591,6 +1686,7 @@ impl TerminalBranchLinearizer {
             }
             JavaStmt::Empty
             | JavaStmt::RecoveryFailure(_)
+            | JavaStmt::RecoveryGap(_)
             | JavaStmt::Variable { .. }
             | JavaStmt::Expression(_)
             | JavaStmt::ConstructorInvocation { .. }
@@ -1683,6 +1779,7 @@ impl TerminalBranchLinearizer {
                 }
                 JavaStmt::Empty
                 | JavaStmt::RecoveryFailure(_)
+                | JavaStmt::RecoveryGap(_)
                 | JavaStmt::Variable { .. }
                 | JavaStmt::Expression(_)
                 | JavaStmt::ConstructorInvocation { .. }
@@ -1742,6 +1839,7 @@ impl TerminalBranchLinearizer {
             }
             JavaStmt::Empty
             | JavaStmt::RecoveryFailure(_)
+            | JavaStmt::RecoveryGap(_)
             | JavaStmt::Variable { .. }
             | JavaStmt::Expression(_)
             | JavaStmt::ConstructorInvocation { .. }
@@ -1759,7 +1857,7 @@ impl TerminalBranchLinearizer {
 
     fn statement_cost(statement: &JavaStmt) -> usize {
         match statement {
-            JavaStmt::Empty | JavaStmt::RecoveryFailure(_) => 0,
+            JavaStmt::Empty | JavaStmt::RecoveryFailure(_) | JavaStmt::RecoveryGap(_) => 0,
             JavaStmt::Variable { value, .. } => {
                 1 + value.as_ref().map(JavaExpr::cost).unwrap_or_default()
             }

@@ -51,7 +51,8 @@ when reproducing a finding or measuring execution time.
 ## Replay a public APK corpus
 
 `corpora` lists the opt-in projects. The checked-in manifests pin the APK release,
-source revision, and reviewed methods for AntennaPod 3.12.3 and NewPipe 0.28.8.
+source revision, and reviewed methods for FairEmail 1.2338, AntennaPod 3.12.3,
+and NewPipe 0.28.8. Automatic discovery selects Java source files.
 `prepare --corpus ID --download` fetches the release and source archive into
 `.cache/decbench/public-corpora/`. With `--apk PATH --source PATH`, it imports
 local copies instead. Runs only read cached inputs. The evaluated APK and
@@ -147,6 +148,43 @@ identities, APKs, oracles and evaluator versions. The gate fails on newly
 failing checks, lost evidence, setup failures or incompatible scope. A known
 unchecked result can remain in a compatible comparison. Coverage accepts
 repeated `--cases` and `--report` arguments for generated shards.
+
+### Scan all source-aligned methods
+
+Use the full profile to scan each project's reviewed and independently
+verifiable Java candidates. It runs `diana export` once per APK using Diana's
+default worker selection. Every shard evaluates methods from the same export.
+The scan partitions larger selections automatically. The `--limit` setting
+controls the maximum size of each shard.
+
+```sh
+python3 quality/decbench prepare --corpus fairemail-1.2338 --download
+python3 quality/decbench campaign --corpus fairemail-1.2338 --profile full \
+  --binary target/release/diana --revision "$(git rev-parse HEAD)" --timeout 120
+```
+
+The export reader uses original class coordinates and complete method
+descriptors to attribute text. Ambiguous signatures and unavailable output
+leave the affected checks unchecked. The export directory is temporary.
+The campaign retains per-shard case manifests and reports, corpus coverage,
+and a `bench.html` for human review. The bench page lists methods with
+differences and shows the pinned original Java and Diana output side by side.
+`review.html` retains the detailed evidence. Supply `--jadx-jar` for a paired
+technical review.
+
+Rebuild a bench page from a saved campaign without running either
+decompiler. Add `--run` to include saved public run reports with executed
+scenario failures and their event traces. Use `--prepared` when the source
+cache has moved.
+
+```sh
+python3 quality/decbench bench --campaign /path/to/campaign \
+  --output .cache/decbench/bench.html
+```
+
+Use `triage --baseline PATH --at LOCATOR --binary PATH` on a shard report to
+reproduce a candidate through the exact method retrieval command. Compare full
+campaigns with the same source and selections to track change across builds.
 
 ### Discover source-aligned methods
 

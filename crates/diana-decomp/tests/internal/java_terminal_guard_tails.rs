@@ -87,3 +87,45 @@ fn initializer_leaves_follow_the_first_guard_with_a_noncompleting_tail() {
         ]
     );
 }
+
+#[test]
+fn equal_boolean_returns_keep_the_order_of_short_circuited_calls() {
+    let call = |name| JavaExpr::Call {
+        receiver: None,
+        owner: None,
+        type_arguments: Vec::new(),
+        method: JavaIdentifier::from_hint(name),
+        args: Vec::new(),
+    };
+    let yes = JavaStmt::Return(Some(JavaExpr::Literal(JavaLiteral::Boolean(true))));
+    let no = JavaStmt::Return(Some(JavaExpr::Literal(JavaLiteral::Boolean(false))));
+    let barrier = JavaStmt::Expression(call("advance"));
+    let third = guard(call("third"), yes.clone());
+    let negative = guard(call("negative"), no);
+    let mut statements = vec![
+        guard(call("first"), yes.clone()),
+        guard(call("second"), JavaStmt::Block(vec![yes.clone()])),
+        barrier.clone(),
+        third.clone(),
+        negative.clone(),
+    ];
+    assert!(TerminalBranchLinearizer::join_boolean_guards(
+        &mut statements
+    ));
+    assert_eq!(
+        statements,
+        vec![
+            guard(
+                JavaExpr::Binary {
+                    left: Box::new(call("first")),
+                    op: JavaBinaryOp::LogicalOr,
+                    right: Box::new(call("second")),
+                },
+                yes
+            ),
+            barrier,
+            third,
+            negative,
+        ]
+    );
+}

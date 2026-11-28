@@ -51,12 +51,16 @@ def load_campaign(path: Path, budget: list[int]):
     path = bundle_file(path.parent.resolve(strict=True), path.name)
     receipt = read_document(path, budget)
     reporting.require_report(receipt, CAMPAIGN_KIND)
-    if (receipt.get("profile") not in ("reviewed", "sample")
+    if (receipt.get("profile") not in ("reviewed", "sample", "full")
             or any(type(receipt.get(key)) is not bool for key in EVIDENCE_MODES[1:])):
         raise ValueError("invalid campaign evidence mode")
     shards = receipt.get("shards")
     if type(shards) is not int or not 1 <= shards <= 512:
         raise ValueError("invalid campaign shard count")
+    project_shards = receipt.get("project_shards", {}) if receipt["profile"] == "full" else {}
+    if not isinstance(project_shards, dict) or any(type(count) is not int or not shards <= count <= 512
+                                                   for count in project_shards.values()):
+        raise ValueError("invalid full campaign project shard count")
     units, setup = {}, []
     assigned = defaultdict(set)
     for unit in reporting.rows(receipt, "units"):
@@ -67,21 +71,22 @@ def load_campaign(path: Path, budget: list[int]):
                 or unit["exit_code"] != EXIT_CODES[status]):
             raise ValueError("invalid campaign unit status")
         if stage != "evaluation":
-            if stage not in ("prepare", "selection", "coverage") or status not in ("EMPTY", "SETUP_ERROR"):
+            if stage not in ("prepare", "selection", "export", "coverage") or status not in ("EMPTY", "SETUP_ERROR"):
                 raise ValueError("invalid campaign preparation or selection unit")
             setup.append(unit)
             continue
 
         backend = reporting.string(unit, "backend")
         number = unit.get("shard")
+        count = project_shards.get(corpus, shards)
         selected = unit.get("selected")
-        if (type(unit.get("shards")) is not int or unit["shards"] != shards
-                or type(number) is not int or not 1 <= number <= shards
+        if (type(unit.get("shards")) is not int or unit["shards"] != count
+                or type(number) is not int or not 1 <= number <= count
                 or not isinstance(selected, list) or not 1 <= len(selected) <= 512
                 or any(not isinstance(at, str) or not LOCATOR.fullmatch(at) for at in selected)
                 or len(set(selected)) != len(selected) or status == "EMPTY"):
             raise ValueError("invalid campaign evaluation selection")
-        key = (corpus, backend, number, shards)
+        key = (corpus, backend, number, count)
         seen = assigned[corpus, backend]
         if key in units or seen.intersection(selected):
             raise ValueError(f"campaign repeats a unit or assigned method for {corpus}/{backend}")

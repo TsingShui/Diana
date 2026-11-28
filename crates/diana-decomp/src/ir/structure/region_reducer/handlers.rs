@@ -1,10 +1,10 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ir::analysis::SsaVar;
 use crate::ir::{
-    RegionGraph, RegionId, RegionKind, RegisterArg, SemanticCatch, SemanticExpression,
-    SemanticExpressionTransform, SemanticFinally, SemanticFolder, SemanticInstructions,
-    SemanticLeaveKind, SemanticNode,
+    ArgType, BlockId, RegionEdge, RegionGraph, RegionId, RegionKind, RegisterArg, SemanticCatch,
+    SemanticExpression, SemanticExpressionTransform, SemanticFinally, SemanticFolder,
+    SemanticInstructions, SemanticLeaveKind, SemanticNode, CFG,
 };
 
 use super::super::{
@@ -171,6 +171,7 @@ struct ExceptionValueSubstitution {
 
 struct ForwardedHandlerBody {
     port: ContinuationPort,
+    edge: Option<RegionEdge>,
     body: SemanticNode,
     replacements: usize,
 }
@@ -179,10 +180,12 @@ impl ForwardedHandlerBody {
     fn inline(
         adapter: SemanticNode,
         port: ContinuationPort,
+        edge: Option<RegionEdge>,
         body: SemanticNode,
     ) -> Result<Option<SemanticNode>, StructureError> {
         let mut forwarding = Self {
             port,
+            edge,
             body,
             replacements: 0,
         };
@@ -204,7 +207,12 @@ impl SemanticFolder for ForwardedHandlerBody {
             SemanticLeaveKind::FallThrough(target) | SemanticLeaveKind::Jump(target) => *target,
             _ => return Ok(node),
         };
-        if leave.target != self.port.scope || target != self.port.target {
+        if leave.target != self.port.scope
+            || target != self.port.target
+            || leave.condition.is_some()
+            || !leave.cleanup.is_empty()
+            || self.edge.is_some_and(|edge| leave.edge != Some(edge))
+        {
             return Ok(node);
         }
         self.replacements += 1;
@@ -234,6 +242,13 @@ pub(super) struct HandlerPort {
 
 pub(super) struct HandlerReducer<'a> {
     regions: &'a RegionGraph,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct CleanupContinuation {
+    pub(super) handler: RegionId,
+    port: ContinuationPort,
+    edge: RegionEdge,
 }
 
 impl<'a> HandlerReducer<'a> {
@@ -364,7 +379,16 @@ impl<'a> HandlerReducer<'a> {
                 RegionKind::Cleanup(cleanup) => {
                     let source_finally = self.source_finally_body(owner, *child)?;
                     let body_region = source_finally.unwrap_or(self.body_region(owner, *child)?);
-                    let (reduction, alternate) = self.reduction(reduced, body_region)?;
+                    let (mut reduction, alternate) = self.reduction(reduced, body_region)?;
+                    if let Some(forwarding) = children.forwarded_cleanups.get(child) {
+                        reduction = self.inline_forwarded_body(
+                            reduction,
+                            forwarding.handler,
+                            forwarding.port,
+                            Some(forwarding.edge),
+                            reduced,
+                        )?;
+                    }
                     let exception_value = cleanup.exception_value;
                     let semantic_handler = source_finally.unwrap_or(*child);
                     let body = self.bind(owner, parent, semantic_handler, region_cfg, reduction)?;
@@ -427,6 +451,17 @@ impl<'a> HandlerReducer<'a> {
             scope: target_handler,
             target,
         };
+        self.inline_forwarded_body(reduction, target_handler, forwarding, None, reduced)
+    }
+
+    fn inline_forwarded_body(
+        &self,
+        reduction: ReducedPort,
+        target_handler: RegionId,
+        forwarding: ContinuationPort,
+        edge: Option<RegionEdge>,
+        reduced: &BTreeMap<RegionId, ReducedRegion>,
+    ) -> Result<ReducedPort, StructureError> {
         if reduction.continuations.ports().len() != 1
             || !reduction.continuations.ports().contains(&forwarding)
             || !reduction.continuations.controls().is_empty()
@@ -435,13 +470,23 @@ impl<'a> HandlerReducer<'a> {
         }
         let Some(target_body) = reduced
             .get(&target_handler)
-            .and_then(|reduction| reduction.ports.get(&target))
+            .and_then(|reduction| reduction.ports.get(&forwarding.target))
         else {
             return Ok(reduction);
         };
+        if edge.is_some()
+            && (!target_body.continuations.ports().is_empty()
+                || !target_body.continuations.controls().is_empty())
+        {
+            return Ok(reduction);
+        }
         let original = reduction.body;
-        let Some(body) =
-            ForwardedHandlerBody::inline(original.clone(), forwarding, target_body.body.clone())?
+        let Some(body) = ForwardedHandlerBody::inline(
+            original.clone(),
+            forwarding,
+            edge,
+            target_body.body.clone(),
+        )?
         else {
             return Ok(ReducedPort::new(original));
         };
@@ -486,7 +531,179 @@ impl<'a> HandlerReducer<'a> {
             .then_some((target_handler, target)))
     }
 
-    fn source_finally_body(
+    /// A captured exception may reach shared cleanup code on a normal
+    /// adapter edge. The receiver can be emitted in this catch only if every
+    /// throwing operation still reaches its original outward handler.
+    pub(super) fn forwarded_cleanup(
+        &self,
+        cfg: &CFG,
+        owner: RegionId,
+        handler: RegionId,
+    ) -> Result<Option<CleanupContinuation>, StructureError> {
+        let tree = self.regions.tree();
+        let source = tree
+            .region(handler)
+            .ok_or(StructureError::UnknownRegion(handler))?;
+        if !matches!(source.kind, RegionKind::Cleanup(_))
+            || self.source_finally_body(owner, handler)?.is_some()
+        {
+            return Ok(None);
+        }
+        let mut exits = self.regions.transfers().iter().filter(|transfer| {
+            transfer.source_region == handler && !source.blocks.contains(&transfer.target_block)
+        });
+        let Some(exit) = exits.next() else {
+            return Ok(None);
+        };
+        if exits.next().is_some()
+            || self.regions.handler_adapters().get(&exit.source_block) != Some(&exit.target_block)
+            || exit.target_block != exit.destination_block
+        {
+            return Ok(None);
+        }
+        let edge = RegionEdge {
+            source: exit.source_block,
+            target: exit.target_block,
+            kind: exit.edge_kind,
+        };
+        // The copies on this edge belong to its source block when there is
+        // only one normal successor. Its anchor remains in the adapter body.
+        if !cfg.normal_successors(edge.source).eq([edge.target]) {
+            return Ok(None);
+        }
+        let Some(leave) = self.regions.leave_for_edge(edge) else {
+            return Ok(None);
+        };
+        if !leave.cleanup_regions.is_empty()
+            || !matches!(leave.leave.exit, crate::ir::RegionExit::FallThrough(target) if target == edge.target)
+        {
+            return Ok(None);
+        }
+        let target = tree
+            .region(exit.target_region)
+            .ok_or(StructureError::UnknownRegion(exit.target_region))?;
+        if !matches!(target.kind, RegionKind::Cleanup(_))
+            || target.entry != Some(edge.target)
+            || tree
+                .is_ancestor(target.id, owner)
+                .map_err(StructureError::from)?
+        {
+            return Ok(None);
+        }
+
+        let mut ambient = None;
+        for ancestor in tree
+            .parent_chain(owner)
+            .map_err(StructureError::from)?
+            .into_iter()
+            .skip(1)
+        {
+            let clauses = self.regions.handlers_of(ancestor);
+            let outer = match clauses {
+                [] => continue,
+                [outer] => *outer,
+                _ => return Ok(None),
+            };
+            if tree
+                .is_ancestor(outer, owner)
+                .map_err(StructureError::from)?
+            {
+                return Ok(None);
+            }
+            let descriptor = tree
+                .region(outer)
+                .ok_or(StructureError::UnknownRegion(outer))?;
+            match &descriptor.kind {
+                RegionKind::Cleanup(catch) | RegionKind::Catch(catch)
+                    if catch.exception_types.as_slice() == [ArgType::throwable()] =>
+                {
+                    ambient = Some(outer)
+                }
+                _ => return Ok(None),
+            }
+            break;
+        }
+
+        let mut visited = BTreeSet::new();
+        let mut pending = vec![edge.target];
+        while let Some(block) = pending.pop() {
+            if !visited.insert(block) {
+                continue;
+            }
+            if !target.blocks.contains(&block)
+                || !self.matches_cleanup_dispatch(cfg, block, ambient)?
+            {
+                return Ok(None);
+            }
+            pending.extend(cfg.normal_successors(block));
+        }
+        Ok(Some(CleanupContinuation {
+            handler: target.id,
+            edge,
+            port: ContinuationPort {
+                scope: leave.leave.target,
+                target: edge.target,
+            },
+        }))
+    }
+
+    fn matches_cleanup_dispatch(
+        &self,
+        cfg: &CFG,
+        block: BlockId,
+        ambient: Option<RegionId>,
+    ) -> Result<bool, StructureError> {
+        let body = cfg
+            .block(block)
+            .ok_or(StructureError::MissingBlock(block))?;
+        if !body.insns.iter().any(|insn| insn.can_throw()) {
+            return Ok(true);
+        }
+        let mut dispatch = cfg
+            .successors_with_kind(block)
+            .iter()
+            .filter_map(|&(entry, kind)| kind.is_exception().then_some(entry));
+        let physical = match (ambient, dispatch.next()) {
+            (None, None) => None,
+            (Some(outer), Some(physical)) if dispatch.next().is_none() => {
+                let canonical = self
+                    .regions
+                    .handler_adapters()
+                    .get(&physical)
+                    .copied()
+                    .unwrap_or(physical);
+                let Some(entry) = cfg.block(physical).filter(|entry| !entry.synthetic) else {
+                    return Ok(false);
+                };
+                if self.regions.enclosing_exception_handler(canonical) != Some(outer) {
+                    return Ok(false);
+                }
+                Some(entry.offset)
+            }
+            _ => return Ok(false),
+        };
+        Ok(body
+            .insns
+            .iter()
+            .filter(|insn| insn.can_throw())
+            .all(|insn| {
+                let mut clauses = cfg
+                    .handlers
+                    .iter()
+                    .filter(|clause| clause.covers(insn.offset));
+                match (physical, clauses.next()) {
+                    (None, None) => true,
+                    (Some(offset), Some(clause)) => {
+                        clause.is_catch_all()
+                            && clause.handler == offset
+                            && clauses.next().is_none()
+                    }
+                    _ => false,
+                }
+            }))
+    }
+
+    pub(super) fn source_finally_body(
         &self,
         owner: RegionId,
         cleanup: RegionId,
@@ -672,7 +889,9 @@ mod tests {
 
     use super::{ForwardedHandlerBody, SemanticNode};
     use crate::ir::structure::continuation::{ContinuationFacts, ContinuationPort};
-    use crate::ir::{BlockId, RegionId, SemanticBlock, SemanticLeave, SemanticLeaveKind};
+    use crate::ir::{
+        BlockId, EdgeKind, RegionEdge, RegionId, SemanticBlock, SemanticLeave, SemanticLeaveKind,
+    };
 
     fn fallthrough(scope: RegionId, target: BlockId) -> SemanticNode {
         SemanticNode::Leave(SemanticLeave {
@@ -694,16 +913,27 @@ mod tests {
         let enclosing = RegionId::new(0);
         let entry = BlockId::new(65);
         let continuation = BlockId::new(70);
+        let source = BlockId::new(58);
+        let edge = RegionEdge {
+            source,
+            target: entry,
+            kind: EdgeKind::Normal,
+        };
         let port = ContinuationPort {
             scope: handler,
             target: entry,
         };
+        let SemanticNode::Leave(mut leave) = fallthrough(handler, entry) else {
+            unreachable!("fallthrough produces a leave");
+        };
+        leave.edge = Some(edge);
+        leave.origin = Some(source);
         let adapter = SemanticNode::sequence([
             SemanticNode::BasicBlock(SemanticBlock {
-                id: BlockId::new(58),
+                id: source,
                 statements: Vec::new(),
             }),
-            fallthrough(handler, entry),
+            SemanticNode::Leave(leave),
         ]);
         let body = SemanticNode::sequence([
             SemanticNode::BasicBlock(SemanticBlock {
@@ -713,7 +943,7 @@ mod tests {
             fallthrough(enclosing, continuation),
         ]);
 
-        let inlined = ForwardedHandlerBody::inline(adapter.clone(), port, body)
+        let inlined = ForwardedHandlerBody::inline(adapter.clone(), port, Some(edge), body)
             .expect("forwarding rewrite")
             .expect("one matching adapter continuation");
         assert_eq!(
@@ -724,14 +954,26 @@ mod tests {
             }])
         );
         assert!(ForwardedHandlerBody::inline(
-            adapter,
+            adapter.clone(),
             ContinuationPort {
                 scope: handler,
                 target: BlockId::new(66),
             },
+            None,
             SemanticNode::Empty,
         )
         .expect("non-matching rewrite")
+        .is_none());
+        assert!(ForwardedHandlerBody::inline(
+            adapter,
+            port,
+            Some(RegionEdge {
+                source: BlockId::new(57),
+                ..edge
+            }),
+            SemanticNode::Empty,
+        )
+        .expect("non-matching physical edge")
         .is_none());
     }
 }

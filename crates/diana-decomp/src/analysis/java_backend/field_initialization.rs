@@ -135,7 +135,7 @@ impl<'a> FieldInitializationAnalysis<'a> {
 
     fn statement(&mut self, statement: &JavaStmt, state: AssignmentCounts) -> InitializationFlow {
         match statement {
-            JavaStmt::RecoveryFailure(_) => {
+            JavaStmt::RecoveryFailure(_) | JavaStmt::RecoveryGap(_) => {
                 // Unavailable code establishes no successful completion facts.
                 InitializationFlow::normal(AssignmentCounts::NONE)
             }

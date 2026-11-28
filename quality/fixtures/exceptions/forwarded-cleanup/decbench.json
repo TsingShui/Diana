@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "dex-forwarded-cleanup",
+  "default": false,
+  "input": "classes.dex",
+  "input_sha256": "554d00bb97a0f79269cd53c9410df69d3ad674983b868b9e36fe851d3d2ec92e",
+  "probe": "decbench_probe.py",
+  "oracle_files": ["ForwardedCleanup.java", "source/ForwardedCleanup.smali", "scenarios.json"],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m2",
+      "member": "Lfixture/ForwardedCleanup;->run(Lfixture/ForwardedCleanup;Lfixture/ForwardedCleanup;Z)V",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

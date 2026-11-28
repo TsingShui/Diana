@@ -600,6 +600,14 @@ impl JavaPrinter {
                 self.indent(output, depth);
                 writeln!(output, "// Diana: {}", reason.escape_debug())?;
             }
+            JavaStmt::RecoveryGap(reason) => {
+                self.indent(output, depth);
+                writeln!(
+                    output,
+                    "// Diana: Partial recovery. {}",
+                    reason.escape_debug()
+                )?;
+            }
             JavaStmt::Block(statements) => {
                 writeln!(output, "{{")?;
                 pending.push(PrintTask::CloseBrace(depth));

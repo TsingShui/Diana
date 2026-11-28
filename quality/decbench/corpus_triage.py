@@ -107,7 +107,9 @@ def triage(report_path: Path, at: str, binary: Path, *, cache: Path | None = Non
         if project.source_commit != corpus["source_revision"]:
             raise corpus_eval.EvidenceChanged("the catalog source revision differs from the saved run")
         saved_judge = saved.get("evaluator_sha256")
-        if saved_judge is not None and saved_judge != corpus_eval.evaluator_fingerprint("diana", flags["inspect_structure"]):
+        exported = (original.get("inventory") or {}).get("capture") == "export"
+        if saved_judge is not None and saved_judge != corpus_eval.evaluator_fingerprint(
+                "diana", flags["inspect_structure"], export=exported):
             raise corpus_eval.EvidenceChanged("the current evaluator differs from the saved run")
         if case_path is None and flags["external_cases"]:
             try:
@@ -139,7 +141,7 @@ def triage(report_path: Path, at: str, binary: Path, *, cache: Path | None = Non
             return assessment, current_item, method
 
         fresh, observed, after = recapture(binary, "diana", revision)
-        if not reporting.evaluator_compatible(saved, fresh):
+        if not exported and not reporting.evaluator_compatible(saved, fresh):
             raise corpus_eval.EvidenceChanged("the fresh run did not use the saved evaluator")
         receipt.update(current=publication(fresh, observed, after), source=after.get("source"))
         baseline = {**saved, "inputs": [{**original, "methods": [before]}]}

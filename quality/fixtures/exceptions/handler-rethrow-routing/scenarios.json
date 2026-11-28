@@ -1,0 +1,26 @@
+{
+  "run": [
+    {"id": "normal-work", "arguments": ["plain", "normal"],
+     "expected": ["setup", "schedule", "wait", "cancel", "return"]},
+    {"id": "setup-retries-only-its-own-fault", "arguments": ["plain", "setup-retry"],
+     "expected": ["setup", "retry:setup", "setup", "schedule", "wait", "cancel", "return"]},
+    {"id": "setup-can-stop-before-scheduling", "arguments": ["plain", "setup-stop"],
+     "expected": ["setup", "retry:setup", "return"]},
+    {"id": "same-exception-type-from-schedule-bypasses-retry", "arguments": ["plain", "schedule-fault"],
+     "expected": ["setup", "schedule", "cancel", "session:schedule:same", "return"]},
+    {"id": "interrupt-is-handled-then-cancel", "arguments": ["plain", "interrupt"],
+     "expected": ["setup", "schedule", "wait", "interrupt:wait", "cancel", "return"]},
+    {"id": "failure-in-interrupt-handler-cancels-once", "arguments": ["plain", "interrupt-fault"],
+     "expected": ["setup", "schedule", "wait", "interrupt:wait", "cancel", "session:interrupt:same", "return"]},
+    {"id": "cancel-fault-replaces-pending-handler-exception", "arguments": ["plain", "interrupt-fault-cancel-fault"],
+     "expected": ["setup", "schedule", "wait", "interrupt:wait", "cancel", "session:cancel:same", "return"]}
+  ],
+  "runWithSecondaryCatch": [
+    {"id": "secondary-catch-can-complete", "arguments": ["nested", "secondary"],
+     "expected": ["setup", "schedule", "wait", "interrupt:wait", "recover:secondary", "cancel", "return"]},
+    {"id": "secondary-catch-failure-bypasses-its-own-clause", "arguments": ["nested", "secondary-fault"],
+     "expected": ["setup", "schedule", "wait", "interrupt:wait", "recover:secondary", "cancel", "session:recover:same", "return"]},
+    {"id": "nonmatching-interrupt-handler-fault-goes-to-cleanup", "arguments": ["nested", "interrupt-fault"],
+     "expected": ["setup", "schedule", "wait", "interrupt:wait", "cancel", "session:interrupt:same", "return"]}
+  ]
+}

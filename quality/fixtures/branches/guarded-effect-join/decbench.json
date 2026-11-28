@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "id": "dex-guarded-effect-join",
+  "default": false,
+  "input": "classes.dex",
+  "input_sha256": "60927de7644d89dfaeb3e79229e7bcf480955e6d0c320f9826212f6c4c5afad8",
+  "probe": "decbench_probe.py",
+  "oracle_files": [
+    "GuardedEffectJoin.java",
+    "GuardedEffectJoin.smali",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m5",
+      "member": "Lfixture/GuardedEffectJoin;->run(ZZ)Ljava/lang/Object;",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m6",
+      "member": "Lfixture/GuardedEffectJoin;->runWithCleanup(ZZ)Ljava/lang/Object;",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

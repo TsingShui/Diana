@@ -86,9 +86,17 @@ impl<'a> RegionReducer<'a> {
     }
 
     pub fn reduce(self) -> Result<SemanticNode, StructureError> {
+        let (body, unresolved) = self.reduce_with_gaps()?;
+        unresolved.map_or(Ok(body), Err)
+    }
+
+    pub(crate) fn reduce_with_gaps(
+        self,
+    ) -> Result<(SemanticNode, Option<StructureError>), StructureError> {
         let root = self.regions.tree().root();
         let mut order = Vec::new();
         let mut entered = BTreeSet::new();
+        let mut unresolved_dispatch = BTreeSet::new();
         let mut pending = vec![(root, None)];
         while let Some((region, children)) = pending.pop() {
             if let Some(children) = children {
@@ -119,6 +127,12 @@ impl<'a> RegionReducer<'a> {
             }
             let children = RegionChildren::classify(self.cfg, self.regions, descriptor)?;
             let mut dependencies = children.ordinary.clone();
+            dependencies.extend(
+                children
+                    .forwarded_cleanups
+                    .values()
+                    .map(|continuation| continuation.handler),
+            );
             for &handler in &children.handlers {
                 dependencies.push(handlers.body_region(region, handler)?);
                 if let Some((target, _)) = handlers.forwarded_catch_target(handler)? {
@@ -142,7 +156,8 @@ impl<'a> RegionReducer<'a> {
             pending.extend(dependencies.into_iter().rev().map(|child| (child, None)));
         }
         let mut reduced = BTreeMap::<RegionId, ReducedRegion>::new();
-        for (region, children) in order {
+        for (region, mut children) in order {
+            unresolved_dispatch.append(&mut children.unresolved_dispatch);
             let node = self.reduce_region(region, children, &mut reduced)?;
             reduced.insert(region, node);
         }
@@ -188,7 +203,10 @@ impl<'a> RegionReducer<'a> {
         if shape.cleanup {
             SemanticCleanupResolver::apply(self.regions, &mut body);
         }
-        Ok(body)
+        let unresolved = (!unresolved_dispatch.is_empty()).then(|| {
+            StructureError::UnresolvedExceptionDispatch(unresolved_dispatch.into_iter().collect())
+        });
+        Ok((body, unresolved))
     }
 
     fn inspect_root(

@@ -39,3 +39,26 @@ fn copy_sites_distinguish_duplicate_endpoints_from_duplicate_physical_edges() {
         None
     );
 }
+
+#[test]
+fn a_phi_inside_the_contraction_keeps_its_concrete_ingress() {
+    let [source, phi, sink, bypass] = [0, 1, 2, 3].map(BlockId);
+    let contractions = ContractionGraph::new([(phi, sink)]).solve(CyclePolicy::Preserve);
+    let mut cfg = CFG::new("contracted_phi_ingress");
+    for id in 0..=3 {
+        cfg.add_block(Block::new(id));
+    }
+    cfg.add_edge(source, phi, EdgeKind::True);
+    cfg.add_edge(source, bypass, EdgeKind::False);
+    cfg.add_edge(phi, sink, EdgeKind::Normal);
+    assert_eq!(
+        contractions.normal_copy_site(&cfg, source, phi, phi),
+        Some(NormalCopySite::Edge(crate::ir::RegionEdge {
+            source,
+            target: phi,
+            kind: EdgeKind::True,
+        }))
+    );
+    cfg.add_edge(phi, bypass, EdgeKind::SwitchDefault);
+    assert_eq!(contractions.normal_copy_site(&cfg, source, phi, phi), None);
+}

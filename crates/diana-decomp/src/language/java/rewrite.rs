@@ -417,6 +417,7 @@ fn walk_statement(visitor: &mut impl Children, statement: &mut JavaStmt) {
         }
         JavaStmt::Empty
         | JavaStmt::RecoveryFailure(_)
+        | JavaStmt::RecoveryGap(_)
         | JavaStmt::Break(_)
         | JavaStmt::Continue(_) => {}
     }

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
 from hashlib import sha256
-from itertools import islice
+from itertools import chain, islice
 from pathlib import Path, PurePosixPath
 from tarfile import open as open_tar
 from urllib.parse import quote, urlsplit
@@ -67,6 +67,7 @@ class Declaration:
     first_line: int
     last_line: int
     bounds: tuple[int, int]
+    first_token: int
 
 
 def source_files(path: Path, root: str) -> dict[str, SourceFile]:
@@ -196,7 +197,7 @@ def declaration_arguments(view, opening):
     return tuple(result)
 
 
-def source_environment(view, source):
+def source_environment(view, owner):
     package = ""
     imports = {}
     wildcard = False
@@ -231,15 +232,15 @@ def source_environment(view, source):
     if len(declarations) != 1 or package is None:
         raise Unavailable("source file has no unique top-level owner")
     name, body, generic = declarations[0]
-    owner = "L" + (package.replace(".", "/") + "/" if package else "") + name + ";"
-    if owner != source.owner or generic:
+    declared = "L" + (package.replace(".", "/") + "/" if package else "") + name + ";"
+    if declared != owner or generic:
         raise Unavailable("source owner does not match the file name or declares type parameters")
     nested_names = {words[index + 1] for index in range(body + 1, view.ends[body] - 1)
                     if words[index] in TYPE_KEYWORDS and words[index - 1] != "."}
     return package, imports, wildcard, nested_names, body
 
 
-def method_declarations(view, class_body):
+def method_declarations(view, class_body, *, include_declarations=False):
     words = view.words
     boundary = class_body + 1
     result = []
@@ -259,7 +260,10 @@ def method_declarations(view, class_body):
         if words[body] == "throws":
             while body < view.ends[class_body] and words[body] not in ("{", ";", "("):
                 body += 1
-        if body not in view.ends or words[body] != "{" or view.scopes[body] != class_body:
+        has_body = body in view.ends and words[body] == "{"
+        if not has_body and not (include_declarations and words[body] == ";"):
+            continue
+        if view.scopes[body] != class_body:
             continue
         arguments = declaration_arguments(view, index)
         if arguments is None or any(not argument or not IDENTIFIER.fullmatch(argument[-1]) for argument in arguments):
@@ -267,9 +271,10 @@ def method_declarations(view, class_body):
         returns = words[boundary:index - 1]
         if declaration_type(returns) is None:
             continue
-        closing = view.ends[body]
+        closing = view.ends.get(body, body)
         result.append(Declaration(words[index - 1], returns, tuple(arg[:-1] for arg in arguments),
-                                  view.tokens[boundary].line, view.tokens[closing].line, (body, closing)))
+                                  view.tokens[boundary].line, view.tokens[closing].line,
+                                  (body, closing), boundary))
     return result
 
 
@@ -435,21 +440,24 @@ class DiscoveryPlan:
     pins: dict
     candidates: tuple[dict, ...]
 
-    def select(self, limit: int, shard: tuple[int, int]) -> dict:
+    def select(self, limit: int, shard: tuple[int, int], *, include=()) -> dict:
         if not 0 < limit <= MAX_METHODS:
             raise ValueError(f"discovery limit must be between 1 and {MAX_METHODS}")
         number, count = shard
         if not 1 <= number <= count <= MAX_METHODS:
             raise ValueError(f"discovery shard must be 1-based and at most {MAX_METHODS} partitions")
-        remaining = islice(self.candidates, number - 1, None, count)
+        required = {case["at"] for case in include}
+        remaining = islice(chain(include, self.candidates), number - 1, None, count)
         selected = []
         while len(selected) < limit:
             batch = list(islice(remaining, max(limit, 16)))
             if not batch:
                 break
-            verified = verify_cases(dict(self.pins, methods=batch), self.artifact, self.source, self.source_root)
+            generated = [case for case in batch if case["at"] not in required]
+            verified = (verify_cases(dict(self.pins, methods=generated), self.artifact, self.source, self.source_root)
+                        if generated else {})
             for case in batch:
-                if all("status" not in item for item in verified[case["at"]]["verified"]):
+                if case["at"] in required or all("status" not in item for item in verified[case["at"]]["verified"]):
                     selected.append(case)
                     if len(selected) == limit:
                         break
@@ -457,9 +465,9 @@ class DiscoveryPlan:
             "kind": "source-dex-invocations-and-accessors",
             "limit": limit,
             "candidate_methods": len(self.candidates),
-            "selected_modules": sorted({case["module"] for case in selected}),
+            "selected_modules": sorted({case["module"] for case in selected if "module" in case}),
             "shard": {"number": number, "count": count},
-            "source_forms": dict(sorted(Counter(form for case in selected for form in case["source_forms"]).items())),
+            "source_forms": dict(sorted(Counter(form for case in selected for form in case.get("source_forms", [])).items())),
         }
         manifest = dict(self.pins, methods=selected, discovery=discovery)
         return validate_cases(manifest, "generated discovery", allow_empty=True)
@@ -498,7 +506,7 @@ def prepare_discovery(artifact: Path, source: Path, source_root: str, source_rev
             file = inputs[owner]
             try:
                 view = View(file.content.decode("utf-8"))
-                environment = source_environment(view, file)
+                environment = source_environment(view, file.owner)
                 declarations = method_declarations(view, environment[-1])
             except (UnicodeError, ValueError):
                 continue

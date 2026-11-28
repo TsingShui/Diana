@@ -105,6 +105,21 @@ impl ControlContractions {
         self.component_members(terminal).clone()
     }
 
+    /// Select the same contraction domain for edge arguments and their copy
+    /// sites, even when the original Phi block itself was contracted.
+    pub(crate) fn phi_component(&self, successor: BlockId) -> (BlockId, &BTreeSet<BlockId>) {
+        let direct = self.component_members(successor);
+        if !direct.iter().any(|block| *block != successor) {
+            if let Some(terminal) = self
+                .terminal(successor)
+                .filter(|terminal| *terminal != successor)
+            {
+                return (terminal, self.component_members(terminal));
+            }
+        }
+        (successor, direct)
+    }
+
     fn component_members(&self, terminal: BlockId) -> &BTreeSet<BlockId> {
         static EMPTY: BTreeSet<BlockId> = BTreeSet::new();
         self.members
@@ -152,7 +167,7 @@ impl ControlContractions {
             return Some(NormalCopySite::Block(predecessor));
         }
 
-        let component = self.component_members(successor);
+        let (_, component) = self.phi_component(successor);
         if !component.contains(&entry) {
             return None;
         }
@@ -201,10 +216,10 @@ impl ControlContractions {
             // SSA destruction can fall back to the original concrete inputs.
             // The copy sites depend on the edge, independently of Phi identity.
             anchors.extend(predecessors.iter().copied());
-            let members = self.component_members(successor);
-            let internal = |block: &BlockId| *block != successor && members.contains(block);
+            let (terminal, members) = self.phi_component(successor);
+            let internal = |block: &BlockId| *block != terminal && members.contains(block);
             if predecessors.iter().any(internal) {
-                for &entry in members.iter().filter(|block| **block != successor) {
+                for &entry in members.iter().filter(|block| **block != terminal) {
                     for &(source, kind) in cfg.predecessors_with_kind(entry) {
                         if kind.is_exception() || internal(&source) {
                             continue;
