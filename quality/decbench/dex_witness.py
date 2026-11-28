@@ -16,6 +16,7 @@ from evidence import file_digest
 MAX_CODE_UNITS = 512
 MAX_STEPS = 512
 MAX_REGISTERS = 256
+MAX_ARRAY_LENGTH = 256
 MAX_HANDLERS = 64
 MAX_SCENARIOS = 32
 # Widths supplement the shared ordinary invoke reader, which rejects transfers.
@@ -292,7 +293,7 @@ def check_value(value, descriptor):
 def register_words(instruction):
     word = instruction.word
     trailing = instruction.operands[1]
-    if instruction.opcode >= 0x74:
+    if instruction.opcode == 0x25 or instruction.opcode >= 0x74:
         return tuple(range(trailing, trailing + (word >> 8)))
     count = word >> 12
     if count > 5:
@@ -324,6 +325,7 @@ class Execution:
         self.outcome: tuple[Value | None, Fault | None] | None = None
         self.caught: Fault | None = None
         self.uninitialized: set[Ref] = set()
+        self.array_lengths: dict[Ref, int] = {}
         self.allocated = {value for value in scenario.arguments if isinstance(value, Ref)}
         if len(scenario.arguments) != len(selected.inputs):
             raise Unavailable("scenario arguments differ from the incoming DEX words")
@@ -395,6 +397,58 @@ class Execution:
         self.pending = None if returns == "V" else (returns, result)
         point["value"] = show_value(result)
 
+    def allocate_array(self, pc, descriptor, length):
+        if (type(length) is not int or not 0 <= length <= MAX_ARRAY_LENGTH
+                or not descriptor.startswith("[")
+                or not (descriptor[1:] == "I" or descriptor[1:].startswith(("L", "[")))):
+            raise Unavailable("array shape is outside the bounded witness")
+        allocate = getattr(self.model, "allocate_array", None)
+        if not callable(allocate):
+            raise Unavailable("the scenario has no array allocation model")
+        point = {"pc": pc, "op": "allocate-array", "descriptor": descriptor, "length": length}
+        self.trace.append(point)
+        array = allocate(descriptor, length)
+        if not isinstance(array, Ref) or array.descriptor != descriptor or array in self.allocated:
+            raise Unavailable("stub allocation does not establish a unique modeled array")
+        self.allocated.add(array)
+        self.array_lengths[array] = length
+        point["value"] = show_value(array)
+        return array
+
+    def store_array(self, pc, array, index, value):
+        length = self.array_lengths.get(array)
+        if (length is None or type(index) is not int or not 0 <= index < length
+                or not check_value(value, array.descriptor[1:]) or value in self.uninitialized):
+            raise Unavailable("array write is outside the bounded witness")
+        store = getattr(self.model, "store_array", None)
+        if not callable(store):
+            raise Unavailable("the scenario has no array store model")
+        self.trace.append({"pc": pc, "op": "write-array", "array": show_value(array),
+                           "index": index, "value": show_value(value)})
+        store(array, index, value)
+
+    def array_instruction(self, instruction):
+        pc, word, opcode = instruction.pc, instruction.word, instruction.opcode
+        if opcode in (0x4b, 0x4d):
+            operands = instruction.operands[0]
+            array, index = self.read(operands & 255), self.read(operands >> 8)
+            if not isinstance(array, Ref) or ((opcode == 0x4b) != (array.descriptor == "[I")):
+                raise Unavailable("array write opcode disagrees with the modeled component type")
+            self.store_array(pc, array, index, self.read(word >> 8))
+            return
+        descriptor = self.program.dex.descriptor(instruction.operands[0])
+        if opcode == 0x23:
+            array = self.allocate_array(pc, descriptor, self.read(word >> 12))
+            self.store((word >> 8) & 15, array)
+            return
+        values = tuple(self.read(register) for register in register_words(instruction))
+        if any(not check_value(value, descriptor[1:]) or value in self.uninitialized for value in values):
+            raise Unavailable("filled array operand is outside the modeled component type")
+        array = self.allocate_array(pc, descriptor, len(values))
+        for index, value in enumerate(values):
+            self.store_array(pc, array, index, value)
+        self.pending = descriptor, array
+
     def route(self, pc, fault):
         self.pending = None
         if ("Ljava/lang/Throwable;" not in (fault.descriptor, *fault.supertypes)
@@ -455,10 +509,10 @@ class Execution:
                     self.move(instruction)
                 elif opcode in (0x0a, 0x0c):
                     if self.pending is None:
-                        raise Unavailable("move-result has no immediately preceding invoke result")
+                        raise Unavailable("move-result has no immediately preceding result producer")
                     kind, result = self.pending
                     if (opcode == 0x0c) != kind.startswith(("L", "[")):
-                        raise Unavailable("move-result form disagrees with the original invoke result")
+                        raise Unavailable("move-result form disagrees with the original result type")
                     self.store(word >> 8, result)
                     self.pending = None
                 elif opcode == 0x0d:
@@ -488,6 +542,8 @@ class Execution:
                     self.uninitialized.add(value)
                     self.store(word >> 8, value)
                     self.trace.append({"pc": pc, "op": "allocate", "value": show_value(value)})
+                elif opcode in (0x23, 0x24, 0x25, 0x4b, 0x4d):
+                    self.array_instruction(instruction)
                 elif opcode == 0x27:
                     value = self.read(word >> 8)
                     if not isinstance(value, Fault):

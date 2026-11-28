@@ -101,12 +101,13 @@ impl InstructionEffects {
         )
     }
 
-    /// Effects that precede operand evaluation in source order.
+    /// Effects that precede operand evaluation in source order. Array
+    /// initializers allocate before evaluating elements. Sized array
+    /// allocations instead evaluate their dimension expressions first.
     pub(crate) fn before_arguments(insn_type: InsnType) -> Self {
-        if insn_type == InsnType::Constructor {
-            Self::UNKNOWN_CALL
-        } else {
-            Self::PURE
+        match insn_type {
+            InsnType::Constructor | InsnType::FilledNewArray => Self::UNKNOWN_CALL,
+            _ => Self::PURE,
         }
     }
 

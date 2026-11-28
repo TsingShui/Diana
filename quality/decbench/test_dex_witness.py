@@ -132,6 +132,24 @@ class DexWitnessTest(unittest.TestCase):
             run.run()
         self.assertEqual(len(run.trace), MAX_STEPS)
 
+    def test_filled_array_rejects_invalid_component_before_allocation_hook(self):
+        class Types:
+            def descriptor(self, index):
+                return "[Ljava/lang/Object;"
+
+        class ArrayFixture(ResponseFixture):
+            def allocate_array(self, descriptor, length):
+                self.events.append("allocate")
+                raise Raised(IO)
+
+        scenario = Scenario("incompatible-component", (42,), lambda: ArrayFixture(0), ())
+        instruction = Instruction(0, 0x1024, (0, 0))
+        program = Program(Types(), 1, ("I",), "V", {0: instruction}, ())
+        run = Execution(program, scenario)
+        with self.assertRaisesRegex(Unavailable, "filled array operand"):
+            run.run()
+        self.assertEqual(run.model.events, [])
+
 
 if __name__ == "__main__":
     unittest.main()

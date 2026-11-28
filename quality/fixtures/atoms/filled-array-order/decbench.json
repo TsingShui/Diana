@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "id": "dex-filled-array-allocation-order",
+  "input": "classes.dex",
+  "input_sha256": "918453e82d6ceb2d17931770f3c3bbdde6e63f0b05ca149b81a24e97a0ee727a",
+  "probe": "decbench_probe.py",
+  "oracle_files": [
+    "ArrayOrder.java",
+    "ArrayOrder.smali",
+    "ArrayOrderProtected.smali",
+    "raw_model.py",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m1",
+      "member": "Lfixture/ArrayOrder;->filled()[I",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m6",
+      "member": "Lfixture/ArrayOrder;->stored()[I",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m5",
+      "member": "Lfixture/ArrayOrder;->staged()[Ljava/lang/Object;",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c1:m9",
+      "member": "Lfixture/ArrayOrderProtected;->protectedFilled()[Ljava/lang/Object;",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

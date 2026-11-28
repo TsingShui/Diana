@@ -268,13 +268,13 @@ impl<'a> ConstructorFolding<'a> {
                     }
                     let start = output.len().checked_sub(instruction.args.len())?;
                     instruction.args = output.split_off(start);
-                    if matches!(
-                        instruction.insn_type,
-                        InsnType::FilledNewArray | InsnType::StringConcat
-                    ) && instruction.args.iter().any(|arg| {
-                        matches!(arg, InsnArg::Wrapped(child)
+                    if (!InstructionEffects::before_arguments(instruction.insn_type).is_pure()
+                        || instruction.insn_type == InsnType::StringConcat)
+                        && instruction.args.iter().any(|arg| {
+                            matches!(arg, InsnArg::Wrapped(child)
                             if !InstructionEffects::of_tree(child).is_pure() || child.can_throw())
-                    }) {
+                        })
+                    {
                         return None;
                     }
                     // The result now exists only inside this expression. Keep its

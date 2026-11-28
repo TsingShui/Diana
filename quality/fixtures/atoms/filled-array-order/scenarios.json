@@ -1,0 +1,227 @@
+{
+  "filled": [
+    {
+      "id": "success",
+      "arguments": [
+        "filled",
+        "-"
+      ],
+      "expected": [
+        "next:1",
+        "next:2",
+        "allocate:int:2",
+        "return:11:21"
+      ]
+    },
+    {
+      "id": "next:1",
+      "arguments": [
+        "filled",
+        "next:1"
+      ],
+      "expected": [
+        "next:1",
+        "escape:same-fault"
+      ]
+    },
+    {
+      "id": "next:2",
+      "arguments": [
+        "filled",
+        "next:2"
+      ],
+      "expected": [
+        "next:1",
+        "next:2",
+        "escape:same-fault"
+      ]
+    },
+    {
+      "id": "allocate:int:2",
+      "arguments": [
+        "filled",
+        "allocate:int:2"
+      ],
+      "expected": [
+        "next:1",
+        "next:2",
+        "allocate:int:2",
+        "escape:same-fault"
+      ]
+    }
+  ],
+  "stored": [
+    {
+      "id": "success",
+      "arguments": [
+        "stored",
+        "-"
+      ],
+      "expected": [
+        "allocate:int:2",
+        "next:1",
+        "next:2",
+        "return:11:21"
+      ]
+    },
+    {
+      "id": "allocate:int:2",
+      "arguments": [
+        "stored",
+        "allocate:int:2"
+      ],
+      "expected": [
+        "allocate:int:2",
+        "escape:same-fault"
+      ]
+    },
+    {
+      "id": "next:1",
+      "arguments": [
+        "stored",
+        "next:1"
+      ],
+      "expected": [
+        "allocate:int:2",
+        "next:1",
+        "escape:same-fault"
+      ]
+    },
+    {
+      "id": "next:2",
+      "arguments": [
+        "stored",
+        "next:2"
+      ],
+      "expected": [
+        "allocate:int:2",
+        "next:1",
+        "next:2",
+        "escape:same-fault"
+      ]
+    }
+  ],
+  "staged": [
+    {
+      "id": "success",
+      "arguments": [
+        "staged",
+        "-"
+      ],
+      "expected": [
+        "make:10",
+        "make:20",
+        "allocate:object:3",
+        "publish:first:second:first",
+        "return:first:second:first"
+      ]
+    },
+    {
+      "id": "make:10",
+      "arguments": [
+        "staged",
+        "make:10"
+      ],
+      "expected": [
+        "make:10",
+        "caught:10:null:null:same-fault",
+        "return:null"
+      ]
+    },
+    {
+      "id": "make:20",
+      "arguments": [
+        "staged",
+        "make:20"
+      ],
+      "expected": [
+        "make:10",
+        "make:20",
+        "caught:20:first:null:same-fault",
+        "return:null"
+      ]
+    },
+    {
+      "id": "allocate:object:3",
+      "arguments": [
+        "staged",
+        "allocate:object:3"
+      ],
+      "expected": [
+        "make:10",
+        "make:20",
+        "allocate:object:3",
+        "caught:30:first:second:same-fault",
+        "return:null"
+      ]
+    },
+    {
+      "id": "publish:first,second,first",
+      "arguments": [
+        "staged",
+        "publish:first:second:first"
+      ],
+      "expected": [
+        "make:10",
+        "make:20",
+        "allocate:object:3",
+        "publish:first:second:first",
+        "caught:40:first:second:same-fault",
+        "return:null"
+      ]
+    }
+  ],
+  "protectedFilled": [
+    {
+      "id": "success",
+      "arguments": [
+        "protectedFilled",
+        "-"
+      ],
+      "expected": [
+        "make:10",
+        "make:20",
+        "allocate:object:3",
+        "return:first:second:first"
+      ]
+    },
+    {
+      "id": "make:10",
+      "arguments": [
+        "protectedFilled",
+        "make:10"
+      ],
+      "expected": [
+        "make:10",
+        "caught:80:same-fault",
+        "return:null"
+      ]
+    },
+    {
+      "id": "make:20",
+      "arguments": [
+        "protectedFilled",
+        "make:20"
+      ],
+      "expected": [
+        "make:10",
+        "make:20",
+        "caught:80:same-fault",
+        "return:null"
+      ]
+    },
+    {
+      "id": "allocate:object:3",
+      "arguments": [
+        "protectedFilled",
+        "allocate:object:3"
+      ],
+      "expected": [
+        "make:10",
+        "make:20",
+        "allocate:object:3",
+        "escape:same-fault"
+      ]
+    }
+  ]
+}

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.10 - 2026-11-28
+
+- Preserved effectful DEX element computations before `filled-new-array`.
+  Arrays originally allocated before element stores can still recover as
+  compact initializers.
+- Added DecBench coverage for array allocation failures, element producer
+  faults, typed catches, returned values, and shared references.
+
 ## 0.4.9 - 2026-11-28
 
 - Preserved the DEX order of allocation, argument evaluation, initialization,
