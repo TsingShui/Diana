@@ -35,7 +35,7 @@ The review covers source, public entry points and documentation; it makes no cor
 
 StringConcatFactory protocol reference: the [JDK 21 API](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/invoke/StringConcatFactory.html)
 describes the standard bootstrap signatures, recipe tags and static constant
-conversion. P7's implementation is independently authored from that protocol
+conversion. The former P7 implementation was independently authored from that protocol
 contract and analyzed DEX facts. No JDK implementation, external declarations or
 classpath become Engine inputs. Recognition is explicitly marked as an inference;
 runtime linkage, arbitrary library replacement and allocation behavior are not
@@ -89,7 +89,7 @@ Check payload and `bytes()` paths in `crates/rusty-dex/src/dex/instructions.rs` 
 | RG-02 | `src/decompiler.rs`: `write_method`; `src/dataflow.rs:479–519`: `optimize_impl`; `src/control_flow.rs:6–33` | lowering → Graph → def/use, split_variables, DCE/propagation → structure → writer | Borrow compact dense IDs, worklists and separation of analysis from printing. Diana makes SSA and verification explicit rather than adopting the entire flat Graph. |
 | RG-03 | `src/ir/mod.rs:7–12`: `VariableId`; `src/dataflow.rs`: `ReachingDefinitions`, `split_variables_at` | No public layer directly named SSA/Phi, but versioned variables and def-use analysis exist. | “No SSA in grep means no definition identity” is too strong. Compare join/exception/type capabilities, not names. |
 | RG-04 | `src/writer.rs:17–43`: `MemberReference`, `SourceOutput::append` | Text byte spans record original method/field descriptors; append adjusts offsets. | Include output OriginSpan. Java local renaming must not lose original member identity; all spans point to final UTF-8 bytes. |
-| RG-05 | `src/writer.rs:140–176`: `visit_node` | The writer directly traverses the graph, tracking follow/visited/condition. | The new printer traverses only owned P7 presentation products; losing a block through visited must not become an implicit fallback. |
+| RG-05 | `src/writer.rs:140–176`: `visit_node` | The writer directly traverses the graph, tracking follow/visited/condition. | The new printer traverses only owned presentation products; losing a block through visited must not become an implicit fallback. |
 | RG-06 | `src/dex/mod.rs:847–925`: `parse_code_item`, `parse_catch_handlers` | Has checked_mul/range checks, but typed_count can reach Vec::with_capacity before complete validation. | The reader validates the count against remaining input before allocation; small size is not evidence of safety. |
 | RG-07 | Same file, `read_mutf8:1059–1121` | Uses replacement characters for isolated surrogates when constructing a Rust String. | Diana preserves DEX strings as UTF-16 code units and does not accept semantic change; human diagnostics and literal representation are separate. |
 | RG-08 | `tests/quality_gate.py:420–456`: `decompile_dad_cached`; `normalize_dad_*` | Frozen DAD output with DEX-aware normalization; missing caches are not automatically generated. pickle is suitable only for trusted internal input. | Borrow the discipline of a fixed comparator and explicit baseline; do not copy fixtures, the pickle loader or permissive normalization. Differential results are clues only. |
@@ -257,20 +257,24 @@ assumptions, not corpus coverage or independent semantic evidence.
 python3 tools/fetch_references.py
 ```
 
-The table at the top of [the download script](../../tools/fetch_references.py) is the sole inventory of actual URLs, source commits and selected directories. It currently lists 46 items; use `--list` or `--only <id> ...` to fetch only the materials for a batch. Files are saved under `.cache/references/`, with local entry point `README.generated.md`. Keep papers/slides only as same-name UTF-8 TXT, not PDF; do not re-download existing TXT. Original URLs remain available for online consultation. As requested, reference downloads do not use checksums, overwrite existing modifications, build/test references or add production dependencies. See [SOURCE_MAP.md](SOURCE_MAP.md#10-reproducible-inputs-and-tools).
+[The download script](../../tools/fetch_references.py) owns the source URLs,
+pinned commits and selected paths. Run it with `--list` to inspect the inventory
+or `--only <id> ...` to fetch selected references. It writes into
+`.cache/references/` and generates a local index at `README.generated.md`.
+See [reproducible inputs and tools](#10-reproducible-inputs-and-tools).
 
 | Script ID | Content / main use | Tasks and limitations |
 |---|---|---|
 | dx / ku / rg | The three reference versions above: raw safety, pipeline discipline, dataflow and text provenance | Pinned versions remain fixed; read rg only, do not copy while its license is unclear. |
-| dex-format / dalvik-bytecode / dex-constraints | AOSP format, instructions and static/structural constraints | P1/P2, D055–D059; prefer the specifications, not permissive parser behavior. |
-| jls-expressions / jls-execution / jvms-verification | JLS/JVMS 8 evaluation/invocation, initialization and verification | T10–T12/T19–T23; distinguish the language target from actual JVM/ART evidence. |
+| dex-format / dalvik-bytecode / dex-constraints | AOSP format, instructions and static/structural constraints | Use the format specifications to check parsing and instruction constraints. |
+| jls-expressions / jls-execution / jvms-verification | JLS/JVMS 8 evaluation/invocation, initialization and verification | Use the specifications for language and VM rules. Record execution evidence separately. |
 | jd-tester / java-decompiler-bugs | 2024 *Understanding and Finding Java Decompiler Bugs* and artifact documentation | Refer to executable small examples, failure classification and reduction methods. Do not download release executables/bug corpora or use output as an oracle. |
 | jadx | Implementation and Java test-support sources for IntegrationTest/SmaliTest | Learn input, recompilation and execution observation during E2E preparation; do not copy text goldens, private seams or skip strategies. |
-| ssa-construction / cranelift | Braun et al. 2013 SSA paper and Rust SSA builder/IR verifier | T07; borrow fixed-identity/Phi and verification ideas, without automatically replacing the chosen algorithm. DEX exceptional state still needs its own proof. |
-| out-of-ssa | Boissinot et al. 2009 Out-of-SSA paper | T08/T09, D002/D003; handle parallel copies correctly before considering optional variable coalescing. |
+| ssa-construction / cranelift | Braun et al. 2013 SSA paper and Rust SSA builder/IR verifier | Reference for fixed-identity SSA, phi nodes and verification. DEX exceptional state still needs its own proof. |
+| out-of-ssa | Boissinot et al. 2009 Out-of-SSA paper | Reference for parallel-copy semantics and variable coalescing. |
 | smali | Google smali/dexlib2 implementation | Fixture assembly and independent input projection; not a production-output reassembly requirement or an E2E tool-version upgrade. Assembler success does not imply semantic correctness. |
 | soot / dexpler | Soot Dexpler type/exception-graph source and 2012 paper | Reference for type/exception batches; do not bring in the whole Jimple/Soot framework. |
-| phoenix / sailr | 2013 Phoenix and 2024 SAILR structuring papers | T13/T14; native/C-oriented, not directly applicable to Java's no-goto, handler and monitor constraints. |
+| phoenix / sailr | 2013 Phoenix and 2024 SAILR structuring papers | Native/C structuring research. Check applicability to Java control flow, handlers and monitors. |
 | vineflower | Java declaration and recovery source | Read as needed for constructor/nested/enum batches; do not treat recovered reference text as truth. |
 
 Fixture-authoring and AXML format anchors: the locked Smali 2.5.2
@@ -375,7 +379,7 @@ evidence. It does not define current algorithm steps, interfaces or acceptance.
 |---|---|---|
 | R01 Cousot / POPL 2023 / R8 | Finite slot-state/liveness domains and exceptional commit positions constrain SSA construction; the staged design selected pruned SSA and on-demand IDF. | The selected algorithm does not inherit a reference proof. |
 | R02 SoK / DREAM / Ghidra | Explicit schemas for Sequence/Diamond/natural loops/restricted switch, check capacity before copying, use an explicit labelled transfer representation on failure; no global optimum sought. | No numeric thresholds are inferred from the papers. |
-| R03 verified lifting / CompCert / Alive2 | Raw/value/copy/edge/Java binding validators each read original facts; finite Drivers and coverage are reported separately, not as general proof. | ALGORITHMS validators and independent case evidence. |
+| R03 verified lifting / CompCert / Alive2 | Raw/value/copy/edge/Java binding validators each read original facts; finite Drivers and coverage are reported separately, not as general proof. | Check Diana's own validation against independent cases. |
 | R04 JLS/JMM / ART | Preserve volatile/init/lock order; lock roots require dynamic freshness; avoid constant field initializers on final fields that would inline sget. | Source semantics do not establish that a recovery implementation preserves them. |
 | R05 DEX / ART / EverParse / wasmparser | Explicit checked ranges/ULEB/MUTF16/metadata and 041 physical addressing; distinguish raw-valid/Java-profile/resource/BUG classifications. | Do not copy upstream panic or unsafe behavior. |
 | R06 Java research / fidelity taxonomy | Generated executable members are not DeclarationOnly; finite behavior is not equivalent to “compilation implies equivalence.” | Product status and semantic evidence remain distinct. |
@@ -383,7 +387,7 @@ evidence. It does not define current algorithm steps, interfaces or acceptance.
 | R08 Dalvik fill / ART verifier | Filling an existing primitive array can accept null under static type verification; do not remove the NPE of a zero-element operation. The staged design used a length read and proven FreshArray stores. | [Bytecode](https://source.android.com/docs/core/runtime/dalvik-bytecode), FILL_ARRAY_DATA branch of pinned ART method_verifier.cc. |
 | R09 JVMS 8 format limits | JVMS limits describe compiled artifacts, not Diana readable-output admission. | [JVMS 4.3.3](https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-4.html#jvms-4.3.3), [4.7.3](https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-4.html#jvms-4.7.3). |
 
-Independent normative basis for case revisions (R10): [DEX access_flags/encoded_value](https://source.android.com/docs/core/runtime/dex-format) distinguishes the managed declared-synchronized flag, explicit value tags and defaults; [JLS §8.9.3](https://docs.oracle.com/javase/specs/jls/se8/html/jls-8.html#jls-8.9.3) gives enum declaration order; [JLS §12.4.1](https://docs.oracle.com/javase/specs/jls/se8/html/jls-12.html#jls-12.4.1) and [§13.4.9](https://docs.oracle.com/javase/specs/jls/se8/html/jls-13.html#jls-13.4.9) define constant inlining/initialization; [ZIP APPNOTE](https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT) specifies entry CRC/size/identity. The historical D069 TargetExists issue concerns the [CLI publication contract](../../apps/diana/README.md#file-publication-and-exit-codes); atomic publication relies on native filesystem primitives, not finite concurrent sampling. Revisions are recorded in git history and JSON revisionReason; normative sources do not replace actual input certification or independent review.
+Specifications for fixture expectations: [DEX access_flags/encoded_value](https://source.android.com/docs/core/runtime/dex-format) distinguishes the managed declared-synchronized flag, explicit value tags and defaults; [JLS §8.9.3](https://docs.oracle.com/javase/specs/jls/se8/html/jls-8.html#jls-8.9.3) gives enum declaration order; [JLS §12.4.1](https://docs.oracle.com/javase/specs/jls/se8/html/jls-12.html#jls-12.4.1) and [§13.4.9](https://docs.oracle.com/javase/specs/jls/se8/html/jls-13.html#jls-13.4.9) define constant inlining/initialization; [ZIP APPNOTE](https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT) specifies entry CRC/size/identity. See the [CLI publication contract](../../apps/diana/README.md#file-publication-and-exit-codes); atomic publication relies on native filesystem primitives, not finite concurrent sampling. Revisions are recorded in git history and JSON revisionReason; normative sources do not replace actual input certification or independent review.
 
 ## 10. Reproducible inputs and tools
 

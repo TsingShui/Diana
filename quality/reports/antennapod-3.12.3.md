@@ -152,9 +152,9 @@ instead of disclosing their character interpretations.
 
 The producer facts exist. P7 has not selected the integer overload or lost the
 character data. The read renderer in
-[`p9/expressions/read.rs`](../../crates/diana-decomp/src/p9/expressions/read.rs)
+[`p9/expressions/read.rs`](https://github.com/TsingShui/Diana/blob/b214ec60086a09e1ab28b9dac89aa402ebb042c9/crates/diana-decomp/src/p9/expressions/read.rs)
 prints the carrier without the supplied integral view.
-[`p9/expressions/literals.rs`](../../crates/diana-decomp/src/p9/expressions/literals.rs)
+[`p9/expressions/literals.rs`](https://github.com/TsingShui/Diana/blob/b214ec60086a09e1ab28b9dac89aa402ebb042c9/crates/diana-decomp/src/p9/expressions/literals.rs)
 reduces `IntegralView` to the integral family and prints the numeric word. The
 repair needs a general scalar-use spelling rule across carrier and literal
 expressions; replacing

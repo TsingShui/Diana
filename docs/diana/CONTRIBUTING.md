@@ -1,376 +1,127 @@
-# Diana contribution details
+# Contributing to Diana
 
-This document supplements the root `AGENTS.md` with detailed rules for the
-relevant work. Package-local instructions refine their respective scopes.
+Follow the [root instructions](../../AGENTS.md) and any package instructions
+for the affected code. The [documentation index](README.md) links to current
+product interfaces and workflow guides.
 
-## Project layout and reference isolation
+## Architecture
 
-- `apps/diana/`: CLI, input, snapshot, ZIP, query and output.
-- `apps/diana-gui/`: native GPUI Kit GUI, selected with `-p diana-gui`.
-  It displays bare DEX class results and has a separate authored demo.
-- `apps/diana-web-ui/`: README-only future target placeholder, outside the workspace.
-  Do not initialize its framework, browser UI or WASM bindings until separately requested.
-- `crates/diana-decomp/`: independent native engine and public library.
-- `docs/diana/`: design, algorithms, sources and contribution rules.
-- `tools/audit/`: sensitive-input audit tooling.
-- `tools/fetch_references.py`: explicit reference downloads to ignored
-  `.cache/references/`; no checksum checks, reference builds/tests or CI hooks.
-- The archived rasc tree (rasc source, dexdec, rusty-dex, patched vendor, old
-  tests, skill/docs and release tooling) was removed from the working tree at
-  commit 5cb156c. It remains reachable in git history only: do not restore it,
-  build, test, lint, format or release it, and do not add a Diana dependency on
-  reference crates.
+Before changing engine behavior, read the [engine README](../../crates/diana-decomp/README.md)
+and the owning implementation. Identify the producer, consumer, input guarantees,
+and failure and resource behavior. Preserve available code, original identities
+and classified failures when moving an analysis boundary.
 
-See the package layout above for actual paths. Older root-product/src paths in
-feature tasks mean the Diana application root `apps/diana/`; historical reference
-paths are resolved against their upstream URL and pinned commit in SOURCE_MAP, not
-by a local copy.
-Do not copy the reference tree wholesale or create speculative common modules.
-Use source ideas only through explicit review and focused extraction/reimplementation.
-
-## Development workflow
-
-Diana is a decompiler: default class/method retrieval MUST expose available
-code, not require an entirely verified Java unit before showing anything.
-Keep partial Java, original DEX debug information and unavailable reasons explicit; a local failure
-MUST NOT discard independently recoverable fragments within that method or other
-members. Error handling follows the root [AGENTS.md](../../AGENTS.md#error-handling).
-Contributors MUST identify the owning producer, affected facts, actual dependents
-and retained output when adding or changing an error path. Any wider stop requires
-a concrete dependency/resource reason, not only an error kind or an Engine-level
-catch-and-continue patch. Contributors MUST update the owning producer and real consumers
-together; a later stage MUST NOT erase local results by reintroducing an all-or-nothing
-gate. Text/JSON are presentations of the same result,
-not capability gates. Preserve hard errors and distinguish observed readable output
-from independently established semantic behavior. Product acceptance evaluates
-readability, original facts and uncertainty, not a verified-Java status.
-
-Prioritize core APK/DEX analysis, decompilation and required safety. Keep non-core
-tooling, registry/trace infrastructure and their documentation minimal; do not
-expand them into frameworks or lengthy designs. The shared analysis chain MUST retain available readable output with concrete
-recovery diagnostics. Contributors MUST NOT build a whole-result Java-legality
-qualification path. Fallback retains original facts when reconstruction is unavailable,
-not a separate recovery subsystem or retry pipeline.
-
-Every authored Diana document, including this file and the package README/AGENTS
-files but excluding the project front page `README.md`, MUST follow
-`docs/diana/WRITING.md`. Read it before editing documentation.
-WRITING owns normative keyword strength, sentence roles, terminology, numbers,
-document ownership and the rules against duplicated narration and speculative
-roadmaps; those rules are not restated here. A style edit MUST NOT change
-requirement strength or technical meaning.
-
-Technical documents specify supported inputs, algorithms, invariants and failure
-behavior. Current status belongs in README; historical plans and execution records
-are available in git history. Do not maintain a separate task or batch-record tree.
-
-## Architecture guardrails
-
-Before changing an engine capability, contributors MUST read the owning
-implementation and [engine README](../../crates/diana-decomp/README.md).
-Identify the actual producer/consumer, consumed facts, full or partial guarantees,
-invariants, classified failure/resource behavior and independent evidence.
-The active public entry is `Engine` in `crates/diana-decomp/src/engine.rs`.
-
-- Contributors MUST keep one shared ordinary-method analysis chain. Rendering
-  consumes delivered products and original facts without starting another analysis.
-- Contributors MUST document actual producer/consumer needs before changing
-  interfaces, visibility, ownership or scheduling. A read-only view or passing
-  behavior test does not establish construction authority.
-- Contributors MUST NOT work around a missing producer or an access restriction
-  by widening visibility, forwarding internal implementations through another
-  module, adding an alternate analysis route or weakening a sealed product.
-  Contributors MUST stop the affected change and request a decision when the
-  capability cannot be implemented within the existing contract.
-- Contributors MUST represent calls, fields, arrays, casts, allocation and fill
-  through the shared operation, definition/use and effect representations.
-  Initialization and array proofs MUST consume those facts in their owning modules, not
-  maintain another complete method register/alias tracker.
-- Contributors MUST NOT select recovery paths by hard-coded class/test names or
-  whole-method instruction templates. Specification-defined opcode/format checks, local
-  proofs, region patterns and generated-member rules remain in their owning modules.
-- Contributors MUST NOT organize `engine.rs` as successive whole-method
-  builders/verifiers that emit on the first match. Ordinary methods MUST use one
-  analysis chain. Recovery MUST retain available readable reconstruction from
-  shared products; the classified read-only raw exit MUST NOT retry analysis or
-  reconstruct values.
-- Natural regions and explicit Java-like graph transfers MUST consume the same
-  operations, storage and transfer facts. Contributors MUST NOT add a generated
-  dispatcher or a separate method analysis for either representation.
-- Reviewers MUST reject parallel recovery implementations with their own
-  complete-method decoding, SSA/type analysis or register/alias tracking.
-  Operation-specific helpers and module-owned proofs do not authorize another
-  method entry path. Independent replay remains a test-only verifier obligation.
-- A migration MUST preserve available members, original identities, classified
-  failures, raw completeness, effect order and resource behavior.
-  Contributors MUST remove replaced paths before reporting the migration
-  complete. Passing behavior cases alone does not establish architecture
-  compliance.
-
-## Preparation and acceptance gates
-
-Contributors MUST check capabilities against active code and independent evidence,
-not infer them from scaffold markers or historical completion labels. Build and
-lint success does not establish semantic correctness or real-application coverage.
-
-Run from the repository root with Rust 1.100 or newer:
-
-```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo build --workspace --release --locked
-```
-
-The CLI, engine and GPUI desktop application share the Rust version declared in
-the workspace manifest. GUI builds also require the platform GUI libraries.
-Current CI behavior is described in [README](README.md#regression-workflow-status).
-
-Bare Cargo commands select Diana only. Do not build or release archived reference
-projects to validate this branch. Report failed checks and missing evidence
-accurately. Real APK/ART validation requires explicit opt-in and authorized
-reproducible inputs; no private APKs are committed.
+- Use the ordinary engine entries for recovery. Rendering consumes analysis
+  products and original facts. It does not start another method analysis.
+- Keep operation, definition/use, effect, storage and transfer facts shared
+  across recovery representations. Initialization and array proofs use those
+  facts in their owning modules. The raw exit delivers available original facts
+  without retrying analysis or reconstructing values.
+- Use format rules and local proofs or patterns in their owning modules.
+  Avoid input-name special cases, whole-method templates, alternate recovery
+  paths and generated dispatchers. Remove the replaced path when a migration
+  is complete.
+- The application owns files and archives. The engine borrows input bytes and
+  declaration facts. Keep fallible allocation and checked ranges. Use
+  `try_reserve` where the input controls allocation size and report failures
+  explicitly. Use actual format and admission limits for resource bounds.
+- Fuzzy queries may buffer and rank all matches. Other query modes retain
+  completion order. Apply xref display limits after ranking and caller expansion.
+  Preserve original values, match identities and local issues.
 
 ## Testing policy
 
-Contributors MUST run Rust tests through `cargo nextest run`, with the applicable
-package and test filters, rather than `cargo test`. A missing nextest installation
-is a setup failure, not a successful skip or permission to substitute a runner.
+Choose checks based on the affected behavior and packages. For a docs-only
+change, inspect the diff, validate links and check changed commands or workflow
+claims where applicable. For Rust changes, use the Rust version in the workspace
+manifest. Here is an example for the CLI and engine:
 
-The root [AGENTS.md](../../AGENTS.md) permits automated tests, regression tools
-and CI test jobs. Fixture inputs and scenario expectations stay under
-`quality/fixtures/<theme>/<slug>/`; engine fixture checks live in
-`crates/diana-decomp/tests/`, with shared helpers under `tests/support/` only when
-needed. Production stage modules do not hold fixture test implementations.
-This includes maintenance and build-tool tests. Contributors
-MUST review historical cases against current contracts before reuse. Test-only
-construction paths MUST NOT bypass the shared method chain or stage authority.
+```sh
+cargo fmt -p diana -p diana-decomp -- --check
+cargo clippy -p diana -p diana-decomp --all-targets --all-features --locked -- -D warnings
+cargo build --locked -p diana -p diana-decomp
+cargo nextest run --locked -p diana -p diana-decomp
+```
 
-Contributors MAY author paired Java explanations, Smali inputs and independent
-expectations for reproduction and regression. [FIXTURES](FIXTURES.md) defines
-their shared `quality/fixtures/<theme>/<slug>/` layout, assembly-environment
-records and publication of prepared DEX beside its sources; it does not require
-Java/D8/R8 compilation or exact assembler versions.
+Choose the relevant packages and test filters. For GUI changes, select
+`diana-gui` and follow its [package instructions](../../apps/diana-gui/AGENTS.md)
+for platform checks. Use workspace-wide checks when the change affects the
+workspace broadly. Measure performance with release builds on representative,
+authorized inputs. Real APK or ART validation requires explicit opt-in and
+authorized reproducible inputs.
 
-`quality/fixtures/` holds all fixtures, including output-quality references and
-Java/Smali reproductions used by tests. Prepared DEX is committed beside its
-sources so inspection and tests need no toolchain. A written quality review
-records an LLM semantic judgment supporting the primary iteration decision, not
-an executed test result. It MUST NOT be cited as a machine behavioral PASS or
-used to override a failed deterministic check.
+Use the ordinary production entry or owning-module interface in regression tests.
+Use [FIXTURES](FIXTURES.md) for fixture preparation and [EVOLUTION](EVOLUTION.md)
+for substantive decompilation changes. Keep test-only construction within the
+same stage ownership boundaries. Report executed outcomes, blocked checks and
+untested scenarios separately. Build and lint checks establish build and lint
+status. [Current CI](README.md#regression-workflow-status) describes what runs
+remotely.
 
-[EVOLUTION](EVOLUTION.md) defines the primary fixture-driven loop: after repairing
-the general cause, generate new more-complex same-mechanism fixtures, review them
-semantically with the original case, and preserve prior effects. Its iteration
-decision and executed behavioral-regression criteria are separate evidence scopes. Contributors MUST distinguish independent expectations
-from observed engine output. Cases that cannot be prepared or evaluated MUST
-remain explicit failures or unchecked results, not successful skips. Reports
-MUST identify the required scenarios, exercised subset and actual outcomes.
-Current suite and CI availability belong in [README](README.md#regression-workflow-status).
+## Rust and dependencies
 
-Production retains safe parsing, range/arithmetic checks, fallible allocation and
-necessary construction error handling. Independent output audits, symbolic replay,
-duplicate graph/dominance checks and transform-correspondence verification MUST
-compile only under `cfg(test)`. Ordinary debug/release requests MUST NOT execute
-them, and no runtime or feature switch enables them. Test authorization does not
-change this separation. A successful production product means construction
-completed, not that an independent verifier accepted it.
+- Follow rustfmt, the established Clippy baseline and the
+  [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/). Keep lint
+  exceptions local and explain the invariant.
+- Use newtypes for confusable coordinates across module boundaries and enums
+  for mutually exclusive states. Keep partial and complete products distinct.
+  Only the owning stage constructs a sealed product.
+- Preserve classified errors through core interfaces and add context at the
+  application boundary. Use checked arithmetic and conversions for untrusted
+  ranges and counts. Explain the local invariant behind any narrowing cast,
+  `unwrap` or `expect` in production.
+- Prefer concrete implementations, direct control flow and borrowed input.
+  Introduce abstractions when they serve actual consumers or isolation. Keep
+  `mod.rs` focused on wiring. Document API guarantees, invariants, units and
+  failure behavior.
+- Use `serde_json` and `serde` major version 1. Obtain approval for a different
+  JSON library. Use `fastrace` 0.7 behind the opt-in `perf` feature for timeline
+  instrumentation. The application owns reporter setup and flushing. Spans
+  describe compute stages without input contents or sensitive identities.
 
-Regression review checks original member identities, readable availability and
-classified failures. Respect unrelated uncommitted work and obtain operator
-approval before withdrawing or committing it.
+## References and corpus data
 
-Reference downloads do not require checksum verification. Keep source URLs and
-fixed revisions for attribution/lookup, preserve local changes, and never build
-or test reference projects as part of downloading. Keep PDF-origin papers/slides
-as same-name UTF-8 TXT only: reuse existing text, otherwise convert with Poppler
-(and OCR when needed), and do not retain PDFs after successful conversion. Keep
-the original public URLs for online consultation.
+Use pinned source URLs and review licenses before reusing ideas. Keep archived
+implementations out of active builds, tests and dependencies.
+`tools/fetch_references.py` downloads references into ignored `.cache/references/`.
+Preserve local reference contents and changes. Keep offline paper or slide
+references as UTF-8 text and record the original public URL.
+
+### Corpus data and sensitive inputs
+
+Follow the root corpus and audit rules. Keep provenance and scenario
+expectations in [fixtures](FIXTURES.md). Prefer independently authored cases
+with a documented source, license and recipe.
 
 ## File verification
 
-Diana's download, preparation and cache tooling MUST NOT perform SHA-256
-verification or require it for acceptance. Existing digest records are
-informational provenance only, not gates. Agents MUST NOT restore those checks
-or substitute another content fingerprint without explicit user authorization.
-Keep explicit tool versions, public URLs, dependency locks, path/range/size
-checks and independent semantic evidence. Format-defined ZIP CRC and original
-DEX header fields retain their own contracts. Reuse existing evidence for
-unchanged artifacts; do not add whole-JDK, dependency-tree or cache scans.
-
-## Engineering constraints
-
-- Treat APK/DEX input as untrusted. Check lengths/offsets/counts before slicing or
-  allocation; malformed input MUST NOT panic/hang or allocate without bounds.
-- Production stays native Rust without external runtime/process dependencies.
-  Active crates forbid unsafe code. File/ZIP ownership belongs to the application;
-  the engine will borrow input bytes and declaration facts.
-- Preserve raw identity and program instruction/argument/effect/catch/lock/
-  initialization order. Independent-result order, generated source or synthetic
-  names are not stable. The application MAY buffer and rank fuzzy search results
-  by relevance, including the default mode for filtered searches and xref. Other query modes MUST retain completion order,
-  without output sorting/reordering buffers or pagination. Fuzzy ranking MUST
-  preserve all matches and original identities; xref display limits apply only
-  after ranking and complete caller expansion.
-- Keep backpressure, checked ranges and allocation failure handling. Request
-  cancellation callbacks/tokens are not an engine API; the CLI/host owns process
-  termination.
-  The engine keeps no work or allocation ledger and no caller-configured numeric
-  quota. Use try_reserve and report an actual allocation failure explicitly; do
-  not introduce speculative JVM-size rejection formulas. Real format limits, input
-  admission and bounded queues still apply.
-- Source semantics beat beauty; Java-unrepresentable methods retain their reason
-  and available original DEX facts/debug information, or an explicit Unavailable
-  with a safe excerpt. No standard-Smali/reassembly guarantee or fake successful
-  source is implied.
-- Measure performance on release builds and authorized representative inputs.
-- Keep changes focused. Read design/source/fork notes before reuse. Preserve
-  reference byte content except explicitly reviewed path/provenance edits.
-- MCP is deferred; old MCP is reference material, not a current interface to migrate.
-
-## Communication
-
-Assistant responses MUST state a clear decision or concrete next action.
-Assistants MUST NOT narrate scope exclusions or unsolicited statements about
-what the work does not accomplish. When a real blocker, safety constraint or
-acceptance limitation affects the decision, assistants MUST report it accurately
-and state the required next action. This communication rule does not change
-implementation scope or acceptance requirements.
-
-## Rust coding conventions
-
-Diana favors plain, explicit, type-driven Rust. Reviewability and correctness
-invariants take precedence over brevity or clever abstractions. Use the
-[Rust Style Guide](https://doc.rust-lang.org/style-guide/) for formatting and
-[Rust API Guidelines](https://rust-lang.github.io/api-guidelines/) for public
-interfaces, naming, conventional traits and documentation. Project contracts
-remain authoritative.
-
-- Contributors MUST use newtypes for confusable coordinates and identities across
-  module boundaries, such as byte offsets, code-unit offsets and method IDs.
-  Ordinary loop counters do not require wrappers. Raw input, partial construction
-  snapshots and complete analysis products MUST remain distinct where consumers
-  depend on those guarantees; only the owning stage constructs its sealed product.
-- Contributors MUST model mutually exclusive states with enums rather than
-  independent flags that permit contradictions. Output states and failure kinds
-  remain separate. Independent declaration/code results
-  and ordinary boolean predicates remain valid when their combinations have
-  explicit meanings.
-- Core interfaces MUST propagate classified errors. Contributors MUST NOT turn
-  parse failures into empty lists, zero, missing results or defaults. Application
-  boundaries MAY add human-readable context while preserving the failure kind.
-  A default representing an explicitly absent option is not error suppression.
-- Contributors MUST use checked arithmetic and checked conversions for untrusted
-  ranges and counts. A narrowing `as` conversion or production `unwrap`/`expect`
-  MUST have a locally evident invariant proving it safe, independent of an
-  assumption that input is valid.
-- Contributors SHOULD use ordinary loops and `match` for stateful algorithms,
-  control-flow analysis and multiple failure exits. Use iterator chains for
-  simple transformations, not to hide mutation or error propagation.
-- Contributors MUST start with concrete implementations and introduce traits or
-  generic abstractions only for actual multiple implementations or a concrete
-  isolation boundary. Macros SHOULD express mechanical repetition rather than
-  hide control flow. The existing direct-scheduling constraints still apply.
-- Contributors SHOULD borrow immutable input and copy only when ownership requires
-  it. Contributors MUST NOT use pervasive `clone` or `Arc<Mutex<_>>` merely to evade
-  ownership design. A small justified copy is preferable to unnecessarily complex
-  lifetimes.
-- Contributors MUST keep `mod.rs` focused on module declarations, re-exports and
-  minimal module-local wiring. Substantial algorithms, data types and error handling
-  MUST live in named implementation files rather than accumulate in `mod.rs`.
-  Create files only for actual producers or consumers; do not split empty scaffolds.
-- Contributors MUST keep parsing, analysis, recovery and rendering responsibilities
-  separate. Parsers do not emit Java, analysis does not choose CLI exit codes,
-  and writers do not repair semantics. Each boundary MUST state its input
-  guarantees, output guarantees and failure behavior.
-- Contributors MUST use default rustfmt formatting and the established Clippy
-  baseline. Broader lint groups SHOULD be enabled selectively rather than all at
-  once. Lint exceptions MUST be local and justified.
-
-## Code comments
-
-Contributors MUST add comments only to explain non-obvious invariants, algorithm
-choices, format constraints, units or failure behavior that the code does not
-express clearly. Contributors MUST NOT add comments that restate code, narrate
-edits, decorate sections or describe speculative future work. Prefer clearer
-names and smaller functions over explanatory comments for avoidable complexity.
-
-Public API documentation MUST describe the contract needed by callers, including
-relevant errors, any panic preconditions, safety requirements, and resource or
-failure behavior, without duplicating the design documents. Contributors MUST preserve comments that carry still-valid
-correctness or safety reasoning and MUST update or remove comments made stale by
-a code change. Comment edits MUST NOT weaken technical requirements.
-
-## Dependency conventions
-
-Diana production packages MUST use `serde_json` major version 1 for JSON
-encoding and decoding, with `serde` major version 1 for serialization traits
-and derives where needed. Contributors MUST obtain operator approval before
-introducing an alternative JSON library. Add dependencies only when an actual
-capability consumes them; this choice does not waive resource-control or
-original-data preservation requirements.
-
-Performance timeline instrumentation MUST use `fastrace` major/minor version
-0.7 behind the opt-in `perf` Cargo feature, disabled by default. The application
-owns reporter initialization and flushing; the engine MUST NOT initialize a
-global reporter. Contributors MUST keep instrumentation limited to actual
-compute stages and MUST NOT record input contents or sensitive identities.
-Timeline spans do not replace CPU sampling, benchmarks or resource accounting.
-
-## diana-decomp
-
-Before working on files under `crates/diana-decomp/`, contributors MUST read
-the [engine README](../../crates/diana-decomp/README.md) and the owning
-implementation, alongside the root instructions and this file.
-
-## Corpus data and sensitive inputs
-
-Do not commit private/unauthorized APKs, real-corpus identifiers or identity-revealing
-mappings. Keep local corpus/cache under untracked `.cache/`. Consult
-`tools/audit/desensitize_words.txt` and run
-`python3 tools/audit/desensitize_check.py --range HEAD`. Relocation MUST NOT leak
-previously ignored artifacts or reintroduce sensitive words from legacy notes.
-Prefer small self-made fixtures with documented source/license/recipe.
+Obtain explicit authorization before adding content-fingerprint verification
+to the repository's reference download, fixture preparation or cache tooling.
+Existing digests record provenance. Keep tool versions, dependency locks,
+path/range/size checks and independent semantic evidence. Preserve
+format-defined ZIP CRC and original DEX header checks.
 
 ## Contribution and releases
 
-Check existing design first and follow the root testing policy. Run applicable
-active-only format, lint, build and implemented test gates, and report blocked or
-not-run evidence.
-Use Conventional Commit messages. Agents MUST prefix every commit subject with
-`[AUTOMATED] ` before the Conventional Commit type, for example
-`[AUTOMATED] feat: decode original debug programs`. When commits are authorized,
-agents MUST commit completed, verified batches promptly.
-Do not commit, push, publish or create tags
-unless the user asks. Root NOTICE is removed as requested; retain existing crate
-license files without adding a license bundle.
-
-Diana packages remain `publish=false`; CLI distribution uses GitHub binary
-releases, not crates.io. The CLI's `diana-vMAJOR.MINOR.PATCH` tag MUST match its
-Cargo package version. `.github/workflows/release.yml` builds only the CLI for
-macOS, Linux and Windows, then publishes a complete release after every target
-build succeeds. The engine and GUI retain independent development versions.
-Publishing a tag or release still requires an explicit operator request.
-The old rasc workflow/scripts remain archived; contributors MUST NOT reactivate
-them or couple Diana versions to rasc.
+Retain the existing license files. Diana packages use `publish = false`.
+The CLI's `diana-vMAJOR.MINOR.PATCH` tag must match its Cargo package version.
+The [release workflow](../../.github/workflows/release.yml) builds the CLI for
+Linux, macOS and Windows and publishes after every target succeeds. The engine
+and GUI have independent versions.
 
 ### Build a profile-guided release CLI
 
-Use a host that can run the target binary. Install the target's native C build
-tools and linker, then run the following commands from a Git checkout.
+Use a host that can run the target binary and has the target's native C tools
+and linker. Install the workspace's Rust toolchain with LLVM tools. Run the
+profile-guided build from a Git checkout:
 
 ```sh
 rustup toolchain install 1.100.0 --profile minimal --component llvm-tools-preview
 rustup run 1.100.0 python3 tools/release/build_cli.py
 ```
 
-Pass `--target <triple>` to select a runnable target explicitly. The build
-writes `target/release-pgo/<triple>/diana` (or `diana.exe` on Windows).
-Ordinary development builds use `cargo build --locked -p diana`.
-
-The script packages the tracked `quality/fixtures/<theme>/<slug>/classes.dex`
-files into one multidex APK and runs a two-worker export. The training run
-checks the Java file count and the identities of deliberately unrecoverable
-methods against the fixture expectations. LLVM merges the resulting counters
-before Cargo recompiles the CLI with the profile. Both compilations use full
-link-time optimization and one code-generation unit by default. Each invocation owns its
-temporary build directory and publishes the binary after both builds succeed.
+Pass `--target <triple>` to select a runnable target explicitly. The script
+packages tracked DEX fixtures into a multidex APK and checks the instrumented
+CLI's export against the fixture expectations. It merges the profiles and
+rebuilds with them. The finished binary is
+`target/release-pgo/<triple>/diana` or `diana.exe` on Windows.

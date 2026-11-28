@@ -1,7 +1,7 @@
 # Diana GUI
 
 Native GPUI Kit 0.9.0 application. Open an APK or bare DEX file and select a
-class to view the Diana Engine P9 result. The separate demo workspace contains
+class to view the recovered source. The separate demo workspace contains
 authored content.
 
 ## Run
@@ -159,11 +159,14 @@ APK/DEX snapshot and calls the Engine. `assets.rs` adds the project artwork to
 the Kit asset catalog. Select the GUI explicitly with `-p diana-gui`; default
 workspace members remain unchanged.
 
+Choose the package checks that cover the change.
+
 ```sh
-cargo fmt --all -- --check
+cargo fmt -p diana-gui -- --check
 cargo clippy -p diana-gui --all-targets --all-features --locked -- -D warnings
-cargo build -p diana-gui --release --locked
+cargo build -p diana-gui --locked
+cargo nextest run -p diana-gui --locked
 ```
 
-Build success does not establish interaction correctness or accessibility.
-The root testing policy applies; this package adds no tests, fixtures or test jobs.
+Run applicable tests when they exist and exercise changed native interactions
+on a supported platform. See the [GUI contributor instructions](AGENTS.md).

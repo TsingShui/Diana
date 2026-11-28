@@ -3,8 +3,7 @@
 The root `AGENTS.md` and `docs/diana/CONTRIBUTING.md` apply.
 
 - This package is a native GPUI Kit application. Keep authored demo content visibly
-  distinct from actual Engine results. Additional input integration requires a
-  separate user request.
+  distinct from actual Engine results.
 - Prefer composing GPUI Kit's existing styled controls and interaction behavior
   over custom widgets or painting. On macOS, use the system title bar and native
   application menus instead of an in-window toolbar. Other desktop platforms
@@ -18,14 +17,18 @@ The root `AGENTS.md` and `docs/diana/CONTRIBUTING.md` apply.
 - Start with an empty welcome view and a concise APK/DEX-opening hint. Do not
   populate a project tree or documents automatically. Keep authored demo content
   behind an explicit demo command; a static hint does not imply file integration.
-- Read `DESIGN.md` before changing resource, identity, navigation, view or result
-  interfaces. Its host-level contracts do not widen Engine stage access or
-  authorize backend integration exceptions.
+- Read [DESIGN](DESIGN.md) before changing resource, identity, navigation, view or
+  result interfaces. Keep the GUI on the public Engine entry points.
 - Keep state changes in event handlers; rendering consumes existing state. Use
   stable class identities for open documents, not current list positions.
 - Keep readonly code views selectable and copyable. Highlighting is presentation,
   never a code-legality or result-availability gate.
 - Preserve native keyboard behavior, meaningful control labels and focus targets.
-- Production Rust forbids unsafe code. Do not add tests, fixtures or CI test jobs.
-- Check this package with `cargo clippy -p diana-gui --all-targets --all-features
-  --locked -- -D warnings` and `cargo build -p diana-gui --locked`.
+- Production Rust forbids unsafe code. Add focused regression tests and fixtures
+  when the change needs them, following the repository testing policy.
+- For GUI code changes, run applicable package checks with
+  `cargo clippy -p diana-gui --all-targets --all-features --locked -- -D warnings`,
+  `cargo build -p diana-gui --locked`, and
+  `cargo nextest run -p diana-gui --locked` when relevant tests exist. For changes
+  to native interactions, exercise the affected flow on an available supported
+  platform and report any platform-specific checks that were unavailable.

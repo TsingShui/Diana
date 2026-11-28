@@ -7,8 +7,11 @@ and tracks a repair through a fresh evaluation and a regression sweep. The
 
 ## Run it
 
-Python 3.11+, SQLite 3.35+, a JDK and a built Diana CLI are required. Build each
-Diana revision in its own worktree. Run these commands from the repository root.
+Python 3.11+, SQLite 3.35+, a JDK and a built Diana CLI are required. Run these
+commands from the repository root. When comparing revisions, keep each executable
+and its source revision identifiable. Isolate worktrees, build outputs, and
+mutable state when concurrent or overlapping work needs it.
+[Working and verifying](../../AGENTS.md#working-and-verifying)
 
 ```sh
 cargo build --locked -p diana
@@ -174,8 +177,8 @@ python3 quality/decbench queue --metric effect_order --status pending
 
 1. Run the corpus. Each independently failing method enters a persistent queue.
    A repeated observation retains its triage state. A later passing run clears
-   the same input and oracle. A recurring failure reopens it. A changed oracle supersedes earlier queue
-   evidence for the same original method.
+   the same input and oracle. A recurring failure reopens it. A changed oracle
+   supersedes earlier queue evidence for the same original method.
 2. Use `queue --status pending` and `claim` to take a case. `show ID` prints
    the expected and observed outcomes, original evidence paths, CLI output and a
    fresh reproduction command. A lease expires after one hour by default.
@@ -183,9 +186,9 @@ python3 quality/decbench queue --metric effect_order --status pending
    `resolve ID --claim-token TOKEN --status pending --group MECHANISM --note NOTE`.
    Group confirmed cases by the owning mechanism. Claims can target that group.
    Use `ignored` with a reason for reviewed non-actionable evidence.
-4. Repair the general cause in a separate worktree. Apply the repository's
-   [fixture evolution and review loop](../../docs/diana/EVOLUTION.md#primary-iteration),
-   including a more complex challenge and applicable Nextest regressions.
+4. Repair the general cause and run the affected Nextest regressions. Follow the
+   fixture evolution loop for substantive changes to decompilation semantics or
+   recovery. [Fixture evolution](../../docs/diana/EVOLUTION.md#primary-iteration)
 5. Run the repaired executable on the same inputs. Compare reports to verify
    recovered checks and detect new failures, lost coverage and publication
    changes across the full scope.
@@ -230,7 +233,7 @@ scenarios executed with matching input and oracle.
 ### Automate a repair attempt
 
 `cycle` leases a failure from a complete baseline report and hands it to an
-explicitly configured local worker in a dedicated worktree. The worker reads
+explicitly configured local worker in a dedicated non-main worktree. The worker reads
 JSON from stdin with the case, baseline report path and worktree. It returns an
 object with `binary` pointing to its built Diana executable and optional
 `revision` and `note` fields. Use a worker you trust to edit and build in that
