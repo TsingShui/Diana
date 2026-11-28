@@ -69,13 +69,23 @@ checks with their actual status.
 
 ## Acceptance and regression
 
-Select implemented behavioral checks by impact on the changed producers,
-consumers, and invariants. Include affected admitted cases even when their
-files are unchanged. Run the entire admitted set when a shared change can
-affect it broadly, when its impact cannot be bounded, or when changing the
-behavioral checker. For checker changes, rerun its negative examples as well.
-For changes limited to CLI routing, GUI behavior, or documentation, choose
-focused checks of that surface. Report the cases and paths the checks exercised.
+Select checks by impact on the changed producers, consumers and invariants.
+Include affected cases even when their files are unchanged.
+
+- Run the relevant Rust cases with `cargo nextest run`. Drop case filters
+  for affected packages when a shared change has broad or uncertain impact.
+- Use `python3 quality/decbench suites` to find relevant suites. Run them
+  with `python3 quality/decbench run --binary PATH --suite ID` after the
+  applicable input preparation. Repeat `--suite` for multiple IDs. If a shared
+  change can affect the corpus broadly, run the relevant prepared corpus
+  without suite filters. The [DecBench guide](../../quality/decbench/README.md)
+  describes inputs, coverage and report status.
+- When changing a checker, rerun its own tests and negative examples, plus
+  the checks it evaluates. For CLI routing, GUI and documentation changes,
+  choose focused checks of the affected surface.
+
+Record the packages, suites and paths exercised and the results each check
+actually observed.
 
 A new behavioral regression case qualifies when the same scenarios expose the
 defect on the baseline and pass on the candidate. Show that the checker detects
@@ -91,7 +101,7 @@ record the evidence before changing them.
 | `UNCHECKED` | The checker lacks required semantics or facts, or the observation did not complete. |
 | `SETUP_ERROR` | Input preparation, selection, build, or infrastructure prevented evaluation. |
 
-For executed behavioral acceptance, the original repair scenario, its admitted
+For executed behavioral acceptance, the original repair scenario, its
 complexity challenges, and all required affected scenarios must pass without
 reduced checker coverage. A failed required check blocks acceptance. A missing,
 empty, or incomplete run leaves acceptance unverified. Preserve failures and

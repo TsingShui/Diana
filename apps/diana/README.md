@@ -16,7 +16,7 @@ external classpaths, declarations and runtimes are not required.
 
 ```text
 get-class   Decompile one class
-get-method  Decompile one DEX method
+get-method  Decompile one DEX or JVM method
 bytecode    Show the original instructions of one JVM method
 outline-class   Show class members and structured method outlines
 outline-method  Show one method outline, with optional call expansion
@@ -27,7 +27,7 @@ extract     Extract one physical entry
 strings     List original string values
 xref        Find references, hierarchy and method relationships
 resources   List resource IDs, configurations and values
-manifest    Decode the binary AndroidManifest.xml
+manifest    Display the Android or JAR manifest
 classes     List class definitions
 tree        Show the code package hierarchy
 fields      List defined fields
@@ -61,7 +61,7 @@ elsewhere in the archive. Code queries also accept standalone DEX files.
 | `manifest` | XML, or JSON with `status, xml, warnings` |
 | `get-class`, `get-method` | Recovered Java-like text for DEX and JVM inputs, or JSON schema 5 |
 | `bytecode` | JVM instructions, operands, byte offsets and exception table |
-| `outline-class`, `outline-method` | Structured tree with call links, or JSON schema 1 |
+| `outline-class`, `outline-method` | Declaration and call outlines. DEX JSON schema 2, JVM JSON schema 1. |
 | `extract` | One output file |
 
 `classes` supports `--filter`, `--extends`, `--implements`, `--subinterface`
@@ -339,44 +339,29 @@ alphabetically sorted. File output uses the ordinary atomic publisher.
 diana outline-class app.apk 'com.example.Worker'
 diana outline-method app.apk 'Lcom/example/Worker;->run()V' --call-depth 2
 diana outline-class classes.dex 'com.example.Worker' --expand-all --format json -o outline.json
+diana outline-method client.jar 'j4:m2' --format json
 ```
 
-These commands accept the same exact selectors as `get-class` and `get-method`.
-The default shows the selected method, or every original class member, without
-starting analysis of additional callees. `outline-class --jobs N` selects the
-ordinary Engine method workers. Imports/package lines are omitted from the tree;
-the retained publication still contains them.
+These commands accept the same selectors as `get-class` and `get-method`.
+Copy an original class or method coordinate from `classes` or `methods` when
+several definitions match.
 
-P9 records lexical scope, text ranges and original call facts during its existing
-render traversal. The outline preserves conditions, loops, ordered catches,
-selected finally/synchronized forms, writes, exits, explicit transfers and local
-gaps. It does not parse Java-like text or recover missing structures. Each method,
-class and available field declaration carries its canonical locator. An empty
-class initializer remains a member even when its ordinary code spelling is empty.
+The default shows the selected method or class members. Add `--call-depth N`
+to follow up to N levels of callees. Use `--expand-all` to follow every
+available linked definition. These options are mutually exclusive. Callee
+links identify original calls and their resolution in the supplied input.
+External, ambiguous and dynamic targets can remain unresolved.
 
-`--call-depth N` permits that many cross-method levels; zero is the default.
-`--expand-all` instead follows every available referenced declaration body. The
-options are mutually exclusive. Class members keep their member positions, while
-additional bodies appear under `expanded methods`, not as invented class members.
-Each delivered call occurrence retains its original PC; repeated bodies and
-recursion link to a single method node. Origin-only cleanup and ABI attachments
-are marked as attachments, not additional executions. Breadth-first expansion gives a shared method its shortest depth from
-the selected roots. Loops show structure, not iterations. Expansion is finite in
-the input's original method identities, but has no implicit row or body limit.
+With `--format json`, both formats return `schema_version` and `command`
+alongside the following top-level fields.
 
-External owners, ambiguous definitions, missing declarations and dynamic dispatch
-remain explicit. Virtual/interface/super expansion shows the referenced declaration
-body, not a proven runtime target; custom/polymorphic targets are not guessed.
-Expansion caches one Engine per used physical root and uses the ordinary method
-entry. An unavailable callee does not erase the caller or another available body.
+| Input | Schema | Outline fields |
+| --- | --- | --- |
+| APK or DEX | 2 | `root` is the index of the root in `nodes`. Each node has `parent`, `kind` and `text`, plus `at` where a locator is available. `issues` describes local gaps. |
+| JVM | 1 | `root` is the original class or method locator. `members` lists declarations and `calls` records caller, byte offset, target and resolution. `issues` describes local gaps. |
 
-Text and JSON present one flat node arena and the same call states. JSON contains
-`root`, `nodes` with parent indexes, `calls`, concrete `issues` and the retained
-ordinary P9 `publications`; source ranges index those publications. `complete`
-describes traversal/delivery availability, not semantic verification. Explicit
-depth boundaries and external references are normal leaves. Local input, selection,
-analysis or rendering failures retain output and exit nonzero. File publication
-uses the ordinary atomic publisher.
+Check `issues` and the exit status when consuming an outline. Local failures
+can return status 1 after delivering available results.
 
 ## Original identity and selection
 
@@ -401,15 +386,12 @@ accepts a method-at or the complete `Lowner;->name(args)return` reference.
 Use locators printed by `classes` and `methods`, shell-quoting dollar signs,
 spaces and arrows. An ambiguous class or method reference is not guessed.
 
-Class locators must agree with their checked descriptor. Method selection
-consumes the same Engine's cached P0 directory and checks membership, original
-MethodId, name and complete prototype. A reference in `method_ids` alone is not
-a definition in the selected class. An unavailable declaration or unfinished
-directory does not establish that a method is absent.
+Class locators must agree with the original descriptor. Method locators
+identify an original definition and its full prototype. Check diagnostics and
+coverage before concluding that a definition is absent.
 
 Class retrieval analyzes all known original members. Single-method retrieval
-calls `Engine::analyze_method` with the selected ID and uses its standalone
-P8/P9 display; it does not analyze siblings or slice text out of a class result.
+analyzes the selected method.
 
 `xref` takes `string`, `type`, `method`, `field`, `impl`, `extend` or `resource`. Names and
 values use the same default ranked fuzzy matching and explicit mode switches as
@@ -606,26 +588,20 @@ For JVM input, schema 5 uses the same top-level keys and physical JVM identities
   half-open relative to the member's original JVM bytecode. An issue that
   prevents proving a named selection unique can accompany its readable match.
 
-The old schema 3 `{kind, product}` wrapper, schema 2, Java/Mixed status
-projections, whole-class method-text slicing, `--verbose` diagnostic gate and
-declaration-catalog adapter are removed.
-
 ## Query and manifest output
 
 Query text is UTF-8 TSV with the column header. Display fields escape backslash,
 tab, CR, LF and NUL; isolated surrogates remain escaped instead of being replaced.
 Query JSON uses `{schema_version, command, items}`. `strings` uses schema 2 with
-`at` and `value`; the former `entry` name column is removed. Its locator retains
-the exact physical-entry identity. `xref` and `resources` schema 3 retain original locators and publish explicit
+`at` and `value`. The locator retains the exact physical-entry identity. `xref` and `resources` schema 3 retain original locators and publish explicit
 display totals, coverage and local issues as described above. Other table queries
 remain schema 1.
 `entries` reads the ZIP central directory only; it does not open or decompress
 DEX payloads.
 
 `manifest` uses XML or JSON schema 2 with `schema_version, command, status, xml,
-warnings`; the constant entry-name field is removed. Recoverable AXML gaps remain
-XML comments, JSON warnings and stderr
-diagnostics. `--strict` reports a partial document as failure after publication.
+warnings`. Recoverable AXML gaps appear in XML comments, JSON warnings and
+stderr diagnostics. `--strict` reports a partial document as failure after publication.
 
 ## File publication and exit codes
 
@@ -633,8 +609,8 @@ Result serialization streams through one fallibly allocated transfer buffer to
 stdout or a private temporary file beside the requested target. Large writes
 bypass that buffer; buffering is not an output limit. A file is renamed into place
 only after serialization and explicit flush complete. Writer/serializer/flush/rename failures do not replace the target.
-A P9 rendering stop is a fully delivered failure report, not an interrupted file
-write. Its text remains explicitly incomplete as described above.
+A rendering failure can deliver a complete report with explicitly incomplete
+source output.
 
 A directory, symbolic-link target or input-file alias is refused. On Unix the
 alias check also covers hard links. A closed stdout pipe is an output error,

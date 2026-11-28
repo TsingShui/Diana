@@ -50,6 +50,9 @@ back to the fixture; it does not introduce a competing source of expected behavi
 Engine fixture tests MUST use the ordinary Engine entry and original selectors.
 Shared helpers belong in `tests/support/` when actual consumers require them;
 production stage modules MUST NOT hold fixture test implementations.
+For CLI-level evaluation, keep authored DecBench manifests and probes beside
+the relevant fixture. Use the [DecBench guide](../../quality/decbench/README.md)
+to prepare inputs, select suites and record executed results.
 
 ## Complexity challenge records
 
