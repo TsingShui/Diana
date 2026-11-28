@@ -1,0 +1,96 @@
+{
+  "run": [
+    {
+      "id": "success",
+      "arguments": [
+        "0",
+        "0",
+        "0",
+        "0"
+      ],
+      "expected": [
+        "S1",
+        "S2",
+        "S3",
+        "C:receiver:42",
+        "RETURN"
+      ]
+    },
+    {
+      "id": "stage-one-throws",
+      "arguments": [
+        "1",
+        "0",
+        "0",
+        "0"
+      ],
+      "expected": [
+        "S1",
+        "C:receiver:42",
+        "THROW:primary"
+      ]
+    },
+    {
+      "id": "stage-two-throws",
+      "arguments": [
+        "2",
+        "0",
+        "0",
+        "0"
+      ],
+      "expected": [
+        "S1",
+        "S2",
+        "C:receiver:42",
+        "THROW:primary"
+      ]
+    },
+    {
+      "id": "stage-three-throws",
+      "arguments": [
+        "3",
+        "0",
+        "0",
+        "0"
+      ],
+      "expected": [
+        "S1",
+        "S2",
+        "S3",
+        "C:receiver:42",
+        "THROW:primary"
+      ]
+    },
+    {
+      "id": "success-cleanup-throws",
+      "arguments": [
+        "0",
+        "0",
+        "0",
+        "1"
+      ],
+      "expected": [
+        "S1",
+        "S2",
+        "S3",
+        "C:receiver:42",
+        "THROW:cleanup"
+      ]
+    },
+    {
+      "id": "stage-two-cleanup-both-throw",
+      "arguments": [
+        "2",
+        "0",
+        "0",
+        "1"
+      ],
+      "expected": [
+        "S1",
+        "S2",
+        "C:receiver:42",
+        "THROW:cleanup"
+      ]
+    }
+  ]
+}

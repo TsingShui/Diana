@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "id": "dex-sequential-finally-family-typed",
+  "default": false,
+  "input": "classes.dex",
+  "input_sha256": "ef0acc4f361b31aa740d6cc1f7ddb01d90757aba8273500ce265031555e6cf62",
+  "probe": "decbench_probe.py",
+  "oracle_files": [
+    "FinallyTyped.java",
+    "FinallyTyped.smali",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m2",
+      "member": "Lfixture/FinallyTyped;->run(Lfixture/FinallyTyped;I)V",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

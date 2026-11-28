@@ -12,6 +12,19 @@ use crate::ir::{
 
 use super::{CleanupContraction, HandlerKind, TryRegion};
 
+#[path = "cleanup/family.rs"]
+mod family;
+
+fn same_physical_dispatch(cfg: &CFG, left: u32, right: u32) -> bool {
+    let clauses = |offset| {
+        cfg.handlers
+            .iter()
+            .filter(move |clause| clause.covers(offset))
+            .map(|clause| (&clause.catch_type, clause.handler))
+    };
+    clauses(left).eq(clauses(right))
+}
+
 #[derive(Default)]
 pub(super) struct CleanupRecoveryResult {
     pub(super) elided: BTreeSet<StatementOrigin>,
@@ -130,6 +143,23 @@ impl<'a> CleanupRecovery<'a> {
         nested_handler_blocks: &BTreeSet<BlockId>,
         cleanup_representatives: &BTreeMap<BlockId, BlockId>,
     ) -> Result<CleanupRecoveryResult, super::ExceptionInvariantError> {
+        self.recover_scope(
+            region,
+            nested_cleanup_blocks,
+            nested_handler_blocks,
+            cleanup_representatives,
+            false,
+        )
+    }
+
+    fn recover_scope(
+        &self,
+        region: &mut TryRegion,
+        nested_cleanup_blocks: &BTreeSet<BlockId>,
+        nested_handler_blocks: &BTreeSet<BlockId>,
+        cleanup_representatives: &BTreeMap<BlockId, BlockId>,
+        closed_family: bool,
+    ) -> Result<CleanupRecoveryResult, super::ExceptionInvariantError> {
         let catch_domains = region
             .handlers
             .iter()
@@ -178,9 +208,10 @@ impl<'a> CleanupRecovery<'a> {
         let mut recovered_finally = false;
         for handler in &mut region.handlers {
             if handler.kind != HandlerKind::Cleanup
-                || self
-                    .shared_cleanup_entries
-                    .contains(&handler.canonical_entry)
+                || (!closed_family
+                    && self
+                        .shared_cleanup_entries
+                        .contains(&handler.canonical_entry))
             {
                 continue;
             }
@@ -226,9 +257,12 @@ impl<'a> CleanupRecovery<'a> {
                     }
                     let mut proof =
                         CleanupProof::new(self.cfg, &self.values, &owned, &handler.rethrow_blocks);
+                    proof.require_physical_dispatch = closed_family;
                     let equivalent = proof.compare(semantic_entry, candidate)?;
                     let blocks = proof.contracted_normal_blocks(candidate);
-                    let complete = proof.fully_contracts_normal_cleanup(&blocks);
+                    let retain_entry =
+                        closed_family && blocks.is_empty() && proof.retains_normal_entry(candidate);
+                    let complete = retain_entry || proof.fully_contracts_normal_cleanup(&blocks);
                     let isolated = equivalent
                         && complete
                         && CleanupCopyIsolation::new(self.cfg).proves(
@@ -237,7 +271,11 @@ impl<'a> CleanupRecovery<'a> {
                             &blocks,
                             &isolation_ingress,
                         );
-                    let completion = proof.normal_completion();
+                    let completion = if retain_entry {
+                        Some(candidate)
+                    } else {
+                        proof.normal_completion()
+                    };
                     let evidence = proof.has_semantic_evidence();
                     let outcome = if !equivalent {
                         CleanupProofOutcome::FlowMismatch
@@ -1394,6 +1432,7 @@ struct CleanupProof<'a> {
     shared_normal: BTreeSet<BlockId>,
     matched_normal: BTreeSet<StatementOrigin>,
     mismatch: Option<CleanupMismatchDiagnostic>,
+    require_physical_dispatch: bool,
 }
 
 impl<'a> CleanupProof<'a> {
@@ -1418,6 +1457,7 @@ impl<'a> CleanupProof<'a> {
             shared_normal: BTreeSet::new(),
             matched_normal: BTreeSet::new(),
             mismatch: None,
+            require_physical_dispatch: false,
         }
     }
 
@@ -1833,6 +1873,11 @@ impl<'a> CleanupProof<'a> {
         normal_insn: &InsnNode,
         normal_targets: &BTreeSet<BlockId>,
     ) -> Option<Vec<(BlockId, BlockId)>> {
+        if self.require_physical_dispatch
+            && !same_physical_dispatch(self.cfg, handler_insn.offset, normal_insn.offset)
+        {
+            return None;
+        }
         if handler_targets == normal_targets {
             return Some(Vec::new());
         }
@@ -2093,6 +2138,33 @@ impl<'a> CleanupProof<'a> {
                 || Some(*block) == completion
                 || contractible.contains(block)
         })
+    }
+
+    /// A cleanup call can share its block with live Phi bindings. Keep
+    /// that block as the normal continuation and elide only the matched
+    /// effect when the entire cleanup copy fits between those bindings
+    /// and the original next block.
+    fn retains_normal_entry(&self, entry: BlockId) -> bool {
+        let Some(completion) = self.normal_completion() else {
+            return false;
+        };
+        completion != entry
+            && self
+                .traversed_normal
+                .iter()
+                .all(|block| *block == entry || *block == completion)
+            && self.cfg.normal_successors(entry).eq([completion])
+            && self.cfg.block(entry).is_some_and(|block| {
+                block.insns.iter().all(|insn| {
+                    matches!(
+                        insn.insn_type,
+                        InsnType::Phi | InsnType::Nop | InsnType::Goto
+                    ) || self.matched_normal.contains(&StatementOrigin {
+                        block: entry,
+                        instruction: insn.id,
+                    })
+                })
+            })
     }
 
     fn normal_block_is_fully_matched(

@@ -1,0 +1,14 @@
+{
+  "run": [
+    {"id": "normal-left", "arguments": ["0", "0", "0", "0"], "expected": ["S1", "S2", "S3", "C:receiver:42", "RETURN"]},
+    {"id": "normal-right", "arguments": ["1", "0", "0", "0"], "expected": ["S1", "S2", "S3", "C:receiver:42", "RETURN"]},
+    {"id": "left-normal-cleanup-failure", "arguments": ["0", "0", "1", "0"], "expected": ["S1", "S2", "S3", "C:receiver:42", "O:1:cleanup", "RETURN"]},
+    {"id": "right-normal-cleanup-failure", "arguments": ["1", "0", "1", "0"], "expected": ["S1", "S2", "S3", "C:receiver:42", "O:2:cleanup", "RETURN"]},
+    {"id": "early-stage-ignores-route", "arguments": ["1", "1", "0", "0"], "expected": ["S1", "C:receiver:42", "O:3:primary", "RETURN"]},
+    {"id": "early-cleanup-replaces-stage", "arguments": ["0", "1", "1", "0"], "expected": ["S1", "C:receiver:42", "O:3:cleanup", "RETURN"]},
+    {"id": "stage-two-uses-left-state", "arguments": ["0", "2", "0", "0"], "expected": ["S1", "S2", "C:receiver:42", "O:1:primary", "RETURN"]},
+    {"id": "stage-two-cleanup-replaces-stage", "arguments": ["1", "2", "1", "0"], "expected": ["S1", "S2", "C:receiver:42", "O:2:cleanup", "RETURN"]},
+    {"id": "stage-three-uses-right-state", "arguments": ["1", "3", "0", "0"], "expected": ["S1", "S2", "S3", "C:receiver:42", "O:2:primary", "RETURN"]},
+    {"id": "outer-catcher-fault-escapes", "arguments": ["0", "3", "0", "1"], "expected": ["S1", "S2", "S3", "C:receiver:42", "O:1:primary", "THROW:reporter"]}
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "id": "dex-sequential-finally-outward-state",
+  "default": false,
+  "input": "classes.dex",
+  "input_sha256": "07044810dc77f35fb5c99328be619471611d2479ad8730230db84c089ea66bd8",
+  "probe": "decbench_probe.py",
+  "oracle_files": [
+    "FinallyOutwardState.java",
+    "FinallyOutwardState.smali",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m2",
+      "member": "Lfixture/FinallyOutwardState;->run(Lfixture/FinallyOutwardState;II)V",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

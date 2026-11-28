@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "id": "dex-sequential-finally-family",
+  "default": false,
+  "input": "classes.dex",
+  "input_sha256": "030994754573c01de29ac5f926233a38704da1e8a5a3cdec6d57cfb1a19c4e5e",
+  "probe": "decbench_probe.py",
+  "oracle_files": [
+    "FinallyFamily.java",
+    "FinallyFamily.smali",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m1",
+      "member": "Lfixture/FinallyFamily;->run(Lfixture/FinallyFamily;I)V",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

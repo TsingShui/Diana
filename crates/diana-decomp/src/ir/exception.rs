@@ -195,6 +195,32 @@ fn shared_handler_entries(handlers: impl IntoIterator<Item = (u32, BlockId)>) ->
         .collect()
 }
 
+/// A rethrow can be shared even when the handlers enter at different
+/// state-transfer adapters.
+fn shared_cleanup_entries(regions: &[TryRegion]) -> BTreeSet<BlockId> {
+    let cleanups = || {
+        regions.iter().flat_map(|region| {
+            region
+                .handlers
+                .iter()
+                .filter(|handler| handler.kind == HandlerKind::Cleanup)
+                .map(move |handler| (region.id, handler))
+        })
+    };
+    let mut shared = shared_handler_entries(
+        cleanups().map(|(region, handler)| (region, handler.canonical_entry)),
+    );
+    let mut rethrows = BTreeMap::<BlockId, BlockId>::new();
+    for (_, handler) in cleanups() {
+        for &block in &handler.rethrow_blocks {
+            if let Some(prior) = rethrows.insert(block, handler.canonical_entry) {
+                shared.extend([prior, handler.canonical_entry]);
+            }
+        }
+    }
+    shared
+}
+
 /// Catch entries shared by try regions that do not share a cleanup identity.
 ///
 /// Split fragments of one source `try` reuse the same catch and finally
@@ -630,13 +656,7 @@ impl<'a> ExceptionRegions<'a> {
         // Elision is method-wide. If independently live scopes still use
         // the same rethrow, recovering a finally in just one scope would
         // erase the exception propagation required by its siblings.
-        let shared_cleanup_entries = shared_handler_entries(regions.iter().flat_map(|region| {
-            region
-                .handlers
-                .iter()
-                .filter(|handler| handler.kind == HandlerKind::Cleanup)
-                .map(move |handler| (region.id, handler.canonical_entry))
-        }));
+        let shared_cleanup_entries = shared_cleanup_entries(&regions);
         let dom_ms = t3.elapsed();
 
         let mut elided_instructions = BTreeSet::new();
@@ -694,6 +714,68 @@ impl<'a> ExceptionRegions<'a> {
                     );
                 }
             }
+        }
+        for family in recovery.recover_families(&regions, &cleanup_representatives)? {
+            let scope = family.scope;
+            let cleanup = family.recovery;
+            let handler = &scope.handlers[0];
+            if !cleanup.elided.is_disjoint(&elided_instructions)
+                || cleanup.normal_contractions.iter().any(|contraction| {
+                    contraction
+                        .blocks
+                        .iter()
+                        .any(|block| cleanup_representatives.contains_key(block))
+                })
+                || handler.adapter_blocks.iter().any(|adapter| {
+                    handler_adapters.get(adapter).is_some_and(|target| {
+                        *target != handler.semantic_entry
+                            && !handler.adapter_blocks.contains(target)
+                    })
+                })
+            {
+                continue;
+            }
+            let mut removed = BTreeSet::new();
+            for region in &mut regions {
+                let count = region.handlers.len();
+                region
+                    .handlers
+                    .retain(|handler| !family.participants.contains(&(region.id, handler.id)));
+                if count > 0 && region.handlers.is_empty() {
+                    removed.insert(region.id);
+                }
+            }
+            let parents = ExceptionParentForest::of(&regions);
+            let domain = scope.blocks.iter().copied().collect::<BTreeSet<_>>();
+            regions.retain(|region| !removed.contains(&region.id));
+            for region in &mut regions {
+                if region
+                    .parent
+                    .is_some_and(|parent| removed.contains(&parent))
+                {
+                    if region.blocks.iter().all(|block| domain.contains(block)) {
+                        region.parent = Some(scope.id);
+                    } else {
+                        while let Some(parent) = region.parent.filter(|id| removed.contains(id)) {
+                            region.parent = parents.parents.get(&parent).copied().flatten();
+                        }
+                    }
+                }
+                region.children.retain(|child| !removed.contains(child));
+            }
+            for &adapter in &handler.adapter_blocks {
+                handler_adapters.insert(adapter, handler.semantic_entry);
+            }
+            elided_instructions.extend(cleanup.elided);
+            cleanup_value_bindings.extend(cleanup.value_bindings);
+            cleanup_proofs.extend(cleanup.diagnostics);
+            for contraction in &cleanup.normal_contractions {
+                for block in &contraction.blocks {
+                    cleanup_representatives.insert(*block, contraction.completion);
+                }
+            }
+            cleanup_contractions.extend(cleanup.contractions);
+            regions.push(scope);
         }
         // Cleanup recovery changes the exceptional continuation graph: a
         // protected block may reach an outer handler only after executing a
