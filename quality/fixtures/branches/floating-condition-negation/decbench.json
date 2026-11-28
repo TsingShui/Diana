@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "id": "dex-floating-condition-negation",
+  "default": true,
+  "input": "classes.dex",
+  "input_sha256": "a8fecb9c2df9b68f476756c64f61da1698e4e530a8538fdf8130a8bfe413b12c",
+  "probe": "verify.py",
+  "oracle_files": [
+    "BranchFloat.java",
+    "BranchFloat.smali",
+    "CheckBranchFloat.java",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m0",
+      "member": "Lfixture/BranchFloat;->dFalls(DD)V",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m1",
+      "member": "Lfixture/BranchFloat;->dJoinFalls(DD)V",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m2",
+      "member": "Lfixture/BranchFloat;->fFalls(FF)V",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m3",
+      "member": "Lfixture/BranchFloat;->fJoinBoolean(FFZ)V",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m4",
+      "member": "Lfixture/BranchFloat;->fJoinFalls(FF)V",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m5",
+      "member": "Lfixture/BranchFloat;->iJoinFalls(II)V",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

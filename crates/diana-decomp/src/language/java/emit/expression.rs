@@ -39,7 +39,11 @@ impl Precedence {
             JavaBinaryOp::Less
             | JavaBinaryOp::GreaterEqual
             | JavaBinaryOp::Greater
-            | JavaBinaryOp::LessEqual => Self::Relational,
+            | JavaBinaryOp::LessEqual
+            | JavaBinaryOp::IntegralLess
+            | JavaBinaryOp::IntegralGreaterEqual
+            | JavaBinaryOp::IntegralGreater
+            | JavaBinaryOp::IntegralLessEqual => Self::Relational,
             JavaBinaryOp::Equal | JavaBinaryOp::NotEqual => Self::Equality,
             JavaBinaryOp::BitAnd => Self::BitAnd,
             JavaBinaryOp::BitXor => Self::BitXor,

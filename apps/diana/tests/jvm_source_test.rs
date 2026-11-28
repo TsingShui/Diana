@@ -338,6 +338,11 @@ fn recovered_jvm_instance_field_accesses_preserve_declaring_owner() {
     verify_jvm_fixture("classes/instance-field-owners/jvm/verify.py");
 }
 
+#[test]
+fn recovered_jvm_floating_condition_negation_preserves_unordered_paths() {
+    verify_jvm_fixture("branches/floating-condition-negation/jvm/verify.py");
+}
+
 fn verify_jvm_fixture(path: &str) {
     let output = tempfile::tempdir().unwrap();
     let verifier = Path::new(env!("CARGO_MANIFEST_DIR"))

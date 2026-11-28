@@ -4791,16 +4791,22 @@ impl DexJavaDialect {
         condition: &SemanticOperation,
         inverted: bool,
     ) -> Result<JavaExpr, JavaLoweringError> {
-        let mut op = condition
+        let expression = self.lower_test(condition)?;
+        Ok(if inverted {
+            expression.negated()
+        } else {
+            expression
+        })
+    }
+
+    fn lower_test(&mut self, condition: &SemanticOperation) -> Result<JavaExpr, JavaLoweringError> {
+        let op = condition
             .payload
             .if_op
             .ok_or(JavaLoweringError::MissingPayload {
                 instruction: condition.insn_type,
                 field: "if_op",
             })?;
-        if inverted {
-            op = op.invert();
-        }
         let left_arg = condition
             .operands()
             .first()
@@ -4833,11 +4839,22 @@ impl DexJavaDialect {
         if let Some(comparison) = self.direct_comparison(left_arg, right_arg, op)? {
             return Ok(comparison);
         }
+        let integral = !matches!(op, IfOp::Eq | IfOp::Ne)
+            && [left_arg, right_arg].into_iter().all(|operand| {
+                self.source_primitive_type(operand)
+                    .is_some_and(PrimitiveType::is_integral)
+            });
         if self.has_intrinsic_numeric_comparison_domain(left_arg, right_arg)? {
             let domain = self.numeric_comparison_domain(left_arg, right_arg);
             return Ok(JavaExpr::Binary {
                 left: Box::new(self.arg_as(left_arg, &domain)?),
-                op: Self::comparison_operator(op),
+                op: Self::comparison_operator(
+                    op,
+                    integral
+                        && domain
+                            .as_primitive()
+                            .is_some_and(PrimitiveType::is_integral),
+                ),
                 right: Box::new(self.arg_as(right_arg, &domain)?),
             });
         }
@@ -4853,7 +4870,7 @@ impl DexJavaDialect {
         }
         Ok(JavaExpr::Binary {
             left: Box::new(left),
-            op: Self::comparison_operator(op),
+            op: Self::comparison_operator(op, integral),
             right: Box::new(right),
         })
     }
@@ -4983,7 +5000,7 @@ impl DexJavaDialect {
         };
         let expression = JavaExpr::Binary {
             left: Box::new(self.arg_as(left, &comparison_type)?),
-            op: Self::comparison_operator(test.operator),
+            op: Self::comparison_operator(test.operator, comparison_type == ArgType::LONG),
             right: Box::new(self.arg_as(right, &comparison_type)?),
         };
         Ok(Some(if test.negated {
@@ -5956,7 +5973,11 @@ impl LocalAssignment {
             | JavaBinaryOp::Less
             | JavaBinaryOp::GreaterEqual
             | JavaBinaryOp::Greater
-            | JavaBinaryOp::LessEqual => return None,
+            | JavaBinaryOp::LessEqual
+            | JavaBinaryOp::IntegralLess
+            | JavaBinaryOp::IntegralGreaterEqual
+            | JavaBinaryOp::IntegralGreater
+            | JavaBinaryOp::IntegralLessEqual => return None,
         })
     }
 }
@@ -6097,14 +6118,18 @@ impl DexJavaDialect {
         })
     }
 
-    fn comparison_operator(operator: IfOp) -> JavaBinaryOp {
-        match operator {
-            IfOp::Eq => JavaBinaryOp::Equal,
-            IfOp::Ne => JavaBinaryOp::NotEqual,
-            IfOp::Lt => JavaBinaryOp::Less,
-            IfOp::Ge => JavaBinaryOp::GreaterEqual,
-            IfOp::Gt => JavaBinaryOp::Greater,
-            IfOp::Le => JavaBinaryOp::LessEqual,
+    fn comparison_operator(operator: IfOp, integral: bool) -> JavaBinaryOp {
+        match (operator, integral) {
+            (IfOp::Eq, _) => JavaBinaryOp::Equal,
+            (IfOp::Ne, _) => JavaBinaryOp::NotEqual,
+            (IfOp::Lt, true) => JavaBinaryOp::IntegralLess,
+            (IfOp::Ge, true) => JavaBinaryOp::IntegralGreaterEqual,
+            (IfOp::Gt, true) => JavaBinaryOp::IntegralGreater,
+            (IfOp::Le, true) => JavaBinaryOp::IntegralLessEqual,
+            (IfOp::Lt, false) => JavaBinaryOp::Less,
+            (IfOp::Ge, false) => JavaBinaryOp::GreaterEqual,
+            (IfOp::Gt, false) => JavaBinaryOp::Greater,
+            (IfOp::Le, false) => JavaBinaryOp::LessEqual,
         }
     }
 

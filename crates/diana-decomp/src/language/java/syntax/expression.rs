@@ -314,7 +314,19 @@ impl CmpConditionProof {
         let [left, right] = comparison.operands() else {
             return None;
         };
-        let operator = Self::java_operator(comparison.payload.cmp_bias?, operator)?;
+        let bias = comparison.payload.cmp_bias?;
+        // Once the compare result is replaced with a relation, its operands
+        // must still identify the original numeric domain to later consumers.
+        if ![left, right].into_iter().all(|value| match bias {
+            CmpBias::None => value.declared_type() == Some(&ArgType::LONG),
+            CmpBias::Lt | CmpBias::Gt => matches!(
+                value.declared_type().and_then(ArgType::as_primitive),
+                Some(PrimitiveType::Float | PrimitiveType::Double)
+            ),
+        }) {
+            return None;
+        }
+        let operator = Self::java_operator(bias, operator)?;
         Some(ExpressionFact::Comparison {
             operator,
             left: left.clone(),

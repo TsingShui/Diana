@@ -683,6 +683,12 @@ pub enum JavaBinaryOp {
     GreaterEqual,
     Greater,
     LessEqual,
+    // These relations carry proof of integral promotion. Unlike the
+    // unqualified relations, their opposites are exact complements.
+    IntegralLess,
+    IntegralGreaterEqual,
+    IntegralGreater,
+    IntegralLessEqual,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -738,10 +744,10 @@ impl JavaBinaryOp {
             Self::LogicalOr => "||",
             Self::Equal => "==",
             Self::NotEqual => "!=",
-            Self::Less => "<",
-            Self::GreaterEqual => ">=",
-            Self::Greater => ">",
-            Self::LessEqual => "<=",
+            Self::Less | Self::IntegralLess => "<",
+            Self::GreaterEqual | Self::IntegralGreaterEqual => ">=",
+            Self::Greater | Self::IntegralGreater => ">",
+            Self::LessEqual | Self::IntegralLessEqual => "<=",
         }
     }
 }
@@ -1031,11 +1037,15 @@ impl JavaExpr {
         Some(match operator {
             JavaBinaryOp::Equal => JavaBinaryOp::NotEqual,
             JavaBinaryOp::NotEqual => JavaBinaryOp::Equal,
-            JavaBinaryOp::Less => JavaBinaryOp::GreaterEqual,
-            JavaBinaryOp::GreaterEqual => JavaBinaryOp::Less,
-            JavaBinaryOp::Greater => JavaBinaryOp::LessEqual,
-            JavaBinaryOp::LessEqual => JavaBinaryOp::Greater,
-            JavaBinaryOp::Add
+            JavaBinaryOp::IntegralLess => JavaBinaryOp::IntegralGreaterEqual,
+            JavaBinaryOp::IntegralGreaterEqual => JavaBinaryOp::IntegralLess,
+            JavaBinaryOp::IntegralGreater => JavaBinaryOp::IntegralLessEqual,
+            JavaBinaryOp::IntegralLessEqual => JavaBinaryOp::IntegralGreater,
+            JavaBinaryOp::Less
+            | JavaBinaryOp::GreaterEqual
+            | JavaBinaryOp::Greater
+            | JavaBinaryOp::LessEqual
+            | JavaBinaryOp::Add
             | JavaBinaryOp::StringConcat
             | JavaBinaryOp::Subtract
             | JavaBinaryOp::Multiply

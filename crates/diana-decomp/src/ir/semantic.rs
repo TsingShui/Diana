@@ -4,6 +4,8 @@
 //! all non-local transfers are explicit; later value recovery must not inspect
 //! CFG edges or rediscover control-flow intent from instruction shapes.
 
+use crate::ir::{ArgType, PrimitiveType};
+
 #[path = "semantic/completion.rs"]
 mod completion;
 #[path = "semantic/dce.rs"]
@@ -999,21 +1001,39 @@ impl SemanticPredicate {
         let [left, right] = test.operands() else {
             return None;
         };
+        let primitives =
+            [left, right].map(|value| value.declared_type().and_then(ArgType::as_primitive));
+        if primitives.iter().any(|primitive| {
+            matches!(
+                primitive,
+                Some(PrimitiveType::Float | PrimitiveType::Double)
+            )
+        }) {
+            // Even a stable operand is not necessarily equal to itself.
+            return None;
+        }
         if left.same_stable_value(right) {
             return Some(match test.payload.if_op? {
                 IfOp::Eq | IfOp::Ge | IfOp::Le => true,
                 IfOp::Ne | IfOp::Lt | IfOp::Gt => false,
             });
         }
-        let left = left.literal_value()?;
-        let right = right.literal_value()?;
+        let comparison_value = |value| {
+            if primitives.contains(&Some(PrimitiveType::Long)) {
+                value
+            } else {
+                i64::from(value as i32)
+            }
+        };
+        let left = comparison_value(left.literal_value()?);
+        let right = comparison_value(right.literal_value()?);
         Some(match test.payload.if_op? {
             IfOp::Eq => left == right,
             IfOp::Ne => left != right,
-            IfOp::Lt => (left as i32) < (right as i32),
-            IfOp::Ge => (left as i32) >= (right as i32),
-            IfOp::Gt => (left as i32) > (right as i32),
-            IfOp::Le => (left as i32) <= (right as i32),
+            IfOp::Lt => left < right,
+            IfOp::Ge => left >= right,
+            IfOp::Gt => left > right,
+            IfOp::Le => left <= right,
         })
     }
 }

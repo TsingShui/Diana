@@ -1747,7 +1747,11 @@ impl ConstructorSyntaxRecovery {
                     | JavaBinaryOp::Less
                     | JavaBinaryOp::GreaterEqual
                     | JavaBinaryOp::Greater
-                    | JavaBinaryOp::LessEqual,
+                    | JavaBinaryOp::LessEqual
+                    | JavaBinaryOp::IntegralLess
+                    | JavaBinaryOp::IntegralGreaterEqual
+                    | JavaBinaryOp::IntegralGreater
+                    | JavaBinaryOp::IntegralLessEqual,
                 ..
             } => Some(JavaType::boolean()),
             JavaExpr::Literal(_) => Self::literal_type(expression),

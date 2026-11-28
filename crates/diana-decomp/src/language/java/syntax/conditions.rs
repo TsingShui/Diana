@@ -6,7 +6,7 @@ use crate::ir::bdd::{Bdd, BddContext};
 use crate::ir::semantic::{CompletionDomain, CompletionInterpreter, SemanticTransfer};
 use crate::ir::{
     analysis::{SourceTypeEnvironment, SsaVar},
-    ArgType, BoolExpr, BoolVariable, IfOp, InsnType, InstructionId, SemanticCatch,
+    ArgType, BoolExpr, BoolVariable, IfOp, InsnType, InstructionId, PrimitiveType, SemanticCatch,
     SemanticExpression, SemanticFinally, SemanticFoldError, SemanticLabel, SemanticLeave,
     SemanticLoopControl, SemanticLoopKind, SemanticNode, SemanticOperation, SemanticPredicate,
     SemanticStatementKind, SemanticSwitchCase, SemanticVisitor,
@@ -72,6 +72,7 @@ impl ComparisonValue {
 enum ComparisonRelation {
     Equal,
     LessThan,
+    LessThanOrEqual,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -87,7 +88,7 @@ struct ComparisonTest {
 }
 
 impl ComparisonTest {
-    fn analyze(test: &SemanticOperation) -> Option<Self> {
+    fn analyze(test: &SemanticOperation, types: &SourceTypeEnvironment) -> Option<Self> {
         (test.insn_type == InsnType::If).then_some(())?;
         let [left, right] = test.operands() else {
             return None;
@@ -95,6 +96,14 @@ impl ComparisonTest {
         if !left.effects().is_pure() || !right.effects().is_pure() {
             return None;
         }
+        let ordered = [left, right].into_iter().all(|value| {
+            value
+                .as_register()
+                .and_then(|register| types.register_type(register).ok())
+                .or_else(|| value.declared_type())
+                .and_then(ArgType::as_primitive)
+                .is_some_and(PrimitiveType::is_integral)
+        });
         let left = ComparisonValue::analyze(left)?;
         let right = ComparisonValue::analyze(right)?;
         let (relation, left, right, polarity) = match test.payload.if_op? {
@@ -112,9 +121,11 @@ impl ComparisonTest {
                 )
             }
             IfOp::Lt => (ComparisonRelation::LessThan, left, right, true),
-            IfOp::Ge => (ComparisonRelation::LessThan, left, right, false),
+            IfOp::Ge if ordered => (ComparisonRelation::LessThan, left, right, false),
+            IfOp::Ge => (ComparisonRelation::LessThanOrEqual, right, left, true),
             IfOp::Gt => (ComparisonRelation::LessThan, right, left, true),
-            IfOp::Le => (ComparisonRelation::LessThan, right, left, false),
+            IfOp::Le if ordered => (ComparisonRelation::LessThan, right, left, false),
+            IfOp::Le => (ComparisonRelation::LessThanOrEqual, left, right, true),
         };
         Some(Self {
             atom: ComparisonAtom {
@@ -139,14 +150,17 @@ struct PredicateAliases {
 }
 
 impl PredicateAliases {
-    fn analyze(tests: &BTreeMap<InstructionId, SemanticOperation>) -> Self {
+    fn analyze(
+        tests: &BTreeMap<InstructionId, SemanticOperation>,
+        types: &SourceTypeEnvironment,
+    ) -> Self {
         if tests.len() < 2 {
             return Self::default();
         }
         let mut representatives = BTreeMap::<ComparisonAtom, (InstructionId, bool)>::new();
         let mut aliases = Self::default();
         for (&instruction, operation) in tests {
-            let Some(test) = ComparisonTest::analyze(operation) else {
+            let Some(test) = ComparisonTest::analyze(operation, types) else {
                 continue;
             };
             let (representative, polarity) = *representatives
@@ -316,7 +330,7 @@ struct PathConditionDomain {
 
 impl PathConditionDomain {
     fn new(catalog: PredicateCatalog, types: &SourceTypeEnvironment) -> Self {
-        let aliases = PredicateAliases::analyze(&catalog.tests);
+        let aliases = PredicateAliases::analyze(&catalog.tests, types);
         let symbols = catalog
             .tests
             .keys()
@@ -1671,8 +1685,9 @@ mod tests {
 
     #[test]
     fn comparison_congruence_normalizes_complementary_relations() {
-        let greater = ComparisonTest::analyze(&comparison(1, IfOp::Gt)).unwrap();
-        let less_or_equal = ComparisonTest::analyze(&comparison(2, IfOp::Le)).unwrap();
+        let types = SourceTypeEnvironment::default();
+        let greater = ComparisonTest::analyze(&comparison(1, IfOp::Gt), &types).unwrap();
+        let less_or_equal = ComparisonTest::analyze(&comparison(2, IfOp::Le), &types).unwrap();
 
         assert_eq!(greater.atom, less_or_equal.atom);
         assert_ne!(greater.polarity, less_or_equal.polarity);

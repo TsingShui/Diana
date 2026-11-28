@@ -1,0 +1,18 @@
+[
+  ["float-left-unordered", "fJoinFalls", ["NaN", "1"], 9],
+  ["float-right-unordered", "fJoinFalls", ["1", "NaN"], 9],
+  ["float-ordered-less", "fJoinFalls", ["1", "2"], 12345],
+  ["float-ordered-equal", "fJoinFalls", ["-0.0", "0.0"], 9],
+  ["float-gated-unordered", "fJoinBoolean", ["NaN", "1", "true"], 9],
+  ["float-gated-false", "fJoinBoolean", ["1", "2", "false"], 9],
+  ["float-terminal-control", "fFalls", ["NaN", "1"], 9],
+  ["double-left-unordered", "dJoinFalls", ["NaN", "1"], 9],
+  ["double-right-unordered", "dJoinFalls", ["1", "NaN"], 9],
+  ["double-ordered-greater", "dJoinFalls", ["2", "1"], 12345],
+  ["double-ordered-equal", "dJoinFalls", ["-0.0", "0.0"], 9],
+  ["double-terminal-control", "dFalls", ["NaN", "1"], 9],
+  ["float-gated-ordered", "fJoinBoolean", ["1", "2", "true"], 12345],
+  ["integer-extrema-ordered", "iJoinFalls", ["-2147483648", "2147483647"], 12345],
+  ["integer-extrema-reversed", "iJoinFalls", ["2147483647", "-2147483648"], 9],
+  ["integer-equal", "iJoinFalls", ["-7", "-7"], 9]
+]

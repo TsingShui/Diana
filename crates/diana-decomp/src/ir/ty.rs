@@ -217,6 +217,13 @@ pub enum PrimitiveType {
 }
 
 impl PrimitiveType {
+    pub(crate) fn is_integral(self) -> bool {
+        matches!(
+            self,
+            Self::Byte | Self::Short | Self::Char | Self::Int | Self::Long
+        )
+    }
+
     /// Check if this is a wide type (takes 2 registers)
     pub fn is_wide(&self) -> bool {
         matches!(self, PrimitiveType::Long | PrimitiveType::Double)

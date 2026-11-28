@@ -4,6 +4,27 @@ use crate::ir::{
     SemanticLeaveKind, SemanticOperand, SemanticStatement,
 };
 
+#[test]
+fn opposite_floating_relations_keep_distinct_path_conditions() {
+    let float = ArgType::Primitive(PrimitiveType::Float);
+    let test = |operator| {
+        let mut instruction = InsnNode::new(InsnType::If, 0);
+        instruction.payload.if_op = Some(operator);
+        SemanticOperation::from_parts(
+            instruction,
+            vec![
+                SemanticExpression::Register(RegisterArg::new_ssa(0, 1, float.clone())),
+                SemanticExpression::Register(RegisterArg::new_ssa(1, 1, float.clone())),
+            ],
+            None,
+        )
+    };
+    let types = SourceTypeEnvironment::default();
+    let less = ComparisonTest::analyze(&test(IfOp::Lt), &types).unwrap();
+    let greater_or_equal = ComparisonTest::analyze(&test(IfOp::Ge), &types).unwrap();
+    assert_ne!(less.atom, greater_or_equal.atom);
+}
+
 fn returned() -> SemanticNode {
     let region = RegionId::new(0);
     SemanticNode::Leave(SemanticLeave {

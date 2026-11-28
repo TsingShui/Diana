@@ -45,10 +45,10 @@ fn expected(value: &JavaExpr) -> (JavaExpr, u8) {
             let opposite = match op {
                 Equal => NotEqual,
                 NotEqual => Equal,
-                Less => GreaterEqual,
-                GreaterEqual => Less,
-                Greater => LessEqual,
-                LessEqual => Greater,
+                IntegralLess => IntegralGreaterEqual,
+                IntegralGreaterEqual => IntegralLess,
+                IntegralGreater => IntegralLessEqual,
+                IntegralLessEqual => IntegralGreater,
                 _ => return (not(value.clone()), 1),
             };
             (binary(*left.clone(), opposite, *right.clone()), 0)
@@ -79,6 +79,10 @@ fn complement_budget_ties_and_printed_cost_agree_with_the_constructed_expression
         GreaterEqual,
         Greater,
         LessEqual,
+        IntegralLess,
+        IntegralGreaterEqual,
+        IntegralGreater,
+        IntegralLessEqual,
         BitOr,
     ] {
         leaves.push(binary(name("left"), op, name("right")));

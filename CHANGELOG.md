@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.20 - 2026-11-28
+
+- Preserved unordered floating-point comparisons when recovering guard
+  branches and short-circuit conditions in DEX and JVM methods.
+- Preserved floating-point self-comparisons when an operand can be NaN.
+
 ## 0.4.19 - 2026-11-28
 
 - Preserved single receiver evaluation, null checks and whole-range bounds
