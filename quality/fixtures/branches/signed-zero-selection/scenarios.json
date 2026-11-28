@@ -1,0 +1,16 @@
+[
+  ["raw-float-negative", "rawFloat", true, false, "80000000"],
+  ["raw-float-positive", "rawFloat", false, false, "00000000"],
+  ["raw-double-positive", "rawDouble", true, false, "0000000000000000"],
+  ["raw-double-negative", "rawDouble", false, false, "8000000000000000"],
+  ["store-float-negative", "storeFloat", true, false, "80000000"],
+  ["store-float-positive", "storeFloat", false, false, "00000000"],
+  ["store-double-positive", "storeDouble", true, false, "0000000000000000"],
+  ["store-double-negative", "storeDouble", false, false, "8000000000000000"],
+  ["return-float-negative", "selectFloat", true, false, "80000000"],
+  ["return-float-positive", "selectFloat", false, false, "00000000"],
+  ["protected-negative-return", "protectedUse", true, false, "80000000:80000000:normal"],
+  ["protected-positive-return", "protectedUse", false, false, "00000000:00000000:normal"],
+  ["protected-negative-fault", "protectedUse", true, true, "80000000:80000000:same-fault"],
+  ["protected-positive-fault", "protectedUse", false, true, "00000000:00000000:same-fault"]
+]

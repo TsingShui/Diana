@@ -635,7 +635,7 @@ impl std::fmt::Display for JavaTypeParameter {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum JavaLiteral {
     Null,
     Boolean(bool),
@@ -645,6 +645,24 @@ pub enum JavaLiteral {
     Double(f64),
     Character(u16),
     String(Utf16String),
+}
+
+impl PartialEq for JavaLiteral {
+    fn eq(&self, other: &Self) -> bool {
+        // AST equivalence describes the represented value, including its
+        // floating-point bits. Java's numeric equality is a separate operation.
+        match (self, other) {
+            (Self::Null, Self::Null) => true,
+            (Self::Boolean(left), Self::Boolean(right)) => left == right,
+            (Self::Integer(left), Self::Integer(right)) => left == right,
+            (Self::Long(left), Self::Long(right)) => left == right,
+            (Self::Float(left), Self::Float(right)) => left.to_bits() == right.to_bits(),
+            (Self::Double(left), Self::Double(right)) => left.to_bits() == right.to_bits(),
+            (Self::Character(left), Self::Character(right)) => left == right,
+            (Self::String(left), Self::String(right)) => left == right,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

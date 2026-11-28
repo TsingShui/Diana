@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.21 - 2026-11-28
+
+- Preserved selections between positive and negative zero in recovered DEX
+  and JVM expressions, including call arguments and field and array writes.
+
 ## 0.4.20 - 2026-11-28
 
 - Preserved unordered floating-point comparisons when recovering guard
