@@ -1,180 +1,107 @@
 # Fixture-driven evolution and regression
 
-The primary improvement process is a fixture-driven iteration: discover a problem,
-repair its general cause, challenge the repair with newly authored, more complex
-fixtures, then confirm that earlier effects remain intact. Repairing the discovery
-fixture alone does not complete an iteration. LLM semantic-equivalence review is
-the primary review method; executed checks supply separate supporting evidence.
+Use the fixture-driven loop for substantive changes to decompilation semantics
+or recovery. These include changes to recovered control flow, values, effects,
+exception handling, and the availability of readable code. For other work,
+choose checks that exercise the behavior the change affects.
 
-The root [AGENTS.md](../../AGENTS.md) owns execution authorization;
-[README](README.md#regression-workflow-status) records implemented tooling.
-A defined procedure is not an executed or passing check.
-
-```text
-Existing fixture or authorized real input
-  → confirmed problem + independent expectations + pre-fix observation
-  → owning-stage repair
-  → newly authored, more complex same-mechanism fixtures
-  → pre-fix/candidate comparison + LLM path-by-path semantic review
-  → original fixture + prior effects + required regression checks
-  → iteration decision → separately authorized integration
-  → further discovery within the authorized task
-```
+The root [AGENTS.md](../../AGENTS.md) owns contribution and integration rules.
+[README](README.md#regression-workflow-status) records available tooling.
 
 ## Primary iteration
 
-| Step | Action | Required evidence before advancing |
-|---|---|---|
-| Discover | Inspect an existing fixture or an authorized real input. | Original member identity, command, actual output and the concrete obstruction. |
-| Confirm | Distinguish a semantic defect, readability limitation, absent fact, wrong selector or faulty expectation. Reduce a real-input discovery to a focused fixture. | Original DEX evidence, applicable contracts and independently recorded results/effect order or targeted recovery criteria. |
-| Repair | Change the general mechanism in its owning stage. | Producer/consumer obligations remain consistent; the original symptom improves without a case-name patch, alternate method chain or hidden fragments. |
-| Challenge | After the repair, author more complex fixtures exercising the same cause and its interactions. | Prepared Java/Smali inputs, independent scenarios, the retained trigger and the added complexity dimension. |
-| Review | Compare the same prepared challenge inputs on pre-fix and candidate revisions. Perform LLM path-by-path review of the original and challenge outputs. | Results, effects, exceptions, identities and targeted recovery agree with the input; improvement and uncertainty are explained, not inferred from surface resemblance. |
-| Regress | Revisit earlier effects and run applicable implemented checks, including every admitted behavioral case. | The required old fixture set, compared paths, actual check outcomes and preserved recovery/coverage are explicit. |
-| Decide | Apply the iteration decision below. | The repair generalizes to the challenge and preserves earlier effects, with evidence limits stated. |
-| Integrate | Run applicable repository checks and obtain the required integration authorization. | The reviewed candidate and its fixture/review/check records; a completed iteration is not commit or merge permission. |
+1. Reproduce the issue using an existing fixture or an authorized input. Record
+   the original member, the command, observed output, and independent expected
+   behavior. Reduce a real input to a focused fixture when needed.
+2. Repair the mechanism in its owning module. Update affected producers and
+   consumers together and preserve independently recoverable results.
+3. Add a complexity challenge that exercises the changed mechanism under a
+   relevant additional interaction.
+4. Compare the original case and challenge on the baseline and candidate
+   revisions. Review the input and output path by path and run the applicable
+   independent checks.
+5. Recheck prior cases based on the effect of the change. Record the outcome and
+   the scope of the evidence.
 
-These responsibilities can be performed in separate sessions; they do not imply
-permission to launch agents or run indefinitely. A Skill or role prompt SHOULD
-link here rather than maintain another acceptance policy. The operator retains
-integration authority.
-
-Authors MUST record independent expectations before inspecting each fixture's
-candidate output. A readability repair records the concrete recovery improvement;
-it does not manufacture a behavioral mismatch to qualify the case. If an
-implemented behavioral checker applies, contributors MUST demonstrate its
-sensitivity on the pre-fix defect and run it on the candidate. The primary review
-loop does not require an implemented behavioral executor; missing execution
-remains unrun, not a pass. An input that does not reproduce the recorded
-trigger cannot serve as a successful repair witness.
+Record fixture expectations before inspecting candidate output. A readability
+change needs an independent criterion for improved recovery. When an existing
+behavioral checker can observe the defect, show that it detects the pre-fix
+failure and verify the repair on the candidate.
 
 ## Complexity challenge
 
-Contributors MUST generate a new, more complex same-mechanism challenge after
-each repair before declaring the iteration effective. Re-running only existing
-fixtures or renaming/enlarging an input does not satisfy this step. Authors MUST
-retain the causal trigger and add a relevant interaction, not unrelated bulk.
-Examples include shared handlers combined with outer finally, fallthrough inside
-a loop with selected-entry copies, or cleanup combined with return capture,
-throwing close and monitor release.
+For a substantive semantic or recovery change, authors MUST prepare a new case
+that retains the trigger and adds a relevant interaction. For example, combine
+a shared exception handler with an outer `finally`, or exercise a loop exit that
+also carries a value. Include normal and exceptional paths where relevant and
+record helper behavior, fault reachability, effect order, and recovery boundaries.
 
-Each challenge MUST identify its original discovery fixture, repaired invariant,
-added interaction, original selectors and independent scenarios. Scenarios MUST
-cover relevant normal and exceptional paths, helper arguments/results, effect
-order and recovery boundaries. Authors MUST establish that a selected fault is
-reachable, distinguish acquisition IDs from returned handles, and state helper
-bodies or explicit models. Unmodeled behavior remains uncertain.
+Follow [FIXTURES](FIXTURES.md) for the layout and records. Compare the same
+prepared input on both revisions through the ordinary Engine entry when
+reviewing Engine fixtures. Identify which result changed under the added
+interaction and explain how it follows from the change. An existing case that
+already behaves as expected is a compatibility check.
 
-Use the [shared fixture layout](FIXTURES.md). Prepare each input once and inspect
-the same DEX on both revisions through the ordinary Engine entry. A challenge
-MUST demonstrate the repaired guarantee under its added interaction. A baseline
-that already handles a case is a useful compatibility guard, but that case alone
-does not demonstrate that the repair generalized. The comparison MUST explain
-which targeted behavior or recovery changed and why it follows from the repair.
-
-A same-cause failure keeps the current iteration open: contributors MUST revisit
-the owning mechanism and recheck the original, challenge and prior cases. An
-independent problem already present in the baseline can become a separately
-recorded next discovery, with the different cause/invariant explained. A
-candidate-induced regression blocks the current iteration even if its cause is
-different. Contributors MUST NOT relabel a same-cause failure or a new regression
-as unrelated to finish an iteration.
+If the new case still exposes the same cause, revisit the repair and recheck
+the original and affected prior cases. Track an independent issue already
+present on the baseline separately. A regression caused by the candidate
+blocks acceptance.
 
 ## Iteration decision
 
-Contributors MUST record the required original, challenge and old fixture set.
-It includes prior completed iterations' repair/challenge cases and all admitted
-behavioral regression cases. Broader producer/consumer effects require a
-correspondingly broader inspection set. Contributors MUST compare semantics,
-available readable fragments, original identities, uncertainty and the previously
-established recovery effects; absence of diagnostics alone is insufficient.
+Review the source and results for the original, challenge, and affected prior
+cases. Use LLM semantic review to compare authored input and helper behavior
+with the final output path by path. Cover relevant results, effect order,
+exceptions, original identities, recovery coverage, and any unresolved paths.
+An existing independent review can be reused when the input and relevant output
+are unchanged. Record which review was reused and the basis for reuse.
 
-LLM review MUST compare the authored input/Smali and helper behavior against final
-output path by path. Reviewers MUST separate semantic agreement, the targeted
-readability/recovery improvement and unresolved paths. An explicit graph or
-exception chain does not by itself establish a semantic defect. Existing
-independently reasoned reviews can be reused for unchanged inputs and output;
-reports MUST identify that reuse and its basis. Changed paths require renewed
-review. Applicable automated checks still run on the candidate.
+A substantive iteration is effective when the original issue is resolved, the
+challenge shows that the mechanism handles the added interaction, and affected
+prior cases preserve their established behavior and recovery. Resolve material
+uncertainty on required paths and run the applicable implemented checks.
 
-An iteration is effective only when:
-
-- The original symptom is resolved and a newly generated complexity challenge
-  demonstrates that the same repair remains effective under the added interaction.
-- LLM semantic review finds no contradiction on the required paths; material
-  uncertainty about those paths is resolved rather than counted as agreement.
-- Earlier required effects, member/code availability and recovery coverage remain
-  intact; expectations and case selection have not been weakened.
-- Required implemented checks pass, no known deterministic failure is overridden,
-  and applicable format/lint/build and architecture checks hold.
-
-An unmet condition keeps the iteration open. Missing inputs, unsupported checking
-semantics or unrun required checks have explicit evidence status, not a successful
-skip. An effective iteration is a review decision with a stated scope, not proof
-for all programs or a machine behavioral PASS. The executed behavioral-regression
-criteria below remain separate; contributors MUST NOT promote a written judgment
-to an execution result. Reviews go in each fixture's `review.md`; provenance,
-independent scenarios, challenge relationships and actual execution records stay
-in its README. Record original and candidate revisions and distinguish LLM,
-structural and actually executed behavioral evidence.
+Put written reasoning in the fixture's `review.md`. Record provenance,
+independent scenarios, revision and assembly details, and executed results in
+its README. Identify written judgments, structural observations, and executed
+behavioral checks separately. Record missing inputs and unsupported or unrun
+checks with their actual status.
 
 ## Acceptance and regression
 
-Each scenario receives one of four check outcomes. These are regression-report
-terms, not new production failure kinds.
+Select implemented behavioral checks by impact on the changed producers,
+consumers, and invariants. Include affected admitted cases even when their
+files are unchanged. Run the entire admitted set when a shared change can
+affect it broadly, when its impact cannot be bounded, or when changing the
+behavioral checker. For checker changes, rerun its negative examples as well.
+For changes limited to CLI routing, GUI behavior, or documentation, choose
+focused checks of that surface. Report the cases and paths the checks exercised.
+
+A new behavioral regression case qualifies when the same scenarios expose the
+defect on the baseline and pass on the candidate. Show that the checker detects
+a relevant incorrect alternative, such as a changed branch target or reordered
+effects. Preserve admitted cases and their independent expectations. Review
+genuinely conflicting or incorrect expectations against the original input and
+record the evidence before changing them.
 
 | Outcome | Meaning |
 |---|---|
-| `PASS` | The completed observation matches its independent result and required ordered effects. |
-| `FAIL` | An observed result or effect contradicts an expectation; report expected and actual behavior and the first divergence. |
-| `UNCHECKED` | The interpreter lacks required semantics, facts are unavailable, or the observation did not complete. |
-| `SETUP_ERROR` | Input preparation, selection, build or check infrastructure prevented evaluation. |
+| `PASS` | The completed observation matches the independent result and required ordered effects. |
+| `FAIL` | The observation contradicts an expectation. Report the expected result and first divergence. |
+| `UNCHECKED` | The checker lacks required semantics or facts, or the observation did not complete. |
+| `SETUP_ERROR` | Input preparation, selection, build, or infrastructure prevented evaluation. |
 
-A new behavioral regression case qualifies only when the same scenarios expose
-the original behavioral defect before the repair and pass after it. The checker qualification also requires a
-negative example that deletes or retargets the relevant branch, or changes the
-required effect order, to be detected. A checker that merely accepts the intended
-patch has not established this sensitivity.
-
-After admission with its repair, a case remains in the required regression set.
-Open, still-failing discoveries remain separate backlog items. Contributors MUST
-run the entire admitted fixture set for integration, not only cases selected by
-changed filenames or text differences. Local development MAY run a focused subset,
-but its report MUST identify that subset and cannot authorize integration.
-
-Acceptance for executed behavioral regression: the qualified behavioral repair
-case, its admitted complexity challenges and every required scenario in the
-admitted set return `PASS`, checker coverage has not decreased, and the discovery
-symptom is resolved. The primary iteration decision and applicable repository
-checks are additional requirements.
-`FAIL`, `UNCHECKED`, `SETUP_ERROR`, an empty run or a missing required case prevents
-regression acceptance. Aggregate percentages MUST NOT hide any such result.
-
-A candidate that repairs A while breaking B is rejected; so is one that repairs B
-while breaking A. The repair must satisfy their combined requirements. Authors
-MUST NOT delete, skip, rename out of selection or weaken a case to obtain green.
-If expectations genuinely conflict, record the conflict and independent evidence
-for review instead of alternating accepted regressions. Correcting a faulty
-expectation is an explicit reviewed specification change, not a baseline refresh.
-
-When changing the executor, contributors MUST rerun its known negative examples
-and the admitted set. Interpreter changes MUST NOT reset expectations or conceal
-previously reported gaps. Reports identify the candidate revision, fixture
-revision, checker revision, actual assembly environment, exercised scenarios and
-outcomes; use original identities, not unstable local names or table indexes.
+For executed behavioral acceptance, the original repair scenario, its admitted
+complexity challenges, and all required affected scenarios must pass without
+reduced checker coverage. A failed required check blocks acceptance. A missing,
+empty, or incomplete run leaves acceptance unverified. Preserve failures and
+identify the scope of any focused run.
 
 ## Cost and evidence boundaries
 
-Every iteration includes the complexity challenge and LLM semantic review.
-Implemented deterministic checks run independently of the LLM, including the
-entire admitted behavioral set for integration. Existing fixtures supply the main
-discovery loop; authorized real inputs supply additional discovery and targeted
-confirmation. Routine regression does not require a full APK corpus rerun.
-Broader corpus runs remain useful for behavior not yet represented by fixtures.
-Contributors MUST report that coverage limit rather than infer whole-program
-correctness from the reviewed set.
-
-LLM judgments are primary semantic-review evidence, not substitutes for executed
-checks. Other decompilers assist investigation; neither their output nor an LLM judgment
-can override a failed deterministic case. Output diffs are diagnostic aids, not the acceptance
-standard and not a reason to replace fixed behavioral expectations.
+Keep independent replay and correspondence checks test-only. Use ordinary
+production entry points to obtain the products under test. Routine regression
+uses focused fixtures and, when needed, authorized representative inputs.
+Corpus coverage and written semantic review provide distinct evidence. Keep
+unresolved behavior explicit and report failures from deterministic checks
+even when the reviewed paths otherwise agree with expectations.

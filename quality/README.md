@@ -50,11 +50,10 @@ JDK, Android SDK, assembler or network. The generated-output exception covers
 
 ## Workflow
 
-The primary improvement loop is [EVOLUTION](../docs/diana/EVOLUTION.md#primary-iteration):
-discover a fixture problem, repair its general cause, author new more-complex
-same-mechanism fixtures, then review the challenge and preserve earlier effects.
-A successful review of only the discovery case does not finish an iteration.
-The commands and review steps below supply evidence for that loop.
+For substantive changes to decompilation semantics or recovery, follow
+[EVOLUTION](../docs/diana/EVOLUTION.md#primary-iteration). Use the commands and
+review steps below to gather evidence for the discovery case, its complexity
+challenge, and affected prior cases.
 
 ```sh
 quality/build.sh                       # after editing assembly/compile inputs
@@ -95,11 +94,9 @@ behavior. Do not invent a Java reference to make the syntax resemble the output.
    A missing or partially reviewed path remains uncertain. Record concrete
    readability and naming findings as prose, not percentages or aggregate ratings.
    Reproduction scenarios and executed check evidence stay in the fixture's README.
-4. After a repair, complete EVOLUTION's new complexity challenge and original/prior
-   effect review, rather than only re-dumping the seed. The **current verdict is
-   rewritten in place** while `## Rounds` gains one line. The file stays bounded:
-   it always opens with what is true now, and older rounds remain readable in
-   `git log -p`.
+4. After a substantive recovery repair, review the complexity challenge and
+   affected prior cases under EVOLUTION. Update the current verdict in place and
+   add one line to `## Rounds`. Use `git log -p` to read earlier rounds.
 
 A fixture review records the LLM's semantic judgment and its evidence separately
 from readability. It supports EVOLUTION's primary iteration decision, but is not

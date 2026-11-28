@@ -3,10 +3,10 @@
 A fixture is a focused, independently authored input for discovery, reproduction,
 regression or a complexity challenge. Java explains the intended behavior; Smali
 fixes the DEX instruction structure. A reduction isolates an observed cause; a
-challenge retains it while adding interacting mechanisms. The primary
-[evolution workflow](EVOLUTION.md#primary-iteration) requires new complexity
-challenges after repair and owns iteration and behavioral-regression decisions. Fixture preparation follows the root
-[permission](../../AGENTS.md) and [testing policy](CONTRIBUTING.md#testing-policy).
+challenge retains it while adding interacting mechanisms. The
+[evolution workflow](EVOLUTION.md#primary-iteration) specifies when to add
+complexity challenges and how to verify substantive recovery changes. Use the
+[testing policy](CONTRIBUTING.md#testing-policy) to select checks.
 
 ## Files and ownership
 
@@ -159,3 +159,5 @@ they do not replace semantic reading. A written judgment is not a claim that
 behavioral execution passed and does not override a failing test. The detailed
 [quality review workflow](../../quality/README.md#workflow) keeps semantic
 agreement, concrete mismatches, uncertainty and readability findings distinct.
+Describe these findings directly and omit numeric ratings of structure, naming
+or token similarity.
