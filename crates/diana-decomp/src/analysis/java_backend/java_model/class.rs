@@ -229,6 +229,7 @@ impl JavaFieldDeclaration {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct JavaClassDeclaration {
     pub annotations: Vec<AnnotationNode>,
+    pub annotation_default_issue: Option<Box<str>>,
     pub package: Option<JavaClassName>,
     pub modifiers: Vec<JavaModifier>,
     pub kind: JavaClassKind,
@@ -251,6 +252,7 @@ impl JavaClassDeclaration {
     pub fn new(name: JavaIdentifier) -> Self {
         Self {
             annotations: Vec::new(),
+            annotation_default_issue: None,
             package: None,
             modifiers: Vec::new(),
             kind: JavaClassKind::Class,
@@ -298,6 +300,7 @@ impl JavaClassDeclaration {
             decl.signature = Some(crate::ir::generic_types::GenericSignatures::class(sig)?);
         }
         decl.annotations = class.annotations.clone();
+        decl.annotation_default_issue = class.annotation_default_issue.clone();
         Ok(decl)
     }
 

@@ -18,6 +18,7 @@ pub(super) enum Owner<'a> {
     Method {
         member: Member<'a>,
         parameters: usize,
+        default_return_type: Option<&'a ArgType>,
     },
 }
 
@@ -25,6 +26,7 @@ pub(super) enum Owner<'a> {
 pub(super) struct SourceAnnotations {
     pub declaration: Vec<AnnotationNode>,
     pub parameters: Vec<Vec<AnnotationNode>>,
+    pub default: Option<Box<DexValue>>,
 }
 
 impl<'a> Owner<'a> {
@@ -73,8 +75,32 @@ pub(super) fn read(
     for error in facts.issues {
         owner.issue(issues, error.into());
     }
-    for value in facts.defaults {
-        owner.unsupported(issues, value.offset, "annotation default");
+    if let Some(default) = facts
+        .source_default
+        .and_then(|index| facts.defaults.into_iter().nth(index))
+    {
+        let return_type = match &owner {
+            Owner::Method {
+                default_return_type,
+                ..
+            } => *default_return_type,
+            _ => None,
+        };
+        let offset = default.offset;
+        let issue_count = issues.len();
+        if let Some(ty) = return_type {
+            let value = convert_value(default, &mut |error| owner.issue(issues, error));
+            if issues.len() == issue_count {
+                output.default = value
+                    .filter(|value| value.matches_annotation_default(ty))
+                    .map(Box::new);
+            }
+        }
+        if output.default.is_none() && issues.len() == issue_count {
+            owner.issue(issues, malformed(format!(
+                "annotation default at JVM class-file byte {offset} does not match its annotation element"
+            )));
+        }
     }
     for entry in facts.annotations {
         let slot = match entry.target {

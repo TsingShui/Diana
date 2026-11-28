@@ -127,6 +127,9 @@ impl JavaMethodTypeUses {
 
     fn collect_into(method: &super::java_model::JavaMethodModel, types: &mut DeclaredTypeUses) {
         AnnotationTypeUses::collect(&method.declaration.annotations, types);
+        if let Some(value) = &method.declaration.annotation_default {
+            DexValueTypeUses::collect(value, types);
+        }
         if method.declaration.override_semantics.is_some() {
             types.insert(&ArgType::object("java/lang/Override"));
         }

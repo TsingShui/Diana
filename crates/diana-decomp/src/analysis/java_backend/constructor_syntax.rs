@@ -767,6 +767,8 @@ impl ConstructorSyntaxRecovery {
         };
         let helper = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Private],
             compiler_generated: true,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -783,6 +785,8 @@ impl ConstructorSyntaxRecovery {
         factory_statements.push(JavaStmt::Return(Some(JavaExpr::Name((*name).clone()))));
         let factory = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Private, JavaModifier::Static],
             compiler_generated: true,
             kind: JavaMethodDeclarationKind::Method,
@@ -1046,6 +1050,8 @@ impl ConstructorSyntaxRecovery {
         };
         let helper = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Private],
             compiler_generated: true,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -1105,6 +1111,8 @@ impl ConstructorSyntaxRecovery {
         })));
         let factory = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Private, JavaModifier::Static],
             compiler_generated: true,
             kind: JavaMethodDeclarationKind::Method,
@@ -1141,6 +1149,8 @@ impl ConstructorSyntaxRecovery {
             .collect::<Vec<_>>();
         let carrier_constructor = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Private],
             compiler_generated: true,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -1187,6 +1197,8 @@ impl ConstructorSyntaxRecovery {
             let cast_value = JavaIdentifier::from_dex("value");
             carrier_methods.push(JavaMethodDeclaration {
                 annotations: Vec::new(),
+                annotation_default: None,
+                annotation_default_issue: None,
                 modifiers: vec![JavaModifier::Private],
                 // Synthetic-member liveness is scoped to the nested carrier and cannot see
                 // the enclosing helper constructor's call to this method.
@@ -1215,6 +1227,7 @@ impl ConstructorSyntaxRecovery {
         }
         let carrier = JavaTypeDeclaration {
             annotations: Vec::new(),
+            annotation_default_issue: None,
             modifiers: vec![
                 JavaModifier::Private,
                 JavaModifier::Static,
@@ -2196,6 +2209,8 @@ impl ConstructorSyntaxRecovery {
         factory_statements.push(JavaStmt::Return(Some(return_value.clone())));
         let factory = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Private, JavaModifier::Static],
             compiler_generated: true,
             kind: JavaMethodDeclarationKind::Method,
@@ -2321,6 +2336,8 @@ impl ConstructorSyntaxRecovery {
         factory_statements.push(JavaStmt::Return(Some(JavaExpr::Name((*candidate).clone()))));
         let factory = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Private, JavaModifier::Static],
             compiler_generated: true,
             kind: JavaMethodDeclarationKind::Method,
@@ -2539,6 +2556,8 @@ impl ConstructorSyntaxRecovery {
         helper_statements.extend_from_slice(trailing);
         let helper = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Private],
             compiler_generated: true,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -2556,6 +2575,8 @@ impl ConstructorSyntaxRecovery {
         factory_statements.push(JavaStmt::Return(Some(JavaExpr::Name(name.clone()))));
         let factory = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Private, JavaModifier::Static],
             compiler_generated: true,
             kind: JavaMethodDeclarationKind::Method,
@@ -2715,6 +2736,8 @@ impl ConstructorSyntaxRecovery {
         };
         let helper = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Private],
             compiler_generated: true,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -2731,6 +2754,8 @@ impl ConstructorSyntaxRecovery {
         factory_statements.push(JavaStmt::Return(Some(JavaExpr::Name(name.clone()))));
         let factory = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Private, JavaModifier::Static],
             compiler_generated: true,
             kind: JavaMethodDeclarationKind::Method,
@@ -2848,6 +2873,8 @@ impl ConstructorSyntaxRecovery {
         };
         let helper = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Private],
             compiler_generated: true,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -4360,6 +4387,7 @@ mod tests {
         let map_type = JavaType::source_class("java.util.Map");
         let mut declaration = JavaTypeDeclaration {
             annotations: Vec::new(),
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             kind: JavaTypeDeclarationKind::Class,
             name: class_name.clone(),
@@ -4376,6 +4404,8 @@ mod tests {
             }],
             methods: vec![JavaMethodDeclaration {
                 annotations: Vec::new(),
+                annotation_default: None,
+                annotation_default_issue: None,
                 modifiers: vec![JavaModifier::Public],
                 compiler_generated: false,
                 kind: JavaMethodDeclarationKind::Constructor,
@@ -4505,6 +4535,8 @@ mod tests {
         let field_type = JavaType::source_class("com.example.Value");
         let constructor = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -4645,6 +4677,7 @@ mod tests {
         let default_value = JavaIdentifier::from_dex("defaultValue");
         let mut declaration = JavaTypeDeclaration {
             annotations: Vec::new(),
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             kind: JavaTypeDeclarationKind::Class,
             name: class_name.clone(),
@@ -4655,6 +4688,8 @@ mod tests {
             fields: Vec::new(),
             methods: vec![JavaMethodDeclaration {
                 annotations: Vec::new(),
+                annotation_default: None,
+                annotation_default_issue: None,
                 modifiers: vec![JavaModifier::Public],
                 compiler_generated: false,
                 kind: JavaMethodDeclarationKind::Constructor,
@@ -4811,6 +4846,7 @@ mod tests {
         let context_type = JavaType::source_class("android.content.Context");
         let mut declaration = JavaTypeDeclaration {
             annotations: Vec::new(),
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             kind: JavaTypeDeclarationKind::Class,
             name: class_name.clone(),
@@ -4827,6 +4863,8 @@ mod tests {
             }],
             methods: vec![JavaMethodDeclaration {
                 annotations: Vec::new(),
+                annotation_default: None,
+                annotation_default_issue: None,
                 modifiers: vec![JavaModifier::Public],
                 compiler_generated: false,
                 kind: JavaMethodDeclarationKind::Constructor,
@@ -5086,6 +5124,7 @@ mod tests {
         };
         let mut declaration = JavaTypeDeclaration {
             annotations: Vec::new(),
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             kind: JavaTypeDeclarationKind::Class,
             name: class_name.clone(),
@@ -5096,6 +5135,8 @@ mod tests {
             fields: Vec::new(),
             methods: vec![JavaMethodDeclaration {
                 annotations: Vec::new(),
+                annotation_default: None,
+                annotation_default_issue: None,
                 modifiers: vec![JavaModifier::Public],
                 compiler_generated: false,
                 kind: JavaMethodDeclarationKind::Constructor,
@@ -5173,6 +5214,8 @@ mod tests {
         let long_type = JavaType::source_class("java.lang.Long");
         let constructor = |parameters, statements| JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -5187,6 +5230,7 @@ mod tests {
         };
         let mut declaration = JavaTypeDeclaration {
             annotations: Vec::new(),
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             kind: JavaTypeDeclarationKind::Class,
             name: class_name.clone(),
@@ -5276,6 +5320,7 @@ mod tests {
         let config_type = JavaType::source_class("example.Config");
         let mut declaration = JavaTypeDeclaration {
             annotations: Vec::new(),
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             kind: JavaTypeDeclarationKind::Class,
             name: class_name.clone(),
@@ -5286,6 +5331,8 @@ mod tests {
             fields: Vec::new(),
             methods: vec![JavaMethodDeclaration {
                 annotations: Vec::new(),
+                annotation_default: None,
+                annotation_default_issue: None,
                 modifiers: vec![JavaModifier::Public],
                 compiler_generated: false,
                 kind: JavaMethodDeclarationKind::Constructor,
@@ -5418,6 +5465,7 @@ mod tests {
         });
         let mut declaration = JavaTypeDeclaration {
             annotations: Vec::new(),
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             kind: JavaTypeDeclarationKind::Class,
             name: class_name.clone(),
@@ -5431,6 +5479,8 @@ mod tests {
             fields: Vec::new(),
             methods: vec![JavaMethodDeclaration {
                 annotations: Vec::new(),
+                annotation_default: None,
+                annotation_default_issue: None,
                 modifiers: vec![JavaModifier::Public],
                 compiler_generated: false,
                 kind: JavaMethodDeclarationKind::Constructor,
@@ -5534,6 +5584,8 @@ mod tests {
     fn post_super_factory_rejects_out_of_scope_type_variables() {
         let constructor = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: Vec::new(),
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -5576,6 +5628,7 @@ mod tests {
         };
         let mut declaration = JavaTypeDeclaration {
             annotations: Vec::new(),
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             kind: JavaTypeDeclarationKind::Class,
             name: class_name.clone(),
@@ -5586,6 +5639,8 @@ mod tests {
             fields: Vec::new(),
             methods: vec![JavaMethodDeclaration {
                 annotations: Vec::new(),
+                annotation_default: None,
+                annotation_default_issue: None,
                 modifiers: vec![JavaModifier::Public],
                 compiler_generated: false,
                 kind: JavaMethodDeclarationKind::Constructor,
@@ -5680,6 +5735,8 @@ mod tests {
         let provider = JavaIdentifier::from_dex("provider");
         let constructor = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -5805,6 +5862,8 @@ mod tests {
         };
         let constructor = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -5892,6 +5951,8 @@ mod tests {
         let prepared_type = JavaType::source_class("example.Prepared");
         let mut constructor = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -6037,6 +6098,8 @@ mod tests {
         let carried_type = JavaType::source_class("example.Carried");
         let constructor = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -6099,6 +6162,7 @@ mod tests {
         let string_type = JavaType::source_class("java.lang.String");
         let mut declaration = JavaTypeDeclaration {
             annotations: Vec::new(),
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             kind: JavaTypeDeclarationKind::Class,
             name: class_name.clone(),
@@ -6109,6 +6173,8 @@ mod tests {
             fields: Vec::new(),
             methods: vec![JavaMethodDeclaration {
                 annotations: Vec::new(),
+                annotation_default: None,
+                annotation_default_issue: None,
                 modifiers: vec![JavaModifier::Public],
                 compiler_generated: true,
                 kind: JavaMethodDeclarationKind::Constructor,
@@ -6530,6 +6596,8 @@ mod tests {
         };
         let constructor = |parameters, statements| JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Private],
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -6544,6 +6612,7 @@ mod tests {
         };
         let mut declaration = JavaTypeDeclaration {
             annotations: Vec::new(),
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             kind: JavaTypeDeclarationKind::Class,
             name: class_name.clone(),
@@ -6640,6 +6709,8 @@ mod tests {
         };
         let constructor = |parameters, statements| JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -6681,6 +6752,7 @@ mod tests {
         );
         let mut declaration = JavaTypeDeclaration {
             annotations: Vec::new(),
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             kind: JavaTypeDeclarationKind::Class,
             name: class_name,
@@ -6739,6 +6811,8 @@ mod tests {
         };
         let constructor = |parameters, statements| JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -6793,6 +6867,7 @@ mod tests {
         );
         let mut declaration = JavaTypeDeclaration {
             annotations: Vec::new(),
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             kind: JavaTypeDeclarationKind::Class,
             name: class_name,
@@ -6838,6 +6913,8 @@ mod tests {
         let class_name = JavaIdentifier::from_dex("LocaleList");
         let constructor = |ty, varargs| JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -6860,6 +6937,7 @@ mod tests {
         let locale_array = JavaType::array(JavaType::source_class("example.Locale"));
         let declaration = JavaTypeDeclaration {
             annotations: Vec::new(),
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             kind: JavaTypeDeclarationKind::Class,
             name: class_name.clone(),
@@ -6935,6 +7013,8 @@ mod tests {
         };
         let constructor = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: Vec::new(),
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -6970,6 +7050,8 @@ mod tests {
         };
         let constructor = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: Vec::new(),
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -7020,6 +7102,8 @@ mod tests {
         let encoding_type = JavaType::source_class("example.Encoding");
         let constructor = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -7088,6 +7172,8 @@ mod tests {
         let mask = JavaIdentifier::from_dex("mask");
         let target = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -7107,6 +7193,8 @@ mod tests {
         };
         let defaults = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -7156,6 +7244,7 @@ mod tests {
         };
         let mut declaration = JavaTypeDeclaration {
             annotations: Vec::new(),
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             kind: JavaTypeDeclarationKind::Class,
             name: class_name,
@@ -7198,6 +7287,8 @@ mod tests {
         let static_lock = JavaExpr::ClassLiteral(JavaType::source_class("com.example.Locks"));
         let constructor = |lock| JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -7321,6 +7412,8 @@ mod tests {
         };
         let constructor = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -7405,6 +7498,8 @@ mod tests {
         let string_type = JavaType::source_class("java.lang.String");
         let constructor = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -7509,6 +7604,8 @@ mod tests {
         };
         let constructor = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -7571,6 +7668,8 @@ mod tests {
         let string_type = JavaType::source_class("java.lang.String");
         let constructor = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -7647,6 +7746,8 @@ mod tests {
         let set_type = JavaType::source_class("java.util.Set");
         let constructor = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -7706,6 +7807,8 @@ mod tests {
         let create = JavaIdentifier::from_dex("create");
         let constructor = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -7750,6 +7853,8 @@ mod tests {
         let string_type = JavaType::source_class("String");
         let constructor = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -7799,6 +7904,8 @@ mod tests {
         let manager_type = JavaType::source_class("example.Manager");
         let constructor = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -7948,6 +8055,8 @@ mod tests {
         };
         let constructor = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -8025,6 +8134,8 @@ mod tests {
         let list_type = JavaType::source_class("java.util.List");
         let constructor = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -8129,6 +8240,8 @@ mod tests {
         let string_type = JavaType::source_class("java.lang.String");
         let target_constructor = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -8156,6 +8269,8 @@ mod tests {
         };
         let parsing_constructor = JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             compiler_generated: false,
             kind: JavaMethodDeclarationKind::Constructor,
@@ -8216,6 +8331,7 @@ mod tests {
         };
         let mut declaration = JavaTypeDeclaration {
             annotations: Vec::new(),
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             kind: JavaTypeDeclarationKind::Class,
             name: class_name,

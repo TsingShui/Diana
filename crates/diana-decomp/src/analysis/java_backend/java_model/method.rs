@@ -1,4 +1,4 @@
-use crate::frontend::{AccessInfo, AnnotationNode, ClassNode, MethodNode};
+use crate::frontend::{AccessInfo, AnnotationNode, ClassNode, DexValue, MethodNode};
 use crate::ir::{ty::ArgType, CFG};
 use crate::language::java::{
     AggregateInitializer, DefiniteAssignment, JavaAstNormalizer, JavaAstTransform, JavaIdentifier,
@@ -403,6 +403,8 @@ pub(in crate::analysis::java_backend) struct MethodBodyOptions {
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::analysis::java_backend) struct JavaMethodDeclaration {
     pub annotations: Vec<AnnotationNode>,
+    pub annotation_default: Option<Box<DexValue>>,
+    pub annotation_default_issue: Option<Box<str>>,
     pub override_semantics: Option<crate::frontend::MethodOverrideSemantics>,
     pub is_interface_default: bool,
     pub modifiers: Vec<JavaModifier>,
@@ -438,6 +440,8 @@ impl JavaMethodDeclaration {
         let param_names = extract_param_debug_names(cfg);
         Self {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             override_semantics: None,
             is_interface_default: false,
             modifiers: if cfg.method().is_static() {
@@ -609,6 +613,8 @@ impl JavaMethodDeclaration {
         let source_parameter_types = vec![None; parameters.len()];
         Self {
             annotations: method.annotations.clone(),
+            annotation_default: method.annotation_default.clone(),
+            annotation_default_issue: method.annotation_default_issue.clone(),
             override_semantics: method.override_semantics.clone(),
             is_interface_default: class.is_interface()
                 && !method.access_flags.is_abstract()

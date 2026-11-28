@@ -889,6 +889,7 @@ impl<'a> JavaTypeLowering<'a> {
         }
         let mut declaration = JavaTypeDeclaration {
             annotations: self.constants.annotations(&class.declaration.annotations)?,
+            annotation_default_issue: class.declaration.annotation_default_issue.clone(),
             modifiers,
             kind: type_kind(class.declaration.kind),
             name: class.declaration.name.clone(),
@@ -1432,8 +1433,45 @@ impl<'a> JavaTypeLowering<'a> {
                 }
             }
         }
+        let mut annotation_default_issue = declaration.annotation_default_issue.clone();
+        let annotation_default =
+            declaration.annotation_default.as_ref().and_then(|value| {
+                match self.constants.annotation_value(value) {
+                    Ok(value) => Some(Box::new(value)),
+                    Err(error) => {
+                        annotation_default_issue.get_or_insert_with(|| {
+                            format!("Annotation default could not be rendered: {error}")
+                                .into_boxed_str()
+                        });
+                        None
+                    }
+                }
+            });
+        if let (Some(owner), Some(issue)) = (owner, &annotation_default_issue) {
+            let descriptor = crate::ir::MethodDescriptor {
+                parameters: declaration
+                    .parameters
+                    .iter()
+                    .map(|p| p.ty.clone())
+                    .collect(),
+                return_type: declaration.return_type.clone().unwrap_or(ArgType::VOID),
+            };
+            let name = match declaration.kind {
+                MethodModelKind::Constructor => "<init>",
+                MethodModelKind::ClassInitializer => "<clinit>",
+                MethodModelKind::Method => declaration.name.original_name(),
+            };
+            MethodRecoveryFailure::new(MethodRecoveryStage::Metadata, issue).observe(
+                self.observer.as_ref(),
+                &owner.to_descriptor(),
+                name,
+                &descriptor.to_string(),
+            );
+        }
         Ok(JavaMethodDeclaration {
             annotations,
+            annotation_default,
+            annotation_default_issue,
             modifiers: declaration.modifiers.clone(),
             compiler_generated: declaration.access_flags.is_synthetic(),
             kind: method_kind(declaration.kind),
@@ -2004,6 +2042,7 @@ mod tests {
     fn annotation_header_omits_jvm_generics_and_marker_interface() {
         let mut declaration = JavaTypeDeclaration {
             annotations: Vec::new(),
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             kind: JavaTypeDeclarationKind::Annotation,
             name: JavaIdentifier::from_dex("RunInScope"),

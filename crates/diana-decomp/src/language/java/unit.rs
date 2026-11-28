@@ -87,6 +87,7 @@ pub struct JavaCompilationUnit {
 #[derive(Debug, Clone, PartialEq)]
 pub struct JavaTypeDeclaration {
     pub annotations: Vec<JavaAnnotation>,
+    pub annotation_default_issue: Option<Box<str>>,
     pub modifiers: Vec<JavaModifier>,
     pub kind: JavaTypeDeclarationKind,
     pub name: JavaIdentifier,
@@ -152,6 +153,8 @@ pub struct JavaMethodParameter {
 #[derive(Debug, Clone, PartialEq)]
 pub struct JavaMethodDeclaration {
     pub annotations: Vec<JavaAnnotation>,
+    pub annotation_default: Option<Box<JavaAnnotationValue>>,
+    pub annotation_default_issue: Option<Box<str>>,
     pub modifiers: Vec<JavaModifier>,
     pub compiler_generated: bool,
     pub kind: JavaMethodDeclarationKind,

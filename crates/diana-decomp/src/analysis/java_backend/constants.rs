@@ -152,7 +152,10 @@ impl<'a> JavaConstantLowering<'a> {
         })
     }
 
-    fn annotation_value(&self, value: &DexValue) -> Result<JavaAnnotationValue, JavaConstantError> {
+    pub(super) fn annotation_value(
+        &self,
+        value: &DexValue,
+    ) -> Result<JavaAnnotationValue, JavaConstantError> {
         Ok(match value {
             DexValue::Null => {
                 return Err(JavaConstantError::InvalidAnnotationValue("null"));

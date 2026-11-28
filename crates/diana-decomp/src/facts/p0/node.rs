@@ -8,11 +8,14 @@ use crate::frontend::{
     MethodNode,
 };
 use crate::input::annotation_facts::{
-    AnnotationRecord, AnnotationToken, AnnotationValueKind, OriginalAnnotations,
+    AnnotationExtent, AnnotationRecord, AnnotationToken, AnnotationValueKind, OriginalAnnotations,
 };
 use crate::input::value_facts::{ValueDeclaration, ValueMember, ValuePrototype, ValueReference};
 use crate::ir::{ArgType, FieldReference, MethodDescriptor, MethodReference, Utf16String};
 use crate::p0::{ClassFacts, Fact, ScalarValue};
+use crate::{AnnotationLocation, AnnotationValue, ByteOffset, TypeId};
+
+const ANNOTATION_DEFAULT: &str = "Ldalvik/annotation/AnnotationDefault;";
 
 /// Original directory ordinals omitted by the frontend declaration representation.
 #[derive(Clone)]
@@ -123,6 +126,7 @@ fn apply_annotations(node: &mut ClassNode, facts: &ClassFacts) {
     if original.records().is_empty() {
         return;
     }
+    let mut default_records = Vec::new();
     let mut class_annotations = Vec::new();
     let mut method_annotations: BTreeMap<u32, Vec<AnnotationNode>> = BTreeMap::new();
     let mut field_annotations: BTreeMap<u32, Vec<AnnotationNode>> = BTreeMap::new();
@@ -130,18 +134,27 @@ fn apply_annotations(node: &mut ClassNode, facts: &ClassFacts) {
         BTreeMap::new();
 
     for record in original.records() {
+        if record
+            .descriptor()
+            .iter()
+            .copied()
+            .eq(ANNOTATION_DEFAULT.encode_utf16())
+        {
+            default_records.push(record);
+            continue;
+        }
         let Some(annotation) = annotation(record, original) else {
             continue;
         };
         match record.location() {
-            crate::AnnotationLocation::Class => class_annotations.push(annotation),
-            crate::AnnotationLocation::Field(id) => {
+            AnnotationLocation::Class => class_annotations.push(annotation),
+            AnnotationLocation::Field(id) => {
                 field_annotations.entry(id.0).or_default().push(annotation)
             }
-            crate::AnnotationLocation::Method(id) => {
+            AnnotationLocation::Method(id) => {
                 method_annotations.entry(id.0).or_default().push(annotation)
             }
-            crate::AnnotationLocation::Parameter { method, parameter } => {
+            AnnotationLocation::Parameter { method, parameter } => {
                 parameter_annotations
                     .entry(method.0)
                     .or_default()
@@ -191,6 +204,207 @@ fn apply_annotations(node: &mut ClassNode, facts: &ClassFacts) {
             field.annotations = annotations;
         }
     }
+    node.annotation_default_issue = apply_annotation_defaults(
+        node,
+        facts.type_index(),
+        &default_records,
+        original.references(),
+    );
+}
+
+fn apply_annotation_defaults(
+    node: &mut ClassNode,
+    owner: TypeId,
+    records: &[&AnnotationRecord],
+    references: &[ValueReference],
+) -> Option<Box<str>> {
+    let mut class_records = records
+        .iter()
+        .copied()
+        .filter(|record| record.location() == AnnotationLocation::Class);
+    let mut class_issue = match (class_records.next(), class_records.next()) {
+        (Some(_), Some(duplicate)) => Some(default_issue(
+            duplicate.range().start,
+            "appears more than once on the class",
+        )),
+        (Some(record), None) => apply_class_annotation_default(node, owner, record, references),
+        (None, _) => None,
+    };
+
+    let mut misplaced_methods = BTreeMap::new();
+    for record in records {
+        match record.location() {
+            AnnotationLocation::Class => continue,
+            AnnotationLocation::Method(method) | AnnotationLocation::Parameter { method, .. } => {
+                misplaced_methods
+                    .entry(method.0)
+                    .or_insert(record.range().start);
+            }
+            AnnotationLocation::Field(_) => {
+                class_issue.get_or_insert_with(|| {
+                    default_issue(record.range().start, "appears on a field")
+                });
+            }
+        }
+    }
+    if !misplaced_methods.is_empty() {
+        for method in node.methods_mut() {
+            if let Some(offset) = misplaced_methods.remove(&method.id) {
+                method.annotation_default_issue.get_or_insert_with(|| {
+                    default_issue(offset, "appears on a method or parameter")
+                });
+            }
+        }
+        if let Some(offset) = misplaced_methods.into_values().next() {
+            class_issue.get_or_insert_with(|| {
+                default_issue(offset, "appears on an unavailable method or parameter")
+            });
+        }
+    }
+    class_issue
+}
+
+fn apply_class_annotation_default(
+    node: &mut ClassNode,
+    owner: TypeId,
+    record: &AnnotationRecord,
+    references: &[ValueReference],
+) -> Option<Box<str>> {
+    let malformed_envelope = || {
+        Some(default_issue(
+            record.range().start,
+            "does not contain a single value annotation for the declaring type",
+        ))
+    };
+    if record.visibility() != 2 || !node.is_annotation() || !node.is_interface() {
+        return Some(default_issue(
+            record.range().start,
+            "requires system visibility on an annotation interface",
+        ));
+    }
+    let tokens = record.tokens();
+    let Some(AnnotationToken::Value(wrapper)) = tokens.first() else {
+        return malformed_envelope();
+    };
+    let AnnotationValueKind::Annotation { type_id, .. } = wrapper.kind() else {
+        return malformed_envelope();
+    };
+    if *type_id != owner
+        || !wrapper
+            .name()
+            .is_some_and(|name| name.iter().copied().eq("value".encode_utf16()))
+    {
+        return malformed_envelope();
+    }
+    let mut elements = match (
+        annotation_value_token_count(tokens, wrapper),
+        record.extent(),
+    ) {
+        (Some(end), AnnotationExtent::Complete) if end == tokens.len() => &tokens[1..end - 1],
+        (None, AnnotationExtent::Prefix) => &tokens[1..],
+        _ => return malformed_envelope(),
+    };
+
+    let mut method_positions = BTreeMap::new();
+    for (index, method) in node.methods().iter().enumerate() {
+        if method.can_have_annotation_default() {
+            method_positions
+                .entry(method.name().to_owned())
+                .and_modify(|position| *position = None)
+                .or_insert(Some(index));
+        }
+    }
+
+    let mut class_issue = None;
+    while let Some(AnnotationToken::Value(element)) = elements.first() {
+        // Each complete child is a separate declaration fact. A bad value must
+        // not stop lookup of its siblings or consume another element's tokens.
+        let end = annotation_value_token_count(elements, element);
+        let offset = element.range().start;
+        let name = element
+            .name()
+            .and_then(|name| String::from_utf16(name).ok());
+        let position = name
+            .as_ref()
+            .and_then(|name| method_positions.get(name).copied().flatten());
+        if let Some(position) = position {
+            let method = &mut node.methods_mut()[position];
+            if method.annotation_default.is_some() || method.annotation_default_issue.is_some() {
+                method.annotation_default = None;
+                method.annotation_default_issue =
+                    Some(default_issue(offset, "repeats the annotation element name"));
+            } else {
+                let value = end.and_then(|end| {
+                    let mut cursor = 1;
+                    let value =
+                        annotation_value(&elements[..end], &mut cursor, element, references, 0)?;
+                    (cursor == end && value.matches_annotation_default(method.return_type()))
+                        .then_some(value)
+                });
+                match (end, value) {
+                    (_, Some(value)) => method.annotation_default = Some(Box::new(value)),
+                    (None, None) => {
+                        method.annotation_default_issue =
+                            Some(default_issue(offset, "value is incomplete"));
+                    }
+                    (Some(_), None) => {
+                        method.annotation_default_issue = Some(default_issue(
+                            offset,
+                            "value is invalid for the annotation element's return type",
+                        ));
+                    }
+                }
+            }
+        } else {
+            class_issue.get_or_insert_with(|| {
+                default_issue(offset, "element has no unique matching annotation method")
+            });
+        }
+        let Some(end) = end else { break };
+        elements = &elements[end..];
+    }
+    if record.extent() == AnnotationExtent::Prefix && elements.is_empty() {
+        class_issue.get_or_insert_with(|| {
+            default_issue(
+                record.range().end,
+                "is incomplete after its last checked element",
+            )
+        });
+    }
+    class_issue
+}
+
+fn default_issue(offset: ByteOffset, reason: &str) -> Box<str> {
+    format!("DEX annotation default {reason} at byte {}", offset.0).into_boxed_str()
+}
+
+fn annotation_value_token_count(
+    tokens: &[AnnotationToken],
+    value: &AnnotationValue,
+) -> Option<usize> {
+    let is_container = |value: &AnnotationValue| {
+        matches!(
+            value.kind(),
+            AnnotationValueKind::Array { .. } | AnnotationValueKind::Annotation { .. }
+        )
+    };
+    if !is_container(value) {
+        return Some(1);
+    }
+    let mut depth = 1;
+    for (index, token) in tokens.iter().enumerate().skip(1) {
+        match token {
+            AnnotationToken::EndContainer => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index + 1);
+                }
+            }
+            AnnotationToken::Value(value) if is_container(value) => depth += 1,
+            AnnotationToken::Value(_) => {}
+        }
+    }
+    None
 }
 
 fn annotation(record: &AnnotationRecord, original: &OriginalAnnotations) -> Option<AnnotationNode> {

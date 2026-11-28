@@ -108,6 +108,60 @@ pub enum DexValue {
     Unsupported { value_type: u8, raw: u64 },
 }
 
+impl DexValue {
+    pub(crate) fn matches_annotation_default(&self, ty: &ArgType) -> bool {
+        match self {
+            Self::Boolean(_) => ty == &ArgType::BOOLEAN,
+            Self::Byte(_) => ty == &ArgType::BYTE,
+            Self::Short(_) => ty == &ArgType::SHORT,
+            Self::Char(_) => ty == &ArgType::CHAR,
+            Self::Int(_) => ty == &ArgType::INT,
+            Self::Long(_) => ty == &ArgType::LONG,
+            Self::Float(_) => ty == &ArgType::FLOAT,
+            Self::Double(_) => ty == &ArgType::DOUBLE,
+            Self::String(_) => ty.as_object() == Some("java/lang/String"),
+            Self::Type(_) => ty.as_object() == Some("java/lang/Class"),
+            Self::Enum(field) => &field.owner == ty && &field.field_type == ty,
+            Self::Annotation(annotation) => {
+                &annotation.annotation_type == ty && self.is_annotation_constant()
+            }
+            Self::Array(values) => ty.as_array_element().is_some_and(|element| {
+                (element.is_object()
+                    || matches!(element.as_primitive(),
+                        Some(primitive) if primitive == crate::ir::PrimitiveType::Boolean
+                            || primitive.is_integral()
+                            || matches!(primitive, crate::ir::PrimitiveType::Float | crate::ir::PrimitiveType::Double)))
+                    && values.iter().all(|value| value.matches_annotation_default(element))
+            }),
+            Self::Null | Self::Field(_) | Self::Method(_) | Self::MethodType(_) | Self::Unsupported { .. } => false,
+        }
+    }
+
+    fn is_annotation_constant(&self) -> bool {
+        match self {
+            Self::Null
+            | Self::Field(_)
+            | Self::Method(_)
+            | Self::MethodType(_)
+            | Self::Unsupported { .. } => false,
+            Self::Enum(field) => field.owner == field.field_type && field.owner.is_object(),
+            Self::Array(values) => values
+                .iter()
+                .all(|value| !matches!(value, Self::Array(_)) && value.is_annotation_constant()),
+            Self::Annotation(annotation) => {
+                let mut names = std::collections::BTreeSet::new();
+                annotation.annotation_type.is_object()
+                    && annotation.elements.iter().all(|element| {
+                        !element.name.is_empty()
+                            && names.insert(element.name.as_str())
+                            && element.value.is_annotation_constant()
+                    })
+            }
+            _ => true,
+        }
+    }
+}
+
 /// Whether an annotation type belongs to the Dalvik system namespace.
 fn is_dalvik_system_annotation(annotation_type: &str) -> bool {
     annotation_type.starts_with("Ldalvik/annotation/")

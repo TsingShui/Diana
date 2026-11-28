@@ -26,6 +26,8 @@ fn method(
         .collect();
     JavaMethodDeclaration {
         annotations: vec![],
+        annotation_default: None,
+        annotation_default_issue: None,
         modifiers: vec![],
         compiler_generated: false,
         kind,
@@ -54,6 +56,7 @@ fn alias_must_have_one_write_per_constructor_and_keep_the_first_outer_spelling()
         .collect();
     let mut declaration = JavaTypeDeclaration {
         annotations: vec![],
+        annotation_default_issue: None,
         modifiers: vec![],
         kind: JavaTypeDeclarationKind::Class,
         name: JavaIdentifier::from_dex("Inner"),

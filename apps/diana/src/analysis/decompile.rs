@@ -3,8 +3,8 @@
 use diana_decomp::p0::{ClassFacts, Fact};
 use diana_decomp::render::Rendered;
 use diana_decomp::{
-    ByteOffset, ClassKey, DexImage, Engine, ImageOrigin, InputId, MethodFailure, MethodId,
-    MethodSource, Request, RequestError,
+    ByteOffset, ClassKey, DexImage, Engine, ImageOrigin, InputId, MethodFailure, MethodId, Request,
+    RequestError,
 };
 use serde::Serialize;
 
@@ -171,8 +171,7 @@ fn run_presentation(
                 let _timer = crate::analysis::perf::Timer::new(&crate::analysis::perf::ANALYZE_NS);
                 engine.analyze_method(class, method)?
             };
-            let issues = result.failures.as_slice();
-            let issues = method_issues(issues, &[], Some(method), &selected.descriptor);
+            let issues = method_issues(&result.failures, &facts, Some(method));
             (Some(method), Some(method_at), result.rendered, issues)
         }
         Selector::Class(_) => {
@@ -188,12 +187,7 @@ fn run_presentation(
                 None,
                 None,
                 result.rendered,
-                method_issues(
-                    &result.failures,
-                    &result.methods,
-                    None,
-                    &selected.descriptor,
-                ),
+                method_issues(&result.failures, &result.facts, None),
             )
         }
         Selector::Field(_) | Selector::String(_) => unreachable!("selection checked above"),
@@ -215,38 +209,45 @@ fn run_presentation(
 
 fn method_issues(
     failures: &[MethodFailure],
-    methods: &[MethodSource],
+    facts: &ClassFacts,
     selected: Option<MethodId>,
-    owner: &[u16],
 ) -> Vec<DecompileIssue> {
     failures
         .iter()
-        .map(|failure| {
+        .filter_map(|failure| {
             let method_id = failure
                 .class
                 .encode_utf16()
-                .eq(owner.iter().copied())
+                .eq(facts.descriptor().units().iter().copied())
                 .then(|| {
-                    selected.or_else(|| {
-                        methods
-                            .iter()
-                            .find(|method| {
-                                String::from_utf16_lossy(&method.name) == failure.name
-                                    && String::from_utf16_lossy(&method.prototype)
-                                        == failure.prototype
-                            })
-                            .map(|method| method.method)
-                    })
+                    let mut matching = facts.methods().iter().filter(|entry| {
+                        let Fact::Present(declaration) = entry.declaration() else {
+                            return false;
+                        };
+                        failure
+                            .name
+                            .encode_utf16()
+                            .eq(declaration.name_units().iter().copied())
+                            && failure
+                                .prototype
+                                .encode_utf16()
+                                .eq(declaration.prototype_units().iter().copied())
+                    });
+                    let method = matching.next()?.method();
+                    matching.next().is_none().then_some(method)
                 })
                 .flatten();
-            DecompileIssue {
+            if selected.is_some_and(|selected| method_id.is_some_and(|id| id != selected)) {
+                return None;
+            }
+            Some(DecompileIssue {
                 method_id: method_id.map(|method| method.0),
                 class: failure.class.clone(),
                 name: failure.name.clone(),
                 prototype: failure.prototype.clone(),
                 stage: failure.stage.clone(),
                 reason: failure.reason.clone(),
-            }
+            })
         })
         .collect()
 }

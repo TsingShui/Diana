@@ -508,11 +508,15 @@ fn method_node(
             annotations::Owner::Method {
                 member,
                 parameters: method.param_types().len(),
+                default_return_type: (class.access_flags() & 0x2200 == 0x2200
+                    && method.can_have_annotation_default())
+                .then(|| method.return_type()),
             },
             issues,
         );
         method.annotations = annotations.declaration;
         method.parameter_annotations = annotations.parameters;
+        method.annotation_default = annotations.default;
     }
     let signature = metadata::method_signature(class, member, &method, generics, issues);
     method.parameter_names = metadata::parameter_names(class, member, &method, issues);

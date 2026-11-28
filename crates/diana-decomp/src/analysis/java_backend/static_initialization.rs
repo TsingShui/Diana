@@ -361,6 +361,8 @@ impl InterfaceInitialization {
 
         Some(JavaMethodDeclaration {
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Static],
             compiler_generated: true,
             kind: JavaMethodDeclarationKind::Method,
@@ -445,6 +447,7 @@ impl InterfaceInitialization {
 
         Some(JavaTypeDeclaration {
             annotations: Vec::new(),
+            annotation_default_issue: None,
             modifiers: vec![
                 JavaModifier::Public,
                 JavaModifier::Static,
@@ -459,6 +462,8 @@ impl InterfaceInitialization {
             fields: holder_fields,
             methods: vec![JavaMethodDeclaration {
                 annotations: Vec::new(),
+                annotation_default: None,
+                annotation_default_issue: None,
                 modifiers: vec![JavaModifier::Static],
                 compiler_generated: true,
                 kind: JavaMethodDeclarationKind::ClassInitializer,
@@ -877,6 +882,7 @@ mod tests {
         };
         JavaTypeDeclaration {
             annotations: Vec::new(),
+            annotation_default_issue: None,
             modifiers: vec![JavaModifier::Public],
             kind: JavaTypeDeclarationKind::Interface,
             name: owner,
@@ -887,6 +893,8 @@ mod tests {
             fields: vec![field(first.clone()), field(second.clone())],
             methods: vec![JavaMethodDeclaration {
                 annotations: Vec::new(),
+                annotation_default: None,
+                annotation_default_issue: None,
                 modifiers: vec![JavaModifier::Static],
                 compiler_generated: true,
                 kind: JavaMethodDeclarationKind::ClassInitializer,

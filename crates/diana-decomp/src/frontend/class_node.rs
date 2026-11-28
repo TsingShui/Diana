@@ -146,6 +146,8 @@ pub struct ClassNode {
     pub metadata: ClassMetadata,
     /// Kotlin source annotations preserved from DEX annotation sets.
     pub annotations: Vec<AnnotationNode>,
+    /// Declaration issue in an annotation default that could not be assigned to a method.
+    pub(crate) annotation_default_issue: Option<Box<str>>,
     /// Methods in this class
     methods: Vec<MethodNode>,
     /// Fields in this class
@@ -175,6 +177,7 @@ impl ClassNode {
             signature: None,
             metadata: ClassMetadata::default(),
             annotations: Vec::new(),
+            annotation_default_issue: None,
             methods: Vec::new(),
             fields: Vec::new(),
             inner_classes: Vec::new(),
@@ -550,6 +553,7 @@ impl Clone for ClassNode {
             signature: self.signature.clone(),
             metadata: self.metadata.clone(),
             annotations: self.annotations.clone(),
+            annotation_default_issue: self.annotation_default_issue.clone(),
             methods: self.methods.clone(),
             fields: self.fields.clone(),
             inner_classes: self.inner_classes.clone(),

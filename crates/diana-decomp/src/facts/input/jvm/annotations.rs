@@ -32,6 +32,7 @@ pub struct DeclarationAnnotations<'a> {
     pub annotations: Vec<FoundAnnotation<'a>>,
     pub defaults: Vec<ElementValue<'a>>,
     pub issues: Vec<ClassError>,
+    pub(crate) source_default: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -197,11 +198,27 @@ impl<'a> ClassFile<'a> {
             let Some(kind) = AttributeKind::of(name) else {
                 continue;
             };
-            if std::mem::replace(&mut seen[kind as usize], true) {
+            let duplicate = std::mem::replace(&mut seen[kind as usize], true);
+            if duplicate {
                 decoder.issue(error(attribute.offset, ClassProblem::DuplicateAttribute))?;
             }
-            if let Err(error) = decoder.read(member, kind, attribute) {
-                decoder.issue(error)?;
+            let issue_count = decoder.result.issues.len();
+            let default_index = decoder.result.defaults.len();
+            let complete = match decoder.read(member, kind, attribute) {
+                Ok(complete) => complete,
+                Err(error) => {
+                    decoder.issue(error)?;
+                    false
+                }
+            };
+            if matches!(kind, AttributeKind::Default) {
+                // Checked prefixes remain available to raw metadata queries.
+                // Source may only consume one complete, unambiguous value.
+                decoder.result.source_default = (!duplicate
+                    && complete
+                    && decoder.result.issues.len() == issue_count
+                    && decoder.result.defaults.len() == default_index + 1)
+                    .then_some(default_index);
             }
         }
         Ok(decoder.result)
@@ -255,7 +272,7 @@ impl<'a> Decoder<'a, '_> {
         member: Option<Member<'a>>,
         kind: AttributeKind,
         attribute: Attribute<'a>,
-    ) -> Result<(), ClassError> {
+    ) -> Result<bool, ClassError> {
         let mut reader = Reader::new(attribute.payload, attribute.offset);
         let visibility = kind.visibility();
         let complete = match kind {
@@ -299,7 +316,7 @@ impl<'a> Decoder<'a, '_> {
         if complete && !reader.rest.is_empty() {
             return Err(error(reader.at, ClassProblem::TrailingBytes));
         }
-        Ok(())
+        Ok(complete)
     }
 
     fn read_annotations(

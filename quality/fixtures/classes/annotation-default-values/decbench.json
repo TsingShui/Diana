@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "id": "dex-annotation-default-values",
+  "default": true,
+  "input": "classes.dex",
+  "input_sha256": "ef45b9104d4f58d9c406f21389b514995f0393a9656451dbd35a2b32689603fb",
+  "probe": "verify.py",
+  "oracle_files": [
+    "CheckDexDefaults.java",
+    "DexDefaults.java",
+    "DexDefaults.smali",
+    "DexLabel.java",
+    "DexLabel.smali",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m0",
+      "member": "Lfixture/DexDefaults;->classChoice()Ljava/lang/Class;",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m1",
+      "member": "Lfixture/DexDefaults;->count()I",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m2",
+      "member": "Lfixture/DexDefaults;->empty()[I",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m3",
+      "member": "Lfixture/DexDefaults;->enabled()Z",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m4",
+      "member": "Lfixture/DexDefaults;->label()Lfixture/DexLabel;",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m5",
+      "member": "Lfixture/DexDefaults;->labels()[Lfixture/DexLabel;",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m6",
+      "member": "Lfixture/DexDefaults;->name()Ljava/lang/String;",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m7",
+      "member": "Lfixture/DexDefaults;->policy()Ljava/lang/annotation/RetentionPolicy;",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m8",
+      "member": "Lfixture/DexDefaults;->required()I",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m9",
+      "member": "Lfixture/DexDefaults;->scores()[I",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c1:m10",
+      "member": "Lfixture/DexLabel;->rank()I",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c1:m11",
+      "member": "Lfixture/DexLabel;->value()Ljava/lang/String;",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

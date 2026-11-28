@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.23 - 2026-11-29
+
+- Recovered annotation element defaults from DEX and JVM input.
+- Localized malformed defaults and retained unaffected annotation members.
+
 ## 0.4.22 - 2026-11-28
 
 - Preserved noncanonical NaN bits in recovered DEX and JVM expressions.

@@ -1,0 +1,17 @@
+{
+  "DexDefaults.classChoice": {"at": "e0:l0:c0:m0", "return": "Ljava/lang/Class;", "value": {"class": "[Ljava/lang/String;"}},
+  "DexDefaults.count": {"at": "e0:l0:c0:m1", "return": "I", "value": -33},
+  "DexDefaults.empty": {"at": "e0:l0:c0:m2", "return": "[I", "value": []},
+  "DexDefaults.enabled": {"at": "e0:l0:c0:m3", "return": "Z", "value": true},
+  "DexDefaults.label": {"at": "e0:l0:c0:m4", "return": "Lfixture/DexLabel;", "value": {"annotation": "Lfixture/DexLabel;", "values": {"rank": 4, "value": "west"}}},
+  "DexDefaults.labels": {"at": "e0:l0:c0:m5", "return": "[Lfixture/DexLabel;", "value": [
+    {"annotation": "Lfixture/DexLabel;", "values": {"rank": -1, "value": "north"}},
+    {"annotation": "Lfixture/DexLabel;", "values": {"rank": 5, "value": "east"}}
+  ]},
+  "DexDefaults.name": {"at": "e0:l0:c0:m6", "return": "Ljava/lang/String;", "value": "row\n\"blue\""},
+  "DexDefaults.policy": {"at": "e0:l0:c0:m7", "return": "Ljava/lang/annotation/RetentionPolicy;", "value": {"enum": ["Ljava/lang/annotation/RetentionPolicy;", "RUNTIME", "Ljava/lang/annotation/RetentionPolicy;"]}},
+  "DexDefaults.required": {"at": "e0:l0:c0:m8", "return": "I", "value": null},
+  "DexDefaults.scores": {"at": "e0:l0:c0:m9", "return": "[I", "value": [3, -2, 3]},
+  "DexLabel.rank": {"at": "e0:l0:c1:m10", "return": "I", "value": null},
+  "DexLabel.value": {"at": "e0:l0:c1:m11", "return": "Ljava/lang/String;", "value": null}
+}

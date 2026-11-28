@@ -170,13 +170,14 @@ fn declaration_xrefs_distinguish_annotation_paths_and_constant_values() {
             .unwrap()
             .contains("type-use annotation placement")
     }));
-    let default = json("get-class", &input, &["j2"], 1);
-    assert!(default["issues"].as_array().unwrap().iter().any(|issue| {
-        issue["reason"]
+    let default = json("get-class", &input, &["j2"], 0);
+    assert!(default["issues"].as_array().unwrap().is_empty());
+    assert!(
+        default["result"]["text"]
             .as_str()
             .unwrap()
-            .contains("annotation default")
-    }));
+            .contains("String label() default \"annotation-default-marker\";")
+    );
 }
 
 #[test]

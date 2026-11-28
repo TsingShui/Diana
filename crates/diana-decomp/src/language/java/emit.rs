@@ -218,6 +218,11 @@ impl JavaPrinter {
         declaration: &JavaTypeDeclaration,
         depth: usize,
     ) -> Result<bool, JavaPrintError> {
+        self.annotation_default_issue(
+            output,
+            declaration.annotation_default_issue.as_deref(),
+            depth,
+        )?;
         self.annotations(output, &declaration.annotations, depth)?;
         self.indent(output, depth);
         self.modifiers(output, &declaration.modifiers)?;
@@ -329,6 +334,7 @@ impl JavaPrinter {
         method: &JavaMethodDeclaration,
         depth: usize,
     ) -> Result<(), JavaPrintError> {
+        self.annotation_default_issue(output, method.annotation_default_issue.as_deref(), depth)?;
         self.annotations(output, &method.annotations, depth)?;
         self.indent(output, depth);
         if method.kind == JavaMethodDeclarationKind::ClassInitializer {
@@ -406,6 +412,9 @@ impl JavaPrinter {
                 )?;
             }
         }
+        if let Some(default) = &method.annotation_default {
+            write!(output, " default {}", self.annotation_value(default)?)?;
+        }
         let Some(body) = &method.body else {
             writeln!(output, ";")?;
             return Ok(());
@@ -414,6 +423,19 @@ impl JavaPrinter {
         output.push_str(&self.print_method_body_at(body, depth + 1)?);
         self.indent(output, depth);
         writeln!(output, "}}")?;
+        Ok(())
+    }
+
+    fn annotation_default_issue(
+        &self,
+        output: &mut String,
+        issue: Option<&str>,
+        depth: usize,
+    ) -> Result<(), JavaPrintError> {
+        if let Some(issue) = issue {
+            self.indent(output, depth);
+            writeln!(output, "// Diana: {}", issue.escape_debug())?;
+        }
         Ok(())
     }
 
@@ -1107,6 +1129,7 @@ mod tests {
         fn declaration(kind: JavaTypeDeclarationKind, name: &str) -> JavaTypeDeclaration {
             JavaTypeDeclaration {
                 annotations: Vec::new(),
+                annotation_default_issue: None,
                 modifiers: Vec::new(),
                 kind,
                 name: JavaIdentifier::from_dex(name),

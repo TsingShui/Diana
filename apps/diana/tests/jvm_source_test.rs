@@ -353,6 +353,11 @@ fn recovered_jvm_nan_literals_preserve_payloads_and_constant_preparation() {
     verify_jvm_fixture("atoms/nan-payload-bits/jvm/verify.py");
 }
 
+#[test]
+fn recovered_jvm_annotation_defaults_preserve_values_and_localize_damage() {
+    verify_jvm_fixture("classes/annotation-default-values/jvm/verify.py");
+}
+
 fn verify_jvm_fixture(path: &str) {
     let output = tempfile::tempdir().unwrap();
     let verifier = Path::new(env!("CARGO_MANIFEST_DIR"))

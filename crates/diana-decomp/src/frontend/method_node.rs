@@ -6,7 +6,7 @@
 //! - Code data (registers, instructions, try-catch handlers)
 //! - Debug information
 
-use super::{AccessInfo, AnnotationNode};
+use super::{AccessInfo, AnnotationNode, DexValue};
 use crate::ir::generic_types::MethodSignature;
 use crate::ir::ty::ArgType;
 
@@ -160,6 +160,8 @@ pub struct MethodNode {
     pub signature: Option<String>,
     /// Kotlin source annotations preserved from DEX annotation sets.
     pub annotations: Vec<AnnotationNode>,
+    pub(crate) annotation_default: Option<Box<DexValue>>,
+    pub(crate) annotation_default_issue: Option<Box<str>>,
     /// Kotlin source annotations attached to each declared parameter.
     pub parameter_annotations: Vec<Vec<AnnotationNode>>,
     /// Original parameter names carried by a declaration attribute.
@@ -178,6 +180,8 @@ impl MethodNode {
             throws: Vec::new(),
             signature: None,
             annotations: Vec::new(),
+            annotation_default: None,
+            annotation_default_issue: None,
             parameter_annotations: Vec::new(),
             parameter_names: Vec::new(),
             override_semantics: None,
@@ -212,6 +216,15 @@ impl MethodNode {
     #[inline]
     pub fn param_types(&self) -> &[ArgType] {
         &self.info.param_types
+    }
+
+    pub(crate) fn can_have_annotation_default(&self) -> bool {
+        self.param_types().is_empty()
+            && self.is_abstract()
+            && !self.is_static()
+            && !self.is_native()
+            && self.return_type() != &ArgType::VOID
+            && !self.name().starts_with('<')
     }
 
     /// Get declared checked exceptions.
@@ -302,6 +315,8 @@ impl Clone for MethodNode {
             throws: self.throws.clone(),
             signature: self.signature.clone(),
             annotations: self.annotations.clone(),
+            annotation_default: self.annotation_default.clone(),
+            annotation_default_issue: self.annotation_default_issue.clone(),
             parameter_annotations: self.parameter_annotations.clone(),
             parameter_names: self.parameter_names.clone(),
             override_semantics: self.override_semantics.clone(),
