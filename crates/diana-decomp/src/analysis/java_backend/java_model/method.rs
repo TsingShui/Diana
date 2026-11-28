@@ -199,6 +199,7 @@ impl JavaMethodBody {
         observer: std::sync::Arc<dyn crate::ir::AnalysisObserver>,
     ) -> Result<crate::language::java::JavaMethodBody, JavaDecompilerError> {
         let returns_void = self.return_type.as_ref() == Some(&ArgType::VOID);
+        let returns_boolean = self.return_type.as_ref() == Some(&ArgType::BOOLEAN);
         let semantically_terminal = self
             .return_type
             .as_ref()
@@ -293,7 +294,7 @@ impl JavaMethodBody {
         }?;
         let mut normalizer = JavaAstNormalizer;
         let normalized = normalizer
-            .normalize_method(&mut ast)
+            .normalize_method(&mut ast, returns_boolean)
             .map_err(crate::language::java::JavaLoweringError::from)?;
         let mut changed = normalized.changed;
         if class_initializer {
@@ -316,7 +317,7 @@ impl JavaMethodBody {
         }
         if changed {
             normalizer
-                .apply(&mut ast)
+                .normalize_method(&mut ast, returns_boolean)
                 .map_err(crate::language::java::JavaLoweringError::from)?;
         }
         if !class_initializer && returns_void {

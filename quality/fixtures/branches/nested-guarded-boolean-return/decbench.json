@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "id": "dex-nested-guarded-boolean-return",
+  "input": "classes.dex",
+  "input_sha256": "ced1e2b15fab9f53243b19065ab780dfa41cf4c33913f666ff16bbcbe74367de",
+  "probe": "decbench_probe.py",
+  "oracle_files": [
+    "MixedBoolean.java",
+    "MixedBoolean.smali",
+    "BooleanEffects.smali",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c1:m6",
+      "member": "Lfixture/MixedBoolean;->effectful()Z",
+      "behavior": true,
+      "issues": [],
+      "contains": [
+        "BooleanEffects.mark();"
+      ]
+    },
+    {
+      "at": "e0:l0:c1:m7",
+      "member": "Lfixture/MixedBoolean;->mixed()Z",
+      "behavior": true,
+      "issues": [],
+      "contains": [
+        "|| !BooleanEffects.fourth();"
+      ],
+      "omits": [
+        "return true;",
+        "return false;"
+      ]
+    }
+  ]
+}

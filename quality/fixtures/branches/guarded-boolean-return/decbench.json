@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "id": "dex-guarded-boolean-return",
+  "input": "classes.dex",
+  "input_sha256": "472ed6fa92e526f404d02d91f64782028febb86ae0351c04d403e92ee5c1ed7d",
+  "probe": "decbench_probe.py",
+  "oracle_files": [
+    "GuardedBoolean.java",
+    "GuardedBoolean.smali",
+    "BooleanEffects.smali",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c1:m6",
+      "member": "Lfixture/GuardedBoolean;->allowed()Z",
+      "behavior": true,
+      "issues": [],
+      "contains": [
+        "return BooleanEffects.first() || !BooleanEffects.second();"
+      ]
+    }
+  ]
+}

@@ -172,7 +172,10 @@ impl JavaVoidTailLinearizer {
 }
 
 impl JavaAstNormalizer {
-    fn normalize(root: JavaStmt) -> Result<(JavaStmt, bool), super::JavaStructuralError> {
+    fn normalize(
+        root: JavaStmt,
+        returns_boolean: bool,
+    ) -> Result<(JavaStmt, bool), super::JavaStructuralError> {
         let mut pending = vec![SyntaxTask::Visit(root)];
         let mut results = Vec::new();
         let mut changed = false;
@@ -180,7 +183,14 @@ impl JavaAstNormalizer {
             match task {
                 SyntaxTask::Visit(statement) => match statement {
                     JavaStmt::Block(children) => {
-                        Self::schedule_block(children, 0, &mut pending, &mut results, &mut changed);
+                        Self::schedule_block(
+                            children,
+                            0,
+                            returns_boolean,
+                            &mut pending,
+                            &mut results,
+                            &mut changed,
+                        );
                     }
                     JavaStmt::Labeled { label, body } => {
                         pending.push(SyntaxTask::Rebuild(SyntaxFrame::Labeled(label)));
@@ -304,6 +314,7 @@ impl JavaAstNormalizer {
                     Self::schedule_block(
                         children,
                         index + 1,
+                        returns_boolean,
                         &mut pending,
                         &mut results,
                         &mut changed,
@@ -315,7 +326,8 @@ impl JavaAstNormalizer {
                         .len()
                         .checked_sub(count)
                         .ok_or(super::JavaStructuralError::MalformedWorkStack)?;
-                    let (statement, local_change) = frame.rebuild(results.drain(start..))?;
+                    let (statement, local_change) =
+                        frame.rebuild(results.drain(start..), returns_boolean)?;
                     changed |= local_change;
                     results.push(statement);
                 }
@@ -333,6 +345,7 @@ impl JavaAstNormalizer {
     fn schedule_block(
         mut children: Vec<JavaStmt>,
         start: usize,
+        returns_boolean: bool,
         pending: &mut Vec<SyntaxTask>,
         results: &mut Vec<JavaStmt>,
         changed: &mut bool,
@@ -359,12 +372,12 @@ impl JavaAstNormalizer {
                 }
             }
         }
-        let (children, local_change) = Self::flatten(children);
+        let (children, local_change) = Self::flatten(children, returns_boolean);
         *changed |= local_change;
         results.push(JavaStmt::Block(children));
     }
 
-    fn flatten(mut flattened: Vec<JavaStmt>) -> (Vec<JavaStmt>, bool) {
+    fn flatten(mut flattened: Vec<JavaStmt>, returns_boolean: bool) -> (Vec<JavaStmt>, bool) {
         let nested = flattened
             .iter()
             .any(|statement| matches!(statement, JavaStmt::Block(_)));
@@ -415,6 +428,9 @@ impl JavaAstNormalizer {
         }
         if has_if {
             changed |= TerminalBranchLinearizer::apply(&mut flattened);
+            if returns_boolean {
+                changed |= TerminalBranchLinearizer::fold_boolean_tail(&mut flattened);
+            }
         }
         (flattened, changed)
     }
@@ -559,8 +575,24 @@ impl JavaAstNormalizer {
         condition: JavaExpr,
         then_stmt: JavaStmt,
         else_stmt: Option<JavaStmt>,
+        returns_boolean: bool,
     ) -> (JavaStmt, bool) {
         if let Some(else_stmt) = else_stmt {
+            if returns_boolean {
+                if let (Some(when_true), Some(when_false)) = (
+                    TerminalBranchLinearizer::boolean_return(&then_stmt),
+                    TerminalBranchLinearizer::boolean_return(&else_stmt),
+                ) {
+                    if when_true != when_false {
+                        let value = if when_true {
+                            condition
+                        } else {
+                            condition.negated()
+                        };
+                        return (JavaStmt::Return(Some(value)), true);
+                    }
+                }
+            }
             let then_empty = Self::is_empty(&then_stmt);
             let else_empty = Self::is_empty(&else_stmt);
             if then_empty && !else_empty {
@@ -1427,6 +1459,58 @@ impl TerminalBranchLinearizer {
         }
     }
 
+    fn fold_boolean_tail(statements: &mut Vec<JavaStmt>) -> bool {
+        // Equal guard runs have already been balanced. Keep a mixed suffix
+        // shallow and leave longer prefixes in statement form.
+        const MAX_GUARDS: usize = 16;
+        let Some((last, preceding)) = statements.split_last() else {
+            return false;
+        };
+        let Some(fallback) = Self::boolean_return(last) else {
+            return false;
+        };
+        let mut guards = preceding.iter().rev().take(MAX_GUARDS);
+        let Some(last_guard) = guards.next().and_then(Self::guard_return) else {
+            return false;
+        };
+        if last_guard == fallback {
+            return false;
+        }
+        let guard_count = 1 + guards
+            .take_while(|statement| Self::guard_return(statement).is_some())
+            .count();
+        let start = preceding.len() - guard_count;
+        let mut value = None;
+        statements.pop();
+        for statement in statements.drain(start..).rev() {
+            let JavaStmt::If {
+                condition,
+                then_stmt,
+                ..
+            } = statement
+            else {
+                unreachable!("the suffix contains only boolean guards");
+            };
+            let (condition, op) = if Self::boolean_return(&then_stmt) == Some(true) {
+                (condition, JavaBinaryOp::LogicalOr)
+            } else {
+                (condition.negated(), JavaBinaryOp::LogicalAnd)
+            };
+            // The right operand is evaluated precisely on the former
+            // fallthrough path. The last guard has an opposite fallback.
+            value = Some(match value {
+                Some(tail) => JavaExpr::Binary {
+                    left: Box::new(condition),
+                    op,
+                    right: Box::new(tail),
+                },
+                None => condition,
+            });
+        }
+        statements.push(JavaStmt::Return(value));
+        true
+    }
+
     fn apply(statements: &mut Vec<JavaStmt>) -> bool {
         Self::linearize_candidates(statements, Self::next_candidate)
     }
@@ -1914,9 +1998,12 @@ impl JavaAstNormalizer {
     pub(crate) fn normalize_method(
         &mut self,
         body: &mut JavaMethodBody,
+        returns_boolean: bool,
     ) -> Result<MethodNormalization, super::JavaStructuralError> {
-        let (root, mut changed) =
-            Self::normalize(std::mem::replace(&mut body.root, JavaStmt::Empty))?;
+        let (root, mut changed) = Self::normalize(
+            std::mem::replace(&mut body.root, JavaStmt::Empty),
+            returns_boolean,
+        )?;
         let mut conditional_simplifier = ConditionalExpressionSimplifier::default();
         let mut root = conditional_simplifier.rewrite_statement(root);
         changed |= conditional_simplifier.changed;
@@ -1942,7 +2029,7 @@ impl JavaAstTransform for JavaAstNormalizer {
     type Error = super::JavaStructuralError;
 
     fn apply(&mut self, body: &mut JavaMethodBody) -> Result<bool, Self::Error> {
-        Ok(self.normalize_method(body)?.changed)
+        Ok(self.normalize_method(body, false)?.changed)
     }
 }
 
@@ -2061,6 +2148,7 @@ impl SyntaxFrame {
     fn rebuild(
         self,
         mut children: impl ExactSizeIterator<Item = JavaStmt>,
+        returns_boolean: bool,
     ) -> Result<(JavaStmt, bool), super::JavaStructuralError> {
         let expected = self.child_count();
         if children.len() != expected {
@@ -2085,7 +2173,10 @@ impl SyntaxFrame {
                     None
                 };
                 return Ok(JavaAstNormalizer::conditional(
-                    condition, then_stmt, else_stmt,
+                    condition,
+                    then_stmt,
+                    else_stmt,
+                    returns_boolean,
                 ));
             }
             Self::While { label, condition } => JavaStmt::While {

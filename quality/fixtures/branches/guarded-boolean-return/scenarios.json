@@ -1,0 +1,59 @@
+{
+  "allowed": [
+    {
+      "id": "first-true-skips-second",
+      "arguments": [
+        "1",
+        "2"
+      ],
+      "expected": [
+        "true",
+        "1"
+      ]
+    },
+    {
+      "id": "both-false",
+      "arguments": [
+        "0",
+        "0"
+      ],
+      "expected": [
+        "true",
+        "12"
+      ]
+    },
+    {
+      "id": "second-true",
+      "arguments": [
+        "2",
+        "0"
+      ],
+      "expected": [
+        "false",
+        "12"
+      ]
+    },
+    {
+      "id": "first-fault",
+      "arguments": [
+        "0",
+        "1"
+      ],
+      "expected": [
+        "same-fault",
+        "1"
+      ]
+    },
+    {
+      "id": "second-fault",
+      "arguments": [
+        "0",
+        "2"
+      ],
+      "expected": [
+        "same-fault",
+        "12"
+      ]
+    }
+  ]
+}

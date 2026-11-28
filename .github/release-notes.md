@@ -1,24 +1,22 @@
-## Diana CLI 0.4.30
+## Diana CLI 0.4.31
 
-- Preserve typed catch returns across cleanup and monitor release. A captured
-  candidate remains distinct from the null result of the exception path.
-- Attribute full-export methods in DecBench when an unrelated generated
-  import matches an original DEX class.
+- Recover terminal boolean guards as short-circuit returns. Predicates keep
+  their original order, conditional execution, and exception behavior.
 
 ### Install or upgrade Diana
 
 For macOS and Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/TsingShui/Diana/diana-v0.4.30/install.sh -o install-diana.sh
-sh install-diana.sh diana-v0.4.30
+curl -fsSL https://raw.githubusercontent.com/TsingShui/Diana/diana-v0.4.31/install.sh -o install-diana.sh
+sh install-diana.sh diana-v0.4.31
 ```
 
 To build the released CLI from source, use Rust 1.100 or newer and native
 build tools.
 
 ```sh
-cargo install --git https://github.com/TsingShui/Diana.git --tag diana-v0.4.30 --locked diana
+cargo install --git https://github.com/TsingShui/Diana.git --tag diana-v0.4.31 --locked diana
 ```
 
 Windows users can extract `diana.exe` from the matching ZIP and add it to PATH.

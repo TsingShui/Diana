@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.31 - 2026-11-29
+
+- Recovered terminal boolean guards as short-circuit returns while preserving
+  the original predicate order and fallthrough behavior.
+
 ## 0.4.30 - 2026-11-29
 
 - Preserved typed catch returns across contracted cleanup and monitor release.
