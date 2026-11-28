@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.30 - 2026-11-29
+
+- Preserved typed catch returns across contracted cleanup and monitor release.
+- Restored DecBench export attribution beside verified generated DEX imports.
+
 ## 0.4.29 - 2026-11-29
 
 - Preserved instantiated generic types for null arguments during overload recovery.

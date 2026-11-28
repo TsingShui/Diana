@@ -1,0 +1,172 @@
+{
+  "lookup": [
+    {
+      "id": "nonempty",
+      "arguments": [
+        "nonempty"
+      ],
+      "expected": [
+        "item",
+        "123465",
+        "none",
+        "released"
+      ]
+    },
+    {
+      "id": "empty",
+      "arguments": [
+        "empty"
+      ],
+      "expected": [
+        "null",
+        "145",
+        "none",
+        "released"
+      ]
+    },
+    {
+      "id": "body-fault",
+      "arguments": [
+        "body-fault"
+      ],
+      "expected": [
+        "null",
+        "12345",
+        "none",
+        "released"
+      ]
+    },
+    {
+      "id": "normal-close-fault",
+      "arguments": [
+        "normal-close-fault"
+      ],
+      "expected": [
+        "null",
+        "12345",
+        "none",
+        "released"
+      ]
+    },
+    {
+      "id": "body-and-resource-fault",
+      "arguments": [
+        "body-and-resource-fault"
+      ],
+      "expected": [
+        "null",
+        "12345",
+        "resource-fault",
+        "released"
+      ]
+    },
+    {
+      "id": "same-fault",
+      "arguments": [
+        "same-fault"
+      ],
+      "expected": [
+        "null",
+        "12345",
+        "none",
+        "released"
+      ]
+    },
+    {
+      "id": "normal-owner-fault",
+      "arguments": [
+        "normal-owner-fault"
+      ],
+      "expected": [
+        "owner-fault",
+        "123465",
+        "none",
+        "released"
+      ]
+    },
+    {
+      "id": "caught-owner-fault",
+      "arguments": [
+        "caught-owner-fault"
+      ],
+      "expected": [
+        "owner-fault",
+        "12345",
+        "none",
+        "released"
+      ]
+    },
+    {
+      "id": "empty-resource-fault",
+      "arguments": [
+        "empty-resource-fault"
+      ],
+      "expected": [
+        "null",
+        "145",
+        "none",
+        "released"
+      ]
+    },
+    {
+      "id": "empty-owner-fault",
+      "arguments": [
+        "empty-owner-fault"
+      ],
+      "expected": [
+        "owner-fault",
+        "145",
+        "none",
+        "released"
+      ]
+    },
+    {
+      "id": "late-fault",
+      "arguments": [
+        "late-fault"
+      ],
+      "expected": [
+        "null",
+        "123465",
+        "none",
+        "released"
+      ]
+    },
+    {
+      "id": "late-and-owner-fault",
+      "arguments": [
+        "late-and-owner-fault"
+      ],
+      "expected": [
+        "owner-fault",
+        "123465",
+        "none",
+        "released"
+      ]
+    },
+    {
+      "id": "resource-skips-late-fault",
+      "arguments": [
+        "resource-skips-late-fault"
+      ],
+      "expected": [
+        "null",
+        "12345",
+        "none",
+        "released"
+      ]
+    },
+    {
+      "id": "empty-skips-late-fault",
+      "arguments": [
+        "empty-skips-late-fault"
+      ],
+      "expected": [
+        "null",
+        "145",
+        "none",
+        "released"
+      ]
+    }
+  ]
+}

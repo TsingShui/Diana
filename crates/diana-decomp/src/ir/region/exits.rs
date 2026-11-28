@@ -273,19 +273,33 @@ impl<'a> RegionExitAnalysis<'a> {
     fn transfers(&self) -> Result<Vec<RegionTransfer>, RegionInvariantError> {
         let mut transfers = Vec::new();
         for source_block in self.cfg.blocks.keys().copied() {
-            if self.cleanup_representatives.contains_key(&source_block) {
-                continue;
-            }
+            let contracted = self.cleanup_representatives.get(&source_block).copied();
             let source_region = self.tree.indexed_owner(self.owners, source_block)?;
             for &(target_block, edge_kind) in self.cfg.successors_with_kind(source_block) {
                 if edge_kind == EdgeKind::Exception {
                     continue;
                 }
-                let target_region = self.tree.indexed_owner(self.owners, target_block)?;
                 let destination_block = Self::terminal_cleanup_representative(
                     self.cleanup_representatives,
                     target_block,
                 );
+                if let Some(completion) = contracted {
+                    // A contracted cleanup can contain the last physical edge
+                    // of a handler. Keep that edge when it denotes the same
+                    // completion proved by the cleanup contraction.
+                    if self
+                        .cleanup_representatives
+                        .contains_key(&destination_block)
+                        || Self::terminal_cleanup_representative(
+                            self.cleanup_representatives,
+                            completion,
+                        ) != destination_block
+                        || !self.is_handler_continuation(source_region, target_block)?
+                    {
+                        continue;
+                    }
+                }
+                let target_region = self.tree.indexed_owner(self.owners, target_block)?;
                 let destination_owner = if destination_block == target_block {
                     target_region
                 } else {
@@ -318,6 +332,23 @@ impl<'a> RegionExitAnalysis<'a> {
             }
         }
         Ok(transfers)
+    }
+
+    fn is_handler_continuation(
+        &self,
+        source: RegionId,
+        destination: BlockId,
+    ) -> Result<bool, RegionInvariantError> {
+        for region in self.tree.parent_chain(source)? {
+            let region = self
+                .tree
+                .region(region)
+                .ok_or(RegionInvariantError::UnknownRegion(region))?;
+            if let RegionKind::Catch(catch) | RegionKind::Cleanup(catch) = &region.kind {
+                return Ok(catch.continuation == Some(destination));
+            }
+        }
+        Ok(false)
     }
 
     fn collect_leaves(
@@ -650,7 +681,7 @@ impl<'a> RegionExitAnalysis<'a> {
             self.cfg,
             self.tree,
             self.owners,
-            self.elisions.candidates(),
+            self.elisions,
             &self.terminal_facts,
         )
         .analyze(source, target)
@@ -694,7 +725,7 @@ struct TerminalContinuation<'a> {
     cfg: &'a CFG,
     tree: &'a RegionTree,
     owners: &'a BlockOwners,
-    elided: &'a BTreeSet<StatementOrigin>,
+    elided: &'a InstructionElisions,
     facts: &'a TerminalContinuationFacts,
 }
 
@@ -703,7 +734,7 @@ impl<'a> TerminalContinuation<'a> {
         cfg: &'a CFG,
         tree: &'a RegionTree,
         owners: &'a BlockOwners,
-        elided: &'a BTreeSet<StatementOrigin>,
+        elided: &'a InstructionElisions,
         facts: &'a TerminalContinuationFacts,
     ) -> Self {
         Self {
@@ -720,12 +751,11 @@ impl<'a> TerminalContinuation<'a> {
         _source: BlockId,
         target: BlockId,
     ) -> Result<Option<RegionExit>, RegionInvariantError> {
-        let scope = self.tree.indexed_owner(self.owners, target)?;
+        let mut scope = self.tree.indexed_owner(self.owners, target)?;
         let mut current = target;
         let mut visited = BTreeSet::new();
         while visited.insert(current) {
             if self.facts.preserves(current)
-                || self.tree.indexed_owner(self.owners, current)? != scope
                 || self
                     .cfg
                     .incoming_edges(current)
@@ -746,9 +776,8 @@ impl<'a> TerminalContinuation<'a> {
                     if self.transparent_prefix(current, block, Some(terminal.id)) {
                         return Ok(Some(RegionExit::Return(terminal.get_arg(0).cloned())));
                     }
-                    return Ok(
-                        TerminalValueSlice::new(self.elided).resolve(current, block, terminal)
-                    );
+                    return Ok(TerminalValueSlice::new(self.elided.candidates())
+                        .resolve(current, block, terminal));
                 }
                 let terminal_is_transparent = terminal.insn_type == InsnType::Goto
                     || InstructionEffects::is_ssa_bookkeeping(terminal)
@@ -773,6 +802,29 @@ impl<'a> TerminalContinuation<'a> {
             let [successor] = successors.as_slice() else {
                 return Ok(None);
             };
+            let next_scope = self.tree.indexed_owner(self.owners, *successor)?;
+            if next_scope != scope {
+                let region = self
+                    .tree
+                    .region(scope)
+                    .ok_or(RegionInvariantError::UnknownRegion(scope))?;
+                // The lexical monitor exit already owns the release. Its
+                // transparent physical block can lead to the original return
+                // in the parent without moving any additional evaluation.
+                if region.parent != Some(next_scope)
+                    || !matches!(region.kind, RegionKind::Synchronized(_))
+                    || !block.insns.iter().any(|instruction| {
+                        instruction.insn_type == InsnType::MonitorExit
+                            && self.elided.is_source_equivalent(&StatementOrigin {
+                                block: current,
+                                instruction: instruction.id,
+                            })
+                    })
+                {
+                    return Ok(None);
+                }
+                scope = next_scope;
+            }
             current = *successor;
         }
         Ok(None)
@@ -1168,7 +1220,7 @@ mod tests {
 
         let mut tree = RegionTree::new(Some(cfg.entry));
         tree.cover_method(&cfg).unwrap();
-        let elided = BTreeSet::new();
+        let elided = InstructionElisions::default();
         let facts = TerminalContinuationFacts::analyze(&cfg);
         let continuation = TerminalContinuation::new(
             &cfg,
@@ -1207,7 +1259,7 @@ mod tests {
             &cfg,
             &tree,
             &BlockOwners::Sparse(BTreeMap::new()),
-            &BTreeSet::new(),
+            &InstructionElisions::default(),
             &facts,
         )
         .analyze(BlockId::new(0), BlockId::new(1))
@@ -1222,7 +1274,7 @@ mod tests {
             &cfg,
             &tree,
             &BlockOwners::Sparse(BTreeMap::new()),
-            &BTreeSet::new(),
+            &InstructionElisions::default(),
             &facts,
         )
         .analyze(BlockId::new(0), BlockId::new(1))
@@ -1255,7 +1307,7 @@ mod tests {
             &cfg,
             &tree,
             &BlockOwners::Sparse(BTreeMap::new()),
-            &BTreeSet::new(),
+            &InstructionElisions::default(),
             &facts,
         )
         .analyze(BlockId::new(0), BlockId::new(1))

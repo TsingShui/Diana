@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "id": "dex-typed-catch-cleanup-return",
+  "input": "classes.dex",
+  "input_sha256": "b8d86c921118adc7b99082f0e8c09367244dbc712ca7df731bbcd47d3ee7c9b0",
+  "probe": "decbench_probe.py",
+  "oracle_files": [
+    "ReturnLanes.java",
+    "ReturnLanes.smali",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m1",
+      "member": "Lfixture/ReturnLanes;->lookup(Ljava/lang/Object;Ljava/lang/RuntimeException;Ljava/lang/RuntimeException;Ljava/lang/RuntimeException;)Ljava/lang/Object;",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}
