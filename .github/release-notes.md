@@ -1,28 +1,28 @@
-## Diana CLI 0.4.2
+## Diana CLI 0.4.3
 
-The embedded Agent Skill now recommends commands and workflows for APK, DEX,
-and JVM analysis. It shows how to reuse original class and method coordinates,
-follow callers and callees, inspect archive entries and resources, compare
-builds, and recover available sources and diagnostics.
-
-Run `diana skill` to read the guide. For a first-time installation, run
-`diana skill -i`. If you already installed the skill, review the printed
-guide before replacing your installed copy.
+- DEX recovery preserves call order across guarded values, including database
+  reads before network requests and layout construction before adapter updates.
+- Complex exception handling retains shared cleanup arguments and dispatches
+  failures to the original handlers. If only part of a method can be recovered,
+  Diana displays available code alongside the recovery diagnostic.
+- Java-like conditions use more ordered `&&` and `||` expressions.
+- DecBench adds full APK export evaluation and a browser view for reviewing
+  per-method differences. FairEmail joins the reproducible public APK corpus.
 
 ### Install or upgrade Diana
 
 For macOS and Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/TsingShui/Diana/diana-v0.4.2/install.sh -o install-diana.sh
-sh install-diana.sh diana-v0.4.2
+curl -fsSL https://raw.githubusercontent.com/TsingShui/Diana/diana-v0.4.3/install.sh -o install-diana.sh
+sh install-diana.sh diana-v0.4.3
 ```
 
 To build the released CLI from source, use Rust 1.100 or newer and native
 build tools.
 
 ```sh
-cargo install --git https://github.com/TsingShui/Diana.git --tag diana-v0.4.2 --locked diana
+cargo install --git https://github.com/TsingShui/Diana.git --tag diana-v0.4.3 --locked diana
 ```
 
 Windows users can extract `diana.exe` from the matching ZIP and add it to PATH.

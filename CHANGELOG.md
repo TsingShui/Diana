@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.3 - 2026-11-28
+
+### DEX recovery
+
+- Preserved effect order when merging guarded values. This fixes reordered
+  database and network calls and premature adapter updates found in AntennaPod.
+- Improved exception recovery for large methods and shared cleanup. Recovery
+  preserves each path's arguments, exception dispatch, and cleanup order.
+  Available method bodies remain visible when some exception dispatch is
+  unresolved, with a diagnostic identifying the affected DEX edges.
+- Recovered more short-circuit expressions while preserving their operand
+  order and evaluation conditions.
+
+### DecBench
+
+- Added FairEmail to the reproducible public APK corpus and added full APK
+  export evaluation with a per-method browser comparison for review.
+
 ## 0.4.2 - 2026-11-28
 
 - Expanded the embedded Agent Skill with recommended workflows for APK, DEX,
