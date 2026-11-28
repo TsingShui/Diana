@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "id": "dex-prepared-static-finals",
+  "default": true,
+  "input": "classes.dex",
+  "input_sha256": "6858633ee853a7820af1ffe331ef31776fc73ca920e9cbe138f860893895ab36",
+  "probe": "verify.py",
+  "oracle_files": [
+    "CheckPreparedDefaults.java",
+    "PreparationEvents.java",
+    "PreparationEvents.smali",
+    "PreparationParent.java",
+    "PreparationParent.smali",
+    "PreparedDefaults.java",
+    "PreparedDefaults.smali",
+    "ReadPreparedDefaults.java",
+    "ReadPreparedDefaults.smali",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c3:m3",
+      "member": "Lfixture/ReadPreparedDefaults;->encodedZero()I",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c3:m4",
+      "member": "Lfixture/ReadPreparedDefaults;->preparedNull()Ljava/lang/String;",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c3:m5",
+      "member": "Lfixture/ReadPreparedDefaults;->preparedZero()I",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

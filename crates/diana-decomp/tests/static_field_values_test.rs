@@ -1,6 +1,9 @@
 mod support;
 
-use diana_decomp::Request;
+use diana_decomp::{
+    p0::{Fact, InitialValue},
+    Request,
+};
 
 const DEX: &[u8] =
     include_bytes!("../../../quality/fixtures/atoms/static-field-values/classes.dex");
@@ -10,6 +13,8 @@ const RUNTIME: &[u8] =
     include_bytes!("../../../quality/fixtures/classes/runtime-static-final/classes.dex");
 const OWNERS: &[u8] =
     include_bytes!("../../../quality/fixtures/classes/static-initializer-owners/classes.dex");
+const PREPARED: &[u8] =
+    include_bytes!("../../../quality/fixtures/classes/prepared-static-final/classes.dex");
 
 #[test]
 fn renders_original_static_field_preparations() {
@@ -43,6 +48,19 @@ fn renders_original_static_field_preparations() {
 fn mixed_width_preparations_preserve_values_and_class_initialization() {
     let engine = support::engine(WIDTHS);
     let class = support::class(WIDTHS, &engine, "Lfixture/StaticFieldValueWidths;");
+    let facts = engine.class_facts(class).expect("original field facts");
+    let zero = facts
+        .fields()
+        .iter()
+        .find(|entry| {
+            matches!(entry.declaration(), Fact::Present(field)
+                if field.name.units().iter().copied().eq("ZERO".encode_utf16()))
+        })
+        .expect("original ZERO field");
+    assert!(matches!(
+        zero.initial_value(),
+        Fact::Present(InitialValue::ImplicitDefault)
+    ));
     let analysis = engine
         .analyze(Request {
             class,
@@ -64,7 +82,7 @@ fn mixed_width_preparations_preserve_values_and_class_initialization() {
         "float NEGATIVE_ZERO = -0.0f;",
         "short SHORT = -300;",
         "String SURROGATE = \"\\ud800\";",
-        "int ZERO = 0;",
+        "int ZERO = null == null ? 0 : 0;",
         "int[] SEQUENCE = new int[] { -7, -300, -1234567, 6 };",
     ] {
         assert!(
@@ -129,4 +147,46 @@ fn static_initializers_preserve_foreign_members_with_the_same_owner_name() {
             "{text}"
         );
     }
+}
+
+#[test]
+fn preparation_only_static_finals_keep_active_reads() {
+    let engine = support::engine(PREPARED);
+    let render = |descriptor| {
+        let class = support::class(PREPARED, &engine, descriptor);
+        let analysis = engine
+            .analyze(Request {
+                class,
+                method: None,
+            })
+            .expect("prepared static field fixture");
+        assert!(analysis.failures.is_empty());
+        analysis.rendered.text().to_owned()
+    };
+
+    let fields = render("Lfixture/PreparedDefaults;");
+    for expected in [
+        "class PreparedDefaults extends PreparationParent",
+        "static final int A_ENCODED_ZERO = 0;",
+        "static final int B_ENCODED_SENTINEL = 9;",
+        "static final int C_PREPARED_ZERO = null == null ? 0 : 0;",
+    ] {
+        assert!(fields.contains(expected), "missing {expected}: {fields}");
+    }
+
+    let readers = render("Lfixture/ReadPreparedDefaults;");
+    for expected in [
+        "return 0;",
+        "return PreparedDefaults.C_PREPARED_ZERO;",
+        "return PreparedDefaults.D_PREPARED_NULL;",
+    ] {
+        assert!(readers.contains(expected), "missing {expected}: {readers}");
+    }
+    let parent = render("Lfixture/PreparationParent;");
+    assert!(
+        parent
+            .split_once("PreparationEvents.start();")
+            .is_some_and(|(_, tail)| tail.contains("PreparationEvents.finish();")),
+        "{parent}"
+    );
 }

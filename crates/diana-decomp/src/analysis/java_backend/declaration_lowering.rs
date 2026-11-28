@@ -847,6 +847,7 @@ impl<'a> JavaTypeLowering<'a> {
         }?;
         let mut prepared_defaults = std::collections::BTreeSet::new();
         let mut constant_capable = std::collections::BTreeSet::new();
+        let mut implicit_scalar_defaults = std::collections::BTreeSet::new();
         for (model, field) in class.fields.iter().zip(&fields) {
             if !model.access_flags.is_static() {
                 continue;
@@ -859,6 +860,12 @@ impl<'a> JavaTypeLowering<'a> {
                     || model.field_type.as_object() == Some("java/lang/String"))
             {
                 constant_capable.insert(field.name.clone());
+                if model.field_type.is_primitive()
+                    && model.initializer.is_none()
+                    && field.initializer.is_some()
+                {
+                    implicit_scalar_defaults.insert(field.name.clone());
+                }
             }
         }
         let synthetic_final_fields = class
@@ -922,6 +929,7 @@ impl<'a> JavaTypeLowering<'a> {
                 ambiguous: &ambiguous_initializer_fields,
                 constant_capable: &constant_capable,
                 prepared_defaults: &prepared_defaults,
+                implicit_scalar_defaults: &implicit_scalar_defaults,
             },
         );
         Self::remove_implicit_field_modifiers(class.declaration.kind, &mut declaration.fields);
@@ -1156,6 +1164,7 @@ impl<'a> JavaTypeLowering<'a> {
         field: &FieldModel,
         owner: Option<&ArgType>,
     ) -> Result<JavaFieldDeclaration, JavaDecompilerError> {
+        let implicit_initializer = field.implicit_initializer();
         Ok(JavaFieldDeclaration {
             annotations: self.constants.annotations(&field.annotations)?,
             modifiers: field.modifiers.clone(),
@@ -1175,6 +1184,7 @@ impl<'a> JavaTypeLowering<'a> {
             initializer: field
                 .initializer
                 .as_ref()
+                .or(implicit_initializer.as_ref())
                 .map(|value| self.constants.field_initializer(&field.field_type, value))
                 .transpose()?,
         })

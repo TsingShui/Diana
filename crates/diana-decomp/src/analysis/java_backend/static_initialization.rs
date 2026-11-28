@@ -12,6 +12,7 @@ pub(super) struct StaticInitializerFields<'a> {
     pub ambiguous: &'a BTreeSet<JavaIdentifier>,
     pub constant_capable: &'a BTreeSet<JavaIdentifier>,
     pub prepared_defaults: &'a BTreeSet<JavaIdentifier>,
+    pub implicit_scalar_defaults: &'a BTreeSet<JavaIdentifier>,
 }
 
 impl StaticInitializerFields<'_> {
@@ -33,6 +34,26 @@ pub(super) struct StaticInitializationRecovery;
 
 impl StaticInitializationRecovery {
     pub(super) fn apply(
+        declaration: &mut JavaTypeDeclaration,
+        fields: &StaticInitializerFields<'_>,
+    ) {
+        Self::recover_assignments(declaration, fields);
+        for field in &mut declaration.fields {
+            if !fields.implicit_scalar_defaults.contains(&field.name)
+                || !fields.has_default_initializer(field)
+            {
+                continue;
+            }
+            if let Some(value) = field.initializer.take() {
+                // A prepared value still requires active initialization
+                // on a static read, even when this class has no writes.
+                field.initializer =
+                    Some(Self::runtime_initializer(value.clone(), value, &field.ty));
+            }
+        }
+    }
+
+    fn recover_assignments(
         declaration: &mut JavaTypeDeclaration,
         fields: &StaticInitializerFields<'_>,
     ) {
@@ -89,7 +110,7 @@ impl StaticInitializationRecovery {
                 let Some(default) = declaration.fields[field_index].initializer.clone() else {
                     break;
                 };
-                InterfaceInitialization::runtime_value(fact.value, default)
+                Self::runtime_initializer(fact.value, default, &declaration.fields[field_index].ty)
             } else {
                 fact.value
             };
@@ -190,6 +211,32 @@ impl StaticInitializationRecovery {
         }
     }
 
+    fn runtime_initializer(value: JavaExpr, default: JavaExpr, field_type: &JavaType) -> JavaExpr {
+        // This condition has no effects and is outside Java's constant
+        // expression grammar. It always selects the original value.
+        let null = || Box::new(JavaExpr::Literal(JavaLiteral::Null));
+        let expression = JavaExpr::Conditional {
+            condition: Box::new(JavaExpr::Binary {
+                left: null(),
+                op: JavaBinaryOp::Equal,
+                right: null(),
+            }),
+            when_true: Box::new(value),
+            when_false: Box::new(default),
+        };
+        if matches!(
+            field_type,
+            JavaType::Primitive(JavaPrimitiveType::Byte | JavaPrimitiveType::Short)
+        ) {
+            JavaExpr::Cast {
+                ty: field_type.clone(),
+                value: Box::new(expression),
+            }
+        } else {
+            expression
+        }
+    }
+
     fn is_default_initializer(field: &JavaFieldDeclaration) -> bool {
         match (&field.ty, field.initializer.as_ref()) {
             (
@@ -233,22 +280,6 @@ impl StaticInitializationRecovery {
 struct InterfaceInitialization;
 
 impl InterfaceInitialization {
-    fn runtime_value(value: JavaExpr, default: JavaExpr) -> JavaExpr {
-        // An interface field has to initialize at its declaration. The null
-        // comparison has no effects and keeps the selected value outside
-        // Java's constant-expression grammar.
-        let null = || Box::new(JavaExpr::Literal(JavaLiteral::Null));
-        JavaExpr::Conditional {
-            condition: Box::new(JavaExpr::Binary {
-                left: null(),
-                op: JavaBinaryOp::Equal,
-                right: null(),
-            }),
-            when_true: Box::new(value),
-            when_false: Box::new(default),
-        }
-    }
-
     fn inline_replayable_locals(statements: &mut Vec<JavaStmt>) {
         let mut index = 0;
         while index < statements.len() {
@@ -819,6 +850,7 @@ mod tests {
                 ambiguous: &BTreeSet::new(),
                 constant_capable: &BTreeSet::new(),
                 prepared_defaults: &prepared_defaults,
+                implicit_scalar_defaults: &BTreeSet::new(),
             },
         );
     }

@@ -323,6 +323,16 @@ fn recovered_jvm_float_comparisons_preserve_operand_effects() {
     verify_jvm_fixture("atoms/float-comparison-effects/jvm/verify.py");
 }
 
+#[test]
+fn recovered_jvm_prepared_static_finals_preserve_active_use() {
+    verify_jvm_fixture("classes/prepared-static-final/jvm/verify.py");
+}
+
+#[test]
+fn recovered_jvm_prepared_static_reads_initialize_the_inherited_owner() {
+    verify_jvm_fixture("classes/prepared-static-final/jvm/challenge/verify.py");
+}
+
 fn verify_jvm_fixture(path: &str) {
     let output = tempfile::tempdir().unwrap();
     let verifier = Path::new(env!("CARGO_MANIFEST_DIR"))

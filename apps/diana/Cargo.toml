@@ -1,6 +1,6 @@
 [package]
 name = "diana"
-version = "0.4.16"
+version = "0.4.17"
 edition = "2024"
 rust-version.workspace = true
 description = "Native Diana APK/DEX analysis and decompilation CLI"

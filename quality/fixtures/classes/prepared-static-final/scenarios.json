@@ -1,0 +1,7 @@
+{
+  "control": ["encoded:0"],
+  "success-zero": ["encoded:0", "read:zero", "start", "finish", "value:0", "read:null", "value:null", "encoded:0"],
+  "success-null": ["encoded:0", "read:null", "start", "finish", "value:null", "read:zero", "value:0", "encoded:0"],
+  "fault-zero": ["encoded:0", "read:zero", "start", "fault", "initializer:true", "read:null", "erroneous", "encoded:0"],
+  "fault-null": ["encoded:0", "read:null", "start", "fault", "initializer:true", "read:zero", "erroneous", "encoded:0"]
+}

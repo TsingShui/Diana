@@ -1,0 +1,8 @@
+{
+  "compile-only": ["compiled:0:true"],
+  "inherited-first": ["compiled:0:true", "read:long", "root:start", "root:complete", "value:long:0", "read:null", "value:null:true", "read:alias", "alias:start", "alias:reentry:0", "alias:complete", "value:alias:5", "compiled:0:true"],
+  "declaring-first": ["compiled:0:true", "read:null", "root:start", "root:complete", "value:null:true", "read:long", "value:long:0", "read:alias", "alias:start", "alias:reentry:0", "alias:complete", "value:alias:5", "compiled:0:true"],
+  "alias-first": ["compiled:0:true", "read:alias", "root:start", "root:complete", "alias:start", "alias:reentry:0", "alias:complete", "value:alias:5", "read:long", "value:long:0", "read:null", "value:null:true", "compiled:0:true"],
+  "root-fault-through-alias": ["compiled:0:true", "read:long", "root:start", "root:fault", "initial:root", "read:null", "prior:null", "read:long", "prior:long", "read:alias", "prior:alias", "compiled:0:true"],
+  "alias-fault": ["compiled:0:true", "read:alias", "root:start", "root:complete", "alias:start", "alias:reentry:0", "alias:fault", "initial:alias", "read:long", "value:long:0", "read:null", "value:null:true", "read:alias", "prior:alias", "compiled:0:true"]
+}

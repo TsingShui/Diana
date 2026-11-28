@@ -182,7 +182,7 @@ impl JavaFieldDeclaration {
             modifiers: field_modifiers(&field.access_flags),
             field_type: field.field_type().clone(),
             name: JavaIdentifier::from_dex(field.name()),
-            initializer: Self::initial_value(field),
+            initializer: field.initial_value.clone(),
             default_preparation: field.default_preparation,
             access_flags: field.access_flags,
             signature: field
@@ -193,12 +193,16 @@ impl JavaFieldDeclaration {
         })
     }
 
-    fn initial_value(field: &FieldNode) -> Option<DexValue> {
-        field.initial_value.clone().or_else(|| {
-            (field.access_flags.is_static() && field.access_flags.is_final())
-                .then(|| Self::default_value(field.field_type()))
-                .flatten()
-        })
+    pub fn implicit_initializer(&self) -> Option<DexValue> {
+        if self.default_preparation
+            && self.initializer.is_none()
+            && self.access_flags.is_static()
+            && self.access_flags.is_final()
+        {
+            Self::default_value(&self.field_type)
+        } else {
+            None
+        }
     }
 
     fn default_value(ty: &ArgType) -> Option<DexValue> {

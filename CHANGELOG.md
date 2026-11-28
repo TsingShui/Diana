@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.17 - 2026-11-28
+
+- Preserved active reads of static final fields with implicit default values.
+  Cross-class reads still trigger initialization and observe its effects
+  and failures in DEX and JVM recovery.
+
 ## 0.4.16 - 2026-11-28
 
 - Preserved eager, left-to-right evaluation of effectful floating-point

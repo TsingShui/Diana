@@ -1,0 +1,7 @@
+{
+  "compile-only": ["compiled:0:true"],
+  "normal-zero": ["compiled:0:true", "first:zero", "parent:start", "parent:complete", "value:zero:0", "second:null", "value:null:true", "compiled:0:true", "narrow:0:0"],
+  "normal-null": ["compiled:0:true", "first:null", "parent:start", "parent:complete", "value:null:true", "second:zero", "value:zero:0", "compiled:0:true", "narrow:0:0"],
+  "fail-zero": ["compiled:0:true", "first:zero", "parent:start", "parent:fault", "error:initial:true", "second:null", "error:prior", "compiled:0:true"],
+  "fail-null": ["compiled:0:true", "first:null", "parent:start", "parent:fault", "error:initial:true", "second:zero", "error:prior", "compiled:0:true"]
+}
