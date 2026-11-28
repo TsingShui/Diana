@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.2 - 2026-11-28
+
+- Expanded the embedded Agent Skill with recommended workflows for APK, DEX,
+  and JVM analysis. The guide includes original class and method coordinates,
+  caller and callee queries, archive inspection, comparison, and export.
+- Updated the workspace and release builds to Rust 1.100.
+
 ## 0.4.1 - 2026-11-28
 
 - Added native analysis and Java-like source recovery for JAR archives and
