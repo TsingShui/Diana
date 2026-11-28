@@ -1,0 +1,18 @@
+{
+  "run": [
+    {"id":"normal-once","arguments":["none","0"],"expected":["initialClock","schedule","save:4294967400","wait","refreshClock","reacquire","cancel","return"]},
+    {"id":"initial-clock-fault-before-alarm","arguments":["initial-clock","0"],"expected":["initialClock","escape:primary"]},
+    {"id":"early-schedule-throws","arguments":["early","0"],"expected":["initialClock","schedule","cancel","diagnostic:4294967400:4294967332:primary","escape:primary"]},
+    {"id":"early-cancel-replaces-fault","arguments":["early","1"],"expected":["initialClock","schedule","cancel","diagnostic:4294967400:4294967332:replacement","escape:replacement"]},
+    {"id":"refresh-clock-throws-before-new-commit","arguments":["refresh-clock","0"],"expected":["initialClock","schedule","save:4294967400","wait","refreshClock","cancel","diagnostic:4294967400:4294967332:primary","escape:primary"]},
+    {"id":"nonmatching-wait-throws-after-refresh","arguments":["wait","0"],"expected":["initialClock","schedule","save:4294967400","wait","refreshClock","reacquire","cancel","diagnostic:8589934600:132:primary","escape:primary"]},
+    {"id":"save-fault-also-refreshes","arguments":["save","0"],"expected":["initialClock","schedule","save:4294967400","refreshClock","reacquire","cancel","diagnostic:8589934600:132:primary","escape:primary"]},
+    {"id":"late-reacquire-throws","arguments":["late","0"],"expected":["initialClock","schedule","save:4294967400","wait","refreshClock","reacquire","cancel","diagnostic:8589934600:132:primary","escape:primary"]},
+    {"id":"late-cancel-replaces-fault","arguments":["late","1"],"expected":["initialClock","schedule","save:4294967400","wait","refreshClock","reacquire","cancel","diagnostic:8589934600:132:replacement","escape:replacement"]},
+    {"id":"normal-cancel-throws","arguments":["none","1"],"expected":["initialClock","schedule","save:4294967400","wait","refreshClock","reacquire","cancel","diagnostic:8589934600:132:replacement","escape:replacement"]},
+    {"id":"caught-interruption-once","arguments":["interrupt","0"],"expected":["initialClock","schedule","save:4294967400","wait","interruption:interrupted","refreshClock","reacquire","cancel","return"]},
+    {"id":"caught-interruption-cancel-throws","arguments":["interrupt","1"],"expected":["initialClock","schedule","save:4294967400","wait","interruption:interrupted","refreshClock","reacquire","cancel","diagnostic:8589934600:132:replacement","escape:replacement"]},
+    {"id":"interruption-handler-throws","arguments":["interruption","0"],"expected":["initialClock","schedule","save:4294967400","wait","interruption:interrupted","refreshClock","reacquire","cancel","diagnostic:8589934600:132:interruption-fault","escape:interruption-fault"]},
+    {"id":"second-cleanup-must-not-exist","arguments":["none","2"],"expected":["initialClock","schedule","save:4294967400","wait","refreshClock","reacquire","cancel","return"]}
+  ]
+}

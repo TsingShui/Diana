@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "id": "dex-exception-state-snapshots",
+  "default": false,
+  "input": "classes.dex",
+  "input_sha256": "9649aaf23a0adb3f070ceebdbc0d56a2f64c458d08474c7d157b4b0a33738102",
+  "probe": "decbench_probe.py",
+  "oracle_files": [
+    "BackoffNested.java",
+    "BackoffNested.smali",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m6",
+      "member": "Lfixture/BackoffNested;->run()V",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

@@ -1693,9 +1693,25 @@ impl PhiCopies {
                     ) else {
                         continue;
                     };
-                    let predecessors = (argument.edge_kind == crate::ir::EdgeKind::Exception)
+                    // A retained rethrow observes the state after its cleanup
+                    // effects. Projection to the protected body can move a
+                    // copy before the definition of its source.
+                    let predecessors = argument
+                        .edge_kind
+                        .is_exception()
                         .then(|| regions.exceptional_rethrow_sources(argument.predecessor))
                         .flatten()
+                        .filter(|_| {
+                            cfg.block(argument.predecessor)
+                                .and_then(|block| block.terminator())
+                                .is_some_and(|terminator| {
+                                    terminator.insn_type == InsnType::Throw
+                                        && regions.is_elided(&StatementOrigin {
+                                            block: argument.predecessor,
+                                            instruction: terminator.id,
+                                        })
+                                })
+                        })
                         .cloned()
                         .unwrap_or_else(|| BTreeSet::from([argument.predecessor]));
                     for predecessor in predecessors {

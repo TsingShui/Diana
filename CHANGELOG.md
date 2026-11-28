@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.5 - 2026-11-28
+
+- Preserved the local state at explicit DEX rethrows after cleanup. In
+  FairEmail's `monitorAccount`, early scheduling failures retain the
+  previous timestamp, and failures after a refresh retain the fresh value.
+- Added DecBench coverage for this state transfer through split catcher
+  entries, wide register moves, and cancellation failures that replace a
+  pending exception.
+
 ## 0.4.4 - 2026-11-28
 
 - Recovered a single DEX `finally` when split catch-all entries forward

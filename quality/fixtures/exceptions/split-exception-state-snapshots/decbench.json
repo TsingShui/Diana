@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "id": "dex-split-exception-state-snapshots",
+  "default": false,
+  "input": "classes.dex",
+  "input_sha256": "e0433703590ac1146258850ecd5654883764ddf9610d576b9f75505a60c43965",
+  "probe": "decbench_probe.py",
+  "oracle_files": [
+    "BackoffSplit.java",
+    "BackoffSplit.smali",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m6",
+      "member": "Lfixture/BackoffSplit;->run()V",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}
