@@ -15,6 +15,7 @@ pub(super) struct ContinuationUpdate {
     updates: usize,
     continues: usize,
     removed: usize,
+    protected: usize,
     valid: bool,
 }
 
@@ -31,6 +32,7 @@ impl ContinuationUpdate {
             updates: 0,
             continues: 0,
             removed: 0,
+            protected: 0,
             valid: true,
         }
     }
@@ -82,6 +84,15 @@ impl ContinuationUpdate {
 impl SemanticFolder for ContinuationUpdate {
     type Error = SemanticFoldError;
 
+    fn enter_node(&mut self, node: &SemanticNode) {
+        if matches!(
+            node,
+            SemanticNode::Try { .. } | SemanticNode::Synchronized { .. }
+        ) {
+            self.protected += 1;
+        }
+    }
+
     fn finish_node(&mut self, mut node: SemanticNode) -> Result<SemanticNode, Self::Error> {
         let is_local_continue = self.is_local_continue(&node);
         match &mut node {
@@ -92,9 +103,12 @@ impl SemanticFolder for ContinuationUpdate {
                     }
                 }
             }
-            SemanticNode::Leave(_) if is_local_continue => {
+            SemanticNode::Leave(leave) if is_local_continue => {
                 self.continues += 1;
+                self.valid &=
+                    self.protected == 0 && leave.condition.is_none() && leave.cleanup.is_empty();
             }
+            SemanticNode::Try { .. } | SemanticNode::Synchronized { .. } => self.protected -= 1,
             SemanticNode::Sequence(nodes) => {
                 for index in 1..nodes.len() {
                     if !self.is_local_continue(&nodes[index]) {

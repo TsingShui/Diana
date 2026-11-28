@@ -114,11 +114,22 @@ impl SemanticFolder for JavaLoopSyntax<'_> {
                 continue;
             }
             statements.reverse();
-            let Some(fact) =
-                LoopSyntaxProof::new(self.hierarchy).prove(&statements, &children[index])
-            else {
-                index += 1;
-                continue;
+            let proof = LoopSyntaxProof::new(self.hierarchy);
+            let normalized;
+            let (fact, loop_node) = if let Some(fact) = proof.prove(&statements, &children[index]) {
+                (fact, &children[index])
+            } else {
+                let Some(loop_node) = LoopGuardCondition::expose_iteration_tail(&children[index])
+                else {
+                    index += 1;
+                    continue;
+                };
+                normalized = loop_node;
+                let Some(fact) = proof.prove(&statements, &normalized) else {
+                    index += 1;
+                    continue;
+                };
+                (fact, &normalized)
             };
             let mut local_facts = crate::ir::SemanticExpressionFacts::default();
             for node in &children[start..=index] {
@@ -129,8 +140,7 @@ impl SemanticFolder for JavaLoopSyntax<'_> {
                 continue;
             }
             let previous = SemanticNode::sequence(children[start..index].iter().cloned());
-            let Some((previous, loop_node)) =
-                LoopForm::apply(fact, previous, children[index].clone())
+            let Some((previous, loop_node)) = LoopForm::apply(fact, previous, loop_node.clone())
             else {
                 index += 1;
                 continue;

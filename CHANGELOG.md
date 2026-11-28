@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.24 - 2026-11-29
+
+- Recovered counted loops with explicit continuation tails and effectful exits.
+- Kept induction updates ordered with uses, exceptions, and monitor cleanup.
+
 ## 0.4.23 - 2026-11-29
 
 - Recovered annotation element defaults from DEX and JVM input.

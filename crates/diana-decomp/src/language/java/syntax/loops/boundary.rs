@@ -67,6 +67,8 @@ impl StatementBoundary {
                     Boundary::First => pending.extend(children.iter().rev()),
                     Boundary::Last => pending.extend(children.iter()),
                 },
+                SemanticNode::Empty | SemanticNode::BasicBlock(_) => {}
+                _ if matches!(boundary, Boundary::Last) => return None,
                 _ => {}
             }
         }

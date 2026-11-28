@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "id": "dex-counted-continue-update",
+  "default": true,
+  "input": "classes.dex",
+  "input_sha256": "13b1515ec38c13e2bd098d0ff8bb2b8fcda1626ea9976c757f8d0b1eb414e315",
+  "structure": {
+    "reference": "CountedContinueUpdate.java",
+    "class_at": "e0:l0:c0",
+    "class_member": "Lfixture/CountedContinueUpdate;"
+  },
+  "probe": "verify.py",
+  "oracle_files": ["CheckCountedContinue.java", "CountedContinueUpdate.java", "CountedContinueUpdate.smali", "scenarios.json"],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m0",
+      "member": "Lfixture/CountedContinueUpdate;->advanceThenStop([IILjava/lang/ArithmeticException;)I",
+      "behavior": true,
+      "structure": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m1",
+      "member": "Lfixture/CountedContinueUpdate;->holdOnZero([I)I",
+      "behavior": true,
+      "structure": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m2",
+      "member": "Lfixture/CountedContinueUpdate;->observeAfterAdvance([ILjava/lang/ArithmeticException;)I",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

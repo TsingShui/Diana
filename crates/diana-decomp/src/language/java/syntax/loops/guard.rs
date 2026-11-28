@@ -59,11 +59,93 @@ impl LoopGuardCondition {
             (left, right) => SemanticPredicate::And(vec![left, right]),
         }
     }
+
+    /// Provides a lexical iteration tail for the counted-loop proof.
+    pub(super) fn expose_iteration_tail(node: &SemanticNode) -> Option<SemanticNode> {
+        let SemanticNode::Loop {
+            control,
+            header,
+            kind: SemanticLoopKind::PreTested,
+            test,
+            body,
+        } = node
+        else {
+            return None;
+        };
+        let body = GuardedIteration::remove_terminal_continue(body, *control)
+            .or_else(|| GuardedIteration::separate_trailing_exit(body, *control))?;
+        Some(SemanticNode::Loop {
+            control: *control,
+            header: *header,
+            kind: SemanticLoopKind::PreTested,
+            test: test.clone(),
+            body: Box::new(body),
+        })
+    }
 }
 
 struct GuardedIteration;
 
 impl GuardedIteration {
+    // The continuing arm skips a straight-line abrupt exit. Keep that exit
+    // and its effects in the inverted branch, then use iteration fallthrough.
+    fn separate_trailing_exit(
+        body: &SemanticNode,
+        control: SemanticLoopControl,
+    ) -> Option<SemanticNode> {
+        let SemanticNode::Sequence(nodes) = body else {
+            return None;
+        };
+        let mut meaningful = nodes
+            .iter()
+            .enumerate()
+            .rev()
+            .filter(|(_, node)| !Self::empty(node));
+        let (_, exit) = meaningful.next()?;
+        let leave = Self::single_leave(exit)?;
+        if leave.condition.is_some()
+            || !matches!(
+                leave.kind,
+                SemanticLeaveKind::Break
+                    | SemanticLeaveKind::BreakLabel(_)
+                    | SemanticLeaveKind::Return(_)
+                    | SemanticLeaveKind::Throw(_)
+            )
+        {
+            return None;
+        }
+        let (index, decision) =
+            meaningful.find(|(_, node)| !matches!(node, SemanticNode::BasicBlock(_)))?;
+        let SemanticNode::If {
+            condition,
+            then_node,
+            else_node,
+        } = decision
+        else {
+            return None;
+        };
+        if !else_node.as_deref().is_none_or(Self::empty) {
+            return None;
+        }
+        let continuation = Self::remove_terminal_continue(then_node, control)?;
+        let exit = SemanticNode::sequence(
+            else_node
+                .iter()
+                .map(|node| node.as_ref().clone())
+                .chain(nodes[index + 1..].iter().cloned()),
+        );
+        let mut condition = condition.clone();
+        condition.value = condition.value.negate();
+        let guard = SemanticNode::If {
+            condition,
+            then_node: Box::new(exit),
+            else_node: None,
+        };
+        Some(SemanticNode::sequence(
+            nodes[..index].iter().cloned().chain([guard, continuation]),
+        ))
+    }
+
     fn analyze(
         control: SemanticLoopControl,
         body: &SemanticNode,
@@ -184,13 +266,16 @@ impl GuardedIteration {
     }
 
     fn is_local_continue(node: &SemanticNode, control: SemanticLoopControl) -> bool {
-        Self::single_leave(node).is_some_and(|leave| match control {
-            SemanticLoopControl::Region(region) => {
-                matches!(leave.kind, SemanticLeaveKind::Continue) && leave.target == region
-            }
-            SemanticLoopControl::Label(label) => {
-                matches!(leave.kind, SemanticLeaveKind::ContinueLabel(target) if target == label)
-            }
+        Self::single_leave(node).is_some_and(|leave| {
+            leave.condition.is_none()
+                && match control {
+                    SemanticLoopControl::Region(region) => {
+                        matches!(leave.kind, SemanticLeaveKind::Continue) && leave.target == region
+                    }
+                    SemanticLoopControl::Label(label) => {
+                        matches!(leave.kind, SemanticLeaveKind::ContinueLabel(target) if target == label)
+                    }
+                }
         })
     }
 
