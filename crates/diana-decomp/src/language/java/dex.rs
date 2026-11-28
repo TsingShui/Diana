@@ -3018,6 +3018,14 @@ impl DexJavaDialect {
             else {
                 continue;
             };
+            if matches!(argument.expression, JavaExpr::Literal(JavaLiteral::Null)) {
+                if let Some(ty) = self.instantiated_null_argument_type(method, expected, argument) {
+                    argument.expression = JavaExpr::Cast {
+                        ty,
+                        value: Box::new(JavaExpr::Literal(JavaLiteral::Null)),
+                    };
+                }
+            }
             let integral_target = expected.as_primitive().filter(|primitive| {
                 matches!(
                     primitive,
@@ -3082,6 +3090,40 @@ impl DexJavaDialect {
                 self.disambiguate_null_argument(method, index, expected, expression)
             })
             .collect()
+    }
+
+    fn instantiated_null_argument_type(
+        &self,
+        method: &MethodReference,
+        erased: &ArgType,
+        argument: &InvocationArgument,
+    ) -> Option<JavaType> {
+        let formal = self
+            .generic_methods
+            .get(method)?
+            .signature
+            .parameter_types
+            .get(argument.index)?;
+        if !erased.is_reference() || !formal.contains_type_variable() {
+            return None;
+        }
+        let inferred = argument.inferred.as_ref()?;
+        let concrete = self.source_erasure(inferred)?;
+        if concrete == *erased
+            || self.current_type.as_ref() != Some(&concrete)
+                && self
+                    .generic_type_projection
+                    .as_deref()
+                    .is_some_and(|projection| projection.is_inaccessible_reference_type(&concrete))
+        {
+            return None;
+        }
+        // A solved generic argument can be narrower than its original
+        // descriptor. For null, that source type stays admissible without
+        // introducing a runtime conversion or requiring the erased type
+        // to satisfy a bound that the declaration places on the argument.
+        self.source_assignable_to(inferred, &self.source_type(erased).ok()?.into_raw())
+            .then(|| inferred.clone())
     }
 
     fn invocation_operand_type(

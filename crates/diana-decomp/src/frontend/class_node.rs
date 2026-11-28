@@ -366,6 +366,11 @@ impl ClassNode {
         &mut self.methods
     }
 
+    pub(crate) fn retain_methods(&mut self, keep: impl FnMut(&MethodNode) -> bool) {
+        self.method_cache.take();
+        self.methods.retain(keep);
+    }
+
     /// Get method by index
     pub fn method(&self, idx: usize) -> Option<&MethodNode> {
         self.methods.get(idx)

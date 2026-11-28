@@ -246,38 +246,45 @@ fn recover_impl(
         Ok(rows) => {
             for (position, row) in rows.enumerate() {
                 let ordinal = position as u16;
-                if method.is_some_and(|selected| ordinal > selected) {
-                    break;
-                }
                 let member = match row {
                     Ok(member) => member,
                     Err(error) => {
-                        issues.push(SourceIssue::declaration(None, Some(ordinal), error.into()));
+                        if method.is_none() || !found {
+                            issues.push(SourceIssue::declaration(
+                                None,
+                                Some(ordinal),
+                                error.into(),
+                            ));
+                        }
                         break;
                     }
                 };
-                if method.is_some_and(|selected| member.ordinal() != selected) {
-                    continue;
-                }
-                found = true;
+                let publish = method.is_none_or(|selected| member.ordinal() == selected);
+                found |= publish;
+                let mut context_issues = Vec::new();
+                let local_issues = if publish {
+                    &mut issues
+                } else {
+                    &mut context_issues
+                };
                 match method_node(
                     class,
                     member,
                     &descriptor,
                     generics.as_ref(),
-                    has_annotations,
-                    collect_members,
-                    &mut issues,
+                    has_annotations && publish,
+                    collect_members && publish,
+                    local_issues,
                 ) {
                     Ok((declaration, identity)) => {
                         let position = node.methods().len();
-                        if !(declaration.is_native() || declaration.is_abstract()) {
+                        if publish && !(declaration.is_native() || declaration.is_abstract()) {
                             methods.push((position, member));
                         }
                         node.add_method(declaration);
                         members.extend(identity);
                     }
-                    Err(error) => issues.push(SourceIssue::declaration(
+                    Err(error) => local_issues.push(SourceIssue::declaration(
                         None,
                         Some(member.ordinal()),
                         error,
@@ -295,6 +302,17 @@ fn recover_impl(
             return Err(SourceError::MissingMethod(ordinal));
         }
     }
+    // Sibling declarations describe the selected method's calls and overloads.
+    // Capture that context before reducing the publication to one original
+    // member. Body preparation still covers only the requested definitions.
+    let type_hierarchy = hierarchy(&[&node]);
+    let source_abi = java_abi(&[&node]);
+    if let Some(ordinal) = method {
+        node.retain_methods(|declaration| declaration.id == u32::from(ordinal));
+        if let Some((position, _)) = methods.first_mut() {
+            *position = 0;
+        }
+    }
     let observer = Arc::new(MethodFailureObserver::default());
     let parallel = jobs != Some(1) && methods.len() >= 8;
     let work = || {
@@ -309,13 +327,12 @@ fn recover_impl(
             inputs.push(input);
             issues.extend(local);
         }
-        let declarations = [&node];
         let text =
             JavaDecompiler::new(JavaDecompilerConfig::default().with_preserved_dex_names(true))
                 .with_parallel_methods(parallel)
                 .with_physical_methods()
-                .with_shared_type_hierarchy(hierarchy(&declarations))
-                .with_source_abi(java_abi(&declarations))
+                .with_shared_type_hierarchy(type_hierarchy)
+                .with_source_abi(source_abi)
                 .with_analysis_observer(observer.clone())
                 .generate_class_with_nested(&node, inputs, Vec::new())
                 .map_err(|error| SourceError::Backend(error.to_string()))?;

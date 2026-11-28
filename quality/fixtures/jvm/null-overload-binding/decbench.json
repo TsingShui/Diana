@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "id": "jvm-null-overload-binding",
+  "prepared": true,
+  "input": "null-overload-binding/NullableOverload.class",
+  "probe": "verify.py",
+  "oracle_files": ["CheckNull.java", "NullEffects.java", "NullableOverload.java"],
+  "methods": [
+    {
+      "at": "j0:m1",
+      "member": "LNullableOverload;->object(LNullableOverload;)Ljava/lang/String;",
+      "issues": [],
+      "behavior": true
+    },
+    {
+      "at": "j0:m2",
+      "member": "LNullableOverload;->integer(LNullableOverload;)Ljava/lang/String;",
+      "issues": [],
+      "behavior": true
+    },
+    {
+      "at": "j0:m3",
+      "member": "LNullableOverload;->guarded(LNullableOverload;Z)Ljava/lang/String;",
+      "issues": [],
+      "behavior": true
+    },
+    {
+      "at": "j0:m4",
+      "member": "LNullableOverload;->bounded()Ljava/lang/String;",
+      "issues": [],
+      "behavior": true
+    }
+  ]
+}

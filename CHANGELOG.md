@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.29 - 2026-11-29
+
+- Preserved instantiated generic types for null arguments during overload recovery.
+- Used same-class JVM declarations as type context for focused method recovery.
+
 ## 0.4.28 - 2026-11-29
 
 - Preserved original overload selection for nested generic invocation arguments.

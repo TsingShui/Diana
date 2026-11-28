@@ -1,24 +1,24 @@
-## Diana CLI 0.4.28
+## Diana CLI 0.4.29
 
-- Preserve the original overload when a nested reference-returning call
-  can acquire a narrower type in the recovered argument context.
-- Use original parameter and return descriptors to anchor arguments with
-  identity or widening reference casts.
+- Render null arguments with the original instantiated generic parameter
+  type when it keeps the selected overload and preserves existing effects.
+- Use sibling JVM declarations for the type context of a selected method,
+  while recovering only the selected body.
 
 ### Install or upgrade Diana
 
 For macOS and Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/TsingShui/Diana/diana-v0.4.28/install.sh -o install-diana.sh
-sh install-diana.sh diana-v0.4.28
+curl -fsSL https://raw.githubusercontent.com/TsingShui/Diana/diana-v0.4.29/install.sh -o install-diana.sh
+sh install-diana.sh diana-v0.4.29
 ```
 
 To build the released CLI from source, use Rust 1.100 or newer and native
 build tools.
 
 ```sh
-cargo install --git https://github.com/TsingShui/Diana.git --tag diana-v0.4.28 --locked diana
+cargo install --git https://github.com/TsingShui/Diana.git --tag diana-v0.4.29 --locked diana
 ```
 
 Windows users can extract `diana.exe` from the matching ZIP and add it to PATH.
