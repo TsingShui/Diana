@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.8 - 2026-11-28
+
+- Kept effectful DEX argument computations before `new` when allocation
+  and initialization have no intervening observable operations. This
+  preserves the order of `Pattern.compile` and visitor construction in
+  FairEmail's `HtmlHelper.autoLink`.
+
 ## 0.4.7 - 2026-11-28
 
 - Preserved integral overloads when DEX and JVM recovery publish Java-like

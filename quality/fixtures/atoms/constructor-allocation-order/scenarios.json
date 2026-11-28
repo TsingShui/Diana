@@ -1,0 +1,34 @@
+{
+  "run": [
+    {
+      "id": "cold-success",
+      "arguments": ["false", "2", "false"],
+      "expected": ["first:2:0", "second:3:0", "class-init:0:0", "construct:6:4", "return:64:0"]
+    },
+    {
+      "id": "cold-prepare-fault-then-retry",
+      "arguments": ["false", "2", "true", "4", "false"],
+      "expected": ["first:2:0", "second:3:1", "throw-prepare:2:0", "first:4:0", "second:5:0", "class-init:0:0", "construct:8:8", "return:88:0"]
+    },
+    {
+      "id": "cold-and-warm-success",
+      "arguments": ["false", "2", "false", "4", "false"],
+      "expected": ["first:2:0", "second:3:0", "class-init:0:0", "construct:6:4", "return:64:0", "first:4:0", "second:5:0", "construct:8:8", "return:88:0"]
+    },
+    {
+      "id": "warm-prepare-fault-then-retry",
+      "arguments": ["false", "2", "false", "4", "true", "5", "false"],
+      "expected": ["first:2:0", "second:3:0", "class-init:0:0", "construct:6:4", "return:64:0", "first:4:0", "second:5:1", "throw-prepare:4:0", "first:5:0", "second:6:0", "construct:9:10", "return:100:0"]
+    },
+    {
+      "id": "cold-class-init-fault-and-erroneous-retry",
+      "arguments": ["true", "2", "false", "4", "false"],
+      "expected": ["first:2:0", "second:3:0", "class-init:0:0", "throw-class-init:2:0", "first:4:0", "second:5:0", "throw-erroneous-class:4:0"]
+    },
+    {
+      "id": "cold-constructor-fault-then-warm-retry",
+      "arguments": ["false", "7", "false", "4", "false"],
+      "expected": ["first:7:0", "second:8:0", "class-init:0:0", "construct:11:14", "throw-constructor:7:0", "first:4:0", "second:5:0", "construct:8:8", "return:88:0"]
+    }
+  ]
+}

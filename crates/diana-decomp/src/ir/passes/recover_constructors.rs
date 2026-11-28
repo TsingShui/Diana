@@ -3,9 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::ir::analysis::{
-    DominanceError, DominanceFrontier, DominatorTree, InsnPosition, ObjectInitialization,
-    ObjectInitializationError, ObjectInitializations, SsaInvariantError, SsaValueGraph, SsaVar,
-    TypeHierarchy,
+    DominanceError, DominanceFrontier, DominatorTree, InsnPosition, InstructionEffects,
+    ObjectInitialization, ObjectInitializationError, ObjectInitializations, SsaInvariantError,
+    SsaValueGraph, SsaVar, TypeHierarchy,
 };
 use crate::ir::{
     ArgType, BlockId, EdgeKind, InsnArg, InsnNode, InsnType, InstructionTransform, InstructionTree,
@@ -608,6 +608,7 @@ impl RecoverConstructors<'_> {
         let mut replacements = BTreeMap::<SsaVar, SsaVar>::new();
         let mut removals = facts.discarded_allocations().clone();
         let mut constructors = BTreeMap::new();
+        let mut allocations_at_call = BTreeSet::new();
         let mut exceptional_edges = Vec::new();
         for allocation in facts.discarded_allocations() {
             for &(handler, kind) in cfg.successors_with_kind(allocation.block) {
@@ -623,6 +624,9 @@ impl RecoverConstructors<'_> {
                 continue;
             }
             if let [constructor] = initialization.constructors.as_slice() {
+                if Self::allocation_at_call(cfg, initialization.allocation, *constructor) {
+                    allocations_at_call.insert(*constructor);
+                }
                 replacements.extend(
                     initialization
                         .aliases
@@ -739,6 +743,8 @@ impl RecoverConstructors<'_> {
                     instruction.insn_type = InsnType::Constructor;
                     instruction.result = Some(result);
                     instruction.payload.class_type = Some(Box::new(ty.clone()));
+                    instruction.payload.constructor_allocation_at_call =
+                        allocations_at_call.contains(&position);
                 }
                 rewritten.push(instruction);
             }
@@ -767,6 +773,57 @@ impl RecoverConstructors<'_> {
             Self::remove_allocation_edge(cfg, allocation, handler)?;
         }
         Ok(PassResult::Changed)
+    }
+
+    fn allocation_at_call(cfg: &CFG, allocation: InsnPosition, constructor: InsnPosition) -> bool {
+        let mut block = allocation.block;
+        let Some(mut start) = allocation.index.checked_add(1) else {
+            return false;
+        };
+        // The original order may span blocks split at throwing instructions.
+        // A single incoming normal edge keeps each interior span on the same
+        // path. The block count bounds malformed or cyclic chains.
+        for _ in 0..cfg.blocks.len() {
+            let Some(body) = cfg.block(block) else {
+                return false;
+            };
+            let end = if block == constructor.block {
+                constructor.index
+            } else {
+                body.insns.len()
+            };
+            let Some(intervening) = body.insns.get(start..end) else {
+                return false;
+            };
+            if intervening.iter().any(|instruction| {
+                let effects = InstructionEffects::of_tree(instruction);
+                if instruction.insn_type == InsnType::Goto {
+                    !effects.without_control().is_pure()
+                } else {
+                    !effects.is_pure()
+                }
+            }) {
+                return false;
+            }
+            if block == constructor.block {
+                return true;
+            }
+            let mut successors = cfg.normal_successors(block);
+            let Some(next) = successors.next() else {
+                return false;
+            };
+            if successors.next().is_some()
+                || cfg
+                    .predecessors_with_kind(next)
+                    .iter()
+                    .any(|&(source, kind)| source != block || kind.is_exception())
+            {
+                return false;
+            }
+            block = next;
+            start = 0;
+        }
+        false
     }
 
     fn remove_allocation_edge(

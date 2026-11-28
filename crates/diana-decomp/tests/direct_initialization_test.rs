@@ -82,6 +82,52 @@ fn ordinary_construction_keeps_natural_syntax() {
 }
 
 #[test]
+fn observable_preparation_stays_before_the_constructor_expression() {
+    let analysis = method(
+        include_bytes!("../../../quality/fixtures/atoms/constructor-allocation-order/classes.dex"),
+        "LConstructorPrefix;",
+        "run",
+        "(IZ)I",
+    );
+    no_failures(&analysis.failures);
+    let text = analysis.rendered.text();
+    let (_, body) = text
+        .split_once("public static int run(")
+        .expect("run method");
+    let (preparation, construction) = body
+        .split_once("new PrefixValue(")
+        .expect("natural constructor expression");
+    assert!(
+        preparation.contains("ConstructorPrefix.prepareSecond("),
+        "{text}"
+    );
+    assert!(
+        !construction
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .contains("prepareSecond("),
+        "{text}"
+    );
+}
+
+#[test]
+fn argument_effects_after_allocation_remain_inside_the_expression() {
+    let analysis = method(
+        include_bytes!("../../../quality/fixtures/atoms/constructor-argument-effects/classes.dex"),
+        "Lfixture/ArgumentEffects;",
+        "tree",
+        "(II)Lfixture/Point;",
+    );
+    no_failures(&analysis.failures);
+    let text = analysis.rendered.text();
+    assert!(
+        text.contains("new Point(ArgumentEffects.finish(ArgumentEffects.read(0,"),
+        "{text}"
+    );
+}
+
+#[test]
 fn retains_alias_effect_order_and_handler_boundaries() {
     let analysis = method(
         EFFECTS,

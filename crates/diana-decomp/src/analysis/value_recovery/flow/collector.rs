@@ -493,6 +493,7 @@ impl<'ir> FlowCollector<'ir> {
     ) -> Result<bool, ValueRecoveryError> {
         let mut operation = operation;
         let (mut operands, mut covers_operation) = evaluation_operands(operation)?;
+        prefix.include_before_arguments(operation);
         // The evaluation cursor already orders the children, including field
         // and array stores. Only a nested operation suspends that cursor.
         let mut parents = smallvec::SmallVec::<[_; 3]>::new();
@@ -514,6 +515,7 @@ impl<'ir> FlowCollector<'ir> {
                     parents.push((operation, operands));
                     operation = child;
                     operands = children;
+                    prefix.include_before_arguments(operation);
                 }
                 Some(SemanticExpression::Select {
                     condition,

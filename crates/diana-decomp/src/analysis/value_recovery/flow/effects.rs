@@ -135,6 +135,13 @@ impl EffectSummary {
         Self::with_instruction_effects(operation, operation.direct_effects())
     }
 
+    pub(super) fn include_before_arguments(&mut self, operation: &SemanticOperation) {
+        let effects = InstructionEffects::before_arguments(operation.insn_type, &operation.payload);
+        if !effects.is_pure() {
+            *self = std::mem::take(self).join(Self::with_instruction_effects(operation, effects));
+        }
+    }
+
     fn with_instruction_effects(
         operation: &SemanticOperation,
         instruction: InstructionEffects,

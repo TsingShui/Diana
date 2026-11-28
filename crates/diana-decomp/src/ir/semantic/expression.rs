@@ -824,7 +824,7 @@ impl SemanticOperation {
         if self.id == target {
             return Ok(Some(InstructionEffects::PURE));
         }
-        let mut effects = InstructionEffects::PURE;
+        let mut effects = InstructionEffects::before_arguments(self.insn_type, &self.payload);
         let mut pending = vec![EvaluationTask::Effect(self)];
         pending.extend(
             self.evaluation_operands_iter()?
@@ -837,6 +837,10 @@ impl SemanticOperation {
                     if operation.id == target {
                         return Ok(Some(effects));
                     }
+                    effects = effects.join(InstructionEffects::before_arguments(
+                        operation.insn_type,
+                        &operation.payload,
+                    ));
                     pending.push(EvaluationTask::Effect(operation));
                     pending.extend(
                         operation

@@ -445,6 +445,7 @@ impl InsnPayload {
             && left.record_operation == right.record_operation
             && left.string_value == right.string_value
             && left.class_type == right.class_type
+            && left.constructor_allocation_at_call == right.constructor_allocation_at_call
             && left.cast_type == right.cast_type
             && left.fill_array_data == right.fill_array_data
             && match (&left.switch_cases, &right.switch_cases) {
@@ -712,6 +713,10 @@ pub struct ExtendedInsnPayload {
     /// For ConstClass: class type
     pub class_type: Option<Box<ArgType>>,
 
+    /// A recovered constructor whose original allocation and initialization
+    /// were separated only by unobservable straight-line instructions.
+    pub constructor_allocation_at_call: bool,
+
     /// For type-related ops: type index in DEX type pool
     pub type_index: Option<u32>,
 
@@ -750,6 +755,7 @@ impl std::ops::Deref for InsnPayload {
             string_value: None,
             string_index: None,
             class_type: None,
+            constructor_allocation_at_call: false,
             type_index: None,
             cast_type: None,
             switch_cases: None,

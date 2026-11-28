@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "id": "dex-constructor-preallocation-order",
+  "input": "classes.dex",
+  "input_sha256": "6ebfefce2a7cc6e20d1198a786e263170da396dabaecc9faa62bdac444d34965",
+  "probe": "decbench_probe.py",
+  "oracle_files": [
+    "ConstructorPrefix.java",
+    "ConstructorPrefix.smali",
+    "PrefixValue.smali",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m4",
+      "member": "LConstructorPrefix;->run(IZ)I",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}
