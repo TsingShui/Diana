@@ -582,7 +582,7 @@ pub enum SemanticNode {
     Synchronized {
         region: RegionId,
         lock: SemanticOperand<SemanticExpression>,
-        method: bool,
+
         body: Box<SemanticNode>,
     },
     Label {
@@ -726,17 +726,11 @@ impl Clone for SemanticNode {
                     );
                     tasks.push(SemanticCloneTask::Visit(body));
                 }
-                SemanticCloneTask::Visit(Self::Synchronized {
-                    region,
-                    lock,
-                    method,
-                    body,
-                }) => {
+                SemanticCloneTask::Visit(Self::Synchronized { region, lock, body }) => {
                     tasks.push(SemanticCloneTask::Rebuild(
                         SemanticCloneFrame::Synchronized {
                             region: *region,
                             lock: lock.clone(),
-                            method: *method,
                         },
                     ));
                     tasks.push(SemanticCloneTask::Visit(body));
@@ -798,7 +792,6 @@ enum SemanticCloneFrame {
     Synchronized {
         region: RegionId,
         lock: SemanticOperand<SemanticExpression>,
-        method: bool,
     },
     Label(SemanticLabel),
 }
@@ -916,14 +909,10 @@ impl SemanticCloneFrame {
                     finally,
                 }
             }
-            Self::Synchronized {
+            Self::Synchronized { region, lock } => SemanticNode::Synchronized {
                 region,
                 lock,
-                method,
-            } => SemanticNode::Synchronized {
-                region,
-                lock,
-                method,
+
                 body: Box::new(Self::child(&mut children)),
             },
             Self::Label(label) => SemanticNode::Label {

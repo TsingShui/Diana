@@ -276,16 +276,10 @@ impl LexicalExitRewriter<'_> {
                         }));
                         tasks.push(RewriteTask::Visit { node: *body, scope });
                     }
-                    SemanticNode::Synchronized {
-                        region,
-                        lock,
-                        method,
-                        body,
-                    } => {
+                    SemanticNode::Synchronized { region, lock, body } => {
                         tasks.push(RewriteTask::Rebuild(RewriteFrame::Synchronized {
                             region,
                             lock,
-                            method,
                         }));
                         tasks.push(RewriteTask::Visit { node: *body, scope });
                     }
@@ -1179,7 +1173,6 @@ enum RewriteFrame {
     Synchronized {
         region: RegionId,
         lock: crate::ir::SemanticOperand<SemanticExpression>,
-        method: bool,
     },
     Label {
         label: SemanticLabel,
@@ -1423,17 +1416,13 @@ impl RewriteFrame {
                     pending,
                 })
             }
-            Self::Synchronized {
-                region,
-                lock,
-                method,
-            } => {
+            Self::Synchronized { region, lock } => {
                 let body = Self::only_child(children)?;
                 Ok(RewriteResult {
                     node: SemanticNode::Synchronized {
                         region,
                         lock,
-                        method,
+
                         body: Box::new(body.node),
                     },
                     pending: body.pending,

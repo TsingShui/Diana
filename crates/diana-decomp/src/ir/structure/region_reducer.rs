@@ -355,7 +355,6 @@ impl<'a> RegionReducer<'a> {
                     lock: crate::ir::SemanticOperand::new(
                         crate::ir::SemanticExpression::from_argument(synchronized.lock.clone())?,
                     ),
-                    method: synchronized.method,
                     body: Box::new(body),
                 },
                 _ => body,

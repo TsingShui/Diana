@@ -1,0 +1,43 @@
+{
+  "metadata-only": [
+    "before:false",
+    "return:false",
+    "after:false"
+  ],
+  "physical": [
+    "before:false",
+    "inside:true",
+    "return:true",
+    "after:false"
+  ],
+  "physical-fault": [
+    "before:false",
+    "inside:true",
+    "throw:true",
+    "after:false"
+  ],
+  "nested": [
+    "before:false",
+    "inside:true",
+    "return:true",
+    "after:false"
+  ],
+  "nested-fault": [
+    "before:false",
+    "inside:true",
+    "throw:true",
+    "after:false"
+  ],
+  "named": [
+    "before:false",
+    "inside:true",
+    "return:void",
+    "after:false"
+  ],
+  "named-fault": [
+    "before:false",
+    "inside:true",
+    "throw:true",
+    "after:false"
+  ]
+}

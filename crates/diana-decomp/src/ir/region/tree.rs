@@ -97,10 +97,9 @@ impl RegionTree {
         blocks: &BTreeSet<BlockId>,
         release_entries: &BTreeSet<BlockId>,
         release_segments: &BTreeSet<RegionId>,
-        method: bool,
     ) -> Result<SynchronizationRewrite, RegionInvariantError> {
         if release_entries.is_empty() {
-            return self.insert_standalone_synchronization(cfg, lock, enter, entry, blocks, method);
+            return self.insert_standalone_synchronization(cfg, lock, enter, entry, blocks);
         }
         SynchronizationPlacement::analyze(
             self,
@@ -113,7 +112,6 @@ impl RegionTree {
             blocks,
             release_entries,
             release_segments,
-            method,
         )?
         .apply(self, cfg, region_handlers)
     }
@@ -125,7 +123,6 @@ impl RegionTree {
         enter: BlockId,
         entry: BlockId,
         blocks: &BTreeSet<BlockId>,
-        method: bool,
     ) -> Result<SynchronizationRewrite, RegionInvariantError> {
         let blocks = self.close_monitor_cleanup_overlap(blocks);
         self.close_lexical_scope(enter, entry, &blocks)?;
@@ -134,7 +131,6 @@ impl RegionTree {
         SynchronizationPlacement::partition_handler_regions_for(self, cfg, None, &blocks)?;
         let kind = RegionKind::Synchronized(SynchronizedRegion {
             lock,
-            method,
             release_handlers: BTreeSet::new(),
         });
         let region = match self.insert_laminar_region(kind, entry, blocks.clone())? {
@@ -1097,7 +1093,6 @@ struct SynchronizationPlacement {
     user_handlers: BTreeSet<RegionId>,
     release_segments: BTreeSet<RegionId>,
     duplicate_handlers: Vec<RegionId>,
-    method: bool,
 }
 
 struct ProtectedDomain {
@@ -1123,7 +1118,6 @@ impl SynchronizationPlacement {
         blocks: &BTreeSet<BlockId>,
         release_entries: &BTreeSet<BlockId>,
         release_segments: &BTreeSet<RegionId>,
-        method: bool,
     ) -> Result<Self, RegionInvariantError> {
         tree.region(owner)
             .ok_or(RegionInvariantError::UnknownRegion(owner))?;
@@ -1161,23 +1155,12 @@ impl SynchronizationPlacement {
                 !release_handlers.contains(handler) && !nested_release_handlers.contains(handler)
             })
             .collect::<BTreeSet<_>>();
-        // A declared-synchronized method is one source-level lexical scope.
-        // Runtime monitor analysis stops at each synthetic monitor-exit, so it
-        // omits return/throw tails split after the exit. Those tails still
-        // belong to the method body and can otherwise cross a user handler at
-        // the same region depth. Keep only the synthetic enter and this
-        // monitor's release handler outside the recovered source scope.
-        let mut blocks = if method {
-            cfg.block_ids()
-                .into_iter()
-                .filter(|block| *block != enter && !own_release_blocks.contains(block))
-                .collect::<BTreeSet<_>>()
-        } else {
-            blocks
-                .difference(&own_release_blocks)
-                .copied()
-                .collect::<BTreeSet<_>>()
-        };
+        // Only the region proved for this explicit acquisition belongs to
+        // its scope. An implicit method monitor does not extend that region.
+        let mut blocks = blocks
+            .difference(&own_release_blocks)
+            .copied()
+            .collect::<BTreeSet<_>>();
         blocks.extend(user_handlers.iter().flat_map(|handler| {
             tree.region(*handler)
                 .into_iter()
@@ -1209,7 +1192,6 @@ impl SynchronizationPlacement {
             user_handlers,
             release_segments: release_segments.clone(),
             duplicate_handlers,
-            method,
         })
     }
 
@@ -1242,7 +1224,6 @@ impl SynchronizationPlacement {
         owner.entry = Some(self.entry);
         owner.kind = RegionKind::Synchronized(SynchronizedRegion {
             lock: self.lock,
-            method: self.method,
             release_handlers: self.release_handlers,
         });
         owner.children.sort_unstable();
@@ -2196,7 +2177,6 @@ mod tests {
             user_handlers: BTreeSet::new(),
             release_segments: BTreeSet::new(),
             duplicate_handlers: Vec::new(),
-            method: false,
         };
 
         placement.reparent_contained_regions(&mut tree).unwrap();
@@ -2358,7 +2338,6 @@ mod tests {
             &blocks([1, 2, 3]),
             &blocks([5]),
             &BTreeSet::new(),
-            false,
         )
         .unwrap();
 
@@ -2415,7 +2394,6 @@ mod tests {
             &scope,
             &BTreeSet::new(),
             &BTreeSet::new(),
-            true,
         )
         .unwrap();
 
@@ -2435,7 +2413,7 @@ mod tests {
 
     #[test]
     fn synchronization_closes_ancestor_try_missing_split_entry() {
-        let mut cfg = CFG::new("declared_synchronized_split_entry");
+        let mut cfg = CFG::new("synchronized_split_entry");
         for id in 0..=5 {
             cfg.add_block(Block::new(id));
         }
@@ -2477,7 +2455,6 @@ mod tests {
             &blocks([1, 2, 3]),
             &blocks([4]),
             &BTreeSet::new(),
-            false,
         )
         .unwrap();
 
@@ -2498,8 +2475,8 @@ mod tests {
     }
 
     #[test]
-    fn declared_synchronization_owns_split_return_tails() {
-        let mut cfg = CFG::new("declared_synchronized_return_tails");
+    fn explicit_synchronization_leaves_unlocked_return_tails_outside() {
+        let mut cfg = CFG::new("synchronized_return_tails");
         for id in 0..=7 {
             cfg.add_block(Block::new(id));
         }
@@ -2542,11 +2519,10 @@ mod tests {
             &blocks([1, 2, 4, 6]),
             &blocks([4]),
             &BTreeSet::new(),
-            true,
         )
         .unwrap();
 
-        assert_eq!(placement.blocks, blocks([1, 2, 3, 6, 7]));
+        assert_eq!(placement.blocks, blocks([1, 2, 6, 7]));
     }
 
     #[test]
@@ -2594,7 +2570,6 @@ mod tests {
             &blocks([1, 2, 3, 4]),
             &blocks([4]),
             &BTreeSet::from([retry_loop]),
-            false,
         )
         .unwrap();
 
@@ -2642,7 +2617,6 @@ mod tests {
             &scope,
             &BTreeSet::new(),
             &BTreeSet::new(),
-            true,
         );
 
         assert!(matches!(
@@ -2680,7 +2654,6 @@ mod tests {
             &blocks([1, 2, 3]),
             &BTreeSet::new(),
             &BTreeSet::new(),
-            false,
         )
         .expect("overlapping finally should be absorbed into the monitor");
 

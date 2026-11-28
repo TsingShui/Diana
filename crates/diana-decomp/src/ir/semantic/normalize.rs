@@ -640,20 +640,13 @@ impl AcyclicExitComposer {
                                 cleanups,
                             });
                         }
-                        SemanticNode::Synchronized {
-                            region,
-                            lock,
-                            method,
-                            body,
-                        } if continuation.is_boundary() => {
+                        SemanticNode::Synchronized { region, lock, body }
+                            if continuation.is_boundary() =>
+                        {
                             let mut body_cleanups = Vec::with_capacity(cleanups.len() + 1);
                             body_cleanups.push(region);
                             body_cleanups.extend(cleanups);
-                            tasks.push(ExitCompositionTask::RebuildSynchronized {
-                                region,
-                                lock,
-                                method,
-                            });
+                            tasks.push(ExitCompositionTask::RebuildSynchronized { region, lock });
                             tasks.push(ExitCompositionTask::Visit {
                                 node: *body,
                                 continuation: ExitContinuation::Boundary,
@@ -738,16 +731,12 @@ impl AcyclicExitComposer {
                         Some(else_node),
                     ));
                 }
-                ExitCompositionTask::RebuildSynchronized {
-                    region,
-                    lock,
-                    method,
-                } => {
+                ExitCompositionTask::RebuildSynchronized { region, lock } => {
                     let body = results.pop()?;
                     results.push(SemanticNode::Synchronized {
                         region,
                         lock,
-                        method,
+
                         body: Box::new(body),
                     });
                 }
@@ -830,7 +819,6 @@ enum ExitCompositionTask {
     RebuildSynchronized {
         region: crate::ir::RegionId,
         lock: crate::ir::SemanticOperand<SemanticExpression>,
-        method: bool,
     },
     RebuildTry {
         region: crate::ir::RegionId,
@@ -1634,18 +1622,9 @@ impl TerminalCompletionRewrite {
                     switch_exit,
                 });
             }
-            SemanticNode::Synchronized {
-                region,
-                lock,
-                method,
-                body,
-            } => {
+            SemanticNode::Synchronized { region, lock, body } => {
                 tasks.push(TerminalRewriteTask::Rebuild(
-                    TerminalRewriteFrame::Synchronized {
-                        region,
-                        lock,
-                        method,
-                    },
+                    TerminalRewriteFrame::Synchronized { region, lock },
                 ));
                 tasks.push(TerminalRewriteTask::Visit {
                     node: *body,
@@ -1731,7 +1710,6 @@ enum TerminalRewriteFrame {
     Synchronized {
         region: crate::ir::RegionId,
         lock: crate::ir::SemanticOperand<SemanticExpression>,
-        method: bool,
     },
     Label(SemanticLabel),
 }
@@ -1791,14 +1769,10 @@ impl TerminalRewriteFrame {
                     finally,
                 }
             }
-            Self::Synchronized {
+            Self::Synchronized { region, lock } => SemanticNode::Synchronized {
                 region,
                 lock,
-                method,
-            } => SemanticNode::Synchronized {
-                region,
-                lock,
-                method,
+
                 body: Box::new(Self::child(&mut children)?),
             },
             Self::Label(label) => SemanticNode::Label {

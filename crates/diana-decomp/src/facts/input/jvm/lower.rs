@@ -191,8 +191,7 @@ pub(crate) fn recover(
             return_type: method.info.return_type.clone(),
         },
         method.is_static(),
-    )
-    .with_declared_synchronization(method.access_flags.is_synchronized());
+    );
     let mut output = Vec::new();
     for (index, (slot, ty)) in inputs.into_iter().enumerate() {
         let param = registers.input_register(slot).map_err(op_error)?;

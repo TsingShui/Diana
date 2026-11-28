@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "id": "dex-monitor-execution-contract",
+  "default": true,
+  "input": "classes.dex",
+  "input_sha256": "2f45fa2b44eb56719461c91fbf2fa8cc52bb1baf0dbc54334afd94dce9cd0055",
+  "probe": "verify.py",
+  "oracle_files": [
+    "CheckMonitor.java",
+    "MonitorContract.java",
+    "MonitorContract.smali",
+    "MonitorHooks.java",
+    "MonitorHooks.smali",
+    "raw_proof.py",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m1",
+      "member": "Lfixture/MonitorContract;->metadataOnly()Z",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m2",
+      "member": "Lfixture/MonitorContract;->nativeSync()V",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m3",
+      "member": "Lfixture/MonitorContract;->nested(Z)Z",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m4",
+      "member": "Lfixture/MonitorContract;->nestedNamed(Ljava/lang/Object;Z)V",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m5",
+      "member": "Lfixture/MonitorContract;->physical(Z)Z",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

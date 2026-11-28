@@ -466,53 +466,6 @@ impl JavaAstNormalizer {
         }
     }
 
-    fn synchronized(lock: JavaExpr, body: JavaStmt) -> (JavaStmt, bool) {
-        let JavaStmt::Block(mut statements) = body else {
-            return (
-                JavaStmt::Synchronized {
-                    lock,
-                    body: Box::new(body),
-                },
-                false,
-            );
-        };
-        let Some(JavaStmt::Synchronized {
-            lock: inner_lock,
-            body: inner_body,
-        }) = statements.first()
-        else {
-            return (
-                JavaStmt::Synchronized {
-                    lock,
-                    body: Box::new(JavaStmt::Block(statements)),
-                },
-                false,
-            );
-        };
-        if inner_lock != &lock || !matches!(lock, JavaExpr::Name(_)) {
-            return (
-                JavaStmt::Synchronized {
-                    lock,
-                    body: Box::new(JavaStmt::Block(statements)),
-                },
-                false,
-            );
-        }
-        let inner = match inner_body.as_ref() {
-            JavaStmt::Block(inner) => inner.clone(),
-            JavaStmt::Empty => Vec::new(),
-            statement => vec![statement.clone()],
-        };
-        statements.splice(0..1, inner);
-        (
-            JavaStmt::Synchronized {
-                lock,
-                body: Box::new(JavaStmt::Block(statements)),
-            },
-            true,
-        )
-    }
-
     fn foreach(
         label: Option<JavaIdentifier>,
         ty: JavaType,
@@ -2183,12 +2136,10 @@ impl SyntaxFrame {
                 };
                 return Ok(JavaAstNormalizer::protection(body, catches, finally));
             }
-            Self::Synchronized(lock) => {
-                return Ok(JavaAstNormalizer::synchronized(
-                    lock,
-                    Self::child(&mut children)?,
-                ));
-            }
+            Self::Synchronized(lock) => JavaStmt::Synchronized {
+                lock,
+                body: Box::new(Self::child(&mut children)?),
+            },
         };
         Ok((statement, false))
     }

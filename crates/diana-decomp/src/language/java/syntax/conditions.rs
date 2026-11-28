@@ -1309,16 +1309,10 @@ impl PathConditionReduction {
                             known,
                         });
                     }
-                    SemanticNode::Synchronized {
-                        region,
-                        lock,
-                        method,
-                        body,
-                    } => {
+                    SemanticNode::Synchronized { region, lock, body } => {
                         tasks.push(ReductionTask::Rebuild(ReductionFrame::Synchronized {
                             region: *region,
                             lock,
-                            method: *method,
                         }));
                         tasks.push(ReductionTask::Visit {
                             node: body,
@@ -1503,7 +1497,6 @@ enum ReductionFrame<'a> {
     Synchronized {
         region: crate::ir::RegionId,
         lock: &'a crate::ir::SemanticOperand<crate::ir::SemanticExpression>,
-        method: bool,
     },
     Label(crate::ir::SemanticLabel),
 }
@@ -1633,14 +1626,10 @@ impl ReductionFrame<'_> {
                     finally,
                 }
             }
-            Self::Synchronized {
-                region,
-                lock,
-                method,
-            } => SemanticNode::Synchronized {
+            Self::Synchronized { region, lock } => SemanticNode::Synchronized {
                 region,
                 lock: lock.clone(),
-                method,
+
                 body: Box::new(Self::child(&mut children)?),
             },
             Self::Label(label) => SemanticNode::Label {

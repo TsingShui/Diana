@@ -1,24 +1,25 @@
-## Diana CLI 0.4.14
+## Diana CLI 0.4.15
 
-- DEX and JVM recovery preserve runtime static final field writes and the
-  initialization triggered by cross-class field reads.
-- Static initializer recovery keeps writes on the original declaring class,
-  even when the current class and the target share a simple name.
+- DEX recovery keeps the monitor instructions of declared-synchronized
+  bytecode methods. The DEX access flag remains available as input metadata.
+- JVM recovery preserves explicit locks inside implicitly synchronized
+  methods. DEX and JVM recovery both retain nested acquisitions of the same
+  monitor and their exceptional release paths.
 
 ### Install or upgrade Diana
 
 For macOS and Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/TsingShui/Diana/diana-v0.4.14/install.sh -o install-diana.sh
-sh install-diana.sh diana-v0.4.14
+curl -fsSL https://raw.githubusercontent.com/TsingShui/Diana/diana-v0.4.15/install.sh -o install-diana.sh
+sh install-diana.sh diana-v0.4.15
 ```
 
 To build the released CLI from source, use Rust 1.100 or newer and native
 build tools.
 
 ```sh
-cargo install --git https://github.com/TsingShui/Diana.git --tag diana-v0.4.14 --locked diana
+cargo install --git https://github.com/TsingShui/Diana.git --tag diana-v0.4.15 --locked diana
 ```
 
 Windows users can extract `diana.exe` from the matching ZIP and add it to PATH.

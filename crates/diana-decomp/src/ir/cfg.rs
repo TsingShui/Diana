@@ -40,7 +40,6 @@ impl EdgeKind {
 pub struct MethodContext {
     reference: MethodReference,
     is_static: bool,
-    declared_synchronized: bool,
 }
 
 impl MethodContext {
@@ -57,7 +56,6 @@ impl MethodContext {
                 descriptor,
             },
             is_static,
-            declared_synchronized: false,
         }
     }
 
@@ -91,15 +89,6 @@ impl MethodContext {
 
     pub fn is_static(&self) -> bool {
         self.is_static
-    }
-
-    pub fn with_declared_synchronization(mut self, declared: bool) -> Self {
-        self.declared_synchronized = declared;
-        self
-    }
-
-    pub fn is_declared_synchronized(&self) -> bool {
-        self.declared_synchronized
     }
 }
 

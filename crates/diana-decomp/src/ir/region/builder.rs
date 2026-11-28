@@ -230,7 +230,6 @@ impl<'a> RegionGraphBuilder<'a> {
                 &lexical_scope,
                 &fact.release_entries,
                 &release_segments,
-                cfg.method().is_declared_synchronized() && fact.enter_origin.block == cfg.entry,
             )?;
             for (split, split_handlers) in &rewrite.handler_splits {
                 for regions in exception_region_map.values_mut() {

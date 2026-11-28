@@ -736,7 +736,10 @@ fn method_modifiers(
     if access.is_native() {
         modifiers.push(JavaModifier::Native);
     }
-    if access.is_synchronized() || access.is_declared_synchronized() {
+    // DEX's declared flag on a bytecode method records source metadata.
+    // The monitor instructions supply its runtime locks. A native entry
+    // can instead acquire the method monitor in the JNI bridge.
+    if access.is_synchronized() || (access.is_native() && access.is_declared_synchronized()) {
         modifiers.push(JavaModifier::Synchronized);
     }
     if access.is_strict() {

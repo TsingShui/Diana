@@ -342,13 +342,8 @@ where
                 );
                 pending.push(LowerTask::Visit(body));
             }
-            SemanticNode::Synchronized {
-                lock, method, body, ..
-            } => {
-                pending.push(LowerTask::Rebuild(LowerFrame::Synchronized {
-                    lock,
-                    method: *method,
-                }));
+            SemanticNode::Synchronized { lock, body, .. } => {
+                pending.push(LowerTask::Rebuild(LowerFrame::Synchronized(lock)));
                 pending.push(LowerTask::Visit(body));
             }
             SemanticNode::Label { label, body } => {
@@ -565,17 +560,10 @@ where
                     finally,
                 )?
             }
-            LowerFrame::Synchronized { lock, method } => {
-                let body = Self::child(&mut children)?;
-                if method {
-                    body
-                } else {
-                    JavaStmt::Synchronized {
-                        lock: self.dialect.expression(lock)?,
-                        body: Box::new(body),
-                    }
-                }
-            }
+            LowerFrame::Synchronized(lock) => JavaStmt::Synchronized {
+                lock: self.dialect.expression(lock)?,
+                body: Box::new(Self::child(&mut children)?),
+            },
             LowerFrame::Label(label) => JavaStmt::Labeled {
                 label: ControlLayout::label_identifier(label),
                 body: Box::new(Self::child(&mut children)?),
@@ -783,10 +771,7 @@ enum LowerFrame<'a> {
         catches: &'a [crate::ir::SemanticCatch],
         has_finally: bool,
     },
-    Synchronized {
-        lock: &'a SemanticExpression,
-        method: bool,
-    },
+    Synchronized(&'a SemanticExpression),
     Label(crate::ir::SemanticLabel),
 }
 
@@ -796,10 +781,7 @@ impl LowerFrame<'_> {
             Self::Sequence(count) => *count,
             Self::If { has_else, .. } => 1 + usize::from(*has_else),
             Self::Loop { .. } => 2,
-            Self::For { .. }
-            | Self::ForEach { .. }
-            | Self::Synchronized { .. }
-            | Self::Label(_) => 1,
+            Self::For { .. } | Self::ForEach { .. } | Self::Synchronized(_) | Self::Label(_) => 1,
             Self::Switch { cases, .. } => cases.len(),
             Self::Try {
                 catches,

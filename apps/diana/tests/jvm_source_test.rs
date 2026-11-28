@@ -314,6 +314,26 @@ fn recovered_classes_preserve_runtime_static_final_initialization() {
 }
 
 #[test]
+fn recovered_jvm_monitor_scopes_match_execution_and_bytecode() {
+    let output = tempfile::tempdir().unwrap();
+    let verifier = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../quality/fixtures/sync/monitor-execution-contract/jvm/verify.py");
+    let process = Command::new(if cfg!(windows) { "python" } else { "python3" })
+        .arg("-B")
+        .arg(verifier)
+        .args(["--binary", env!("CARGO_BIN_EXE_diana"), "--output"])
+        .arg(output.path().join("report.json"))
+        .output()
+        .expect("run the independent JVM monitor witness");
+    assert!(
+        process.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&process.stdout),
+        String::from_utf8_lossy(&process.stderr)
+    );
+}
+
+#[test]
 fn get_method_recovers_the_same_original_method_by_name_and_position() {
     let fixture = fixture();
     let inputs = [

@@ -501,15 +501,10 @@ impl<'a> ExceptionEnvelopeCanonicalizer<'a> {
                     },
                 }
             }
-            SemanticNode::Synchronized {
+            SemanticNode::Synchronized { region, lock, body } => SemanticNode::Synchronized {
                 region,
                 lock,
-                method,
-                body,
-            } => SemanticNode::Synchronized {
-                region,
-                lock,
-                method,
+
                 body: Box::new(self.strip(*body, target)?),
             },
             SemanticNode::Label { label, body } => SemanticNode::Label {
@@ -1125,35 +1120,19 @@ impl SemanticFolder for SynchronizedEnvelopePlacement {
     type Error = SemanticFoldError;
 
     fn finish_node(&mut self, node: SemanticNode) -> Result<SemanticNode, Self::Error> {
-        let SemanticNode::Synchronized {
-            region,
-            lock,
-            method,
-            body,
-        } = node
-        else {
+        let SemanticNode::Synchronized { region, lock, body } = node else {
             return Ok(node);
         };
         if region != self.region {
-            return Ok(SemanticNode::Synchronized {
-                region,
-                lock,
-                method,
-                body,
-            });
+            return Ok(SemanticNode::Synchronized { region, lock, body });
         }
         let Some(envelope) = self.envelope.take() else {
-            return Ok(SemanticNode::Synchronized {
-                region,
-                lock,
-                method,
-                body,
-            });
+            return Ok(SemanticNode::Synchronized { region, lock, body });
         };
         Ok(SemanticNode::Synchronized {
             region,
             lock,
-            method,
+
             body: Box::new(envelope.attach(region, *body)),
         })
     }
@@ -1286,30 +1265,11 @@ impl SemanticFolder for ExternalMonitorHandlerPlacement<'_, '_> {
     type Error = StructureError;
 
     fn finish_node(&mut self, node: SemanticNode) -> Result<SemanticNode, Self::Error> {
-        let SemanticNode::Synchronized {
-            region,
-            lock,
-            method,
-            body,
-        } = node
-        else {
+        let SemanticNode::Synchronized { region, lock, body } = node else {
             return Ok(node);
         };
-        if method {
-            return Ok(SemanticNode::Synchronized {
-                region,
-                lock,
-                method,
-                body,
-            });
-        }
         let Some(plan) = self.plan(region, &body)? else {
-            return Ok(SemanticNode::Synchronized {
-                region,
-                lock,
-                method,
-                body,
-            });
+            return Ok(SemanticNode::Synchronized { region, lock, body });
         };
 
         let (try_region, synchronized_body, catches, finally) = match (plan, *body) {
@@ -1344,7 +1304,7 @@ impl SemanticFolder for ExternalMonitorHandlerPlacement<'_, '_> {
             body: Box::new(SemanticNode::Synchronized {
                 region,
                 lock,
-                method,
+
                 body: Box::new(synchronized_body),
             }),
             catches,
@@ -1855,7 +1815,7 @@ mod tests {
                 root,
                 RegionKind::Synchronized(SynchronizedRegion {
                     lock: InsnArg::Reg(lock.clone()),
-                    method: false,
+
                     release_handlers: BTreeSet::new(),
                 }),
                 Some(crate::ir::BlockId::new(1)),
@@ -1887,7 +1847,7 @@ mod tests {
         let node = SemanticNode::Synchronized {
             region: synchronized,
             lock: SemanticOperand::new(SemanticExpression::Register(lock)),
-            method: false,
+
             body: Box::new(SemanticNode::Sequence(vec![
                 SemanticNode::BasicBlock(SemanticBlock {
                     id: prefix,

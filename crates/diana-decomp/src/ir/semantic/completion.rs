@@ -107,7 +107,7 @@ enum ControlToken {
     ForEach(SemanticLoopControl),
     Switch(Option<RegionId>, Vec<bool>),
     Try(RegionId, Vec<RegionId>, Option<RegionId>),
-    Synchronized(RegionId, bool),
+    Synchronized(RegionId),
     Label(SemanticLabel),
     Leave(AbruptCompletion, bool),
     End,
@@ -145,9 +145,7 @@ impl SemanticVisitor for SemanticControlTopology {
                 catches.iter().map(|catch| catch.region).collect(),
                 finally.as_ref().map(|finally| finally.region),
             ),
-            SemanticNode::Synchronized { region, method, .. } => {
-                ControlToken::Synchronized(*region, *method)
-            }
+            SemanticNode::Synchronized { region, .. } => ControlToken::Synchronized(*region),
             SemanticNode::Label { label, .. } => ControlToken::Label(*label),
             SemanticNode::Leave(leave) => ControlToken::Leave(
                 AbruptCompletion::from_leave(leave),

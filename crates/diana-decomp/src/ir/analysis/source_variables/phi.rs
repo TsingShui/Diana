@@ -2790,22 +2790,12 @@ impl SemanticFolder for PhiLowering {
                     },
                 ]))
             }
-            SemanticNode::Synchronized {
-                region,
-                lock,
-                method,
-                body,
-            } => {
+            SemanticNode::Synchronized { region, lock, body } => {
                 let prefix =
                     self.exceptional_prefix(|| EvaluationInstructions::of_expression(&lock));
                 Ok(SemanticNode::sequence([
                     prefix,
-                    SemanticNode::Synchronized {
-                        region,
-                        lock,
-                        method,
-                        body,
-                    },
+                    SemanticNode::Synchronized { region, lock, body },
                 ]))
             }
             SemanticNode::ForEach {

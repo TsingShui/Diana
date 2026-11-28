@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.15 - 2026-11-28
+
+- Preserved explicit monitor scopes in DEX and JVM methods, including nested
+  acquisitions of the same object and explicit scopes inside JVM synchronized
+  methods.
+- Used the original DEX monitor instructions to recover synchronization in
+  bytecode methods carrying the declared-synchronized access flag.
+
 ## 0.4.14 - 2026-11-28
 
 - Preserved runtime writes to static final primitive and string fields so

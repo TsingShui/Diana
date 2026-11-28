@@ -158,8 +158,7 @@ fn decode_decoded_method(method: &MethodNode, ir: MethodIr) -> DexResult<CFG> {
             return_type: method.info.return_type.clone(),
         },
         method.access_flags.is_static(),
-    )
-    .with_declared_synchronization(method.access_flags.is_synchronized());
+    );
     let registers = ir.registers();
     let incoming_words = ir.ins();
     let (instructions, handlers) = ir.into_code();

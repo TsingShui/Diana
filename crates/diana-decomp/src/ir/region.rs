@@ -81,7 +81,6 @@ pub struct CatchRegion {
 #[derive(Debug, Clone)]
 pub struct SynchronizedRegion {
     pub lock: InsnArg,
-    pub method: bool,
     /// Exception-handler regions proved to implement monitor release rather
     /// than source-level catch/finally semantics.
     pub release_handlers: BTreeSet<RegionId>,
