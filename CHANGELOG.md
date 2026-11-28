@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.4 - 2026-11-28
+
+- Recovered a single DEX `finally` when split catch-all entries forward
+  to shared cleanup and the normal path runs equivalent cleanup. This fixes
+  cases where recovery could skip cleanup or swallow the pending exception.
+- Preserved nested typed handlers and values observed by the enclosing catch.
+  A cleanup failure still replaces the pending exception.
+- Added DecBench fixtures for split exception entries, nested typed catches,
+  and state carried into an enclosing catch.
+
 ## 0.4.3 - 2026-11-28
 
 ### DEX recovery

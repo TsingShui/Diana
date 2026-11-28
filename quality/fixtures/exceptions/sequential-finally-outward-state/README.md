@@ -34,23 +34,11 @@ The source-mode assembler calls `SmaliBuilder.buildFile` and
 
 The original DEX path witness and Java control agree on all ten
 scenarios. The 0.4.2 release fails eight scenarios. In particular,
-both early failure traces incorrectly report timestamp 0. The tested
-release candidate with SHA-256
-`540378a807641fc8a1e01bf5bdc4489bfdf16163f087ceee7a986a0701992cd2`
-and debug candidate with SHA-256
-`27ad37b4a6c9421ff41bdea7b4185ac2c6ce6063e59837b544d4a631f0252650`
-pass all ten. The earlier 0.4.3 executable has no verified result
-for this input.
+both early failure traces incorrectly report timestamp 0. Recovery at
+`c59c4879` passes all ten in DecBench. The earlier 0.4.3 executable
+has no verified result for this input.
 
 ```sh
 diana get-method classes.dex 'Lfixture/FinallyOutwardState;->run(Lfixture/FinallyOutwardState;II)V' --format json
 python3 quality/decbench run --suite dex-sequential-finally-outward-state --binary /path/to/diana
-```
-
-From the Diana checkout, run the detached original DEX and DecBench
-checks with the existing evaluator.
-
-```sh
-PYTHONPATH=quality/decbench python3 -B /tmp/diana-finally-family/outward-state/prove.py \
-    --binary /absolute/path/to/diana --output /tmp/diana-finally-family/outward-state/candidate.json
 ```
