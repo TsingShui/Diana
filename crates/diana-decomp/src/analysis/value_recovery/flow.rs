@@ -69,6 +69,7 @@ pub(super) struct DefinitionFact<'ir> {
     pub(super) loop_owner: ScopeId,
     pub(super) event: usize,
     pub(super) repetitive: bool,
+    required_statement: bool,
 }
 
 /// A source instruction with a result can be the root of a value without
@@ -131,13 +132,18 @@ impl DefinitionFact<'_> {
     }
 
     fn effects(&self) -> EffectSummary {
-        match &self.statement.kind {
+        let effects = match &self.statement.kind {
             crate::ir::SemanticStatementKind::Definition { value, .. } => {
                 EffectSummary::expression(value)
             }
             crate::ir::SemanticStatementKind::Instruction(operation) => {
                 EffectSummary::operation(operation)
             }
+        };
+        if self.required_statement {
+            effects.join(EffectSummary::statement_boundary())
+        } else {
+            effects
         }
     }
 
@@ -482,6 +488,11 @@ pub(super) struct ValueFlowGraph<'ir> {
     predicate_uses: BTreeMap<crate::ir::InstructionId, BTreeSet<PredicateUseFact>>,
     canonical: Option<&'ir BTreeMap<SsaVar, InsnArg>>,
     identity_statements: Vec<(crate::ir::SemanticSiteId, usize)>,
+    exceptional_snapshots: Option<&'ir BTreeSet<crate::ir::InstructionId>>,
+    exact_snapshots:
+        Option<&'ir BTreeMap<crate::ir::InstructionId, super::source::ExceptionSnapshot>>,
+    throwing_owners: BTreeMap<crate::ir::SemanticSiteId, BTreeSet<crate::ir::InstructionId>>,
+    observable_owners: BTreeSet<crate::ir::SemanticSiteId>,
     semantic_flow: Option<ScheduledFlow<'ir>>,
 }
 
@@ -542,7 +553,7 @@ impl<'ir> ValueFlowGraph<'ir> {
         root: &'ir SemanticNode,
         values: &'ir SsaValueGraph,
         canonical: &'ir BTreeMap<SsaVar, InsnArg>,
-        cache: &SourceFlowCache,
+        cache: &'ir SourceFlowCache,
     ) -> Result<Self, ValueRecoveryError> {
         Self::build_ssa(
             root,
@@ -559,7 +570,7 @@ impl<'ir> ValueFlowGraph<'ir> {
         values: &'ir SsaValueGraph,
         canonical: &'ir BTreeMap<SsaVar, InsnArg>,
         semantic_flow: Option<ScheduledFlow<'ir>>,
-        cache: Option<&SourceFlowCache>,
+        cache: Option<&'ir SourceFlowCache>,
         symbols: ControlSymbolClosure<'_>,
     ) -> Result<Self, ValueRecoveryError> {
         let logic = DomainLogic::ordered(symbols.tests.variables());
@@ -586,6 +597,10 @@ impl<'ir> ValueFlowGraph<'ir> {
             predicate_uses: BTreeMap::new(),
             canonical: Some(canonical),
             identity_statements: Vec::new(),
+            exceptional_snapshots: cache.map(|cache| &cache.exceptional_snapshots),
+            exact_snapshots: cache.map(|cache| &cache.exact_snapshots),
+            throwing_owners: BTreeMap::new(),
+            observable_owners: BTreeSet::new(),
             semantic_flow,
         };
         let mut graph = FlowCollector::new(graph).collect(root, cache)?;
@@ -652,9 +667,20 @@ impl<'ir> ValueFlowGraph<'ir> {
             predicate_uses: BTreeMap::new(),
             canonical: None,
             identity_statements: Vec::new(),
+            exceptional_snapshots: cache.map(|cache| &cache.exceptional_snapshots),
+            exact_snapshots: None,
+            throwing_owners: BTreeMap::new(),
+            observable_owners: BTreeSet::new(),
             semantic_flow: Some(ScheduledFlow::new(root, cache)),
         };
         FlowCollector::new(graph).collect(root, cache)
+    }
+
+    fn statement_boundary(&self) -> StatementBoundary<'_> {
+        StatementBoundary {
+            snapshots: self.exceptional_snapshots,
+            required: false,
+        }
     }
 
     pub(super) fn attach_semantic_flow(
@@ -1158,6 +1184,20 @@ impl<'ir> ValueFlowGraph<'ir> {
             pending,
             self.retained_phi_inputs.clone(),
         )
+    }
+}
+
+struct StatementBoundary<'a> {
+    snapshots: Option<&'a BTreeSet<crate::ir::InstructionId>>,
+    required: bool,
+}
+
+impl SemanticVisitor for StatementBoundary<'_> {
+    fn enter_operation(&mut self, operation: &SemanticOperation) {
+        self.required |= operation.insn_type == InsnType::NewInstance
+            || self
+                .snapshots
+                .is_some_and(|snapshots| snapshots.contains(&operation.id));
     }
 }
 

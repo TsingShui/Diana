@@ -17,7 +17,6 @@ pub struct ObjectInitialization {
     pub value: SsaVar,
     pub ty: crate::ir::ArgType,
     pub mergeable: bool,
-    pub allocation_exception_handlers: Vec<crate::ir::BlockId>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -286,8 +285,6 @@ impl ObjectInitializations {
                     });
                 }
             }
-            let allocation_exception_handlers =
-                Self::allocation_exception_handlers(cfg, *allocation, &constructor_positions);
             entries.push(ObjectInitialization {
                 mergeable,
                 allocation: *allocation,
@@ -298,7 +295,6 @@ impl ObjectInitializations {
                     .map(|(_, value, _)| *value)
                     .unwrap_or(*allocation_value),
                 ty: allocation_type.clone(),
-                allocation_exception_handlers,
             });
         }
         Ok(Self {
@@ -503,26 +499,6 @@ impl ObjectInitializations {
         } else {
             dominators.dominates(definition.block, usage.block)
         }
-    }
-
-    fn allocation_exception_handlers(
-        cfg: &CFG,
-        allocation: InsnPosition,
-        constructors: &[InsnPosition],
-    ) -> Vec<crate::ir::BlockId> {
-        if constructors
-            .iter()
-            .any(|constructor| allocation.block == constructor.block)
-        {
-            return Vec::new();
-        }
-
-        cfg.successors_with_kind(allocation.block)
-            .iter()
-            .filter_map(|(target, kind)| (*kind == EdgeKind::Exception).then_some(*target))
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect()
     }
 }
 

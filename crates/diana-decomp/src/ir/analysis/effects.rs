@@ -102,8 +102,8 @@ impl InstructionEffects {
     }
 
     /// Effects that precede operand evaluation in source order.
-    pub(crate) fn before_arguments(insn_type: InsnType, payload: &InsnPayload) -> Self {
-        if insn_type == InsnType::Constructor && payload.constructor_allocation_at_call {
+    pub(crate) fn before_arguments(insn_type: InsnType) -> Self {
+        if insn_type == InsnType::Constructor {
             Self::UNKNOWN_CALL
         } else {
             Self::PURE

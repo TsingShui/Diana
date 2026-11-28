@@ -1,7 +1,11 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    cell::OnceCell,
+    collections::{BTreeMap, BTreeSet},
+};
 
 use crate::ir::{
-    BoolExpr, InsnArg, InsnType, SemanticExpression, SemanticOperation, SemanticVisitor,
+    BoolExpr, InsnArg, InsnType, InstructionId, SemanticExpression, SemanticOperation,
+    SemanticSiteId, SemanticVisitor,
 };
 
 use super::{
@@ -23,6 +27,7 @@ pub(super) struct ValuePlanner<'a> {
     facts: SparseValueFacts<'a>,
     mode: RecoveryMode,
     early_returns: bool,
+    snapshot_contributors: OnceCell<BTreeMap<SemanticSiteId, Option<InstructionId>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +122,7 @@ impl<'a> ValuePlanner<'a> {
             facts,
             mode,
             early_returns: crate::ir::trivial_early_returns(),
+            snapshot_contributors: OnceCell::new(),
         })
     }
 
@@ -1134,6 +1140,11 @@ impl<'a> ValuePlanner<'a> {
             let Some(test) = self.graph().predicate_tests.get(&instruction) else {
                 return Ok(None);
             };
+            let mut boundary = self.graph().statement_boundary();
+            boundary.visit_operation(test);
+            if boundary.required {
+                return Ok(None);
+            }
             let effect = EffectSummary::operation(test).without_control();
             if effect.is_pure() {
                 continue;
@@ -1328,6 +1339,11 @@ impl<'a> ValuePlanner<'a> {
         let [usage] = uses else {
             return Ok(false);
         };
+        let snapshot_inline =
+            definition.required_statement && self.snapshot_can_inline(definition, usage)?;
+        if definition.required_statement && !snapshot_inline {
+            return Ok(false);
+        }
         // A materialized DEX `cmpg`/`cmpl` is lowered with explicit NaN bias
         // and may inspect each operand more than once. Keep effectful operand
         // producers as locals until the comparison itself can be rewritten as
@@ -1348,7 +1364,12 @@ impl<'a> ValuePlanner<'a> {
             .graph()
             .logic
             .equivalent(definition.domain, usage.domain)?;
-        let Some(effect) = Self::relocatable_definition_effect(definition) else {
+        let effect = if snapshot_inline {
+            definition.operation().and_then(Self::relocatable_effect)
+        } else {
+            Self::relocatable_definition_effect(definition)
+        };
+        let Some(effect) = effect else {
             return Ok(false);
         };
         let domain_sink =
@@ -1356,6 +1377,115 @@ impl<'a> ValuePlanner<'a> {
         Ok(self
             .prove_movement(definition, usage, &effect, same_domain, domain_sink)
             .is_ok())
+    }
+
+    fn snapshot_can_inline(
+        &self,
+        definition: &DefinitionFact,
+        usage: &UseFact,
+    ) -> Result<bool, ValueRecoveryError> {
+        let Some(operation) = definition.operation() else {
+            return Ok(false);
+        };
+        let Some(target) = usage.location.id() else {
+            return Ok(false);
+        };
+        if operation.insn_type == InsnType::NewInstance
+            || operation.payload.edge_copy
+            || !operation.direct_effects().may_throw()
+            || operation
+                .operands()
+                .iter()
+                .any(|operand| !operand.effects().is_pure())
+            || !self
+                .graph()
+                .exceptional_snapshots
+                .is_some_and(|sites| sites.contains(&operation.id))
+        {
+            return Ok(false);
+        }
+        if definition.scope == usage.scope
+            && !self.graph().observable_owners.contains(&target)
+            && self.adjacent_inline(definition, usage)?
+        {
+            return Ok(true);
+        }
+        let Some(UseSite::SelectedArgument(..)) = usage.location.site() else {
+            return Ok(false);
+        };
+        let Some(snapshots) = self.graph().exact_snapshots else {
+            return Ok(false);
+        };
+        let Some(snapshot) = snapshots.get(&operation.id) else {
+            return Ok(false);
+        };
+        if self
+            .graph()
+            .throwing_owners
+            .get(&target)
+            .is_some_and(|operations| {
+                operations
+                    .iter()
+                    .any(|id| snapshots.get(id) != Some(snapshot))
+            })
+        {
+            return Ok(false);
+        }
+        // Independently planned arms may enter the same statement at once.
+        // They can share its catch prelude only if every throwing contributor
+        // selects the same handler inputs. The ordinary domain and movement
+        // proof still checks which arm executes and which effects precede it.
+        Ok(self
+            .snapshot_contributors(snapshots)
+            .get(&target)
+            .copied()
+            .flatten()
+            .and_then(|id| snapshots.get(&id))
+            == Some(snapshot))
+    }
+
+    fn snapshot_contributors(
+        &self,
+        snapshots: &BTreeMap<InstructionId, super::super::source::ExceptionSnapshot>,
+    ) -> &BTreeMap<SemanticSiteId, Option<InstructionId>> {
+        self.snapshot_contributors.get_or_init(|| {
+            let mut contributors = BTreeMap::<_, Option<InstructionId>>::new();
+            for (key, definitions) in self.graph().definitions.iter() {
+                for definition in definitions
+                    .iter()
+                    .filter(|definition| !definition.effects().is_pure())
+                {
+                    let contributor = definition
+                        .operation()
+                        .filter(|operation| {
+                            snapshots.contains_key(&operation.id)
+                                && operation
+                                    .operands()
+                                    .iter()
+                                    .all(|operand| operand.effects().is_pure())
+                        })
+                        .map(|operation| operation.id);
+                    for site in self
+                        .facts
+                        .uses_of(*key)
+                        .iter()
+                        .filter_map(|usage| usage.location.id())
+                    {
+                        contributors
+                            .entry(site)
+                            .and_modify(|existing| {
+                                if existing.and_then(|id| snapshots.get(&id))
+                                    != contributor.and_then(|id| snapshots.get(&id))
+                                {
+                                    *existing = None;
+                                }
+                            })
+                            .or_insert(contributor);
+                    }
+                }
+            }
+            contributors
+        })
     }
 
     fn adjacent_inline(
@@ -1780,6 +1910,9 @@ impl<'a> ValuePlanner<'a> {
     }
 
     fn relocatable_definition_effect(definition: &DefinitionFact) -> Option<EffectSummary> {
+        if definition.required_statement {
+            return None;
+        }
         match definition.operation() {
             Some(operation) => Self::relocatable_effect(operation),
             None => {
@@ -1851,6 +1984,9 @@ impl<'a> ValuePlanner<'a> {
     }
 
     fn selection_effect(definition: &DefinitionFact) -> EffectSummary {
+        if definition.required_statement {
+            return definition.effects();
+        }
         match definition.operation() {
             Some(operation) if operation.payload.edge_copy => {
                 EffectSummary::operation_ignoring_edge_copy(operation)

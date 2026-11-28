@@ -248,6 +248,13 @@ impl<'ir> FlowCollector<'ir> {
         if statement.site.is_none() {
             self.graph.definitions_without_sites.insert(key);
         }
+        let mut boundary = self.graph.statement_boundary();
+        crate::ir::SemanticVisitor::visit_statement(&mut boundary, statement);
+        let required_statement = boundary.required
+            || (statement.origin.is_some()
+                && statement
+                    .instruction_ref()
+                    .is_some_and(|op| op.payload.edge_copy));
         self.graph.definitions.push(
             key,
             DefinitionFact {
@@ -263,6 +270,7 @@ impl<'ir> FlowCollector<'ir> {
                 loop_owner: self.loop_owner,
                 event,
                 repetitive: self.loop_owner != ScopeId::default(),
+                required_statement,
             },
         );
     }
@@ -493,6 +501,7 @@ impl<'ir> FlowCollector<'ir> {
     ) -> Result<bool, ValueRecoveryError> {
         let mut operation = operation;
         let (mut operands, mut covers_operation) = evaluation_operands(operation)?;
+        self.record_throwing_owner(location, operation);
         prefix.include_before_arguments(operation);
         // The evaluation cursor already orders the children, including field
         // and array stores. Only a nested operation suspends that cursor.
@@ -515,6 +524,7 @@ impl<'ir> FlowCollector<'ir> {
                     parents.push((operation, operands));
                     operation = child;
                     operands = children;
+                    self.record_throwing_owner(location, operation);
                     prefix.include_before_arguments(operation);
                 }
                 Some(SemanticExpression::Select {
@@ -591,6 +601,23 @@ impl<'ir> FlowCollector<'ir> {
                     consumer,
                 },
             );
+        }
+    }
+
+    fn record_throwing_owner(&mut self, location: UseLocation, operation: &SemanticOperation) {
+        if self
+            .graph
+            .exact_snapshots
+            .is_some_and(|snapshots| !snapshots.is_empty())
+            && operation.direct_effects().may_throw()
+        {
+            if let Some(site) = location.id() {
+                self.graph
+                    .throwing_owners
+                    .entry(site)
+                    .or_default()
+                    .insert(operation.id);
+            }
         }
     }
 
@@ -673,6 +700,14 @@ impl<'ir> FlowCollector<'ir> {
             return;
         }
         if let Some(site) = site {
+            if self
+                .graph
+                .exceptional_snapshots
+                .is_some_and(|snapshots| !snapshots.is_empty())
+                && !effect.is_pure_without_control()
+            {
+                self.graph.observable_owners.insert(site);
+            }
             self.graph.effects.push(EffectFact {
                 point: crate::ir::analysis::SemanticFlowPoint::after(site),
                 domain,

@@ -196,6 +196,7 @@ impl ValueRecovery {
         Ok(Self::from_gated_control(
             cfg,
             GatedControlFlow::analyze(cfg)?,
+            None,
         ))
     }
 
@@ -206,16 +207,104 @@ impl ValueRecovery {
         Self::from_gated_control(
             cfg,
             GatedControlFlow::from_normal_dominance(cfg, predecessors, dominators),
+            Some(method.state().regions()),
         )
     }
 
-    fn from_gated_control(cfg: &CFG, gated_control: GatedControlFlow) -> Self {
+    fn from_gated_control(
+        cfg: &CFG,
+        gated_control: GatedControlFlow,
+        regions: Option<&crate::ir::RegionGraph>,
+    ) -> Self {
+        let mut source_flow_cache = source::SourceFlowCache::default();
+        let mut projected_snapshots = BTreeSet::new();
+        let predecessors = cfg
+            .blocks
+            .values()
+            .flat_map(|block| {
+                block
+                    .insns
+                    .iter()
+                    .take_while(|instruction| instruction.insn_type == crate::ir::InsnType::Phi)
+            })
+            .flat_map(|phi| &phi.payload.phi_edges)
+            .filter(|(_, kind)| kind.is_exception())
+            .map(|&(block, _)| block)
+            .chain(
+                regions
+                    .into_iter()
+                    .flat_map(|regions| regions.cleanup_catch_values().values())
+                    .flat_map(|plan| plan.inputs.keys())
+                    .filter(|edge| edge.kind.is_exception())
+                    .map(|edge| edge.source),
+            );
+        for predecessor in predecessors {
+            if let Some(sources) =
+                regions.and_then(|regions| regions.elided_rethrow_sources(cfg, predecessor))
+            {
+                projected_snapshots.extend(
+                    sources
+                        .iter()
+                        .filter_map(|&source| exceptional_instruction(cfg, source)),
+                );
+            } else if let Some(site) = exceptional_instruction(cfg, predecessor) {
+                source_flow_cache.exceptional_snapshots.insert(site);
+            }
+        }
+        for (&handler, block) in &cfg.blocks {
+            for phi in block
+                .insns
+                .iter()
+                .take_while(|instruction| instruction.insn_type == crate::ir::InsnType::Phi)
+            {
+                let Some(result) = phi.result.as_ref().and_then(SsaVar::from_reg) else {
+                    continue;
+                };
+                for (&(predecessor, kind), argument) in phi.payload.phi_edges.iter().zip(&phi.args)
+                {
+                    if !kind.is_exception() {
+                        continue;
+                    }
+                    let Some(site) = exceptional_instruction(cfg, predecessor) else {
+                        continue;
+                    };
+                    let Some(value) = argument.as_register().and_then(SsaVar::from_reg) else {
+                        continue;
+                    };
+                    source_flow_cache
+                        .exact_snapshots
+                        .entry(site)
+                        .or_insert_with(|| source::ExceptionSnapshot {
+                            coverage: cfg.exception_coverage(predecessor).clone(),
+                            inputs: BTreeMap::new(),
+                        })
+                        .inputs
+                        .insert((handler, result), value);
+                }
+            }
+        }
+        if let Some(regions) = regions {
+            projected_snapshots.extend(
+                regions
+                    .cleanup_catch_values()
+                    .values()
+                    .flat_map(|plan| plan.inputs.keys())
+                    .filter(|edge| edge.kind.is_exception())
+                    .filter_map(|edge| exceptional_instruction(cfg, edge.source)),
+            );
+        }
+        // These sites also observe state projected through cleanup. Their
+        // raw handler Phi lanes alone cannot establish a shared prelude.
+        for site in projected_snapshots {
+            source_flow_cache.exceptional_snapshots.insert(site);
+            source_flow_cache.exact_snapshots.remove(&site);
+        }
         Self {
             gated_control,
             ssa_constants: SparseConstantPropagation::new(cfg).solve(),
             source_bindings: BTreeSet::new(),
             diagnostics: crate::ir::ValueRecoveryDiagnostics::default(),
-            source_flow_cache: Default::default(),
+            source_flow_cache,
         }
     }
 
@@ -263,6 +352,11 @@ impl ValueRecovery {
             &mut self.source_flow_cache,
         )
     }
+}
+
+fn exceptional_instruction(cfg: &CFG, block: BlockId) -> Option<crate::ir::InstructionId> {
+    let instruction = cfg.block(block)?.terminator()?;
+    (instruction.id.is_valid() && instruction.can_throw()).then_some(instruction.id)
 }
 
 impl SemanticTransform<SsaSemantics> for ValueRecovery {

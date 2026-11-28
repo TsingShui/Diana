@@ -1,0 +1,148 @@
+{
+  "run": [
+    {
+      "id": "first-use-between-preparation-and-arguments",
+      "arguments": [
+        "none",
+        "once"
+      ],
+      "expected": [
+        "prepare",
+        "class-init",
+        "argument:20",
+        "constructor:7:11:30",
+        "publish"
+      ]
+    },
+    {
+      "id": "failed-preparation-before-first-use",
+      "arguments": [
+        "prepare",
+        "once"
+      ],
+      "expected": [
+        "prepare",
+        "caught:10:before"
+      ]
+    },
+    {
+      "id": "failed-first-use-before-argument",
+      "arguments": [
+        "init",
+        "once"
+      ],
+      "expected": [
+        "prepare",
+        "class-init",
+        "caught:15:class-init"
+      ]
+    },
+    {
+      "id": "failed-argument-after-first-use",
+      "arguments": [
+        "argument",
+        "once"
+      ],
+      "expected": [
+        "prepare",
+        "class-init",
+        "argument:20",
+        "caught:20:argument"
+      ]
+    },
+    {
+      "id": "failed-constructor-after-argument",
+      "arguments": [
+        "constructor",
+        "once"
+      ],
+      "expected": [
+        "prepare",
+        "class-init",
+        "argument:20",
+        "constructor:7:11:30",
+        "caught:30:constructor"
+      ]
+    },
+    {
+      "id": "failed-publication-after-constructor",
+      "arguments": [
+        "publish",
+        "once"
+      ],
+      "expected": [
+        "prepare",
+        "class-init",
+        "argument:20",
+        "constructor:7:11:30",
+        "publish",
+        "caught:30:publish"
+      ]
+    },
+    {
+      "id": "second-construction-does-not-repeat-class-init",
+      "arguments": [
+        "none",
+        "repeat"
+      ],
+      "expected": [
+        "prepare",
+        "class-init",
+        "argument:20",
+        "constructor:7:11:30",
+        "publish",
+        "prepare",
+        "argument:20",
+        "constructor:7:11:30",
+        "publish"
+      ]
+    },
+    {
+      "id": "retry-after-preparation-failure-still-triggers-first-use",
+      "arguments": [
+        "prepare",
+        "repeat"
+      ],
+      "expected": [
+        "prepare",
+        "caught:10:before",
+        "prepare",
+        "class-init",
+        "argument:20",
+        "constructor:7:11:30",
+        "publish"
+      ]
+    },
+    {
+      "id": "retry-after-argument-failure-keeps-initialized-class",
+      "arguments": [
+        "argument",
+        "repeat"
+      ],
+      "expected": [
+        "prepare",
+        "class-init",
+        "argument:20",
+        "caught:20:argument",
+        "prepare",
+        "argument:20",
+        "constructor:7:11:30",
+        "publish"
+      ]
+    },
+    {
+      "id": "failed-initialization-marks-class-erroneous",
+      "arguments": [
+        "init",
+        "repeat"
+      ],
+      "expected": [
+        "prepare",
+        "class-init",
+        "caught:15:class-init",
+        "prepare",
+        "caught:15:erroneous"
+      ]
+    }
+  ]
+}

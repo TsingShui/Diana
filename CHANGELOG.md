@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.9 - 2026-11-28
+
+- Preserved the DEX order of allocation, argument evaluation, initialization,
+  and publication when each phase can expose different state to a catch.
+  Recovered `new` expressions still combine argument operations when their
+  original order, exception dispatch, and handler inputs agree.
+- Added DecBench scenarios that exercise class initialization, allocation
+  and constructor operands, catch state, and warm and erroneous-class retries.
+
 ## 0.4.8 - 2026-11-28
 
 - Kept effectful DEX argument computations before `new` when allocation

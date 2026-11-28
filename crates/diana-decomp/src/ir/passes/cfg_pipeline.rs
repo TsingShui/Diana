@@ -7,10 +7,11 @@ use crate::ir::passes::{
     PhiSimplify, PruneUnreachable, RecoverConstructors, ResultBindingError, SSATransform,
     SplitCriticalEdges, SplitMonitorEntries, SsaTransformError, ValidateCFG,
 };
-use crate::ir::{AnalysisCancelled, CFG};
+use crate::ir::{AnalysisCancelled, MethodReference, CFG};
 
 pub struct CfgPipeline<'a> {
     hierarchy: &'a dyn TypeHierarchy,
+    constructor_keeps_operands: Option<&'a dyn Fn(&MethodReference) -> bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -97,7 +98,18 @@ cfg_error_conversion!(SsaInvariantError, SsaInvariant);
 
 impl<'a> CfgPipeline<'a> {
     pub fn new(hierarchy: &'a dyn TypeHierarchy) -> Self {
-        Self { hierarchy }
+        Self {
+            hierarchy,
+            constructor_keeps_operands: None,
+        }
+    }
+
+    pub(crate) fn with_constructor_operand_order(
+        mut self,
+        keeps_order: &'a dyn Fn(&MethodReference) -> bool,
+    ) -> Self {
+        self.constructor_keeps_operands = Some(keeps_order);
+        self
     }
 
     pub fn run(&self, cfg: &mut CFG) -> Result<PassResult, CfgPipelineError> {
@@ -148,7 +160,8 @@ impl<'a> CfgPipeline<'a> {
         context.validate("input")?;
         let mut changed = NormalizationStage::default().run(&mut context)?;
         let mut facts = SsaPassFacts::default();
-        changed |= SsaStage::new(self.hierarchy).run(&mut context, &mut facts)?;
+        changed |= SsaStage::new(self.hierarchy, self.constructor_keeps_operands)
+            .run(&mut context, &mut facts)?;
 
         context.validate("ssa")?;
         context.cfg.identify_instructions();
@@ -249,11 +262,15 @@ struct SsaStage<'a> {
 }
 
 impl<'a> SsaStage<'a> {
-    fn new(hierarchy: &'a dyn TypeHierarchy) -> Self {
+    fn new(
+        hierarchy: &'a dyn TypeHierarchy,
+        constructor_keeps_operands: Option<&'a dyn Fn(&MethodReference) -> bool>,
+    ) -> Self {
         Self {
             construct: SSATransform,
             simplify: PhiSimplify,
-            constructors: RecoverConstructors::new(hierarchy),
+            constructors: RecoverConstructors::new(hierarchy)
+                .with_constructor_operand_order(constructor_keeps_operands),
             prune: PruneUnreachable,
         }
     }

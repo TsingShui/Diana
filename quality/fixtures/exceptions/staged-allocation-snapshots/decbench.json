@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "id": "dex-allocation-first-use-order",
+  "input": "classes.dex",
+  "input_sha256": "ce6489ad2a4b6d7df23279fa9a6bef9daf3d1d2ef7ac7e75e241e39a6baae635",
+  "probe": "decbench_probe.py",
+  "oracle_files": [
+    "AllocationStages.java",
+    "AllocationStages.smali",
+    "AllocationItem.smali",
+    "scenarios.json",
+    "explicit_recovery.py",
+    "raw_proof.py"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c1:m8",
+      "member": "Lfixture/AllocationStages;->run()V",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

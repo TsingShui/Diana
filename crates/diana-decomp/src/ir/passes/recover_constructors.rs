@@ -3,16 +3,18 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::ir::analysis::{
-    DominanceError, DominanceFrontier, DominatorTree, InsnPosition, InstructionEffects,
-    ObjectInitialization, ObjectInitializationError, ObjectInitializations, SsaInvariantError,
-    SsaValueGraph, SsaVar, TypeHierarchy,
+    DominanceError, DominanceFrontier, DominatorTree, InsnPosition, ObjectInitialization,
+    ObjectInitializationError, ObjectInitializations, SsaInvariantError, SsaValueGraph, SsaVar,
+    TypeHierarchy,
 };
 use crate::ir::{
     ArgType, BlockId, EdgeKind, InsnArg, InsnNode, InsnType, InstructionTransform, InstructionTree,
-    RegisterArg, CFG,
+    MethodReference, RegisterArg, CFG,
 };
 
 use super::{Pass, PassResult};
+
+mod plan;
 
 #[derive(Debug)]
 pub enum ConstructorRecoveryError {
@@ -100,11 +102,23 @@ impl From<crate::ir::InstructionTreeError> for ConstructorRecoveryError {
 
 pub struct RecoverConstructors<'a> {
     hierarchy: &'a dyn TypeHierarchy,
+    constructor_keeps_operands: Option<&'a dyn Fn(&MethodReference) -> bool>,
 }
 
 impl<'a> RecoverConstructors<'a> {
     pub fn new(hierarchy: &'a dyn TypeHierarchy) -> Self {
-        Self { hierarchy }
+        Self {
+            hierarchy,
+            constructor_keeps_operands: None,
+        }
+    }
+
+    pub(super) fn with_constructor_operand_order(
+        mut self,
+        keeps_order: Option<&'a dyn Fn(&MethodReference) -> bool>,
+    ) -> Self {
+        self.constructor_keeps_operands = keeps_order;
+        self
     }
 }
 
@@ -608,24 +622,35 @@ impl RecoverConstructors<'_> {
         let mut replacements = BTreeMap::<SsaVar, SsaVar>::new();
         let mut removals = facts.discarded_allocations().clone();
         let mut constructors = BTreeMap::new();
-        let mut allocations_at_call = BTreeSet::new();
-        let mut exceptional_edges = Vec::new();
+        let mut arguments = BTreeMap::new();
+        let mut exceptional_edges = BTreeSet::new();
         for allocation in facts.discarded_allocations() {
             for &(handler, kind) in cfg.successors_with_kind(allocation.block) {
                 if kind == EdgeKind::Exception {
-                    exceptional_edges.push((allocation.block, handler));
+                    exceptional_edges.insert((allocation.block, handler));
                 }
             }
         }
         let mut multi_site = None;
         let mut object_plans = Vec::new();
+        let folding = plan::ConstructorFolding::new(
+            cfg,
+            values,
+            facts.entries(),
+            self.constructor_keeps_operands,
+        );
         for initialization in facts.entries() {
             if !initialization.mergeable {
                 continue;
             }
+            let Some(fold) = folding.plan(initialization) else {
+                continue;
+            };
+            removals.extend(fold.folded);
+            exceptional_edges.extend(fold.exceptional_edges);
             if let [constructor] = initialization.constructors.as_slice() {
-                if Self::allocation_at_call(cfg, initialization.allocation, *constructor) {
-                    allocations_at_call.insert(*constructor);
+                if let Some(operands) = fold.arguments {
+                    arguments.insert(*constructor, operands);
                 }
                 replacements.extend(
                     initialization
@@ -679,15 +704,12 @@ impl RecoverConstructors<'_> {
                 );
                 object_plans.push(plan);
             }
-            exceptional_edges.extend(
-                initialization
-                    .allocation_exception_handlers
-                    .iter()
-                    .map(|&handler| (initialization.allocation.block, handler)),
-            );
         }
 
         drop(multi_site);
+        if removals.is_empty() {
+            return Ok(PassResult::Unchanged);
+        }
         if exceptional_edges.is_empty() {
             cached.invalidate_values();
         } else {
@@ -705,6 +727,9 @@ impl RecoverConstructors<'_> {
                 };
                 if removals.contains(&position) {
                     continue;
+                }
+                if let Some(operands) = arguments.remove(&position) {
+                    instruction.args = operands;
                 }
                 InstructionTree::transform_args(&mut instruction, &mut rewriter)?;
                 for (argument, value) in instruction.args.iter_mut().enumerate() {
@@ -743,8 +768,6 @@ impl RecoverConstructors<'_> {
                     instruction.insn_type = InsnType::Constructor;
                     instruction.result = Some(result);
                     instruction.payload.class_type = Some(Box::new(ty.clone()));
-                    instruction.payload.constructor_allocation_at_call =
-                        allocations_at_call.contains(&position);
                 }
                 rewritten.push(instruction);
             }
@@ -769,69 +792,18 @@ impl RecoverConstructors<'_> {
             inserted.extend(std::mem::take(&mut body.insns));
             body.insns = inserted;
         }
-        for (allocation, handler) in exceptional_edges {
-            Self::remove_allocation_edge(cfg, allocation, handler)?;
+        for (source, handler) in exceptional_edges {
+            Self::remove_exceptional_input(cfg, source, handler)?;
         }
         Ok(PassResult::Changed)
     }
 
-    fn allocation_at_call(cfg: &CFG, allocation: InsnPosition, constructor: InsnPosition) -> bool {
-        let mut block = allocation.block;
-        let Some(mut start) = allocation.index.checked_add(1) else {
-            return false;
-        };
-        // The original order may span blocks split at throwing instructions.
-        // A single incoming normal edge keeps each interior span on the same
-        // path. The block count bounds malformed or cyclic chains.
-        for _ in 0..cfg.blocks.len() {
-            let Some(body) = cfg.block(block) else {
-                return false;
-            };
-            let end = if block == constructor.block {
-                constructor.index
-            } else {
-                body.insns.len()
-            };
-            let Some(intervening) = body.insns.get(start..end) else {
-                return false;
-            };
-            if intervening.iter().any(|instruction| {
-                let effects = InstructionEffects::of_tree(instruction);
-                if instruction.insn_type == InsnType::Goto {
-                    !effects.without_control().is_pure()
-                } else {
-                    !effects.is_pure()
-                }
-            }) {
-                return false;
-            }
-            if block == constructor.block {
-                return true;
-            }
-            let mut successors = cfg.normal_successors(block);
-            let Some(next) = successors.next() else {
-                return false;
-            };
-            if successors.next().is_some()
-                || cfg
-                    .predecessors_with_kind(next)
-                    .iter()
-                    .any(|&(source, kind)| source != block || kind.is_exception())
-            {
-                return false;
-            }
-            block = next;
-            start = 0;
-        }
-        false
-    }
-
-    fn remove_allocation_edge(
+    fn remove_exceptional_input(
         cfg: &mut CFG,
-        allocation: BlockId,
+        source: BlockId,
         handler: BlockId,
     ) -> Result<(), ConstructorRecoveryError> {
-        cfg.remove_edge_with_kind(allocation, handler, EdgeKind::Exception);
+        cfg.remove_edge_with_kind(source, handler, EdgeKind::Exception);
         let block = cfg
             .block_mut(handler)
             .ok_or(ConstructorRecoveryError::MissingHandler(handler))?;
@@ -846,7 +818,7 @@ impl RecoverConstructors<'_> {
             let mut arguments = std::mem::take(&mut phi.args).into_iter();
             let mut edges = std::mem::take(&mut phi.payload.phi_edges).into_iter();
             while let (Some(argument), Some(edge)) = (arguments.next(), edges.next()) {
-                if edge != (allocation, EdgeKind::Exception) {
+                if edge != (source, EdgeKind::Exception) {
                     phi.args.push(argument);
                     phi.payload.phi_edges.push(edge);
                 }

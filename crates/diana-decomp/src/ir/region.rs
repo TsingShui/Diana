@@ -527,6 +527,21 @@ impl RegionGraph {
         self.exceptional_rethrow_sources.get(&block)
     }
 
+    pub(crate) fn elided_rethrow_sources(
+        &self,
+        cfg: &super::CFG,
+        block: BlockId,
+    ) -> Option<&BTreeSet<BlockId>> {
+        let sources = self.exceptional_rethrow_sources(block)?;
+        let terminal = cfg.block(block)?.terminator()?;
+        (terminal.insn_type == super::InsnType::Throw
+            && self.is_elided(&super::semantic::StatementOrigin {
+                block,
+                instruction: terminal.id,
+            }))
+        .then_some(sources)
+    }
+
     pub fn transfers(&self) -> &[RegionTransfer] {
         &self.transfers
     }

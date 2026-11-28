@@ -195,6 +195,7 @@ impl EdgeInitializer {
         };
         if operation.insn_type != InsnType::Move
             || !operation.payload.edge_copy
+            || statement.origin.is_some()
             || !operation.effects_ignoring_edge_copy().is_pure()
             || operation.compound_target().is_some()
         {

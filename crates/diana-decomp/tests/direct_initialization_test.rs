@@ -82,6 +82,42 @@ fn ordinary_construction_keeps_natural_syntax() {
 }
 
 #[test]
+fn split_construction_preserves_each_exception_snapshot() {
+    let analysis = method(
+        include_bytes!(
+            "../../../quality/fixtures/exceptions/staged-allocation-snapshots/classes.dex"
+        ),
+        "Lfixture/AllocationStages;",
+        "run",
+        "()V",
+    );
+    no_failures(&analysis.failures);
+    let text = analysis.rendered.text();
+    let (_, body) = text.split_once("try {").expect("protected construction");
+    let operations = [
+        " = 10;",
+        "AllocationStages.prepare()",
+        " = 15;",
+        " = allocate-instance AllocationItem;",
+        " = 20;",
+        "AllocationStages.argument(",
+        " = 30;",
+        "init-direct ",
+        "Lfixture/AllocationItem;-><init>(III)V",
+        "AllocationStages.publish(",
+        "catch (Throwable",
+        "AllocationStages.caught(",
+    ];
+    let mut remaining = body;
+    for operation in operations {
+        remaining = remaining
+            .split_once(operation)
+            .unwrap_or_else(|| panic!("missing ordered {operation}: {text}"))
+            .1;
+    }
+}
+
+#[test]
 fn observable_preparation_stays_before_the_constructor_expression() {
     let analysis = method(
         include_bytes!("../../../quality/fixtures/atoms/constructor-allocation-order/classes.dex"),

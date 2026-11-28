@@ -634,6 +634,7 @@ impl<'a> LexicalTypeEnvironment<'a> {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct JavaSourceAbi {
     constructors: BTreeMap<MethodReference, JavaConstructorLayout>,
+    lifted_constructor_owners: BTreeSet<ArgType>,
     owner_types: std::collections::BTreeMap<ArgType, ClassTypeSignature>,
     lexical_type_parameters: std::collections::BTreeMap<ArgType, Vec<TypeParameter>>,
     inherited_member_types: BTreeMap<ArgType, BTreeSet<(JavaIdentifier, ArgType)>>,
@@ -966,6 +967,15 @@ impl JavaSourceAbi {
         }
         let mut abi = Self {
             constructors,
+            lifted_constructor_owners: classes
+                .iter()
+                .filter(|class| {
+                    class.is_anonymous()
+                        || class.is_local_class()
+                        || FunctionObjectClass::analyze(class)
+                })
+                .map(|class| class.class_type().clone())
+                .collect(),
             owner_types: open_owners,
             lexical_type_parameters,
             inherited_member_types,
@@ -1021,6 +1031,12 @@ impl JavaSourceAbi {
 
     pub(crate) fn constructors(&self) -> impl Iterator<Item = JavaConstructorLayout> + '_ {
         self.constructors.values().cloned()
+    }
+
+    pub(crate) fn constructor_keeps_operand_order(&self, method: &MethodReference) -> bool {
+        !self.constructors.contains_key(method)
+            && !self.lifted_constructor_owners.contains(&method.owner)
+            && !self.is_function_object_identity(&method.owner)
     }
 
     pub(crate) fn referenced_constructors<'a>(

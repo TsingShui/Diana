@@ -124,6 +124,13 @@ impl EffectSummary {
         Self::default()
     }
 
+    pub(super) fn statement_boundary() -> Self {
+        Self {
+            instruction: InstructionEffects::CONTROL,
+            ..Self::default()
+        }
+    }
+
     pub(super) fn synchronization() -> Self {
         Self {
             instruction: InstructionEffects::SYNCHRONIZATION,
@@ -136,7 +143,7 @@ impl EffectSummary {
     }
 
     pub(super) fn include_before_arguments(&mut self, operation: &SemanticOperation) {
-        let effects = InstructionEffects::before_arguments(operation.insn_type, &operation.payload);
+        let effects = InstructionEffects::before_arguments(operation.insn_type);
         if !effects.is_pure() {
             *self = std::mem::take(self).join(Self::with_instruction_effects(operation, effects));
         }
@@ -237,13 +244,19 @@ impl EffectSummary {
     }
 
     pub(super) fn statement(statement: &SemanticStatement) -> Self {
+        let normal_copy = statement.origin.is_none();
         match &statement.kind {
-            SemanticStatementKind::Instruction(operation) if operation.payload.edge_copy => {
+            SemanticStatementKind::Instruction(operation)
+                if operation.payload.edge_copy && normal_copy =>
+            {
                 Self::operation_ignoring_edge_copy(operation)
             }
             SemanticStatementKind::Instruction(operation) => Self::operation(operation),
             SemanticStatementKind::Definition { value, .. } => {
-                match value.as_operation().filter(|value| value.payload.edge_copy) {
+                match value
+                    .as_operation()
+                    .filter(|value| value.payload.edge_copy && normal_copy)
+                {
                     Some(operation) => Self::operation_ignoring_edge_copy(operation),
                     None => Self::expression(value),
                 }

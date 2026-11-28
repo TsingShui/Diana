@@ -92,7 +92,7 @@ impl SourceEvaluation {
         if root.id == target {
             return Ok(Some(InstructionEffects::PURE));
         }
-        let mut effects = InstructionEffects::before_arguments(root.insn_type, &root.payload);
+        let mut effects = InstructionEffects::before_arguments(root.insn_type);
         let mut pending = vec![EvaluationTask::Effect(root)];
         pending.extend(
             Self::arguments(root)?
@@ -106,10 +106,8 @@ impl SourceEvaluation {
                     if instruction.id == target {
                         return Ok(Some(effects));
                     }
-                    effects = effects.join(InstructionEffects::before_arguments(
-                        instruction.insn_type,
-                        &instruction.payload,
-                    ));
+                    effects =
+                        effects.join(InstructionEffects::before_arguments(instruction.insn_type));
                     pending.push(EvaluationTask::Effect(instruction));
                     pending.extend(
                         Self::arguments(instruction)?

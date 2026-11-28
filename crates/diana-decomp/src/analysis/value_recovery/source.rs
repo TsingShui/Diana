@@ -4,11 +4,14 @@
 //! The same control-domain and effect scheduler used for SSA can therefore run
 //! again with source identities, without a second propagation or DCE algorithm.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::{Arc, Mutex},
+};
 
 use crate::ir::{
-    SemanticControlTopology, SemanticMethod, SemanticNode, SemanticSiteId, SemanticVisitor,
-    SourceVariableContext,
+    InstructionId, SemanticControlTopology, SemanticMethod, SemanticNode, SemanticSiteId,
+    SemanticVisitor, SourceVariableContext,
 };
 
 #[cfg(test)]
@@ -29,8 +32,20 @@ mod tests;
 #[derive(Debug, Default)]
 pub(super) struct SourceFlowCache {
     pub(super) proofs: super::domain::DomainProofCache,
+    /// Throwing statements that select live values on a physical exceptional
+    /// edge. Later allocation may implement the capture with a coalesced
+    /// local instead of an explicit copy, so keep the original boundary.
+    pub(super) exceptional_snapshots: BTreeSet<InstructionId>,
+    pub(super) exact_snapshots: BTreeMap<InstructionId, ExceptionSnapshot>,
     predicates: super::predicate_regions::PredicateQueries,
     entry: Mutex<Option<StoredFlow>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct ExceptionSnapshot {
+    pub(super) coverage: BTreeSet<(u32, u32)>,
+    pub(super) inputs:
+        BTreeMap<(crate::ir::BlockId, crate::ir::analysis::SsaVar), crate::ir::analysis::SsaVar>,
 }
 
 #[derive(Debug)]

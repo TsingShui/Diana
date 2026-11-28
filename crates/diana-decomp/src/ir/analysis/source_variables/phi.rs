@@ -16,7 +16,7 @@ use super::{
     SsaTypeEnvironment, SsaValueGraph, SsaVar, TypeConstraintError,
 };
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct EdgeCopy {
     destination: RegisterArg,
     source: InsnArg,
@@ -1886,19 +1886,8 @@ impl PhiCopies {
                     let predecessors = argument
                         .edge_kind
                         .is_exception()
-                        .then(|| regions.exceptional_rethrow_sources(argument.predecessor))
+                        .then(|| regions.elided_rethrow_sources(cfg, argument.predecessor))
                         .flatten()
-                        .filter(|_| {
-                            cfg.block(argument.predecessor)
-                                .and_then(|block| block.terminator())
-                                .is_some_and(|terminator| {
-                                    terminator.insn_type == InsnType::Throw
-                                        && regions.is_elided(&StatementOrigin {
-                                            block: argument.predecessor,
-                                            instruction: terminator.id,
-                                        })
-                                })
-                        })
                         .cloned()
                         .unwrap_or_else(|| BTreeSet::from([argument.predecessor]));
                     for predecessor in predecessors {
@@ -2429,7 +2418,7 @@ struct PhiInputType {
 
 pub(super) struct PhiLowering {
     normal: NormalCopies,
-    exceptional: BTreeMap<InstructionId, (BlockId, Vec<SemanticStatement>)>,
+    exceptional: BTreeMap<InstructionId, ExceptionalCapture>,
     terminal_exceptional: BTreeMap<BlockId, InstructionId>,
     handler_entries: BTreeMap<BlockId, Vec<SemanticStatement>>,
     cleanup_entries: BTreeMap<ExceptionHandlerPort, Vec<SemanticStatement>>,
@@ -2445,6 +2434,12 @@ pub(super) struct PhiLowering {
     placed_exceptional: BTreeSet<InstructionId>,
     seen: BTreeSet<BlockId>,
     next_variable: u32,
+}
+
+struct ExceptionalCapture {
+    origin: BlockId,
+    inputs: Vec<EdgeCopy>,
+    statements: Vec<SemanticStatement>,
 }
 
 impl PhiLowering {
@@ -2558,12 +2553,20 @@ impl PhiLowering {
             if regions.is_elided(&origin) {
                 continue;
             }
-            let mut statements = PhiCopies::sequentialize(copies, &mut next_variable, types)?;
+            let mut statements =
+                PhiCopies::sequentialize(copies.clone(), &mut next_variable, types)?;
             for statement in &mut statements {
                 statement.origin = Some(origin.clone());
             }
             if !statements.is_empty() {
-                exceptional.insert(origin.instruction, (origin.block, statements));
+                exceptional.insert(
+                    origin.instruction,
+                    ExceptionalCapture {
+                        origin: origin.block,
+                        inputs: copies,
+                        statements,
+                    },
+                );
             }
         }
         let terminal_exceptional = cfg
@@ -2686,13 +2689,13 @@ impl PhiLowering {
                 NormalCopySite::Edge(edge) => SourceVariableError::MissingSemanticEdge(edge),
             });
         }
-        if let Some((instruction, (block, _))) = self
+        if let Some((instruction, capture)) = self
             .exceptional
             .iter()
             .find(|(instruction, _)| !self.placed_exceptional.contains(instruction))
         {
             return Err(SourceVariableError::MissingExceptionalCopySite {
-                block: *block,
+                block: capture.origin,
                 instruction: *instruction,
             });
         }
@@ -2843,23 +2846,24 @@ impl PhiLowering {
             return SemanticNode::Empty;
         }
         let mut resolved = BTreeSet::new();
+        let mut captured = Vec::new();
         let mut blocks = Vec::new();
         for instruction in instructions() {
             if !resolved.insert(instruction) {
                 continue;
             }
-            let Some((origin, copies)) = self.exceptional.get(&instruction) else {
+            let Some(capture) = self.exceptional.get(&instruction) else {
                 continue;
             };
-            let origin = *origin;
-            let copies = copies.clone();
             self.placed_exceptional.insert(instruction);
-            if !copies.is_empty() {
-                blocks.push(SemanticNode::BasicBlock(SemanticBlock {
-                    id: origin,
-                    statements: copies,
-                }));
+            if captured.contains(&&capture.inputs) {
+                continue;
             }
+            captured.push(&capture.inputs);
+            blocks.push(SemanticNode::BasicBlock(SemanticBlock {
+                id: capture.origin,
+                statements: capture.statements.clone(),
+            }));
         }
         SemanticNode::sequence(blocks)
     }
@@ -2881,11 +2885,15 @@ impl PhiLowering {
         if !self.exceptional.is_empty() {
             let mut resolved = BTreeSet::new();
             for statement in block.statements {
+                let mut captured = Vec::new();
                 for instruction in EvaluationInstructions::of_statement(&statement) {
-                    if let Some((_, copies)) = self.exceptional.get(&instruction) {
+                    if let Some(capture) = self.exceptional.get(&instruction) {
                         if resolved.insert(instruction) {
                             self.placed_exceptional.insert(instruction);
-                            prefix.extend(copies.iter().cloned());
+                            if !captured.contains(&&capture.inputs) {
+                                captured.push(&capture.inputs);
+                                prefix.extend(capture.statements.iter().cloned());
+                            }
                         }
                     }
                 }

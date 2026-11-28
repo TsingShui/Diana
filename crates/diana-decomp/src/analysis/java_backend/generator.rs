@@ -428,8 +428,12 @@ impl JavaDecompiler {
         let declaration = JavaMethodDeclaration::from_cfg(cfg);
         let mut options = declaration.body_options(None);
         options.current_type = Some(cfg.method().owner().clone());
-        let body = MethodBodyPipeline::new(self.type_hierarchy.as_ref(), self.observer.as_ref())
-            .analyze(cfg)?;
+        let body = MethodBodyPipeline::new(
+            self.type_hierarchy.as_ref(),
+            &self.source_abi,
+            self.observer.as_ref(),
+        )
+        .analyze(cfg)?;
         method_model_from_body_analysis(declaration, body, options)
     }
 
@@ -517,8 +521,12 @@ impl JavaDecompiler {
             options.outer_instance = Some(outer_instance.clone());
         }
         let body = {
-            MethodBodyPipeline::new(self.type_hierarchy.as_ref(), self.observer.as_ref())
-                .analyze(cfg)
+            MethodBodyPipeline::new(
+                self.type_hierarchy.as_ref(),
+                &self.source_abi,
+                self.observer.as_ref(),
+            )
+            .analyze(cfg)
         }?;
         {
             JavaMethodModel::from_body_analysis_with_options(declaration, body, options)

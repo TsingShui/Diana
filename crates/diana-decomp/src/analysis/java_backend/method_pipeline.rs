@@ -26,16 +26,19 @@ pub(super) struct MethodBodyAnalysis {
 
 pub(super) struct MethodBodyPipeline<'a> {
     hierarchy: &'a dyn TypeHierarchy,
+    source_abi: &'a super::JavaSourceAbi,
     observer: &'a dyn crate::ir::AnalysisObserver,
 }
 
 impl<'a> MethodBodyPipeline<'a> {
     pub(super) fn new(
         hierarchy: &'a dyn TypeHierarchy,
+        source_abi: &'a super::JavaSourceAbi,
         observer: &'a dyn crate::ir::AnalysisObserver,
     ) -> Self {
         Self {
             hierarchy,
+            source_abi,
             observer,
         }
     }
@@ -56,7 +59,11 @@ impl<'a> MethodBodyPipeline<'a> {
         };
 
         self.observer.checkpoint()?;
-        let cfg_pipeline = CfgPipeline::new(self.hierarchy);
+        let keeps_order = |method: &crate::ir::MethodReference| {
+            self.source_abi.constructor_keeps_operand_order(method)
+        };
+        let cfg_pipeline =
+            CfgPipeline::new(self.hierarchy).with_constructor_operand_order(&keeps_order);
         let t = stats.then(std::time::Instant::now);
         let (cfg_analysis, dominators) =
             cfg_pipeline.analyze_with_dominators(cfg, self.observer)?;
