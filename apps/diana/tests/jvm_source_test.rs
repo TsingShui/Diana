@@ -112,6 +112,58 @@ fn recovered_source_preserves_overload_results_and_effect_order() {
 }
 
 #[test]
+fn get_method_keeps_explicit_string_builder_capacities() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../quality/fixtures/atoms/string-builder-capacity/BuilderCapacity.java");
+    let compilation = Command::new("java")
+        .args([
+            "-XX:-UsePerfData",
+            "-m",
+            "jdk.compiler/com.sun.tools.javac.Main",
+            "-g",
+            "-d",
+        ])
+        .args([directory.path(), &fixture])
+        .output()
+        .expect("compile the builder capacity fixture with the JDK");
+    assert!(
+        compilation.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compilation.stderr)
+    );
+
+    let class = directory.path().join("BuilderCapacity.class");
+    let buffer = json_source(
+        "get-method",
+        &class,
+        "LBuilderCapacity;->buffer(II)Ljava/lang/String;",
+        0,
+    );
+    assert!(buffer["issues"].as_array().unwrap().is_empty());
+    assert_contains(
+        text(&buffer),
+        &["new StringBuffer(capacity).append(BuilderCapacity.produce(1, mode))"],
+    );
+
+    let protected = json_source(
+        "get-method",
+        &class,
+        "LBuilderCapacity;->protectedBuilder(II)Ljava/lang/String;",
+        0,
+    );
+    assert!(protected["issues"].as_array().unwrap().is_empty());
+    assert_contains(
+        text(&protected),
+        &[
+            "try {\n            return new StringBuilder(capacity).append(BuilderCapacity.produce(1, mode))",
+            "catch (NegativeArraySizeException ",
+            "catch (IllegalStateException ",
+        ],
+    );
+}
+
+#[test]
 fn get_method_recovers_the_same_original_method_by_name_and_position() {
     let fixture = fixture();
     let inputs = [

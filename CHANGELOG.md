@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.11 - 2026-11-28
+
+- Preserved explicit capacities and their computation when recovering
+  `StringBuilder` and `StringBuffer` chains from DEX and JVM bytecode.
+  A capacity failure can still prevent later append arguments from running.
+- Added DecBench coverage for negative capacities, returned strings,
+  producer exception identity, and dispatch to competing typed catches.
+
 ## 0.4.10 - 2026-11-28
 
 - Preserved effectful DEX element computations before `filled-new-array`.

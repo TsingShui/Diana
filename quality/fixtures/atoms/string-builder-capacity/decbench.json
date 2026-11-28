@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "dex-builder-capacity",
+  "input": "classes.dex",
+  "input_sha256": "75b54922bb5440476ed596619bdc256f0c8c4210ad07a2e3fda1fb3d47fb4648",
+  "probe": "decbench_probe.py",
+  "oracle_files": [
+    "BuilderCapacity.java",
+    "BuilderCapacity.smali",
+    "raw_model.py",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m1",
+      "member": "Lfixture/BuilderCapacity;->builder(II)Ljava/lang/String;",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m0",
+      "member": "Lfixture/BuilderCapacity;->buffer(II)Ljava/lang/String;",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m4",
+      "member": "Lfixture/BuilderCapacity;->protectedBuilder(II)Ljava/lang/String;",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

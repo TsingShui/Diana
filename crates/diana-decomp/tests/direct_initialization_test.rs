@@ -82,6 +82,47 @@ fn ordinary_construction_keeps_natural_syntax() {
 }
 
 #[test]
+fn string_builder_capacity_stays_before_appends_and_inside_its_handlers() {
+    let input =
+        include_bytes!("../../../quality/fixtures/atoms/string-builder-capacity/classes.dex");
+    for (name, class) in [
+        ("builder", "StringBuilder"),
+        ("buffer", "StringBuffer"),
+        ("protectedBuilder", "StringBuilder"),
+    ] {
+        let analysis = method(
+            input,
+            "Lfixture/BuilderCapacity;",
+            name,
+            "(II)Ljava/lang/String;",
+        );
+        no_failures(&analysis.failures);
+        let text = analysis.rendered.text();
+        let chain = format!("new {class}(i).append(BuilderCapacity.produce(1, i2))");
+        let before_append = text.split_once(&chain).unwrap_or_else(|| panic!("{text}"));
+        assert!(
+            before_append
+                .1
+                .starts_with(".append(BuilderCapacity.produce(2, i2)).toString();"),
+            "{text}"
+        );
+        if name == "protectedBuilder" {
+            assert!(before_append.0.contains("try {"), "{text}");
+            assert!(
+                before_append
+                    .1
+                    .contains("catch (NegativeArraySizeException "),
+                "{text}"
+            );
+            assert!(
+                before_append.1.contains("catch (IllegalStateException "),
+                "{text}"
+            );
+        }
+    }
+}
+
+#[test]
 fn split_construction_preserves_each_exception_snapshot() {
     let analysis = method(
         include_bytes!(

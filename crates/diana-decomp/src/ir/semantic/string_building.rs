@@ -182,16 +182,15 @@ impl StringBuilderProtocol {
 
     /// The term a builder's own allocation contributes, if any.
     ///
-    /// A capacity contributes nothing — it cannot be observed through the
-    /// string. A starting string contributes itself, but only when it is a
-    /// literal: `StringBuilder(null)` raises where `null + x` reads "null", so
-    /// the two agree only where the argument is known not to be null.
+    /// Keep explicit capacity constructors: computing the capacity can have
+    /// effects, and the constructor can throw before any append runs. A
+    /// starting string contributes itself when it is a literal. A null seed
+    /// throws in the constructor, whereas concatenation would append "null".
     fn seed(operation: &SemanticOperation, owner: &ArgType) -> Option<Option<SemanticExpression>> {
         let method = Self::allocation(operation)?;
         (method.owner == *owner).then_some(())?;
         match method.descriptor.parameters.as_slice() {
             [] => Some(None),
-            [ArgType::Primitive(PrimitiveType::Int)] => Some(None),
             [parameter] if parameter.as_object() == Some("java/lang/String") => {
                 let argument = operation.operands().get(1)?;
                 Self::is_string_literal(argument).then(|| Some(argument.clone()))
