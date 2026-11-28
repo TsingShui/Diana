@@ -78,13 +78,13 @@ public final class ChapterUtils {
     }
 
     private static final class AntennapodHttpClient {
-        static HttpClient getHttpClient() {
+        static OkHttpClient getHttpClient() {
             record("client");
-            return new HttpClient();
+            return new OkHttpClient();
         }
     }
 
-    private static final class HttpClient {
+    private static final class OkHttpClient {
         Call newCall(Request request) {
             record(request != null && URL.equals(request.url()) && request.cache() == CACHE
                    ? "new-call" : "wrong-request");

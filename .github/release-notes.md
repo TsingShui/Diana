@@ -6,6 +6,8 @@
   change the original order or handler inputs.
 - DecBench now checks first-use class initialization, constructor and
   publication faults, retries, and the identity of the allocated object.
+  Its source-aligned checks read explicit initializers by original owner
+  and descriptor, including array parameters.
 
 ### Install or upgrade Diana
 

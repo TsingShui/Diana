@@ -10,7 +10,7 @@ import unittest
 from zipfile import ZipFile
 
 from corpus_oracles import (
-    View, compare, load_cases, read_sources, register_arguments, verify_cases, verify_obligation, verify_source,
+    Unavailable, View, compare, load_cases, read_sources, register_arguments, verify_cases, verify_obligation, verify_source,
 )
 from evidence import file_digest
 
@@ -135,6 +135,36 @@ class CorpusOraclesTest(unittest.TestCase):
                     if display.startswith("new sample.net"):
                         self.assertEqual(result["observed"]["display_sites"][0]["constructor_spelling"],
                                          "sample.net.Request$Builder")
+
+    def test_explicit_initializer_preserves_descriptor_arguments_and_call_order(self):
+        original = [invoke("read", "()[I", 1),
+                    invoke("<init>", "([II)V", 5, "Lsample/net/Request$Builder;"),
+                    invoke("execute", "()V", 8)]
+        source = capture("new Request.Builder(read(), 7).execute();")
+        case = case_for(source, "call_sequence", original)
+        staged = capture("""
+            Request.Builder builder = allocate-instance Request.Builder;
+            init-direct builder, Lsample/net/Request$Builder;-><init>([II)V, [read(), 7];
+            builder.execute();
+        """)
+        result, = compare(case, {"text": staged})
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(result["observed"]["display_sites"][1]["direct_initializer"],
+                         "Lsample/net/Request$Builder;-><init>([II)V")
+        for wrong in (staged.replace("sample/net/", "other/net/"), staged.replace("[II)V", "[IJ)V")):
+            result, = compare(case, {"text": wrong})
+            self.assertEqual(result["status"], "FAIL")
+
+    def test_initializer_array_descriptor_does_not_hide_a_sibling_method(self):
+        staged = """class Example {
+            void sibling() { init-direct target, Lsample/Payload;-><init>([[B[[Ljava/lang/String;)V, [bytes, names]; }
+            void example(boolean choice) { write(3); }
+        }"""
+        view = View(staged)
+        self.assertEqual([site.name for site in view.calls(view.method_body(MEMBER))], ["write"])
+        for broken in (staged.replace("[bytes, names]", "[bytes]"), staged.replace("init-direct", "other")):
+            with self.assertRaises(Unavailable):
+                View(broken)
 
     def test_char_overload_needs_a_known_type_in_the_selected_scope(self):
         before = capture("char[] values = getValues(); output.append(values[0]);")

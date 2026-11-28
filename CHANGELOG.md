@@ -8,6 +8,8 @@
   original order, exception dispatch, and handler inputs agree.
 - Added DecBench scenarios that exercise class initialization, allocation
   and constructor operands, catch state, and warm and erroneous-class retries.
+  The source-aligned checker recognizes explicit initializer targets with
+  array parameters and verifies their exact DEX member identities.
 
 ## 0.4.8 - 2026-11-28
 

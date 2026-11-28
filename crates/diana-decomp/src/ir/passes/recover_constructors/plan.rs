@@ -219,9 +219,24 @@ impl<'a> ConstructorFolding<'a> {
                         continue;
                     };
                     let instruction = self.instruction(position)?;
+                    if instruction
+                        .result
+                        .as_ref()
+                        .is_some_and(|result| !result.ty.is_known())
+                        && !instruction.can_throw()
+                        && InstructionEffects::of_tree(instruction).is_pure()
+                    {
+                        // This value can stay precomputed. Only operations
+                        // embedded in the tree need an independent result type.
+                        output.push(argument.clone());
+                        continue;
+                    }
                     if matches!(
                         instruction.insn_type,
-                        InsnType::Phi | InsnType::MoveException | InsnType::Cmp
+                        InsnType::Phi
+                            | InsnType::MoveException
+                            | InsnType::Cmp
+                            | InsnType::Unavailable
                     ) || instruction.payload.compound_target.is_some()
                         || !folded.insert(position)
                     {

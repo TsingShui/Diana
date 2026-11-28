@@ -34,7 +34,11 @@ DEX_SIMPLE_NAME = (
 )
 OBJECT_TYPE = rf"L{DEX_SIMPLE_NAME}(?:/{DEX_SIMPLE_NAME})*;"
 CALL_OWNER = re.compile(rf"(?:{OBJECT_TYPE}|\[{{1,255}}(?:[ZBSCIJFD]|{OBJECT_TYPE}))")
-TOKEN = re.compile(r"""(?P<skip>\s+|//[^\n]*|/\*[\s\S]*?\*/)|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|[\w$]+|[^\s]""")
+INIT_MEMBER = rf"(?P<init_owner>{OBJECT_TYPE})-><init>(?P<init_descriptor>\((?:\[{{0,255}}(?:[ZBSCIJFD]|{OBJECT_TYPE}))*\)V)"
+TOKEN = re.compile(
+    r"""(?P<skip>\s+|//[^\n]*|/\*[\s\S]*?\*/)|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|"""
+    + INIT_MEMBER + r"|[\w$]+|[^\s]"
+)
 KEYWORDS = frozenset({"if", "for", "while", "switch", "try", "catch", "synchronized", "return", "throw"})
 BRACKETS = dict(zip("([{", ")]}"))
 PRIMITIVE_NAMES = {"Z": "boolean", "B": "byte", "S": "short", "C": "char", "I": "int",
@@ -179,6 +183,7 @@ class Site:
     line: int
     choices: tuple[tuple[int, bool], ...] = ()
     constructor: str | None = None
+    direct_target: tuple[str, str] | None = None
 
     @property
     def key(self):
@@ -191,12 +196,15 @@ class View:
         self.offsets = [] if locate_tokens else None
         self.ends = {}
         self.scopes = []
+        direct_members = []
         stack = []
         scopes = []
         line = first_line
         for match in TOKEN.finditer(text):
             value = match[0]
             if not match["skip"]:
+                if match["init_owner"]:
+                    direct_members.append((len(self.tokens), match["init_owner"], match["init_descriptor"]))
                 if self.offsets is not None:
                     self.offsets.append(match.span())
                 self.scopes.append(scopes[-1] if scopes else None)
@@ -216,6 +224,35 @@ class View:
         if stack:
             raise Unavailable("unbalanced brackets in selected text")
         self.words = tuple(token.text for token in self.tokens)
+        self.direct_initializers = self.read_direct_initializers(direct_members)
+
+    def read_direct_initializers(self, members):
+        if not members:
+            return ()
+        result = []
+        openings = {closing: opening for opening, closing in self.ends.items() if self.words[opening] != "{"}
+        for member, owner, descriptor in members:
+            opening = member + 2
+            if (self.words[member - 1:member] != (",",) or self.words[member + 1:opening + 1] != (",", "[")
+                    or opening not in self.ends):
+                raise Unavailable("invalid explicit initializer operands")
+            closing = self.ends[opening]
+            if self.words[closing + 1:closing + 2] != (";",):
+                raise Unavailable("missing explicit initializer statement boundary")
+            cursor = member - 2
+            while cursor >= 0 and self.words[cursor] not in (";", "{", "}"):
+                cursor = openings.get(cursor, cursor) - 1
+            start = cursor + 1
+            if self.words[start:start + 3] != ("init", "-", "direct") or start + 3 >= member - 1:
+                raise Unavailable("explicit initializer has no receiver")
+            arguments = self.arguments(opening)
+            target = {"name": "<init>", "owner": owner, "descriptor": descriptor}
+            name, arity = target_key(target)
+            if len(arguments) != arity or any(not argument for argument in arguments):
+                raise Unavailable("explicit initializer arity differs from its descriptor")
+            site = Site(name, arguments, self.tokens[start].line, direct_target=(owner, descriptor))
+            result.append((start, closing, site))
+        return result
 
     def arguments(self, opening):
         closing = self.ends[opening]
@@ -301,7 +338,14 @@ class View:
     def calls(self, bounds):
         start, stop = bounds
         branches = self.choices(bounds)
-        result = []
+        def choices_at(index):
+            return tuple((left, left < index < left_end) for left, left_end, right, right_end in branches
+                         if left < index < left_end or right < index < right_end)
+
+        result = [(closing, replace(site, choices=choices_at(opening)))
+                  for opening, closing, site in self.direct_initializers if start < opening < closing < stop]
+        if len(result) > MAX_CALL_SITES:
+            raise Unavailable("the selected display exceeds the call-site bound")
         for opening, closing in self.ends.items():
             if not start < opening < closing < stop or self.words[opening] != "(":
                 continue
@@ -317,11 +361,7 @@ class View:
             if self.words[receiver] == "new":
                 constructor = "".join(self.words[receiver + 1:opening])
                 name = "new " + name
-            choices = tuple(
-                (left, left < opening < left_end) for left, left_end, right, right_end in branches
-                if left < opening < left_end or right < opening < right_end
-            )
-            site = Site(name, self.arguments(opening), self.tokens[opening - 1].line, choices, constructor)
+            site = Site(name, self.arguments(opening), self.tokens[opening - 1].line, choices_at(opening), constructor)
             result.append((closing, site))
         return [site for _, site in sorted(result, key=lambda item: item[0])]
 
@@ -579,6 +619,8 @@ def display(site):
     result = {"name": site.name, "arity": len(site.arguments), "line": site.line}
     if site.constructor and "$" in site.constructor:
         result["constructor_spelling"] = site.constructor
+    if site.direct_target:
+        result["direct_initializer"] = f"{site.direct_target[0]}-><init>{site.direct_target[1]}"
     return result
 
 
@@ -596,7 +638,11 @@ def select_sites(sites, targets):
     selected = []
     ambiguous = []
     for site in sites:
-        if site.key in targets:
+        if site.direct_target:
+            target = targets.get(site.key)
+            if target and target["name"] == "<init>" and site.direct_target == (target["owner"], target["descriptor"]):
+                selected.append(site)
+        elif site.key in targets:
             selected.append(site)
         elif site.constructor:
             arity = len(site.arguments)
