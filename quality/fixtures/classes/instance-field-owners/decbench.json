@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "id": "dex-instance-field-owners",
+  "default": true,
+  "input": "classes.dex",
+  "input_sha256": "a541c767b61d1400241b5fbf9c554c2a71c14808e04cb13e52ac4c1f5ae780f5",
+  "probe": "verify.py",
+  "oracle_files": [
+    "CheckFieldOwners.java",
+    "ForeignFieldAccess.java",
+    "ForeignFieldAccess.smali",
+    "ParentFields.java",
+    "ParentFields.smali",
+    "RootFields.java",
+    "RootFields.smali",
+    "ShadowFields.java",
+    "ShadowFields.smali",
+    "raw_proof.py",
+    "scenarios.json"
+  ],
+  "methods": [
+    {
+      "at": "e0:l0:c0:m1",
+      "member": "Lfixture/ForeignFieldAccess;->readRootThroughShadow(Lfixture/ShadowFields;)I",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c0:m2",
+      "member": "Lfixture/ForeignFieldAccess;->writeChosenRoot(Lfixture/ShadowFields;I)V",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c3:m6",
+      "member": "Lfixture/ShadowFields;->readOwn()I",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c3:m7",
+      "member": "Lfixture/ShadowFields;->readParent()I",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c3:m8",
+      "member": "Lfixture/ShadowFields;->readRoot()I",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c3:m9",
+      "member": "Lfixture/ShadowFields;->writeParent(I)V",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c3:m10",
+      "member": "Lfixture/ShadowFields;->writePeerRoot(Lfixture/ShadowFields;I)I",
+      "behavior": true,
+      "issues": []
+    },
+    {
+      "at": "e0:l0:c3:m11",
+      "member": "Lfixture/ShadowFields;->writeRoot(I)V",
+      "behavior": true,
+      "issues": []
+    }
+  ]
+}

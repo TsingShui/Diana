@@ -23,6 +23,7 @@ SOURCE_SCAN_LIMIT = 256 * 1024 * 1024
 MAX_ARCHIVE_ENTRIES = 50_000
 MAX_METHODS = 512
 MAX_CALL_SITES = 2_048
+MAX_CONSTRUCTOR_HEAD = 256
 SHA256 = re.compile(r"[a-f0-9]{64}")
 REVISION = re.compile(r"[a-f0-9]{40}")
 IDENTIFIER = re.compile(r"[A-Za-z_$][\w$]*")
@@ -224,6 +225,21 @@ class View:
         if stack:
             raise Unavailable("unbalanced brackets in selected text")
         self.words = tuple(token.text for token in self.tokens)
+        self.constructors = {}
+        self.constructor_heads = {}
+        self.overlong_constructor_heads = []
+        for index, word in enumerate(self.words):
+            if word != "new":
+                continue
+            try:
+                head = self.constructor_head(index)
+            except Unavailable:
+                self.overlong_constructor_heads.append(index)
+                continue
+            if head is not None:
+                opening, name, owner = head
+                self.constructors[opening] = (name, owner)
+                self.constructor_heads[index] = opening
         self.direct_initializers = self.read_direct_initializers(direct_members)
 
     def read_direct_initializers(self, members):
@@ -254,6 +270,74 @@ class View:
             result.append((start, closing, site))
         return result
 
+    def constructor_head(self, start):
+        """Read the erased name and argument opening of a displayed `new` expression."""
+        stop = min(len(self.words), start + MAX_CONSTRUCTOR_HEAD)
+        cursor = start + 1
+        if cursor < stop and self.words[cursor] == "<":
+            cursor = self.constructor_type_arguments(cursor, stop)
+        head = self.constructor_named_type(cursor, stop, diamond=True)
+        if head is None:
+            return None
+        cursor, names = head
+        if cursor >= stop:
+            return self.constructor_limit(stop)
+        if self.words[cursor] == "(":
+            return cursor, names[-1], ".".join(names)
+        return None
+
+    def constructor_named_type(self, cursor, stop, *, diamond=False):
+        names = []
+        if cursor is None:
+            return None
+        while cursor < stop:
+            name = self.words[cursor]
+            if (not IDENTIFIER.fullmatch(name)
+                    or name in KEYWORDS or name in ("new", "extends", "super", "null", "true", "false")):
+                return None
+            names.append(name)
+            cursor += 1
+            if cursor < stop and self.words[cursor] == "<":
+                cursor = self.constructor_type_arguments(cursor, stop, diamond=diamond)
+            if cursor is None:
+                return None
+            if cursor >= stop or self.words[cursor] != ".":
+                return cursor, names
+            cursor += 1
+        return self.constructor_limit(stop)
+
+    def constructor_type_arguments(self, opening, stop, *, diamond=False):
+        """Consume type arguments only within a bounded head anchored by `new`."""
+        cursor = opening + 1
+        if diamond and cursor < stop and self.words[cursor] == ">":
+            return cursor + 1
+        while cursor < stop:
+            has_type = True
+            if self.words[cursor] == "?":
+                cursor += 1
+                has_type = cursor < stop and self.words[cursor] in ("extends", "super")
+                if has_type:
+                    cursor += 1
+            if has_type:
+                item = self.constructor_named_type(cursor, stop)
+                if item is None:
+                    return None
+                cursor, _ = item
+                while cursor + 1 < stop and self.words[cursor:cursor + 2] == ("[", "]"):
+                    cursor += 2
+            if cursor >= stop:
+                break
+            if self.words[cursor] == ">":
+                return cursor + 1
+            if self.words[cursor] != ",":
+                return None
+            cursor += 1
+        return self.constructor_limit(stop)
+
+    def constructor_limit(self, stop):
+        if stop < len(self.words):
+            raise Unavailable("constructor head exceeds its token bound")
+
     def arguments(self, opening):
         closing = self.ends[opening]
         if closing == opening + 1:
@@ -265,6 +349,7 @@ class View:
             if token == ",":
                 result.append(self.words[start:cursor])
                 start = cursor + 1
+            cursor = self.constructor_heads.get(cursor, cursor)
             cursor = self.ends.get(cursor, cursor) + 1
         result.append(self.words[start:closing])
         return tuple(result)
@@ -337,6 +422,8 @@ class View:
 
     def calls(self, bounds):
         start, stop = bounds
+        if any(start < index < stop for index in self.overlong_constructor_heads):
+            raise Unavailable("constructor head exceeds its token bound")
         branches = self.choices(bounds)
         def choices_at(index):
             return tuple((left, left < index < left_end) for left, left_end, right, right_end in branches
@@ -351,16 +438,14 @@ class View:
                 continue
             if len(result) >= MAX_CALL_SITES:
                 raise Unavailable("the selected display exceeds the call-site bound")
-            name = self.words[opening - 1]
-            if not IDENTIFIER.fullmatch(name) or name in KEYWORDS:
-                continue
-            receiver = opening - 2
-            while receiver > start and self.words[receiver] == ".":
-                receiver -= 2
             constructor = None
-            if self.words[receiver] == "new":
-                constructor = "".join(self.words[receiver + 1:opening])
+            if opening in self.constructors:
+                name, constructor = self.constructors[opening]
                 name = "new " + name
+            else:
+                name = self.words[opening - 1]
+                if not IDENTIFIER.fullmatch(name) or name in KEYWORDS:
+                    continue
             site = Site(name, self.arguments(opening), self.tokens[opening - 1].line, choices_at(opening), constructor)
             result.append((closing, site))
         return [site for _, site in sorted(result, key=lambda item: item[0])]

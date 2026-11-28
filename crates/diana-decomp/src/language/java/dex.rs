@@ -764,6 +764,58 @@ impl DexJavaDialect {
         }
     }
 
+    fn instance_field(
+        &self,
+        field: &FieldReference,
+        receiver: &SemanticExpression,
+        expression: JavaExpr,
+    ) -> Result<JavaExpr, JavaLoweringError> {
+        let owner =
+            if expression == JavaExpr::This && self.current_type.as_ref() == Some(&field.owner) {
+                expression
+            } else if expression == JavaExpr::This
+                && self
+                    .source_super_type
+                    .as_ref()
+                    .and_then(|super_type| self.source_erasure(super_type))
+                    .as_ref()
+                    == Some(&field.owner)
+            {
+                JavaExpr::Super
+            } else {
+                let actual = match &expression {
+                    JavaExpr::QualifiedThis(ty) => Some(ty.clone()),
+                    _ => self
+                        .emitted_expression_type(&expression)
+                        .or_else(|| self.cast_source_type(receiver)),
+                };
+                let declared = self.source_type(&field.owner)?;
+                if actual.as_ref().is_some_and(|ty| {
+                    Self::same_erasure(ty, &declared)
+                        || self.source_erasure(ty).as_ref() == Some(&field.owner)
+                }) {
+                    expression
+                } else {
+                    // Field lookup uses the receiver's static type. Project to
+                    // the original reference owner when the displayed receiver
+                    // could otherwise select an intervening declaration.
+                    let ty = actual
+                        .as_ref()
+                        .zip(self.generic_type_projection.as_deref())
+                        .and_then(|(ty, projection)| projection.project_supertype(ty, &field.owner))
+                        .unwrap_or(declared);
+                    JavaExpr::Cast {
+                        ty,
+                        value: Box::new(expression),
+                    }
+                }
+            };
+        Ok(JavaExpr::Field {
+            owner: Box::new(owner),
+            name: self.member_names.field(field),
+        })
+    }
+
     fn arg_as_source_target(
         &mut self,
         value: &SemanticExpression,
@@ -1811,10 +1863,7 @@ impl DexJavaDialect {
                         self.source_type(&field.field_type)?,
                     ));
                 }
-                Ok(JavaExpr::Field {
-                    owner: Box::new(owner_expression),
-                    name: self.member_names.field(field),
-                })
+                self.instance_field(field, owner, owner_expression)
             }
             InsnType::Sget => {
                 let field = Self::field(insn.payload.reference.as_deref())?;
@@ -5178,11 +5227,9 @@ impl JavaDialect for DexJavaDialect {
                 }) {
                     return Ok(JavaStmt::Empty);
                 }
+                let owner_expression = self.arg(owner)?;
                 JavaStmt::Assign {
-                    target: JavaExpr::Field {
-                        owner: Box::new(self.arg(owner)?),
-                        name: self.member_names.field(field),
-                    },
+                    target: self.instance_field(field, owner, owner_expression)?,
                     op: JavaAssignOp::Assign,
                     value: self.arg_as_field(value, field, Some(owner))?,
                 }

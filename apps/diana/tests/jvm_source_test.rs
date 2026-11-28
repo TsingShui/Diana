@@ -333,6 +333,11 @@ fn recovered_jvm_prepared_static_reads_initialize_the_inherited_owner() {
     verify_jvm_fixture("classes/prepared-static-final/jvm/challenge/verify.py");
 }
 
+#[test]
+fn recovered_jvm_instance_field_accesses_preserve_declaring_owner() {
+    verify_jvm_fixture("classes/instance-field-owners/jvm/verify.py");
+}
+
 fn verify_jvm_fixture(path: &str) {
     let output = tempfile::tempdir().unwrap();
     let verifier = Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.18 - 2026-11-28
+
+- Preserved the referenced owner of DEX and JVM instance field reads and
+  writes when a subclass declares a field with the same name.
+- Recognized generic constructor calls in DecBench invocation checks.
+
 ## 0.4.17 - 2026-11-28
 
 - Preserved active reads of static final fields with implicit default values.

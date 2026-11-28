@@ -125,16 +125,69 @@ class CorpusOraclesTest(unittest.TestCase):
             for display, status in (
                 ("new Request.Builder().execute();", "PASS"),
                 ("new sample.net.Request$Builder().execute();", "PASS"),
+                ("new sample.net.Request$Builder<>().execute();", "PASS"),
+                ("new sample.net.Request<String>.Builder<Integer>().execute();", "PASS"),
                 ("new Request$Builder().execute();", "UNCHECKED"),
-                ("new other.net.Request$Builder().execute();", "UNCHECKED"),
+                ("new other.net.Request$Builder<>().execute();", "UNCHECKED"),
                 ("new Different().execute();", "FAIL"),
             ):
                 with self.subTest(mode=mode, display=display):
                     result, = compare(case, {"text": capture(display)})
                     self.assertEqual(result["status"], status)
-                    if display.startswith("new sample.net"):
+                    if display.startswith("new sample.net.Request$Builder"):
                         self.assertEqual(result["observed"]["display_sites"][0]["constructor_spelling"],
                                          "sample.net.Request$Builder")
+
+    def test_generic_constructor_names_and_outer_argument_counts(self):
+        source = capture("consume(new Pair(read(), 2), 3);")
+        original = [
+            invoke("read", "()I", 1),
+            invoke("<init>", "(II)V", 2, "Lsample/Pair;"),
+            invoke("consume", "(Lsample/Pair;I)V", 3),
+        ]
+        for mode in ("call_presence", "call_sequence"):
+            case = case_for(source, mode, original)
+            for head in (
+                "Pair",
+                "Pair<>",
+                "sample.Pair<String>",
+                "sample.Pair<java.util.Map<String, java.util.List<? extends String[]>>, Integer>",
+                "<java.util.List<String>> sample.Pair<>",
+            ):
+                with self.subTest(mode=mode, head=head):
+                    result, = compare(case, {"text": capture(f"consume(new {head}(read(), 2), 3);")})
+                    self.assertEqual(result["status"], "PASS")
+                    self.assertEqual(
+                        [(site["name"], site["arity"]) for site in result["observed"]["display_sites"]],
+                        [("read", 0), ("new Pair", 2), ("consume", 2)],
+                    )
+
+    def test_angle_operators_and_invalid_suffixes_do_not_create_constructors(self):
+        source = capture("new Pair(1, 2);")
+        case = case_for(source, "call_presence", [invoke("<init>", "(II)V", 1, "Lsample/Pair;")])
+        for body in (
+            "report(first < (second), third > (fourth), total >> (bits));",
+            "factory.<Pair>create(1, 2);",
+            "new Different<>(1, 2);",
+            "new Pair<>(1);",
+            "new Pair<String,>(1, 2);",
+            "new Pair<first + second>(1, 2);",
+        ):
+            with self.subTest(body=body):
+                result, = compare(case, {"text": capture(body)})
+                self.assertEqual(result["status"], "FAIL")
+                self.assertEqual(result["observed"]["calls"], [])
+
+    def test_constructor_head_bound_leaves_only_the_selected_body_unchecked(self):
+        source = capture("new Pair(1, 2);")
+        case = case_for(source, "call_presence", [invoke("<init>", "(II)V", 1, "Lsample/Pair;")])
+        overlong = "new Pair<" + "Box<" * 256 + "String" + ">" * 257 + "(1, 2);"
+        result, = compare(case, {"text": capture(overlong)})
+        self.assertEqual(result["status"], "UNCHECKED")
+        self.assertIn("token bound", result["detail"])
+        sibling = source[:-1] + " void other() { " + overlong + " } }"
+        result, = compare(case, {"text": sibling})
+        self.assertEqual(result["status"], "PASS")
 
     def test_explicit_initializer_preserves_descriptor_arguments_and_call_order(self):
         original = [invoke("read", "()[I", 1),

@@ -1,0 +1,64 @@
+{
+  "own-read": [
+    "return:30",
+    "self:10:20:30",
+    "peer:40:50:60"
+  ],
+  "parent-read": [
+    "return:20",
+    "self:10:20:30",
+    "peer:40:50:60"
+  ],
+  "root-read": [
+    "return:10",
+    "self:10:20:30",
+    "peer:40:50:60"
+  ],
+  "parent-write": [
+    "return:void",
+    "self:10:77:30",
+    "peer:40:50:60"
+  ],
+  "root-write": [
+    "return:void",
+    "self:77:20:30",
+    "peer:40:50:60"
+  ],
+  "peer-distinct": [
+    "return:10",
+    "self:10:20:30",
+    "peer:77:50:60"
+  ],
+  "peer-alias": [
+    "return:77",
+    "self:77:20:30",
+    "peer:40:50:60"
+  ],
+  "peer-null": [
+    "throw:NullPointerException",
+    "self:10:20:30",
+    "peer:40:50:60"
+  ],
+  "external-read": [
+    "return:10",
+    "self:10:20:30",
+    "peer:40:50:60"
+  ],
+  "external-null": [
+    "throw:NullPointerException",
+    "self:10:20:30",
+    "peer:40:50:60"
+  ],
+  "chosen-peer": [
+    "return:void",
+    "self:10:20:30",
+    "peer:77:50:60",
+    "calls:1"
+  ],
+  "chosen-null": [
+    "throw:NullPointerException",
+    "self:10:20:30",
+    "peer:40:50:60",
+    "calls:1"
+  ]
+}
